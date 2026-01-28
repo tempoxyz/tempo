@@ -2,22 +2,19 @@
 //!
 //! # Usage
 //! ```rust,ignore
-//! let handle = ConsensusNodeBuilder::default()
-//!     .with_args(args.consensus)
-//!     .with_execution_node_receiver(node_rx)
-//!     .with_feed_state(feed_state)
-//!     .with_shutdown_token(shutdown_token)
+//! let handle = ConsensusNode::builder(args.consensus)
+//!     .with_execution_node(node)
 //!     .build()?
 //!     .spawn();
+//!
+//! // Handle can be used to trigger graceful shutdown
+//! handle.shutdown();
 //! ```
 
 use commonware_runtime::{Metrics, Runner};
 use eyre::{WrapErr as _, eyre};
 use futures::{FutureExt as _, future::FusedFuture as _};
-use reth_ethereum::chainspec::EthChainSpec as _;
 use std::{path::PathBuf, thread};
-use tokio::sync::oneshot;
-use tokio_util::sync::CancellationToken;
 use tracing::{error, info, info_span};
 
 use crate::{args::Args, feed::FeedStateHandle, run_consensus_stack};
@@ -27,123 +24,66 @@ pub(crate) mod builder;
 pub(crate) mod handle;
 
 pub use builder::ConsensusNodeBuilder;
-pub use handle::{ConsensusDeadSignal, ConsensusNodeHandle};
-
-/// Input received from the execution layer to start consensus.
-pub struct ExecutionNodeInput {
-    /// The execution node handle.
-    pub node: TempoFullNode,
-    /// Whether the node is in dev mode.
-    pub is_dev_mode: bool,
-    /// Whether follow mode is enabled (skip consensus).
-    pub skip_consensus: bool,
-    /// Optional storage directory override. If None, derived from node datadir.
-    pub storage_dir_override: Option<PathBuf>,
-}
-
-/// Validated consensus node configuration.
-pub(crate) struct ConsensusNodeConfig {
-    pub(crate) args: Args,
-    pub(crate) execution_node_rx: oneshot::Receiver<ExecutionNodeInput>,
-    pub(crate) feed_state: FeedStateHandle,
-    pub(crate) shutdown_token: CancellationToken,
-}
+pub use handle::ConsensusNodeHandle;
 
 /// Consensus node that can be spawned in a dedicated thread.
 ///
 /// This encapsulates the commonware runtime and consensus stack setup,
 /// providing a clean interface to spawn the consensus layer.
 pub struct ConsensusNode {
-    config: ConsensusNodeConfig,
+    args: Args,
+    execution_node: TempoFullNode,
+    feed_state: FeedStateHandle,
+    storage_directory: PathBuf,
 }
 
 impl ConsensusNode {
-    /// Creates a new consensus node with the given configuration.
-    pub(crate) fn new(config: ConsensusNodeConfig) -> Self {
-        Self { config }
+    /// Create a new builder with the consensus CLI arguments.
+    pub fn builder(args: Args) -> ConsensusNodeBuilder {
+        ConsensusNodeBuilder::new(args)
     }
 
     /// Spawns the consensus node in a dedicated thread and returns a handle.
     ///
     /// The consensus stack runs in its own tokio runtime on a separate thread.
-    /// The returned handle can be used to wait for completion or check status.
+    /// The returned handle can trigger graceful shutdown via [`ConsensusNodeHandle::shutdown`].
     ///
-    /// All business logic (waiting for execution node, dev mode handling,
-    /// storage directory resolution) is encapsulated within this method.
+    /// # Panics
+    /// The spawned thread will panic if the consensus stack fails.
     pub fn spawn(self) -> ConsensusNodeHandle {
-        let (dead_tx, dead_rx) = oneshot::channel();
+        info_span!("prepare_consensus").in_scope(|| {
+            info!(
+                path = %self.storage_directory.display(),
+                "determined directory for consensus data",
+            )
+        });
 
-        let config = self.config;
+        let Self {
+            args,
+            execution_node,
+            feed_state,
+            storage_directory,
+        } = self;
+
+        let (handle, shutdown_token) = ConsensusNodeHandle::create();
 
         let thread_handle = thread::spawn(move || {
-            let args = config.args;
-            let feed_state = config.feed_state;
-            let shutdown_token = config.shutdown_token;
-
-            // Wait for the execution node to be ready
-            let input = match config.execution_node_rx.blocking_recv() {
-                Ok(input) => input,
-                Err(_) => {
-                    let _ = dead_tx.send(());
-                    return Err(eyre!(
-                        "channel closed before execution node input could be received"
-                    ));
-                }
-            };
-
-            // Skip consensus in dev mode or follow mode
-            if input.is_dev_mode || input.skip_consensus {
-                info_span!("consensus").in_scope(|| {
-                    info!(
-                        dev_mode = input.is_dev_mode,
-                        skip_consensus = input.skip_consensus,
-                        "skipping consensus stack"
-                    );
-                });
-                let _ = dead_tx.send(());
-                futures::executor::block_on(async move {
-                    shutdown_token.cancelled().await;
-                });
-                return Ok(());
-            }
-
-            // Resolve storage directory
-            let storage_directory = input.storage_dir_override.or_else(|| args.storage_dir.clone()).unwrap_or_else(|| {
-                input
-                    .node
-                    .config
-                    .datadir
-                    .clone()
-                    .resolve_datadir(input.node.chain_spec().chain())
-                    .data_dir()
-                    .join("consensus")
-            });
-
-            info_span!("prepare_consensus").in_scope(|| {
-                info!(
-                    path = %storage_directory.display(),
-                    "determined directory for consensus data",
-                )
-            });
-
-            let worker_threads = args.worker_threads;
             let runtime_config = commonware_runtime::tokio::Config::default()
                 .with_tcp_nodelay(Some(true))
-                .with_worker_threads(worker_threads)
+                .with_worker_threads(args.worker_threads)
                 .with_storage_directory(storage_directory)
                 .with_catch_panics(true);
 
             let runner = commonware_runtime::tokio::Runner::new(runtime_config);
 
-            let result: eyre::Result<()> = runner.start(async move |ctx| {
+            let result: eyre::Result<()> = runner.start(|ctx| async move {
                 // Ensure all consensus metrics are prefixed
                 let ctx = ctx.with_label("consensus");
 
                 let mut metrics_server =
                     crate::metrics::install(ctx.with_label("metrics"), args.metrics_address).fuse();
 
-                let consensus_stack =
-                    run_consensus_stack(&ctx, args, input.node, feed_state);
+                let consensus_stack = run_consensus_stack(&ctx, args, execution_node, feed_state);
                 tokio::pin!(consensus_stack);
 
                 loop {
@@ -151,14 +91,14 @@ impl ConsensusNode {
                         biased;
 
                         () = shutdown_token.cancelled() => {
+                            info!("consensus received shutdown signal");
                             break Ok(());
                         }
 
                         ret = &mut consensus_stack => {
-                            break ret.and_then(|()| Err::<(), eyre::Report>(eyre!(
-                                "consensus stack exited unexpectedly"))
-                            )
-                            .wrap_err("consensus stack failed");
+                            break ret
+                                .and_then(|()| Err(eyre!("consensus stack exited unexpectedly")))
+                                .wrap_err("consensus stack failed");
                         }
 
                         ret = &mut metrics_server, if !metrics_server.is_terminated() => {
@@ -173,13 +113,13 @@ impl ConsensusNode {
             });
 
             if let Err(ref e) = result {
-                error!("Consensus node runner failed: {e:?}");
+                error!("Consensus node failed: {e:?}");
+                panic!("Consensus node failed: {e:?}");
             }
 
-            let _ = dead_tx.send(());
             result
         });
 
-        ConsensusNodeHandle::new(thread_handle, dead_rx)
+        handle.with_thread(thread_handle)
     }
 }

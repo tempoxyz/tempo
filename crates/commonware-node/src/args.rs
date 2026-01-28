@@ -148,6 +148,11 @@ pub struct Args {
 }
 
 impl Args {
+    /// Returns true if consensus should run.
+    pub fn is_enabled(&self, is_dev_mode: bool, is_follow_mode: bool) -> bool {
+        !is_dev_mode && !is_follow_mode
+    }
+
     /// Returns the signing key loaded from specified file.
     pub(crate) fn signing_key(&self) -> eyre::Result<Option<SigningKey>> {
         if let Some(signing_key) = self.loaded_signing_key.get() {
