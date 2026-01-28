@@ -67,7 +67,7 @@ This eliminates the need to retain historical account state for consensus recove
 ## Precompile Address
 
 ```solidity
-address constant VALIDATOR_CONFIG_V2_ADDRESS = 0xCCCCCCCC00000000000000000000000000000002;
+address constant VALIDATOR_CONFIG_V2_ADDRESS = 0xCCCCCCCC00000000000000000000000000000001;
 ```
 
 ## Interface
@@ -125,16 +125,16 @@ interface IValidatorConfigV2 {
     /// @notice Validator information (V2 - append-only, delete-once)
     /// @param publicKey Ed25519 communication public key (non-zero, unique across all validators)
     /// @param validatorAddress Ethereum-style address of the validator (unique across all validators)
-    /// @param inboundAddress Address where other validators can connect (format: `<hostname|ip>:<port>`)
-    /// @param outboundAddress IP address for firewall whitelisting (format: `<ip>:<port>`, no hostnames)
+    /// @param ingress Address where other validators can connect (format: `<hostname|ip>:<port>`)
+    /// @param egress IP Address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>:<port>`, no hostnames)
     /// @param index Position in validators array (assigned at creation, immutable)
     /// @param addedAtHeight Block height when validator was added (set by builder, immutable)
     /// @param deletedAtHeight Block height when validator was deleted (0 = active, set by builder)
     struct Validator {
         bytes32 publicKey;
         address validatorAddress;
-        string inboundAddress;
-        string outboundAddress;
+        string ingress;
+        string egress;
         uint64 index;
         uint64 addedAtHeight;
         uint64 deletedAtHeight;
@@ -178,18 +178,18 @@ interface IValidatorConfigV2 {
 
     /// @notice Add a new validator (owner only)
     /// @dev The signature must be an Ed25519 signature over:
-    ///      keccak256(abi.encodePacked(chainId, contractAddress, validatorAddress, inboundAddress, outboundAddress))
+    ///      keccak256(abi.encodePacked(chainId, contractAddress, validatorAddress, ingress, egress))
     ///      This proves the caller controls the private key corresponding to publicKey.
     /// @param validatorAddress The address of the new validator
     /// @param publicKey The validator's Ed25519 communication public key
-    /// @param inboundAddress The validator's inbound address `<hostname|ip>:<port>` for incoming connections
-    /// @param outboundAddress The validator's outbound IP address `<ip>:<port>` for firewall whitelisting
+    /// @param ingress The validator's inbound address `<hostname|ip>:<port>` for incoming connections
+    /// @param egress The validator's outbound IP address `<ip>:<port>` for firewall whitelisting
     /// @param signature Ed25519 signature (64 bytes) proving ownership of the public key
     function addValidator(
         address validatorAddress,
         bytes32 publicKey,
-        string calldata inboundAddress,
-        string calldata outboundAddress,
+        string calldata ingress,
+        string calldata egress,
         bytes calldata signature
     ) external;
 
@@ -211,18 +211,18 @@ interface IValidatorConfigV2 {
     ///      The signature must be an Ed25519 signature over:
     ///      keccak256(abi.encodePacked(
     ///          "TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
-    ///          chainId, contractAddress, validatorAddress, inboundAddress, outboundAddress
+    ///          chainId, contractAddress, validatorAddress, ingress, egress
     ///      ))
     /// @param validatorAddress The address of the new validator
     /// @param publicKey The new validator's Ed25519 communication public key
-    /// @param inboundAddress The new validator's inbound address `<hostname|ip>:<port>` for incoming connections
-    /// @param outboundAddress The new validator's outbound IP address `<ip>:<port>` for firewall whitelisting
+    /// @param ingress The new validator's inbound address `<hostname|ip>:<port>` for incoming connections
+    /// @param egress The new validator's outbound IP address `<ip>:<port>` for firewall whitelisting
     /// @param signature Ed25519 signature (64 bytes) proving ownership of the new public key
     function rotateValidator(
         address validatorAddress,
         bytes32 publicKey,
-        string calldata inboundAddress,
-        string calldata outboundAddress,
+        string calldata ingress,
+        string calldata egress,
         bytes calldata signature
     ) external;
 
@@ -275,8 +275,8 @@ message = keccak256(abi.encodePacked(
     chainId,                              // uint64: Prevents cross-chain replay
     contractAddress,                      // address: Prevents cross-contract replay
     validatorAddress,                     // address: Binds to specific validator address
-    inboundAddress,                       // string: Binds network configuration
-    outboundAddress                       // string: Binds network configuration
+    ingress,                       // string: Binds network configuration
+    egress                       // string: Binds network configuration
 ))
 ```
 
@@ -292,8 +292,8 @@ message = keccak256(abi.encodePacked(
     chainId,                                   // uint64: Prevents cross-chain replay
     contractAddress,                           // address: Prevents cross-contract replay
     validatorAddress,                          // address: Binds to specific new validator address
-    inboundAddress,                            // string: Binds network configuration
-    outboundAddress                            // string: Binds network configuration
+    ingress,                            // string: Binds network configuration
+    egress                            // string: Binds network configuration
 ))
 ```
 
@@ -358,9 +358,9 @@ This distinction matters because:
 
 ### Address Validation
 
-- **inboundAddress**: Must be in `<hostname|ip>:<port>` format. Hostnames and IP
+- **ingress**: Must be in `<hostname|ip>:<port>` format. Hostnames and IP
   addresses are both accepted.
-- **outboundAddress**: Must be in `<ip>:<port>` format. Only IP addresses are
+- **egress**: Must be in `<ip>:<port>` format. Only IP addresses are
   accepted (no hostnames).
 
 Both IPv4 and IPv6 addresses are supported. IPv6 addresses must be enclosed in
@@ -424,7 +424,7 @@ The following invariants must always hold:
    decreases.
 
 2. **Immutable validators**: Once a validator is added, its `publicKey`,
-   `validatorAddress`, `inboundAddress`, `outboundAddress`, `index`, and
+   `validatorAddress`, `ingress`, `egress`, `index`, and
    `addedAtHeight` fields never change.
 
 3. **Delete-once**: A validator's `deletedAtHeight` can only transition from 0
@@ -446,8 +446,8 @@ The following invariants must always hold:
    `addedAtHeight <= H && (deletedAtHeight == 0 || deletedAtHeight > H)`.
 
 9. **Signature binding**: The signature message includes `chainId`,
-   `contractAddress`, `validatorAddress`, `inboundAddress`, and
-   `outboundAddress`, preventing replay across chains, contracts, or parameter
+   `contractAddress`, `validatorAddress`, `ingress`, and
+   `egress`, preventing replay across chains, contracts, or parameter
    changes.
 
 10. **Owner authorization**: Only the owner can call `addValidator`,
