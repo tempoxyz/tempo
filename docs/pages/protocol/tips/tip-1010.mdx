@@ -1,0 +1,159 @@
+# Fallback Subblock Transactions and Fee Recipient Registry
+
+This document specifies inclusion of 0x5b transactions outside signed subblocks, and introduces an onchain fee recipient registry for validators.
+
+- **TIP ID**: TIP-1010
+- **Authors/Owners**: TBD
+- **Status**: Draft
+- **Related Specs/TIPs**: Subblock Specification, Tempo Transaction Specification
+- **Protocol Version**: TBD
+---
+
+# Overview
+
+## Abstract
+
+This TIP allows 0x5b transactions to be included outside signed subblocks unconditionally. It keeps root-only signing for all 0x5b transactions and introduces a validator fee recipient registry to support fee routing without requiring a signed subblock. The subblock metadata system transaction is extended with offsets to disambiguate which 0x5b transactions are signed subblock transactions.
+
+## Motivation
+
+Today, 0x5b transactions are only valid when included inside signed subblocks. This provides strong ordering and fee routing guarantees but means users have no alternative inclusion path. Allowing 0x5b transactions outside subblocks provides flexibility and improves inclusion reliability—for example, when a validator is unavailable or has exhausted its subblock gas budget—while preserving the reserved nonce space and root-only signing requirements.
+
+This change requires a canonical fee recipient mapping (for unsigned fallback 0x5b transactions) and a way to distinguish signed subblock transactions from fallback 0x5b transactions in the block body. Extending subblock metadata with offsets is the minimal mechanism to achieve this without introducing a new transaction type.
+
+---
+
+# Specification
+
+## 1. Terminology
+
+- **Signed subblock transaction**: A 0x5b transaction that is included in a subblock referenced by the end-of-block subblock metadata system transaction.
+- **Fallback 0x5b transaction**: A 0x5b transaction that is not referenced by any subblock metadata entry.
+- **Validator prefix**: The 15-byte prefix embedded in the 0x5b nonce key (most significant byte is 0x5b, next 15 bytes are the validator public key prefix).
+
+## 2. Fee Recipient Registry
+
+Extend the existing Validator Config precompile with a fee recipient mapping.
+
+### 2.1 Storage
+
+For each validator, store:
+- `fee_recipient`: address
+- `pubkey_prefix`: bytes15 (derived from the validator public key)
+
+The registry MUST enforce uniqueness of `pubkey_prefix` across all validators.
+
+### 2.2 Interface
+
+Add the following methods to the Validator Config precompile:
+
+```solidity
+/// @notice Returns the fee recipient for a validator address.
+function feeRecipient(address validator) external view returns (address);
+
+/// @notice Returns the fee recipient for a validator pubkey prefix.
+/// @dev Reverts if the prefix is unknown.
+function feeRecipientByPrefix(bytes15 pubkeyPrefix) external view returns (address);
+
+/// @notice Sets the fee recipient for the caller's validator address.
+/// @dev Only callable by a validator address.
+function setFeeRecipient(address feeRecipient) external;
+```
+
+### 2.3 Initialization
+
+On `addValidator`, set the validator's `fee_recipient` to the validator address by default.
+
+### 2.4 Cache From Subblock Metadata
+
+During execution of the end-of-block subblock metadata system transaction, the registry MUST update the `fee_recipient` for each metadata entry's validator to the `fee_recipient` in that entry. Fee recipient resolution for transactions in the current block uses the metadata payload directly when available (see Section 4.3); the registry update is a cache for future blocks.
+
+## 3. Subblock Metadata Extension
+
+Extend `SubBlockMetadata` with two fields:
+
+- `tx_start_index: u64`
+- `tx_count: u64`
+
+The RLP encoding order becomes:
+
+```
+[version, validator_pubkey, fee_recipient, signature, tx_start_index, tx_count]
+```
+
+### 3.1 Indexing Rules
+
+- Indices are zero-based over the full block transaction list, including start-of-block system transactions.
+- The end-of-block subblock metadata system transaction is excluded from indexing.
+- Each metadata entry references the contiguous transaction range:
+
+```
+[tx_start_index, tx_start_index + tx_count)
+```
+
+### 3.2 Metadata Validity
+
+For each metadata entry:
+
+- The referenced range MUST be within the block transaction list.
+- All transactions in the range MUST have a 0x5b nonce key prefix matching the entry's validator.
+- The range MUST be contiguous and exclusively assigned to that validator.
+- Ranges MUST NOT overlap.
+- Entries MUST be ordered by `tx_start_index` in ascending order.
+- Empty subblocks are allowed with `tx_count = 0` and MUST have a `tx_start_index` that fits between other ranges.
+
+Signature validation for each metadata entry uses the referenced transaction list as the subblock transaction list (unchanged from the current signature scheme).
+
+## 4. Fallback 0x5b Transactions
+
+### 4.1 Inclusion Rules
+
+- Fallback 0x5b transactions MAY appear anywhere in the block body, including before or after subblock ranges.
+- Fallback 0x5b transactions MAY appear in both the proposer lane and the gas incentive lane.
+- For gas accounting and lane limits, fallback 0x5b transactions are treated as normal proposer transactions in the position they appear.
+- Any transaction with an invalid nonce invalidates the block (existing rule).
+
+### 4.2 Root-Only Signing
+
+All 0x5b transactions (signed subblock or fallback) MUST be signed by the root EOA key of the sender.
+
+- Keychain signatures are not allowed.
+- `key_authorization` is not allowed.
+
+### 4.3 Fee Recipient Resolution
+
+For any 0x5b transaction, the fee recipient is resolved as follows:
+
+1. If the transaction is within a subblock metadata range, use the metadata entry's `fee_recipient`.
+2. Else, if the validator appears in the current block's metadata list, use that metadata `fee_recipient`.
+3. Else, use the registry `fee_recipient` for the validator prefix.
+
+If no fee recipient can be resolved, the block is invalid.
+
+### 4.4 Fee Failure Behavior
+
+- Signed subblock transactions follow the existing subblock fee failure behavior.
+- Fallback 0x5b transactions follow normal transaction semantics: if fee payment fails (insufficient balance or insufficient Fee AMM liquidity), the transaction is invalid and the block is invalid if included.
+
+## 5. Fee Accounting
+
+- Signed subblock transactions pay fees to the metadata `fee_recipient` (unchanged behavior).
+- Fallback 0x5b transactions pay fees to the resolved fee recipient (Section 4.3).
+
+# Invariants
+
+1. **Nonce Safety**: Any invalid nonce invalidates the block, including for 0x5b transactions.
+2. **Root-Only Signing**: 0x5b transactions never use keychain signatures and never include `key_authorization`.
+3. **Metadata Ranges**: Subblock metadata ranges are ordered, non-overlapping, and only include matching 0x5b transactions.
+4. **Fee Recipient Determinism**: Every 0x5b transaction resolves a fee recipient using the rules in Section 4.3.
+5. **Registry Cache**: Subblock metadata updates the registry for future blocks.
+
+## Test Cases
+
+1. Valid block with mixed proposer txs, signed subblock txs, and fallback 0x5b txs.
+2. Invalid block where a metadata range includes a non-0x5b transaction.
+3. Invalid block with overlapping metadata ranges.
+4. Fallback 0x5b tx uses registry fee recipient when metadata is absent.
+5. Fallback 0x5b tx uses metadata fee recipient when present in the same block.
+6. Invalid block when a fallback 0x5b tx targets an unknown prefix.
+7. Invalid block when a 0x5b tx includes keychain signature or key_authorization.
