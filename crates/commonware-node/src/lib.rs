@@ -29,10 +29,7 @@ pub use crate::config::{
 };
 
 pub use args::Args;
-pub use node::{
-    ConsensusDeadSignal, ConsensusNode, ConsensusNodeBuilder, ConsensusNodeHandle,
-    ExecutionNodeInput,
-};
+pub use node::{ConsensusNode, ConsensusNodeBuilder, ConsensusNodeHandle};
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
