@@ -3,6 +3,7 @@ pragma solidity >=0.8.13 <0.9.0;
 
 import { HandlerBase } from "./HandlerBase.sol";
 import { TxBuilder } from "./TxBuilder.sol";
+import { console } from "forge-std/Test.sol";
 
 /// @title InvariantChecker - Consolidated Invariant Verification
 /// @notice Consolidates all invariant checks into a single master function with category helpers
@@ -198,6 +199,36 @@ abstract contract InvariantChecker is HandlerBase {
                 // C5: Code exists at the address
                 assertTrue(recorded.code.length > 0, "C5: No code at CREATE address");
             }
+        }
+    }
+
+    // ============ Skip Stats Reporting ============
+
+    /// @notice Report handler skip statistics for debugging slow invariant runs
+    /// @dev Call this in afterInvariant() to see why handlers are being skipped
+    function _reportSkipStats() internal view {
+        console.log("=== Handler Skip Statistics ===");
+        console.log("Insufficient balance:", ghost_skipInsufficientBalance);
+        console.log("Key not authorized:", ghost_skipKeyNotAuthorized);
+        console.log("Key expired:", ghost_skipKeyExpired);
+        console.log("Key spending limit:", ghost_skipKeySpendingLimit);
+        console.log("Key already authorized:", ghost_skipKeyAlreadyAuthorized);
+        console.log("Key never authorized:", ghost_skipKeyNeverAuthorized);
+        console.log("No policies:", ghost_skipNoPolicies);
+        console.log("No keys:", ghost_skipNoKeys);
+        console.log("Other:", ghost_skipOther);
+        uint256 totalSkips = ghost_skipInsufficientBalance + ghost_skipKeyNotAuthorized
+            + ghost_skipKeyExpired + ghost_skipKeySpendingLimit + ghost_skipNoPolicies
+            + ghost_skipNoKeys + ghost_skipKeyAlreadyAuthorized + ghost_skipKeyNeverAuthorized
+            + ghost_skipOther;
+        console.log("Total skips:", totalSkips);
+        console.log("Handler attempts:", ghost_handlerAttempts);
+        console.log("Total tx executed:", ghost_totalTxExecuted);
+        console.log("Total tx reverted:", ghost_totalTxReverted);
+        if (totalSkips + ghost_totalTxExecuted + ghost_totalTxReverted > 0) {
+            uint256 skipPct =
+                (totalSkips * 100) / (totalSkips + ghost_totalTxExecuted + ghost_totalTxReverted);
+            console.log("Skip percentage:", skipPct, "%");
         }
     }
 

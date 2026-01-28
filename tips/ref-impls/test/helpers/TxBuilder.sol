@@ -19,9 +19,64 @@ library TxBuilder {
     using LegacyTransactionLib for LegacyTransaction;
     using TempoTransactionLib for TempoTransaction;
 
+    // ============ Default Transaction Parameters ============
+
     uint64 constant DEFAULT_GAS_LIMIT = 100_000;
+    uint64 constant DEFAULT_CREATE_GAS_LIMIT = 1_500_000;
     uint256 constant DEFAULT_GAS_PRICE = 100;
-    uint64 constant DEFAULT_CREATE_GAS_LIMIT = 500_000;
+    uint64 constant GAS_LIMIT_BUFFER = 100_000;
+
+    // ============ EVM Gas Constants ============
+
+    uint64 constant TX_BASE_COST = 21_000;
+    uint64 constant COLD_ACCOUNT_ACCESS = 2600;
+    uint64 constant CALLDATA_ZERO_BYTE = 4;
+    uint64 constant CALLDATA_NONZERO_BYTE = 16;
+    uint64 constant INITCODE_WORD_COST = 2;
+    uint64 constant ACCESS_LIST_ADDR_COST = 2400;
+    uint64 constant ACCESS_LIST_SLOT_COST = 1900;
+    uint64 constant ECRECOVER_GAS = 3000;
+    uint64 constant P256_EXTRA_GAS = 5000;
+    uint64 constant KEY_AUTH_BASE_GAS = 27_000;
+    uint64 constant KEY_AUTH_PER_LIMIT_GAS = 22_000;
+
+    // ============ TIP-1000 Gas Constants (Hardfork: T1) ============
+
+    uint64 constant ACCOUNT_CREATION_COST = 250_000; // nonce 0→1
+    uint64 constant STATE_CREATION_COST = 250_000; // SSTORE zero→non-zero
+    uint64 constant CREATE_BASE_COST = 500_000; // CREATE/CREATE2 base
+    uint64 constant CODE_DEPOSIT_COST = 1000; // per byte
+    uint64 constant CREATE_FIELDS_COST = 500_000; // keccak + codesize (2 × 250,000)
+
+    // ============ Gas Calculation Helpers ============
+
+    /// @notice Calculate calldata gas cost (4 per zero byte, 16 per non-zero)
+    function calldataGas(bytes memory data) internal pure returns (uint64 gas) {
+        for (uint256 i = 0; i < data.length; i++) {
+            gas += data[i] == 0 ? CALLDATA_ZERO_BYTE : CALLDATA_NONZERO_BYTE;
+        }
+    }
+
+    /// @notice Calculate initcode gas cost (2 gas per 32-byte word)
+    function initcodeGas(bytes memory initcode) internal pure returns (uint64) {
+        return uint64(((initcode.length + 31) / 32) * INITCODE_WORD_COST);
+    }
+
+    /// @notice Calculate T1 CREATE intrinsic gas (TIP-1000)
+    /// @param initcode The contract creation bytecode
+    /// @param nonce The sender's current nonce (0 = first tx, account creation cost applies)
+    function createGas(bytes memory initcode, uint64 nonce) internal pure returns (uint64) {
+        uint64 gas = TX_BASE_COST + CREATE_BASE_COST;
+
+        if (nonce == 0) {
+            gas += ACCOUNT_CREATION_COST;
+        }
+
+        gas += calldataGas(initcode);
+        gas += initcodeGas(initcode);
+
+        return gas;
+    }
 
     uint8 constant SIGNATURE_TYPE_P256 = 0x01;
     uint8 constant SIGNATURE_TYPE_WEBAUTHN = 0x02;
