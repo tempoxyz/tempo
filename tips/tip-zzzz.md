@@ -32,6 +32,7 @@ HALF_LIFE = 3_600_000 milliseconds (1 hour)
 PRECISION = 10^18 (fixed-point precision)
 BASE_PRICE = 25_000 gas
 TARGET_PRICE = 250_000 gas
+LOG2_10 = 3_321928094887362347  // log2(10) × PRECISION
 ```
 
 **Note**: Tempo timestamps have millisecond precision (`timestamp_millis()` = seconds × 1000 + `timestamp_millis_part`).
@@ -74,13 +75,13 @@ last_update_time_ms = block.timestamp_millis()
 ```
 ratio_fp = (current_rate_fp × PRECISION) / (TARGET_RATE × PRECISION)
 
-// price = 25_000 × 10^ratio = 25_000 × e^(ratio × ln(10))
-ln_10_fp = 2_302585092994045684  // ln(10) × PRECISION
-exponent_fp = (ratio_fp × ln_10_fp) / PRECISION
-price = (BASE_PRICE × exp(exponent_fp)) / PRECISION
+// price = ceil(25_000 × 10^ratio) = ceil(25_000 × 2^(ratio × log2(10)))
+exponent_fp = (ratio_fp × LOG2_10) / PRECISION
+price_fp = (BASE_PRICE × exp2(exponent_fp))
+price = (price_fp + PRECISION - 1) / PRECISION  // ceiling division
 ```
 
-All arithmetic uses fixed-point with PRECISION = 10^18.
+All arithmetic uses fixed-point with PRECISION = 10^18. Final price is rounded up to nearest integer.
 
 ## Pricing Table
 
