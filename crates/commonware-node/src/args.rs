@@ -32,6 +32,15 @@ pub struct Args {
     #[arg(long = "consensus.metrics-address", default_value = "127.0.0.1:8001")]
     pub metrics_address: SocketAddr,
 
+    /// The OTLP endpoint URL to push consensus metrics to (e.g., `https://metrics.example.com/v1/metrics`).
+    /// If not set, metrics will only be exposed on the metrics-address endpoint.
+    #[arg(long = "consensus.metrics-otlp")]
+    pub metrics_otlp_url: Option<String>,
+
+    /// The interval at which to push consensus metrics via OTLP.
+    #[arg(long = "consensus.metrics-otlp.interval", default_value = "10s")]
+    pub metrics_otlp_interval: jiff::SignedDuration,
+
     #[arg(long = "consensus.max-message-size-bytes", default_value_t = DEFAULT_MAX_MESSAGE_SIZE_BYTES)]
     pub max_message_size_bytes: u32,
 

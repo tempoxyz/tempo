@@ -54,6 +54,22 @@ struct TempoArgs {
     #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
     pub follow: Option<String>,
 
+    /// Unified telemetry URL that expands to configure logs, metrics, and consensus telemetry.
+    ///
+    /// When provided, this URL is expanded and overwrites set values for:
+    ///
+    ///  - `--logs-otlp=<url>/opentelemetry/v1/logs`
+    ///
+    ///  - `--logs-otlp.filter=debug`
+    ///
+    ///  - `--metrics.prometheus.push.url=<url>/api/v1/import/prometheus`
+    ///
+    ///  - `--consensus.metrics-otlp=<url>/opentelemetry/v1/metrics`
+    ///
+    /// The URL must include credentials: `https://user:pass@metrics.example.com`
+    #[arg(long, value_name = "URL")]
+    pub telemetry_url: Option<String>,
+
     #[command(flatten)]
     pub consensus: tempo_commonware_node::Args,
 
@@ -110,12 +126,15 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
+    // Expand --telemetry-url into the equivalent telemetry arguments
+    let args = defaults::expand_telemetry_args(std::env::args().collect())?;
+
     let cli = Cli::<
         TempoChainSpecParser,
         TempoArgs,
         DefaultRpcModuleValidator,
         tempo_cmd::TempoSubcommand,
-    >::parse();
+    >::parse_from(args);
     let is_node = matches!(cli.command, Commands::Node(_));
 
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
@@ -179,6 +198,34 @@ fn main() -> eyre::Result<()> {
                     args.consensus.metrics_address,
                 )
                 .fuse();
+
+                // Start the OTLP metrics exporter if configured
+                let _metrics_otlp = args
+                    .consensus
+                    .metrics_otlp_url
+                    .clone()
+                    .map(|endpoint| {
+                        // Build labels for identifying this node in metrics
+                        let mut labels = std::collections::HashMap::new();
+
+                        // Add consensus public key as node identifier
+                        if let Ok(Some(public_key)) = args.consensus.public_key() {
+                            labels.insert("consensus_pubkey".to_string(), public_key.to_string());
+                        }
+
+                        let config = tempo_commonware_node::metrics::OtlpConfig {
+                            endpoint,
+                            interval: args.consensus.metrics_otlp_interval,
+                            labels,
+                        };
+
+                        tempo_commonware_node::metrics::install_otlp(
+                            ctx.with_label("metrics_otlp"),
+                            config,
+                        )
+                    })
+                    .transpose()?;
+
                 let consensus_stack =
                     run_consensus_stack(&ctx, args.consensus, node, cl_feed_state_clone);
                 tokio::pin!(consensus_stack);
