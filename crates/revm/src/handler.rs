@@ -172,26 +172,6 @@ fn adjusted_initial_gas(
     }
 }
 
-/// Checks if gas limit is sufficient and returns OOG frame result if not.
-///
-/// For T0+, validates gas limit covers intrinsic gas. For pre-T0, skips check
-/// to maintain backward compatibility.
-#[inline]
-fn check_gas_limit(
-    spec: tempo_chainspec::hardfork::TempoHardfork,
-    tx: &TempoTxEnv,
-    adjusted_gas: &InitialAndFloorGas,
-) -> Option<FrameResult> {
-    if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
-        let kind = *tx
-            .first_call()
-            .expect("we already checked that there is at least one call in aa tx")
-            .0;
-        return Some(oog_frame_result(kind, tx.gas_limit()));
-    }
-    None
-}
-
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
 ///
 /// Fees are paid in fee tokens instead of account balance.
@@ -1572,6 +1552,26 @@ fn oog_frame_result(kind: TxKind, gas_limit: u64) -> FrameResult {
     } else {
         FrameResult::new_create_oog(gas_limit)
     }
+}
+
+/// Checks if gas limit is sufficient and returns OOG frame result if not.
+///
+/// For T0+, validates gas limit covers intrinsic gas. For pre-T0, skips check
+/// to maintain backward compatibility.
+#[inline]
+fn check_gas_limit(
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    tx: &TempoTxEnv,
+    adjusted_gas: &InitialAndFloorGas,
+) -> Option<FrameResult> {
+    if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
+        let kind = *tx
+            .first_call()
+            .expect("we already checked that there is at least one call in aa tx")
+            .0;
+        return Some(oog_frame_result(kind, tx.gas_limit()));
+    }
+    None
 }
 
 /// Validates time window for AA transactions
