@@ -52,18 +52,30 @@ impl AmmLiquidityCache {
 
     /// Checks whether there's enough liquidity in at least one of the AMM pools
     /// used by recent validators for the given fee token and fee amount.
+    ///
+    /// # Mempool DoS Prevention
+    ///
+    /// This check is enforced during mempool validation to prevent network-wide DoS attacks.
+    /// Without this check, attackers could spam transactions with fee tokens that have no or
+    /// low AMM liquidity - these would propagate through the mempool but fail execution for
+    /// most validators (only succeeding if a validator's configured token matches).
+    ///
+    /// # Subblock Bypass
+    ///
+    /// Transactions submitted via the subblock path (with `subblock_proposer` set) bypass
+    /// this check entirely. They are sent directly to a specific validator and validated
+    /// at execution time via `evm.transact_commit()`.
+    ///
+    /// For tokens without AMM liquidity, users should:
+    /// 1. Find a validator whose configured fee token matches their token
+    /// 2. Submit via subblock with that validator as `subblock_proposer`
+    /// 3. When `user_token == validator_token`, no swap is needed (see `TipFeeManager`)
     pub fn has_enough_liquidity(
         &self,
         user_token: Address,
         fee: U256,
         state_provider: &impl StateProvider,
     ) -> Result<bool, ProviderError> {
-        // DEFAULT_FEE_TOKEN (PATH_USD) is always accepted by all validators without
-        // requiring an AMM swap. Skip liquidity check for the base token.
-        if user_token == DEFAULT_FEE_TOKEN {
-            return Ok(true);
-        }
-
         let amount_out = compute_amount_out(fee).map_err(ProviderError::other)?;
 
         let mut missing_in_cache = Vec::new();

@@ -695,6 +695,9 @@ where
             );
         }
 
+        // AMM liquidity check for mempool DoS prevention.
+        // Subblock transactions (with subblock_proposer set) bypass this check entirely
+        // via a separate submission path - see crates/node/src/rpc/mod.rs.
         match self
             .amm_liquidity_cache
             .has_enough_liquidity(fee_token, cost, &state_provider)
