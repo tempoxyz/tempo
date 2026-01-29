@@ -1,0 +1,602 @@
+# ValidatorConfig V2
+
+This document specifies the second version of the Validator Config precompile,
+introducing an append-only, delete-once design that eliminates the need for
+historical state access during node recovery.
+
+- **TIP ID**: TIP-XXXX
+- **Authors/Owners**: Janis
+- **Status**: Draft
+- **Related Specs/TIPs**: N/A
+- **Protocol Version**: TBD
+
+---
+
+# Overview
+
+## Abstract
+
+TIP-XXXX introduces ValidatorConfig V2, a new precompile for managing consensus
+validators with append-only semantics. Unlike the original ValidatorConfig, V2
+replaces the mutable `active` boolean with `addedAtHeight` (set when adding an
+entry) and `deletedAtHeight` fields (set when deleting), enabling nodes to
+reconstruct the validator set for any historical epoch using only current state.
+The new design also requires Ed25519 signature verification when adding
+validators to prove key ownership.
+
+## Motivation
+
+The original ValidatorConfig precompile allows validators to be updated
+arbitrarily, which creates challenges for node recovery:
+
+1. **Historical state dependency**: To determine the validator set at a past
+   epoch, nodes must access historical account state, which requires retaining
+   and indexing all historical data.
+
+2. **Key ownership verification**: V1 does not verify that the caller controls
+   the private key corresponding to the public key being registered, allowing
+   potential key squatting attacks.
+
+3. **Validator re-registration**: V1 allows deleted validators to be re-added
+   with different parameters, complicating historical queries.
+
+V2 solves these problems with an append-only design where:
+- Validators are immutable after creation (no `updateValidator`)
+- `addedAtHeight` and `deletedAtHeight` fields enable historical reconstruction
+  from current state
+- Ed25519 signature verification proves key ownership at registration time
+- Both address and public key remain reserved forever (even after deletion)
+
+### Key Design Principle
+
+By recording `addedAtHeight` and `deletedAtHeight`, nodes can determine DKG players for any epoch using only current state. When preparing for a DKG ceremony in epoch `E+2`, a node reads the contract at `boundary(E)` and filters:
+
+```
+players(E+2) = validators.filter(v =>
+    v.addedAtHeight <= boundary(E) &&
+    (v.deletedAtHeight == 0 || v.deletedAtHeight > boundary(E))
+)
+```
+
+This eliminates the need to retain historical account state for consensus recovery—nodes can derive DKG player sets from the current contract state alone.
+
+---
+
+# Specification
+
+## Precompile Address
+
+```solidity
+address constant VALIDATOR_CONFIG_V2_ADDRESS = 0xCCCCCCCC00000000000000000000000000000001;
+```
+
+## Interface
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.13;
+
+/// @title IValidatorConfigV2 - Validator Config V2 Precompile Interface
+/// @notice Interface for managing consensus validators with append-only, delete-once semantics
+/// @dev This precompile manages the set of validators that participate in consensus.
+///      V2 uses an append-only design that eliminates the need for historical state access
+///      during node recovery. Validators are immutable after creation and can only be deleted once.
+///
+///      Key differences from V1:
+///      - `active` bool replaced by `addedAtHeight` and `deletedAtHeight`
+///      - No `updateValidator` - validators are immutable after creation
+///      - Requires Ed25519 signature on `addValidator` to prove key ownership
+///      - Both address and public key must be unique across all validators (including deleted)
+interface IValidatorConfigV2 {
+
+    /// @notice Thrown when caller lacks authorization to perform the requested action
+    error Unauthorized();
+
+    /// @notice Thrown when trying to add a validator with an address that already exists
+    error ValidatorAlreadyExists();
+
+    /// @notice Thrown when trying to add a validator with a public key that already exists
+    error PublicKeyAlreadyExists();
+
+    /// @notice Thrown when validator is not found
+    error ValidatorNotFound();
+
+    /// @notice Thrown when trying to delete a validator that is already deleted
+    error ValidatorAlreadyDeleted();
+
+    /// @notice Thrown when public key is invalid (zero)
+    error InvalidPublicKey();
+
+    /// @notice Thrown when the Ed25519 signature verification fails
+    error InvalidSignature();
+
+    /// @notice Thrown when inbound address is not in valid host:port format
+    /// @param field The field name that failed validation
+    /// @param input The invalid input that was provided
+    /// @param backtrace Additional error context
+    error NotHostPort(string field, string input, string backtrace);
+
+    /// @notice Thrown when outbound address is not in valid ip:port format
+    /// @param field The field name that failed validation
+    /// @param input The invalid input that was provided
+    /// @param backtrace Additional error context
+    error NotIpPort(string field, string input, string backtrace);
+
+    /// @notice Validator information (V2 - append-only, delete-once)
+    /// @param publicKey Ed25519 communication public key (non-zero, unique across all validators)
+    /// @param validatorAddress Ethereum-style address of the validator (unique across all validators)
+    /// @param ingress Address where other validators can connect (format: `<hostname|ip>:<port>`)
+    /// @param egress IP Address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>:<port>`, no hostnames)
+    /// @param index Position in validators array (assigned at creation, immutable)
+    /// @param addedAtHeight Block height when validator was added (set by builder, immutable)
+    /// @param deletedAtHeight Block height when validator was deleted (0 = active, set by builder)
+    struct Validator {
+        bytes32 publicKey;
+        address validatorAddress;
+        string ingress;
+        string egress;
+        uint64 index;
+        uint64 addedAtHeight;
+        uint64 deletedAtHeight;
+    }
+
+    /// @notice Get all validators (including deleted ones) in array order
+    /// @return validators Array of all validators with their information
+    function getValidators() external view returns (Validator[] memory validators);
+
+    /// @notice Get only active validators (where deletedAtHeight == 0)
+    /// @return validators Array of active validators
+    function getActiveValidators() external view returns (Validator[] memory validators);
+
+    /// @notice Get the owner of the precompile
+    /// @return The owner address
+    function owner() external view returns (address);
+
+    /// @notice Get total number of validators ever added (including deleted)
+    /// @return The count of validators
+    function validatorCount() external view returns (uint64);
+
+    /// @notice Get validator information by index in the validators array
+    /// @param index The index in the validators array
+    /// @return The validator struct at the given index
+    function validatorByIndex(uint256 index) external view returns (Validator memory);
+
+    /// @notice Get validator information by address
+    /// @param validatorAddress The validator address to look up
+    /// @return The validator struct for the given address
+    function validatorByAddress(address validatorAddress) external view returns (Validator memory);
+
+    /// @notice Get validator information by public key
+    /// @param publicKey The validator's public key to look up
+    /// @return The validator struct for the given public key
+    function validatorByPublicKey(bytes32 publicKey) external view returns (Validator memory);
+
+    /// @notice Get the epoch at which a fresh DKG ceremony will be triggered
+    /// @return The epoch number, or 0 if no fresh DKG is scheduled.
+    ///         The fresh DKG ceremony runs in epoch N, and epoch N+1 uses the new DKG polynomial.
+    function getNextFullDkgCeremony() external view returns (uint64);
+
+    /// @notice Add a new validator (owner only)
+    /// @dev The signature must be an Ed25519 signature over:
+    ///      keccak256(abi.encodePacked(chainId, contractAddress, validatorAddress, ingress, egress))
+    ///      This proves the caller controls the private key corresponding to publicKey.
+    /// @param validatorAddress The address of the new validator
+    /// @param publicKey The validator's Ed25519 communication public key
+    /// @param ingress The validator's inbound address `<hostname|ip>:<port>` for incoming connections
+    /// @param egress The validator's outbound IP address `<ip>:<port>` for firewall whitelisting
+    /// @param signature Ed25519 signature (64 bytes) proving ownership of the public key
+    function addValidator(
+        address validatorAddress,
+        bytes32 publicKey,
+        string calldata ingress,
+        string calldata egress,
+        bytes calldata signature
+    ) external;
+
+    /// @notice Delete a validator (owner only)
+    /// @dev Marks the validator as deleted by setting deletedAtHeight to the current block height.
+    ///      The validator's entry remains in storage for historical queries.
+    ///      The address and public key remain reserved and cannot be reused.
+    /// @param validatorAddress The validator address to delete
+    function deleteValidator(address validatorAddress) external;
+
+    /// @notice Rotate a validator to a new identity (caller must be existing validator)
+    /// @dev Atomically deletes the caller's validator entry and adds a new one. This is equivalent
+    ///      to calling deleteValidator followed by addValidator, but executed atomically.
+    ///      The caller (msg.sender) must be an existing active validator.
+    ///      The same validation rules as addValidator apply:
+    ///      - The new public key must not already exist
+    ///      - The new validator address must not already exist
+    ///      - The signature must prove ownership of the new public key
+    ///      The signature must be an Ed25519 signature over:
+    ///      keccak256(abi.encodePacked(
+    ///          "TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
+    ///          chainId, contractAddress, validatorAddress, ingress, egress
+    ///      ))
+    /// @param validatorAddress The address of the new validator
+    /// @param publicKey The new validator's Ed25519 communication public key
+    /// @param ingress The new validator's inbound address `<hostname|ip>:<port>` for incoming connections
+    /// @param egress The new validator's outbound IP address `<ip>:<port>` for firewall whitelisting
+    /// @param signature Ed25519 signature (64 bytes) proving ownership of the new public key
+    function rotateValidator(
+        address validatorAddress,
+        bytes32 publicKey,
+        string calldata ingress,
+        string calldata egress,
+        bytes calldata signature
+    ) external;
+
+    /// @notice Change owner (owner only)
+    /// @param newOwner The new owner address
+    function changeOwner(address newOwner) external;
+
+    /// @notice Set the epoch at which a fresh DKG ceremony will be triggered (owner only)
+    /// @param epoch The epoch in which to run the fresh DKG ceremony.
+    ///        Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
+    function setNextFullDkgCeremony(uint64 epoch) external;
+}
+```
+
+## Behavior
+
+### Validator Lifecycle
+
+Unlike V1, validators in V2 follow a strict lifecycle:
+
+1. **Addition**: `addValidator` creates an immutable validator entry with
+   `addedAtHeight` set to the current block height and `deletedAtHeight = 0`
+2. **Active period**: Validator participates in consensus while
+   `deletedAtHeight == 0`
+3. **Deletion**: `deleteValidator` sets `deletedAtHeight` to the current block
+   height
+4. **Preserved**: The validator entry remains in storage forever for historical
+   queries
+
+```
+┌─────────────┐     addValidator()     ┌─────────────┐     deleteValidator()     ┌─────────────┐
+│             │ ────────────────────►  │             │ ────────────────────────► │             │
+│  Not Exist  │                        │   Active    │                           │   Deleted   │
+│             │                        │ deleted=0   │                           │ deleted>0   │
+└─────────────┘                        └─────────────┘                           └─────────────┘
+                                              │                                         │
+                                              │◄────────────────────────/───────────────┘
+                                              │         (No transition back)
+```
+
+### Signature Verification
+
+When adding a validator, the caller must provide an Ed25519 signature proving
+ownership of the public key:
+
+```
+message = keccak256(abi.encodePacked(
+    b"TEMPO",                             // bytes: global namespace prefix 
+    b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR" // bytes: contract specific namespace
+    chainId,                              // uint64: Prevents cross-chain replay
+    contractAddress,                      // address: Prevents cross-contract replay
+    validatorAddress,                     // address: Binds to specific validator address
+    ingress,                       // string: Binds network configuration
+    egress                       // string: Binds network configuration
+))
+```
+
+The signature must be exactly 64 bytes and must verify against the provided
+public key.
+
+When rotating a validator, the signature message format is identical to `addValidator`:
+
+```
+message = keccak256(abi.encodePacked(
+    b"TEMPO",                                  // bytes: global namespace prefix 
+    b"_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"  // bytes: contract specific namespace
+    chainId,                                   // uint64: Prevents cross-chain replay
+    contractAddress,                           // address: Prevents cross-contract replay
+    validatorAddress,                          // address: Binds to specific new validator address
+    ingress,                            // string: Binds network configuration
+    egress                            // string: Binds network configuration
+))
+```
+
+The old validator is identified by `msg.sender`, which must be an existing active validator.
+
+### DKG Player Selection
+
+The DKG manager uses the validator set from this contract to determine participants in each DKG ceremony. To ensure validators have sufficient time to join the network and synchronize, there is a **one-epoch gap** between registration and DKG participation.
+
+**Rule**: A validator becomes a DKG player in epoch `E+2` if `addedAtHeight <= boundary(E)`, where `boundary(E)` is the last block height of epoch `E`.
+
+```
+Epoch E                    Epoch E+1                  Epoch E+2
+│                          │                          │
+│  addValidator() called   │  Validator syncs,        │  Validator participates
+│  at some height H        │  prepares for DKG        │  as DKG player
+│                          │                          │
+├──────────────────────────┼──────────────────────────┼──────────────────────────►
+│                          │                          │
+           boundary(E)              boundary(E+1)
+           (last block)             (last block)
+```
+
+**Example timeline** (assuming epoch length of 100 blocks):
+1. Validator is added at height 1050 during epoch 10, confirmed at `boundary(10) = 1000`
+2. Epoch 11 (heights 1001–1100): The validator syncs with the network
+3. Epoch 12 (heights 1101–1200): The validator participates as a DKG player and receives a share (on success)
+4. Epoch 13 (heights 1201–1300): The validator becomes a signer using the share from the epoch 12 DKG
+
+**Deletion follows the same pattern**: A deleted validator is excluded from epoch `E+2` if `deletedAtHeight <= boundary(E)`.
+
+The complete filter for DKG players at epoch `E+2`:
+```
+players = validators.filter(v =>
+    v.addedAtHeight <= boundary(E) &&
+    (v.deletedAtHeight == 0 || v.deletedAtHeight > boundary(E))
+)
+```
+
+### Determining Active Validators
+
+Reading this contract alone is **not sufficient** to determine who the active validators (signers) are during a given epoch. The contract only records which validators are *eligible* to participate in DKG ceremonies—it does not record DKG outcomes.
+
+To determine the actual validators for epoch `E+1`:
+
+1. Read the DKG outcome from block `boundary(E)`
+2. The DKG outcome contains the Ed25519 public keys of successful DKG players
+3. Match these public keys against the contract via `validatorByPublicKey()` to obtain validator addresses and IP addresses
+
+```
+activeValidators(E+1) = dkgOutcome(boundary(E)).players.map(pubkey =>
+    contract.validatorByPublicKey(pubkey)
+)
+```
+
+This distinction matters because:
+- The DKG can fail, reverting to the previous DKG outcome (for example, not all
+  eligible players may successfully participate in the the DKG due to network
+  issues, crashes, etc.)
+- The DKG outcome is the authoritative record of who holds valid key shares
+- Only validators with valid shares can produce valid signatures in epoch `E+1`
+
+### Address Validation
+
+- **ingress**: Must be in `<hostname|ip>:<port>` format. Hostnames and IP
+  addresses are both accepted.
+- **egress**: Must be in `<ip>:<port>` format. Only IP addresses are
+  accepted (no hostnames).
+
+Both IPv4 and IPv6 addresses are supported. IPv6 addresses must be enclosed in
+brackets: `[2001:db8::1]:8080`.
+
+### Reconstructing DKG Players
+
+Nodes can determine the DKG players for any past or future epoch using only current contract state. To find the players for epoch `E+2`, fetch all validators via `getValidators()` and filter based on `boundary(E)`:
+
+```
+players(E+2) = validators.filter(v =>
+    v.addedAtHeight <= boundary(E) &&
+    (v.deletedAtHeight == 0 || v.deletedAtHeight > boundary(E))
+)
+```
+
+This enables nodes to reconstruct DKG player sets without accessing historical account state—critical for node recovery and late-joining validators.
+
+### Uniqueness Constraints
+
+Both the validator address and public key must be globally unique across all
+validators (including deleted ones):
+
+- `ValidatorAlreadyExists`: Reverts if the address has ever been registered
+- `PublicKeyAlreadyExists`: Reverts if the public key has ever been registered
+
+This ensures historical queries always return consistent results.
+
+## Storage Layout
+
+| Slot | Field | Description |
+|------|-------|-------------|
+| 0 | `owner` | Owner address |
+| 1 | `validatorsArray.length` | Count of validators ever added |
+| keccak256(1) + i | `validatorsArray[i]` | Validator address at index i |
+| keccak256(addr, 2) | `validators[addr]` | Validator struct for address |
+| keccak256(pubkey, 3) | `pubkeyToIndex[pubkey]` | Index for public key lookup |
+| 4 | `nextDkgCeremony` | Next full DKG ceremony epoch |
+
+## Differences from V1
+
+| Aspect | V1 | V2 |
+|--------|----|----|
+| Status field | `active: bool` | `deletedAtHeight: uint64` (0 = active) |
+| Creation tracking | None | `addedAtHeight: uint64` |
+| Mutability | Mutable via `updateValidator()` | Immutable after creation |
+| Deletion | Sets `active = false` | Sets `deletedAtHeight = block.number` |
+| Re-registration | Allowed after deletion | Never allowed (address/pubkey reserved forever) |
+| Key ownership | Not verified | Ed25519 signature required |
+| Historical queries | Requires historical state | Filter `getValidators()` by `addedAtHeight`/`deletedAtHeight` |
+| Uniqueness | Address only | Address AND public key |
+| Precompile address | `0xCCCC...0001` | `0xCCCC...0002` |
+
+---
+
+# Invariants
+
+The following invariants must always hold:
+
+1. **Append-only array**: The `validatorsArray` length only increases; it never
+   decreases.
+
+2. **Immutable validators**: Once a validator is added, its `publicKey`,
+   `validatorAddress`, `ingress`, `egress`, `index`, and
+   `addedAtHeight` fields never change.
+
+3. **Delete-once**: A validator's `deletedAtHeight` can only transition from 0
+   to a non-zero value, never back to 0 or to a different non-zero value.
+
+4. **Unique addresses**: No two validators (including deleted ones) can have the
+   same `validatorAddress`.
+
+5. **Unique public keys**: No two validators (including deleted ones) can have
+   the same `publicKey`.
+
+6. **Non-zero public keys**: All validators must have a non-zero `publicKey`.
+
+7. **Monotonic index**: Validator `index` equals its position in
+   `validatorsArray` and equals `validatorCount - 1` at creation time.
+
+8. **Historical consistency**: For any height H, `getValidatorSetAtHeight(H)`
+   returns exactly the validators where
+   `addedAtHeight <= H && (deletedAtHeight == 0 || deletedAtHeight > H)`.
+
+9. **Signature binding**: The signature message includes `chainId`,
+   `contractAddress`, `validatorAddress`, `ingress`, and
+   `egress`, preventing replay across chains, contracts, or parameter
+   changes.
+
+10. **Owner authorization**: Only the owner can call `addValidator`,
+    `deleteValidator`, `changeOwner`, and `setNextFullDkgCeremony`.
+
+11. **Validator self-rotation**: Only an existing active validator can call
+    `rotateValidator` on themselves (caller must be the validator being rotated).
+
+12. **Atomic rotation**: `rotateValidator` atomically deletes the old validator
+    (setting its `deletedAtHeight`) and adds a new validator entry. Both
+    operations occur in the same transaction with the same block height.
+
+---
+
+# Migration from V1
+
+This section describes the migration strategy from ValidatorConfig V1 to V2.
+
+## Overview
+
+The migration uses a three-pronged approach:
+
+1. **New hardfork ("Allegro")**: Timestamp-based activation that switches
+   consensus from reading V1 to V2
+2. **Genesis initialization for new networks**: New deployments initialize V2 at
+   genesis
+3. **Bootstrap V2 from V1 for existing networks**: At the fork, copy V1 state
+   into V2
+
+## Hardfork-Based Switching
+
+The DKG manager determines which contract to read based on the block timestamp
+at the boundary height:
+
+```
+if chainspec.is_allegro_active_at_timestamp(block.timestamp) {
+    read_from_contract_v2_at_height(height)
+} else {
+    read_from_contract_at_height(height)  // V1
+}
+```
+
+This ensures all nodes switch deterministically at the same point.
+
+## Bootstrap Migration
+
+V2 requires Ed25519 signatures on `addValidator`, but V1 validators don't have
+pre-signed messages. To solve this, V2 includes a one-time privileged bootstrap
+mechanism:
+
+```solidity
+/// @notice Bootstrap V2 from V1 state (owner only, one-time)
+/// @dev Can only be called once. After bootstrap, normal signature requirements apply.
+/// @param migrationHeight The block height at which migration occurs
+function bootstrapFromV1(uint64 migrationHeight) external;
+```
+
+**Properties:**
+- Callable only if `bootstrapped == false`
+- After execution, sets `bootstrapped = true` permanently
+- Internally reads V1 state and copies active validators
+- Sets `addedAtHeight = migrationHeight` for imported validators
+- Inactive V1 validators are not imported
+
+## Timeline
+
+```
+Before Fork                    Fork Block                      After Fork
+     │                              │                              │
+     │  DKG reads V1                │  Bootstrap executes          │  DKG reads V2
+     │  V2 may be empty             │  V2 populated from V1        │  V1 ignored
+     │                              │                              │
+─────┴──────────────────────────────┴──────────────────────────────┴─────────────────►
+                                    │
+                              allegroTime
+```
+
+## Migration Steps
+
+### For Existing Networks (testnet, mainnet)
+
+1. **Release new node software** with Allegro hardfork support and V2 bootstrap
+   method, but set `allegroTime` far in future
+2. **Schedule the fork** by updating chainspec with target `allegroTime`
+3. **At fork activation**: Execute `bootstrapFromV1(migrationHeight)` as a
+   system transaction
+4. **Post-fork**: DKG reads V2; future validator changes use V2's `addValidator`
+   with signatures
+
+### For New Networks
+
+1. Initialize V2 at genesis with the initial validator set
+2. Optionally populate V1 for backward tooling compatibility
+3. Set `allegroTime = 0` to activate V2 immediately
+
+## Safety Checks
+
+Nodes should fail fast if:
+- Allegro is active but V2 validator set is empty (bootstrap didn't execute)
+- V2 `bootstrapped` is false after the fork activation block
+
+---
+
+## Test Cases
+
+The test suite must cover:
+
+### Basic Operations
+
+1. **Add validator**: Successfully adds a validator with valid signature
+2. **Delete validator**: Successfully marks validator as deleted
+3. **Change owner**: Successfully transfers ownership
+4. **Set next DKG ceremony**: Successfully sets the epoch
+5. **Rotate validator**: Successfully deletes old validator and adds new one atomically
+
+### Query Functions
+
+6. **getValidators**: Returns all validators including deleted with correct
+   `addedAtHeight` and `deletedAtHeight`
+7. **getActiveValidators**: Returns only validators with `deletedAtHeight == 0`
+8. **validatorByPublicKey**: Returns validator by public key lookup
+9. **validatorCount**: Returns total count including deleted
+
+### Error Conditions
+
+10. **Unauthorized**: Non-owner cannot call protected functions
+11. **ValidatorAlreadyExists**: Cannot re-add same address
+12. **PublicKeyAlreadyExists**: Cannot re-use same public key
+13. **ValidatorNotFound**: Cannot query/delete non-existent validator
+14. **ValidatorAlreadyDeleted**: Cannot delete twice
+15. **InvalidPublicKey**: Rejects zero public key
+16. **InvalidSignature**: Rejects wrong signature, wrong length, wrong signer
+17. **RotateValidator caller not validator**: Non-validator cannot call rotateValidator
+18. **RotateValidator caller already deleted**: Cannot rotate already-deleted validator
+19. **RotateValidator new address exists**: Cannot rotate to existing address
+20. **RotateValidator new pubkey exists**: Cannot rotate to existing public key
+21. **RotateValidator invalid signature**: Rejects invalid signature for rotation
+
+### Address Validation
+
+22. **Valid IPv4:port**: Accepts `192.168.1.1:8080`
+23. **Valid IPv6:port**: Accepts `[2001:db8::1]:8080`
+24. **Invalid format**: Rejects malformed addresses
+
+### Historical Filtering (Caller-side)
+
+25. **addedAtHeight correctness**: Validators have correct `addedAtHeight` set
+    at creation
+26. **deletedAtHeight correctness**: Deleted validators have correct
+    `deletedAtHeight` set
+27. **Filter logic**: Caller can correctly filter by
+    `addedAtHeight <= H && (deletedAtHeight == 0 || deletedAtHeight > H)`
