@@ -25,6 +25,8 @@ alloy = { workspace = true, features = [
   "providers",
   "reqwest",
   "reqwest-rustls-tls",
+  "rpc-client",
+  "rpc-types",
   "signers",
   "signer-local",
   "signer-mnemonic",

@@ -3,10 +3,11 @@
 use std::collections::BTreeMap;
 
 use alloy::{
-    primitives::{B256, Bytes},
+    primitives::{B256, Bytes, U64},
     providers::{Provider, ProviderBuilder},
+    rpc::{client::ClientBuilder, types::Block},
 };
-use commonware_codec::{Read as _, ReadExt as _};
+use commonware_codec::{Encode as _, Read as _, ReadExt as _};
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_cryptography::{
     bls12381::{
@@ -18,14 +19,15 @@ use commonware_cryptography::{
 use commonware_parallel::Sequential;
 use commonware_utils::{N3f1, NZU32, NZU64};
 use eyre::{Context as _, OptionExt as _, eyre};
-use futures::StreamExt as _;
+
 use indicatif::{ProgressBar, ProgressStyle};
+use itertools::Itertools;
 use serde::Serialize;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
-use crate::dealer_log::{InspectableSignedDealerLog, PlayerResultType};
+use crate::dealer_log::{InspectableDealerLog, PlayerResultType};
 
-const CONCURRENT_BLOCK_FETCHES: usize = 4;
+const BATCH_SIZE: usize = 100;
 
 /// The namespace used by the DKG protocol in Tempo.
 const DKG_NAMESPACE: &[u8] = b"TEMPO";
@@ -43,6 +45,10 @@ pub(crate) struct ReplayDkg {
     /// Chain spec (mainnet, testnet, moderato, dev, or path to genesis JSON)
     #[arg(long)]
     chain_spec: String,
+
+    /// Scan from the beginning of the epoch instead of skipping to the midpoint
+    #[arg(long, default_value_t = false)]
+    no_skip_to_midpoint: bool,
 }
 
 #[derive(Serialize)]
@@ -171,110 +177,142 @@ impl ReplayDkg {
         )
         .wrap_err("failed to create DKG Info")?;
 
-        // Iterate through blocks from midpoint to end of epoch to find dealings
-        // Dealer logs start appearing at the midpoint of the epoch
-        let midpoint = self.epoch * epoch_length + epoch_length / 2;
-        let scan_start = midpoint - 1;
+        // Calculate scan start: either from midpoint-1 (where dealer logs start) or epoch start
+        let scan_start = if self.no_skip_to_midpoint {
+            epoch_start
+        } else {
+            // Midpoint is at epoch_length * epoch + epoch_length / 2
+            // Dealer logs start appearing at midpoint, so scan from midpoint - 1
+            let midpoint = epoch_length * self.epoch + epoch_length / 2;
+            (midpoint - 1).max(epoch_start)
+        };
 
         eprintln!("Scanning blocks {scan_start} to {epoch_end}");
 
         let mut dealings_found = Vec::new();
         let mut logs: BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>> = BTreeMap::new();
 
-        // Fetch blocks in parallel using buffered streams
-        let num_players = NZU32!(players.len() as u32);
-        let block_futures = (scan_start..=epoch_end).map(|block_num| {
-            let provider = &provider;
-            async move {
-                let block = provider
-                    .get_block_by_number(block_num.into())
-                    .await
-                    .wrap_err_with(|| format!("failed to fetch block {block_num}"))?
-                    .ok_or_else(|| eyre!("block {block_num} not found"))?;
-                Ok::<_, eyre::Report>((block_num, block))
-            }
-        });
+        // Create RPC client for batch requests
+        let client =
+            ClientBuilder::default().http(self.rpc_url.parse().wrap_err("invalid RPC URL")?);
 
+        let num_players = NZU32!(players.len() as u32);
         let total_blocks = epoch_end - scan_start + 1;
         let progress = ProgressBar::new(total_blocks);
         progress.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta}) | empty: {msg}")
                 .expect("valid template")
                 .progress_chars("#>-"),
         );
+        progress.set_message("0 errors: 0");
 
-        let mut block_stream =
-            futures::stream::iter(block_futures).buffered(CONCURRENT_BLOCK_FETCHES);
+        let mut empty_count: u64 = 0;
+        let mut error_count: u64 = 0;
 
-        while let Some(result) = block_stream.next().await {
-            let (block_num, block) = result?;
-            progress.inc(1);
+        // Fetch blocks in batches
+        for height_batch in &(scan_start..=epoch_end).chunks(BATCH_SIZE) {
+            let heights: Vec<u64> = height_batch.collect();
 
-            let extra_data = &block.header.inner.extra_data;
-            if extra_data.is_empty() {
-                continue;
-            }
-
-            // Try to parse as InspectableSignedDealerLog first to get dealer info
-            match InspectableSignedDealerLog::<MinSig, PrivateKey>::from_bytes(
-                extra_data.as_ref(),
-                num_players,
-            ) {
-                Ok(inspectable) => {
-                    let dealer_hex = pubkey_to_hex(inspectable.dealer());
-                    let ack_count = inspectable.ack_count();
-                    let reveal_count = inspectable.reveal_count();
-                    let too_many_reveals = inspectable.has_too_many_reveals();
-
-                    let player_results: Vec<PlayerAckReveal> = inspectable
-                        .player_results()
-                        .into_iter()
-                        .map(|pr| PlayerAckReveal {
-                            player: pubkey_to_hex(&pr.player),
-                            result: pr.result_type,
-                        })
-                        .collect();
-
-                    // Now parse the original SignedDealerLog for verification
-                    let signed_log = SignedDealerLog::<MinSig, PrivateKey>::read_cfg(
-                        &mut extra_data.as_ref(),
-                        &num_players,
+            let mut batch = client.new_batch();
+            let waiters: Vec<_> = heights
+                .iter()
+                .map(|&height| {
+                    batch.add_call::<_, Option<Block>>(
+                        "eth_getBlockByNumber",
+                        &(U64::from(height), false),
                     )
-                    .expect("already parsed successfully");
+                })
+                .collect::<Result<_, _>>()
+                .wrap_err("failed to add batch calls")?;
 
-                    if let Some((dealer, log)) = signed_log.check(&info) {
-                        progress.suspend(|| {
-                            eprintln!(
-                                "Block {block_num}: dealer log from {dealer} (acks: {ack_count}, reveals: {reveal_count})",
-                                dealer = inspectable.dealer(),
-                            );
-                        });
+            batch.send().await.wrap_err("failed to send batch")?;
 
-                        dealings_found.push(DealingInfo {
-                            block_number: block_num,
-                            block_hash: block.header.hash,
-                            dealer: dealer_hex,
-                            ack_count,
-                            reveal_count,
-                            too_many_reveals,
-                            player_results,
-                        });
-                        logs.insert(dealer, log);
-                    } else {
-                        progress.suspend(|| {
-                            eprintln!(
-                                "Block {block_num}: dealer log from {dealer_hex} failed verification"
-                            );
-                        });
+            for (height, waiter) in heights.into_iter().zip(waiters) {
+                progress.inc(1);
+
+                let block = match waiter.await {
+                    Ok(Some(block)) => block,
+                    Ok(None) => {
+                        error_count += 1;
+                        progress.set_message(format!("{empty_count} errors: {error_count}"));
+                        continue;
                     }
+                    Err(_) => {
+                        error_count += 1;
+                        progress.set_message(format!("{empty_count} errors: {error_count}"));
+                        continue;
+                    }
+                };
+
+                let extra_data = &block.header.inner.extra_data;
+                if extra_data.is_empty() {
+                    empty_count += 1;
+                    progress.set_message(format!("{empty_count} errors: {error_count}"));
+                    continue;
                 }
-                Err(_) => {
-                    // Not a dealer log - could be the final DKG outcome at epoch boundary
-                    if block_num == epoch_end {
-                        progress.suspend(|| {
-                            eprintln!("Block {block_num}: epoch boundary (DKG outcome)");
-                        });
+
+                // Try to parse as SignedDealerLog
+                match SignedDealerLog::<MinSig, PrivateKey>::read_cfg(
+                    &mut extra_data.as_ref(),
+                    &num_players,
+                ) {
+                    Ok(signed_log) => {
+                        if let Some((dealer, log)) = signed_log.check(&info) {
+                            let dealer_hex = pubkey_to_hex(&dealer);
+
+                            // Re-encode and decode into InspectableDealerLog to get ack/reveal info
+                            let encoded = log.encode();
+                            let inspectable =
+                                InspectableDealerLog::<MinSig, PublicKey>::from_bytes(
+                                    &encoded,
+                                    num_players,
+                                )
+                                .expect("re-decoding should not fail");
+
+                            let ack_count = inspectable.ack_count();
+                            let reveal_count = inspectable.reveal_count();
+                            let too_many_reveals = inspectable.has_too_many_reveals();
+
+                            let player_results: Vec<PlayerAckReveal> = inspectable
+                                .player_results()
+                                .into_iter()
+                                .map(|pr| PlayerAckReveal {
+                                    player: pubkey_to_hex(&pr.player),
+                                    result: pr.result_type,
+                                })
+                                .collect();
+
+                            progress.println(format!(
+                                "Block {height}: dealer log from {dealer_hex} (acks: {ack_count}, reveals: {reveal_count})"
+                            ));
+
+                            dealings_found.push(DealingInfo {
+                                block_number: height,
+                                block_hash: block.header.hash,
+                                dealer: dealer_hex,
+                                ack_count,
+                                reveal_count,
+                                too_many_reveals,
+                                player_results,
+                            });
+                            logs.insert(dealer, log);
+                        } else {
+                            progress
+                                .println(format!("Block {height}: dealer log failed verification"));
+                        }
+                    }
+                    Err(err) => {
+                        // Not a dealer log - could be the final DKG outcome at epoch boundary
+                        let msg = if height == epoch_end {
+                            format!("Block {height}: epoch boundary (DKG outcome)")
+                        } else {
+                            format!(
+                                "Block {height}: failed reading extra_data: {}",
+                                err.to_string()
+                            )
+                        };
+                        progress.println(msg);
                     }
                 }
             }
