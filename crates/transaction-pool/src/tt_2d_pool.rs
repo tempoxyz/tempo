@@ -603,6 +603,9 @@ impl AA2dPool {
     }
 
     /// Removes the transaction by its hash from all internal sets.
+    ///
+    /// This batches demotion by seq_id to avoid O(N*N) complexity when removing many
+    /// transactions from the same sequence.
     pub(crate) fn remove_transactions<'a, I>(
         &mut self,
         tx_hashes: I,
@@ -611,27 +614,66 @@ impl AA2dPool {
         I: Iterator<Item = &'a TxHash> + 'a,
     {
         let mut txs = Vec::new();
+        let mut seq_ids_to_demote: HashMap<AASequenceId, u64> = HashMap::default();
+
         for tx_hash in tx_hashes {
-            if let Some(tx) = self.remove_transaction_by_hash(tx_hash) {
+            if let Some((tx, seq_id)) = self.remove_transaction_by_hash_no_demote(tx_hash) {
+                if let Some(id) = seq_id {
+                    seq_ids_to_demote
+                        .entry(id.seq_id)
+                        .and_modify(|min_nonce| {
+                            if id.nonce < *min_nonce {
+                                *min_nonce = id.nonce;
+                            }
+                        })
+                        .or_insert(id.nonce);
+                }
                 txs.push(tx);
             }
         }
+
+        // Demote once per seq_id, starting from the minimum removed nonce
+        for (seq_id, min_nonce) in seq_ids_to_demote {
+            self.demote_from_nonce(&seq_id, min_nonce);
+        }
+
         txs
     }
 
     /// Removes the transaction by its hash from all internal sets.
     ///
-    /// This does __not__ shift the independent transaction forward or mark descendants as pending.
+    /// This does __not__ shift the independent transaction forward but it does demote descendants
+    /// to queued status since removing a transaction creates a nonce gap.
     fn remove_transaction_by_hash(
         &mut self,
         tx_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let (tx, id) = self.remove_transaction_by_hash_no_demote(tx_hash)?;
+
+        // Demote all descendants to queued status since removing this transaction creates a gap
+        if let Some(id) = id {
+            self.demote_descendants(&id);
+        }
+
+        Some(tx)
+    }
+
+    /// Internal helper that removes a transaction without demoting descendants.
+    ///
+    /// Returns the removed transaction and its AA2dTransactionId (if it was a 2D nonce tx).
+    fn remove_transaction_by_hash_no_demote(
+        &mut self,
+        tx_hash: &B256,
+    ) -> Option<(
+        Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        Option<AA2dTransactionId>,
+    )> {
         let tx = self.by_hash.remove(tx_hash)?;
 
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
             self.expiring_nonce_txs.remove(tx_hash);
-            return Some(tx);
+            return Some((tx, None));
         }
 
         // Regular 2D nonce transaction
@@ -640,7 +682,34 @@ impl AA2dPool {
             .aa_transaction_id()
             .expect("is AA transaction");
         self.remove_transaction_by_id(&id)?;
-        Some(tx)
+
+        Some((tx, Some(id)))
+    }
+
+    /// Demotes all descendants of the given transaction to queued status (`is_pending = false`).
+    ///
+    /// This should be called after removing a transaction to ensure descendants don't remain
+    /// marked as pending when they're no longer executable due to the nonce gap.
+    fn demote_descendants(&mut self, id: &AA2dTransactionId) {
+        self.demote_from_nonce(&id.seq_id, id.nonce);
+    }
+
+    /// Demotes all transactions for a seq_id with nonce > min_nonce to queued status.
+    ///
+    /// This is used both for single-tx removal (demote_descendants) and batch removal
+    /// where we want to demote once per seq_id starting from the minimum removed nonce.
+    fn demote_from_nonce(&mut self, seq_id: &AASequenceId, min_nonce: u64) {
+        let start_id = AA2dTransactionId::new(*seq_id, min_nonce);
+        for (_, tx) in self
+            .by_id
+            .range_mut((Excluded(&start_id), Unbounded))
+            .take_while(|(other, _)| *seq_id == other.seq_id)
+        {
+            if std::mem::replace(&mut tx.is_pending, false) {
+                self.pending_count -= 1;
+                self.queued_count += 1;
+            }
+        }
     }
 
     /// Removes and returns all matching transactions and their dependent transactions from the
@@ -860,7 +929,12 @@ impl AA2dPool {
             .find(|(_, tx)| tx.is_pending == is_pending)
             .map(|(id, _)| *id)?;
 
-        self.remove_transaction_by_id(&id_to_remove)
+        let tx = self.remove_transaction_by_id(&id_to_remove)?;
+
+        // Demote descendants since removing this transaction creates a nonce gap
+        self.demote_descendants(&id_to_remove);
+
+        Some(tx)
     }
 
     /// Returns a reference to the metrics for this pool
@@ -1983,18 +2057,23 @@ mod tests {
         let removed = pool.remove_transactions([&tx1_hash].into_iter());
         assert_eq!(removed.len(), 1, "Should remove tx1");
 
-        // Note: Current implementation doesn't automatically re-scan and update
-        // is_pending flags after removal. This is a known limitation.
-        // The is_pending flag for tx2 remains true even though there's now a gap.
-        // However, tx2 won't be included in independent_transactions or best_transactions
-        // until the gap is filled.
-
         // Verify tx1 is removed from pool
         assert!(!pool.by_id.contains_key(&tx1_id), "tx1 should be removed");
         assert!(!pool.contains(&tx1_hash), "tx1 should be removed");
 
         // Verify tx0 and tx2 remain
         assert_eq!(pool.by_id.len(), 2, "Should have 2 transactions left");
+
+        // Verify tx2 is now demoted to queued since tx1 removal creates a gap
+        assert!(
+            !pool.by_id.get(&tx2_id).unwrap().is_pending,
+            "tx2 should be demoted to queued after tx1 removal creates a gap"
+        );
+
+        // Verify counts: tx0 is pending, tx2 is queued
+        let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending_count, 1, "Only tx0 should be pending");
+        assert_eq!(queued_count, 1, "tx2 should be queued");
 
         pool.assert_invariants();
     }
