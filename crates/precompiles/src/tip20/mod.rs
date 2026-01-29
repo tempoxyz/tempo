@@ -27,11 +27,7 @@ use tracing::trace;
 /// u128::MAX as U256
 pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 
-/// Decimal precision for TIP-20 tokens (6 decimals = microdollar precision)
-///
-/// TIP-20 tokens represent microdollars, the standard unit for USD-denominated
-/// tokens in Tempo at 10^-6 USD precision. This matches the precision needed for
-/// sub-cent transactions while maintaining efficient u128 storage.
+/// Decimal precision for TIP-20 tokens
 const TIP20_DECIMALS: u8 = 6;
 
 /// USD currency string constant
