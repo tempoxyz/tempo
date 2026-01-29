@@ -466,7 +466,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-KEY8 (duplicate key rejection)
     function tryAuthorizeDuplicateKey(uint256 accountSeed, uint256 keyIdSeed) external {
         // Find an actor with an active key, or create one as fallback (skip if all keys are revoked)
-        (address account, address keyId, bool skip) = _ensureActorWithActiveKey(accountSeed, keyIdSeed);
+        (address account, address keyId, bool skip) =
+            _ensureActorWithActiveKey(accountSeed, keyIdSeed);
         if (skip) return;
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
