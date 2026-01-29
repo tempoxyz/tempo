@@ -26,10 +26,6 @@ abstract contract GhostState {
     mapping(bytes32 => address) public ghost_createAddresses;
     mapping(address => uint256) public ghost_createCount;
 
-    // ============ Fee Tracking ============
-
-    mapping(address => uint256) public ghost_feeTokenBalance;
-
     // ============ CREATE Rejection Tracking ============
 
     uint256 public ghost_createRejectedStructure; // C1, C2, C3, C4 rejections

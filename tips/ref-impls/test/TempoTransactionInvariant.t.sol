@@ -156,7 +156,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         for (uint256 i = 0; i < actors.length; i++) {
             address p256Addr = actorP256Addresses[i];
             feeToken.mint(p256Addr, 100_000_000e6);
-            ghost_feeTokenBalance[p256Addr] = 100_000_000e6;
             ghost_previousProtocolNonce[p256Addr] = 0;
         }
         vm.stopPrank();
@@ -277,78 +276,22 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                         TRANSACTION BUILDING
     //////////////////////////////////////////////////////////////*/
 
-    function _buildAndSignLegacyTransferWithSigType(
+    function _buildAndSignTransfer(
         uint256 actorIndex,
         address to,
         uint256 amount,
-        uint64 txNonce,
+        uint64 nonceValue,
         uint256 sigTypeSeed
     ) internal view returns (bytes memory signedTx, address sender) {
-        SignatureType sigType = _getRandomSignatureType(sigTypeSeed);
-        (TxBuilder.SigningParams memory params, address senderAddr) =
-            _getSigningParams(actorIndex, sigType, sigTypeSeed);
-        sender = senderAddr;
-
-        bytes memory data = abi.encodeCall(ITIP20.transfer, (to, amount));
-        uint64 gasLimit = TxBuilder.callGas(data, txNonce) + TxBuilder.GAS_LIMIT_BUFFER;
-
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(txNonce)
-            .withGasPrice(TxBuilder.DEFAULT_GAS_PRICE).withGasLimit(gasLimit)
-            .withTo(address(feeToken)).withData(data);
-
-        signedTx = TxBuilder.signLegacy(vmRlp, vm, tx_, params);
+        return _buildAndSignTransfer(actorIndex, to, amount, 0, nonceValue, sigTypeSeed);
     }
 
-    function _buildAndSignLegacyTransfer(
-        uint256 actorIndex,
-        address to,
-        uint256 amount,
-        uint64 txNonce
-    ) internal view returns (bytes memory) {
-        return TxBuilder.buildLegacyCall(
-            vmRlp,
-            vm,
-            address(feeToken),
-            abi.encodeCall(ITIP20.transfer, (to, amount)),
-            txNonce,
-            actorKeys[actorIndex]
-        );
-    }
-
-    function _buildAndSignLegacyCreateWithSigType(
-        uint256 actorIndex,
-        bytes memory initcode,
-        uint64 txNonce,
-        uint256 sigTypeSeed
-    ) internal view returns (bytes memory signedTx, address sender) {
-        SignatureType sigType = _getRandomSignatureType(sigTypeSeed);
-        (TxBuilder.SigningParams memory params, address senderAddr) =
-            _getSigningParams(actorIndex, sigType, sigTypeSeed);
-        sender = senderAddr;
-
-        uint64 gasLimit = TxBuilder.createGas(initcode, txNonce) + TxBuilder.GAS_LIMIT_BUFFER;
-
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(txNonce)
-            .withGasPrice(TxBuilder.DEFAULT_GAS_PRICE).withGasLimit(gasLimit).withTo(address(0))
-            .withData(initcode);
-
-        signedTx = TxBuilder.signLegacy(vmRlp, vm, tx_, params);
-    }
-
-    function _buildAndSignLegacyCreate(uint256 actorIndex, bytes memory initcode, uint64 txNonce)
-        internal
-        view
-        returns (bytes memory)
-    {
-        return TxBuilder.buildLegacyCreate(vmRlp, vm, initcode, txNonce, actorKeys[actorIndex]);
-    }
-
-    function _buildAndSignTempoTransferWithSigType(
+    function _buildAndSignTransfer(
         uint256 actorIndex,
         address to,
         uint256 amount,
         uint64 nonceKey,
-        uint64 txNonce,
+        uint64 nonceValue,
         uint256 sigTypeSeed
     ) internal view returns (bytes memory signedTx, address sender) {
         SignatureType sigType = _getRandomSignatureType(sigTypeSeed);
@@ -356,18 +299,60 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _getSigningParams(actorIndex, sigType, sigTypeSeed);
         sender = senderAddr;
 
-        TempoCall[] memory calls = new TempoCall[](1);
-        calls[0] = TempoCall({
-            to: address(feeToken), value: 0, data: abi.encodeCall(ITIP20.transfer, (to, amount))
-        });
+        if (sigType == SignatureType.Secp256k1 && nonceKey == 0) {
+            signedTx = TxBuilder.buildLegacyCall(
+                vmRlp,
+                vm,
+                address(feeToken),
+                abi.encodeCall(ITIP20.transfer, (to, amount)),
+                nonceValue,
+                actorKeys[actorIndex]
+            );
+        } else {
+            TempoCall[] memory calls = new TempoCall[](1);
+            calls[0] = TempoCall({
+                to: address(feeToken), value: 0, data: abi.encodeCall(ITIP20.transfer, (to, amount))
+            });
 
-        uint64 gasLimit = TxBuilder.callGas(calls[0].data, txNonce) + TxBuilder.GAS_LIMIT_BUFFER;
+            uint64 gasLimit =
+                TxBuilder.callGas(calls[0].data, nonceValue) + TxBuilder.GAS_LIMIT_BUFFER;
 
-        TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
+            TempoTransaction memory tx_ = TempoTransactionLib.create()
+                .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+                .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey)
+                .withNonce(nonceValue);
 
-        signedTx = TxBuilder.signTempo(vmRlp, vm, tx_, params);
+            signedTx = TxBuilder.signTempo(vmRlp, vm, tx_, params);
+        }
+    }
+
+    function _buildAndSignCreate(
+        uint256 actorIndex,
+        bytes memory initcode,
+        uint64 nonceValue,
+        uint256 sigTypeSeed
+    ) internal view returns (bytes memory signedTx, address sender) {
+        SignatureType sigType = _getRandomSignatureType(sigTypeSeed);
+        (TxBuilder.SigningParams memory params, address senderAddr) =
+            _getSigningParams(actorIndex, sigType, sigTypeSeed);
+        sender = senderAddr;
+
+        if (sigType == SignatureType.Secp256k1) {
+            signedTx = TxBuilder.buildLegacyCreate(
+                vmRlp, vm, initcode, nonceValue, actorKeys[actorIndex]
+            );
+        } else {
+            TempoCall[] memory calls = new TempoCall[](1);
+            calls[0] = TempoCall({ to: address(0), value: 0, data: initcode });
+
+            uint64 gasLimit = TxBuilder.createGas(initcode, nonceValue) + TxBuilder.GAS_LIMIT_BUFFER;
+
+            TempoTransaction memory tx_ = TempoTransactionLib.create()
+                .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+                .withGasLimit(gasLimit).withCalls(calls).withNonceKey(0).withNonce(nonceValue);
+
+            signedTx = TxBuilder.signTempo(vmRlp, vm, tx_, params);
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -382,25 +367,22 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint256 sigTypeSeed
     ) external {
-        (TxContext memory ctx, bool skip) = _setupTransferContext(
+        TxContext memory ctx = _setupTransferContext(
             actorSeed, recipientSeed, amount, sigTypeSeed, 1e6, 100e6
         );
-        if (skip) {
-            return;
-        }
 
         uint64 currentNonce = uint64(ghost_protocolNonce[ctx.sender]);
-        (bytes memory signedTx,) = _buildAndSignLegacyTransferWithSigType(
+        (bytes memory signedTx, address sender) = _buildAndSignTransfer(
             ctx.senderIdx, ctx.recipient, ctx.amount, currentNonce, sigTypeSeed
         );
 
-        ghost_previousProtocolNonce[ctx.sender] = ghost_protocolNonce[ctx.sender];
+        ghost_previousProtocolNonce[sender] = ghost_protocolNonce[sender];
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _recordProtocolNonceTxSuccess(ctx.sender);
+            _recordProtocolNonceTxSuccess(sender);
         } catch (bytes memory reason) {
-            _handleRevertProtocol(ctx.sender);
+            _handleRevertProtocol(sender);
         }
     }
 
@@ -417,7 +399,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         }
         uint256 amountPerTx = 10e6;
 
-        (TxContext memory ctx, bool skip) = _setupTransferContextWithTracking(
+        TxContext memory ctx = _setupTransferContext(
             actorSeed,
             recipientSeed,
             amountPerTx * count,
@@ -425,15 +407,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             amountPerTx,
             amountPerTx * count
         );
-        if (skip) return;
 
         for (uint256 i = 0; i < count; i++) {
-            ghost_previousProtocolNonce[ctx.sender] = ghost_protocolNonce[ctx.sender];
             uint64 currentNonce = uint64(ghost_protocolNonce[ctx.sender]);
-
-            (bytes memory signedTx,) = _buildAndSignLegacyTransferWithSigType(
+            (bytes memory signedTx,) = _buildAndSignTransfer(
                 ctx.senderIdx, ctx.recipient, amountPerTx, currentNonce, sigTypeSeed
             );
+            ghost_previousProtocolNonce[ctx.sender] = ghost_protocolNonce[ctx.sender];
             vm.coinbase(validator);
 
             try vmExec.executeTransaction(signedTx) {
@@ -449,24 +429,15 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     /// @dev Tests N3 (nonce bumps on tx inclusion) and C5-C6 (address derivation) across all sig types
     function handler_create(uint256 actorSeed, uint256 initValue, uint256 sigTypeSeed) external {
         uint256 senderIdx = actorSeed % actors.length;
-        SignatureType sigType = _getRandomSignatureType(sigTypeSeed);
-        address sender = _getSenderForSigType(senderIdx, sigType);
-
         initValue = bound(initValue, 0, 1000);
 
-        // Build tx first to get actual sender (may differ for P256/WebAuthn)
-        uint64 currentNonce = uint64(ghost_protocolNonce[sender]);
         bytes memory initcode = InitcodeHelper.simpleStorageInitcode(initValue);
         (bytes memory signedTx, address actualSender) =
-            _buildAndSignLegacyCreateWithSigType(senderIdx, initcode, currentNonce, sigTypeSeed);
+            _buildAndSignCreate(senderIdx, initcode, 0, sigTypeSeed);
 
-        // Re-check nonce with actual sender if different
-        if (actualSender != sender) {
-            currentNonce = uint64(ghost_protocolNonce[actualSender]);
-            (signedTx,) = _buildAndSignLegacyCreateWithSigType(
-                senderIdx, initcode, currentNonce, sigTypeSeed
-            );
-        }
+        // Re-build with correct nonce for actual sender
+        uint64 currentNonce = uint64(ghost_protocolNonce[actualSender]);
+        (signedTx,) = _buildAndSignCreate(senderIdx, initcode, currentNonce, sigTypeSeed);
 
         // Compute expected CREATE address BEFORE nonce is incremented
         address expectedAddress = TxBuilder.computeCreateAddress(actualSender, currentNonce);
@@ -495,13 +466,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     /// @dev Tests that reverting initcode causes tx rejection (no nonce consumed)
     function handler_createReverting(uint256 actorSeed, uint256 sigTypeSeed) external {
         uint256 senderIdx = actorSeed % actors.length;
-        SignatureType sigType = _getRandomSignatureType(sigTypeSeed);
-        address sender = _getSenderForSigType(senderIdx, sigType);
 
-        // Get actual sender first by doing a dry-run build
         bytes memory initcode = InitcodeHelper.revertingContractInitcode();
-        (, address actualSender) =
-            _buildAndSignLegacyCreateWithSigType(senderIdx, initcode, 0, sigTypeSeed);
+
+        // Get the sender address for this sig type
+        (, address actualSender) = _buildAndSignCreate(senderIdx, initcode, 0, sigTypeSeed);
 
         // Use actual on-chain nonce, not ghost state, to ensure tx is valid
         uint64 currentNonce = uint64(vm.getNonce(actualSender));
@@ -513,7 +482,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Build the actual transaction with correct nonce
         (bytes memory signedTx,) =
-            _buildAndSignLegacyCreateWithSigType(senderIdx, initcode, currentNonce, sigTypeSeed);
+            _buildAndSignCreate(senderIdx, initcode, currentNonce, sigTypeSeed);
 
         ghost_previousProtocolNonce[actualSender] = ghost_protocolNonce[actualSender];
 
@@ -694,12 +663,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 nonceKeySeed,
         uint256 sigTypeSeed
     ) external {
-        (TxContext memory ctx, bool skip) = _setup2dNonceTransferContextWithTracking(
+        TxContext memory ctx = _setup2dNonceTransferContext(
             actorSeed, recipientSeed, amount, nonceKeySeed, sigTypeSeed, 1e6, 100e6
         );
-        if (skip) return;
 
-        (bytes memory signedTx,) = _buildAndSignTempoTransferWithSigType(
+        (bytes memory signedTx,) = _buildAndSignTransfer(
             ctx.senderIdx, ctx.recipient, ctx.amount, ctx.nonceKey, ctx.currentNonce, sigTypeSeed
         );
 
@@ -721,15 +689,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint256 sigTypeSeed
     ) external {
-        (TxContext memory ctx, bool skip) = _setupTransferContextWithTracking(
+        TxContext memory ctx = _setupTransferContext(
             actorSeed, recipientSeed, amount, sigTypeSeed, 1e6, 100e6
         );
-        if (skip) return;
 
-        uint64 nonceKey = 0;
         uint64 currentNonce = uint64(ghost_protocolNonce[ctx.sender]);
-        (bytes memory signedTx, address sender) = _buildAndSignTempoTransferWithSigType(
-            ctx.senderIdx, ctx.recipient, ctx.amount, nonceKey, currentNonce, sigTypeSeed
+        (bytes memory signedTx, address sender) = _buildAndSignTransfer(
+            ctx.senderIdx, ctx.recipient, ctx.amount, currentNonce, sigTypeSeed
         );
 
         ghost_previousProtocolNonce[sender] = ghost_protocolNonce[sender];
@@ -917,16 +883,18 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint64 currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
 
-        bytes memory signedTx = TxBuilder.buildLegacyCallKeychain(
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
             vmRlp,
             vm,
             address(feeToken),
             abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0, // nonceKey=0 uses protocol nonce
             currentNonce,
             ctx.keyPk,
             ctx.owner
         );
 
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
@@ -937,7 +905,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _handleExpectedReject(_recordKeyWrongSigner);
+            _handleRevertProtocol(ctx.owner);
+            _recordKeyWrongSigner();
         }
     }
 
@@ -976,16 +945,18 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint64 currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
 
-        bytes memory signedTx = TxBuilder.buildLegacyCallKeychain(
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
             vmRlp,
             vm,
             address(feeToken),
             abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0, // nonceKey=0 uses protocol nonce
             currentNonce,
             ctx.keyPk,
             ctx.owner
         );
 
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
@@ -996,7 +967,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _handleExpectedReject(_recordKeyWrongSigner);
+            _handleRevertProtocol(ctx.owner);
+            _recordKeyWrongSigner();
         }
     }
 
@@ -1021,11 +993,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
         uint64 currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
 
-        bytes memory signedTx = TxBuilder.buildLegacyCallKeychain(
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
             vmRlp,
             vm,
             address(feeToken),
             abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0, // nonceKey=0 uses protocol nonce
             currentNonce,
             ctx.keyPk,
             ctx.owner
@@ -1057,15 +1030,14 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         address sender = actors[senderIdx];
         address recipient = actors[recipientIdx];
 
-        // Try to transfer more than balance
-        uint256 balance = feeToken.balanceOf(sender);
-        uint256 excessAmount = balance + 1e6;
+        // Try to transfer more than balance (intentionally don't ensure balance)
+        uint256 excessAmount = feeToken.balanceOf(sender) + 1e6;
 
         ghost_previousProtocolNonce[sender] = ghost_protocolNonce[sender];
         uint64 currentNonce = uint64(ghost_protocolNonce[sender]);
 
-        bytes memory signedTx =
-            _buildAndSignLegacyTransfer(senderIdx, recipient, excessAmount, currentNonce);
+        (bytes memory signedTx,) =
+            _buildAndSignTransfer(senderIdx, recipient, excessAmount, currentNonce, 0);
 
         vm.coinbase(validator);
 
@@ -1367,38 +1339,27 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     function handler_replayProtocolNonce(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
         external
     {
-        uint256 senderIdx = actorSeed % actors.length;
-        uint256 recipientIdx = recipientSeed % actors.length;
-        if (senderIdx == recipientIdx) {
-            recipientIdx = (recipientIdx + 1) % actors.length;
-        }
-
-        address sender = actors[senderIdx];
-        address recipient = actors[recipientIdx];
-
+        // Need 2x amount for replay test, so use amount*2 as min/max
         amount = bound(amount, 1e6, 10e6);
+        TxContext memory ctx =
+            _setupBaseTransferContext(actorSeed, recipientSeed, amount * 2, amount * 2, amount * 2);
 
-        uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount * 2) {
-            return;
-        }
+        uint64 currentNonce = uint64(ghost_protocolNonce[ctx.sender]);
+        (bytes memory signedTx,) =
+            _buildAndSignTransfer(ctx.senderIdx, ctx.recipient, amount, currentNonce, 0);
 
-        uint64 currentNonce = uint64(ghost_protocolNonce[sender]);
-        bytes memory signedTx =
-            _buildAndSignLegacyTransfer(senderIdx, recipient, amount, currentNonce);
-
-        ghost_previousProtocolNonce[sender] = ghost_protocolNonce[sender];
+        ghost_previousProtocolNonce[ctx.sender] = ghost_protocolNonce[ctx.sender];
 
         vm.coinbase(validator);
 
         // Snapshot nonce before first tx
-        uint256 nonce0 = vm.getNonce(sender);
+        uint256 nonce0 = vm.getNonce(ctx.sender);
 
         // First execution should succeed and consume exactly 1 nonce
         try vmExec.executeTransaction(signedTx) {
-            uint256 nonce1 = vm.getNonce(sender);
+            uint256 nonce1 = vm.getNonce(ctx.sender);
             assertEq(nonce1, nonce0 + 1, "N12: First tx must consume exactly one nonce");
-            ghost_protocolNonce[sender] = nonce1;
+            ghost_protocolNonce[ctx.sender] = nonce1;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
@@ -1426,30 +1387,19 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint256 nonceKeySeed
     ) external {
-        uint256 senderIdx = actorSeed % actors.length;
-        uint256 recipientIdx = recipientSeed % actors.length;
-        if (senderIdx == recipientIdx) {
-            recipientIdx = (recipientIdx + 1) % actors.length;
-        }
-
-        address sender = actors[senderIdx];
-        address recipient = actors[recipientIdx];
-
+        // Need 2x amount for replay test
         amount = bound(amount, 1e6, 10e6);
+        TxContext memory ctx =
+            _setupBaseTransferContext(actorSeed, recipientSeed, amount * 2, amount * 2, amount * 2);
+
         uint64 nonceKey = uint64(bound(nonceKeySeed, 1, 100));
-
-        uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount * 2) {
-            return;
-        }
-
-        uint64 currentNonce = uint64(ghost_2dNonce[sender][nonceKey]);
+        uint64 currentNonce = uint64(ghost_2dNonce[ctx.sender][nonceKey]);
 
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({
             to: address(feeToken),
             value: 0,
-            data: abi.encodeCall(ITIP20.transfer, (recipient, amount))
+            data: abi.encodeCall(ITIP20.transfer, (ctx.recipient, amount))
         });
 
         uint64 gasLimit =
@@ -1465,24 +1415,24 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             tx_,
             TxBuilder.SigningParams({
                 strategy: TxBuilder.SigningStrategy.Secp256k1,
-                privateKey: actorKeys[senderIdx],
+                privateKey: actorKeys[ctx.senderIdx],
                 pubKeyX: bytes32(0),
                 pubKeyY: bytes32(0),
                 userAddress: address(0)
             })
         );
 
-        ghost_previous2dNonce[sender][nonceKey] = ghost_2dNonce[sender][nonceKey];
+        ghost_previous2dNonce[ctx.sender][nonceKey] = ghost_2dNonce[ctx.sender][nonceKey];
 
         vm.coinbase(validator);
 
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         try vmExec.executeTransaction(signedTx) {
             // Verify on-chain nonce actually incremented before updating ghost
-            uint64 actualNonce = nonce.getNonce(sender, nonceKey);
+            uint64 actualNonce = nonce.getNonce(ctx.sender, nonceKey);
             if (actualNonce > currentNonce) {
-                ghost_2dNonce[sender][nonceKey] = actualNonce;
-                ghost_2dNonceUsed[sender][nonceKey] = true;
+                ghost_2dNonce[ctx.sender][nonceKey] = actualNonce;
+                ghost_2dNonceUsed[ctx.sender][nonceKey] = true;
                 ghost_totalTxExecuted++;
                 ghost_totalCallsExecuted++;
                 ghost_total2dNonceTxs++;
@@ -1506,26 +1456,15 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     function handler_nonceTooHigh(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
         external
     {
-        uint256 senderIdx = actorSeed % actors.length;
-        uint256 recipientIdx = recipientSeed % actors.length;
-        if (senderIdx == recipientIdx) {
-            recipientIdx = (recipientIdx + 1) % actors.length;
-        }
-
-        address sender = actors[senderIdx];
-        address recipient = actors[recipientIdx];
-
-        amount = bound(amount, 1e6, 10e6);
-
-        uint256 balance = feeToken.balanceOf(sender);
-        vm.assume(balance >= amount);
+        TxContext memory ctx =
+            _setupBaseTransferContext(actorSeed, recipientSeed, amount, 1e6, 10e6);
 
         // Use actual on-chain nonce, not ghost state
-        uint64 currentNonce = uint64(vm.getNonce(sender));
+        uint64 currentNonce = uint64(vm.getNonce(ctx.sender));
         uint64 wrongNonce = currentNonce + 1;
 
-        bytes memory signedTx =
-            _buildAndSignLegacyTransfer(senderIdx, recipient, amount, wrongNonce);
+        (bytes memory signedTx,) =
+            _buildAndSignTransfer(ctx.senderIdx, ctx.recipient, ctx.amount, wrongNonce, 0);
 
         vm.coinbase(validator);
         ghost_nonceTooHighAttempted++;
@@ -1543,30 +1482,19 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     function handler_nonceTooLow(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
         external
     {
-        uint256 senderIdx = actorSeed % actors.length;
-        uint256 recipientIdx = recipientSeed % actors.length;
-        if (senderIdx == recipientIdx) {
-            recipientIdx = (recipientIdx + 1) % actors.length;
-        }
-
-        address sender = actors[senderIdx];
-        address recipient = actors[recipientIdx];
-
-        amount = bound(amount, 1e6, 10e6);
-
-        uint256 balance = feeToken.balanceOf(sender);
-        vm.assume(balance >= amount);
+        TxContext memory ctx =
+            _setupBaseTransferContext(actorSeed, recipientSeed, amount, 1e6, 10e6);
 
         // Use actual on-chain nonce, not ghost state
-        uint64 currentNonce = uint64(vm.getNonce(sender));
+        uint64 currentNonce = uint64(vm.getNonce(ctx.sender));
         if (currentNonce == 0) {
             return;
         }
 
         uint64 wrongNonce = currentNonce - 1;
 
-        bytes memory signedTx =
-            _buildAndSignLegacyTransfer(senderIdx, recipient, amount, wrongNonce);
+        (bytes memory signedTx,) =
+            _buildAndSignTransfer(ctx.senderIdx, ctx.recipient, ctx.amount, wrongNonce, 0);
 
         vm.coinbase(validator);
         ghost_nonceTooLowAttempted++;
@@ -1586,31 +1514,21 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount
     ) external {
-        uint256 senderIdx = actorSeed % actors.length;
-        uint256 recipientIdx = recipientSeed % actors.length;
-        if (senderIdx == recipientIdx) {
-            recipientIdx = (recipientIdx + 1) % actors.length;
-        }
-
-        address sender = actors[senderIdx];
-        address recipient = actors[recipientIdx];
-
+        // Need 2x amount for two transactions
         amount = bound(amount, 1e6, 10e6);
+        TxContext memory ctx =
+            _setupBaseTransferContext(actorSeed, recipientSeed, amount * 2, amount * 2, amount * 2);
+
         uint64 nonceKey = uint64(bound(nonceKeySeed, 101, 200));
 
-        uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount * 2) {
-            return;
-        }
-
-        bool isFirstUse = !ghost_2dNonceUsed[sender][nonceKey];
-        uint64 currentNonce = uint64(ghost_2dNonce[sender][nonceKey]);
+        bool isFirstUse = !ghost_2dNonceUsed[ctx.sender][nonceKey];
+        uint64 currentNonce = uint64(ghost_2dNonce[ctx.sender][nonceKey]);
 
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({
             to: address(feeToken),
             value: 0,
-            data: abi.encodeCall(ITIP20.transfer, (recipient, amount))
+            data: abi.encodeCall(ITIP20.transfer, (ctx.recipient, amount))
         });
 
         uint64 gasLimit =
@@ -1626,14 +1544,14 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             tx_,
             TxBuilder.SigningParams({
                 strategy: TxBuilder.SigningStrategy.Secp256k1,
-                privateKey: actorKeys[senderIdx],
+                privateKey: actorKeys[ctx.senderIdx],
                 pubKeyX: bytes32(0),
                 pubKeyY: bytes32(0),
                 userAddress: address(0)
             })
         );
 
-        ghost_previous2dNonce[sender][nonceKey] = ghost_2dNonce[sender][nonceKey];
+        ghost_previous2dNonce[ctx.sender][nonceKey] = ghost_2dNonce[ctx.sender][nonceKey];
 
         vm.coinbase(validator);
 
@@ -1643,22 +1561,22 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             uint256 gasUsed = gasBefore - gasleft();
 
             // Verify on-chain nonce actually incremented before updating ghost
-            uint64 actualNonce = nonce.getNonce(sender, nonceKey);
+            uint64 actualNonce = nonce.getNonce(ctx.sender, nonceKey);
             if (actualNonce > currentNonce) {
-                ghost_2dNonce[sender][nonceKey] = actualNonce;
-                ghost_2dNonceUsed[sender][nonceKey] = true;
+                ghost_2dNonce[ctx.sender][nonceKey] = actualNonce;
+                ghost_2dNonceUsed[ctx.sender][nonceKey] = true;
                 ghost_totalTxExecuted++;
                 ghost_totalCallsExecuted++;
                 ghost_total2dNonceTxs++;
 
                 if (isFirstUse) {
-                    ghost_firstUseGas[sender][nonceKey] = gasUsed;
+                    ghost_firstUseGas[ctx.sender][nonceKey] = gasUsed;
                 } else {
-                    ghost_subsequentUseGas[sender][nonceKey] = gasUsed;
+                    ghost_subsequentUseGas[ctx.sender][nonceKey] = gasUsed;
                 }
             }
         } catch {
-            _handleRevert2d(sender, nonceKey);
+            _handleRevert2d(ctx.sender, nonceKey);
         }
     }
 
@@ -1717,19 +1635,22 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         if (actorIdx == recipientIdx) recipientIdx = (recipientIdx + 1) % actors.length;
         address recipient = actors[recipientIdx];
 
+        // nonceKey=0 uses protocol nonce
         uint64 currentNonce = uint64(ghost_protocolNonce[owner]);
 
         // Build a transaction signed with the unauthorized key
-        bytes memory signedTx = TxBuilder.buildLegacyCallKeychain(
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
             vmRlp,
             vm,
             address(feeToken),
             abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0,
             currentNonce,
             keyPk,
             owner
         );
 
+        ghost_previousProtocolNonce[owner] = ghost_protocolNonce[owner];
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
@@ -1740,7 +1661,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _handleExpectedReject(_recordKeyWrongSigner);
+            _handleRevertProtocol(owner);
+            _recordKeyWrongSigner();
         }
     }
 
@@ -1783,7 +1705,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         limitsB[0] = IAccountKeychain.TokenLimit({ token: address(feeToken), amount: 100e6 });
 
         uint64 currentNonce = uint64(ghost_protocolNonce[owner]);
-        bytes memory signedTx = TxBuilder.buildLegacyCallKeychain(
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
             vmRlp,
             vm,
             address(keychain),
@@ -1791,11 +1713,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 IAccountKeychain.authorizeKey,
                 (keyIdB, IAccountKeychain.SignatureType.Secp256k1, expiryB, true, limitsB)
             ),
+            0, // nonceKey=0 uses protocol nonce
             currentNonce,
             keyPkA,
             owner
         );
 
+        ghost_previousProtocolNonce[owner] = ghost_protocolNonce[owner];
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
@@ -1804,6 +1728,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
+            _handleRevertProtocol(owner);
             ghost_keyAuthRejectedNotSelf++;
         }
     }
@@ -2009,16 +1934,18 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint64 currentNonce = uint64(ghost_protocolNonce[owner]);
 
-        bytes memory signedTx = TxBuilder.buildLegacyCallKeychain(
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
             vmRlp,
             vm,
             address(feeToken),
             abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0, // nonceKey=0 uses protocol nonce
             currentNonce,
             keyPk,
             owner
         );
 
+        ghost_previousProtocolNonce[owner] = ghost_protocolNonce[owner];
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
@@ -2075,16 +2002,18 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint64 currentNonce = uint64(ghost_protocolNonce[owner]);
 
-        bytes memory signedTx = TxBuilder.buildLegacyCallKeychain(
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
             vmRlp,
             vm,
             address(feeToken),
             abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0, // nonceKey=0 uses protocol nonce
             currentNonce,
             keyPk,
             owner
         );
 
+        ghost_previousProtocolNonce[owner] = ghost_protocolNonce[owner];
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
@@ -2144,16 +2073,18 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint64 currentNonce = uint64(ghost_protocolNonce[owner]);
 
-        bytes memory signedTx = TxBuilder.buildLegacyCallKeychain(
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
             vmRlp,
             vm,
             address(feeToken),
             abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0, // nonceKey=0 uses protocol nonce
             currentNonce,
             keyPk,
             owner
         );
 
+        ghost_previousProtocolNonce[owner] = ghost_protocolNonce[owner];
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
@@ -2164,7 +2095,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _handleExpectedReject(_recordKeyZeroLimit);
+            _handleRevertProtocol(owner);
+            _recordKeyZeroLimit();
         }
     }
 
@@ -2215,11 +2147,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint64 currentNonce = uint64(ghost_protocolNonce[owner]);
 
-        bytes memory signedTx = TxBuilder.buildLegacyCallKeychainP256(
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychainP256(
             vmRlp,
             vm,
             address(feeToken),
             abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0, // nonceKey=0 uses protocol nonce
             currentNonce,
             p256Pk,
             pubKeyX,
@@ -2227,6 +2160,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             owner
         );
 
+        ghost_previousProtocolNonce[owner] = ghost_protocolNonce[owner];
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
@@ -2235,6 +2169,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
+            _handleRevertProtocol(owner);
             ghost_keySigMismatchRejected++;
         }
     }
@@ -2260,11 +2195,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount2,
         uint256 nonceKeySeed
     ) external {
-        (TxContext memory ctx, bool skip, uint256 totalAmount) =
+        (TxContext memory ctx, uint256 totalAmount) =
             _setupMulticallContext(actorSeed, recipientSeed, amount1, amount2, nonceKeySeed);
-        if (skip) {
-            return;
-        }
 
         uint256 amt2 = totalAmount - ctx.amount;
         TempoCall[] memory calls = new TempoCall[](2);
@@ -2308,12 +2240,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint256 nonceKeySeed
     ) external {
-        (TxContext memory ctx, bool skip) = _setup2dNonceTransferContextWithTracking(
+        TxContext memory ctx = _setup2dNonceTransferContext(
             actorSeed, recipientSeed, amount, nonceKeySeed, 0, 1e6, 10e6
         );
-        if (skip) {
-            return;
-        }
 
         uint256 excessAmount = feeToken.balanceOf(ctx.sender) + 1e6;
 
@@ -2374,12 +2303,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint256 nonceKeySeed
     ) external {
-        (TxContext memory ctx, bool skip) = _setup2dNonceTransferContextWithTracking(
+        TxContext memory ctx = _setup2dNonceTransferContext(
             actorSeed, recipientSeed, amount, nonceKeySeed, 0, 1e6, 10e6
         );
-        if (skip) {
-            return;
-        }
         if (feeToken.balanceOf(ctx.recipient) < ctx.amount) {
             return;
         }
@@ -3092,14 +3018,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint256 futureOffset
     ) external {
-        (TxContext memory ctx, bool skip) = _setup2dNonceTransferContextWithTracking(
+        TxContext memory ctx = _setup2dNonceTransferContext(
             actorSeed, recipientSeed, amount, 1, 0, 1e6, 100e6
         );
         ctx.nonceKey = 1;
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
-        if (skip) {
-            return;
-        }
 
         futureOffset = bound(futureOffset, 1, 1 days);
         uint64 validAfter = uint64(block.timestamp + futureOffset);
@@ -3127,14 +3050,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint256 pastOffset
     ) external {
-        (TxContext memory ctx, bool skip) = _setup2dNonceTransferContextWithTracking(
+        TxContext memory ctx = _setup2dNonceTransferContext(
             actorSeed, recipientSeed, amount, 2, 0, 1e6, 100e6
         );
         ctx.nonceKey = 2;
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
-        if (skip) {
-            return;
-        }
 
         pastOffset = bound(pastOffset, 0, block.timestamp > 1 ? block.timestamp - 1 : 0);
         uint64 validBefore = uint64(block.timestamp - pastOffset);
@@ -3163,14 +3083,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint256 windowSize
     ) external {
-        (TxContext memory ctx, bool skip) = _setup2dNonceTransferContextWithTracking(
+        TxContext memory ctx = _setup2dNonceTransferContext(
             actorSeed, recipientSeed, amount, 3, 0, 1e6, 100e6
         );
         ctx.nonceKey = 3;
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
-        if (skip) {
-            return;
-        }
 
         windowSize = bound(windowSize, 1 hours, 1 days);
         uint64 validAfter = uint64(block.timestamp > 1 hours ? block.timestamp - 1 hours : 0);
@@ -3200,14 +3117,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     function handler_timeBoundOpen(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
         external
     {
-        (TxContext memory ctx, bool skip) = _setup2dNonceTransferContextWithTracking(
-            actorSeed, recipientSeed, amount, 4, 0, 1e6, 100e6
-        );
+        TxContext memory ctx =
+            _setup2dNonceTransferContext(actorSeed, recipientSeed, amount, 4, 0, 1e6, 100e6);
         ctx.nonceKey = 4;
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
-        if (skip) {
-            return;
-        }
 
         (bytes memory signedTx,) = _buildTempoWithTimeBounds(
             ctx.senderIdx, ctx.recipient, ctx.amount, ctx.nonceKey, ctx.currentNonce, 0, 0
@@ -3786,41 +3699,35 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 senderIdx = actorSeed % actors.length;
         address recipient = actors[(senderIdx + 1) % actors.length];
 
-        uint256 sigTypeRaw = sigTypeSeed % 3;
-        SignatureType sigType;
-        if (sigTypeRaw == 0) {
-            sigType = SignatureType.Secp256k1;
-        } else if (sigTypeRaw == 1) {
-            sigType = SignatureType.P256;
+        amount = bound(amount, 1e6, 10e6);
+
+        // Determine sender first based on signature type to check balance and get nonce
+        SignatureType sigType = _getRandomSignatureType(sigTypeSeed);
+        address sender;
+        if (sigType == SignatureType.Secp256k1) {
+            sender = actors[senderIdx];
         } else {
-            sigType = SignatureType.WebAuthn;
+            sender = actorP256Addresses[senderIdx];
         }
 
-        (TxBuilder.SigningParams memory params, address sender) =
-            _getSigningParams(senderIdx, sigType, sigTypeSeed);
-
-        amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(sender);
         vm.assume(balance >= amount);
 
         uint64 currentNonce = uint64(ghost_protocolNonce[sender]);
-        bytes memory callData = abi.encodeCall(ITIP20.transfer, (recipient, amount));
-        uint64 gasLimit = TxBuilder.callGas(callData, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(currentNonce)
-            .withGasPrice(TxBuilder.DEFAULT_GAS_PRICE).withGasLimit(gasLimit)
-            .withTo(address(feeToken)).withData(callData);
+        // Build and sign transfer using unified helper
+        // Use the sender returned by _buildAndSignTransfer as authoritative
+        (bytes memory signedTx, address actualSender) =
+            _buildAndSignTransfer(senderIdx, recipient, amount, currentNonce, sigTypeSeed);
 
-        bytes memory signedTx = TxBuilder.signLegacy(vmRlp, vm, tx_, params);
-
-        ghost_previousProtocolNonce[sender] = ghost_protocolNonce[sender];
+        ghost_previousProtocolNonce[actualSender] = ghost_protocolNonce[actualSender];
 
         vm.coinbase(validator);
 
         uint256 gasBefore = gasleft();
         try vmExec.executeTransaction(signedTx) {
             uint256 gasUsed = gasBefore - gasleft();
-            ghost_signatureGasUsed[sender] = gasUsed;
+            ghost_signatureGasUsed[actualSender] = gasUsed;
 
             // G6/G7/G8: Verify signature verification consumes gas
             // secp256k1: ECRECOVER_GAS (3000)
@@ -3828,13 +3735,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             // WebAuthn: P256 cost + calldata parsing overhead
             assertTrue(gasUsed > 0, "G6/G7/G8: Signature verification should consume gas");
 
-            ghost_protocolNonce[sender]++;
+            ghost_protocolNonce[actualSender]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
             _recordGasTrackingSignature();
         } catch {
-            _handleRevertProtocol(sender);
+            _handleRevertProtocol(actualSender);
         }
     }
 

@@ -53,7 +53,34 @@ abstract contract HandlerBase is InvariantBase {
 
     // ============ Setup Helpers ============
 
-    /// @notice Setup a transfer context with all necessary parameters
+    /// @notice Setup base transfer context (sender, recipient, amount) with guaranteed balance
+    /// @param actorSeed Seed to select sender actor
+    /// @param recipientSeed Seed to select recipient actor
+    /// @param amountSeed Seed for amount randomization
+    /// @param minAmount Minimum transfer amount
+    /// @param maxAmount Maximum transfer amount
+    /// @return ctx The populated transaction context with base fields set
+    function _setupBaseTransferContext(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amountSeed,
+        uint256 minAmount,
+        uint256 maxAmount
+    ) internal returns (TxContext memory ctx) {
+        ctx.senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        ctx.sender = actors[ctx.senderIdx];
+        ctx.recipient = actors[recipientIdx];
+        ctx.amount = bound(amountSeed, minAmount, maxAmount);
+
+        _ensureFeeTokenBalance(ctx.sender, ctx.amount);
+    }
+
+    /// @notice Setup a transfer context with signature type
     /// @param actorSeed Seed to select sender actor
     /// @param recipientSeed Seed to select recipient actor
     /// @param amountSeed Seed for amount randomization
@@ -61,7 +88,6 @@ abstract contract HandlerBase is InvariantBase {
     /// @param minAmount Minimum transfer amount
     /// @param maxAmount Maximum transfer amount
     /// @return ctx The populated transaction context
-    /// @return skip True if the transaction should be skipped (insufficient balance)
     function _setupTransferContext(
         uint256 actorSeed,
         uint256 recipientSeed,
@@ -69,19 +95,11 @@ abstract contract HandlerBase is InvariantBase {
         uint256 sigTypeSeed,
         uint256 minAmount,
         uint256 maxAmount
-    ) internal view returns (TxContext memory ctx, bool skip) {
-        ctx.senderIdx = actorSeed % actors.length;
-        uint256 recipientIdx = recipientSeed % actors.length;
-        if (ctx.senderIdx == recipientIdx) {
-            recipientIdx = (recipientIdx + 1) % actors.length;
-        }
-
+    ) internal returns (TxContext memory ctx) {
+        ctx = _setupBaseTransferContext(actorSeed, recipientSeed, amountSeed, minAmount, maxAmount);
         ctx.sigType = _getRandomSignatureType(sigTypeSeed);
         ctx.sender = _getSenderForSigType(ctx.senderIdx, ctx.sigType);
-        ctx.recipient = actors[recipientIdx];
-        ctx.amount = bound(amountSeed, minAmount, maxAmount);
-
-        skip = !_checkBalance(ctx.sender, ctx.amount);
+        _ensureFeeTokenBalance(ctx.sender, ctx.amount);
     }
 
     /// @notice Setup a 2D nonce transfer context
@@ -93,7 +111,6 @@ abstract contract HandlerBase is InvariantBase {
     /// @param minAmount Minimum transfer amount
     /// @param maxAmount Maximum transfer amount
     /// @return ctx The populated transaction context
-    /// @return skip True if the transaction should be skipped
     function _setup2dNonceTransferContext(
         uint256 actorSeed,
         uint256 recipientSeed,
@@ -102,49 +119,8 @@ abstract contract HandlerBase is InvariantBase {
         uint256 sigTypeSeed,
         uint256 minAmount,
         uint256 maxAmount
-    ) internal view returns (TxContext memory ctx, bool skip) {
-        (ctx, skip) = _setupTransferContext(
-            actorSeed, recipientSeed, amountSeed, sigTypeSeed, minAmount, maxAmount
-        );
-        ctx.nonceKey = uint64(bound(nonceKeySeed, 1, 100));
-        ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
-    }
-
-    /// @notice Setup a transfer context with skip tracking (non-view version)
-    /// @dev Use this when you need to track why handlers skip
-    function _setupTransferContextWithTracking(
-        uint256 actorSeed,
-        uint256 recipientSeed,
-        uint256 amountSeed,
-        uint256 sigTypeSeed,
-        uint256 minAmount,
-        uint256 maxAmount
-    ) internal returns (TxContext memory ctx, bool skip) {
-        ctx.senderIdx = actorSeed % actors.length;
-        uint256 recipientIdx = recipientSeed % actors.length;
-        if (ctx.senderIdx == recipientIdx) {
-            recipientIdx = (recipientIdx + 1) % actors.length;
-        }
-
-        ctx.sigType = _getRandomSignatureType(sigTypeSeed);
-        ctx.sender = _getSenderForSigType(ctx.senderIdx, ctx.sigType);
-        ctx.recipient = actors[recipientIdx];
-        ctx.amount = bound(amountSeed, minAmount, maxAmount);
-
-        skip = !_checkBalanceWithTracking(ctx.sender, ctx.amount);
-    }
-
-    /// @notice Setup a 2D nonce transfer context with skip tracking
-    function _setup2dNonceTransferContextWithTracking(
-        uint256 actorSeed,
-        uint256 recipientSeed,
-        uint256 amountSeed,
-        uint256 nonceKeySeed,
-        uint256 sigTypeSeed,
-        uint256 minAmount,
-        uint256 maxAmount
-    ) internal returns (TxContext memory ctx, bool skip) {
-        (ctx, skip) = _setupTransferContextWithTracking(
+    ) internal returns (TxContext memory ctx) {
+        ctx = _setupTransferContext(
             actorSeed, recipientSeed, amountSeed, sigTypeSeed, minAmount, maxAmount
         );
         ctx.nonceKey = uint64(bound(nonceKeySeed, 1, 100));
@@ -359,7 +335,6 @@ abstract contract HandlerBase is InvariantBase {
 
     /// @notice Setup context for multicall with two amounts
     /// @return ctx Transaction context
-    /// @return skip True if should skip
     /// @return totalAmount Combined amount needed
     function _setupMulticallContext(
         uint256 actorSeed,
@@ -367,21 +342,13 @@ abstract contract HandlerBase is InvariantBase {
         uint256 amount1,
         uint256 amount2,
         uint256 nonceKeySeed
-    ) internal view returns (TxContext memory ctx, bool skip, uint256 totalAmount) {
-        ctx.senderIdx = actorSeed % actors.length;
-        uint256 recipientIdx = recipientSeed % actors.length;
-        if (ctx.senderIdx == recipientIdx) {
-            recipientIdx = (recipientIdx + 1) % actors.length;
-        }
-
-        ctx.sender = actors[ctx.senderIdx];
-        ctx.recipient = actors[recipientIdx];
-        ctx.amount = bound(amount1, 1e6, 10e6);
+    ) internal returns (TxContext memory ctx, uint256 totalAmount) {
+        ctx = _setupBaseTransferContext(actorSeed, recipientSeed, amount1, 1e6, 10e6);
         totalAmount = ctx.amount + bound(amount2, 1e6, 10e6);
         ctx.nonceKey = uint64(bound(nonceKeySeed, 1, 100));
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
 
-        skip = feeToken.balanceOf(ctx.sender) < totalAmount;
+        _ensureFeeTokenBalance(ctx.sender, totalAmount);
     }
 
     /// @notice Simplified record helper for 2D nonce success (overload without previousNonce)
