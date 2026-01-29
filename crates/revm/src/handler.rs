@@ -787,11 +787,16 @@ where
             }
 
             let internals = EvmInternals::new(journal, block, cfg, tx);
-            let mut provider = EvmPrecompileStorageProvider::new_with_gas_limit(
-                internals,
-                cfg,
-                tx.gas_limit() - initial_gas,
-            );
+            // T1+: Use gas-limited provider for key authorization to charge actual gas costs.
+            let mut provider = if spec.is_t1() {
+                EvmPrecompileStorageProvider::new_with_gas_limit(
+                    internals,
+                    cfg,
+                    tx.gas_limit() - initial_gas,
+                )
+            } else {
+                EvmPrecompileStorageProvider::new_max_gas(internals, cfg)
+            };
 
             // The core logic of setting up thread-local storage is here.
             let out_of_gas = StorageCtx::enter(&mut provider, || {
@@ -3131,5 +3136,73 @@ mod tests {
             gas_nonce_zero.initial_gas, gas_regular.initial_gas,
             "nonce=0 should charge the same regardless of nonce_key (2D vs regular)"
         );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn test_key_auth_gas_provider_hardfork_gating() {
+        // Verifies that key authorization gas provider selection is correctly gated by T1:
+        // - Pre-T1: Uses unlimited gas (new_max_gas) for backward compatibility with v1.0.2
+        // - T1+: Uses gas-limited provider (new_with_gas_limit) to charge actual gas costs
+        //
+        // This test confirms the fix for the consensus-breaking bug where historical blocks
+        // failed re-execution due to gas accounting differences introduced in commit 31e00f10.
+
+        use alloy_evm::EvmInternals;
+        use tempo_precompiles::storage::{
+            PrecompileStorageProvider, evm::EvmPrecompileStorageProvider,
+        };
+
+        const INITIAL_GAS: u64 = 21_000;
+        const TX_GAS_LIMIT: u64 = 100_000;
+        const EXPECTED_GAS_LIMIT: u64 = TX_GAS_LIMIT - INITIAL_GAS;
+
+        // Helper to create a provider for a given hardfork and verify its gas limit
+        let test_provider_gas_limit = |spec: TempoHardfork, expected_unlimited: bool| {
+            let db = CacheDB::new(EmptyDB::default());
+            let mut journal: Journal<CacheDB<EmptyDB>> = Journal::new(db);
+
+            let block = TempoBlockEnv::default();
+            let mut cfg: CfgEnv<TempoHardfork> = Default::default();
+            cfg.spec = spec;
+
+            let mut tx = TempoTxEnv::default();
+            tx.gas_limit = TX_GAS_LIMIT;
+
+            let internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
+
+            // Create provider using the same logic as validate_against_state_and_deduct_caller
+            let provider = if spec.is_t1() {
+                EvmPrecompileStorageProvider::new_with_gas_limit(
+                    internals,
+                    &cfg,
+                    tx.gas_limit - INITIAL_GAS,
+                )
+            } else {
+                EvmPrecompileStorageProvider::new_max_gas(internals, &cfg)
+            };
+
+            let gas_limit = provider.gas_limit();
+
+            if expected_unlimited {
+                assert_eq!(
+                    gas_limit,
+                    u64::MAX,
+                    "{spec:?} should use unlimited gas (u64::MAX), got {gas_limit}"
+                );
+            } else {
+                assert_eq!(
+                    gas_limit, EXPECTED_GAS_LIMIT,
+                    "{spec:?} should use limited gas ({EXPECTED_GAS_LIMIT}), got {gas_limit}"
+                );
+            }
+        };
+
+        // Pre-T1: should use unlimited gas (new_max_gas)
+        test_provider_gas_limit(TempoHardfork::Genesis, true);
+        test_provider_gas_limit(TempoHardfork::T0, true);
+
+        // T1+: should use gas-limited provider
+        test_provider_gas_limit(TempoHardfork::T1, false);
     }
 }

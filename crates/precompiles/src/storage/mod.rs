@@ -69,6 +69,9 @@ pub trait PrecompileStorageProvider {
     /// Add refund to the refund gas counter.
     fn refund_gas(&mut self, gas: i64);
 
+    /// Returns the gas limit.
+    fn gas_limit(&self) -> u64;
+
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
 

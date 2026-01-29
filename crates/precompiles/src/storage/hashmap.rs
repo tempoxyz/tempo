@@ -127,6 +127,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         // No-op
     }
 
+    fn gas_limit(&self) -> u64 {
+        u64::MAX
+    }
+
     fn gas_used(&self) -> u64 {
         0
     }

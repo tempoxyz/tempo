@@ -393,6 +393,10 @@ where
         unreachable!("'tload' not implemented in read-only context yet")
     }
 
+    fn gas_limit(&self) -> u64 {
+        unreachable!("'gas_limit' not implemented in read-only context yet")
+    }
+
     fn gas_used(&self) -> u64 {
         unreachable!("'gas_used' not implemented in read-only context yet")
     }
