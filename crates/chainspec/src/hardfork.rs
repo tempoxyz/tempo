@@ -132,14 +132,18 @@ impl From<&TempoHardfork> for SpecId {
 }
 
 impl From<SpecId> for TempoHardfork {
-    fn from(spec: SpecId) -> Self {
-        if spec.is_enabled_in(SpecId::from(Self::T1)) {
-            Self::T1
-        } else if spec.is_enabled_in(SpecId::from(Self::T0)) {
-            Self::T0
-        } else {
-            Self::Genesis
-        }
+    fn from(_spec: SpecId) -> Self {
+        // WARNING: SpecId does not encode Tempo hardfork information.
+        // All Tempo hardforks map to the same SpecId (OSAKA), so we cannot
+        // reliably determine the Tempo hardfork from a SpecId.
+        //
+        // This conversion should NOT be used for hardfork-dependent logic.
+        // Instead, use `TempoHardforks::tempo_hardfork_at(timestamp)` with the
+        // block timestamp to determine the correct Tempo hardfork.
+        //
+        // For safety, we return Genesis (the most restrictive hardfork) to
+        // avoid accidentally applying T1 rules to pre-T1 blocks.
+        Self::Genesis
     }
 }
 
