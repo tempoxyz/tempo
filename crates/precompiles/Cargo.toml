@@ -1,6 +1,6 @@
 [package]
 name = "tempo-precompiles"
-description = "TODO:"
+description = "Tempo-specific EVM precompiles and helpers for chain contracts and storage"
 
 version.workspace = true
 edition.workspace = true
