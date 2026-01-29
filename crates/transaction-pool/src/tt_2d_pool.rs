@@ -49,7 +49,7 @@ pub struct AA2dPool {
     /// independent, pending, executable transactions, one per sequence id.
     independent_transactions: HashMap<AASequenceId, PendingTransaction<TxOrdering>>,
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
-    by_id: BTreeMap<AA2dTransactionId, AA2dInternalTransaction>,
+    by_id: BTreeMap<AA2dTransactionId, Arc<AA2dInternalTransaction>>,
     /// _All_ transactions by hash.
     by_hash: HashMap<TxHash, Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     /// Expiring nonce transactions, keyed by tx hash (always pending/independent).
@@ -163,16 +163,15 @@ impl AA2dPool {
         }
 
         // assume the transaction is not pending, will get updated later
-        let is_pending = Arc::new(AtomicBool::new(false));
-        let tx = AA2dInternalTransaction {
+        let tx = Arc::new(AA2dInternalTransaction {
             inner: PendingTransaction {
                 submission_id: self.next_id(),
                 priority: CoinbaseTipOrdering::default()
                     .priority(&transaction.transaction, hardfork.base_fee()),
                 transaction: transaction.clone(),
             },
-            is_pending: Arc::clone(&is_pending),
-        };
+            is_pending: Arc::new(AtomicBool::new(false)),
+        });
 
         // try to insert the transaction
         let replaced = match self.by_id.entry(tx_id) {
@@ -190,10 +189,10 @@ impl AA2dPool {
                     ));
                 }
 
-                Some(entry.insert(tx.clone()))
+                Some(entry.insert(Arc::clone(&tx)))
             }
             Entry::Vacant(entry) => {
-                entry.insert(tx.clone());
+                entry.insert(Arc::clone(&tx));
                 None
             }
         };
@@ -204,12 +203,7 @@ impl AA2dPool {
             // and if this is the independent transaction, it will be replaced by the new transaction below
             self.by_hash.remove(replaced.inner.transaction.hash());
             // Remove from eviction set
-            let replaced_key = EvictionKey::new(
-                replaced.inner.priority.clone(),
-                replaced.inner.submission_id,
-                tx_id,
-                Arc::clone(&replaced.is_pending),
-            );
+            let replaced_key = EvictionKey::new(Arc::clone(replaced), tx_id);
             self.by_eviction_order.remove(&replaced_key);
         }
 
@@ -228,7 +222,7 @@ impl AA2dPool {
 
         // scan all the transactions with the same nonce key starting with the on chain nonce
         // to check if our new transaction was inserted as pending and perhaps promoted more transactions
-        for (existing_id, existing_tx) in self.descendant_txs_mut(&on_chain_id) {
+        for (existing_id, existing_tx) in self.descendant_txs(&on_chain_id) {
             if existing_id.nonce == next_nonce {
                 match existing_id.nonce.cmp(&tx_id.nonce) {
                     std::cmp::Ordering::Less => {
@@ -258,12 +252,7 @@ impl AA2dPool {
         self.metrics.inc_inserted();
 
         // Create eviction key for the new transaction and add to the single eviction set
-        let new_tx_eviction_key = EvictionKey::new(
-            tx.inner.priority.clone(),
-            tx.inner.submission_id,
-            tx_id,
-            Arc::clone(&is_pending),
-        );
+        let new_tx_eviction_key = EvictionKey::new(Arc::clone(&tx), tx_id);
         self.by_eviction_order.insert(new_tx_eviction_key);
 
         if inserted_as_pending {
@@ -272,12 +261,13 @@ impl AA2dPool {
             }
             // if this is the next nonce in line we can mark it as independent
             if tx_id.nonce == on_chain_nonce {
-                self.independent_transactions.insert(tx_id.seq_id, tx.inner);
+                self.independent_transactions
+                    .insert(tx_id.seq_id, tx.inner.clone());
             }
 
             return Ok(AddedTransaction::Pending(AddedPendingTransaction {
                 transaction,
-                replaced: replaced.map(|tx| tx.inner.transaction),
+                replaced: replaced.map(|tx| tx.inner.transaction.clone()),
                 promoted,
                 discarded: self.discard(),
             }));
@@ -288,7 +278,7 @@ impl AA2dPool {
 
         Ok(AddedTransaction::Parked {
             transaction,
-            replaced: replaced.map(|tx| tx.inner.transaction),
+            replaced: replaced.map(|tx| tx.inner.transaction.clone()),
             subpool: SubPool::Queued,
             queued_reason: Some(QueuedReason::NonceGap),
         })
@@ -530,16 +520,16 @@ impl AA2dPool {
         regular.chain(expiring)
     }
 
-    /// Returns all mutable transactions that _follow_ after the given id but have the same sender.
+    /// Returns all transactions that _follow_ after the given id but have the same sender.
     ///
-    /// NOTE: The range is _inclusive_: if the transaction that belongs to `id` it field be the
+    /// NOTE: The range is _inclusive_: if the transaction that belongs to `id` it will be the
     /// first value.
-    fn descendant_txs_mut<'a, 'b: 'a>(
-        &'a mut self,
+    fn descendant_txs<'a, 'b: 'a>(
+        &'a self,
         id: &'b AA2dTransactionId,
-    ) -> impl Iterator<Item = (&'a AA2dTransactionId, &'a mut AA2dInternalTransaction)> + 'a {
+    ) -> impl Iterator<Item = (&'a AA2dTransactionId, &'a Arc<AA2dInternalTransaction>)> + 'a {
         self.by_id
-            .range_mut(id..)
+            .range(id..)
             .take_while(|(other, _)| id.seq_id == other.seq_id)
     }
 
@@ -549,7 +539,7 @@ impl AA2dPool {
     fn descendant_txs_exclusive<'a, 'b: 'a>(
         &'a self,
         id: &'b AA2dTransactionId,
-    ) -> impl Iterator<Item = (&'a AA2dTransactionId, &'a AA2dInternalTransaction)> + 'a {
+    ) -> impl Iterator<Item = (&'a AA2dTransactionId, &'a Arc<AA2dInternalTransaction>)> + 'a {
         self.by_id
             .range((Excluded(id), Unbounded))
             .take_while(|(other, _)| id.seq_id == other.seq_id)
@@ -565,12 +555,7 @@ impl AA2dPool {
         let tx = self.by_id.remove(id)?;
 
         // Remove from eviction set
-        let eviction_key = EvictionKey::new(
-            tx.inner.priority,
-            tx.inner.submission_id,
-            *id,
-            Arc::clone(&tx.is_pending),
-        );
+        let eviction_key = EvictionKey::new(Arc::clone(&tx), *id);
         self.by_eviction_order.remove(&eviction_key);
 
         // Clean up cached nonce key slots if this was the last transaction of the sequence
@@ -582,7 +567,7 @@ impl AA2dPool {
 
         self.remove_independent(id);
         self.by_hash.remove(tx.inner.transaction.hash());
-        Some(tx.inner.transaction)
+        Some(tx.inner.transaction.clone())
     }
 
     /// Removes the independent transaction if it matches the given id.
@@ -699,17 +684,14 @@ impl AA2dPool {
     ///
     /// This is used both for single-tx removal (demote_descendants) and batch removal
     /// where we want to demote once per seq_id starting from the minimum removed nonce.
-    fn demote_from_nonce(&mut self, seq_id: &AASequenceId, min_nonce: u64) {
+    fn demote_from_nonce(&self, seq_id: &AASequenceId, min_nonce: u64) {
         let start_id = AA2dTransactionId::new(*seq_id, min_nonce);
         for (_, tx) in self
             .by_id
-            .range_mut((Excluded(&start_id), Unbounded))
+            .range((Excluded(&start_id), Unbounded))
             .take_while(|(other, _)| *seq_id == other.seq_id)
         {
-            if std::mem::replace(&mut tx.is_pending, false) {
-                self.pending_count -= 1;
-                self.queued_count += 1;
-            }
+            tx.is_pending.store(false, Ordering::Relaxed);
         }
     }
 
@@ -932,7 +914,7 @@ impl AA2dPool {
         let to_remove: Vec<_> = self
             .by_eviction_order
             .iter()
-            .filter(|key| key.is_pending.load(Ordering::Relaxed) == evict_pending)
+            .filter(|key| key.is_pending() == evict_pending)
             .map(|key| key.tx_id)
             .take(count)
             .collect();
@@ -1255,37 +1237,39 @@ struct AA2dInternalTransaction {
 /// Newer transactions are evicted first to preserve older transactions that have been waiting longer.
 #[derive(Debug, Clone)]
 struct EvictionKey {
-    /// The transaction's priority (from `CoinbaseTipOrdering`).
-    priority: Priority<u128>,
-    /// The submission ID when the transaction was added to the pool.
-    /// This is unique per transaction, so it's sufficient for ordering.
-    submission_id: u64,
-    /// The transaction's unique identifier (for lookup during eviction).
+    /// The wrapped transaction containing all needed data.
+    tx: Arc<AA2dInternalTransaction>,
+    /// The transaction's unique identifier (cached for lookup during eviction).
+    /// We cache this because deriving it from the transaction requires
+    /// `aa_transaction_id()` which returns an Option and does more work.
     tx_id: AA2dTransactionId,
-    /// Shared pending state for filtering without lookup.
-    is_pending: Arc<AtomicBool>,
 }
 
 impl EvictionKey {
-    /// Creates a new eviction key from transaction data.
-    fn new(
-        priority: Priority<u128>,
-        submission_id: u64,
-        tx_id: AA2dTransactionId,
-        is_pending: Arc<AtomicBool>,
-    ) -> Self {
-        Self {
-            priority,
-            submission_id,
-            tx_id,
-            is_pending,
-        }
+    /// Creates a new eviction key wrapping the transaction.
+    fn new(tx: Arc<AA2dInternalTransaction>, tx_id: AA2dTransactionId) -> Self {
+        Self { tx, tx_id }
+    }
+
+    /// Returns the transaction's priority.
+    fn priority(&self) -> &Priority<u128> {
+        &self.tx.inner.priority
+    }
+
+    /// Returns the submission ID.
+    fn submission_id(&self) -> u64 {
+        self.tx.inner.submission_id
+    }
+
+    /// Returns whether this transaction is pending.
+    fn is_pending(&self) -> bool {
+        self.tx.is_pending.load(Ordering::Relaxed)
     }
 }
 
 impl PartialEq for EvictionKey {
     fn eq(&self, other: &Self) -> bool {
-        self.submission_id == other.submission_id
+        self.submission_id() == other.submission_id()
     }
 }
 
@@ -1294,11 +1278,11 @@ impl Eq for EvictionKey {}
 impl Ord for EvictionKey {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Lower priority first (evict lowest priority)
-        self.priority
-            .cmp(&other.priority)
+        self.priority()
+            .cmp(other.priority())
             // Then newer submission first (evict newer transactions among same priority)
             // This preserves older transactions that have been waiting longer
-            .then_with(|| other.submission_id.cmp(&self.submission_id))
+            .then_with(|| other.submission_id().cmp(&self.submission_id()))
     }
 }
 
@@ -2174,7 +2158,12 @@ mod tests {
 
         // Verify tx2 is now demoted to queued since tx1 removal creates a gap
         assert!(
-            !pool.by_id.get(&tx2_id).unwrap().is_pending,
+            !pool
+                .by_id
+                .get(&tx2_id)
+                .unwrap()
+                .is_pending
+                .load(Ordering::Relaxed),
             "tx2 should be demoted to queued after tx1 removal creates a gap"
         );
 
