@@ -264,6 +264,13 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         // Get or create a EUR token to use as quote
         try factory.getTokenAddress(actor, eurSalt) returns (address predictedEurAddr) {
             if (predictedEurAddr.code.length != 0) {
+                // Verify the existing token is actually a EUR token (not some other token
+                // that happened to be created at this address by another handler)
+                if (keccak256(bytes(TIP20(predictedEurAddr).currency())) != keccak256(bytes("EUR")))
+                {
+                    // Token exists but is not EUR - skip this test case
+                    return;
+                }
                 eurToken = predictedEurAddr;
             } else {
                 vm.startPrank(actor);
