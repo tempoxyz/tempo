@@ -17,13 +17,13 @@ use tempo_primitives::TempoHeader;
 
 /// T0 base fee: 10 billion attodollars (1×10^10)
 ///
-/// Attodollars (a$) are the atomic gas accounting units at 10^-18 USD precision.
+/// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
 /// Basefee is denominated in attodollars.
 pub const TEMPO_T0_BASE_FEE: u64 = 10_000_000_000;
 
 /// T1 base fee: 20 billion attodollars (2×10^10)
 ///
-/// Attodollars (a$) are the atomic gas accounting units at 10^-18 USD precision.
+/// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
 /// Basefee is denominated in attodollars.
 ///
 /// At this basefee, a standard TIP-20 transfer (~50,000 gas) costs:

@@ -23,7 +23,7 @@ pub use tt_signed::AASigned;
 
 use alloy_primitives::{U256, uint};
 
-/// Scaling factor for converting gas prices (in attodollars) to TIP-20 token amounts (in microdollars).
+/// Scaling factor for converting gas prices (attodollars) to TIP-20 token amounts (microdollars).
 ///
 /// This factor is 10^12, which converts from attodollars (10^-18 USD) to microdollars (10^-6 USD):
 /// - Gas prices are in attodollars at 10^-18 USD precision
