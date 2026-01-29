@@ -656,6 +656,7 @@ impl AA2dPool {
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
             self.expiring_nonce_txs.remove(tx_hash);
+            self.pending_count -= 1;
             return Some((tx, None));
         }
 
@@ -729,6 +730,7 @@ impl AA2dPool {
                 let hash = *tx.hash();
                 if self.expiring_nonce_txs.remove(&hash).is_some() {
                     self.by_hash.remove(&hash);
+                    self.pending_count -= 1;
                     removed.push(tx);
                 }
             } else if let Some(tx) = tx
@@ -4807,6 +4809,68 @@ mod tests {
         );
 
         // This will fail if pending_count wasn't decremented
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn remove_expiring_nonce_tx_by_hash_decrements_pending_count() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
+        let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
+        let tx_hash = *valid_tx.hash();
+
+        pool.add_transaction(Arc::new(valid_tx), 0, TempoHardfork::T1)
+            .unwrap();
+
+        assert_eq!(pool.pending_count, 1);
+        pool.assert_invariants();
+
+        // Remove via remove_transactions (uses remove_transaction_by_hash_no_demote)
+        let removed = pool.remove_transactions(std::iter::once(&tx_hash));
+        assert_eq!(removed.len(), 1);
+
+        assert_eq!(pool.pending_count, 0);
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn remove_expiring_nonce_tx_by_sender_decrements_pending_count() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx1 = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
+        let valid_tx1 = wrap_valid_tx(tx1, TransactionOrigin::Local);
+
+        let tx2 = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .max_priority_fee(1_100_000_000)
+            .max_fee(2_200_000_000)
+            .build();
+        let valid_tx2 = wrap_valid_tx(tx2, TransactionOrigin::Local);
+
+        pool.add_transaction(Arc::new(valid_tx1), 0, TempoHardfork::T1)
+            .unwrap();
+        pool.add_transaction(Arc::new(valid_tx2), 0, TempoHardfork::T1)
+            .unwrap();
+
+        assert_eq!(pool.pending_count, 2);
+        pool.assert_invariants();
+
+        // Remove via remove_transactions_by_sender
+        let removed = pool.remove_transactions_by_sender(sender);
+        assert_eq!(removed.len(), 2);
+
+        assert_eq!(pool.pending_count, 0);
         pool.assert_invariants();
     }
 }
