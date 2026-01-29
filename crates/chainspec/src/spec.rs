@@ -416,4 +416,32 @@ mod tests {
         assert_eq!(dev_chainspec.tempo_hardfork_at(0), TempoHardfork::T1);
         assert_eq!(dev_chainspec.tempo_hardfork_at(1000), TempoHardfork::T1);
     }
+
+    #[test]
+    fn test_from_genesis_with_hardforks_at_zero() {
+        use alloy_genesis::Genesis;
+
+        let genesis: Genesis = serde_json::from_str(
+            r#"{
+                "config": {
+                    "chainId": 1234,
+                    "t0Time": 0,
+                    "t1Time": 0
+                },
+                "alloc": {}
+            }"#,
+        )
+        .unwrap();
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+
+        assert!(chainspec.is_t0_active_at_timestamp(0));
+        assert!(chainspec.is_t0_active_at_timestamp(1000));
+        assert!(chainspec.is_t1_active_at_timestamp(0));
+        assert!(chainspec.is_t1_active_at_timestamp(1000));
+
+        assert_eq!(chainspec.tempo_hardfork_at(0), TempoHardfork::T1);
+        assert_eq!(chainspec.tempo_hardfork_at(1000), TempoHardfork::T1);
+        assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), TempoHardfork::T1);
+    }
 }

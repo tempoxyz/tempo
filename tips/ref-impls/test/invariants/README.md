@@ -14,7 +14,8 @@
 - **TEMPO-DEX5**: `amountIn <= maxAmountIn` when executing `swapExactAmountOut`.
 - **TEMPO-DEX14**: Swapper total balance (external + internal) changes correctly - loses exact `amountIn` of tokenIn and gains exact `amountOut` of tokenOut. Skipped when swapper has active orders (self-trade makes accounting complex).
 - **TEMPO-DEX16**: Quote functions (`quoteSwapExactAmountIn/Out`) return values matching actual swap execution.
-- **TEMPO-DEX18**: Dust invariant - each swap can at maximum increase the dust in the DEX by 1.
+- **TEMPO-DEX18**: Dust invariant - each swap can at maximum increase the dust in the DEX by the number of orders filled.
+- **TEMPO-DEX19**: Post-swap dust bounded - maximum dust accumulation in the protocol is bounded and tracked via `_maxDust`.
 
 ### Balance Invariants
 
@@ -89,7 +90,8 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 - **TEMPO-AMM19**: Must pay at least 1 for any swap - prevents zero-cost extraction.
 - **TEMPO-AMM20**: Reserves are always bounded by uint128.
 - **TEMPO-AMM21**: Spread between fee swap (M) and rebalance (N) prevents arbitrage - M < N with 15 bps spread.
-- **TEMPO-AMM22**: Rebalance swap rounding always favors the pool - the +1 in the formula ensures pool never loses to rounding.
+- **TEMPO-AMM22**: Rebalance swap rounding always favors the pool - the +1 in the formula ensures pool never loses to rounding, even when `(amountOut * N) % SCALE == 0` (exact division case).
+
 - **TEMPO-AMM23**: Burn rounding dust accumulates in pool - integer division rounds down, so users receive <= theoretical amount.
 - **TEMPO-AMM24**: All participants can exit with solvency guaranteed. After distributing all fees and burning all LP positions:
 
@@ -128,3 +130,207 @@ The FeeManager extends FeeAMM and handles fee token preferences and distribution
 
 - **TEMPO-FEE5**: Collected fees should not exceed AMM token balance for any token.
 - **TEMPO-FEE6**: Fee swap rate M is correctly applied - fee output should always be <= fee input.
+
+## Nonce
+
+The Nonce precompile manages 2D nonces for accounts, enabling multiple independent nonce sequences per account identified by a nonce key.
+
+### Nonce Increment Invariants
+
+- **TEMPO-NON1**: Monotonic increment - nonces only ever increase by exactly 1 per increment operation.
+- **TEMPO-NON2**: Ghost state consistency - actual nonce values always match tracked ghost state.
+- **TEMPO-NON3**: Read consistency - `getNonce` returns the correct value after any number of increments.
+
+### Protocol Nonce Invariants
+
+- **TEMPO-NON4**: Protocol nonce rejection - nonce key 0 is reserved for protocol nonces and reverts with `ProtocolNonceNotSupported` when accessed through the precompile.
+
+### Independence Invariants
+
+- **TEMPO-NON5**: Account independence - incrementing one account's nonce does not affect any other account's nonces.
+- **TEMPO-NON6**: Key independence - incrementing one nonce key does not affect any other nonce key for the same account.
+
+### Edge Case Invariants
+
+- **TEMPO-NON7**: Large nonce key support - `type(uint256).max - 1` works correctly as a nonce key. Note: `type(uint256).max` is reserved for `TEMPO_EXPIRING_NONCE_KEY`.
+- **TEMPO-NON8**: Strict monotonicity - multiple sequential increments produce strictly increasing values with no gaps.
+
+### Overflow Invariants
+
+- **TEMPO-NON9**: Nonce overflow protection - incrementing a nonce at `u64::MAX` reverts with `NonceOverflow`. Rust uses `checked_add(1)` which returns an error on overflow.
+- **TEMPO-NON10**: Invalid key increment rejection - `increment_nonce(key=0)` reverts with `InvalidNonceKey` (distinct from `ProtocolNonceNotSupported` used for reads).
+
+### Reserved Key Invariants
+
+- **TEMPO-NON11**: Reserved expiring nonce key - `type(uint256).max` is reserved for `TEMPO_EXPIRING_NONCE_KEY`. Reading it returns 0 for uninitialized accounts (readable but reserved for special use).
+
+## TIP20Factory
+
+The TIP20Factory is the factory contract for creating TIP-20 compliant tokens with deterministic addresses.
+
+### Token Creation Invariants
+
+- **TEMPO-FAC1**: Deterministic addresses - `createToken` deploys to the exact address returned by `getTokenAddress` for the same sender/salt combination.
+- **TEMPO-FAC2**: TIP20 recognition - all tokens created by the factory are recognized as TIP-20 by `isTIP20()`.
+- **TEMPO-FAC3**: Address uniqueness - attempting to create a token at an existing address reverts with `TokenAlreadyExists`.
+- **TEMPO-FAC4**: Quote token validation - `createToken` reverts with `InvalidQuoteToken` if the quote token is not a valid TIP-20.
+- **TEMPO-FAC5**: Reserved address enforcement - addresses in the reserved range (lower 64 bits < 1024) revert with `AddressReserved`.
+- **TEMPO-FAC6**: Token properties - created tokens have correct name, symbol, and currency as specified.
+- **TEMPO-FAC7**: Currency consistency - USD tokens must have USD quote tokens; non-USD tokens can have any valid quote token.
+
+### Address Prediction Invariants
+
+- **TEMPO-FAC8**: isTIP20 consistency - created tokens return true, non-TIP20 addresses return false.
+- **TEMPO-FAC9**: Address determinism - `getTokenAddress(sender, salt)` always returns the same address for the same inputs.
+- **TEMPO-FAC10**: Sender differentiation - different senders with the same salt produce different token addresses.
+
+### Global Invariants
+
+- **TEMPO-FAC11**: Address format - all created tokens have addresses with the correct TIP-20 prefix (`0x20C0...`).
+- **TEMPO-FAC12**: Salt-to-token consistency - ghost mappings `saltToToken` and `tokenToSalt` match factory's `getTokenAddress` for all tracked sender/salt combinations.
+
+## TIP403Registry
+
+The TIP403Registry manages transfer policies (whitelists and blacklists) that control which addresses can send or receive tokens.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-REG13**: Special policy existence - policies 0 and 1 always exist (return true for `policyExists`).
+- **TEMPO-REG15**: Counter monotonicity - `policyIdCounter` only increases and equals `2 + totalPoliciesCreated`.
+- **TEMPO-REG16**: Policy type immutability - a policy's type cannot change after creation.
+- **TEMPO-REG19**: Policy membership consistency - ghost policy membership state matches registry `isAuthorized` for all tracked accounts, respecting whitelist/blacklist semantics.
+
+### Per-Handler Assertions
+
+These verify correct behavior when the specific function is called:
+
+#### Policy Creation
+
+- **TEMPO-REG1**: Policy ID assignment - newly created policy ID equals `policyIdCounter` before creation.
+- **TEMPO-REG2**: Counter increment - `policyIdCounter` increments by 1 after each policy creation.
+- **TEMPO-REG3**: Policy existence - all created policies return true for `policyExists()`.
+- **TEMPO-REG4**: Policy data accuracy - `policyData()` returns the correct type and admin as specified during creation.
+- **TEMPO-REG5**: Bulk creation - `createPolicyWithAccounts` correctly initializes all provided accounts in the policy.
+
+#### Admin Management
+
+- **TEMPO-REG6**: Admin transfer - `setPolicyAdmin` correctly updates the policy admin.
+- **TEMPO-REG7**: Admin-only enforcement - non-admins cannot modify policy admin (reverts with `Unauthorized`).
+
+#### Policy Modification
+
+- **TEMPO-REG8**: Whitelist modification - adding an account to a whitelist makes `isAuthorized` return true for that account.
+- **TEMPO-REG9**: Blacklist modification - adding an account to a blacklist makes `isAuthorized` return false for that account.
+- **TEMPO-REG10**: Policy type enforcement - `modifyPolicyWhitelist` on a blacklist (or vice versa) reverts with `IncompatiblePolicyType`.
+
+#### Special Policies
+
+- **TEMPO-REG11**: Always-reject policy - policy ID 0 returns false for all `isAuthorized` checks.
+- **TEMPO-REG12**: Always-allow policy - policy ID 1 returns true for all `isAuthorized` checks.
+- **TEMPO-REG14**: Non-existent policies - policy IDs >= `policyIdCounter` return false for `policyExists()`.
+- **TEMPO-REG17**: Special policy immutability - policies 0 and 1 cannot be modified via `modifyPolicyWhitelist` or `modifyPolicyBlacklist`.
+- **TEMPO-REG18**: Special policy admin immutability - the admin of policies 0 and 1 cannot be changed (attempts revert with `Unauthorized` since admin is `address(0)`).
+
+
+## ValidatorConfig
+
+The ValidatorConfig precompile manages the set of validators that participate in consensus, including their public keys, addresses, and active status.
+
+### Owner Authorization Invariants
+
+- **TEMPO-VAL1**: Owner-only add - only the owner can add new validators (non-owners revert with `Unauthorized`).
+- **TEMPO-VAL7**: Owner transfer - `changeOwner` correctly updates the owner address.
+- **TEMPO-VAL8**: New owner authority - only the current owner can transfer ownership.
+
+### Validator Index Invariants
+
+- **TEMPO-VAL2**: Index assignment - new validators receive sequential indices starting from 0; indices are unique and within bounds.
+
+### Validator Update Invariants
+
+- **TEMPO-VAL3**: Validator self-update - validators can update their own public key, inbound address, and outbound address.
+- **TEMPO-VAL4**: Update restriction - only the validator themselves can call `updateValidator` (owner cannot update validators).
+
+### Status Management Invariants
+
+- **TEMPO-VAL5**: Owner-only status change - only the owner can change validator active status (validators cannot change their own status).
+- **TEMPO-VAL6**: Status toggle - `changeValidatorStatus` correctly updates the validator's active flag.
+
+### Validator Creation Invariants
+
+- **TEMPO-VAL9**: Duplicate rejection - adding a validator that already exists reverts with `ValidatorAlreadyExists`.
+- **TEMPO-VAL10**: Zero public key rejection - adding a validator with zero public key reverts with `InvalidPublicKey`.
+
+### Validator Rotation Invariants
+
+- **TEMPO-VAL11**: Address rotation - validators can rotate to a new address while preserving their index and active status.
+
+### DKG Ceremony Invariants
+
+- **TEMPO-VAL12**: DKG epoch setting - `setNextFullDkgCeremony` correctly stores the epoch value.
+- **TEMPO-VAL13**: Owner-only DKG - only the owner can set the DKG ceremony epoch.
+
+### Global Invariants
+
+- **TEMPO-VAL14**: Owner consistency - contract owner always matches ghost state.
+- **TEMPO-VAL15**: Validator data consistency - all validator data (active status, public key, index) matches ghost state.
+- **TEMPO-VAL16**: Index consistency - each validator's index matches the ghost-tracked index assigned at creation.
+
+## TIP20
+
+TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, memo support, pause functionality, and reward distribution.
+
+### Transfer Invariants
+
+- **TEMPO-TIP1**: Balance conservation - sender balance decreases by exactly `amount`, recipient balance increases by exactly `amount`. Transfer returns `true` on success.
+- **TEMPO-TIP2**: Total supply unchanged after transfer - transfers only move tokens between accounts.
+- **TEMPO-TIP3**: Allowance consumption - `transferFrom` decreases allowance by exactly `amount` transferred.
+- **TEMPO-TIP4**: Infinite allowance preserved - `type(uint256).max` allowance remains infinite after `transferFrom`.
+- **TEMPO-TIP9**: Memo transfers behave identically to regular transfers for balance accounting.
+
+### Approval Invariants
+
+- **TEMPO-TIP5**: Allowance setting - `approve` sets exact allowance amount, returns `true`.
+
+### Mint/Burn Invariants
+
+- **TEMPO-TIP6**: Minting increases total supply and recipient balance by exactly `amount`.
+- **TEMPO-TIP7**: Supply cap enforcement - minting reverts if `totalSupply + amount > supplyCap`.
+- **TEMPO-TIP8**: Burning decreases total supply and burner balance by exactly `amount`.
+- **TEMPO-TIP23**: Burn blocked - `burnBlocked` decreases target balance and total supply by exactly `amount` when target is blacklisted.
+
+### Reward Distribution Invariants
+
+- **TEMPO-TIP10**: Reward recipient setting - `setRewardRecipient` updates the stored recipient correctly.
+- **TEMPO-TIP11**: Opted-in supply tracking - `optedInSupply` increases when opting in (by holder's balance) and decreases when opting out.
+- **TEMPO-TIP25**: Reward delegation - users can delegate their rewards to another address via `setRewardRecipient`.
+- **TEMPO-TIP12**: Global reward per token updates - `distributeReward` increases `globalRewardPerToken` by `(amount * ACC_PRECISION) / optedInSupply`.
+- **TEMPO-TIP13**: Reward token custody - distributed rewards are transferred to the token contract.
+- **TEMPO-TIP14**: Reward claiming - `claimRewards` transfers owed amount from contract to caller, updates balances correctly.
+- **TEMPO-TIP15**: Claim bounded by available - claimed amount cannot exceed contract's token balance.
+
+### Policy Invariants
+
+- **TEMPO-TIP16**: Blacklist enforcement - transfers to/from blacklisted addresses revert with `PolicyForbids`.
+- **TEMPO-TIP17**: Pause enforcement - transfers revert with `ContractPaused` when paused.
+
+### Global Invariants
+
+- **TEMPO-TIP18**: Supply conservation - `totalSupply = initialSupply + totalMints - totalBurns`.
+- **TEMPO-TIP19**: Opted-in supply bounded - `optedInSupply <= totalSupply`.
+- **TEMPO-TIP20**: Balance sum equals supply - sum of all holder balances equals `totalSupply`.
+- **TEMPO-TIP21**: Decimals constant - `decimals()` always returns 6.
+- **TEMPO-TIP22**: Supply cap enforced - `totalSupply <= supplyCap` always holds.
+
+### Protected Address Invariants
+
+- **TEMPO-TIP24**: Protected address enforcement - `burnBlocked` cannot be called on FeeManager or DEX addresses (reverts with `ProtectedAddress`).
+
+### Access Control Invariants
+
+- **TEMPO-TIP26**: Issuer-only minting - only accounts with `ISSUER_ROLE` can call `mint` (non-issuers revert with `Unauthorized`).
+- **TEMPO-TIP27**: Pause-role enforcement - only accounts with `PAUSE_ROLE` can call `pause` (non-role holders revert with `Unauthorized`).
+- **TEMPO-TIP28**: Unpause-role enforcement - only accounts with `UNPAUSE_ROLE` can call `unpause` (non-role holders revert with `Unauthorized`).
+- **TEMPO-TIP29**: Burn-blocked-role enforcement - only accounts with `BURN_BLOCKED_ROLE` can call `burnBlocked` (non-role holders revert with `Unauthorized`).
