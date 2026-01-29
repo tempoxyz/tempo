@@ -1351,13 +1351,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _recordProtocolNonceCreateSuccess(sender, currentNonce, expectedAddress);
             _recordCreateGasTracked();
         } catch {
-            // Only update ghost nonce if actual nonce was consumed (tx included but reverted)
-            // If tx was rejected at validation, nonce is NOT consumed
-            uint256 actualNonce = vm.getNonce(sender);
-            if (actualNonce > ghost_protocolNonce[sender]) {
-                ghost_protocolNonce[sender] = actualNonce;
-                ghost_totalProtocolNonceTxs++;
-            }
+            ghost_protocolNonce[sender]++;
+            ghost_totalProtocolNonceTxs++;
             ghost_totalTxReverted++;
         }
     }
