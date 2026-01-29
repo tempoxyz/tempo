@@ -193,62 +193,62 @@ impl TempoPoolState {
     }
 }
 
-/// Default threshold for pending transaction staleness eviction (30 minutes).
-/// Transactions that have been pending for longer than this will be evicted.
-const DEFAULT_PENDING_STALENESS_THRESHOLD: u64 = 30 * 60;
+/// Default interval for pending transaction staleness checks (30 minutes).
+/// Transactions that remain pending across two consecutive snapshots will be evicted.
+const DEFAULT_PENDING_STALENESS_INTERVAL: u64 = 30 * 60;
 
-/// Tracks when transactions first became pending to detect stale transactions.
+/// Tracks pending transactions across snapshots to detect stale transactions.
 ///
-/// Used to evict transactions that have been pending for too long but can't be included
-/// (e.g., due to dynamic state changes like AMM liquidity).
+/// Uses a simple snapshot comparison approach:
+/// - Every interval, take a snapshot of current pending transactions
+/// - Transactions present in both the previous and current snapshot are considered stale
+/// - Stale transactions are evicted since they've been pending for at least one full interval
 #[derive(Debug)]
 struct PendingStalenessTracker {
-    /// Maps tx_hash -> timestamp when the transaction first became pending.
-    pending_since: HashMap<TxHash, u64>,
-    /// Threshold in seconds for considering a transaction stale.
-    threshold_secs: u64,
+    /// Previous snapshot of pending transaction hashes.
+    previous_pending: HashSet<TxHash>,
+    /// Timestamp of the last snapshot.
+    last_snapshot_time: Option<u64>,
+    /// Interval in seconds between staleness checks.
+    interval_secs: u64,
 }
 
 impl PendingStalenessTracker {
-    /// Creates a new tracker with the given staleness threshold.
-    fn new(threshold_secs: u64) -> Self {
+    /// Creates a new tracker with the given check interval.
+    fn new(interval_secs: u64) -> Self {
         Self {
-            pending_since: HashMap::default(),
-            threshold_secs,
+            previous_pending: HashSet::default(),
+            last_snapshot_time: None,
+            interval_secs,
         }
     }
 
-    /// Updates the pending set with the current pending transaction hashes.
+    /// Checks for stale transactions and updates the snapshot if the interval has elapsed.
     ///
-    /// - New hashes are recorded with the current timestamp
-    /// - Hashes no longer pending are removed from tracking
-    /// - Existing hashes keep their original timestamp (first-seen semantics)
-    fn update_pending(&mut self, current_pending: impl Iterator<Item = TxHash>, now: u64) {
-        let current_set: HashSet<TxHash> = current_pending.collect();
+    /// Returns transactions that have been pending across two consecutive snapshots
+    /// (i.e., pending for at least one full interval).
+    fn check_and_update(&mut self, current_pending: HashSet<TxHash>, now: u64) -> Vec<TxHash> {
+        let should_check = self
+            .last_snapshot_time
+            .is_none_or(|last| now.saturating_sub(last) >= self.interval_secs);
 
-        // Remove entries no longer in the pending set
-        self.pending_since
-            .retain(|hash, _| current_set.contains(hash));
-
-        // Add new entries with current timestamp (only if not already tracked)
-        for hash in current_set {
-            self.pending_since.entry(hash).or_insert(now);
+        if !should_check {
+            return Vec::new();
         }
-    }
 
-    /// Drains and returns all transactions that have been pending longer than the threshold.
-    fn drain_stale(&mut self, now: u64) -> Vec<TxHash> {
-        let threshold = self.threshold_secs;
+        // Find transactions present in both snapshots (stale)
         let stale: Vec<TxHash> = self
-            .pending_since
-            .iter()
-            .filter(|(_, first_seen)| now.saturating_sub(**first_seen) > threshold)
-            .map(|(hash, _)| *hash)
+            .previous_pending
+            .intersection(&current_pending)
+            .copied()
             .collect();
 
-        for hash in &stale {
-            self.pending_since.remove(hash);
-        }
+        // Update snapshot: store current pending (excluding stale ones we're about to evict)
+        self.previous_pending = current_pending
+            .into_iter()
+            .filter(|hash| !stale.contains(hash))
+            .collect();
+        self.last_snapshot_time = Some(now);
 
         stale
     }
@@ -256,7 +256,7 @@ impl PendingStalenessTracker {
 
 impl Default for PendingStalenessTracker {
     fn default() -> Self {
-        Self::new(DEFAULT_PENDING_STALENESS_THRESHOLD)
+        Self::new(DEFAULT_PENDING_STALENESS_INTERVAL)
     }
 }
 
@@ -534,14 +534,14 @@ where
                         .record(invalidation_start.elapsed());
                 }
 
-                // 10. Track and evict stale pending transactions
-                // Update the pending set tracking (must happen after AA pool promotions in step 6)
+                // 10. Evict stale pending transactions (must happen after AA pool promotions in step 6)
+                // Takes a snapshot every interval and evicts transactions that remain pending
+                // across two consecutive snapshots.
                 let all_txs = pool.all_transactions();
-                let current_pending = all_txs.pending.iter().map(|tx| *tx.hash());
-                state.pending_staleness.update_pending(current_pending, tip_timestamp);
-
-                // Evict transactions that have been pending too long
-                let stale_to_evict = state.pending_staleness.drain_stale(tip_timestamp);
+                let current_pending: HashSet<TxHash> =
+                    all_txs.pending.iter().map(|tx| *tx.hash()).collect();
+                let stale_to_evict =
+                    state.pending_staleness.check_and_update(current_pending, tip_timestamp);
 
                 if !stale_to_evict.is_empty() {
                     debug!(
@@ -631,71 +631,72 @@ mod tests {
         use super::*;
 
         #[test]
-        fn tracks_new_pending_transactions() {
-            let mut tracker = PendingStalenessTracker::new(DEFAULT_PENDING_STALENESS_THRESHOLD);
+        fn no_eviction_on_first_snapshot() {
+            let mut tracker = PendingStalenessTracker::new(100);
             let tx1 = TxHash::random();
-            let tx2 = TxHash::random();
 
-            // Track tx1 at timestamp 100
-            tracker.update_pending(std::iter::once(tx1), 100);
-            assert_eq!(tracker.pending_since.get(&tx1), Some(&100));
-
-            // Track tx2 at timestamp 200, tx1 should keep original timestamp
-            tracker.update_pending([tx1, tx2].into_iter(), 200);
-            assert_eq!(tracker.pending_since.get(&tx1), Some(&100));
-            assert_eq!(tracker.pending_since.get(&tx2), Some(&200));
+            // First snapshot should not evict anything (no previous snapshot to compare)
+            let stale = tracker.check_and_update([tx1].into_iter().collect(), 100);
+            assert!(stale.is_empty());
+            assert!(tracker.previous_pending.contains(&tx1));
         }
 
         #[test]
-        fn removes_transactions_no_longer_pending() {
-            let mut tracker = PendingStalenessTracker::new(DEFAULT_PENDING_STALENESS_THRESHOLD);
-            let tx1 = TxHash::random();
-            let tx2 = TxHash::random();
-
-            // Track both txs
-            tracker.update_pending([tx1, tx2].into_iter(), 100);
-            assert_eq!(tracker.pending_since.len(), 2);
-
-            // Only tx1 is still pending
-            tracker.update_pending(std::iter::once(tx1), 200);
-            assert!(tracker.pending_since.contains_key(&tx1));
-            assert!(!tracker.pending_since.contains_key(&tx2));
-        }
-
-        #[test]
-        fn drains_stale_pending_transactions() {
-            let mut tracker = PendingStalenessTracker::new(100); // 100 second threshold
-            let tx_old = TxHash::random();
+        fn evicts_transactions_present_in_both_snapshots() {
+            let mut tracker = PendingStalenessTracker::new(100);
+            let tx_stale = TxHash::random();
             let tx_new = TxHash::random();
 
-            // Track old tx at timestamp 100
-            tracker.update_pending(std::iter::once(tx_old), 100);
-            // Track new tx at timestamp 250
-            tracker.update_pending([tx_old, tx_new].into_iter(), 250);
+            // First snapshot at t=0
+            tracker.check_and_update([tx_stale].into_iter().collect(), 0);
 
-            // At timestamp 250, tx_old has been pending for 150s (> 100s threshold)
-            let stale = tracker.drain_stale(250);
+            // Second snapshot at t=100: tx_stale still pending, tx_new is new
+            let stale = tracker.check_and_update([tx_stale, tx_new].into_iter().collect(), 100);
+
+            // tx_stale was in both snapshots -> evicted
             assert_eq!(stale.len(), 1);
-            assert_eq!(stale[0], tx_old);
+            assert!(stale.contains(&tx_stale));
 
-            // tx_old should be removed from tracking
-            assert!(!tracker.pending_since.contains_key(&tx_old));
-            // tx_new should still be tracked
-            assert!(tracker.pending_since.contains_key(&tx_new));
+            // tx_new should be tracked for the next snapshot
+            assert!(tracker.previous_pending.contains(&tx_new));
+            // tx_stale should NOT be in the snapshot (it was evicted)
+            assert!(!tracker.previous_pending.contains(&tx_stale));
         }
 
         #[test]
-        fn does_not_drain_fresh_transactions() {
-            let mut tracker = PendingStalenessTracker::new(100); // 100 second threshold
+        fn does_not_evict_before_interval_elapsed() {
+            let mut tracker = PendingStalenessTracker::new(100);
             let tx = TxHash::random();
 
-            // Track tx at timestamp 100
-            tracker.update_pending(std::iter::once(tx), 100);
+            // First snapshot at t=0
+            tracker.check_and_update([tx].into_iter().collect(), 0);
 
-            // At timestamp 150, tx has only been pending for 50s (< 100s threshold)
-            let stale = tracker.drain_stale(150);
+            // Check at t=50 (before interval elapsed) - should not check
+            let stale = tracker.check_and_update([tx].into_iter().collect(), 50);
             assert!(stale.is_empty());
-            assert!(tracker.pending_since.contains_key(&tx));
+
+            // Snapshot should not have been updated (still at t=0)
+            assert_eq!(tracker.last_snapshot_time, Some(0));
+        }
+
+        #[test]
+        fn removes_transactions_no_longer_pending_from_snapshot() {
+            let mut tracker = PendingStalenessTracker::new(100);
+            let tx1 = TxHash::random();
+            let tx2 = TxHash::random();
+
+            // First snapshot with both txs at t=0
+            tracker.check_and_update([tx1, tx2].into_iter().collect(), 0);
+            assert_eq!(tracker.previous_pending.len(), 2);
+
+            // Second snapshot at t=100: only tx1 still pending
+            // tx1 was in both -> stale, tx2 not in current -> removed from tracking
+            let stale = tracker.check_and_update([tx1].into_iter().collect(), 100);
+            assert_eq!(stale.len(), 1);
+            assert!(stale.contains(&tx1));
+
+            // Neither should be in the snapshot now
+            assert!(tracker.previous_pending.is_empty());
         }
     }
 
