@@ -12,10 +12,7 @@ const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct Args {
     /// The file containing the ed25519 signing key for p2p communication.
-    #[arg(
-        long = "consensus.signing-key",
-        required_unless_present_any = ["follow", "dev"],
-    )]
+    #[arg(long = "consensus.signing-key")]
     signing_key: Option<PathBuf>,
 
     /// The file containing a share of the bls12-381 threshold signing key.

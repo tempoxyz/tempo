@@ -597,6 +597,7 @@ where
         fields(
             dkg.epoch = %round.epoch(),
             block.height = %block.height(),
+            block.digest = %block.digest(),
             block.extra_data.bytes = block.header().extra_data().len(),
         ),
         err,
@@ -1512,12 +1513,15 @@ fn pubkeys_to_addrs(
             key.clone(),
             validators
                 .get_value(&key)
-                .expect(
-                    "all DKG participants must have an entry in the \
-                        unfiltered, contract validator set; if one does not, \
-                        then it was wrongly included in the ceremony or the \
+                .ok_or_else(|| {
+                    format!(
+                        "`{key}` not found: all DKG participants must have an entry \
+                        in the unfiltered, contract validator set; if one does \
+                        not, then it was wrongly included in the ceremony or the \
                         contract was bad",
-                )
+                    )
+                })
+                .unwrap()
                 .outbound,
         )
     }))

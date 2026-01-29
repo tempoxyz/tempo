@@ -20,6 +20,7 @@ use tempo_precompiles::{
 use tracing::{Level, info, instrument, warn};
 
 /// Reads state from the ValidatorConfig precompile at a given block height.
+#[instrument(skip_all, fields(%height), err)]
 fn read_validator_config_at_height<T>(
     node: &TempoFullNode,
     height: Height,
@@ -35,6 +36,7 @@ fn read_validator_config_at_height<T>(
         .block_hash(height.get())
         .wrap_err_with(|| format!("failed reading block hash at height `{height}`"))?
     {
+        info!(%hash, "defaulting to canonical chain");
         hash
     } else if let Some(pending) = node
         .provider
@@ -42,10 +44,12 @@ fn read_validator_config_at_height<T>(
         .wrap_err("failed reading pending block state")?
         && pending.number == height.get()
     {
+        info!(height = %height.get(), "defaulting to pending chain");
         pending.hash
     } else {
         return Err(eyre::eyre!("block not found at height `{height}`"));
     };
+    info!(%block_hash, "mapped block height to hash");
 
     let block = node
         .provider
@@ -63,6 +67,9 @@ fn read_validator_config_at_height<T>(
                 })?,
         ))
         .build();
+
+    let header = block.header();
+    info!("instantiating evm with header, {header:?}");
 
     let mut evm = node
         .evm_config
