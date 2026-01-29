@@ -6,11 +6,11 @@
 use std::collections::BTreeMap;
 
 use alloy::{
-    primitives::{B256, Bytes},
+    primitives::Bytes,
     providers::{Provider, ProviderBuilder},
 };
 use commonware_codec::{Encode as _, Read, ReadExt as _};
-use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
+use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_cryptography::{
     bls12381::{
         dkg::{self, DealerLog, Info, SignedDealerLog},
@@ -22,6 +22,7 @@ use commonware_parallel::Sequential;
 use commonware_utils::{N3f1, NZU32, NZU64};
 use eyre::{Context as _, OptionExt as _, bail, eyre};
 use serde::Serialize;
+use tempo_chainspec::spec::chain_value_parser;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 /// The namespace used by Tempo for DKG ceremonies.
@@ -33,18 +34,19 @@ pub(crate) struct ReplayDkg {
     #[arg(long)]
     rpc_url: String,
 
-    /// Block number of the epoch E-1 boundary block (last block of epoch E-1).
-    /// The DKG ceremony from epoch E will be replayed.
-    #[arg(long, group = "boundary")]
-    boundary_block: Option<u64>,
-
-    /// Block hash of the epoch E-1 boundary block.
-    #[arg(long, group = "boundary")]
-    boundary_hash: Option<B256>,
-
-    /// Epoch length in blocks (required to determine epoch boundaries).
+    /// The epoch to replay (epoch E). The DKG ceremony from this epoch will be replayed.
     #[arg(long)]
-    epoch_length: u64,
+    epoch: u64,
+
+    /// Epoch length in blocks. Mutually exclusive with --chain.
+    #[arg(long, group = "epoch_source")]
+    epoch_length: Option<u64>,
+
+    /// Chain name or path to chainspec JSON. Used to determine epoch length.
+    /// Supported chains: mainnet, testnet, moderato.
+    /// Mutually exclusive with --epoch-length.
+    #[arg(long, group = "epoch_source")]
+    chain: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -77,68 +79,66 @@ fn pubkey_to_hex(pk: &PublicKey) -> String {
 
 impl ReplayDkg {
     pub(crate) async fn run(self) -> eyre::Result<()> {
+        // Determine epoch length from --epoch-length or --chain
+        let epoch_length = self.resolve_epoch_length()?;
+
         let provider = ProviderBuilder::new()
             .connect(&self.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
 
-        let epocher = FixedEpocher::new(NZU64!(self.epoch_length));
+        let epocher = FixedEpocher::new(NZU64!(epoch_length));
+        let epoch_e = Epoch::new(self.epoch);
 
-        // Step 1: Get the boundary block of epoch E-1
-        let boundary_block = if let Some(hash) = self.boundary_hash {
-            provider
-                .get_block_by_hash(hash)
-                .await
-                .wrap_err_with(|| format!("failed to fetch block hash `{hash}`"))?
-                .ok_or_else(|| eyre!("block {hash} not found"))?
-        } else if let Some(block_num) = self.boundary_block {
-            provider
-                .get_block_by_number(block_num.into())
-                .await
-                .wrap_err_with(|| format!("failed to fetch block number `{block_num}`"))?
-                .ok_or_else(|| eyre!("block {block_num} not found"))?
-        } else {
-            bail!("must provide either --boundary-block or --boundary-hash");
-        };
+        // Calculate block ranges for epoch E and E-1
+        let last_block_e = epocher
+            .last(epoch_e)
+            .ok_or_eyre("epoch is not valid for this epoch strategy")?
+            .get();
 
-        let boundary_block_num = boundary_block.header.number;
+        let first_block_e = epocher
+            .last(epoch_e.previous().unwrap_or(Epoch::new(0)))
+            .map(|h| h.get() + 1)
+            .unwrap_or(1);
 
-        // Verify this is actually an epoch boundary block
-        let epoch_e_minus_1_info = epocher
-            .containing(Height::new(boundary_block_num))
-            .ok_or_eyre("block number too large for epoch strategy")?;
+        // The boundary block of epoch E-1 contains the DKG outcome that defines
+        // the participants for epoch E
+        let boundary_block_e_minus_1 = first_block_e - 1;
 
-        if boundary_block_num != epoch_e_minus_1_info.last().get() {
-            bail!(
-                "block {} is not an epoch boundary block; epoch {} ends at block {}",
-                boundary_block_num,
-                epoch_e_minus_1_info.epoch().get(),
-                epoch_e_minus_1_info.last().get()
-            );
-        }
+        eprintln!(
+            "Epoch {} spans blocks {} to {}",
+            epoch_e.get(),
+            first_block_e,
+            last_block_e
+        );
+        eprintln!(
+            "Fetching epoch E-1 boundary block {boundary_block_e_minus_1} for initial state..."
+        );
 
-        // Extract the DKG outcome from epoch E-1 boundary block (this gives us the
-        // state going into epoch E)
+        // Step 1: Fetch the epoch E-1 boundary block to get the initial DKG state
+        let boundary_block = provider
+            .get_block_by_number(boundary_block_e_minus_1.into())
+            .await
+            .wrap_err_with(|| {
+                format!("failed to fetch epoch E-1 boundary block {boundary_block_e_minus_1}")
+            })?
+            .ok_or_else(|| {
+                eyre!("epoch E-1 boundary block {boundary_block_e_minus_1} not found")
+            })?;
+
+        // Extract the DKG outcome from epoch E-1 boundary block
         let epoch_e_minus_1_outcome =
             OnchainDkgOutcome::read(&mut boundary_block.header.inner.extra_data.as_ref())
                 .wrap_err("failed to parse DKG outcome from epoch E-1 boundary block")?;
 
-        let epoch_e = epoch_e_minus_1_outcome.epoch;
-        eprintln!(
-            "Epoch E-1 boundary block {} contains outcome for epoch {}",
-            boundary_block_num,
-            epoch_e.get()
-        );
-
-        // Get epoch E block range using .last() for epoch E
-        let first_block_e = epocher
-            .last(epoch_e.previous().unwrap_or(Epoch::new(0)))
-            .map(|h| h.get() + 1)
-            .unwrap_or(1); // First epoch starts at block 1
-        let last_block_e = epocher
-            .last(epoch_e)
-            .ok_or_eyre("epoch E is not valid for this epoch strategy")?
-            .get();
+        // Verify the outcome is for the expected epoch
+        if epoch_e_minus_1_outcome.epoch != epoch_e {
+            bail!(
+                "epoch E-1 boundary block contains outcome for epoch {}, expected {}",
+                epoch_e_minus_1_outcome.epoch.get(),
+                epoch_e.get()
+            );
+        }
 
         eprintln!(
             "Fetching {} blocks from epoch {} (blocks {} to {})...",
@@ -149,8 +149,6 @@ impl ReplayDkg {
         );
 
         // Step 2: Build the DKG Info for epoch E
-        // The dealers for epoch E are the players from epoch E-1 outcome
-        // The players for epoch E are the next_players from epoch E-1 outcome
         let dealers = epoch_e_minus_1_outcome.players().clone();
         let players = epoch_e_minus_1_outcome.next_players().clone();
         let is_full_dkg = epoch_e_minus_1_outcome.is_next_full_dkg;
@@ -258,6 +256,22 @@ impl ReplayDkg {
         }
 
         Ok(())
+    }
+
+    /// Resolve the epoch length from either --epoch-length or --chain.
+    fn resolve_epoch_length(&self) -> eyre::Result<u64> {
+        match (&self.epoch_length, &self.chain) {
+            (Some(len), None) => Ok(*len),
+            (None, Some(chain)) => {
+                let spec = chain_value_parser(chain)
+                    .wrap_err_with(|| format!("failed to parse chainspec '{chain}'"))?;
+                spec.info
+                    .epoch_length()
+                    .ok_or_else(|| eyre!("chainspec '{chain}' does not specify an epoch length"))
+            }
+            (None, None) => bail!("must provide either --epoch-length or --chain"),
+            (Some(_), Some(_)) => bail!("--epoch-length and --chain are mutually exclusive"),
+        }
     }
 }
 
