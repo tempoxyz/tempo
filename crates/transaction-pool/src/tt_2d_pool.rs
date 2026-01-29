@@ -656,7 +656,6 @@ impl AA2dPool {
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
             self.expiring_nonce_txs.remove(tx_hash);
-            self.pending_count -= 1;
             return Some((tx, None));
         }
 
@@ -730,7 +729,6 @@ impl AA2dPool {
                 let hash = *tx.hash();
                 if self.expiring_nonce_txs.remove(&hash).is_some() {
                     self.by_hash.remove(&hash);
-                    self.pending_count -= 1;
                     removed.push(tx);
                 }
             } else if let Some(tx) = tx
@@ -4813,7 +4811,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_expiring_nonce_tx_by_hash_decrements_pending_count() {
+    fn remove_expiring_nonce_tx_by_hash_updates_pending_count() {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
@@ -4828,19 +4826,21 @@ mod tests {
         pool.add_transaction(Arc::new(valid_tx), 0, TempoHardfork::T1)
             .unwrap();
 
-        assert_eq!(pool.pending_count, 1);
+        let (pending, _) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 1);
         pool.assert_invariants();
 
         // Remove via remove_transactions (uses remove_transaction_by_hash_no_demote)
         let removed = pool.remove_transactions(std::iter::once(&tx_hash));
         assert_eq!(removed.len(), 1);
 
-        assert_eq!(pool.pending_count, 0);
+        let (pending, _) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 0);
         pool.assert_invariants();
     }
 
     #[test]
-    fn remove_expiring_nonce_tx_by_sender_decrements_pending_count() {
+    fn remove_expiring_nonce_tx_by_sender_updates_pending_count() {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
@@ -4863,14 +4863,16 @@ mod tests {
         pool.add_transaction(Arc::new(valid_tx2), 0, TempoHardfork::T1)
             .unwrap();
 
-        assert_eq!(pool.pending_count, 2);
+        let (pending, _) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 2);
         pool.assert_invariants();
 
         // Remove via remove_transactions_by_sender
         let removed = pool.remove_transactions_by_sender(sender);
         assert_eq!(removed.len(), 2);
 
-        assert_eq!(pool.pending_count, 0);
+        let (pending, _) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 0);
         pool.assert_invariants();
     }
 }
