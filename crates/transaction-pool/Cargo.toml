@@ -65,3 +65,4 @@ alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 tokio.workspace = true
 test-case.workspace = true
+tempo-evm.workspace = true
