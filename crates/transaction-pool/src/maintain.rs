@@ -30,73 +30,6 @@ use tempo_precompiles::{
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
-/// Default threshold for pending transaction staleness eviction (30 minutes).
-/// Transactions that have been pending for longer than this will be evicted.
-pub const DEFAULT_PENDING_STALENESS_THRESHOLD: u64 = 30 * 60;
-
-/// Tracks when transactions first became pending to detect stale transactions.
-///
-/// Used to evict transactions that have been pending for too long but can't be included
-/// (e.g., due to dynamic state changes like AMM liquidity).
-#[derive(Debug)]
-pub struct PendingStalenessTracker {
-    /// Maps tx_hash -> timestamp when the transaction first became pending.
-    pending_since: HashMap<TxHash, u64>,
-    /// Threshold in seconds for considering a transaction stale.
-    threshold_secs: u64,
-}
-
-impl PendingStalenessTracker {
-    /// Creates a new tracker with the given staleness threshold.
-    pub fn new(threshold_secs: u64) -> Self {
-        Self {
-            pending_since: HashMap::default(),
-            threshold_secs,
-        }
-    }
-
-    /// Updates the pending set with the current pending transaction hashes.
-    ///
-    /// - New hashes are recorded with the current timestamp
-    /// - Hashes no longer pending are removed from tracking
-    /// - Existing hashes keep their original timestamp (first-seen semantics)
-    pub fn update_pending(&mut self, current_pending: impl Iterator<Item = TxHash>, now: u64) {
-        let current_set: HashSet<TxHash> = current_pending.collect();
-
-        // Remove entries no longer in the pending set
-        self.pending_since
-            .retain(|hash, _| current_set.contains(hash));
-
-        // Add new entries with current timestamp (only if not already tracked)
-        for hash in current_set {
-            self.pending_since.entry(hash).or_insert(now);
-        }
-    }
-
-    /// Drains and returns all transactions that have been pending longer than the threshold.
-    pub fn drain_stale(&mut self, now: u64) -> Vec<TxHash> {
-        let threshold = self.threshold_secs;
-        let stale: Vec<TxHash> = self
-            .pending_since
-            .iter()
-            .filter(|(_, first_seen)| now.saturating_sub(**first_seen) > threshold)
-            .map(|(hash, _)| *hash)
-            .collect();
-
-        for hash in &stale {
-            self.pending_since.remove(hash);
-        }
-
-        stale
-    }
-}
-
-impl Default for PendingStalenessTracker {
-    fn default() -> Self {
-        Self::new(DEFAULT_PENDING_STALENESS_THRESHOLD)
-    }
-}
-
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
 /// Collects all invalidation events from a block into a single structure,
@@ -257,6 +190,73 @@ impl TempoPoolState {
             expired.extend(expired_hashes);
         }
         expired
+    }
+}
+
+/// Default threshold for pending transaction staleness eviction (30 minutes).
+/// Transactions that have been pending for longer than this will be evicted.
+const DEFAULT_PENDING_STALENESS_THRESHOLD: u64 = 30 * 60;
+
+/// Tracks when transactions first became pending to detect stale transactions.
+///
+/// Used to evict transactions that have been pending for too long but can't be included
+/// (e.g., due to dynamic state changes like AMM liquidity).
+#[derive(Debug)]
+struct PendingStalenessTracker {
+    /// Maps tx_hash -> timestamp when the transaction first became pending.
+    pending_since: HashMap<TxHash, u64>,
+    /// Threshold in seconds for considering a transaction stale.
+    threshold_secs: u64,
+}
+
+impl PendingStalenessTracker {
+    /// Creates a new tracker with the given staleness threshold.
+    fn new(threshold_secs: u64) -> Self {
+        Self {
+            pending_since: HashMap::default(),
+            threshold_secs,
+        }
+    }
+
+    /// Updates the pending set with the current pending transaction hashes.
+    ///
+    /// - New hashes are recorded with the current timestamp
+    /// - Hashes no longer pending are removed from tracking
+    /// - Existing hashes keep their original timestamp (first-seen semantics)
+    fn update_pending(&mut self, current_pending: impl Iterator<Item = TxHash>, now: u64) {
+        let current_set: HashSet<TxHash> = current_pending.collect();
+
+        // Remove entries no longer in the pending set
+        self.pending_since
+            .retain(|hash, _| current_set.contains(hash));
+
+        // Add new entries with current timestamp (only if not already tracked)
+        for hash in current_set {
+            self.pending_since.entry(hash).or_insert(now);
+        }
+    }
+
+    /// Drains and returns all transactions that have been pending longer than the threshold.
+    fn drain_stale(&mut self, now: u64) -> Vec<TxHash> {
+        let threshold = self.threshold_secs;
+        let stale: Vec<TxHash> = self
+            .pending_since
+            .iter()
+            .filter(|(_, first_seen)| now.saturating_sub(**first_seen) > threshold)
+            .map(|(hash, _)| *hash)
+            .collect();
+
+        for hash in &stale {
+            self.pending_since.remove(hash);
+        }
+
+        stale
+    }
+}
+
+impl Default for PendingStalenessTracker {
+    fn default() -> Self {
+        Self::new(DEFAULT_PENDING_STALENESS_THRESHOLD)
     }
 }
 
