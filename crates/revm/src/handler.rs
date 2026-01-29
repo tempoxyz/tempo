@@ -153,6 +153,25 @@ fn calculate_key_authorization_gas(
     KEY_AUTH_BASE_GAS + sig_gas + limits_gas
 }
 
+/// Computes the adjusted initial gas for AA transaction execution.
+///
+/// For T1+: Uses `evm_initial_gas` which includes key_authorization gas tracking.
+/// For pre-T1: Uses `init_and_floor_gas` directly to maintain backward compatibility,
+/// since pre-T1 doesn't have key_authorization gas tracking and Genesis has special
+/// handling where nonce_2d_gas is added to init_and_floor_gas but not to evm.initial_gas.
+#[inline]
+fn adjusted_initial_gas(
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    evm_initial_gas: u64,
+    init_and_floor_gas: &InitialAndFloorGas,
+) -> InitialAndFloorGas {
+    if spec.is_t1() {
+        InitialAndFloorGas::new(evm_initial_gas, init_and_floor_gas.floor_gas)
+    } else {
+        *init_and_floor_gas
+    }
+}
+
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
 ///
 /// Fees are paid in fee tokens instead of account balance.
@@ -491,12 +510,14 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        // Add key_authorization gas to the initial gas (calculated in validate_aa_initial_tx_gas)
-        // Use saturating_add to avoid overflow when additional_initial_gas is u64::MAX (OOG case)
-        let adjusted_gas = InitialAndFloorGas::new(evm.initial_gas, init_and_floor_gas.floor_gas);
+        let spec = evm.ctx_ref().cfg().spec();
+        let adjusted_gas = adjusted_initial_gas(*spec, evm.initial_gas, init_and_floor_gas);
 
         let tx = evm.tx();
-        if tx.gas_limit() < adjusted_gas.initial_gas {
+        // For T0+, check gas limit covers intrinsic gas (including 2D nonce for AA txs)
+        // For pre-T0 (Genesis), skip this check to maintain backward compatibility -
+        // the original behavior didn't validate gas limit for 2D nonce cost upfront
+        if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
             let kind = *tx
                 .first_call()
                 .expect("we already checked that there is at least one call in aa tx")
@@ -787,11 +808,17 @@ where
             }
 
             let internals = EvmInternals::new(journal, block, cfg, tx);
-            let mut provider = EvmPrecompileStorageProvider::new_with_gas_limit(
-                internals,
-                cfg,
-                tx.gas_limit() - initial_gas,
-            );
+            // TIP-1000: Only apply gas metering for T1 hardfork.
+            // For pre-T1 chains, use unlimited gas to maintain backward compatibility.
+            let mut provider = if spec.is_t1() {
+                EvmPrecompileStorageProvider::new_with_gas_limit(
+                    internals,
+                    cfg,
+                    tx.gas_limit() - initial_gas,
+                )
+            } else {
+                EvmPrecompileStorageProvider::new_max_gas(internals, cfg)
+            };
 
             // The core logic of setting up thread-local storage is here.
             let out_of_gas = StorageCtx::enter(&mut provider, || {
@@ -1143,9 +1170,9 @@ where
         let gas_params = evm.ctx_ref().cfg().gas_params();
         let gas_limit = tx.gas_limit();
 
-        // Route to appropriate gas calculation based on transaction type
-        let mut init_gas = if tx.tempo_tx_env.is_some() {
-            // AA transaction - use batch gas calculation
+        // Route to appropriate gas calculation and validation based on transaction type
+        let init_gas = if tx.tempo_tx_env.is_some() {
+            // AA transaction - use batch gas calculation (includes validation)
             validate_aa_initial_tx_gas(evm)?
         } else {
             let mut acc = 0;
@@ -1183,30 +1210,30 @@ where
                 init_gas.initial_gas += gas_params.get(GasId::new_account_cost());
             }
 
+            if evm.ctx.cfg.is_eip7623_disabled() {
+                init_gas.floor_gas = 0u64;
+            }
+
+            // Validate gas limit is sufficient for initial gas
+            if gas_limit < init_gas.initial_gas {
+                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                    gas_limit,
+                    intrinsic_gas: init_gas.initial_gas,
+                }
+                .into());
+            }
+
+            // Validate floor gas (Prague+)
+            if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < init_gas.floor_gas {
+                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                    gas_limit,
+                    intrinsic_gas: init_gas.floor_gas,
+                }
+                .into());
+            }
+
             init_gas
         };
-
-        if evm.ctx.cfg.is_eip7623_disabled() {
-            init_gas.floor_gas = 0u64;
-        }
-
-        // Validate gas limit is sufficient for initial gas
-        if gas_limit < init_gas.initial_gas {
-            return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                gas_limit,
-                intrinsic_gas: init_gas.initial_gas,
-            }
-            .into());
-        }
-
-        // Validate floor gas (Prague+)
-        if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < init_gas.floor_gas {
-            return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                gas_limit,
-                intrinsic_gas: init_gas.floor_gas,
-            }
-            .into());
-        }
 
         // used to calculate key_authorization gas spending limit.
         evm.initial_gas = init_gas.initial_gas;
@@ -1420,7 +1447,10 @@ where
         batch_gas.floor_gas = 0u64;
     }
 
-    // For T0+, include 2D nonce gas in the validation
+    // For T0+, include 2D nonce gas in validation (charged upfront)
+    // For pre-T0 (Genesis), 2D nonce gas is added AFTER validation to allow transactions
+    // with gas_limit < intrinsic + nonce_2d_gas to pass validation, but the gas is still
+    // charged during execution via init_and_floor_gas (not evm.initial_gas)
     if spec.is_t0() {
         batch_gas.initial_gas += nonce_2d_gas;
     }
@@ -1434,7 +1464,8 @@ where
         .into());
     }
 
-    // For pre-T0, add 2D nonce gas after validation
+    // For pre-T0 (Genesis), add 2D nonce gas after validation
+    // This gas will be charged via init_and_floor_gas, not evm.initial_gas
     if !spec.is_t0() {
         batch_gas.initial_gas += nonce_2d_gas;
     }
@@ -1503,12 +1534,13 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        // Add key_authorization gas to the initial gas (calculated in validate_aa_initial_tx_gas)
-        // Use saturating_add to avoid overflow when additional_initial_gas is u64::MAX (OOG case)
-        let adjusted_gas = InitialAndFloorGas::new(evm.initial_gas, init_and_floor_gas.floor_gas);
+        let spec = evm.ctx_ref().cfg().spec();
+        let adjusted_gas = adjusted_initial_gas(*spec, evm.initial_gas, init_and_floor_gas);
 
         let tx = evm.tx();
-        if tx.gas_limit() < adjusted_gas.initial_gas {
+        // For T0+, check gas limit covers intrinsic gas (including 2D nonce for AA txs)
+        // For pre-T0 (Genesis), skip this check to maintain backward compatibility
+        if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
             let kind = *tx
                 .first_call()
                 .expect("we already checked that there is at least one call in aa tx")
