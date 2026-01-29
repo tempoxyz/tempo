@@ -537,9 +537,8 @@ where
                 // 10. Evict stale pending transactions (must happen after AA pool promotions in step 6)
                 // Takes a snapshot every interval and evicts transactions that remain pending
                 // across two consecutive snapshots.
-                let all_txs = pool.all_transactions();
                 let current_pending: HashSet<TxHash> =
-                    all_txs.pending.iter().map(|tx| *tx.hash()).collect();
+                    pool.pending_transactions().iter().map(|tx| *tx.hash()).collect();
                 let stale_to_evict =
                     state.pending_staleness.check_and_update(current_pending, tip_timestamp);
 
