@@ -90,6 +90,107 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
+                         CORE CREATION HELPERS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Core key authorization with ghost state updates. Does NOT include assertions.
+    /// @param account The account to authorize the key for
+    /// @param keyId The key ID to authorize
+    /// @param isFallback Whether this is a fallback creation (for logging)
+    function _createKeyInternal(address account, address keyId, bool isFallback) internal {
+        uint64 expiry = _generateExpiry(uint256(keccak256(abi.encode(account, keyId))));
+        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+
+        vm.startPrank(account);
+        keychain.authorizeKey(
+            keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, false, limits
+        );
+        vm.stopPrank();
+
+        _totalKeysAuthorized++;
+        _ghostKeyExists[account][keyId] = true;
+        _ghostKeyExpiry[account][keyId] = expiry;
+        _ghostKeyEnforceLimits[account][keyId] = false;
+        _ghostKeySignatureType[account][keyId] = 0;
+
+        if (!_keyUsed[account][keyId]) {
+            _keyUsed[account][keyId] = true;
+            _accountKeys[account].push(keyId);
+        }
+
+        if (isFallback) {
+            _log(
+                string.concat(
+                    "AUTHORIZE_KEY[fallback]: account=",
+                    _getActorIndex(account),
+                    " keyId=",
+                    vm.toString(keyId)
+                )
+            );
+        }
+    }
+
+    /// @dev Find an existing active (non-revoked) key for an account
+    /// @param account The account to search
+    /// @param seed Random seed for selection
+    /// @return keyId The found key ID (address(0) if not found)
+    /// @return found Whether a matching key was found
+    function _findActiveKey(address account, uint256 seed)
+        internal
+        view
+        returns (address keyId, bool found)
+    {
+        address[] memory keys = _accountKeys[account];
+        if (keys.length == 0) return (address(0), false);
+
+        uint256 startIdx = seed % keys.length;
+        for (uint256 i = 0; i < keys.length; i++) {
+            uint256 idx = (startIdx + i) % keys.length;
+            address candidate = keys[idx];
+            if (_ghostKeyExists[account][candidate] && !_ghostKeyRevoked[account][candidate]) {
+                return (candidate, true);
+            }
+        }
+        return (address(0), false);
+    }
+
+    /// @dev Find an actor with an active key, or create one as fallback if none exist
+    /// @param actorSeed Random seed for actor selection
+    /// @param keyIdSeed Random seed for key selection
+    /// @return account The actor with an active key
+    /// @return keyId The active key ID
+    /// @return skip True if no active key could be found or created
+    function _ensureActorWithActiveKey(uint256 actorSeed, uint256 keyIdSeed)
+        internal
+        returns (address account, address keyId, bool skip)
+    {
+        // First, iterate over actors to find one with an existing active key
+        uint256 startActorIdx = actorSeed % _actors.length;
+        for (uint256 a = 0; a < _actors.length; a++) {
+            address candidate = _actors[(startActorIdx + a) % _actors.length];
+            bool found;
+            (keyId, found) = _findActiveKey(candidate, keyIdSeed);
+            if (found) {
+                return (candidate, keyId, false);
+            }
+        }
+
+        // No actor has an active key - create one as fallback
+        account = _selectActor(actorSeed);
+        for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
+            address candidateKey = _potentialKeyIds[(keyIdSeed + i) % _potentialKeyIds.length];
+            // Can't reauthorize revoked keys (TEMPO-KEY4)
+            if (!_ghostKeyRevoked[account][candidateKey]) {
+                _createKeyInternal(account, candidateKey, true);
+                return (account, candidateKey, false);
+            }
+        }
+
+        // All keyIds revoked for this account - extremely rare, skip
+        return (address(0), address(0), true);
+    }
+
+    /*//////////////////////////////////////////////////////////////
                             FUZZ HANDLERS
     //////////////////////////////////////////////////////////////*/
 
@@ -364,21 +465,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @notice Handler for authorizing duplicate key (should fail)
     /// @dev Tests TEMPO-KEY8 (duplicate key rejection)
     function tryAuthorizeDuplicateKey(uint256 accountSeed, uint256 keyIdSeed) external {
-        address account = _selectActor(accountSeed);
-
-        // Find an existing key for this account
-        address keyId = address(0);
-        uint256 startIdx = keyIdSeed % _potentialKeyIds.length;
-        for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-            address potentialKey = _potentialKeyIds[(startIdx + i) % _potentialKeyIds.length];
-            if (_ghostKeyExists[account][potentialKey] && !_ghostKeyRevoked[account][potentialKey])
-            {
-                keyId = potentialKey;
-                break;
-            }
-        }
-
-        if (keyId == address(0)) return;
+        // Find an actor with an active key, or create one as fallback (skip if all keys are revoked)
+        (address account, address keyId, bool skip) = _ensureActorWithActiveKey(accountSeed, keyIdSeed);
+        if (skip) return;
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
