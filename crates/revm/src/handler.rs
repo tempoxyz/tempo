@@ -1166,11 +1166,10 @@ where
         let gas_params = evm.ctx_ref().cfg().gas_params();
         let gas_limit = tx.gas_limit();
 
-        // Route to appropriate gas calculation based on transaction type
-        // AA transactions do their own validation inside validate_aa_initial_tx_gas
-        let (mut init_gas, is_aa_tx) = if tx.tempo_tx_env.is_some() {
+        // Route to appropriate gas calculation and validation based on transaction type
+        let init_gas = if tx.tempo_tx_env.is_some() {
             // AA transaction - use batch gas calculation (includes validation)
-            (validate_aa_initial_tx_gas(evm)?, true)
+            validate_aa_initial_tx_gas(evm)?
         } else {
             let mut acc = 0;
             let mut storage = 0;
@@ -1207,12 +1206,6 @@ where
                 init_gas.initial_gas += gas_params.get(GasId::new_account_cost());
             }
 
-            (init_gas, false)
-        };
-
-        // Skip validation for AA transactions - they already validated in validate_aa_initial_tx_gas
-        // (AA validation happens before adding post-validation gas like 2D nonce costs)
-        if !is_aa_tx {
             if evm.ctx.cfg.is_eip7623_disabled() {
                 init_gas.floor_gas = 0u64;
             }
@@ -1234,7 +1227,9 @@ where
                 }
                 .into());
             }
-        }
+
+            init_gas
+        };
 
         // used to calculate key_authorization gas spending limit.
         evm.initial_gas = init_gas.initial_gas;
