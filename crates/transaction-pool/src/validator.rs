@@ -3189,26 +3189,25 @@ mod tests {
         let spec = provider.chain_spec().tempo_hardfork_at(0);
 
         // Create AMM cache with the paused token in unique_tokens (simulating a validator's
-        // preferred token). This would normally cause has_enough_liquidity() to return true
-        // immediately at the bypass check.
+        // preferred token).
         let amm_cache = AmmLiquidityCache::with_unique_tokens(vec![paused_validator_token]);
 
-        // Verify the bypass would apply: the token IS in unique_tokens
+        // Verify the token IS in unique_tokens
         assert!(
             amm_cache.contains_unique_token(&paused_validator_token),
             "Token should be in unique_tokens for this test"
         );
 
-        // Verify has_enough_liquidity would bypass (return true) for this token
-        // because it matches a validator token. This confirms the vulnerability we're testing.
+        // With the fix for CHAIN-442, user tokens matching a validator's preferred token
+        // no longer bypass the AMM liquidity check. The old bypass was removed entirely.
         let liquidity_result =
             amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
         assert!(
-            liquidity_result.is_ok() && liquidity_result.unwrap(),
-            "Token in unique_tokens should bypass liquidity check and return true"
+            liquidity_result.is_ok() && !liquidity_result.unwrap(),
+            "User token matching a validator token no longer bypasses liquidity check"
         );
 
-        // BUT the pause check in is_fee_token_paused should catch it BEFORE the bypass
+        // The pause check in is_fee_token_paused provides defense-in-depth
         let is_paused = state.is_fee_token_paused(spec, paused_validator_token);
         assert!(is_paused.is_ok());
         assert!(

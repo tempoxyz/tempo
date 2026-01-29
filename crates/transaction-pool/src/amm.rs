@@ -51,13 +51,19 @@ impl AmmLiquidityCache {
     }
 
     /// Checks whether there's enough liquidity in at least one of the AMM pools
-    /// used by recent validators for the given fee token and fee amount
+    /// used by recent validators for the given fee token and fee amount.
     pub fn has_enough_liquidity(
         &self,
         user_token: Address,
         fee: U256,
         state_provider: &impl StateProvider,
     ) -> Result<bool, ProviderError> {
+        // DEFAULT_FEE_TOKEN (PATH_USD) is always accepted by all validators without
+        // requiring an AMM swap. Skip liquidity check for the base token.
+        if user_token == DEFAULT_FEE_TOKEN {
+            return Ok(true);
+        }
+
         let amount_out = compute_amount_out(fee).map_err(ProviderError::other)?;
 
         let mut missing_in_cache = Vec::new();
@@ -66,13 +72,6 @@ impl AmmLiquidityCache {
         {
             let inner = self.inner.read();
             for validator_token in &inner.unique_tokens {
-                // If user token matches one of the recently seen validator tokens,
-                // short circuit and return true. We assume that validators are willing to
-                // accept transactions that pay fees in their token directly.
-                if validator_token == &user_token {
-                    return Ok(true);
-                }
-
                 if let Some(validator_reserve) = inner.cache.get(&(user_token, *validator_token)) {
                     if *validator_reserve >= amount_out {
                         return Ok(true);
@@ -253,12 +252,9 @@ mod tests {
     // ============================================
 
     #[test]
-    fn test_has_enough_liquidity_user_token_matches_validator_token() {
+    fn test_has_enough_liquidity_no_amm_pool() {
         let cache = AmmLiquidityCache {
-            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                unique_tokens: vec![address!("1111111111111111111111111111111111111111")],
-                ..Default::default()
-            })),
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner::default())),
         };
 
         let provider = create_mock_provider();
@@ -266,11 +262,10 @@ mod tests {
 
         let user_token = address!("1111111111111111111111111111111111111111");
         let result = cache.has_enough_liquidity(user_token, U256::from(100), &state);
-
         assert!(result.is_ok());
         assert!(
-            result.unwrap(),
-            "Should return true when user token matches validator token"
+            !result.unwrap(),
+            "Should return false when no AMM liquidity exists for user's fee token"
         );
     }
 
