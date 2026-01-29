@@ -597,6 +597,7 @@ where
         fields(
             dkg.epoch = %round.epoch(),
             block.height = %block.height(),
+            block.digest = %block.digest(),
             block.extra_data.bytes = block.header().extra_data().len(),
         ),
         err,
