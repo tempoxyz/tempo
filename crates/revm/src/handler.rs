@@ -787,11 +787,17 @@ where
             }
 
             let internals = EvmInternals::new(journal, block, cfg, tx);
-            let mut provider = EvmPrecompileStorageProvider::new_with_gas_limit(
-                internals,
-                cfg,
-                tx.gas_limit() - initial_gas,
-            );
+            // TIP-1000: Only apply gas metering for T1 hardfork.
+            // For pre-T1 chains, use unlimited gas to maintain backward compatibility.
+            let mut provider = if spec.is_t1() {
+                EvmPrecompileStorageProvider::new_with_gas_limit(
+                    internals,
+                    cfg,
+                    tx.gas_limit() - initial_gas,
+                )
+            } else {
+                EvmPrecompileStorageProvider::new_max_gas(internals, cfg)
+            };
 
             // The core logic of setting up thread-local storage is here.
             let out_of_gas = StorageCtx::enter(&mut provider, || {
