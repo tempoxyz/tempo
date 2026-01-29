@@ -203,139 +203,6 @@ library TxBuilder {
         return _signLegacy(vmRlp, vm, tx_, privateKey);
     }
 
-    // ============ Legacy Transactions with P256 ============
-
-    /// @notice Build and sign a legacy CALL transaction with P256 signature
-    function buildLegacyCallP256(
-        VmRlp vmRlp,
-        Vm vm,
-        address to,
-        bytes memory data,
-        uint64 nonce,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(callGas(data, nonce) + GAS_LIMIT_BUFFER)
-            .withTo(to).withData(data);
-
-        return _signLegacyP256(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
-    }
-
-    /// @notice Build and sign a legacy CREATE transaction with P256 signature
-    function buildLegacyCreateP256(
-        VmRlp vmRlp,
-        Vm vm,
-        bytes memory initcode,
-        uint64 nonce,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE)
-            .withGasLimit(createGas(initcode, nonce) + GAS_LIMIT_BUFFER).withTo(address(0))
-            .withData(initcode);
-
-        return _signLegacyP256(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
-    }
-
-    // ============ Legacy Transactions with WebAuthn ============
-
-    /// @notice Build and sign a legacy CALL transaction with WebAuthn signature
-    function buildLegacyCallWebAuthn(
-        VmRlp vmRlp,
-        Vm vm,
-        address to,
-        bytes memory data,
-        uint64 nonce,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(callGas(data, nonce) + GAS_LIMIT_BUFFER)
-            .withTo(to).withData(data);
-
-        return _signLegacyWebAuthn(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
-    }
-
-    /// @notice Build and sign a legacy CREATE transaction with WebAuthn signature
-    function buildLegacyCreateWebAuthn(
-        VmRlp vmRlp,
-        Vm vm,
-        bytes memory initcode,
-        uint64 nonce,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE)
-            .withGasLimit(createGas(initcode, nonce) + GAS_LIMIT_BUFFER).withTo(address(0))
-            .withData(initcode);
-
-        return _signLegacyWebAuthn(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
-    }
-
-    // ============ Legacy Transactions with Keychain (Access Key) ============
-
-    /// @notice Build and sign a legacy CALL transaction with Keychain signature (secp256k1 access key)
-    function buildLegacyCallKeychain(
-        VmRlp vmRlp,
-        Vm vm,
-        address to,
-        bytes memory data,
-        uint64 nonce,
-        uint256 accessKeyPrivateKey,
-        address userAddress
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(callGas(data, nonce) + GAS_LIMIT_BUFFER)
-            .withTo(to).withData(data);
-
-        return _signLegacyKeychain(vmRlp, vm, tx_, accessKeyPrivateKey, userAddress);
-    }
-
-    /// @notice Build and sign a legacy CALL transaction with Keychain P256 signature
-    function buildLegacyCallKeychainP256(
-        VmRlp vmRlp,
-        Vm vm,
-        address to,
-        bytes memory data,
-        uint64 nonce,
-        uint256 accessKeyP256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY,
-        address userAddress
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(callGas(data, nonce) + GAS_LIMIT_BUFFER)
-            .withTo(to).withData(data);
-
-        return _signLegacyKeychainP256(
-            vmRlp, vm, tx_, accessKeyP256PrivateKey, pubKeyX, pubKeyY, userAddress
-        );
-    }
-
-    /// @notice Build and sign a legacy CREATE transaction with Keychain signature
-    function buildLegacyCreateKeychain(
-        VmRlp vmRlp,
-        Vm vm,
-        bytes memory initcode,
-        uint64 nonce,
-        uint256 accessKeyPrivateKey,
-        address userAddress
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE)
-            .withGasLimit(createGas(initcode, nonce) + GAS_LIMIT_BUFFER).withTo(address(0))
-            .withData(initcode);
-
-        return _signLegacyKeychain(vmRlp, vm, tx_, accessKeyPrivateKey, userAddress);
-    }
-
     // ============ Tempo Transactions with Secp256k1 ============
 
     /// @notice Build and sign a Tempo single-call transaction with secp256k1
@@ -696,97 +563,6 @@ library TxBuilder {
         );
     }
 
-    function _signLegacyP256(
-        VmRlp vmRlp,
-        Vm vm,
-        LegacyTransaction memory tx_,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        return signLegacy(
-            vmRlp,
-            vm,
-            tx_,
-            SigningParams(SigningStrategy.P256, p256PrivateKey, pubKeyX, pubKeyY, address(0))
-        );
-    }
-
-    function _signLegacyWebAuthn(
-        VmRlp vmRlp,
-        Vm vm,
-        LegacyTransaction memory tx_,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        return signLegacy(
-            vmRlp,
-            vm,
-            tx_,
-            SigningParams(SigningStrategy.WebAuthn, p256PrivateKey, pubKeyX, pubKeyY, address(0))
-        );
-    }
-
-    function _signLegacyKeychain(
-        VmRlp vmRlp,
-        Vm vm,
-        LegacyTransaction memory tx_,
-        uint256 accessKeyPrivateKey,
-        address userAddress
-    ) internal view returns (bytes memory) {
-        return signLegacy(
-            vmRlp,
-            vm,
-            tx_,
-            SigningParams(
-                SigningStrategy.KeychainSecp256k1,
-                accessKeyPrivateKey,
-                bytes32(0),
-                bytes32(0),
-                userAddress
-            )
-        );
-    }
-
-    function _signLegacyKeychainP256(
-        VmRlp vmRlp,
-        Vm vm,
-        LegacyTransaction memory tx_,
-        uint256 accessKeyP256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY,
-        address userAddress
-    ) internal view returns (bytes memory) {
-        return signLegacy(
-            vmRlp,
-            vm,
-            tx_,
-            SigningParams(
-                SigningStrategy.KeychainP256, accessKeyP256PrivateKey, pubKeyX, pubKeyY, userAddress
-            )
-        );
-    }
-
-    // ============ RLP Encoding Helpers ============
-
-    function _encodeSignedLegacy(VmRlp vmRlp, LegacyTransaction memory tx_, bytes memory signature)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        bytes[] memory items = new bytes[](7);
-        items[0] = TxRlp.encodeUint(tx_.nonce);
-        items[1] = TxRlp.encodeUint(tx_.gasPrice);
-        items[2] = TxRlp.encodeUint(tx_.gasLimit);
-        items[3] = tx_.to == address(0) ? TxRlp.encodeNone() : TxRlp.encodeAddress(tx_.to);
-        items[4] = TxRlp.encodeUint(tx_.value);
-        items[5] = tx_.data;
-        items[6] = signature;
-
-        return TxRlp.encodeList(vmRlp, items);
-    }
-
     // ============ Unified Signing (Internal) ============
 
     /// @dev Create signature bytes for any strategy
@@ -846,23 +622,23 @@ library TxBuilder {
         return abi.encodePacked(SIGNATURE_TYPE_WEBAUTHN, webauthnData, r, s, pubKeyX, pubKeyY);
     }
 
-    /// @notice Sign a legacy tx with unified params
+    /// @notice Sign a legacy tx with unified params (only secp256k1 supported)
     function signLegacy(
         VmRlp vmRlp,
         Vm vm,
         LegacyTransaction memory tx_,
         SigningParams memory params
     ) internal view returns (bytes memory) {
+        require(
+            params.strategy == SigningStrategy.Secp256k1,
+            "Legacy transactions only support secp256k1 signatures"
+        );
+
         bytes memory unsignedTx = tx_.encode(vmRlp);
         bytes32 txHash = keccak256(unsignedTx);
 
-        if (params.strategy == SigningStrategy.Secp256k1) {
-            (uint8 v, bytes32 r, bytes32 s) = vm.sign(params.privateKey, txHash);
-            return tx_.encodeWithSignature(vmRlp, v, r, s);
-        }
-
-        bytes memory signature = _createSignature(vm, txHash, params);
-        return _encodeSignedLegacy(vmRlp, tx_, signature);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(params.privateKey, txHash);
+        return tx_.encodeWithSignature(vmRlp, v, r, s);
     }
 
     /// @notice Sign a tempo tx with unified params
