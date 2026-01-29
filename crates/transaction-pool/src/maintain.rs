@@ -160,6 +160,8 @@ struct TempoPoolState {
     tx_to_expiry: HashMap<TxHash, u64>,
     /// Pool for transactions whose fee token is temporarily paused.
     paused_pool: PausedFeeTokenPool,
+    /// Tracks pending transaction staleness for DoS mitigation.
+    pending_staleness: PendingStalenessTracker,
 }
 
 impl TempoPoolState {
@@ -188,6 +190,73 @@ impl TempoPoolState {
             expired.extend(expired_hashes);
         }
         expired
+    }
+}
+
+/// Default interval for pending transaction staleness checks (30 minutes).
+/// Transactions that remain pending across two consecutive snapshots will be evicted.
+const DEFAULT_PENDING_STALENESS_INTERVAL: u64 = 30 * 60;
+
+/// Tracks pending transactions across snapshots to detect stale transactions.
+///
+/// Uses a simple snapshot comparison approach:
+/// - Every interval, take a snapshot of current pending transactions
+/// - Transactions present in both the previous and current snapshot are considered stale
+/// - Stale transactions are evicted since they've been pending for at least one full interval
+#[derive(Debug)]
+struct PendingStalenessTracker {
+    /// Previous snapshot of pending transaction hashes.
+    previous_pending: HashSet<TxHash>,
+    /// Timestamp of the last snapshot.
+    last_snapshot_time: Option<u64>,
+    /// Interval in seconds between staleness checks.
+    interval_secs: u64,
+}
+
+impl PendingStalenessTracker {
+    /// Creates a new tracker with the given check interval.
+    fn new(interval_secs: u64) -> Self {
+        Self {
+            previous_pending: HashSet::default(),
+            last_snapshot_time: None,
+            interval_secs,
+        }
+    }
+
+    /// Returns true if the staleness check interval has elapsed and a snapshot should be taken.
+    fn should_check(&self, now: u64) -> bool {
+        self.last_snapshot_time
+            .is_none_or(|last| now.saturating_sub(last) >= self.interval_secs)
+    }
+
+    /// Checks for stale transactions and updates the snapshot.
+    ///
+    /// Returns transactions that have been pending across two consecutive snapshots
+    /// (i.e., pending for at least one full interval).
+    ///
+    /// Call `should_check` first to avoid collecting the pending set on every block.
+    fn check_and_update(&mut self, current_pending: HashSet<TxHash>, now: u64) -> Vec<TxHash> {
+        // Find transactions present in both snapshots (stale)
+        let stale: Vec<TxHash> = self
+            .previous_pending
+            .intersection(&current_pending)
+            .copied()
+            .collect();
+
+        // Update snapshot: store current pending (excluding stale ones we're about to evict)
+        self.previous_pending = current_pending
+            .into_iter()
+            .filter(|hash| !stale.contains(hash))
+            .collect();
+        self.last_snapshot_time = Some(now);
+
+        stale
+    }
+}
+
+impl Default for PendingStalenessTracker {
+    fn default() -> Self {
+        Self::new(DEFAULT_PENDING_STALENESS_INTERVAL)
     }
 }
 
@@ -465,6 +534,26 @@ where
                         .record(invalidation_start.elapsed());
                 }
 
+                // 10. Evict stale pending transactions (must happen after AA pool promotions in step 6)
+                // Only runs once per interval (~30 min) to avoid overhead on every block.
+                // Transactions pending across two consecutive snapshots are considered stale.
+                if state.pending_staleness.should_check(tip_timestamp) {
+                    let current_pending: HashSet<TxHash> =
+                        pool.pending_transactions().iter().map(|tx| *tx.hash()).collect();
+                    let stale_to_evict =
+                        state.pending_staleness.check_and_update(current_pending, tip_timestamp);
+
+                    if !stale_to_evict.is_empty() {
+                        debug!(
+                            target: "txpool",
+                            count = stale_to_evict.len(),
+                            tip_timestamp,
+                            "Evicting stale pending transactions"
+                        );
+                        pool.remove_transactions(stale_to_evict);
+                    }
+                }
+
                 // Record total block update duration
                 metrics.block_update_duration_seconds.record(block_update_start.elapsed());
             }
@@ -538,6 +627,80 @@ mod tests {
     use reth_transaction_pool::PoolTransaction;
     use std::collections::HashSet;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
+
+    mod pending_staleness_tracker_tests {
+        use super::*;
+
+        #[test]
+        fn no_eviction_on_first_snapshot() {
+            let mut tracker = PendingStalenessTracker::new(100);
+            let tx1 = TxHash::random();
+
+            // First snapshot should not evict anything (no previous snapshot to compare)
+            let stale = tracker.check_and_update([tx1].into_iter().collect(), 100);
+            assert!(stale.is_empty());
+            assert!(tracker.previous_pending.contains(&tx1));
+        }
+
+        #[test]
+        fn evicts_transactions_present_in_both_snapshots() {
+            let mut tracker = PendingStalenessTracker::new(100);
+            let tx_stale = TxHash::random();
+            let tx_new = TxHash::random();
+
+            // First snapshot at t=0
+            tracker.check_and_update([tx_stale].into_iter().collect(), 0);
+
+            // Second snapshot at t=100: tx_stale still pending, tx_new is new
+            let stale = tracker.check_and_update([tx_stale, tx_new].into_iter().collect(), 100);
+
+            // tx_stale was in both snapshots -> evicted
+            assert_eq!(stale.len(), 1);
+            assert!(stale.contains(&tx_stale));
+
+            // tx_new should be tracked for the next snapshot
+            assert!(tracker.previous_pending.contains(&tx_new));
+            // tx_stale should NOT be in the snapshot (it was evicted)
+            assert!(!tracker.previous_pending.contains(&tx_stale));
+        }
+
+        #[test]
+        fn should_check_returns_false_before_interval_elapsed() {
+            let mut tracker = PendingStalenessTracker::new(100);
+            let tx = TxHash::random();
+
+            // First snapshot at t=0
+            assert!(tracker.should_check(0));
+            tracker.check_and_update([tx].into_iter().collect(), 0);
+
+            // At t=50 (before interval elapsed) - should_check returns false
+            assert!(!tracker.should_check(50));
+            assert_eq!(tracker.last_snapshot_time, Some(0));
+
+            // At t=100 (interval elapsed) - should_check returns true
+            assert!(tracker.should_check(100));
+        }
+
+        #[test]
+        fn removes_transactions_no_longer_pending_from_snapshot() {
+            let mut tracker = PendingStalenessTracker::new(100);
+            let tx1 = TxHash::random();
+            let tx2 = TxHash::random();
+
+            // First snapshot with both txs at t=0
+            tracker.check_and_update([tx1, tx2].into_iter().collect(), 0);
+            assert_eq!(tracker.previous_pending.len(), 2);
+
+            // Second snapshot at t=100: only tx1 still pending
+            // tx1 was in both -> stale, tx2 not in current -> removed from tracking
+            let stale = tracker.check_and_update([tx1].into_iter().collect(), 100);
+            assert_eq!(stale.len(), 1);
+            assert!(stale.contains(&tx1));
+
+            // Neither should be in the snapshot now
+            assert!(tracker.previous_pending.is_empty());
+        }
+    }
 
     fn create_test_chain(
         blocks: Vec<reth_primitives_traits::RecoveredBlock<Block>>,

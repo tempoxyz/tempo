@@ -153,6 +153,25 @@ fn calculate_key_authorization_gas(
     KEY_AUTH_BASE_GAS + sig_gas + limits_gas
 }
 
+/// Computes the adjusted initial gas for AA transaction execution.
+///
+/// For T1+: Uses `evm_initial_gas` which includes key_authorization gas tracking.
+/// For pre-T1: Uses `init_and_floor_gas` directly to maintain backward compatibility,
+/// since pre-T1 doesn't have key_authorization gas tracking and Genesis has special
+/// handling where nonce_2d_gas is added to init_and_floor_gas but not to evm.initial_gas.
+#[inline]
+fn adjusted_initial_gas(
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    evm_initial_gas: u64,
+    init_and_floor_gas: &InitialAndFloorGas,
+) -> InitialAndFloorGas {
+    if spec.is_t1() {
+        InitialAndFloorGas::new(evm_initial_gas, init_and_floor_gas.floor_gas)
+    } else {
+        *init_and_floor_gas
+    }
+}
+
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
 ///
 /// Fees are paid in fee tokens instead of account balance.
@@ -491,12 +510,14 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        // Add key_authorization gas to the initial gas (calculated in validate_aa_initial_tx_gas)
-        // Use saturating_add to avoid overflow when additional_initial_gas is u64::MAX (OOG case)
-        let adjusted_gas = InitialAndFloorGas::new(evm.initial_gas, init_and_floor_gas.floor_gas);
+        let spec = evm.ctx_ref().cfg().spec();
+        let adjusted_gas = adjusted_initial_gas(*spec, evm.initial_gas, init_and_floor_gas);
 
         let tx = evm.tx();
-        if tx.gas_limit() < adjusted_gas.initial_gas {
+        // For T0+, check gas limit covers intrinsic gas (including 2D nonce for AA txs)
+        // For pre-T0 (Genesis), skip this check to maintain backward compatibility -
+        // the original behavior didn't validate gas limit for 2D nonce cost upfront
+        if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
             let kind = *tx
                 .first_call()
                 .expect("we already checked that there is at least one call in aa tx")
@@ -787,11 +808,17 @@ where
             }
 
             let internals = EvmInternals::new(journal, block, cfg, tx);
-            let mut provider = EvmPrecompileStorageProvider::new_with_gas_limit(
-                internals,
-                cfg,
-                tx.gas_limit() - initial_gas,
-            );
+            // TIP-1000: Only apply gas metering for T1 hardfork.
+            // For pre-T1 chains, use unlimited gas to maintain backward compatibility.
+            let mut provider = if spec.is_t1() {
+                EvmPrecompileStorageProvider::new_with_gas_limit(
+                    internals,
+                    cfg,
+                    tx.gas_limit() - initial_gas,
+                )
+            } else {
+                EvmPrecompileStorageProvider::new_max_gas(internals, cfg)
+            };
 
             // The core logic of setting up thread-local storage is here.
             let out_of_gas = StorageCtx::enter(&mut provider, || {
@@ -923,7 +950,11 @@ where
                         // Extract the signature type from the inner signature to validate it matches
                         // the key_type stored in the keychain. This prevents using a signature of one
                         // type to authenticate as a key registered with a different type.
-                        let sig_type: u8 = keychain_sig.signature.signature_type().into();
+                        // Only validate signature type on T1+ to maintain backward compatibility
+                        // with historical blocks during re-execution.
+                        let sig_type = spec
+                            .is_t1()
+                            .then_some(keychain_sig.signature.signature_type().into());
 
                         keychain
                             .validate_keychain_authorization(
@@ -1139,9 +1170,9 @@ where
         let gas_params = evm.ctx_ref().cfg().gas_params();
         let gas_limit = tx.gas_limit();
 
-        // Route to appropriate gas calculation based on transaction type
-        let mut init_gas = if tx.tempo_tx_env.is_some() {
-            // AA transaction - use batch gas calculation
+        // Route to appropriate gas calculation and validation based on transaction type
+        let init_gas = if tx.tempo_tx_env.is_some() {
+            // AA transaction - use batch gas calculation (includes validation)
             validate_aa_initial_tx_gas(evm)?
         } else {
             let mut acc = 0;
@@ -1179,30 +1210,30 @@ where
                 init_gas.initial_gas += gas_params.get(GasId::new_account_cost());
             }
 
+            if evm.ctx.cfg.is_eip7623_disabled() {
+                init_gas.floor_gas = 0u64;
+            }
+
+            // Validate gas limit is sufficient for initial gas
+            if gas_limit < init_gas.initial_gas {
+                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                    gas_limit,
+                    intrinsic_gas: init_gas.initial_gas,
+                }
+                .into());
+            }
+
+            // Validate floor gas (Prague+)
+            if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < init_gas.floor_gas {
+                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                    gas_limit,
+                    intrinsic_gas: init_gas.floor_gas,
+                }
+                .into());
+            }
+
             init_gas
         };
-
-        if evm.ctx.cfg.is_eip7623_disabled() {
-            init_gas.floor_gas = 0u64;
-        }
-
-        // Validate gas limit is sufficient for initial gas
-        if gas_limit < init_gas.initial_gas {
-            return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                gas_limit,
-                intrinsic_gas: init_gas.initial_gas,
-            }
-            .into());
-        }
-
-        // Validate floor gas (Prague+)
-        if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < init_gas.floor_gas {
-            return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                gas_limit,
-                intrinsic_gas: init_gas.floor_gas,
-            }
-            .into());
-        }
 
         // used to calculate key_authorization gas spending limit.
         evm.initial_gas = init_gas.initial_gas;
@@ -1416,7 +1447,10 @@ where
         batch_gas.floor_gas = 0u64;
     }
 
-    // For T0+, include 2D nonce gas in the validation
+    // For T0+, include 2D nonce gas in validation (charged upfront)
+    // For pre-T0 (Genesis), 2D nonce gas is added AFTER validation to allow transactions
+    // with gas_limit < intrinsic + nonce_2d_gas to pass validation, but the gas is still
+    // charged during execution via init_and_floor_gas (not evm.initial_gas)
     if spec.is_t0() {
         batch_gas.initial_gas += nonce_2d_gas;
     }
@@ -1430,7 +1464,8 @@ where
         .into());
     }
 
-    // For pre-T0, add 2D nonce gas after validation
+    // For pre-T0 (Genesis), add 2D nonce gas after validation
+    // This gas will be charged via init_and_floor_gas, not evm.initial_gas
     if !spec.is_t0() {
         batch_gas.initial_gas += nonce_2d_gas;
     }
@@ -1499,12 +1534,13 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        // Add key_authorization gas to the initial gas (calculated in validate_aa_initial_tx_gas)
-        // Use saturating_add to avoid overflow when additional_initial_gas is u64::MAX (OOG case)
-        let adjusted_gas = InitialAndFloorGas::new(evm.initial_gas, init_and_floor_gas.floor_gas);
+        let spec = evm.ctx_ref().cfg().spec();
+        let adjusted_gas = adjusted_initial_gas(*spec, evm.initial_gas, init_and_floor_gas);
 
         let tx = evm.tx();
-        if tx.gas_limit() < adjusted_gas.initial_gas {
+        // For T0+, check gas limit covers intrinsic gas (including 2D nonce for AA txs)
+        // For pre-T0 (Genesis), skip this check to maintain backward compatibility
+        if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
             let kind = *tx
                 .first_call()
                 .expect("we already checked that there is at least one call in aa tx")
@@ -3031,6 +3067,101 @@ mod tests {
         assert_eq!(
             compute_nonce_gas(TEMPO_EXPIRING_NONCE_KEY, 0),
             EXPIRING_NONCE_GAS
+        );
+    }
+
+    /// Test that T1 hardfork correctly charges 250k gas for nonce == 0.
+    ///
+    /// This test validates TIP-1000's requirement:
+    /// "Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas"
+    ///
+    /// The test proves the audit finding (claiming only 22,100 gas is charged) is a false positive
+    /// by using delta-based assertions: gas(nonce=0) - gas(nonce>0) == new_account_cost.
+    #[test]
+    fn test_t1_2d_nonce_key_charges_250k_gas() {
+        use crate::gas_params::tempo_gas_params;
+        use revm::{context_interface::cfg::GasId, handler::Handler};
+
+        // Deterministic test addresses
+        const TEST_TARGET: Address = Address::new([0xAA; 20]);
+        const TEST_NONCE_KEY: U256 = U256::from_limbs([42, 0, 0, 0]);
+
+        // Create T1 config with TIP-1000 gas params
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+
+        // Get the expected new_account_cost dynamically from gas params
+        let new_account_cost = cfg.gas_params.get(GasId::new_account_cost());
+        assert_eq!(
+            new_account_cost, 250_000,
+            "T1 gas params should have 250k new_account_cost"
+        );
+
+        // Helper to create EVM context for testing
+        let make_evm = |cfg: CfgEnv<TempoHardfork>, nonce: u64, nonce_key: U256| {
+            let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+            let ctx = Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(TempoTxEnv {
+                    inner: revm::context::TxEnv {
+                        gas_limit: 1_000_000,
+                        nonce,
+                        ..Default::default()
+                    },
+                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        aa_calls: vec![Call {
+                            to: TxKind::Call(TEST_TARGET),
+                            value: U256::ZERO,
+                            input: Bytes::new(),
+                        }],
+                        nonce_key,
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .with_new_journal(journal);
+            TempoEvm::<_, ()>::new(ctx, ())
+        };
+
+        // Case 1: nonce == 0 with 2D nonce key -> should include new_account_cost
+        let mut evm_nonce_zero = make_evm(cfg.clone(), 0, TEST_NONCE_KEY);
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+        let gas_nonce_zero = handler
+            .validate_initial_tx_gas(&mut evm_nonce_zero)
+            .unwrap();
+
+        // Case 2: nonce > 0 with same 2D nonce key -> should NOT include new_account_cost
+        // This tests that only nonce == 0 triggers the +250k charge, regardless of nonce_key state
+        let mut evm_nonce_five = make_evm(cfg.clone(), 5, TEST_NONCE_KEY);
+        let gas_nonce_five = handler
+            .validate_initial_tx_gas(&mut evm_nonce_five)
+            .unwrap();
+
+        // Delta-based assertion: the difference should be exactly new_account_cost
+        let gas_delta = gas_nonce_zero.initial_gas - gas_nonce_five.initial_gas;
+        assert_eq!(
+            gas_delta, new_account_cost,
+            "T1 gas difference between nonce=0 and nonce>0 should be exactly {new_account_cost} (new_account_cost), got {gas_delta}"
+        );
+
+        // Verify it's NOT using the pre-T1 NEW_NONCE_KEY_GAS (22,100)
+        assert_ne!(
+            gas_delta, NEW_NONCE_KEY_GAS,
+            "T1 should NOT use pre-T1 NEW_NONCE_KEY_GAS ({NEW_NONCE_KEY_GAS}) for nonce=0 transactions"
+        );
+
+        // Case 3: nonce == 0 with regular nonce (nonce_key=0) -> same +250k charge
+        let mut evm_regular_nonce = make_evm(cfg, 0, U256::ZERO);
+        let gas_regular = handler
+            .validate_initial_tx_gas(&mut evm_regular_nonce)
+            .unwrap();
+
+        assert_eq!(
+            gas_nonce_zero.initial_gas, gas_regular.initial_gas,
+            "nonce=0 should charge the same regardless of nonce_key (2D vs regular)"
         );
     }
 }

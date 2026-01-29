@@ -131,6 +131,68 @@ The FeeManager extends FeeAMM and handles fee token preferences and distribution
 - **TEMPO-FEE5**: Collected fees should not exceed AMM token balance for any token.
 - **TEMPO-FEE6**: Fee swap rate M is correctly applied - fee output should always be <= fee input.
 
+## TIP-1000: State Creation Cost (Gas Pricing)
+
+TIP-1000 defines Tempo's gas pricing for state creation operations, charging 250,000 gas for each new state element to account for long-term storage costs.
+
+### State Creation Invariants (GasPricing.t.sol)
+
+Tested via `vmExec.executeTransaction()` - executes real transactions and verifies gas requirements:
+
+- **TEMPO-GAS1**: SSTORE to new slot costs exactly 250,000 gas.
+  - Handler executes SSTORE with insufficient gas (100k) and sufficient gas (350k)
+  - Invariant: insufficient gas must fail, sufficient must succeed
+
+- **TEMPO-GAS5**: Contract creation cost = (code_size × 1,000) + 500,000 + 250,000 (account creation).
+  - Handler deploys contracts with insufficient and sufficient gas
+  - Invariant: deployment must fail below threshold, succeed above
+
+- **TEMPO-GAS8**: Multiple new state elements charge 250k each independently.
+  - Handler writes N slots (2-5) with gas for only 1 slot vs gas for N slots
+  - Invariant: all N slots must not be written with gas for only 1
+
+### Protocol-Level Invariants (Rust)
+
+The following are enforced at the protocol level and tested in Rust:
+
+- **TEMPO-GAS2**: Account creation intrinsic gas (250k) → `crates/revm/src/handler.rs`
+- **TEMPO-GAS3**: SSTORE reset cost (5k) → `crates/revm/`
+- **TEMPO-GAS4**: Storage clear refund (15k) → `crates/revm/`
+- **TEMPO-GAS6**: Transaction gas cap (30M) → `crates/transaction-pool/src/validator.rs`
+- **TEMPO-GAS7**: First tx minimum gas (271k) → `crates/transaction-pool/src/validator.rs`
+- **TEMPO-GAS9-14**: Various protocol-level gas rules → `crates/revm/`
+
+## TIP-1010: Mainnet Gas Parameters (Block Limits)
+
+TIP-1010 defines Tempo's mainnet block gas parameters, including a 500M total block gas limit with a 30M general lane and 470M payment lane allocation.
+
+### Block Gas Invariants (BlockGasLimits.t.sol)
+
+Tested via `vmExec.executeTransaction()` and constant assertions:
+
+- **TEMPO-BLOCK1**: Block total gas limit = 500,000,000. (constant assertion)
+- **TEMPO-BLOCK2**: General lane gas limit = 30,000,000. (constant assertion)
+- **TEMPO-BLOCK3**: Transaction gas cap = 30,000,000.
+  - Handler submits tx at cap (30M) and over cap (30M+)
+  - Invariant: over-cap transactions must be rejected
+
+- **TEMPO-BLOCK4**: Base fee = 20 gwei (T1), 10 gwei (T0). (constant assertion)
+- **TEMPO-BLOCK5**: Payment lane minimum = 470M. (constant assertion)
+- **TEMPO-BLOCK6**: Max contract deployment (24KB) fits within tx gas cap.
+  - Handler deploys contracts at 50-100% of max size
+  - Invariant: max size deployment must succeed within tx cap
+
+- **TEMPO-BLOCK10**: shared_gas_limit = 50M. (constant assertion)
+
+### Protocol-Level Invariants (Rust)
+
+The following are enforced in the block builder and tested in Rust:
+
+- **TEMPO-BLOCK7**: Block validity rejects over-limit blocks → `crates/payload/builder/src/lib.rs`
+- **TEMPO-BLOCK8-9**: Hardfork activation rules → `crates/chainspec/`
+- **TEMPO-BLOCK11**: Constant base fee within epoch → `crates/chainspec/`
+- **TEMPO-BLOCK12**: General lane enforcement (30M cap) → `crates/payload/builder/src/lib.rs`
+
 ## Nonce
 
 The Nonce precompile manages 2D nonces for accounts, enabling multiple independent nonce sequences per account identified by a nonce key.
