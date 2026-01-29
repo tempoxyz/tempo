@@ -12,7 +12,7 @@ protocolVersion: T2
 
 ## Abstract
 
-This TIP extends the TIP-403 policy registry to support **compound policies** that allow token issuers to specify different authorization rules for senders and recipients. A compound policy references two simple policies: one for sender authorization and one for recipient authorization. Compound policies are immutable once created.
+This TIP extends the TIP-403 policy registry to support **compound policies** that allow token issuers to specify different authorization rules for senders, recipients, and mint recipients. A compound policy references three simple policies: one for sender authorization, one for recipient authorization, and one for mint recipient authorization. Compound policies are immutable once created.
 
 ## Motivation
 
@@ -43,16 +43,17 @@ enum PolicyType {
 
 ## Compound Policy Structure
 
-A compound policy references two existing simple policies by their policy IDs:
+A compound policy references three existing simple policies by their policy IDs:
 
 ```solidity
 struct CompoundPolicyData {
-    uint64 senderPolicyId;    // Policy checked for senders
-    uint64 recipientPolicyId; // Policy checked for recipients
+    uint64 senderPolicyId;        // Policy checked for transfer senders
+    uint64 recipientPolicyId;     // Policy checked for transfer recipients
+    uint64 mintRecipientPolicyId; // Policy checked for mint recipients
 }
 ```
 
-Both referenced policies MUST be simple policies (WHITELIST or BLACKLIST), not compound policies. This prevents circular references and unbounded recursion.
+All three referenced policies MUST be simple policies (WHITELIST or BLACKLIST), not compound policies. This prevents circular references and unbounded recursion.
 
 ## Interface Additions
 
@@ -67,15 +68,17 @@ interface ITIP403Registry {
     // =========================================================================
 
     /// @notice Creates a new immutable compound policy
-    /// @param senderPolicyId Policy ID to check for senders
-    /// @param recipientPolicyId Policy ID to check for recipients
+    /// @param senderPolicyId Policy ID to check for transfer senders
+    /// @param recipientPolicyId Policy ID to check for transfer recipients
+    /// @param mintRecipientPolicyId Policy ID to check for mint recipients
     /// @return newPolicyId ID of the newly created compound policy
-    /// @dev Both policy IDs must reference existing simple policies (not compound).
+    /// @dev All three policy IDs must reference existing simple policies (not compound).
     /// Compound policies are immutable - they cannot be modified after creation.
     /// Emits CompoundPolicyCreated event.
     function createCompoundPolicy(
         uint64 senderPolicyId,
-        uint64 recipientPolicyId
+        uint64 recipientPolicyId,
+        uint64 mintRecipientPolicyId
     ) external returns (uint64 newPolicyId);
 
     // =========================================================================
@@ -98,6 +101,14 @@ interface ITIP403Registry {
     /// For compound policies: checks against the recipientPolicyId
     function isAuthorizedRecipient(uint64 policyId, address user) external view returns (bool);
 
+    /// @notice Checks if a user is authorized as a mint recipient under the given policy
+    /// @param policyId Policy ID to check against
+    /// @param user Address to check
+    /// @return True if authorized to receive mints, false otherwise
+    /// @dev For simple policies: equivalent to isAuthorized()
+    /// For compound policies: checks against the mintRecipientPolicyId
+    function isAuthorizedMintRecipient(uint64 policyId, address user) external view returns (bool);
+
     // =========================================================================
     //                      Compound Policy Queries
     // =========================================================================
@@ -106,10 +117,12 @@ interface ITIP403Registry {
     /// @param policyId ID of the compound policy to query
     /// @return senderPolicyId Policy ID for sender checks
     /// @return recipientPolicyId Policy ID for recipient checks
+    /// @return mintRecipientPolicyId Policy ID for mint recipient checks
     /// @dev Reverts if policyId is not a compound policy
     function compoundPolicyData(uint64 policyId) external view returns (
         uint64 senderPolicyId,
-        uint64 recipientPolicyId
+        uint64 recipientPolicyId,
+        uint64 mintRecipientPolicyId
     );
 
     // =========================================================================
@@ -121,11 +134,13 @@ interface ITIP403Registry {
     /// @param creator Address that created the policy
     /// @param senderPolicyId Policy ID for sender checks
     /// @param recipientPolicyId Policy ID for recipient checks
+    /// @param mintRecipientPolicyId Policy ID for mint recipient checks
     event CompoundPolicyCreated(
         uint64 indexed policyId,
         address indexed creator,
         uint64 senderPolicyId,
-        uint64 recipientPolicyId
+        uint64 recipientPolicyId,
+        uint64 mintRecipientPolicyId
     );
 
     // =========================================================================
@@ -174,6 +189,22 @@ function isAuthorizedRecipient(uint64 policyId, address user) external view retu
 }
 ```
 
+### isAuthorizedMintRecipient
+
+```solidity
+function isAuthorizedMintRecipient(uint64 policyId, address user) external view returns (bool) {
+    PolicyData memory data = policyData[policyId];
+    
+    if (data.policyType == PolicyType.COMPOUND) {
+        CompoundPolicyData memory compound = compoundPolicyData[policyId];
+        return isAuthorized(compound.mintRecipientPolicyId, user);
+    }
+    
+    // For simple policies, mint recipient authorization equals general authorization
+    return isAuthorized(policyId, user);
+}
+```
+
 ### isAuthorized (updated)
 
 The existing `isAuthorized` function is updated to check both sender and recipient authorization:
@@ -194,7 +225,7 @@ This TIP requires exactly 5 replacements of `isAuthorized` calls:
 
 | Location | Current | Replace With |
 |----------|---------|--------------|
-| TIP-20 `_mint` | `isAuthorized(to)` | `isAuthorizedRecipient(to)` |
+| TIP-20 `_mint` | `isAuthorized(to)` | `isAuthorizedMintRecipient(to)` |
 | TIP-20 `burnBlocked` | `isAuthorized(from)` | `isAuthorizedSender(from)` |
 | DEX `cancelStaleOrder` | `isAuthorized(maker)` | `isAuthorizedSender(maker)` |
 
@@ -231,11 +262,11 @@ function isTransferAuthorized(address from, address to) internal view returns (b
 
 ### Mint Operations
 
-Mint operations check only the recipient:
+Mint operations check the mint recipient policy:
 
 ```solidity
 function _mint(address to, uint256 amount) internal {
-    if (!TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, to)) {
+    if (!TIP403_REGISTRY.isAuthorizedMintRecipient(transferPolicyId, to)) {
         revert PolicyForbids();
     }
     // ... mint logic
@@ -298,21 +329,21 @@ This TIP is fully backward compatible:
 
 # Invariants
 
-1. **Simple Policy Constraint**: Both policy IDs in a compound policy MUST reference simple policies (WHITELIST or BLACKLIST). Compound policies cannot reference other compound policies.
+1. **Simple Policy Constraint**: All three policy IDs in a compound policy MUST reference simple policies (WHITELIST or BLACKLIST). Compound policies cannot reference other compound policies.
 
 2. **Immutability**: Once created, a compound policy's constituent policy IDs cannot be changed. The compound policy itself has no admin.
 
-3. **Existence Check**: `createCompoundPolicy` MUST revert if either of the referenced policy IDs does not exist.
+3. **Existence Check**: `createCompoundPolicy` MUST revert if any of the referenced policy IDs does not exist.
 
-4. **Delegation Correctness**: For simple policies, `isAuthorizedSender(p, u)` MUST equal `isAuthorizedRecipient(p, u)`.
+4. **Delegation Correctness**: For simple policies, `isAuthorizedSender(p, u)` MUST equal `isAuthorizedRecipient(p, u)` MUST equal `isAuthorizedMintRecipient(p, u)`.
 
 5. **isAuthorized Equivalence**: `isAuthorized(p, u)` MUST equal `isAuthorizedSender(p, u) && isAuthorizedRecipient(p, u)`.
 
-6. **Built-in Policy Compatibility**: Compound policies MAY reference built-in policies (0 = always-reject, 1 = always-allow) as either of their constituent policies.
+6. **Built-in Policy Compatibility**: Compound policies MAY reference built-in policies (0 = always-reject, 1 = always-allow) as any of their constituent policies.
 
 ## Test Cases
 
-1. **Simple policy equivalence**: Verify that for simple policies, all three authorization functions return the same result.
+1. **Simple policy equivalence**: Verify that for simple policies, all four authorization functions return the same result.
 
 2. **Compound policy creation**: Verify that compound policies can be created with valid simple policy references.
 
@@ -322,6 +353,8 @@ This TIP is fully backward compatible:
 
 5. **isAuthorized behavior**: Verify that `isAuthorized` on a compound policy returns `isAuthorizedSender() && isAuthorizedRecipient()`.
 
-6. **TIP-20 mint**: Verify that mints only check recipient authorization.
+6. **TIP-20 mint**: Verify that mints check `isAuthorizedMintRecipient`, not `isAuthorizedRecipient`.
 
 7. **TIP-20 burnBlocked**: Verify that burnBlocked checks sender authorization (and allows burning from blocked senders).
+
+8. **Vendor credits**: Verify that a compound policy with `mintRecipientPolicyId = 1` (always-allow), `senderPolicyId = 1` (always-allow), and `recipientPolicyId = vendor whitelist` allows minting to anyone but only transfers to vendors.
