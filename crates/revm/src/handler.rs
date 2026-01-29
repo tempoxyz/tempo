@@ -494,9 +494,13 @@ where
         // Add key_authorization gas to the initial gas (calculated in validate_aa_initial_tx_gas)
         // Use saturating_add to avoid overflow when additional_initial_gas is u64::MAX (OOG case)
         let adjusted_gas = InitialAndFloorGas::new(evm.initial_gas, init_and_floor_gas.floor_gas);
+        let spec = *evm.ctx().cfg().spec();
 
         let tx = evm.tx();
-        if tx.gas_limit() < adjusted_gas.initial_gas {
+
+        // T1+: Verify gas limit covers adjusted initial gas (includes key_authorization costs).
+        // Pre-T1: Skip because key_authorization uses max_gas provider (no gas charged).
+        if spec.is_t1() && tx.gas_limit() < adjusted_gas.initial_gas {
             let kind = *tx
                 .first_call()
                 .expect("we already checked that there is at least one call in aa tx")
@@ -787,11 +791,16 @@ where
             }
 
             let internals = EvmInternals::new(journal, block, cfg, tx);
-            let mut provider = EvmPrecompileStorageProvider::new_with_gas_limit(
-                internals,
-                cfg,
-                tx.gas_limit() - initial_gas,
-            );
+            // T1+: Use gas-limited provider for key authorization to charge actual gas costs.
+            let mut provider = if spec.is_t1() {
+                EvmPrecompileStorageProvider::new_with_gas_limit(
+                    internals,
+                    cfg,
+                    tx.gas_limit() - initial_gas,
+                )
+            } else {
+                EvmPrecompileStorageProvider::new_max_gas(internals, cfg)
+            };
 
             // The core logic of setting up thread-local storage is here.
             let out_of_gas = StorageCtx::enter(&mut provider, || {
@@ -1190,22 +1199,25 @@ where
             init_gas.floor_gas = 0u64;
         }
 
-        // Validate gas limit is sufficient for initial gas
-        if gas_limit < init_gas.initial_gas {
-            return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                gas_limit,
-                intrinsic_gas: init_gas.initial_gas,
+        // T1+: Gas validation post TIP-1000
+        if spec.is_t1() {
+            // Validate gas limit is sufficient for initial gas
+            if gas_limit < init_gas.initial_gas {
+                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                    gas_limit,
+                    intrinsic_gas: init_gas.initial_gas,
+                }
+                .into());
             }
-            .into());
-        }
 
-        // Validate floor gas (Prague+)
-        if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < init_gas.floor_gas {
-            return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                gas_limit,
-                intrinsic_gas: init_gas.floor_gas,
+            // Validate floor gas (Prague+).
+            if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < init_gas.floor_gas {
+                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                    gas_limit,
+                    intrinsic_gas: init_gas.floor_gas,
+                }
+                .into());
             }
-            .into());
         }
 
         // used to calculate key_authorization gas spending limit.
@@ -1434,7 +1446,11 @@ where
         .into());
     }
 
-    // For pre-T0, add 2D nonce gas after validation
+    // Pre-T0: Add 2D nonce gas after validation for backwards compatibility.
+    // Transactions could pass validation without nonce gas, which was consumed during execution.
+    // T0: Nonce gas is added before validation (see above), so this block is skipped.
+    // T1+: Nonce gas is charged via gas-limited storage provider during execution, and the
+    // execution() gas check is gated on T1+ to avoid spurious OOG errors from this addition.
     if !spec.is_t0() {
         batch_gas.initial_gas += nonce_2d_gas;
     }
