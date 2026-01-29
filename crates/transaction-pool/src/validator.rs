@@ -3201,16 +3201,17 @@ mod tests {
             "Token should be in unique_tokens for this test"
         );
 
-        // With the fix for CHAIN-442, user tokens matching a validator's preferred token
-        // no longer bypass the AMM liquidity check. The old bypass was removed entirely.
+        // When user_token matches a validator's preferred token, has_enough_liquidity returns true
+        // because no AMM swap is needed at execution time. The TipFeeManager handles this directly.
         let liquidity_result =
             amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
         assert!(
-            liquidity_result.is_ok() && !liquidity_result.unwrap(),
-            "User token matching a validator token no longer bypasses liquidity check"
+            liquidity_result.is_ok() && liquidity_result.unwrap(),
+            "User token matching a validator token should bypass AMM liquidity check"
         );
 
-        // The pause check in is_fee_token_paused provides defense-in-depth
+        // However, the pause check in is_fee_token_paused provides defense-in-depth and MUST
+        // catch paused tokens BEFORE the liquidity check is even consulted.
         let is_paused = state.is_fee_token_paused(spec, paused_validator_token);
         assert!(is_paused.is_ok());
         assert!(

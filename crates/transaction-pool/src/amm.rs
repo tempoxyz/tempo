@@ -84,6 +84,15 @@ impl AmmLiquidityCache {
         {
             let inner = self.inner.read();
             for validator_token in &inner.unique_tokens {
+                // When user_token matches a validator's configured token, no AMM swap is needed
+                // at execution time. The TipFeeManager transfers fees directly without swapping.
+                // This is safe because the transaction will only succeed when processed by a
+                // validator whose token matches - other validators will fail to execute it,
+                // but it won't propagate spam since the user IS paying in a valid validator token.
+                if validator_token == &user_token {
+                    return Ok(true);
+                }
+
                 if let Some(validator_reserve) = inner.cache.get(&(user_token, *validator_token)) {
                     if *validator_reserve >= amount_out {
                         return Ok(true);
@@ -278,6 +287,29 @@ mod tests {
         assert!(
             !result.unwrap(),
             "Should return false when no AMM liquidity exists for user's fee token"
+        );
+    }
+
+    #[test]
+    fn test_has_enough_liquidity_user_token_matches_validator_token() {
+        let token = address!("1111111111111111111111111111111111111111");
+
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                unique_tokens: vec![token],
+                ..Default::default()
+            })),
+        };
+
+        let provider = create_mock_provider();
+        let state = provider.latest().unwrap();
+
+        // When user_token == validator_token, no AMM swap is needed. Return true.
+        let result = cache.has_enough_liquidity(token, U256::from(100), &state);
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "Should return true when user token matches a validator's preferred token"
         );
     }
 
