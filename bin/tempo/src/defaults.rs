@@ -17,10 +17,9 @@ pub(crate) struct TelemetryConfig {
     pub logs_otlp_url: Url,
     /// OTLP logs filter level.
     pub logs_otlp_filter: String,
-    /// Prometheus push gateway URL (with credentials).
-    pub prometheus_push_url: String,
-    /// Consensus metrics OTLP endpoint (without credentials).
-    pub consensus_metrics_otlp_url: String,
+    /// Unified metrics OTLP endpoint (without credentials).
+    /// Used for both consensus and execution metrics.
+    pub metrics_otlp_url: String,
 }
 
 fn init_download_urls() {
@@ -93,16 +92,8 @@ pub(crate) fn parse_telemetry_config(telemetry_url: &str) -> eyre::Result<Teleme
         ));
     }
 
-    // Build prometheus URL with credentials
-    let credentials = format!("{}:{}", username, password.unwrap());
-    let prometheus_push_url = format!(
-        "{}://{credentials}@{}{}/api/v1/import/prometheus",
-        url.scheme(),
-        url.host_str().unwrap_or_default(),
-        url.port().map(|p| format!(":{p}")).unwrap_or_default()
-    );
-
     // Set OTEL_EXPORTER_OTLP_HEADERS for OTLP authentication
+    let credentials = format!("{}:{}", username, password.unwrap());
     if std::env::var_os("OTEL_EXPORTER_OTLP_HEADERS").is_none() {
         let encoded = BASE64_STANDARD.encode(credentials.as_bytes());
         let header_value = format!("Authorization=Basic {encoded}");
@@ -117,17 +108,16 @@ pub(crate) fn parse_telemetry_config(telemetry_url: &str) -> eyre::Result<Teleme
     url.set_password(None).ok();
     let base_url_no_creds = url.as_str().trim_end_matches('/');
 
-    // Build logs OTLP URL
-    let logs_otlp_url = Url::parse(&format!("{base_url_no_creds}/opentelemetry/v1/logs"))
+    // Build logs OTLP URL (standard OTLP HTTP path)
+    let logs_otlp_url = Url::parse(&format!("{base_url_no_creds}/v1/logs"))
         .map_err(|e| eyre::eyre!("failed to construct logs OTLP URL: {e}"))?;
 
-    // Build consensus metrics OTLP URL
-    let consensus_metrics_otlp_url = format!("{base_url_no_creds}/opentelemetry/v1/metrics");
+    // Build unified metrics OTLP URL (standard OTLP HTTP path)
+    let metrics_otlp_url = format!("{base_url_no_creds}/v1/metrics");
 
     Ok(TelemetryConfig {
         logs_otlp_url,
         logs_otlp_filter: DEFAULT_LOGS_OTLP_FILTER.to_string(),
-        prometheus_push_url,
-        consensus_metrics_otlp_url,
+        metrics_otlp_url,
     })
 }

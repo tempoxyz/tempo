@@ -42,6 +42,7 @@ use tempo_node::{
     TempoFullNode, TempoNodeArgs,
     node::TempoNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
+    telemetry::{OtlpMetricsConfig, install_otlp_metrics},
 };
 use tokio::sync::oneshot;
 use tracing::{info, info_span};
@@ -137,14 +138,9 @@ fn main() -> eyre::Result<()> {
                     .expect("invalid default logs filter");
             }
 
-            // Set prometheus push URL if not already set
-            if node_cmd.metrics.push_gateway_url.is_none() {
-                node_cmd.metrics.push_gateway_url = Some(config.prometheus_push_url);
-            }
-
-            // Set consensus metrics OTLP if not already set
+            // Set unified metrics OTLP endpoint (handles both reth and consensus metrics)
             if node_cmd.ext.consensus.metrics_otlp_url.is_none() {
-                node_cmd.ext.consensus.metrics_otlp_url = Some(config.consensus_metrics_otlp_url);
+                node_cmd.ext.consensus.metrics_otlp_url = Some(config.metrics_otlp_url);
             }
         }
     }
@@ -213,7 +209,7 @@ fn main() -> eyre::Result<()> {
                 )
                 .fuse();
 
-                // Start the OTLP metrics exporter if configured
+                // Start the unified OTLP metrics exporter if configured
                 let _metrics_otlp = args
                     .consensus
                     .metrics_otlp_url
@@ -227,16 +223,13 @@ fn main() -> eyre::Result<()> {
                             labels.insert("consensus_pubkey".to_string(), public_key.to_string());
                         }
 
-                        let config = tempo_commonware_node::metrics::OtlpConfig {
+                        let config = OtlpMetricsConfig {
                             endpoint,
                             interval: args.consensus.metrics_otlp_interval,
                             labels,
                         };
 
-                        tempo_commonware_node::metrics::install_otlp(
-                            ctx.with_label("metrics_otlp"),
-                            config,
-                        )
+                        install_otlp_metrics(ctx.with_label("metrics_otlp"), config)
                     })
                     .transpose()?;
 

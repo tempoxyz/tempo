@@ -64,7 +64,3 @@ reth-rpc-convert.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true
 pin-project = "1.1.10"
-
-opentelemetry.workspace = true
-opentelemetry_sdk.workspace = true
-opentelemetry-otlp.workspace = true
