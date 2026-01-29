@@ -283,6 +283,15 @@ fn create_mock_primitive_signature(
                 pub_key_y: alloy_primitives::B256::ZERO,
             })
         }
+        SignatureType::Multisig => {
+            use tempo_primitives::transaction::tt_signature::MultisigSignature;
+            // Create a dummy multisig signature
+            PrimitiveSignature::Multisig(MultisigSignature {
+                multisig_id: alloy_primitives::B256::ZERO,
+                signers: vec![],
+                signatures: vec![],
+            })
+        }
     }
 }
 
