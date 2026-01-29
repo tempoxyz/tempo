@@ -223,19 +223,19 @@ impl PendingStalenessTracker {
         }
     }
 
-    /// Checks for stale transactions and updates the snapshot if the interval has elapsed.
+    /// Returns true if the staleness check interval has elapsed and a snapshot should be taken.
+    fn should_check(&self, now: u64) -> bool {
+        self.last_snapshot_time
+            .is_none_or(|last| now.saturating_sub(last) >= self.interval_secs)
+    }
+
+    /// Checks for stale transactions and updates the snapshot.
     ///
     /// Returns transactions that have been pending across two consecutive snapshots
     /// (i.e., pending for at least one full interval).
+    ///
+    /// Call `should_check` first to avoid collecting the pending set on every block.
     fn check_and_update(&mut self, current_pending: HashSet<TxHash>, now: u64) -> Vec<TxHash> {
-        let should_check = self
-            .last_snapshot_time
-            .is_none_or(|last| now.saturating_sub(last) >= self.interval_secs);
-
-        if !should_check {
-            return Vec::new();
-        }
-
         // Find transactions present in both snapshots (stale)
         let stale: Vec<TxHash> = self
             .previous_pending
@@ -535,21 +535,23 @@ where
                 }
 
                 // 10. Evict stale pending transactions (must happen after AA pool promotions in step 6)
-                // Takes a snapshot every interval and evicts transactions that remain pending
-                // across two consecutive snapshots.
-                let current_pending: HashSet<TxHash> =
-                    pool.pending_transactions().iter().map(|tx| *tx.hash()).collect();
-                let stale_to_evict =
-                    state.pending_staleness.check_and_update(current_pending, tip_timestamp);
+                // Only runs once per interval (~30 min) to avoid overhead on every block.
+                // Transactions pending across two consecutive snapshots are considered stale.
+                if state.pending_staleness.should_check(tip_timestamp) {
+                    let current_pending: HashSet<TxHash> =
+                        pool.pending_transactions().iter().map(|tx| *tx.hash()).collect();
+                    let stale_to_evict =
+                        state.pending_staleness.check_and_update(current_pending, tip_timestamp);
 
-                if !stale_to_evict.is_empty() {
-                    debug!(
-                        target: "txpool",
-                        count = stale_to_evict.len(),
-                        tip_timestamp,
-                        "Evicting stale pending transactions"
-                    );
-                    pool.remove_transactions(stale_to_evict);
+                    if !stale_to_evict.is_empty() {
+                        debug!(
+                            target: "txpool",
+                            count = stale_to_evict.len(),
+                            tip_timestamp,
+                            "Evicting stale pending transactions"
+                        );
+                        pool.remove_transactions(stale_to_evict);
+                    }
                 }
 
                 // Record total block update duration
@@ -663,19 +665,20 @@ mod tests {
         }
 
         #[test]
-        fn does_not_evict_before_interval_elapsed() {
+        fn should_check_returns_false_before_interval_elapsed() {
             let mut tracker = PendingStalenessTracker::new(100);
             let tx = TxHash::random();
 
             // First snapshot at t=0
+            assert!(tracker.should_check(0));
             tracker.check_and_update([tx].into_iter().collect(), 0);
 
-            // Check at t=50 (before interval elapsed) - should not check
-            let stale = tracker.check_and_update([tx].into_iter().collect(), 50);
-            assert!(stale.is_empty());
-
-            // Snapshot should not have been updated (still at t=0)
+            // At t=50 (before interval elapsed) - should_check returns false
+            assert!(!tracker.should_check(50));
             assert_eq!(tracker.last_snapshot_time, Some(0));
+
+            // At t=100 (interval elapsed) - should_check returns true
+            assert!(tracker.should_check(100));
         }
 
         #[test]
