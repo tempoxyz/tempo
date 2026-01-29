@@ -12,6 +12,7 @@ use reth_transaction_pool::{
 };
 use revm::database::BundleAccount;
 use std::{
+    cell::RefCell,
     collections::{
         BTreeMap, BTreeSet,
         Bound::{Excluded, Unbounded},
@@ -19,10 +20,8 @@ use std::{
         btree_map::Entry,
         hash_map,
     },
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    rc::Rc,
+    sync::Arc,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
@@ -170,7 +169,7 @@ impl AA2dPool {
                     .priority(&transaction.transaction, hardfork.base_fee()),
                 transaction: transaction.clone(),
             },
-            is_pending: Arc::new(AtomicBool::new(false)),
+            is_pending: Rc::new(RefCell::new(false)),
         });
 
         // try to insert the transaction
@@ -229,12 +228,13 @@ impl AA2dPool {
                         // unaffected by our transaction
                     }
                     std::cmp::Ordering::Equal => {
-                        existing_tx.is_pending.store(true, Ordering::Relaxed);
+                        *existing_tx.is_pending.borrow_mut() = true;
                         inserted_as_pending = true;
                     }
                     std::cmp::Ordering::Greater => {
                         // if this was previously not pending we need to promote the transaction
-                        let was_pending = existing_tx.is_pending.swap(true, Ordering::Relaxed);
+                        let was_pending =
+                            std::mem::replace(&mut *existing_tx.is_pending.borrow_mut(), true);
                         if !was_pending {
                             promoted.push(existing_tx.inner.transaction.clone());
                         }
@@ -328,7 +328,7 @@ impl AA2dPool {
     /// Returns how many pending and queued transactions are in the pool.
     pub(crate) fn pending_and_queued_txn_count(&self) -> (usize, usize) {
         let (pending_2d, queued_2d) = self.by_id.values().fold((0, 0), |mut acc, tx| {
-            if tx.is_pending.load(Ordering::Relaxed) {
+            if *tx.is_pending.borrow() {
                 acc.0 += 1;
             } else {
                 acc.1 += 1;
@@ -366,9 +366,7 @@ impl AA2dPool {
         let regular = self
             .by_id
             .values()
-            .filter(move |tx| {
-                tx.is_pending.load(Ordering::Relaxed) && tx.inner.transaction.origin == origin
-            })
+            .filter(move |tx| *tx.is_pending.borrow() && tx.inner.transaction.origin == origin)
             .map(|tx| tx.inner.transaction.clone());
         // Expiring nonce txs are always pending
         let expiring = self
@@ -408,7 +406,7 @@ impl AA2dPool {
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         self.by_id
             .values()
-            .filter(|tx| !tx.is_pending.load(Ordering::Relaxed))
+            .filter(|tx| !*tx.is_pending.borrow())
             .map(|tx| tx.inner.transaction.clone())
     }
 
@@ -420,7 +418,7 @@ impl AA2dPool {
         let regular_pending = self
             .by_id
             .values()
-            .filter(|tx| tx.is_pending.load(Ordering::Relaxed))
+            .filter(|tx| *tx.is_pending.borrow())
             .map(|tx| tx.inner.transaction.clone());
         let expiring_pending = self
             .expiring_nonce_txs
@@ -443,7 +441,7 @@ impl AA2dPool {
             by_id: self
                 .by_id
                 .iter()
-                .filter(|(_, tx)| tx.is_pending.load(Ordering::Relaxed))
+                .filter(|(_, tx)| *tx.is_pending.borrow())
                 .map(|(id, tx)| (*id, tx.inner.clone()))
                 .collect(),
             invalid: Default::default(),
@@ -691,7 +689,7 @@ impl AA2dPool {
             .range((Excluded(&start_id), Unbounded))
             .take_while(|(other, _)| *seq_id == other.seq_id)
         {
-            tx.is_pending.store(false, Ordering::Relaxed);
+            *tx.is_pending.borrow_mut() = false;
         }
     }
 
@@ -817,7 +815,8 @@ impl AA2dPool {
             for (existing_id, existing_tx) in std::iter::once(current).chain(iter) {
                 if existing_id.nonce == next_nonce {
                     // Promote if transaction was previously queued (not pending)
-                    let was_pending = existing_tx.is_pending.swap(true, Ordering::Relaxed);
+                    let was_pending =
+                        std::mem::replace(&mut *existing_tx.is_pending.borrow_mut(), true);
                     if !was_pending {
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
@@ -831,7 +830,7 @@ impl AA2dPool {
                     next_nonce = next_nonce.saturating_add(1);
                 } else {
                     // Gap detected - mark this and all remaining transactions as non-pending
-                    existing_tx.is_pending.store(false, Ordering::Relaxed);
+                    *existing_tx.is_pending.borrow_mut() = false;
                 }
             }
 
@@ -1067,7 +1066,7 @@ impl AA2dPool {
             // Independent transactions must be pending
             let tx_in_pool = self.by_id.get(&tx_id).unwrap();
             assert!(
-                tx_in_pool.is_pending.load(Ordering::Relaxed),
+                *tx_in_pool.is_pending.borrow(),
                 "Independent transaction {tx_id:?} is not pending"
             );
 
@@ -1153,7 +1152,7 @@ impl AA2dPool {
                 && independent_tx.transaction.hash() == tx.inner.transaction.hash()
             {
                 assert!(
-                    tx.is_pending.load(Ordering::Relaxed),
+                    *tx.is_pending.borrow(),
                     "Transaction {id:?} is in independent set but not pending"
                 );
             }
@@ -1221,11 +1220,19 @@ struct AA2dInternalTransaction {
     ///
     /// If it's not pending, it is queued.
     ///
-    /// Uses `Arc<AtomicBool>` so we can mutate this flag without removing/reinserting
+    /// Uses `Rc<RefCell<bool>>` so we can mutate this flag without removing/reinserting
     /// the transaction from the eviction set. This allows a single eviction set for
     /// all transactions, with pending/queued filtering done at eviction time.
-    is_pending: Arc<AtomicBool>,
+    is_pending: Rc<RefCell<bool>>,
 }
+
+// SAFETY: `AA2dInternalTransaction` contains `Rc<RefCell<bool>>` which is not `Send`/`Sync`.
+// However, `AA2dPool` is only ever accessed through `Arc<RwLock<AA2dPool>>`, meaning:
+// - All reads require holding the read lock (shared access to the pool, no mutation of is_pending)
+// - All writes require holding the write lock (exclusive access, single consumer)
+// Since we never have concurrent access to `is_pending`, this is safe.
+unsafe impl Send for AA2dInternalTransaction {}
+unsafe impl Sync for AA2dInternalTransaction {}
 
 /// Key for ordering transactions by eviction priority.
 ///
@@ -1263,7 +1270,7 @@ impl EvictionKey {
 
     /// Returns whether this transaction is pending.
     fn is_pending(&self) -> bool {
-        self.tx.is_pending.load(Ordering::Relaxed)
+        *self.tx.is_pending.borrow()
     }
 }
 
@@ -1541,19 +1548,11 @@ mod tests {
         // Verify both transactions are now pending
         let tx0_id = AA2dTransactionId::new(seq_id, 0);
         assert!(
-            pool.by_id
-                .get(&tx0_id)
-                .unwrap()
-                .is_pending
-                .load(Ordering::Relaxed),
+            *pool.by_id.get(&tx0_id).unwrap().is_pending.borrow(),
             "Transaction 0 should be pending"
         );
         assert!(
-            pool.by_id
-                .get(&tx1_id)
-                .unwrap()
-                .is_pending
-                .load(Ordering::Relaxed),
+            *pool.by_id.get(&tx1_id).unwrap().is_pending.borrow(),
             "Transaction 1 should be pending after promotion"
         );
 
@@ -1708,7 +1707,7 @@ mod tests {
             "Transaction in by_id should be tx_high"
         );
         assert!(
-            tx_in_pool.is_pending.load(Ordering::Relaxed),
+            *tx_in_pool.is_pending.borrow(),
             "Transaction should be pending"
         );
 
@@ -1830,30 +1829,15 @@ mod tests {
         let tx6_id = AA2dTransactionId::new(seq_id, 6);
 
         assert!(
-            !pool
-                .by_id
-                .get(&tx3_id)
-                .unwrap()
-                .is_pending
-                .load(Ordering::Relaxed),
+            !*pool.by_id.get(&tx3_id).unwrap().is_pending.borrow(),
             "Transaction 3 should be queued (gap at nonce 2)"
         );
         assert!(
-            !pool
-                .by_id
-                .get(&tx4_id)
-                .unwrap()
-                .is_pending
-                .load(Ordering::Relaxed),
+            !*pool.by_id.get(&tx4_id).unwrap().is_pending.borrow(),
             "Transaction 4 should be queued"
         );
         assert!(
-            !pool
-                .by_id
-                .get(&tx6_id)
-                .unwrap()
-                .is_pending
-                .load(Ordering::Relaxed),
+            !*pool.by_id.get(&tx6_id).unwrap().is_pending.borrow(),
             "Transaction 6 should be queued"
         );
 
@@ -1901,30 +1885,17 @@ mod tests {
 
         // Verify transactions 3 and 4 are now pending
         assert!(
-            pool.by_id
-                .get(&tx3_id)
-                .unwrap()
-                .is_pending
-                .load(Ordering::Relaxed),
+            *pool.by_id.get(&tx3_id).unwrap().is_pending.borrow(),
             "Transaction 3 should be pending"
         );
         assert!(
-            pool.by_id
-                .get(&tx4_id)
-                .unwrap()
-                .is_pending
-                .load(Ordering::Relaxed),
+            *pool.by_id.get(&tx4_id).unwrap().is_pending.borrow(),
             "Transaction 4 should be pending"
         );
 
         // Verify transaction 6 is still queued
         assert!(
-            !pool
-                .by_id
-                .get(&tx6_id)
-                .unwrap()
-                .is_pending
-                .load(Ordering::Relaxed),
+            !*pool.by_id.get(&tx6_id).unwrap().is_pending.borrow(),
             "Transaction 6 should still be queued (gap at nonce 5)"
         );
 
@@ -2137,11 +2108,7 @@ mod tests {
 
         // Verify tx2 is pending before removal
         assert!(
-            pool.by_id
-                .get(&tx2_id)
-                .unwrap()
-                .is_pending
-                .load(Ordering::Relaxed),
+            *pool.by_id.get(&tx2_id).unwrap().is_pending.borrow(),
             "tx2 should be pending before removal"
         );
 
@@ -2158,12 +2125,7 @@ mod tests {
 
         // Verify tx2 is now demoted to queued since tx1 removal creates a gap
         assert!(
-            !pool
-                .by_id
-                .get(&tx2_id)
-                .unwrap()
-                .is_pending
-                .load(Ordering::Relaxed),
+            !*pool.by_id.get(&tx2_id).unwrap().is_pending.borrow(),
             "tx2 should be demoted to queued after tx1 removal creates a gap"
         );
 
@@ -2408,36 +2370,30 @@ mod tests {
 
         // Only tx0 should be pending, rest should be queued
         let tx0_id = AA2dTransactionId::new(seq_id, 0);
+        assert!(*pool.by_id.get(&tx0_id).unwrap().is_pending.borrow());
         assert!(
-            pool.by_id
-                .get(&tx0_id)
-                .unwrap()
-                .is_pending
-                .load(Ordering::Relaxed)
-        );
-        assert!(
-            !pool
+            !*pool
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 5))
                 .unwrap()
                 .is_pending
-                .load(Ordering::Relaxed)
+                .borrow()
         );
         assert!(
-            !pool
+            !*pool
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 10))
                 .unwrap()
                 .is_pending
-                .load(Ordering::Relaxed)
+                .borrow()
         );
         assert!(
-            !pool
+            !*pool
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
                 .is_pending
-                .load(Ordering::Relaxed)
+                .borrow()
         );
         assert_eq!(pool.independent_transactions.len(), 1);
 
@@ -2462,30 +2418,26 @@ mod tests {
         for nonce in 0..=5 {
             let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
-                pool.by_id
-                    .get(&id)
-                    .unwrap()
-                    .is_pending
-                    .load(Ordering::Relaxed),
+                *pool.by_id.get(&id).unwrap().is_pending.borrow(),
                 "Nonce {nonce} should be pending"
             );
         }
         // [10, 15] should still be queued
         assert!(
-            !pool
+            !*pool
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 10))
                 .unwrap()
                 .is_pending
-                .load(Ordering::Relaxed)
+                .borrow()
         );
         assert!(
-            !pool
+            !*pool
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
                 .is_pending
-                .load(Ordering::Relaxed)
+                .borrow()
         );
 
         // Fill gap [6,7,8,9]
@@ -2509,22 +2461,18 @@ mod tests {
         for nonce in 0..=10 {
             let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
-                pool.by_id
-                    .get(&id)
-                    .unwrap()
-                    .is_pending
-                    .load(Ordering::Relaxed),
+                *pool.by_id.get(&id).unwrap().is_pending.borrow(),
                 "Nonce {nonce} should be pending"
             );
         }
         // Only [15] should be queued
         assert!(
-            !pool
+            !*pool
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
                 .is_pending
-                .load(Ordering::Relaxed)
+                .borrow()
         );
 
         // Fill final gap [11,12,13,14]
@@ -2548,11 +2496,7 @@ mod tests {
         for nonce in 0..=15 {
             let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
-                pool.by_id
-                    .get(&id)
-                    .unwrap()
-                    .is_pending
-                    .load(Ordering::Relaxed),
+                *pool.by_id.get(&id).unwrap().is_pending.borrow(),
                 "Nonce {nonce} should be pending"
             );
         }
@@ -2590,11 +2534,12 @@ mod tests {
         // All should be pending
         for nonce in 0..=4 {
             assert!(
-                pool.by_id
+                *pool
+                    .by_id
                     .get(&AA2dTransactionId::new(seq_id, nonce))
                     .unwrap()
                     .is_pending
-                    .load(Ordering::Relaxed)
+                    .borrow()
             );
         }
 
@@ -2755,13 +2700,7 @@ mod tests {
             };
             for nonce in 0..TXS_PER_SENDER {
                 let id = AA2dTransactionId::new(seq_id, nonce);
-                assert!(
-                    pool.by_id
-                        .get(&id)
-                        .unwrap()
-                        .is_pending
-                        .load(Ordering::Relaxed)
-                );
+                assert!(*pool.by_id.get(&id).unwrap().is_pending.borrow());
             }
         }
 
