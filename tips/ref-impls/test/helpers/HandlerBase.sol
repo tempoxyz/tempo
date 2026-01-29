@@ -127,6 +127,47 @@ abstract contract HandlerBase is InvariantBase {
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
     }
 
+    /// @notice Setup a transfer context with skip tracking (non-view version)
+    /// @dev Use this when you need to track why handlers skip
+    function _setupTransferContextWithTracking(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amountSeed,
+        uint256 sigTypeSeed,
+        uint256 minAmount,
+        uint256 maxAmount
+    ) internal returns (TxContext memory ctx, bool skip) {
+        ctx.senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        ctx.sigType = _getRandomSignatureType(sigTypeSeed);
+        ctx.sender = _getSenderForSigType(ctx.senderIdx, ctx.sigType);
+        ctx.recipient = actors[recipientIdx];
+        ctx.amount = bound(amountSeed, minAmount, maxAmount);
+
+        skip = !_checkBalanceWithTracking(ctx.sender, ctx.amount);
+    }
+
+    /// @notice Setup a 2D nonce transfer context with skip tracking
+    function _setup2dNonceTransferContextWithTracking(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amountSeed,
+        uint256 nonceKeySeed,
+        uint256 sigTypeSeed,
+        uint256 minAmount,
+        uint256 maxAmount
+    ) internal returns (TxContext memory ctx, bool skip) {
+        (ctx, skip) = _setupTransferContextWithTracking(
+            actorSeed, recipientSeed, amountSeed, sigTypeSeed, minAmount, maxAmount
+        );
+        ctx.nonceKey = uint64(bound(nonceKeySeed, 1, 100));
+        ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
+    }
+
     // ============ Nonce Assertion Helpers ============
 
     /// @notice Assert protocol nonce matches ghost state (for debugging)

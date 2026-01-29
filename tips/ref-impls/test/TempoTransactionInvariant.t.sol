@@ -372,17 +372,17 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         );
 
         uint64 currentNonce = uint64(ghost_protocolNonce[ctx.sender]);
-        (bytes memory signedTx, address sender) = _buildAndSignTransfer(
+        (bytes memory signedTx,) = _buildAndSignTransfer(
             ctx.senderIdx, ctx.recipient, ctx.amount, currentNonce, sigTypeSeed
         );
 
-        ghost_previousProtocolNonce[sender] = ghost_protocolNonce[sender];
+        ghost_previousProtocolNonce[ctx.sender] = ghost_protocolNonce[ctx.sender];
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _recordProtocolNonceTxSuccess(sender);
+            _recordProtocolNonceTxSuccess(ctx.sender);
         } catch (bytes memory reason) {
-            _handleRevertProtocol(sender);
+            _handleRevertProtocol(ctx.sender);
         }
     }
 
