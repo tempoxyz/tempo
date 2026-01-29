@@ -9,7 +9,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title TIP20Factory Invariant Tests
 /// @notice Fuzz-based invariant tests for the TIP20Factory implementation
-/// @dev Tests invariants TEMPO-FAC1 through TEMPO-FAC10 as documented in README.md
+/// @dev Tests invariants TEMPO-FAC1 through TEMPO-FAC12 as documented in README.md
 contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
     /// @dev Log file path for recording actions
