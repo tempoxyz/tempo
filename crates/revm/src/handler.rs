@@ -45,7 +45,7 @@ use tempo_primitives::transaction::{
 };
 
 use crate::{
-    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
+    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
@@ -170,6 +170,26 @@ fn adjusted_initial_gas(
     } else {
         *init_and_floor_gas
     }
+}
+
+/// Checks if gas limit is sufficient and returns OOG frame result if not.
+///
+/// For T0+, validates gas limit covers intrinsic gas. For pre-T0, skips check
+/// to maintain backward compatibility.
+#[inline]
+fn check_gas_limit(
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    tx: &TempoTxEnv,
+    adjusted_gas: &InitialAndFloorGas,
+) -> Option<FrameResult> {
+    if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
+        let kind = *tx
+            .first_call()
+            .expect("we already checked that there is at least one call in aa tx")
+            .0;
+        return Some(oog_frame_result(kind, tx.gas_limit()));
+    }
+    None
 }
 
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
@@ -512,26 +532,16 @@ where
     ) -> Result<FrameResult, Self::Error> {
         let spec = evm.ctx_ref().cfg().spec();
         let adjusted_gas = adjusted_initial_gas(*spec, evm.initial_gas, init_and_floor_gas);
-
         let tx = evm.tx();
-        // For T0+, check gas limit covers intrinsic gas (including 2D nonce for AA txs)
-        // For pre-T0 (Genesis), skip this check to maintain backward compatibility -
-        // the original behavior didn't validate gas limit for 2D nonce cost upfront
-        if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
-            let kind = *tx
-                .first_call()
-                .expect("we already checked that there is at least one call in aa tx")
-                .0;
-            return Ok(oog_frame_result(kind, tx.gas_limit()));
+
+        if let Some(oog) = check_gas_limit(*spec, tx, &adjusted_gas) {
+            return Ok(oog);
         }
 
-        // Check if this is an AA transaction by checking for tempo_tx_env
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
-            // AA transaction - use batch execution with calls field
             let calls = tempo_tx_env.aa_calls.clone();
             self.execute_multi_call(evm, &adjusted_gas, calls)
         } else {
-            // Standard transaction - use single-call execution
             self.execute_single_call(evm, &adjusted_gas)
         }
     }
@@ -1538,23 +1548,15 @@ where
         let adjusted_gas = adjusted_initial_gas(*spec, evm.initial_gas, init_and_floor_gas);
 
         let tx = evm.tx();
-        // For T0+, check gas limit covers intrinsic gas (including 2D nonce for AA txs)
-        // For pre-T0 (Genesis), skip this check to maintain backward compatibility
-        if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
-            let kind = *tx
-                .first_call()
-                .expect("we already checked that there is at least one call in aa tx")
-                .0;
-            return Ok(oog_frame_result(kind, tx.gas_limit()));
+
+        if let Some(oog) = check_gas_limit(*spec, tx, &adjusted_gas) {
+            return Ok(oog);
         }
 
-        // Check if this is an AA transaction by checking for tempo_tx_env
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
-            // AA transaction - use batch execution with calls field
             let calls = tempo_tx_env.aa_calls.clone();
             self.inspect_execute_multi_call(evm, &adjusted_gas, calls)
         } else {
-            // Standard transaction - use single-call execution
             self.inspect_execute_single_call(evm, &adjusted_gas)
         }
     }
