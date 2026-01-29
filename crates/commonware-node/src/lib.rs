@@ -12,8 +12,8 @@ pub(crate) mod epoch;
 pub(crate) mod executor;
 pub mod feed;
 pub mod metrics;
-pub(crate) mod network;
 pub mod node;
+pub mod p2p;
 pub(crate) mod utils;
 
 pub(crate) mod subblocks;
@@ -22,10 +22,14 @@ use commonware_runtime::Metrics as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_node::TempoFullNode;
 
-pub use crate::config::{
-    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
-    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
+pub use crate::{
+    config::{
+        BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT,
+        CERTIFICATES_LIMIT, DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT,
+        RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
+        VOTES_CHANNEL_IDENT, VOTES_LIMIT,
+    },
+    p2p::{Channels, P2pNetwork, TempoNetworkBuilder},
 };
 
 pub use args::Args;
@@ -43,7 +47,7 @@ pub async fn run_consensus_stack(
         .signing_key()?
         .ok_or_eyre("required option `consensus.signing-key` not set")?;
 
-    let mut net = network::TempoNetworkBuilder::default()
+    let mut net = TempoNetworkBuilder::default()
         .with_signing_key(signing_key.clone().into_inner())
         .with_listen_address(config.listen_address)
         .with_mailbox_size(config.mailbox_size)
@@ -54,16 +58,15 @@ pub async fn run_consensus_stack(
         .build(context)
         .wrap_err("failed to build network")?;
 
-    let channels = net.register_channels();
-    let oracle = net.oracle().clone();
+    let channels = net.register_channels().await?;
 
     let consensus_engine = crate::consensus::Builder {
         fee_recipient: config
             .fee_recipient
             .ok_or_eyre("required option `consensus.fee-recipient` not set")?,
         execution_node: Some(execution_node),
-        blocker: oracle.clone(),
-        peer_manager: oracle.clone(),
+        blocker: net.blocker(),
+        peer_manager: net.peer_manager(),
         partition_prefix: "engine".into(),
         signer: signing_key.into_inner(),
         share,
