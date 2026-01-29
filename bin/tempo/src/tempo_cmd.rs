@@ -2,8 +2,7 @@ use std::{collections::HashMap, fs::OpenOptions, path::PathBuf, sync::Arc};
 
 use alloy_primitives::Address;
 use alloy_provider::Provider;
-
-use alloy_rpc_types_eth::TransactionRequest;
+use alloy_rpc_types_eth::{BlockId, TransactionRequest};
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
 use commonware_codec::ReadExt as _;
@@ -45,6 +44,8 @@ pub(crate) enum ConsensusSubcommand {
     CalculatePublicKey(CalculatePublicKey),
     /// Query validator info from the previous epoch's DKG outcome and current contract state.
     ValidatorsInfo(ValidatorsInfo),
+    /// Read ValidatorConfig storage directly via eth_getStorageAt.
+    ValidatorConfigStorage(ValidatorConfigStorage),
 }
 
 impl ConsensusSubcommand {
@@ -53,6 +54,7 @@ impl ConsensusSubcommand {
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
             Self::ValidatorsInfo(args) => args.run(),
+            Self::ValidatorConfigStorage(args) => args.run(),
         }
     }
 }
@@ -305,4 +307,161 @@ impl ValidatorsInfo {
         println!("{}", serde_json::to_string_pretty(&output)?);
         Ok(())
     }
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct ValidatorConfigStorage {
+    /// RPC URL to query
+    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    rpc_url: String,
+
+    /// Query a specific validator by address instead of all validators
+    #[arg(long)]
+    validator: Option<Address>,
+
+    /// Block number or tag to query at (e.g., "latest", "pending", or a number)
+    #[arg(long, default_value_t = BlockId::latest())]
+    block: BlockId,
+}
+
+impl ValidatorConfigStorage {
+    fn run(self) -> eyre::Result<()> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .wrap_err("failed constructing async runtime")?
+            .block_on(self.run_async())
+    }
+
+    async fn run_async(self) -> eyre::Result<()> {
+        use alloy_provider::ProviderBuilder;
+
+        let block_id = self.block;
+
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect(&self.rpc_url)
+            .await
+            .wrap_err("failed to connect to RPC")?;
+
+        if let Some(validator_addr) = self.validator {
+            let result = provider
+                .call(
+                    TransactionRequest::default()
+                        .to(VALIDATOR_CONFIG_ADDRESS)
+                        .input(
+                            IValidatorConfig::validatorsCall {
+                                validator: validator_addr,
+                            }
+                            .abi_encode()
+                            .into(),
+                        )
+                        .into(),
+                )
+                .block(block_id)
+                .await
+                .wrap_err("failed to call validators")?;
+
+            let validator = IValidatorConfig::validatorsCall::abi_decode_returns(&result)
+                .wrap_err("failed to decode validators response")?;
+
+            let entry = ValidatorOutputEntry {
+                address: validator.validatorAddress,
+                public_key: alloy_primitives::hex::encode(validator.publicKey),
+                active: validator.active,
+                index: validator.index,
+                inbound_address: validator.inboundAddress,
+                outbound_address: validator.outboundAddress,
+            };
+
+            println!("{}", serde_json::to_string_pretty(&entry)?);
+        } else {
+            let owner_result = provider
+                .call(
+                    TransactionRequest::default()
+                        .to(VALIDATOR_CONFIG_ADDRESS)
+                        .input(IValidatorConfig::ownerCall {}.abi_encode().into())
+                        .into(),
+                )
+                .block(block_id)
+                .await
+                .wrap_err("failed to call owner")?;
+            let owner = IValidatorConfig::ownerCall::abi_decode_returns(&owner_result)
+                .wrap_err("failed to decode owner response")?;
+
+            let next_dkg_result = provider
+                .call(
+                    TransactionRequest::default()
+                        .to(VALIDATOR_CONFIG_ADDRESS)
+                        .input(
+                            IValidatorConfig::getNextFullDkgCeremonyCall {}
+                                .abi_encode()
+                                .into(),
+                        )
+                        .into(),
+                )
+                .block(block_id)
+                .await
+                .wrap_err("failed to call getNextFullDkgCeremony")?;
+            let next_dkg_ceremony =
+                IValidatorConfig::getNextFullDkgCeremonyCall::abi_decode_returns(&next_dkg_result)
+                    .wrap_err("failed to decode getNextFullDkgCeremony response")?;
+
+            let validators_result = provider
+                .call(
+                    TransactionRequest::default()
+                        .to(VALIDATOR_CONFIG_ADDRESS)
+                        .input(IValidatorConfig::getValidatorsCall {}.abi_encode().into())
+                        .into(),
+                )
+                .block(block_id)
+                .await
+                .wrap_err("failed to call getValidators")?;
+            let validators =
+                IValidatorConfig::getValidatorsCall::abi_decode_returns(&validators_result)
+                    .wrap_err("failed to decode getValidators response")?;
+
+            let validators: Vec<ValidatorOutputEntry> = validators
+                .into_iter()
+                .map(|v| ValidatorOutputEntry {
+                    address: v.validatorAddress,
+                    public_key: alloy_primitives::hex::encode(v.publicKey),
+                    active: v.active,
+                    index: v.index,
+                    inbound_address: v.inboundAddress,
+                    outbound_address: v.outboundAddress,
+                })
+                .collect();
+
+            let output = ValidatorConfigOutput {
+                contract_address: VALIDATOR_CONFIG_ADDRESS,
+                owner,
+                next_dkg_ceremony,
+                validators,
+            };
+
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+
+        Ok(())
+    }
+}
+
+/// Output structure for validator config query
+#[derive(Debug, Serialize)]
+struct ValidatorConfigOutput {
+    contract_address: Address,
+    owner: Address,
+    next_dkg_ceremony: u64,
+    validators: Vec<ValidatorOutputEntry>,
+}
+
+/// Individual validator entry
+#[derive(Debug, Serialize)]
+struct ValidatorOutputEntry {
+    address: Address,
+    public_key: String,
+    active: bool,
+    index: u64,
+    inbound_address: String,
+    outbound_address: String,
 }
