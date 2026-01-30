@@ -5,7 +5,7 @@ use tempo_precompiles::{
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
     test_util::TIP20Setup,
     tip20::{ISSUER_ROLE, ITIP20, PAUSE_ROLE, UNPAUSE_ROLE},
-    tip403_registry::{ITIP403Registry, TIP403Registry},
+    tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 
 fn tip20_metadata(c: &mut Criterion) {
@@ -545,11 +545,11 @@ fn tip403_registry_view(c: &mut Criterion) {
 
             b.iter(|| {
                 let registry = black_box(&mut registry);
-                let call = black_box(ITIP403Registry::isAuthorizedCall {
-                    policyId: policy_id,
-                    user,
-                });
-                let result = registry.is_authorized(call).unwrap();
+                let policy_id = black_box(policy_id);
+                let user = black_box(user);
+                let result = registry
+                    .is_authorized_as(policy_id, user, AuthRole::Transfer)
+                    .unwrap();
                 black_box(result);
             });
         });
