@@ -3803,7 +3803,7 @@ mod tests {
                     restricted: true,
                 },
             )?;
-            assert!(!registry.is_authorized_as(policy_id, alice, AuthRole::Transfer)?);
+            assert!(!registry.is_authorized_as(policy_id, alice, AuthRole::sender())?);
 
             // Attempt to place order using internal balance - should fail
             let tick = 0i16;
