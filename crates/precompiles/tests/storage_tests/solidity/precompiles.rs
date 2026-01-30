@@ -234,7 +234,12 @@ fn export_all_storage_constants() {
 
         let compound_policy_data_struct = {
             use tempo_precompiles::tip403_registry::__packing_compound_policy_data::*;
-            struct_fields!(base_slot, sender_policy_id, recipient_policy_id, mint_recipient_policy_id)
+            struct_fields!(
+                base_slot,
+                sender_policy_id,
+                recipient_policy_id,
+                mint_recipient_policy_id
+            )
         };
 
         all_constants.insert(
