@@ -312,17 +312,32 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             revert("TEMPO-FAC7: USD token with non-USD quote should fail");
         } catch (bytes memory reason) {
             vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                ITIP20Factory.InvalidQuoteToken.selector,
-                "TEMPO-FAC7: Should revert with InvalidQuoteToken"
+            bytes4 selector = bytes4(reason);
+            // Accept either InvalidQuoteToken (expected) or TokenAlreadyExists (address collision
+            // from another handler creating a token at the same computed address)
+            assertTrue(
+                selector == ITIP20Factory.InvalidQuoteToken.selector
+                    || selector == ITIP20Factory.TokenAlreadyExists.selector,
+                "TEMPO-FAC7: Should revert with InvalidQuoteToken or TokenAlreadyExists"
             );
-            _totalUsdWithNonUsdQuoteRejected++;
-            _log(
-                string.concat(
-                    "CREATE_USD_WITH_NON_USD_QUOTE: ", _getActorIndex(actor), " correctly rejected"
-                )
-            );
+            if (selector == ITIP20Factory.InvalidQuoteToken.selector) {
+                _totalUsdWithNonUsdQuoteRejected++;
+                _log(
+                    string.concat(
+                        "CREATE_USD_WITH_NON_USD_QUOTE: ",
+                        _getActorIndex(actor),
+                        " correctly rejected with InvalidQuoteToken"
+                    )
+                );
+            } else {
+                _log(
+                    string.concat(
+                        "CREATE_USD_WITH_NON_USD_QUOTE: ",
+                        _getActorIndex(actor),
+                        " skipped - address already exists"
+                    )
+                );
+            }
         }
     }
 
