@@ -1,10 +1,16 @@
 use crate::{
     Precompile, dispatch_call, input_cost, mutate, mutate_void, tip403_registry::TIP403Registry,
-    view,
+    unknown_selector, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
+use tempo_contracts::precompiles::ITIP403Registry::{
+    ITIP403RegistryCalls, compoundPolicyDataCall, createCompoundPolicyCall,
+    isAuthorizedMintRecipientCall, isAuthorizedRecipientCall, isAuthorizedSenderCall,
+};
 
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -22,16 +28,41 @@ impl Precompile for TIP403Registry {
                 ITIP403RegistryCalls::policyExists(call) => view(call, |c| self.policy_exists(c)),
                 ITIP403RegistryCalls::policyData(call) => view(call, |c| self.policy_data(c)),
                 ITIP403RegistryCalls::isAuthorized(call) => view(call, |c| self.is_authorized(c)),
+                // TIP-1015: T1+ only
                 ITIP403RegistryCalls::isAuthorizedSender(call) => {
+                    if !self.storage.spec().is_t1() {
+                        return unknown_selector(
+                            isAuthorizedSenderCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
                     view(call, |c| self.is_authorized_sender(c))
                 }
                 ITIP403RegistryCalls::isAuthorizedRecipient(call) => {
+                    if !self.storage.spec().is_t1() {
+                        return unknown_selector(
+                            isAuthorizedRecipientCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
                     view(call, |c| self.is_authorized_recipient(c))
                 }
                 ITIP403RegistryCalls::isAuthorizedMintRecipient(call) => {
+                    if !self.storage.spec().is_t1() {
+                        return unknown_selector(
+                            isAuthorizedMintRecipientCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
                     view(call, |c| self.is_authorized_mint_recipient(c))
                 }
                 ITIP403RegistryCalls::compoundPolicyData(call) => {
+                    if !self.storage.spec().is_t1() {
+                        return unknown_selector(
+                            compoundPolicyDataCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
                     view(call, |c| self.compound_policy_data(c))
                 }
                 ITIP403RegistryCalls::createPolicy(call) => {
@@ -51,7 +82,14 @@ impl Precompile for TIP403Registry {
                 ITIP403RegistryCalls::modifyPolicyBlacklist(call) => {
                     mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c))
                 }
+                // TIP-1015: T1+ only
                 ITIP403RegistryCalls::createCompoundPolicy(call) => {
+                    if !self.storage.spec().is_t1() {
+                        return unknown_selector(
+                            createCompoundPolicyCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
                     mutate(call, msg_sender, |s, c| self.create_compound_policy(s, c))
                 }
             },
@@ -512,7 +550,8 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        // Use T1 to test all selectors including TIP-1015 compound policy functions
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
