@@ -2756,16 +2756,16 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     let keychain_gas_u64 = u64::from_str_radix(keychain_gas.trim_start_matches("0x"), 16)?;
     println!("  Keychain gas: {keychain_gas_u64}");
 
-    // Keychain with same-tx auth adds ~289,693 gas which includes:
+    // Keychain with same-tx auth adds ~285,926 gas which includes:
     // - 3,000 for keychain validation
     // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
     // - storage costs for key authorization precompile
     let keychain_diff = keychain_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (289_000..=291_000).contains(&keychain_diff.unsigned_abs()),
-        "Keychain + KeyAuth should add ~289,693 gas: actual diff {keychain_diff}"
+        (285_000..=287_000).contains(&keychain_diff.unsigned_abs()),
+        "Keychain + KeyAuth should add ~285,926 gas: actual diff {keychain_diff}"
     );
-    println!("  ✓ Keychain + KeyAuth adds {keychain_diff} gas (expected ~289,693)");
+    println!("  ✓ Keychain + KeyAuth adds {keychain_diff} gas (expected ~285,926)");
 
     // Test 3: Keychain signature with P256 inner
     println!("\nTest 3: Keychain signature (P256 inner)");
@@ -2789,17 +2789,17 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         u64::from_str_radix(keychain_p256_gas.trim_start_matches("0x"), 16)?;
     println!("  Keychain P256 gas: {keychain_p256_gas_u64}");
 
-    // Keychain P256 with same-tx auth adds ~294,733 gas which includes:
+    // Keychain P256 with same-tx auth adds ~290,966 gas which includes:
     // - 3,000 for keychain validation
     // - 5,000 for P256 signature verification
     // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
     // - storage costs for key authorization precompile
     let keychain_p256_diff = keychain_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (294_000..=296_000).contains(&keychain_p256_diff.unsigned_abs()),
-        "Keychain P256 + KeyAuth should add ~294,733 gas: actual diff {keychain_p256_diff}"
+        (290_000..=292_000).contains(&keychain_p256_diff.unsigned_abs()),
+        "Keychain P256 + KeyAuth should add ~290,966 gas: actual diff {keychain_p256_diff}"
     );
-    println!("  ✓ Keychain P256 + KeyAuth adds {keychain_p256_diff} gas (expected ~294,733)");
+    println!("  ✓ Keychain P256 + KeyAuth adds {keychain_p256_diff} gas (expected ~290,966)");
 
     // Test 4: KeyAuthorization with secp256k1 (no limits)
     println!("\nTest 4: KeyAuthorization (secp256k1, no limits)");
@@ -2818,15 +2818,15 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     let key_auth_gas_u64 = u64::from_str_radix(key_auth_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth gas: {key_auth_gas_u64}");
 
-    // KeyAuth secp256k1 adds ~286,669 gas which includes:
+    // KeyAuth secp256k1 adds ~282,903 gas which includes:
     // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
     // - storage costs for key authorization precompile
     let key_auth_diff = key_auth_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (286_000..=288_000).contains(&key_auth_diff.unsigned_abs()),
-        "KeyAuth secp256k1 should add ~286,669 gas: actual diff {key_auth_diff}"
+        (282_000..=284_000).contains(&key_auth_diff.unsigned_abs()),
+        "KeyAuth secp256k1 should add ~282,903 gas: actual diff {key_auth_diff}"
     );
-    println!("  ✓ KeyAuth secp256k1 adds {key_auth_diff} gas (expected ~286,669)");
+    println!("  ✓ KeyAuth secp256k1 adds {key_auth_diff} gas (expected ~282,903)");
 
     // Test 5: KeyAuthorization with P256 key type (no limits)
     // Note: The key authorization signature is secp256k1 (signed by root key).
@@ -2849,15 +2849,15 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         u64::from_str_radix(key_auth_p256_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth P256 key type gas: {key_auth_p256_gas_u64}");
 
-    // KeyAuth with P256 key type has same gas as secp256k1 (~286,669) because
+    // KeyAuth with P256 key type has same gas as secp256k1 (~282,903) because
     // the authorization signature itself is always secp256k1 from the root key
     let key_auth_p256_diff = key_auth_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (286_000..=288_000).contains(&key_auth_p256_diff.unsigned_abs()),
-        "KeyAuth P256 key type should add ~286,669 gas (same as secp256k1): actual diff {key_auth_p256_diff}"
+        (282_000..=284_000).contains(&key_auth_p256_diff.unsigned_abs()),
+        "KeyAuth P256 key type should add ~282,903 gas (same as secp256k1): actual diff {key_auth_p256_diff}"
     );
     println!(
-        "  ✓ KeyAuth P256 key type adds {key_auth_p256_diff} gas (same as secp256k1, ~286,669)"
+        "  ✓ KeyAuth P256 key type adds {key_auth_p256_diff} gas (same as secp256k1, ~282,903)"
     );
 
     // Test 6: KeyAuthorization with spending limits
@@ -2878,16 +2878,16 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         u64::from_str_radix(key_auth_limits_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth with 3 limits gas: {key_auth_limits_gas_u64}");
 
-    // KeyAuth secp256k1 with 3 limits adds ~355,612 gas which includes:
+    // KeyAuth secp256k1 with 3 limits adds ~349,426 gas which includes:
     // - ~30,000 for KeyAuthorization base (27,000 base + 3,000 ecrecover)
     // - 3 * 22,000 = 66,000 for spending limits
     // - storage costs for key authorization precompile
     let key_auth_limits_diff = key_auth_limits_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (355_000..=357_000).contains(&key_auth_limits_diff.unsigned_abs()),
-        "KeyAuth with 3 limits should add ~355,612 gas: actual diff {key_auth_limits_diff}"
+        (349_000..=351_000).contains(&key_auth_limits_diff.unsigned_abs()),
+        "KeyAuth with 3 limits should add ~349,426 gas: actual diff {key_auth_limits_diff}"
     );
-    println!("  ✓ KeyAuth with 3 limits adds {key_auth_limits_diff} gas (expected ~355,612)");
+    println!("  ✓ KeyAuth with 3 limits adds {key_auth_limits_diff} gas (expected ~349,426)");
 
     println!("\n✓ All gas estimation tests passed!");
     Ok(())

@@ -38,6 +38,11 @@ pub struct TempoPooledTransaction {
     nonce_key_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
+    /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
+    ///
+    /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
+    /// `None` for non-keychain transactions or keys that never expire.
+    key_expiry: OnceLock<Option<u64>>,
 }
 
 impl TempoPooledTransaction {
@@ -58,6 +63,7 @@ impl TempoPooledTransaction {
             is_payment,
             nonce_key_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
+            key_expiry: OnceLock::new(),
         }
     }
 
@@ -174,6 +180,23 @@ impl TempoPooledTransaction {
             tx: Arc::new(self.inner.transaction),
         }
     }
+
+    /// Sets the keychain key expiry timestamp for this transaction.
+    ///
+    /// Called during validation when we read the AuthorizedKey from state.
+    /// Pass `Some(expiry)` for keys with finite expiry, `None` for non-keychain txs
+    /// or keys that never expire.
+    pub fn set_key_expiry(&self, expiry: Option<u64>) {
+        let _ = self.key_expiry.set(expiry);
+    }
+
+    /// Returns the keychain key expiry timestamp, if set during validation.
+    ///
+    /// Returns `Some(expiry)` for keychain transactions with finite expiry.
+    /// Returns `None` if not a keychain tx, key never expires, or not yet validated.
+    pub fn key_expiry(&self) -> Option<u64> {
+        self.key_expiry.get().copied().flatten()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -203,6 +226,14 @@ pub enum TempoPoolTransactionError {
 
     #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
     InvalidValidAfter { valid_after: u64, max_allowed: u64 },
+
+    #[error(
+        "max_fee_per_gas {max_fee_per_gas} is below the minimum base fee {min_base_fee} for the current hardfork"
+    )]
+    FeeCapBelowMinBaseFee {
+        max_fee_per_gas: u128,
+        min_base_fee: u64,
+    },
 
     #[error(
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
@@ -256,6 +287,10 @@ pub enum TempoPoolTransactionError {
     /// Thrown when a call in an AA transaction is the second call and is a CREATE.
     #[error("CREATE calls must be the first call in an AA transaction")]
     CreateCallNotFirst,
+
+    /// Thrown when an AA transaction contains both a CREATE call and an authorization list.
+    #[error("CREATE calls are not allowed in the same transaction that has an authorization list")]
+    CreateCallWithAuthorizationList,
 
     /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
     #[error(
@@ -360,7 +395,9 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::NoCalls
-            | Self::CreateCallNotFirst => true,
+            | Self::CreateCallWithAuthorizationList
+            | Self::CreateCallNotFirst
+            | Self::FeeCapBelowMinBaseFee { .. } => true,
         }
     }
 
@@ -603,9 +640,9 @@ mod tests {
             .build();
 
         // fee_token_cost = cost - value = gas spending
-        // gas spending = calc_gas_balance_spending(1_000_000, 2_000_000_000)
-        //              = (1_000_000 * 2_000_000_000) / 1_000_000_000_000 = 2000
-        let expected_fee_cost = U256::from(2000);
+        // gas spending = calc_gas_balance_spending(1_000_000, 20_000_000_000)
+        //              = (1_000_000 * 20_000_000_000) / 1_000_000_000_000 = 20000
+        let expected_fee_cost = U256::from(20000);
         assert_eq!(tx.fee_token_cost(), expected_fee_cost);
         assert_eq!(tx.inner.cost, expected_fee_cost + value);
     }
@@ -855,7 +892,7 @@ mod tests {
         let aa_tx = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
-            max_fee_per_gas: 2_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
             calls: vec![Call {
                 to: TxKind::Call(Address::random()),
@@ -890,7 +927,7 @@ mod tests {
         assert_eq!(tx.chain_id(), Some(1));
         assert_eq!(tx.nonce(), 0);
         assert_eq!(tx.gas_limit(), 1_000_000);
-        assert_eq!(tx.max_fee_per_gas(), 2_000_000_000);
+        assert_eq!(tx.max_fee_per_gas(), 20_000_000_000);
         assert_eq!(tx.max_priority_fee_per_gas(), Some(1_000_000_000));
         assert!(tx.is_dynamic_fee());
         assert!(!tx.is_create());
