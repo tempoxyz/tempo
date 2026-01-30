@@ -462,6 +462,39 @@ abstract contract InvariantBaseTest is BaseTest {
             || selector == ITIP20Factory.TokenAlreadyExists.selector || _isKnownTIP20Error(selector);
     }
 
+    /*//////////////////////////////////////////////////////////////
+                       FACTORY ADDRESS HELPERS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Checks if a salt would produce a usable token address
+    /// @param actor The actor creating the token
+    /// @param salt The salt to check
+    /// @return available True if address is available for creation
+    /// @return existing Non-zero if token already exists at this address (for collision checks)
+    function _checkTokenAddress(address actor, bytes32 salt)
+        internal
+        view
+        returns (bool available, address existing)
+    {
+        try factory.getTokenAddress(actor, salt) returns (address predicted) {
+            if (predicted.code.length != 0) {
+                return (false, predicted); // Collision - return existing token
+            }
+            return (true, address(0)); // Available
+        } catch {
+            return (false, address(0)); // Reserved
+        }
+    }
+
+    /// @dev Checks if an address is in the reserved TIP20 range
+    /// @param addr The address to check
+    /// @return True if address is reserved (prefix 0x20C0... with lower 64 bits < 1024)
+    function _isReservedTIP20Address(address addr) internal pure returns (bool) {
+        bytes12 prefix = bytes12(bytes20(addr));
+        uint64 lowerBytes = uint64(uint160(addr));
+        return prefix == bytes12(0x20c000000000000000000000) && lowerBytes < 1024;
+    }
+
     /// @dev Checks if an error is a known Nonce precompile error
     /// @param selector Error selector
     /// @return True if known Nonce error

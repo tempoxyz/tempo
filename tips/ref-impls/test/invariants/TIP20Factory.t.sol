@@ -259,85 +259,56 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         address actor = _selectActor(actorSeed);
 
         bytes32 eurSalt = keccak256(abi.encode(salt, "EUR"));
+
+        // Check EUR token address availability
+        (bool eurAvailable, address existingEur) = _checkTokenAddress(actor, eurSalt);
+
         address eurToken;
-
-        // Get or create a EUR token to use as quote
-        try factory.getTokenAddress(actor, eurSalt) returns (address predictedEurAddr) {
-            if (predictedEurAddr.code.length != 0) {
-                // Verify the existing token is actually a EUR token (not some other token
-                // that happened to be created at this address by another handler)
-                if (keccak256(bytes(TIP20(predictedEurAddr).currency())) != keccak256(bytes("EUR")))
-                {
-                    // Token exists but is not EUR - skip this test case
-                    return;
-                }
-                eurToken = predictedEurAddr;
-            } else {
-                vm.startPrank(actor);
-                try factory.createToken(
-                    "EUR Token", "EUR", "EUR", pathUSD, admin, eurSalt
-                ) returns (
-                    address addr
-                ) {
-                    eurToken = addr;
-                    _recordCreatedToken(actor, eurSalt, addr);
-                } catch (bytes memory reason) {
-                    vm.stopPrank();
-                    _assertKnownError(reason);
-                    return;
-                }
+        if (existingEur != address(0)) {
+            // Token exists - verify it's actually EUR (another handler may have created different token)
+            if (keccak256(bytes(TIP20(existingEur).currency())) != keccak256(bytes("EUR"))) {
+                return; // Skip - address collision with non-EUR token
+            }
+            eurToken = existingEur;
+        } else if (eurAvailable) {
+            // Create EUR token
+            vm.startPrank(actor);
+            try factory.createToken("EUR Token", "EUR", "EUR", pathUSD, admin, eurSalt) returns (address addr) {
+                eurToken = addr;
+                _recordCreatedToken(actor, eurSalt, addr);
+            } catch (bytes memory reason) {
                 vm.stopPrank();
-            }
-        } catch (bytes memory reason) {
-            if (bytes4(reason) == ITIP20Factory.AddressReserved.selector) {
+                _assertKnownError(reason);
                 return;
             }
-            revert("Unknown error in getTokenAddress");
+            vm.stopPrank();
+        } else {
+            return; // Reserved
         }
 
-        // Try to create a USD token with EUR quote - should fail
+        // Check USD token address availability
         bytes32 usdSalt = keccak256(abi.encode(salt, "USD_WITH_EUR"));
+        (bool usdAvailable,) = _checkTokenAddress(actor, usdSalt);
+        if (!usdAvailable) return;
 
-        try factory.getTokenAddress(actor, usdSalt) returns (address) { }
-        catch (bytes memory reason) {
-            if (bytes4(reason) == ITIP20Factory.AddressReserved.selector) {
-                return;
-            }
-            revert("Unknown error in getTokenAddress");
-        }
-
+        // Try to create a USD token with EUR quote - should fail with InvalidQuoteToken
         vm.startPrank(actor);
         try factory.createToken("Bad USD", "BUSD", "USD", ITIP20(eurToken), admin, usdSalt) {
             vm.stopPrank();
             revert("TEMPO-FAC7: USD token with non-USD quote should fail");
         } catch (bytes memory reason) {
             vm.stopPrank();
-            bytes4 selector = bytes4(reason);
-            // Accept either InvalidQuoteToken (expected) or TokenAlreadyExists (address collision
-            // from another handler creating a token at the same computed address)
-            assertTrue(
-                selector == ITIP20Factory.InvalidQuoteToken.selector
-                    || selector == ITIP20Factory.TokenAlreadyExists.selector,
-                "TEMPO-FAC7: Should revert with InvalidQuoteToken or TokenAlreadyExists"
+            assertEq(
+                bytes4(reason),
+                ITIP20Factory.InvalidQuoteToken.selector,
+                "TEMPO-FAC7: Should revert with InvalidQuoteToken"
             );
-            if (selector == ITIP20Factory.InvalidQuoteToken.selector) {
-                _totalUsdWithNonUsdQuoteRejected++;
-                _log(
-                    string.concat(
-                        "CREATE_USD_WITH_NON_USD_QUOTE: ",
-                        _getActorIndex(actor),
-                        " correctly rejected with InvalidQuoteToken"
-                    )
-                );
-            } else {
-                _log(
-                    string.concat(
-                        "CREATE_USD_WITH_NON_USD_QUOTE: ",
-                        _getActorIndex(actor),
-                        " skipped - address already exists"
-                    )
-                );
-            }
+            _totalUsdWithNonUsdQuoteRejected++;
+            _log(
+                string.concat(
+                    "CREATE_USD_WITH_NON_USD_QUOTE: ", _getActorIndex(actor), " correctly rejected"
+                )
+            );
         }
     }
 
@@ -397,17 +368,11 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         } else {
             // Check a random address - exclude known TIP20s and reserved range
             address checkAddr = address(uint160(addrSeed));
-
-            // Skip addresses in the reserved TIP20 range (prefix 0x20C0... with lower 64 bits < 1024)
-            // These addresses may have code from genesis/hardfork deployments
-            bool hasPrefix = bytes12(bytes20(checkAddr)) == bytes12(0x20c000000000000000000000);
-            uint64 lowerBytes = uint64(uint160(checkAddr));
-            bool isReserved = hasPrefix && lowerBytes < 1024;
-
             if (
                 !_isCreatedToken[checkAddr] && checkAddr != address(pathUSD)
                     && checkAddr != address(token1) && checkAddr != address(token2)
-                    && checkAddr != address(token3) && checkAddr != address(token4) && !isReserved
+                    && checkAddr != address(token3) && checkAddr != address(token4)
+                    && !_isReservedTIP20Address(checkAddr)
             ) {
                 assertFalse(
                     factory.isTIP20(checkAddr), "TEMPO-FAC8: Random address should not be TIP20"
