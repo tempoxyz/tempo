@@ -28,6 +28,9 @@ use alloy::{
     consensus::TxReceipt,
     primitives::{U256, uint},
 };
+// Note: StateOverride is needed when implementing custom EstimateCall
+#[allow(unused_imports)]
+use alloy_rpc_types_eth::state::StateOverride;
 use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -42,9 +45,13 @@ use reth_node_builder::{
     rpc::{EthApiBuilder, EthApiCtx},
 };
 use reth_provider::{ChainSpecProvider, ProviderError};
+// Note: EvmStateProvider is needed when implementing custom EstimateCall
+#[allow(unused_imports)]
+use reth_revm::database::EvmStateProvider;
 use reth_rpc::{DynRpcConverter, eth::EthApi};
+use reth_rpc_convert::RpcConverter;
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
+    EthApiTypes, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
         Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, LoadBlock,
         LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
@@ -326,6 +333,19 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     }
 }
 
+/// TIP-1000: New account cost added for nonce=0 transactions on T1+
+#[allow(dead_code)]
+const TIP1000_NEW_ACCOUNT_COST: u64 = 250_000;
+
+/// TIP-1000: Additional contract creation cost delta (500k - 53k = 447k)
+#[allow(dead_code)]
+const TIP1000_CREATE_COST_DELTA: u64 = 447_000;
+
+// Use the default EstimateCall implementation for now.
+// TODO: Implement custom EstimateCall to handle TIP-1000 nonce=0 gas estimation.
+// The fix needs to capture the original nonce, call parent implementation,
+// then add TIP-1000 costs if the original nonce was explicitly 0 and we're on T1+.
+// See: https://github.com/tempoxyz/tempo/pull/2254
 impl<N: FullNodeTypes<Types = TempoNode>> EstimateCall for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> LoadBlock for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> LoadReceipt for TempoEthApi<N> {}
