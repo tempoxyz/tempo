@@ -7,6 +7,8 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 /// @title TIP-1015 Compound Policy Invariant Tests
 /// @notice Invariant tests for compound transfer policies as specified in TIP-1015
 /// @dev Tests the 6 invariants from the TIP-1015 specification
+///      These tests only run against the Solidity reference implementation (!isTempo)
+///      since the Rust precompiles don't implement TIP-1015 yet.
 contract TIP1015InvariantTest is InvariantBaseTest {
 
     /*//////////////////////////////////////////////////////////////
@@ -33,6 +35,13 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     function setUp() public override {
         super.setUp();
+
+        // Skip all TIP-1015 tests when running against Rust precompiles
+        // since TIP-1015 is not yet implemented there
+        if (isTempo) {
+            return;
+        }
+
         _setupInvariantBase();
 
         whitelistedUser = makeAddr("whitelistedUser");
@@ -56,13 +65,21 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         vm.stopPrank();
     }
 
+    /// @dev Modifier to skip tests when running on Tempo (Rust precompiles)
+    modifier onlySolidityImpl() {
+        if (isTempo) {
+            return;
+        }
+        _;
+    }
+
     /*//////////////////////////////////////////////////////////////
                     INVARIANT 1: Simple Policy Constraint
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Compound policies can only reference simple policies
     /// @dev "All three policy IDs in a compound policy MUST reference simple policies"
-    function test_invariant1_cannotReferenceCompoundPolicy() public {
+    function test_invariant1_cannotReferenceCompoundPolicy() public onlySolidityImpl {
         vm.startPrank(admin);
 
         // Create a compound policy first
@@ -83,7 +100,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     }
 
     /// @notice All three positions can reference different simple policies
-    function test_invariant1_canReferenceSimplePolicies() public {
+    function test_invariant1_canReferenceSimplePolicies() public onlySolidityImpl {
         vm.startPrank(admin);
 
         uint64 compoundPolicy =
@@ -106,7 +123,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     /// @notice Compound policies are immutable with no admin
     /// @dev "Once created, a compound policy's constituent policy IDs cannot be changed"
-    function test_invariant2_compoundPolicyHasNoAdmin() public {
+    function test_invariant2_compoundPolicyHasNoAdmin() public onlySolidityImpl {
         vm.startPrank(admin);
 
         uint64 compoundPolicy =
@@ -124,7 +141,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     /// @notice Cannot modify compound policy whitelist/blacklist
     /// @dev Compound policies have no admin (address(0)), so modification attempts fail
-    function test_invariant2_cannotModifyCompoundPolicy() public {
+    function test_invariant2_cannotModifyCompoundPolicy() public onlySolidityImpl {
         vm.startPrank(admin);
 
         uint64 compoundPolicy =
@@ -146,7 +163,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice createCompoundPolicy MUST revert if any referenced policy doesn't exist
-    function test_invariant3_revertsOnNonExistentPolicy() public {
+    function test_invariant3_revertsOnNonExistentPolicy() public onlySolidityImpl {
         uint64 nonExistentPolicy = 99_999;
 
         vm.startPrank(admin);
@@ -170,7 +187,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     /// @notice For simple policies: sender = recipient = mintRecipient authorization
     /// @dev "For simple policies, isAuthorizedSender(p, u) MUST equal isAuthorizedRecipient(p, u)
     ///       MUST equal isAuthorizedMintRecipient(p, u)"
-    function test_invariant4_simplePolicyEquivalence() public view {
+    function test_invariant4_simplePolicyEquivalence() public onlySolidityImpl {
         // Test with whitelisted user on whitelist policy
         bool sender = registry.isAuthorizedSender(whitelistPolicy, whitelistedUser);
         bool recipient = registry.isAuthorizedRecipient(whitelistPolicy, whitelistedUser);
@@ -203,7 +220,10 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     }
 
     /// @notice Fuzz test: delegation correctness for any simple policy and user
-    function testFuzz_invariant4_simplePolicyEquivalence(uint256 policySeed, address user) public {
+    function testFuzz_invariant4_simplePolicyEquivalence(uint256 policySeed, address user)
+        public
+        onlySolidityImpl
+    {
         vm.assume(user != address(0));
 
         vm.startPrank(admin);
@@ -240,7 +260,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice isAuthorized(p, u) MUST equal isAuthorizedSender(p, u) && isAuthorizedRecipient(p, u)
-    function test_invariant5_isAuthorizedEquivalence() public {
+    function test_invariant5_isAuthorizedEquivalence() public onlySolidityImpl {
         vm.startPrank(admin);
 
         // Create compound policy with different sender/recipient policies
@@ -274,7 +294,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     }
 
     /// @notice Fuzz test: isAuthorized equivalence for compound policies
-    function testFuzz_invariant5_isAuthorizedEquivalence(address user) public {
+    function testFuzz_invariant5_isAuthorizedEquivalence(address user) public onlySolidityImpl {
         vm.assume(user != address(0));
 
         vm.startPrank(admin);
@@ -296,7 +316,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Compound policies MAY reference built-in policies 0 and 1
-    function test_invariant6_canReferenceBuiltinPolicies() public {
+    function test_invariant6_canReferenceBuiltinPolicies() public onlySolidityImpl {
         uint64 alwaysReject = 0;
         uint64 alwaysAllow = 1;
 
@@ -341,7 +361,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     /// @notice Test the vendor credits use case from the spec
     /// @dev "Credits that can be minted to anyone and spent to a specific vendor"
-    function test_vendorCreditsUseCase() public {
+    function test_vendorCreditsUseCase() public onlySolidityImpl {
         address vendor = makeAddr("vendor");
         address customer = makeAddr("customer");
         address randomPerson = makeAddr("randomPerson");
@@ -400,7 +420,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     /// @notice Test asymmetric transfer scenario from the spec
     /// @dev "Block sanctioned addresses from sending, while allowing anyone to receive"
-    function test_asymmetricSenderRestriction() public {
+    function test_asymmetricSenderRestriction() public onlySolidityImpl {
         address sanctionedUser = makeAddr("sanctionedUser");
         address normalUser = makeAddr("normalUser");
 
