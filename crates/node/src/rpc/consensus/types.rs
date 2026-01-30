@@ -3,6 +3,7 @@
 use alloy_primitives::B256;
 use futures::Future;
 use serde::{Deserialize, Serialize};
+use tempo_alloy::rpc::TempoHeaderResponse;
 use tokio::sync::broadcast;
 
 /// A block with a threshold BLS certificate (notarization or finalization).
@@ -65,6 +66,67 @@ pub struct ConsensusState {
     pub notarized: Option<CertifiedBlock>,
 }
 
+/// Error type for identity transition proof requests.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum IdentityProofError {
+    /// Node is not ready - consensus state not yet initialized.
+    #[error("node not ready")]
+    NotReady,
+    /// Block data has been pruned.
+    #[error("block data pruned at height {0}")]
+    PrunedData(u64),
+    /// Failed to decode DKG outcome from block.
+    #[error("malformed DKG outcome at height {0}")]
+    MalformedData(u64),
+}
+
+/// Response containing identity transition proofs.
+///
+/// Each transition represents a full DKG ceremony where the network's
+/// BLS public key changed. The proof demonstrates that the old network
+/// identity endorsed the new identity.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityTransitionResponse {
+    /// Network identity of the requested epoch.
+    pub identity: String,
+    /// List of identity transitions, ordered newest to oldest.
+    /// Empty if no full DKG ceremonies have occurred.
+    pub transitions: Vec<IdentityTransition>,
+}
+
+/// A single identity transition (full DKG event).
+///
+/// This proves that the network transitioned from `old_identity` to
+/// `new_identity` at the given epoch, with a certificate signed by
+/// the old network identity.
+///
+/// For genesis (epoch 0), `proof` will be `None` since there is no
+/// finalization certificate for the genesis block.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityTransition {
+    /// Epoch where the full DKG ceremony occurred.
+    pub transition_epoch: u64,
+    /// Hex-encoded BLS public key before the transition.
+    pub old_identity: String,
+    /// Hex-encoded BLS public key after the transition.
+    pub new_identity: String,
+    /// Proof of the transition. `None` for genesis identity (epoch 0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof: Option<TransitionProofData>,
+}
+
+/// Cryptographic proof data for an identity transition.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitionProofData {
+    /// The block header containing the new DKG outcome in extra_data.
+    pub header: TempoHeaderResponse,
+    /// Hex-encoded finalization certificate.
+    pub finalization_certificate: String,
+}
+
 /// Trait for accessing consensus feed data.
 pub trait ConsensusFeed: Send + Sync + 'static {
     /// Get a finalization by query (supports `Latest` or `Height`).
@@ -76,4 +138,14 @@ pub trait ConsensusFeed: Send + Sync + 'static {
 
     /// Subscribe to consensus events.
     fn subscribe(&self) -> impl Future<Output = Option<broadcast::Receiver<Event>>> + Send;
+
+    /// Get identity transition proofs (full DKG events where network public key changed).
+    ///
+    /// - `from_epoch`: Optional epoch to start searching from (defaults to latest finalized)
+    /// - `full`: If true, return all transitions back to genesis; if false, return only the most recent
+    fn get_identity_transition_proof(
+        &self,
+        from_epoch: Option<u64>,
+        full: bool,
+    ) -> impl Future<Output = Result<IdentityTransitionResponse, IdentityProofError>> + Send;
 }

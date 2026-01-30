@@ -163,7 +163,7 @@ async fn test_fee_transfer_logs() -> eyre::Result<()> {
     let tx = TransactionRequest::default()
         .into_create()
         .input(Bytes::from_static(&[0xef]).into())
-        .gas_limit(100000);
+        .gas_limit(1_000_000);
     let pending_tx = provider.send_transaction(tx).await?;
     let tx_hash = pending_tx.watch().await?;
     let receipt = provider

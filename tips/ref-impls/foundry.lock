@@ -1,0 +1,11 @@
+{
+  "lib/forge-std": {
+    "rev": "f61e4dd133379a4536a54ee57a808c9c00019b60"
+  },
+  "lib/tempo-std": {
+    "branch": {
+      "name": "master",
+      "rev": "91dfcf70289b07ec6409f289917c6d4c9ce7e73e"
+    }
+  }
+}

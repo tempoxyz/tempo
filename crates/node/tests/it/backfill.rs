@@ -12,7 +12,7 @@ use reth_e2e_test_utils::wallet::Wallet;
 use reth_node_api::EngineApiMessageVersion;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_primitives_traits::{AlloyBlockHeader as _, transaction::TxHashRef};
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 
 /// Test that verifies backfill sync works correctly.
 ///
@@ -72,10 +72,10 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         let raw_tx = {
             let mut tx = TxEip1559 {
                 chain_id,
-                gas_limit: 21000,
+                gas_limit: 300_000,
                 to: Address::ZERO.into(),
-                max_fee_per_gas: TEMPO_BASE_FEE as u128,
-                max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+                max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+                max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
                 ..Default::default()
             };
             let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();

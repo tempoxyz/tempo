@@ -10,7 +10,7 @@ use std::{
 use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters, marshal,
-    simplex::scheme::bls12381_threshold::Scheme,
+    simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{FixedEpocher, ViewDelta},
 };
 use commonware_cryptography::{
@@ -308,6 +308,7 @@ where
         let (feed, feed_mailbox) = crate::feed::init(
             context.with_label("feed"),
             marshal_mailbox.clone(),
+            epoch_strategy.clone(),
             self.feed_state,
         );
 
@@ -474,11 +475,11 @@ where
     )]
     pub fn start(
         mut self,
-        pending_network: (
+        votes_network: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        recovered_network: (
+        certificates_network: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -506,8 +507,8 @@ where
         spawn_cell!(
             self.context,
             self.run(
-                pending_network,
-                recovered_network,
+                votes_network,
+                certificates_network,
                 resolver_network,
                 broadcast_network,
                 marshal_network,
@@ -524,11 +525,11 @@ where
     )]
     async fn run(
         self,
-        pending_channel: (
+        votes_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        recovered_channel: (
+        certificates_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -571,7 +572,7 @@ where
 
         let epoch_manager =
             self.epoch_manager
-                .start(pending_channel, recovered_channel, resolver_channel);
+                .start(votes_channel, certificates_channel, resolver_channel);
 
         let feed = self.feed.start();
 

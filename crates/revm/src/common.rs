@@ -222,6 +222,17 @@ pub trait TempoStateAccess<M = ()> {
         self.is_tip20_usd(spec, fee_token)
     }
 
+    /// Checks if a fee token is paused.
+    fn is_fee_token_paused(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
+    where
+        Self: Sized,
+    {
+        self.with_read_only_storage_ctx(spec, || {
+            let token = TIP20Token::from_address(fee_token)?;
+            token.paused()
+        })
+    }
+
     /// Checks if the fee payer can transfer a given token (is not blacklisted).
     fn can_fee_payer_transfer(
         &mut self,
@@ -618,6 +629,21 @@ mod tests {
         // Edge cases
         assert!(!is_tip20_fee_inference_call(&[]));
         assert!(!is_tip20_fee_inference_call(&[0x00, 0x01, 0x02]));
+    }
+
+    #[test]
+    fn test_is_fee_token_paused() -> eyre::Result<()> {
+        let token_address = PATH_USD_ADDRESS;
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+
+        // Default (unpaused) returns false
+        assert!(!db.is_fee_token_paused(TempoHardfork::Genesis, token_address)?);
+
+        // Set paused=true
+        db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::from(1))?;
+        assert!(db.is_fee_token_paused(TempoHardfork::Genesis, token_address)?);
+
+        Ok(())
     }
 
     #[test]

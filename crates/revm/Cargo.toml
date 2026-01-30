@@ -39,6 +39,7 @@ alloy-eips.workspace = true
 alloy-rlp.workspace = true
 base64.workspace = true
 p256.workspace = true
+proptest.workspace = true
 sha2.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
