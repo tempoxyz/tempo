@@ -2,9 +2,9 @@
 pragma solidity ^0.8.13;
 
 import { TIP20 } from "../../src/TIP20.sol";
+import { IStablecoinDEX } from "../../src/interfaces/IStablecoinDEX.sol";
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
-import { IStablecoinDEX } from "../../src/interfaces/IStablecoinDEX.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title TIP-1015 Integration Tests
@@ -73,23 +73,21 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
 
         // Create compound policy: sender whitelist, recipient whitelist, mint recipient whitelist
         compoundPolicy = registry.createCompoundPolicy(
-            senderWhitelist,
-            recipientWhitelist,
-            mintRecipientWhitelist
+            senderWhitelist, recipientWhitelist, mintRecipientWhitelist
         );
 
         // Create asymmetric compound: sender blacklist (block bad actors), anyone can receive
         asymmetricCompound = registry.createCompoundPolicy(
-            senderBlacklist,  // blockedUser cannot send
-            1,                // anyone can receive (always-allow)
-            1                 // anyone can receive mints
+            senderBlacklist, // blockedUser cannot send
+            1, // anyone can receive (always-allow)
+            1 // anyone can receive mints
         );
 
         // Create vendor credits: anyone can send, only recipient can receive, anyone can get mints
         vendorCreditsPolicy = registry.createCompoundPolicy(
-            1,                   // anyone can send
-            recipientWhitelist,  // only recipient can receive
-            1                    // anyone can receive mints
+            1, // anyone can send
+            recipientWhitelist, // only recipient can receive
+            1 // anyone can receive mints
         );
 
         // Create a token with compound policy
@@ -120,9 +118,8 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
         vm.startPrank(admin);
 
         // Create token with simple whitelist policy
-        TIP20 simpleToken = TIP20(
-            factory.createToken("SIMPLE", "SMP", "USD", pathUSD, admin, bytes32("simple"))
-        );
+        TIP20 simpleToken =
+            TIP20(factory.createToken("SIMPLE", "SMP", "USD", pathUSD, admin, bytes32("simple")));
         simpleToken.grantRole(_ISSUER_ROLE, admin);
         simpleToken.changeTransferPolicyId(mintRecipientWhitelist);
 
@@ -196,11 +193,10 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
     function test_transfer_succeeds_bothAuthorized_simplePolicy() public onlySolidityImpl {
         vm.startPrank(admin);
 
-        TIP20 simpleToken = TIP20(
-            factory.createToken("XFER1", "XF1", "USD", pathUSD, admin, bytes32("xfer1"))
-        );
+        TIP20 simpleToken =
+            TIP20(factory.createToken("XFER1", "XF1", "USD", pathUSD, admin, bytes32("xfer1")));
         simpleToken.grantRole(_ISSUER_ROLE, admin);
-        
+
         // Use always-allow policy (policy ID 1)
         simpleToken.changeTransferPolicyId(1);
         simpleToken.mint(sender, 1000);
@@ -218,12 +214,11 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
     function test_transfer_fails_senderBlacklisted_simplePolicy() public onlySolidityImpl {
         vm.startPrank(admin);
 
-        TIP20 simpleToken = TIP20(
-            factory.createToken("XFER2", "XF2", "USD", pathUSD, admin, bytes32("xfer2"))
-        );
+        TIP20 simpleToken =
+            TIP20(factory.createToken("XFER2", "XF2", "USD", pathUSD, admin, bytes32("xfer2")));
         simpleToken.grantRole(_ISSUER_ROLE, admin);
         simpleToken.changeTransferPolicyId(senderBlacklist);
-        
+
         // Mint to blockedUser first (using admin privilege before policy is enforced)
         // Actually we need to set policy after mint, or use a permissive mint policy
         simpleToken.changeTransferPolicyId(1); // temporarily allow
@@ -260,19 +255,18 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
         vm.startPrank(admin);
 
         // Mint to blockedUser via always-allow mint recipient policy
-        TIP20 testToken = TIP20(
-            factory.createToken("XFER3", "XF3", "USD", pathUSD, admin, bytes32("xfer3"))
-        );
+        TIP20 testToken =
+            TIP20(factory.createToken("XFER3", "XF3", "USD", pathUSD, admin, bytes32("xfer3")));
         testToken.grantRole(_ISSUER_ROLE, admin);
-        
+
         // Create compound: blockedUser not in sender whitelist
         uint64 testCompound = registry.createCompoundPolicy(
-            senderWhitelist,     // blockedUser is NOT here
-            1,                   // anyone can receive
-            1                    // anyone can get mints
+            senderWhitelist, // blockedUser is NOT here
+            1, // anyone can receive
+            1 // anyone can get mints
         );
-        
-        testToken.changeTransferPolicyId(1);  // allow mint
+
+        testToken.changeTransferPolicyId(1); // allow mint
         testToken.mint(blockedUser, 1000);
         testToken.changeTransferPolicyId(testCompound);
 
@@ -288,11 +282,10 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
         vm.startPrank(admin);
 
         // Use vendorCreditsPolicy: anyone can send, only recipient whitelist can receive
-        TIP20 testToken = TIP20(
-            factory.createToken("XFER4", "XF4", "USD", pathUSD, admin, bytes32("xfer4"))
-        );
+        TIP20 testToken =
+            TIP20(factory.createToken("XFER4", "XF4", "USD", pathUSD, admin, bytes32("xfer4")));
         testToken.grantRole(_ISSUER_ROLE, admin);
-        testToken.changeTransferPolicyId(1);  // allow mint
+        testToken.changeTransferPolicyId(1); // allow mint
         testToken.mint(sender, 1000);
         testToken.changeTransferPolicyId(vendorCreditsPolicy);
 
@@ -308,11 +301,10 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
     function test_transfer_asymmetricCompound_blockedCanReceiveNotSend() public onlySolidityImpl {
         vm.startPrank(admin);
 
-        TIP20 testToken = TIP20(
-            factory.createToken("ASYM1", "ASY1", "USD", pathUSD, admin, bytes32("asym1"))
-        );
+        TIP20 testToken =
+            TIP20(factory.createToken("ASYM1", "ASY1", "USD", pathUSD, admin, bytes32("asym1")));
         testToken.grantRole(_ISSUER_ROLE, admin);
-        testToken.changeTransferPolicyId(1);  // allow mints
+        testToken.changeTransferPolicyId(1); // allow mints
         testToken.mint(sender, 1000);
         testToken.mint(blockedUser, 500);
         testToken.changeTransferPolicyId(asymmetricCompound);
@@ -338,12 +330,11 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
     function test_burnBlocked_succeeds_blockedSender_simplePolicy() public onlySolidityImpl {
         vm.startPrank(admin);
 
-        TIP20 testToken = TIP20(
-            factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1"))
-        );
+        TIP20 testToken =
+            TIP20(factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1")));
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
-        
+
         // Mint first, then set restrictive policy
         testToken.changeTransferPolicyId(1);
         testToken.mint(blockedUser, 1000);
@@ -360,12 +351,11 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
     function test_burnBlocked_fails_authorizedSender_simplePolicy() public onlySolidityImpl {
         vm.startPrank(admin);
 
-        TIP20 testToken = TIP20(
-            factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2"))
-        );
+        TIP20 testToken =
+            TIP20(factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2")));
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
-        testToken.changeTransferPolicyId(1);  // always allow
+        testToken.changeTransferPolicyId(1); // always allow
         testToken.mint(sender, 1000);
 
         // sender is authorized, so burnBlocked should fail
@@ -379,15 +369,14 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
     function test_burnBlocked_succeeds_blockedSender_compoundPolicy() public onlySolidityImpl {
         vm.startPrank(admin);
 
-        TIP20 testToken = TIP20(
-            factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3"))
-        );
+        TIP20 testToken =
+            TIP20(factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3")));
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
-        
+
         testToken.changeTransferPolicyId(1);
         testToken.mint(blockedUser, 1000);
-        testToken.changeTransferPolicyId(asymmetricCompound);  // blockedUser is in senderBlacklist
+        testToken.changeTransferPolicyId(asymmetricCompound); // blockedUser is in senderBlacklist
 
         // blockedUser is blocked as sender via compound policy
         testToken.burnBlocked(blockedUser, 500);
@@ -400,15 +389,14 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
     function test_burnBlocked_fails_authorizedSender_compoundPolicy() public onlySolidityImpl {
         vm.startPrank(admin);
 
-        TIP20 testToken = TIP20(
-            factory.createToken("BURN4", "BRN4", "USD", pathUSD, admin, bytes32("burn4"))
-        );
+        TIP20 testToken =
+            TIP20(factory.createToken("BURN4", "BRN4", "USD", pathUSD, admin, bytes32("burn4")));
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
-        
+
         testToken.changeTransferPolicyId(1);
         testToken.mint(sender, 1000);
-        testToken.changeTransferPolicyId(asymmetricCompound);  // sender is NOT blocked
+        testToken.changeTransferPolicyId(asymmetricCompound); // sender is NOT blocked
 
         // sender is authorized as sender, burnBlocked should fail
         vm.expectRevert(ITIP20.PolicyForbids.selector);
@@ -422,22 +410,22 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
         vm.startPrank(admin);
 
         // Create a blacklist where ONLY blockedUser is blocked as recipient (not sender)
-        uint64 recipientBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        uint64 recipientBlacklist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
         registry.modifyPolicyBlacklist(recipientBlacklist, blockedUser, true);
 
         // Create compound where user is blocked as recipient but allowed as sender
         uint64 recipientBlockedCompound = registry.createCompoundPolicy(
-            1,                   // anyone can send (blockedUser CAN send)
-            recipientBlacklist,  // blockedUser cannot receive
-            1                    // anyone can mint
+            1, // anyone can send (blockedUser CAN send)
+            recipientBlacklist, // blockedUser cannot receive
+            1 // anyone can mint
         );
 
-        TIP20 testToken = TIP20(
-            factory.createToken("BURN5", "BRN5", "USD", pathUSD, admin, bytes32("burn5"))
-        );
+        TIP20 testToken =
+            TIP20(factory.createToken("BURN5", "BRN5", "USD", pathUSD, admin, bytes32("burn5")));
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
-        
+
         testToken.changeTransferPolicyId(1);
         testToken.mint(blockedUser, 1000);
         testToken.changeTransferPolicyId(recipientBlockedCompound);
@@ -457,24 +445,23 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
     /// @notice cancelStaleOrder succeeds when maker is blocked from sending
     function test_cancelStaleOrder_succeeds_blockedMaker_simplePolicy() public onlySolidityImpl {
         uint128 MIN_ORDER = 100_000_000; // DEX minimum order amount
-        
+
         vm.startPrank(admin);
 
         // Create and configure token for DEX
-        TIP20 baseToken = TIP20(
-            factory.createToken("BASE1", "BS1", "USD", pathUSD, admin, bytes32("base1"))
-        );
+        TIP20 baseToken =
+            TIP20(factory.createToken("BASE1", "BS1", "USD", pathUSD, admin, bytes32("base1")));
         baseToken.grantRole(_ISSUER_ROLE, admin);
-        
+
         // Mint to sender first
         baseToken.changeTransferPolicyId(1);
         baseToken.mint(sender, MIN_ORDER * 10);
-        
+
         // Create DEX pair
         exchange.createPair(address(baseToken));
 
         vm.stopPrank();
-        
+
         // Mint pathUSD to sender for placing bid orders (pathUSDAdmin is the issuer)
         vm.startPrank(pathUSDAdmin);
         pathUSD.grantRole(_ISSUER_ROLE, pathUSDAdmin);
@@ -485,14 +472,15 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
         vm.startPrank(sender);
         baseToken.approve(address(exchange), type(uint256).max);
         pathUSD.approve(address(exchange), type(uint256).max);
-        
+
         uint128 orderId = exchange.place(address(baseToken), MIN_ORDER, true, 0);
         vm.stopPrank();
 
         // Now blacklist the sender on pathUSD (the escrowed token for bid orders)
         // For bid orders, the checked token is book.quote (pathUSD)
         vm.startPrank(pathUSDAdmin);
-        uint64 makerBlacklist = registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
+        uint64 makerBlacklist =
+            registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
         registry.modifyPolicyBlacklist(makerBlacklist, sender, true);
         pathUSD.changeTransferPolicyId(makerBlacklist);
         vm.stopPrank();
@@ -505,12 +493,11 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
     /// @notice cancelStaleOrder fails when maker is still authorized
     function test_cancelStaleOrder_fails_authorizedMaker_simplePolicy() public onlySolidityImpl {
         uint128 MIN_ORDER = 100_000_000;
-        
+
         vm.startPrank(admin);
 
-        TIP20 baseToken = TIP20(
-            factory.createToken("BASE2", "BS2", "USD", pathUSD, admin, bytes32("base2"))
-        );
+        TIP20 baseToken =
+            TIP20(factory.createToken("BASE2", "BS2", "USD", pathUSD, admin, bytes32("base2")));
         baseToken.grantRole(_ISSUER_ROLE, admin);
         baseToken.changeTransferPolicyId(1);
         baseToken.mint(sender, MIN_ORDER * 10);
@@ -518,7 +505,7 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
         exchange.createPair(address(baseToken));
 
         vm.stopPrank();
-        
+
         vm.startPrank(pathUSDAdmin);
         pathUSD.grantRole(_ISSUER_ROLE, pathUSDAdmin);
         pathUSD.mint(sender, MIN_ORDER * 10);
@@ -527,7 +514,7 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
         vm.startPrank(sender);
         baseToken.approve(address(exchange), type(uint256).max);
         pathUSD.approve(address(exchange), type(uint256).max);
-        
+
         uint128 orderId = exchange.place(address(baseToken), MIN_ORDER, true, 0);
         vm.stopPrank();
 
@@ -540,12 +527,11 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
     /// @notice cancelStaleOrder with compound policy checks senderPolicyId
     function test_cancelStaleOrder_succeeds_blockedMaker_compoundPolicy() public onlySolidityImpl {
         uint128 MIN_ORDER = 100_000_000;
-        
+
         vm.startPrank(admin);
 
-        TIP20 baseToken = TIP20(
-            factory.createToken("BASE3", "BS3", "USD", pathUSD, admin, bytes32("base3"))
-        );
+        TIP20 baseToken =
+            TIP20(factory.createToken("BASE3", "BS3", "USD", pathUSD, admin, bytes32("base3")));
         baseToken.grantRole(_ISSUER_ROLE, admin);
         baseToken.changeTransferPolicyId(1);
         baseToken.mint(sender, MIN_ORDER * 10);
@@ -553,7 +539,7 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
         exchange.createPair(address(baseToken));
 
         vm.stopPrank();
-        
+
         vm.startPrank(pathUSDAdmin);
         pathUSD.grantRole(_ISSUER_ROLE, pathUSDAdmin);
         pathUSD.mint(sender, MIN_ORDER * 10);
@@ -562,19 +548,20 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
         vm.startPrank(sender);
         baseToken.approve(address(exchange), type(uint256).max);
         pathUSD.approve(address(exchange), type(uint256).max);
-        
+
         uint128 orderId = exchange.place(address(baseToken), MIN_ORDER, true, 0);
         vm.stopPrank();
 
         // Blacklist sender via compound policy on pathUSD (the escrowed token for bid orders)
         vm.startPrank(pathUSDAdmin);
-        uint64 senderOnlyBlacklist = registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
+        uint64 senderOnlyBlacklist =
+            registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
         registry.modifyPolicyBlacklist(senderOnlyBlacklist, sender, true);
-        
+
         uint64 staleCompound = registry.createCompoundPolicy(
-            senderOnlyBlacklist,  // sender is blocked
-            1,                    // anyone can receive
-            1                     // anyone can mint
+            senderOnlyBlacklist, // sender is blocked
+            1, // anyone can receive
+            1 // anyone can mint
         );
         pathUSD.changeTransferPolicyId(staleCompound);
         vm.stopPrank();
@@ -615,7 +602,14 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
         uint64 fuzzCompound = registry.createCompoundPolicy(senderPolicy, recipientPolicy, 1);
 
         TIP20 fuzzToken = TIP20(
-            factory.createToken("FUZZ", "FZZ", "USD", pathUSD, admin, keccak256(abi.encode(senderInWhitelist, recipientInWhitelist)))
+            factory.createToken(
+                "FUZZ",
+                "FZZ",
+                "USD",
+                pathUSD,
+                admin,
+                keccak256(abi.encode(senderInWhitelist, recipientInWhitelist))
+            )
         );
         fuzzToken.grantRole(_ISSUER_ROLE, admin);
         fuzzToken.changeTransferPolicyId(1);
@@ -667,7 +661,11 @@ contract TIP1015IntegrationTest is InvariantBaseTest {
 
         TIP20 fuzzToken = TIP20(
             factory.createToken(
-                "FUZZ2", "FZ2", "USD", pathUSD, admin,
+                "FUZZ2",
+                "FZ2",
+                "USD",
+                pathUSD,
+                admin,
                 keccak256(abi.encode(inSenderPolicy, inRecipientPolicy, inMintPolicy))
             )
         );
