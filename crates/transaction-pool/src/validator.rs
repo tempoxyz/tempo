@@ -1231,7 +1231,7 @@ mod tests {
             policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
             admin: Address::ZERO,
         };
-        let policy_data_slot = TIP403Registry::new().policy_recods[policy_id]
+        let policy_data_slot = TIP403Registry::new().policy_records[policy_id]
             .base
             .base_slot();
         let policy_set_slot = TIP403Registry::new().policy_set[policy_id][fee_payer].slot();
