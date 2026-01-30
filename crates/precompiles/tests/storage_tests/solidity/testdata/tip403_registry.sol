@@ -11,13 +11,24 @@ contract TIP403Registry {
         address admin;
     }
 
+    struct CompoundPolicyData {
+        uint64 senderPolicyId;
+        uint64 recipientPolicyId;
+        uint64 mintRecipientPolicyId;
+    }
+
+    struct PolicyRecord {
+        PolicyData base;
+        CompoundPolicyData compound;
+    }
+
     // ========== Storage ==========
 
     /// Counter for policy IDs
     uint64 public policyIdCounter;
 
     /// Mapping of policy ID to policy data
-    mapping(uint64 => PolicyData) public policyData;
+    mapping(uint64 => PolicyRecord) public policyRecords;
 
     /// Nested mapping for policy sets: policy_id -> address -> is_in_set
     /// Used for whitelist/blacklist entries

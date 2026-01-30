@@ -13,14 +13,21 @@ use alloy::primitives::{Address, U256};
 #[contract(addr = TIP403_REGISTRY_ADDRESS)]
 pub struct TIP403Registry {
     policy_id_counter: u64,
-    policy_data: Mapping<u64, PolicyData>,
+    policy_records: Mapping<u64, PolicyRecord>,
     policy_set: Mapping<u64, Mapping<Address, bool>>,
-    // TIP-1015: Compound policy data (sender, recipient, mintRecipient policy IDs)
-    compound_policy_data: Mapping<u64, CompoundPolicyData>,
+}
+
+/// Policy record containing base data and optional data for compound policies (TIP-1015)
+#[derive(Debug, Clone, Storable)]
+pub struct PolicyRecord {
+    /// Base policy data
+    pub base: PolicyData,
+    /// Compound policy data. Only relevant when `base.policy_type == COMPOUND`
+    pub compound: CompoundPolicyData,
 }
 
 /// Data for compound policies (TIP-1015)
-#[derive(Debug, Clone, Storable)]
+#[derive(Debug, Clone, Default, Storable)]
 pub struct CompoundPolicyData {
     pub sender_policy_id: u64,
     pub recipient_policy_id: u64,
@@ -139,7 +146,7 @@ impl TIP403Registry {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
-        let compound = self.compound_policy_data[call.policyId].read()?;
+        let compound = self.policy_records[call.policyId].compound.read()?;
         Ok(ITIP403Registry::compoundPolicyDataReturn {
             senderPolicyId: compound.sender_policy_id,
             recipientPolicyId: compound.recipient_policy_id,
@@ -163,7 +170,7 @@ impl TIP403Registry {
         )?;
 
         // Store policy data
-        self.policy_data[new_policy_id].write(PolicyData {
+        self.policy_records[new_policy_id].base.write(PolicyData {
             policy_type: call.policyType as u8,
             admin: call.admin,
         })?;
@@ -372,17 +379,17 @@ impl TIP403Registry {
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
-        // Store policy data with COMPOUND type and no admin (immutable)
-        self.policy_data[new_policy_id].write(PolicyData {
-            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-            admin: Address::ZERO,
-        })?;
-
-        // Store compound policy data
-        self.compound_policy_data[new_policy_id].write(CompoundPolicyData {
-            sender_policy_id: call.senderPolicyId,
-            recipient_policy_id: call.recipientPolicyId,
-            mint_recipient_policy_id: call.mintRecipientPolicyId,
+        // Store policy record with COMPOUND type and compound data
+        self.policy_records[new_policy_id].write(PolicyRecord {
+            base: PolicyData {
+                policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                admin: Address::ZERO,
+            },
+            compound: CompoundPolicyData {
+                sender_policy_id: call.senderPolicyId,
+                recipient_policy_id: call.recipientPolicyId,
+                mint_recipient_policy_id: call.mintRecipientPolicyId,
+            },
         })?;
 
         // Emit event
@@ -408,7 +415,7 @@ impl TIP403Registry {
         let data = self.get_policy_data(policy_id)?;
 
         if data.is_compound() {
-            let compound = self.compound_policy_data[policy_id].read()?;
+            let compound = self.policy_records[policy_id].compound.read()?;
             return match role {
                 AuthRole::Sender => {
                     self.is_authorized_simple_policy(compound.sender_policy_id, user)
@@ -490,11 +497,11 @@ impl TIP403Registry {
 
     // Internal helper functions
     fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
-        self.policy_data[policy_id].read()
+        self.policy_records[policy_id].base.read()
     }
 
     fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
-        self.policy_data[policy_id].write(data)
+        self.policy_records[policy_id].base.write(data)
     }
 
     fn set_policy_set(&mut self, policy_id: u64, account: Address, value: bool) -> Result<()> {
