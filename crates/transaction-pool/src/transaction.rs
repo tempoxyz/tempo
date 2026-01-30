@@ -265,9 +265,8 @@ pub enum TempoPoolTransactionError {
     #[error("CREATE calls must be the first call in an AA transaction")]
     CreateCallNotFirst,
 
-    /// Thrown when an AA transaction contains a CREATE call and has a non-empty authorization list.
-    /// CREATE calls and authorization lists are mutually exclusive.
-    #[error("AA transactions with CREATE calls cannot have an authorization list")]
+    /// Thrown when an AA transaction contains both a CREATE call and an authorization list.
+    #[error("CREATE calls are not allowed in the same transaction that has an authorization list")]
     CreateCallWithAuthorizationList,
 
     /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
