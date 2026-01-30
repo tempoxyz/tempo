@@ -527,8 +527,10 @@ impl TIP403Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::TempoPrecompileError;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{
+        error::TempoPrecompileError,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+    };
     use alloy::primitives::Address;
     use rand::Rng;
     use tempo_chainspec::hardfork::TempoHardfork;
