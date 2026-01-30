@@ -465,7 +465,7 @@ where
                 if idx != 0 {
                     return Err(TempoPoolTransactionError::CreateCallNotFirst);
                 }
-                // CREATE call must not be present in the authorization list.
+                // CREATE calls are not allowed in transactions with an authorization list.
                 if !tx.tempo_authorization_list.is_empty() {
                     return Err(TempoPoolTransactionError::CreateCallWithAuthorizationList);
                 }
