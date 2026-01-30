@@ -1930,12 +1930,12 @@ mod tests {
 
         let signed_auth = key_pair.create_signed_authorization(Address::repeat_byte(0x42))?;
 
-        // Use very low gas_limit - this should cause OOG
+        // Insufficient gas - will cause OOG during key_authorization processing
         let tx_low_gas = TxBuilder::new()
             .call_identity(&[0x01])
             .authorization(signed_auth)
             .key_authorization(signed_key_auth)
-            .gas_limit(600_000) // Very low - definitely not enough to key authorization
+            .gas_limit(589_000)
             .build();
 
         let signed_tx_low = key_pair.sign_tx(tx_low_gas)?;
@@ -1947,14 +1947,23 @@ mod tests {
         // Transaction should fail (either rejected or OOG)
         match &result_low {
             Ok(result) => {
-                assert_eq!(result.gas_used(), 600_000, "Gas used should be gas limit");
+                assert_eq!(result.gas_used(), 589_000, "Gas used should be gas limit");
                 assert!(
                     !result.is_success(),
                     "Transaction with insufficient gas should fail"
                 );
             }
-            Err(_) => {
-                // Transaction rejected during validation - also expected
+            Err(e) => {
+                // Transaction rejected during validation - must be InsufficientGasForIntrinsicCost
+                assert!(
+                    matches!(
+                        e,
+                        revm::context::result::EVMError::Transaction(
+                            TempoInvalidTransaction::InsufficientGasForIntrinsicCost { .. }
+                        )
+                    ),
+                    "Expected InsufficientGasForIntrinsicCost, got: {e:?}"
+                );
             }
         }
 
