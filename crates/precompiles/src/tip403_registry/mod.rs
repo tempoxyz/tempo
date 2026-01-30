@@ -765,4 +765,513 @@ mod tests {
             Ok(())
         })
     }
+
+    // =========================================================================
+    //                      TIP-1015: Compound Policy Tests
+    // =========================================================================
+
+    #[test]
+    fn test_create_compound_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let creator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create two simple policies to reference
+            let sender_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            let recipient_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+            let mint_recipient_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+
+            // Create compound policy
+            let compound_id = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: sender_policy,
+                    recipientPolicyId: recipient_policy,
+                    mintRecipientPolicyId: mint_recipient_policy,
+                },
+            )?;
+
+            // Verify compound policy exists
+            assert!(registry.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: compound_id
+            })?);
+
+            // Verify policy type is COMPOUND
+            let data = registry.policy_data(ITIP403Registry::policyDataCall {
+                policyId: compound_id,
+            })?;
+            assert_eq!(data.policyType, ITIP403Registry::PolicyType::COMPOUND);
+            assert_eq!(data.admin, Address::ZERO); // Compound policies have no admin
+
+            // Verify compound policy data
+            let compound_data =
+                registry.compound_policy_data(ITIP403Registry::compoundPolicyDataCall {
+                    policyId: compound_id,
+                })?;
+            assert_eq!(compound_data.senderPolicyId, sender_policy);
+            assert_eq!(compound_data.recipientPolicyId, recipient_policy);
+            assert_eq!(compound_data.mintRecipientPolicyId, mint_recipient_policy);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compound_policy_rejects_non_existent_refs() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let creator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Try to create compound policy with non-existent policy IDs
+            let result = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: 999,
+                    recipientPolicyId: 1,
+                    mintRecipientPolicyId: 1,
+                },
+            );
+            assert!(result.is_err());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compound_policy_rejects_compound_refs() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let creator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create a simple policy
+            let simple_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+
+            // Create a compound policy
+            let compound_id = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: 1,
+                    recipientPolicyId: simple_policy,
+                    mintRecipientPolicyId: 1,
+                },
+            )?;
+
+            // Try to create another compound policy referencing the first compound
+            let result = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: compound_id, // This should fail - can't reference compound
+                    recipientPolicyId: 1,
+                    mintRecipientPolicyId: 1,
+                },
+            );
+            assert!(result.is_err());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compound_policy_sender_recipient_differentiation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let creator = Address::random();
+        let alice = Address::random();
+        let bob = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create sender whitelist (only Alice can send)
+            let sender_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: sender_policy,
+                    account: alice,
+                    allowed: true,
+                },
+            )?;
+
+            // Create recipient whitelist (only Bob can receive)
+            let recipient_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: recipient_policy,
+                    account: bob,
+                    allowed: true,
+                },
+            )?;
+
+            // Create compound policy
+            let compound_id = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: sender_policy,
+                    recipientPolicyId: recipient_policy,
+                    mintRecipientPolicyId: 1, // anyone can receive mints
+                },
+            )?;
+
+            // Alice can send (is in sender whitelist)
+            assert!(
+                registry.is_authorized_sender(ITIP403Registry::isAuthorizedSenderCall {
+                    policyId: compound_id,
+                    user: alice,
+                })?
+            );
+
+            // Bob cannot send (not in sender whitelist)
+            assert!(
+                !registry.is_authorized_sender(ITIP403Registry::isAuthorizedSenderCall {
+                    policyId: compound_id,
+                    user: bob,
+                })?
+            );
+
+            // Bob can receive (is in recipient whitelist)
+            assert!(registry.is_authorized_recipient(
+                ITIP403Registry::isAuthorizedRecipientCall {
+                    policyId: compound_id,
+                    user: bob,
+                }
+            )?);
+
+            // Alice cannot receive (not in recipient whitelist)
+            assert!(!registry.is_authorized_recipient(
+                ITIP403Registry::isAuthorizedRecipientCall {
+                    policyId: compound_id,
+                    user: alice,
+                }
+            )?);
+
+            // Anyone can receive mints (mintRecipientPolicyId = 1 = always-allow)
+            assert!(registry.is_authorized_mint_recipient(
+                ITIP403Registry::isAuthorizedMintRecipientCall {
+                    policyId: compound_id,
+                    user: alice,
+                }
+            )?);
+            assert!(registry.is_authorized_mint_recipient(
+                ITIP403Registry::isAuthorizedMintRecipientCall {
+                    policyId: compound_id,
+                    user: bob,
+                }
+            )?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compound_policy_is_authorized_behavior() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let creator = Address::random();
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create sender whitelist with user
+            let sender_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: sender_policy,
+                    account: user,
+                    allowed: true,
+                },
+            )?;
+
+            // Create recipient whitelist WITHOUT user
+            let recipient_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+
+            // Create compound policy
+            let compound_id = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: sender_policy,
+                    recipientPolicyId: recipient_policy,
+                    mintRecipientPolicyId: 1,
+                },
+            )?;
+
+            // isAuthorized should be sender && recipient
+            // User is sender-authorized but NOT recipient-authorized
+            assert!(
+                registry.is_authorized_sender(ITIP403Registry::isAuthorizedSenderCall {
+                    policyId: compound_id,
+                    user,
+                })?
+            );
+            assert!(!registry.is_authorized_recipient(
+                ITIP403Registry::isAuthorizedRecipientCall {
+                    policyId: compound_id,
+                    user,
+                }
+            )?);
+
+            // isAuthorized = sender && recipient = true && false = false
+            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+                policyId: compound_id,
+                user,
+            })?);
+
+            // Now add user to recipient whitelist
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: recipient_policy,
+                    account: user,
+                    allowed: true,
+                },
+            )?;
+
+            // Now isAuthorized = sender && recipient = true && true = true
+            assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+                policyId: compound_id,
+                user,
+            })?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_simple_policy_equivalence() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create a simple whitelist policy with user
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: policy_id,
+                    account: user,
+                    allowed: true,
+                },
+            )?;
+
+            // For simple policies, all four authorization functions should return the same result
+            let is_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+                policyId: policy_id,
+                user,
+            })?;
+            let is_sender =
+                registry.is_authorized_sender(ITIP403Registry::isAuthorizedSenderCall {
+                    policyId: policy_id,
+                    user,
+                })?;
+            let is_recipient =
+                registry.is_authorized_recipient(ITIP403Registry::isAuthorizedRecipientCall {
+                    policyId: policy_id,
+                    user,
+                })?;
+            let is_mint_recipient = registry.is_authorized_mint_recipient(
+                ITIP403Registry::isAuthorizedMintRecipientCall {
+                    policyId: policy_id,
+                    user,
+                },
+            )?;
+
+            assert!(is_authorized);
+            assert_eq!(is_authorized, is_sender);
+            assert_eq!(is_sender, is_recipient);
+            assert_eq!(is_recipient, is_mint_recipient);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compound_policy_with_builtin_policies() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let creator = Address::random();
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create compound policy using built-in policies
+            // senderPolicyId = 1 (always-allow)
+            // recipientPolicyId = 0 (always-reject)
+            // mintRecipientPolicyId = 1 (always-allow)
+            let compound_id = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: 1,
+                    recipientPolicyId: 0,
+                    mintRecipientPolicyId: 1,
+                },
+            )?;
+
+            // Anyone can send (policy 1 = always-allow)
+            assert!(
+                registry.is_authorized_sender(ITIP403Registry::isAuthorizedSenderCall {
+                    policyId: compound_id,
+                    user,
+                })?
+            );
+
+            // No one can receive transfers (policy 0 = always-reject)
+            assert!(!registry.is_authorized_recipient(
+                ITIP403Registry::isAuthorizedRecipientCall {
+                    policyId: compound_id,
+                    user,
+                }
+            )?);
+
+            // Anyone can receive mints (policy 1 = always-allow)
+            assert!(registry.is_authorized_mint_recipient(
+                ITIP403Registry::isAuthorizedMintRecipientCall {
+                    policyId: compound_id,
+                    user,
+                }
+            )?);
+
+            // isAuthorized = sender && recipient = true && false = false
+            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+                policyId: compound_id,
+                user,
+            })?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_vendor_credits_use_case() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let creator = Address::random();
+        let vendor = Address::random();
+        let customer = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create vendor whitelist (only vendor can receive transfers)
+            let vendor_whitelist = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: vendor_whitelist,
+                    account: vendor,
+                    allowed: true,
+                },
+            )?;
+
+            // Create compound policy for vendor credits:
+            // - Anyone can send (senderPolicyId = 1)
+            // - Only vendor can receive transfers (recipientPolicyId = vendor_whitelist)
+            // - Anyone can receive mints (mintRecipientPolicyId = 1)
+            let compound_id = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: 1,                   // anyone can send
+                    recipientPolicyId: vendor_whitelist, // only vendor receives
+                    mintRecipientPolicyId: 1,            // anyone can receive mints
+                },
+            )?;
+
+            // Minting: anyone can receive mints (customer gets credits)
+            assert!(registry.is_authorized_mint_recipient(
+                ITIP403Registry::isAuthorizedMintRecipientCall {
+                    policyId: compound_id,
+                    user: customer,
+                }
+            )?);
+
+            // Transfer: customer can send
+            assert!(
+                registry.is_authorized_sender(ITIP403Registry::isAuthorizedSenderCall {
+                    policyId: compound_id,
+                    user: customer,
+                })?
+            );
+
+            // Transfer: only vendor can receive
+            assert!(registry.is_authorized_recipient(
+                ITIP403Registry::isAuthorizedRecipientCall {
+                    policyId: compound_id,
+                    user: vendor,
+                }
+            )?);
+            assert!(!registry.is_authorized_recipient(
+                ITIP403Registry::isAuthorizedRecipientCall {
+                    policyId: compound_id,
+                    user: customer, // customer cannot receive transfers (no P2P)
+                }
+            )?);
+
+            Ok(())
+        })
+    }
 }
