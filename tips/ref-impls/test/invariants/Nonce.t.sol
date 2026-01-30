@@ -500,14 +500,10 @@ contract NonceInvariantTest is InvariantBaseTest {
                          GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Run all invariant checks
+    /// @notice Run all invariant checks in a single unified loop
+    /// @dev Combines TEMPO-NON1 (never decrease) and TEMPO-NON2 (ghost consistency) checks
+    ///      Caches nonce.getNonce() result to avoid duplicate external calls
     function invariant_globalInvariants() public view {
-        _invariantGhostStateConsistency();
-        _invariantNonceNeverDecrease();
-    }
-
-    /// @notice TEMPO-NON2: Ghost state should match actual state for all tracked nonces
-    function _invariantGhostStateConsistency() internal view {
         for (uint256 a = 0; a < _actors.length; a++) {
             address actor = _actors[a];
             uint256[] storage keys = _accountNonceKeys[actor];
@@ -516,25 +512,13 @@ contract NonceInvariantTest is InvariantBaseTest {
             for (uint256 k = 0; k < keysLength; k++) {
                 uint256 nonceKey = keys[k];
                 uint64 actual = nonce.getNonce(actor, nonceKey);
+
+                // TEMPO-NON2: Ghost state should match actual state
                 uint64 expected = _ghostNonces[actor][nonceKey];
                 assertEq(actual, expected, "TEMPO-NON2: Ghost state should match actual state");
-            }
-        }
-    }
 
-    /// @notice TEMPO-NON1: Nonces should never decrease
-    function _invariantNonceNeverDecrease() internal view {
-        for (uint256 a = 0; a < _actors.length; a++) {
-            address actor = _actors[a];
-            uint256[] storage keys = _accountNonceKeys[actor];
-            uint256 keysLength = keys.length;
-
-            for (uint256 k = 0; k < keysLength; k++) {
-                uint256 nonceKey = keys[k];
-                uint64 actual = nonce.getNonce(actor, nonceKey);
+                // TEMPO-NON1: Nonces should never decrease
                 uint64 lastSeen = _lastSeenNonces[actor][nonceKey];
-
-                // Current value should be >= last seen value
                 assertGe(actual, lastSeen, "TEMPO-NON1: Nonce decreased from last seen value");
             }
         }
