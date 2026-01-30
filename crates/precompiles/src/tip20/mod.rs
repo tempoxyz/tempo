@@ -344,10 +344,12 @@ impl TIP20Token {
         let registry = TIP403Registry::new();
         let policy_id = self.transfer_policy_id()?;
         let is_authorized = if self.storage.spec().is_t1() {
-            registry.is_authorized_mint_recipient(ITIP403Registry::isAuthorizedMintRecipientCall {
-                policyId: policy_id,
-                user: to,
-            })?
+            registry.is_authorized_mint_recipient(
+                ITIP403Registry::isAuthorizedMintRecipientCall {
+                    policyId: policy_id,
+                    user: to,
+                },
+            )?
         } else {
             registry.is_authorized(ITIP403Registry::isAuthorizedCall {
                 policyId: policy_id,
@@ -708,14 +710,16 @@ impl TIP20Token {
 
         let (from_authorized, to_authorized) = if self.storage.spec().is_t1() {
             // TIP-1011: Use directional authorization checks
-            let from_auth = registry.is_authorized_sender(ITIP403Registry::isAuthorizedSenderCall {
-                policyId: transfer_policy_id,
-                user: from,
-            })?;
-            let to_auth = registry.is_authorized_recipient(ITIP403Registry::isAuthorizedRecipientCall {
-                policyId: transfer_policy_id,
-                user: to,
-            })?;
+            let from_auth =
+                registry.is_authorized_sender(ITIP403Registry::isAuthorizedSenderCall {
+                    policyId: transfer_policy_id,
+                    user: from,
+                })?;
+            let to_auth =
+                registry.is_authorized_recipient(ITIP403Registry::isAuthorizedRecipientCall {
+                    policyId: transfer_policy_id,
+                    user: to,
+                })?;
             (from_auth, to_auth)
         } else {
             // Pre-T1: Use symmetric authorization

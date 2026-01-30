@@ -506,7 +506,12 @@ impl TIP403Registry {
     }
 
     /// Authorization check for simple (non-compound) policies
-    fn is_authorized_simple(&self, policy_id: u64, user: Address, data: &PolicyData) -> Result<bool> {
+    fn is_authorized_simple(
+        &self,
+        policy_id: u64,
+        user: Address,
+        data: &PolicyData,
+    ) -> Result<bool> {
         let is_in_set = self.policy_set[policy_id][user].read()?;
 
         let auth = match data
