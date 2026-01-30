@@ -373,7 +373,7 @@ where
                 // T1 transition: one-time cleanup of underpriced transactions.
                 // When T1 activates, transactions with max_fee_per_gas < 20 gwei become
                 // never-includable and should be evicted. This check runs once per node lifetime.
-                // TODO: Remove this after T1 is activated on mainnet (CHAIN-562).
+                // TODO: Remove this after T1 is activated on mainnet.
                 if !state.t1_transition_cleanup_done {
                     let chain_spec = pool.client().chain_spec();
                     if chain_spec.is_t1_active_at_timestamp(tip_timestamp) {
