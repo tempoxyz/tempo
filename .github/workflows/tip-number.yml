@@ -1,0 +1,54 @@
+name: TIP Number Automation
+
+on:
+  pull_request:
+    types: [closed]
+    paths:
+      - 'tips/draft-*.md'
+
+jobs:
+  assign-tip-number:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rename draft to TIP
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          DRAFTS=(tips/draft-*.md)
+
+          if [[ ! -f "${DRAFTS[0]}" ]]; then
+            echo "No draft TIP found, skipping"
+            exit 0
+          fi
+
+          if [[ ${#DRAFTS[@]} -gt 1 ]]; then
+            echo "Error: Multiple draft TIPs found. Only one TIP per PR is allowed."
+            exit 1
+          fi
+
+          DRAFT="${DRAFTS[0]}"
+          TARGET="tips/tip-${PR_NUMBER}.md"
+
+          if [[ -f "$TARGET" ]]; then
+            echo "Error: $TARGET already exists"
+            exit 1
+          fi
+
+          git mv "$DRAFT" "$TARGET"
+
+          # Update frontmatter id and title
+          sed -i "s/^id: TIP-XXXX$/id: TIP-${PR_NUMBER}/" "$TARGET"
+          sed -i "s/^# TIP-XXXX:/# TIP-${PR_NUMBER}:/" "$TARGET"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$TARGET"
+          git commit -m "chore(tips): assign TIP-${PR_NUMBER} from $DRAFT"
+          git push
