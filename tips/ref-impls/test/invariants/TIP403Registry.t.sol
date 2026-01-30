@@ -6,7 +6,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title TIP403Registry Invariant Tests
 /// @notice Fuzz-based invariant tests for the TIP403Registry implementation
-/// @dev Tests invariants TEMPO-REG1 through TEMPO-REG18 as documented in README.md
+/// @dev Tests invariants TEMPO-REG1 through TEMPO-REG19 as documented in README.md
 contract TIP403RegistryInvariantTest is InvariantBaseTest {
 
     /// @dev Log file path for recording actions
