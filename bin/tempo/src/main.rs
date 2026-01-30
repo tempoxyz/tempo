@@ -203,7 +203,7 @@ fn main() -> eyre::Result<()> {
                 )
                 .fuse();
 
-                // Start the unified OTLP metrics exporter if configured
+                // Start the unified metrics exporter if configured
                 if let Some(config) = defaults::parse_telemetry_config(&args.telemetry)? {
                     let mut extra_labels = std::collections::HashMap::new();
 
@@ -219,8 +219,11 @@ fn main() -> eyre::Result<()> {
                         auth_header: config.metrics_auth_header,
                     };
 
-                    install_prometheus_metrics(ctx.with_label("metrics_otlp"), prometheus_config)
-                        .wrap_err("failed to start Prometheus metrics exporter")?;
+                    install_prometheus_metrics(
+                        ctx.with_label("telemetry_metrics"),
+                        prometheus_config,
+                    )
+                    .wrap_err("failed to start Prometheus metrics exporter")?;
                 }
 
                 let consensus_stack =
