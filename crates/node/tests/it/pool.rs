@@ -297,7 +297,8 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
         validator_token_changes: vec![(user_addr, new_validator_token)],
         ..Default::default()
     };
-    pool.evict_invalidated_transactions(&updates);
+    let amm_cache = pool.amm_liquidity_cache();
+    pool.evict_invalidated_transactions(&updates, &amm_cache);
 
     // The eviction ran successfully (no panic)
     // Now let's test with a transaction that uses DEFAULT_FEE_TOKEN (PATH_USD)
@@ -340,7 +341,7 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
         validator_token_changes: vec![(user_addr, new_validator_token)],
         ..Default::default()
     };
-    pool.evict_invalidated_transactions(&updates);
+    pool.evict_invalidated_transactions(&updates, &amm_cache);
 
     // Give time for the eviction to complete
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;

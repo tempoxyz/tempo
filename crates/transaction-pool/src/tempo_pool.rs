@@ -7,7 +7,7 @@ use crate::{
     tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
-use alloy_primitives::{Address, B256, TxHash, map::HashMap};
+use alloy_primitives::{Address, B256, TxHash, U256, map::HashMap};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
@@ -27,6 +27,8 @@ use reth_transaction_pool::{
 use revm::database::BundleAccount;
 use std::{collections::HashSet, sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_precompiles::DEFAULT_FEE_TOKEN;
+use tracing::warn;
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -148,12 +150,11 @@ where
     pub fn evict_invalidated_transactions(
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
+        amm_cache: &AmmLiquidityCache,
     ) -> usize {
         use reth_storage_api::StateProvider;
         use tempo_precompiles::{
-            TIP_FEE_MANAGER_ADDRESS,
-            tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
-            tip20::slots as tip20_slots,
+            tip_fee_manager::amm::compute_amount_out, tip20::slots as tip20_slots,
         };
 
         if !updates.has_invalidation_events() {
@@ -182,6 +183,105 @@ where
         let mut unwhitelisted_count = 0;
 
         let all_txs = self.all_transactions();
+
+        let should_check_liquidity = !updates.validator_token_changes.is_empty();
+        let should_check_tip403 =
+            !updates.blacklist_additions.is_empty() || !updates.whitelist_removals.is_empty();
+
+        let mut user_fee_tokens = HashSet::new();
+        if state_provider.is_some() && (should_check_liquidity || should_check_tip403) {
+            // TODO: Skip DEFAULT_FEE_TOKEN for TIP403 policy fetches once behavior is confirmed.
+            for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
+                let fee_token = tx
+                    .transaction
+                    .inner()
+                    .fee_token()
+                    .unwrap_or(DEFAULT_FEE_TOKEN);
+                user_fee_tokens.insert(fee_token);
+            }
+        }
+
+        let mut amm_validator_reserve: HashMap<Address, U256> =
+            HashMap::with_capacity_and_hasher(user_fee_tokens.len(), Default::default());
+        if should_check_liquidity && let Some(ref state_provider) = state_provider {
+            for user_fee_token in &user_fee_tokens {
+                for &(_validator, validator_token) in &updates.validator_token_changes {
+                    if *user_fee_token == validator_token {
+                        continue;
+                    }
+
+                    let reserve = match amm_cache.validator_reserve_for_pair(
+                        *user_fee_token,
+                        validator_token,
+                        state_provider,
+                    ) {
+                        Ok(r) => r,
+                        Err(err) => {
+                            warn!(
+                                target: "txpool",
+                                ?err,
+                                user_token = ?user_fee_token,
+                                validator_token = ?validator_token,
+                                "AMM reserve lookup failed"
+                            );
+                            continue;
+                        }
+                    };
+
+                    amm_validator_reserve
+                        .entry(*user_fee_token)
+                        .and_modify(|min_reserve| *min_reserve = (*min_reserve).min(reserve))
+                        .or_insert(reserve);
+                }
+            }
+        }
+
+        let mut fee_token_policy: HashMap<Address, u64> =
+            HashMap::with_capacity_and_hasher(user_fee_tokens.len(), Default::default());
+        let mut blacklisted_by_policy: HashMap<u64, HashSet<Address>> = HashMap::default();
+        let mut unwhitelisted_by_policy: HashMap<u64, HashSet<Address>> = HashMap::default();
+
+        if should_check_tip403 {
+            for &(policy_id, account) in &updates.blacklist_additions {
+                blacklisted_by_policy
+                    .entry(policy_id)
+                    .or_default()
+                    .insert(account);
+            }
+            for &(policy_id, account) in &updates.whitelist_removals {
+                unwhitelisted_by_policy
+                    .entry(policy_id)
+                    .or_default()
+                    .insert(account);
+            }
+
+            if let Some(ref provider) = state_provider {
+                for fee_token in &user_fee_tokens {
+                    if let Some(&cached) = policy_cache.get(fee_token) {
+                        fee_token_policy.insert(*fee_token, cached);
+                        continue;
+                    }
+                    match provider.storage(*fee_token, tip20_slots::TRANSFER_POLICY_ID.into()) {
+                        Ok(Some(packed)) => {
+                            let policy_id: u64 =
+                                (packed >> tip20_slots::TRANSFER_POLICY_ID_OFFSET).to();
+                            policy_cache.insert(*fee_token, policy_id);
+                            fee_token_policy.insert(*fee_token, policy_id);
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            warn!(
+                                target: "txpool",
+                                ?err,
+                                fee_token = ?fee_token,
+                                "Fee token policy lookup failed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
             // Extract keychain subject once per transaction (if applicable)
             let keychain_subject = tx.transaction.keychain_subject();
@@ -208,47 +308,24 @@ where
             }
 
             // Check 3: Validator token changes (check liquidity for all transactions)
-            if let Some(ref provider) = state_provider {
+            if should_check_liquidity {
                 let user_token = tx
                     .transaction
                     .inner()
                     .fee_token()
                     .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
-                let cost = tx.transaction.fee_token_cost();
 
-                let amount_out = match compute_amount_out(cost) {
-                    Ok(amount) => amount,
-                    Err(_) => continue,
-                };
-
-                for &(_validator, new_validator_token) in &updates.validator_token_changes {
-                    if user_token == new_validator_token {
-                        continue;
-                    }
-
-                    let pool_key = PoolKey::new(user_token, new_validator_token).get_id();
-                    let slot = tempo_precompiles::tip_fee_manager::TipFeeManager::new().pools
-                        [pool_key]
-                        .base_slot();
-
-                    let pool_value = match provider.storage(TIP_FEE_MANAGER_ADDRESS, slot.into()) {
-                        Ok(Some(value)) => value,
-                        Ok(None) => {
-                            to_remove.push(*tx.hash());
-                            liquidity_count += 1;
-                            break;
-                        }
+                if let Some(validator_reserve) = amm_validator_reserve.get(&user_token) {
+                    let cost = tx.transaction.fee_token_cost();
+                    let amount_out = match compute_amount_out(cost) {
+                        Ok(amount) => amount,
                         Err(_) => continue,
                     };
 
-                    let reserve = alloy_primitives::U256::from(
-                        Pool::decode_from_slot(pool_value).reserve_validator_token,
-                    );
-
-                    if reserve < amount_out {
+                    if *validator_reserve < amount_out {
                         to_remove.push(*tx.hash());
                         liquidity_count += 1;
-                        break;
+                        continue;
                     }
                 }
             }
@@ -256,9 +333,9 @@ where
             // Check 4: Blacklisted fee payers
             // Only check AA transactions with a fee token (non-AA transactions don't have
             // a fee payer that can be blacklisted via TIP403)
-            if !updates.blacklist_additions.is_empty()
-                && let Some(ref provider) = state_provider
+            if should_check_tip403
                 && let Some(fee_token) = tx.transaction.inner().fee_token()
+                && let Some(&policy_id) = fee_token_policy.get(&fee_token)
             {
                 let fee_payer = tx
                     .transaction
@@ -266,77 +343,22 @@ where
                     .fee_payer(tx.transaction.sender())
                     .unwrap_or(tx.transaction.sender());
 
-                // Check if any blacklist addition applies to this transaction
-                for &(blacklist_policy_id, blacklisted_account) in &updates.blacklist_additions {
-                    if fee_payer != blacklisted_account {
-                        continue;
-                    }
-
-                    // Get the token's transfer policy ID from cache or storage
-                    let token_policy = if let Some(&cached) = policy_cache.get(&fee_token) {
-                        Some(cached)
-                    } else {
-                        provider
-                            .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
-                            .ok()
-                            .flatten()
-                            .map(|packed| {
-                                let policy_id: u64 =
-                                    (packed >> tip20_slots::TRANSFER_POLICY_ID_OFFSET).to();
-                                policy_cache.insert(fee_token, policy_id);
-                                policy_id
-                            })
-                    };
-
-                    // If the token's policy matches the blacklist policy, evict the transaction
-                    if token_policy == Some(blacklist_policy_id) {
-                        to_remove.push(*tx.hash());
-                        blacklisted_count += 1;
-                        break;
-                    }
+                if blacklisted_by_policy
+                    .get(&policy_id)
+                    .is_some_and(|set| set.contains(&fee_payer))
+                {
+                    to_remove.push(*tx.hash());
+                    blacklisted_count += 1;
+                    continue;
                 }
-            }
 
-            // Check 5: Un-whitelisted fee payers
-            // When a fee payer is removed from a whitelist, their pending transactions
-            // will fail validation at execution time.
-            if !updates.whitelist_removals.is_empty()
-                && let Some(ref provider) = state_provider
-                && let Some(fee_token) = tx.transaction.inner().fee_token()
-            {
-                let fee_payer = tx
-                    .transaction
-                    .inner()
-                    .fee_payer(tx.transaction.sender())
-                    .unwrap_or(tx.transaction.sender());
-
-                for &(whitelist_policy_id, unwhitelisted_account) in &updates.whitelist_removals {
-                    if fee_payer != unwhitelisted_account {
-                        continue;
-                    }
-
-                    // Get the token's transfer policy ID from cache or storage
-                    let token_policy = if let Some(&cached) = policy_cache.get(&fee_token) {
-                        Some(cached)
-                    } else {
-                        provider
-                            .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
-                            .ok()
-                            .flatten()
-                            .map(|packed| {
-                                let policy_id: u64 =
-                                    (packed >> tip20_slots::TRANSFER_POLICY_ID_OFFSET).to();
-                                policy_cache.insert(fee_token, policy_id);
-                                policy_id
-                            })
-                    };
-
-                    // If the token's policy matches the whitelist policy, evict the transaction
-                    if token_policy == Some(whitelist_policy_id) {
-                        to_remove.push(*tx.hash());
-                        unwhitelisted_count += 1;
-                        break;
-                    }
+                if unwhitelisted_by_policy
+                    .get(&policy_id)
+                    .is_some_and(|set| set.contains(&fee_payer))
+                {
+                    to_remove.push(*tx.hash());
+                    unwhitelisted_count += 1;
+                    continue;
                 }
             }
         }
