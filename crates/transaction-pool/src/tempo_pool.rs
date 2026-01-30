@@ -175,15 +175,15 @@ where
         let mut policy_cache: HashMap<Address, u64> = HashMap::default();
 
         // Filter validator token changes to only those from active validators.
-        // This prevents DoS via permissionless setValidatorToken.
-        // Only process changes where the new token is already used by actual block producers.
+        // This prevents DoS via permissionless setValidatorToken: we only process
+        // token changes from validators who have actually produced recent blocks.
         let amm_cache = self.amm_liquidity_cache();
         let active_validator_token_changes: Vec<Address> = updates
             .validator_token_changes
             .iter()
-            .filter_map(|&(_validator, new_token)| {
+            .filter_map(|&(validator, new_token)| {
                 amm_cache
-                    .is_active_validator_token(&new_token)
+                    .is_active_validator(&validator)
                     .then_some(new_token)
             })
             .collect();
