@@ -1,6 +1,10 @@
 //! Tempo EVM Handler implementation.
 
-use std::{cmp::Ordering, fmt::Debug};
+use std::{
+    cmp::Ordering,
+    fmt::Debug,
+    sync::{Arc, OnceLock},
+};
 
 use alloy_primitives::{Address, TxKind, U256};
 use reth_evm::{EvmError, EvmInternals};
@@ -814,17 +818,33 @@ where
             };
 
             let internals = EvmInternals::new(journal, block, cfg, tx);
+
             // TIP-1000: Only apply gas metering for T1 hardfork.
             // For pre-T1 chains, use unlimited gas to maintain backward compatibility.
-            let mut provider = if spec.is_t1() {
-                EvmPrecompileStorageProvider::new_with_gas_limit(
-                    internals,
-                    cfg,
-                    tx.gas_limit() - initial_gas,
-                )
+            let gas_limit = if spec.is_t1() {
+                tx.gas_limit() - initial_gas
             } else {
-                EvmPrecompileStorageProvider::new_max_gas(internals, cfg)
+                u64::MAX
             };
+
+            // Create gas_params with only sstore increase for key authorization
+            let gas_params = if spec.is_t1() {
+                static TABLE: OnceLock<GasParams> = OnceLock::new();
+                // only enabled SSTORE gas param for T1 fork in keychain.
+                TABLE
+                    .get_or_init(|| {
+                        let mut table = [0u64; 256];
+                        table[GasId::sstore_set_without_load_cost().as_usize()] = 250_000;
+                        GasParams::new(Arc::new(table))
+                    })
+                    .clone()
+            } else {
+                cfg.gas_params.clone()
+            };
+
+            let mut provider = EvmPrecompileStorageProvider::new(
+                internals, gas_limit, cfg.spec, false, gas_params,
+            );
 
             // The core logic of setting up thread-local storage is here.
             let out_of_gas = StorageCtx::enter(&mut provider, || {

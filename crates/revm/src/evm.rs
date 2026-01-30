@@ -2018,7 +2018,7 @@ mod tests {
         assert!(result.is_success(), "Transaction should succeed");
         assert_eq!(
             result.gas_used(),
-            590914,
+            587177,
             "T1 key authorization gas should be exact"
         );
 
