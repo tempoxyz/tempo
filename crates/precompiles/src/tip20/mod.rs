@@ -63,7 +63,8 @@ pub struct TIP20Token {
     name: String,
     symbol: String,
     currency: String,
-    domain_separator: B256,
+    // Unused slot, kept for storage layout compatibility
+    _domain_separator: B256,
     quote_token: Address,
     next_quote_token: Address,
     transfer_policy_id: u64,
@@ -72,10 +73,12 @@ pub struct TIP20Token {
     total_supply: U256,
     balances: Mapping<Address, U256>,
     allowances: Mapping<Address, Mapping<Address, U256>>,
-    nonces: Mapping<Address, U256>,
+    // Unused slot, kept for storage layout compatibility
+    _nonces: Mapping<Address, U256>,
     paused: bool,
     supply_cap: U256,
-    salts: Mapping<B256, bool>,
+    // Unused slot, kept for storage layout compatibility
+    _salts: Mapping<B256, bool>,
 
     // TIP20 Rewards
     global_reward_per_token: U256,

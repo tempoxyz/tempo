@@ -1,6 +1,7 @@
 use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{DefaultPayloadBuilderValues, DefaultTxPoolValues};
 use std::{borrow::Cow, time::Duration};
+use tempo_chainspec::hardfork::TempoHardfork;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/42431";
 
@@ -44,7 +45,7 @@ fn init_txpool_defaults() {
         .with_new_tx_listener_buffer_size(50000)
         .with_disable_transactions_backup(true)
         .with_additional_validation_tasks(8)
-        .with_minimal_protocol_basefee(0)
+        .with_minimal_protocol_basefee(TempoHardfork::default().base_fee())
         .with_minimum_priority_fee(Some(0))
         .with_max_batch_size(50000)
         .try_init()

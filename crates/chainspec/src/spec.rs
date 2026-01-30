@@ -15,7 +15,12 @@ use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 use tempo_primitives::TempoHeader;
 
-pub const TEMPO_BASE_FEE: u64 = 10_000_000_000;
+/// T0 base fee: 10 gwei (1×10^10 wei)
+pub const TEMPO_T0_BASE_FEE: u64 = 10_000_000_000;
+
+/// T1 base fee: 20 gwei (2×10^10 wei)
+/// At this base fee, a standard TIP-20 transfer (~50,000 gas) costs ~0.1 cent
+pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
 
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
@@ -31,6 +36,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T0 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t0_time: Option<u64>,
+    /// Activation timestamp for T1 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t1_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -49,6 +57,10 @@ impl TempoGenesisInfo {
 
     pub fn t0_time(&self) -> Option<u64> {
         self.t0_time
+    }
+
+    pub fn t1_time(&self) -> Option<u64> {
+        self.t1_time
     }
 }
 
@@ -137,7 +149,9 @@ impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
-        let info @ TempoGenesisInfo { t0_time, .. } = TempoGenesisInfo::extract_from(&genesis);
+        let info @ TempoGenesisInfo {
+            t0_time, t1_time, ..
+        } = TempoGenesisInfo::extract_from(&genesis);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
@@ -145,6 +159,7 @@ impl TempoChainSpec {
         let tempo_forks = vec![
             (TempoHardfork::Genesis, Some(0)),
             (TempoHardfork::T0, t0_time),
+            (TempoHardfork::T1, t1_time),
         ]
         .into_iter()
         .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
@@ -267,8 +282,8 @@ impl EthChainSpec for TempoChainSpec {
         self.inner.get_final_paris_total_difficulty()
     }
 
-    fn next_block_base_fee(&self, _parent: &TempoHeader, _target_timestamp: u64) -> Option<u64> {
-        Some(TEMPO_BASE_FEE)
+    fn next_block_base_fee(&self, _parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
+        Some(self.tempo_hardfork_at(target_timestamp).base_fee())
     }
 }
 
@@ -394,5 +409,39 @@ mod tests {
             testnet_chainspec.tempo_hardfork_at(u64::MAX),
             TempoHardfork::Genesis
         );
+
+        // Dev chainspec should return T1 (all hardforks active at 0)
+        let dev_chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+        assert_eq!(dev_chainspec.tempo_hardfork_at(0), TempoHardfork::T1);
+        assert_eq!(dev_chainspec.tempo_hardfork_at(1000), TempoHardfork::T1);
+    }
+
+    #[test]
+    fn test_from_genesis_with_hardforks_at_zero() {
+        use alloy_genesis::Genesis;
+
+        let genesis: Genesis = serde_json::from_str(
+            r#"{
+                "config": {
+                    "chainId": 1234,
+                    "t0Time": 0,
+                    "t1Time": 0
+                },
+                "alloc": {}
+            }"#,
+        )
+        .unwrap();
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+
+        assert!(chainspec.is_t0_active_at_timestamp(0));
+        assert!(chainspec.is_t0_active_at_timestamp(1000));
+        assert!(chainspec.is_t1_active_at_timestamp(0));
+        assert!(chainspec.is_t1_active_at_timestamp(1000));
+
+        assert_eq!(chainspec.tempo_hardfork_at(0), TempoHardfork::T1);
+        assert_eq!(chainspec.tempo_hardfork_at(1000), TempoHardfork::T1);
+        assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), TempoHardfork::T1);
     }
 }

@@ -36,7 +36,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
@@ -81,10 +81,6 @@ pub(crate) struct GenesisArgs {
     /// Chain ID
     #[arg(long, short, default_value = "1337")]
     chain_id: u64,
-
-    /// Base fee
-    #[arg(long, default_value_t = TEMPO_BASE_FEE.into())]
-    base_fee_per_gas: u128,
 
     /// Genesis block gas limit
     #[arg(long, default_value_t = 500_000_000)]
@@ -146,6 +142,14 @@ pub(crate) struct GenesisArgs {
     /// Disable minting pairwise FeeAMM liquidity.
     #[arg(long)]
     no_pairwise_liquidity: bool,
+
+    /// Timestamp for T0 hardfork activation (0 = genesis).
+    #[arg(long, default_value = "0")]
+    t0_time: u64,
+
+    /// T1 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t1_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -480,7 +484,10 @@ impl GenesisArgs {
             .insert_value("epochLength".to_string(), self.epoch_length)?;
         chain_config
             .extra_fields
-            .insert_value("t0Time".to_string(), 0u64)?;
+            .insert_value("t0Time".to_string(), self.t0_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t1Time".to_string(), self.t1_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -495,9 +502,16 @@ impl GenesisArgs {
             }
         }
 
+        // Base fee determined by hardfork: T1 active at genesis (t1_time=0) uses T1 fee
+        let base_fee: u128 = if self.t1_time == 0 {
+            TempoHardfork::T1.base_fee().into()
+        } else {
+            TempoHardfork::T0.base_fee().into()
+        };
+
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
-            .with_base_fee(Some(self.base_fee_per_gas))
+            .with_base_fee(Some(base_fee))
             .with_nonce(0x42)
             .with_extra_data(extra_data)
             .with_coinbase(self.coinbase);

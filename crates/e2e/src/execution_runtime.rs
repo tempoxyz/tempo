@@ -370,7 +370,7 @@ impl ExecutionRuntime {
                             let ChangeValidatorStatus {
                                 http_url,
                                 active,
-                                address,
+                                index,
                                 response,
                             } = *change_validator_status;
                             let provider = ProviderBuilder::new()
@@ -379,7 +379,7 @@ impl ExecutionRuntime {
                             let validator_config =
                                 IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
                             let receipt = validator_config
-                                .changeValidatorStatus(address, active)
+                                .changeValidatorStatusByIndex(index, active)
                                 .send()
                                 .await
                                 .unwrap()
@@ -483,14 +483,14 @@ impl ExecutionRuntime {
     pub async fn change_validator_status(
         &self,
         http_url: Url,
-        address: Address,
+        index: u64,
         active: bool,
     ) -> eyre::Result<TransactionReceipt> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
             .send(
                 ChangeValidatorStatus {
-                    address,
+                    index,
                     active,
                     http_url,
                     response: tx,
@@ -814,7 +814,7 @@ struct AddValidator {
 struct ChangeValidatorStatus {
     /// URL of the node to send this to.
     http_url: Url,
-    address: Address,
+    index: u64,
     active: bool,
     response: tokio::sync::oneshot::Sender<TransactionReceipt>,
 }
