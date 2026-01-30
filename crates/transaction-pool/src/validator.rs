@@ -460,8 +460,15 @@ where
 
         // Check each call's input size
         for (idx, call) in tx.calls.iter().enumerate() {
-            if call.to.is_create() && idx != 0 {
-                return Err(TempoPoolTransactionError::CreateCallNotFirst);
+            if call.to.is_create() {
+                // CREATE call must be the first call in the transaction.
+                if idx != 0 {
+                    return Err(TempoPoolTransactionError::CreateCallNotFirst);
+                }
+                // CREATE call must not be present in the authorization list.
+                if !tx.tempo_authorization_list.is_empty() {
+                    return Err(TempoPoolTransactionError::CreateCallWithAuthorizationList);
+                }
             }
 
             if call.input.len() > MAX_CALL_INPUT_SIZE {
@@ -3009,6 +3016,66 @@ mod tests {
                 );
             }
             _ => panic!("Expected Invalid outcome with CreateCallNotFirst error, got: {outcome:?}"),
+        }
+    }
+
+    /// CREATE calls must not have any entries in the authorization list.
+    #[tokio::test]
+    async fn test_aa_create_call_with_authorization_list_rejected() {
+        use alloy_eips::eip7702::Authorization;
+        use alloy_primitives::Signature;
+        use tempo_primitives::transaction::{
+            TempoSignedAuthorization,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create an AA transaction with a CREATE call and a non-empty authorization list
+        let calls = vec![Call {
+            to: TxKind::Create, // CREATE call
+            value: U256::ZERO,
+            input: Default::default(),
+        }];
+
+        // Create a single authorization entry
+        let auth = Authorization {
+            chain_id: U256::from(1),
+            nonce: 0,
+            address: address!("0000000000000000000000000000000000000001"),
+        };
+        let authorization = TempoSignedAuthorization::new_unchecked(
+            auth,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        );
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(calls)
+            .authorization_list(vec![authorization])
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::CreateCallWithAuthorizationList)
+                    ),
+                    "Expected CreateCallWithAuthorizationList error, got: {err:?}"
+                );
+            }
+            _ => panic!(
+                "Expected Invalid outcome with CreateCallWithAuthorizationList error, got: {outcome:?}"
+            ),
         }
     }
 

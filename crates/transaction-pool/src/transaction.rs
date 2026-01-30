@@ -257,6 +257,10 @@ pub enum TempoPoolTransactionError {
     #[error("CREATE calls must be the first call in an AA transaction")]
     CreateCallNotFirst,
 
+    /// Thrown when a call in an AA transaction is a CREATE and is present in the authorization list.
+    #[error("CREATE calls must not be present in the authorization list")]
+    CreateCallWithAuthorizationList,
+
     /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
     #[error(
         "Call input size {size} exceeds maximum allowed {max_allowed} bytes (call index: {call_index})"
@@ -360,6 +364,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::NoCalls
+            | Self::CreateCallWithAuthorizationList
             | Self::CreateCallNotFirst => true,
         }
     }
