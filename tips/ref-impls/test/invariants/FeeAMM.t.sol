@@ -1278,13 +1278,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @notice Main invariant function called after each fuzz sequence
     function invariantFeeAMM() public view {
-        _invariantPoolSolvency();
-        _invariantLiquidityAccounting();
-        _invariantMinLiquidityLocked();
-        _invariantReservesBoundedByU128();
+        _invariantPoolStateChecks(); // Unified: AMM13, AMM14, AMM15, AMM20, FEE5
         _invariantRebalanceRoundingFavorsPool();
         _invariantBurnRoundingFavorsPool();
-        _invariantCollectedFeesNotExceedBalance();
         _invariantFeeSwapRateApplied(); // Also covers TEMPO-FEE6
         _invariantFeeSwapReservesUpdate(); // TEMPO-AMM26
         _invariantFeeDoubleCountPrevention(); // TEMPO-AMM31
@@ -1294,123 +1290,65 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         _invariantPoolInitializationShape();
     }
 
-    /// @notice TEMPO-AMM13: Pool solvency - AMM token balances >= sum of reserves
-    function _invariantPoolSolvency() internal view {
-        // Check all token pairs
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            for (uint256 j = 0; j < _tokens.length; j++) {
+    /// @notice Unified pool state checks - single loop for AMM13, AMM14, AMM15, AMM20, FEE5
+    /// @dev Combines _invariantPoolSolvency, _invariantLiquidityAccounting, _invariantMinLiquidityLocked,
+    ///      _invariantReservesBoundedByU128, and _invariantCollectedFeesNotExceedBalance
+    function _invariantPoolStateChecks() internal view {
+        uint256 MAX_U128 = type(uint128).max;
+        uint256 numTokens = _tokens.length;
+        uint256 numActors = _actors.length;
+
+        // Cache AMM token balances (one balanceOf call per token instead of O(n²))
+        uint256[] memory ammBalances = new uint256[](numTokens);
+        for (uint256 i = 0; i < numTokens; i++) {
+            ammBalances[i] = _tokens[i].balanceOf(address(amm));
+        }
+        uint256 ammPathUsdBalance = pathUSD.balanceOf(address(amm));
+
+        // Check collected fees for all tokens (FEE5) - O(tokens × actors)
+        for (uint256 i = 0; i < numTokens; i++) {
+            address token = address(_tokens[i]);
+            uint256 totalCollected = 0;
+            for (uint256 j = 0; j < numActors; j++) {
+                totalCollected += amm.collectedFees(_actors[j], token);
+            }
+            assertTrue(
+                totalCollected <= ammBalances[i], "TEMPO-FEE5: Collected fees exceed AMM balance"
+            );
+        }
+        // Check pathUSD collected fees
+        uint256 totalPathUsdCollected = 0;
+        for (uint256 j = 0; j < numActors; j++) {
+            totalPathUsdCollected += amm.collectedFees(_actors[j], address(pathUSD));
+        }
+        assertTrue(
+            totalPathUsdCollected <= ammPathUsdBalance,
+            "TEMPO-FEE5: Collected pathUSD fees exceed AMM balance"
+        );
+
+        // Check all token pairs - single O(n²) loop for AMM13, AMM14, AMM15, AMM20
+        for (uint256 i = 0; i < numTokens; i++) {
+            for (uint256 j = 0; j < numTokens; j++) {
                 if (i == j) continue;
 
                 address userToken = address(_tokens[i]);
                 address validatorToken = address(_tokens[j]);
 
                 IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
+                bytes32 poolId = amm.getPoolId(userToken, validatorToken);
+                uint256 totalSupply = amm.totalSupply(poolId);
 
-                // AMM should hold at least as many tokens as reserves indicate
-                uint256 ammUserBalance = TIP20(userToken).balanceOf(address(amm));
-                uint256 ammValidatorBalance = TIP20(validatorToken).balanceOf(address(amm));
-
-                // Note: AMM balance may be higher due to collected fees not yet distributed
+                // TEMPO-AMM13: Pool solvency - use cached balances
                 assertTrue(
-                    ammUserBalance >= pool.reserveUserToken,
+                    ammBalances[i] >= pool.reserveUserToken,
                     "TEMPO-AMM13: AMM user token balance < reserve"
                 );
                 assertTrue(
-                    ammValidatorBalance >= pool.reserveValidatorToken,
+                    ammBalances[j] >= pool.reserveValidatorToken,
                     "TEMPO-AMM13: AMM validator token balance < reserve"
                 );
-            }
-        }
 
-        // Also check pathUSD pools
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            address token = address(_tokens[i]);
-
-            // pathUSD as user token
-            IFeeAMM.Pool memory pool1 = amm.getPool(address(pathUSD), token);
-            assertTrue(
-                pathUSD.balanceOf(address(amm)) >= pool1.reserveUserToken,
-                "TEMPO-AMM13: AMM pathUSD balance < reserve (as user)"
-            );
-
-            // pathUSD as validator token
-            IFeeAMM.Pool memory pool2 = amm.getPool(token, address(pathUSD));
-            assertTrue(
-                pathUSD.balanceOf(address(amm)) >= pool2.reserveValidatorToken,
-                "TEMPO-AMM13: AMM pathUSD balance < reserve (as validator)"
-            );
-        }
-    }
-
-    /// @notice TEMPO-AMM14: LP token accounting - sum of balances == total supply
-    function _invariantLiquidityAccounting() internal view {
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            for (uint256 j = 0; j < _tokens.length; j++) {
-                if (i == j) continue;
-
-                address userToken = address(_tokens[i]);
-                address validatorToken = address(_tokens[j]);
-                bytes32 poolId = amm.getPoolId(userToken, validatorToken);
-
-                uint256 totalSupply = amm.totalSupply(poolId);
-                if (totalSupply == 0) continue;
-
-                // Sum all actor balances
-                uint256 sumBalances = 0;
-                for (uint256 k = 0; k < _actors.length; k++) {
-                    sumBalances += amm.liquidityBalances(poolId, _actors[k]);
-                }
-
-                // Total supply should equal sum of balances + MIN_LIQUIDITY (locked on first mint)
-                // Note: MIN_LIQUIDITY is locked and not assigned to any user
-                assertTrue(
-                    totalSupply >= sumBalances, "TEMPO-AMM14: Total supply < sum of balances"
-                );
-                assertTrue(
-                    totalSupply <= sumBalances + MIN_LIQUIDITY,
-                    "TEMPO-AMM14: Total supply > sum of balances + MIN_LIQUIDITY"
-                );
-            }
-        }
-    }
-
-    /// @notice TEMPO-AMM15: MIN_LIQUIDITY permanently locked on first mint
-    function _invariantMinLiquidityLocked() internal view {
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            for (uint256 j = 0; j < _tokens.length; j++) {
-                if (i == j) continue;
-
-                address userToken = address(_tokens[i]);
-                address validatorToken = address(_tokens[j]);
-                bytes32 poolId = amm.getPoolId(userToken, validatorToken);
-
-                uint256 totalSupply = amm.totalSupply(poolId);
-                IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
-
-                // If pool has been initialized (reserves > 0), MIN_LIQUIDITY should be locked
-                if (pool.reserveValidatorToken > 0 || pool.reserveUserToken > 0) {
-                    assertTrue(
-                        totalSupply >= MIN_LIQUIDITY,
-                        "TEMPO-AMM15: Total supply < MIN_LIQUIDITY after initialization"
-                    );
-                }
-            }
-        }
-    }
-
-    /// @notice TEMPO-AMM20: Reserves are always bounded by uint128
-    function _invariantReservesBoundedByU128() internal view {
-        uint256 MAX_U128 = type(uint128).max;
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            for (uint256 j = 0; j < _tokens.length; j++) {
-                if (i == j) continue;
-
-                address userToken = address(_tokens[i]);
-                address validatorToken = address(_tokens[j]);
-
-                IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
-
-                // Reserves are uint128 by definition, but verify they're within bounds
+                // TEMPO-AMM20: Reserves bounded by uint128
                 assertTrue(
                     uint256(pool.reserveUserToken) <= MAX_U128,
                     "TEMPO-AMM20: reserveUserToken exceeds uint128"
@@ -1419,7 +1357,47 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                     uint256(pool.reserveValidatorToken) <= MAX_U128,
                     "TEMPO-AMM20: reserveValidatorToken exceeds uint128"
                 );
+
+                // TEMPO-AMM15: MIN_LIQUIDITY locked on first mint
+                if (pool.reserveValidatorToken > 0 || pool.reserveUserToken > 0) {
+                    assertTrue(
+                        totalSupply >= MIN_LIQUIDITY,
+                        "TEMPO-AMM15: Total supply < MIN_LIQUIDITY after initialization"
+                    );
+                }
+
+                // TEMPO-AMM14: LP token accounting (only if pool has supply)
+                if (totalSupply > 0) {
+                    uint256 sumBalances = 0;
+                    for (uint256 k = 0; k < numActors; k++) {
+                        sumBalances += amm.liquidityBalances(poolId, _actors[k]);
+                    }
+                    assertTrue(
+                        totalSupply >= sumBalances, "TEMPO-AMM14: Total supply < sum of balances"
+                    );
+                    assertTrue(
+                        totalSupply <= sumBalances + MIN_LIQUIDITY,
+                        "TEMPO-AMM14: Total supply > sum of balances + MIN_LIQUIDITY"
+                    );
+                }
             }
+        }
+
+        // Check pathUSD pools - TEMPO-AMM13
+        for (uint256 i = 0; i < numTokens; i++) {
+            address token = address(_tokens[i]);
+
+            IFeeAMM.Pool memory pool1 = amm.getPool(address(pathUSD), token);
+            assertTrue(
+                ammPathUsdBalance >= pool1.reserveUserToken,
+                "TEMPO-AMM13: AMM pathUSD balance < reserve (as user)"
+            );
+
+            IFeeAMM.Pool memory pool2 = amm.getPool(token, address(pathUSD));
+            assertTrue(
+                ammPathUsdBalance >= pool2.reserveValidatorToken,
+                "TEMPO-AMM13: AMM pathUSD balance < reserve (as validator)"
+            );
         }
     }
 
@@ -1437,35 +1415,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 "TEMPO-AMM22: Rebalance rounding should favor pool"
             );
         }
-    }
-
-    /// @notice TEMPO-FEE5: Collected fees should not exceed AMM token balance
-    function _invariantCollectedFeesNotExceedBalance() internal view {
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            address token = address(_tokens[i]);
-            uint256 ammBalance = TIP20(token).balanceOf(address(amm));
-
-            // Sum collected fees for all actors for this token
-            uint256 totalCollected = 0;
-            for (uint256 j = 0; j < _actors.length; j++) {
-                totalCollected += amm.collectedFees(_actors[j], token);
-            }
-
-            assertTrue(
-                totalCollected <= ammBalance, "TEMPO-FEE5: Collected fees exceed AMM balance"
-            );
-        }
-
-        // Also check pathUSD
-        uint256 pathUsdBalance = pathUSD.balanceOf(address(amm));
-        uint256 totalPathUsdCollected = 0;
-        for (uint256 j = 0; j < _actors.length; j++) {
-            totalPathUsdCollected += amm.collectedFees(_actors[j], address(pathUSD));
-        }
-        assertTrue(
-            totalPathUsdCollected <= pathUsdBalance,
-            "TEMPO-FEE5: Collected pathUSD fees exceed AMM balance"
-        );
     }
 
     /// @notice TEMPO-AMM25 & TEMPO-FEE6: Fee swap rate M is correctly applied
