@@ -834,8 +834,8 @@ where
                 TABLE
                     .get_or_init(|| {
                         let mut table = [0u64; 256];
-table[GasId::sstore_set_without_load_cost().as_usize()] = 
-    cfg.gas_params.get(GasId::sstore_set_without_load_cost());
+                        table[GasId::sstore_set_without_load_cost().as_usize()] =
+                            cfg.gas_params.get(GasId::sstore_set_without_load_cost());
                         GasParams::new(Arc::new(table))
                     })
                     .clone()
