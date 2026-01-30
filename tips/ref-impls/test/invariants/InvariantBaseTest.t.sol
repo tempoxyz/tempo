@@ -1,23 +1,22 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { TIP20 } from "../../src/TIP20.sol";
-import { IAccountKeychain } from "../../src/interfaces/IAccountKeychain.sol";
-import { IFeeAMM } from "../../src/interfaces/IFeeAMM.sol";
-import { INonce } from "../../src/interfaces/INonce.sol";
-import { IStablecoinDEX } from "../../src/interfaces/IStablecoinDEX.sol";
-import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
-import { ITIP20Factory } from "../../src/interfaces/ITIP20Factory.sol";
-import { ITIP20RolesAuth } from "../../src/interfaces/ITIP20RolesAuth.sol";
-import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
-import { IValidatorConfig } from "../../src/interfaces/IValidatorConfig.sol";
-import { BaseTest } from "../BaseTest.t.sol";
+import {TIP20} from "../../src/TIP20.sol";
+import {IAccountKeychain} from "../../src/interfaces/IAccountKeychain.sol";
+import {IFeeAMM} from "../../src/interfaces/IFeeAMM.sol";
+import {INonce} from "../../src/interfaces/INonce.sol";
+import {IStablecoinDEX} from "../../src/interfaces/IStablecoinDEX.sol";
+import {ITIP20} from "../../src/interfaces/ITIP20.sol";
+import {ITIP20Factory} from "../../src/interfaces/ITIP20Factory.sol";
+import {ITIP20RolesAuth} from "../../src/interfaces/ITIP20RolesAuth.sol";
+import {ITIP403Registry} from "../../src/interfaces/ITIP403Registry.sol";
+import {IValidatorConfig} from "../../src/interfaces/IValidatorConfig.sol";
+import {BaseTest} from "../BaseTest.t.sol";
 
 /// @title Invariant Base Test
 /// @notice Shared test infrastructure for invariant testing of Tempo precompiles
 /// @dev Provides common actor management, token selection, funding, and logging utilities
 abstract contract InvariantBaseTest is BaseTest {
-
     /*//////////////////////////////////////////////////////////////
                               STATE
     //////////////////////////////////////////////////////////////*/
@@ -41,6 +40,9 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @dev Log file path - must be set by child contract
     string internal _logFile;
 
+    /// @dev Whether logging is enabled (disabled via INVARIANT_NO_LOG=true env var for CI)
+    bool internal _loggingEnabled;
+
     /// @dev All addresses that may hold token balances (for invariant checks)
     address[] internal _balanceHolders;
 
@@ -52,10 +54,8 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @dev Creates tokens, sets up roles, creates blacklist policies
     function _setupInvariantBase() internal {
         // Create additional tokens (token1, token2 already created in BaseTest)
-        token3 =
-            TIP20(factory.createToken("TOKEN3", "T3", "USD", pathUSD, admin, bytes32("token3")));
-        token4 =
-            TIP20(factory.createToken("TOKEN4", "T4", "USD", pathUSD, admin, bytes32("token4")));
+        token3 = TIP20(factory.createToken("TOKEN3", "T3", "USD", pathUSD, admin, bytes32("token3")));
+        token4 = TIP20(factory.createToken("TOKEN4", "T4", "USD", pathUSD, admin, bytes32("token4")));
 
         // Setup pathUSD with issuer role (pathUSDAdmin is the pathUSD admin from BaseTest)
         vm.startPrank(pathUSDAdmin);
@@ -99,11 +99,23 @@ abstract contract InvariantBaseTest is BaseTest {
     }
 
     /// @notice Initialize log file with header
+    /// @dev Logging is disabled if INVARIANT_NO_LOG=true env var is set (for CI performance)
     /// @param logFile The log file path
     /// @param title The title for the log header
     function _initLogFile(string memory logFile, string memory title) internal {
+        // Check if logging should be disabled (for CI runs)
+        try vm.envBool("INVARIANT_NO_LOG") returns (bool noLog) {
+            _loggingEnabled = !noLog;
+        } catch {
+            _loggingEnabled = true; // Default to enabled for local debugging
+        }
+
+        if (!_loggingEnabled) {
+            return;
+        }
+
         _logFile = logFile;
-        try vm.removeFile(_logFile) { } catch { }
+        try vm.removeFile(_logFile) {} catch {}
         _log("================================================================================");
         _log(string.concat("                         ", title));
         _log("================================================================================");
@@ -170,10 +182,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param noOfActors_ Number of actors to create
     /// @param spender Contract to approve for token spending
     /// @return actorsAddress Array of created actor addresses
-    function _buildActorsWithApprovals(uint256 noOfActors_, address spender)
-        internal
-        returns (address[] memory)
-    {
+    function _buildActorsWithApprovals(uint256 noOfActors_, address spender) internal returns (address[] memory) {
         address[] memory actorsAddress = _buildActors(noOfActors_);
 
         for (uint256 i = 0; i < noOfActors_; i++) {
@@ -208,11 +217,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param pairSeed Random seed - lower bits for first token, upper bits for offset
     /// @return userToken First token
     /// @return validatorToken Second token (guaranteed different from first)
-    function _selectTokenPair(uint256 pairSeed)
-        internal
-        view
-        returns (address userToken, address validatorToken)
-    {
+    function _selectTokenPair(uint256 pairSeed) internal view returns (address userToken, address validatorToken) {
         uint256 totalTokens = _tokens.length + 1;
         uint256 idx1 = bound(pairSeed, 0, totalTokens - 1);
 
@@ -338,8 +343,11 @@ abstract contract InvariantBaseTest is BaseTest {
                               LOGGING
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Logs a message to the log file
+    /// @dev Logs a message to the log file (no-op if logging disabled)
     function _log(string memory message) internal {
+        if (!_loggingEnabled) {
+            return;
+        }
         vm.writeLine(_logFile, message);
     }
 
@@ -360,9 +368,7 @@ abstract contract InvariantBaseTest is BaseTest {
 
     /// @dev Logs a handler revert
     function _logHandlerRevert(string memory handler, bytes4 selector) internal {
-        vm.writeLine(
-            _logFile, string.concat("REVERT: ", handler, " selector=", vm.toString(selector))
-        );
+        vm.writeLine(_logFile, string.concat("REVERT: ", handler, " selector=", vm.toString(selector)));
     }
 
     /// @dev Gets actor index from address for logging
@@ -381,16 +387,11 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param contractAddr Contract address to check
     /// @param contractName Name for logging
     function _logContractBalances(address contractAddr, string memory contractName) internal {
-        string memory balanceStr = string.concat(
-            contractName, " balances: pathUSD=", vm.toString(pathUSD.balanceOf(contractAddr))
-        );
+        string memory balanceStr =
+            string.concat(contractName, " balances: pathUSD=", vm.toString(pathUSD.balanceOf(contractAddr)));
         for (uint256 t = 0; t < _tokens.length; t++) {
             balanceStr = string.concat(
-                balanceStr,
-                ", ",
-                _tokens[t].symbol(),
-                "=",
-                vm.toString(_tokens[t].balanceOf(contractAddr))
+                balanceStr, ", ", _tokens[t].symbol(), "=", vm.toString(_tokens[t].balanceOf(contractAddr))
             );
         }
         _log(balanceStr);
@@ -405,16 +406,11 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param spender Address to approve for spending (0 for no approvals)
     /// @param logFile Log file path
     /// @param title Log file title
-    function _setupInvariantTest(
-        uint256 actorCount,
-        address spender,
-        string memory logFile,
-        string memory title
-    ) internal {
+    function _setupInvariantTest(uint256 actorCount, address spender, string memory logFile, string memory title)
+        internal
+    {
         _setupInvariantBase();
-        _actors = spender == address(0)
-            ? _buildActors(actorCount)
-            : _buildActorsWithApprovals(actorCount, spender);
+        _actors = spender == address(0) ? _buildActors(actorCount) : _buildActorsWithApprovals(actorCount, spender);
         _initLogFile(logFile, title);
     }
 
@@ -437,20 +433,13 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param selector Error selector
     /// @return True if known TIP20 error
     function _isKnownTIP20Error(bytes4 selector) internal pure returns (bool) {
-        return selector == ITIP20.ContractPaused.selector
-            || selector == ITIP20.InsufficientAllowance.selector
-            || selector == ITIP20.InsufficientBalance.selector
-            || selector == ITIP20.InvalidRecipient.selector
-            || selector == ITIP20.InvalidAmount.selector
-            || selector == ITIP20.PolicyForbids.selector
-            || selector == ITIP20.SupplyCapExceeded.selector
-            || selector == ITIP20.NoOptedInSupply.selector
-            || selector == ITIP20.InvalidTransferPolicyId.selector
-            || selector == ITIP20.InvalidQuoteToken.selector
-            || selector == ITIP20.InvalidCurrency.selector
-            || selector == ITIP20.InvalidSupplyCap.selector
-            || selector == ITIP20.ProtectedAddress.selector
-            || selector == ITIP20RolesAuth.Unauthorized.selector;
+        return selector == ITIP20.ContractPaused.selector || selector == ITIP20.InsufficientAllowance.selector
+            || selector == ITIP20.InsufficientBalance.selector || selector == ITIP20.InvalidRecipient.selector
+            || selector == ITIP20.InvalidAmount.selector || selector == ITIP20.PolicyForbids.selector
+            || selector == ITIP20.SupplyCapExceeded.selector || selector == ITIP20.NoOptedInSupply.selector
+            || selector == ITIP20.InvalidTransferPolicyId.selector || selector == ITIP20.InvalidQuoteToken.selector
+            || selector == ITIP20.InvalidCurrency.selector || selector == ITIP20.InvalidSupplyCap.selector
+            || selector == ITIP20.ProtectedAddress.selector || selector == ITIP20RolesAuth.Unauthorized.selector;
     }
 
     /// @dev Checks if an error is a known TIP20Factory error
@@ -499,8 +488,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param selector Error selector
     /// @return True if known Nonce error
     function _isKnownNonceError(bytes4 selector) internal pure returns (bool) {
-        return selector == INonce.ProtocolNonceNotSupported.selector
-            || selector == INonce.InvalidNonceKey.selector
+        return selector == INonce.ProtocolNonceNotSupported.selector || selector == INonce.InvalidNonceKey.selector
             || selector == INonce.NonceOverflow.selector;
     }
 
@@ -509,8 +497,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @return True if known AccountKeychain error
     function _isKnownKeychainError(bytes4 selector) internal pure returns (bool) {
         return selector == IAccountKeychain.KeyAlreadyExists.selector
-            || selector == IAccountKeychain.KeyNotFound.selector
-            || selector == IAccountKeychain.KeyInactive.selector
+            || selector == IAccountKeychain.KeyNotFound.selector || selector == IAccountKeychain.KeyInactive.selector
             || selector == IAccountKeychain.KeyExpired.selector
             || selector == IAccountKeychain.KeyAlreadyRevoked.selector
             || selector == IAccountKeychain.SpendingLimitExceeded.selector
@@ -527,8 +514,7 @@ abstract contract InvariantBaseTest is BaseTest {
             || selector == IValidatorConfig.ValidatorAlreadyExists.selector
             || selector == IValidatorConfig.ValidatorNotFound.selector
             || selector == IValidatorConfig.InvalidPublicKey.selector
-            || selector == IValidatorConfig.NotHostPort.selector
-            || selector == IValidatorConfig.NotIpPort.selector;
+            || selector == IValidatorConfig.NotHostPort.selector || selector == IValidatorConfig.NotIpPort.selector;
     }
 
     /// @dev Checks if an error is a known TIP403Registry error
@@ -544,14 +530,11 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param selector Error selector
     /// @return True if known FeeAMM error
     function _isKnownFeeAMMError(bytes4 selector) internal pure returns (bool) {
-        return selector == IFeeAMM.IdenticalAddresses.selector
-            || selector == IFeeAMM.InvalidAmount.selector
-            || selector == IFeeAMM.InsufficientLiquidity.selector
-            || selector == IFeeAMM.InsufficientReserves.selector
-            || selector == IFeeAMM.DivisionByZero.selector
-            || selector == IFeeAMM.InvalidSwapCalculation.selector
-            || selector == IFeeAMM.InvalidCurrency.selector
-            || selector == IFeeAMM.InvalidToken.selector || _isKnownTIP20Error(selector);
+        return selector == IFeeAMM.IdenticalAddresses.selector || selector == IFeeAMM.InvalidAmount.selector
+            || selector == IFeeAMM.InsufficientLiquidity.selector || selector == IFeeAMM.InsufficientReserves.selector
+            || selector == IFeeAMM.DivisionByZero.selector || selector == IFeeAMM.InvalidSwapCalculation.selector
+            || selector == IFeeAMM.InvalidCurrency.selector || selector == IFeeAMM.InvalidToken.selector
+            || _isKnownTIP20Error(selector);
     }
 
     /// @dev Checks if an error is a known StablecoinDEX error
@@ -563,8 +546,7 @@ abstract contract InvariantBaseTest is BaseTest {
             || selector == IStablecoinDEX.MaxInputExceeded.selector
             || selector == IStablecoinDEX.InsufficientBalance.selector
             || selector == IStablecoinDEX.PairDoesNotExist.selector
-            || selector == IStablecoinDEX.IdenticalTokens.selector
-            || selector == IStablecoinDEX.InvalidToken.selector
+            || selector == IStablecoinDEX.IdenticalTokens.selector || selector == IStablecoinDEX.InvalidToken.selector
             || selector == IStablecoinDEX.OrderDoesNotExist.selector
             || selector == IStablecoinDEX.BelowMinimumOrderSize.selector
             || selector == IStablecoinDEX.InvalidTick.selector || _isKnownTIP20Error(selector);
@@ -618,11 +600,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param count Number of addresses to generate
     /// @param startOffset Starting offset for address generation (e.g., 0x1001, 0x2000)
     /// @return addresses Array of generated addresses
-    function _buildAddressPool(uint256 count, uint256 startOffset)
-        internal
-        pure
-        returns (address[] memory)
-    {
+    function _buildAddressPool(uint256 count, uint256 startOffset) internal pure returns (address[] memory) {
         address[] memory addresses = new address[](count);
         for (uint256 i = 0; i < count; i++) {
             addresses[i] = address(uint160(startOffset + i));
@@ -696,11 +674,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param minPct Minimum percentage (0-100)
     /// @param maxPct Maximum percentage (0-100)
     /// @return The bounded value as a percentage of total
-    function _boundPct(uint256 x, uint256 total, uint256 minPct, uint256 maxPct)
-        internal
-        pure
-        returns (uint256)
-    {
+    function _boundPct(uint256 x, uint256 total, uint256 minPct, uint256 maxPct) internal pure returns (uint256) {
         uint256 pct = _boundSafe(x, minPct, maxPct);
         return (total * pct) / 100;
     }
@@ -741,9 +715,7 @@ abstract contract InvariantBaseTest is BaseTest {
     function _generateValidIpPort(uint256 seed) internal pure returns (string memory) {
         uint8 lastOctet = uint8((seed % 254) + 1);
         uint16 port = uint16((seed % 9000) + 1000);
-        return string(
-            abi.encodePacked("192.168.1.", _uint8ToString(lastOctet), ":", _uint16ToString(port))
-        );
+        return string(abi.encodePacked("192.168.1.", _uint8ToString(lastOctet), ":", _uint16ToString(port)));
     }
 
     /// @dev Converts uint16 to string
@@ -803,11 +775,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param reason The revert reason bytes
     /// @param expected The expected error selector
     /// @param message Assertion message on failure
-    function _assertExactSelector(bytes memory reason, bytes4 expected, string memory message)
-        internal
-        pure
-    {
+    function _assertExactSelector(bytes memory reason, bytes4 expected, string memory message) internal pure {
         assertEq(bytes4(reason), expected, message);
     }
-
 }
