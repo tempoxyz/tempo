@@ -328,14 +328,20 @@ contract StablecoinDEXTest is BaseTest {
         vm.expectEmit(true, true, true, true);
         emit OrderFilled(flipOrderId, alice, bob, 1e18, false);
 
+        // After fix: flipped orders are NOT flip orders themselves (isFlipOrder=false)
+        // This prevents ping-pong accumulation of rounding errors
+        // flipTick is 0 for non-flip orders
         vm.expectEmit(true, true, true, true);
-        emit OrderPlaced(2, alice, address(token1), 1e18, false, 200, true, 100);
+        emit OrderPlaced(2, alice, address(token1), 1e18, false, 200, false, 0);
 
         vm.prank(bob);
         exchange.swapExactAmountIn(address(token1), address(pathUSD), 1e18, 0);
 
         assertEq(exchange.nextOrderId(), 3);
-        // TODO: pull the order from orders mapping and assert state changes
+
+        // Verify the flipped order is NOT a flip order
+        IStablecoinDEX.Order memory flippedOrder = exchange.getOrder(2);
+        assertFalse(flippedOrder.isFlip, "Flipped order should not be a flip order");
     }
 
     function test_OrdersImmediatelyActive() public {
@@ -881,6 +887,10 @@ contract StablecoinDEXTest is BaseTest {
 
     // Test price conversion validates bounds and reverts for out-of-range prices
     function testFuzz_PriceToTick_Conversion(uint32 price) public view {
+        // Bound price to valid int32 range to avoid overflow in expectedTick calculation
+        // MAX_PRICE is much smaller than int32.max so this is the relevant bound
+        vm.assume(price <= uint32(type(int32).max));
+
         int16 expectedTick = int16(int32(price) - int32(exchange.PRICE_SCALE()));
 
         if (price < exchange.MIN_PRICE() || price > exchange.MAX_PRICE()) {
@@ -1310,7 +1320,7 @@ contract StablecoinDEXTest is BaseTest {
         assertEq(askLiquidity, 0);
     }
 
-    function test_FlipOrder_DoesNotFlipWhenMakerWithdrawsBalance() public {
+    function test_FlipOrder_FlipsWithFillAmountAfterWithdrawal() public {
         // Alice places a flip bid order: buying 2e18 base tokens at tick 100, will flip to ask at tick 200
         uint128 orderAmount = 2e18;
         int16 tick = 100;
@@ -1337,24 +1347,13 @@ contract StablecoinDEXTest is BaseTest {
             exchange.balanceOf(alice, address(token1)), 0, "Alice's internal balance should be 0"
         );
 
-        // Verify Alice still has sufficient external token balance and approval for a flip order
-        // For a flip ask at tick 200, she would need to escrow base tokens
-        assertGt(
-            token1.balanceOf(alice),
-            orderAmount,
-            "Alice should have sufficient external token balance"
-        );
-        assertGt(
-            token1.allowance(alice, address(exchange)),
-            orderAmount,
-            "Alice should have sufficient approval"
-        );
-
         uint128 nextOrderIdBefore = exchange.nextOrderId();
 
         // Bob fills the remaining order (sells another 1e18 base tokens)
-        // The flip order should NOT be created because Alice's internal balance is insufficient
-        // and we don't resort to transferFrom for flip orders
+        // The flip WILL succeed because:
+        // 1. The fill credits Alice with 1e18 base tokens FIRST
+        // 2. The flipped order uses fillAmount (1e18), not order.amount (2e18)
+        // 3. Alice has exactly enough internal balance from step 1 to cover the escrow
         vm.prank(bob);
         exchange.swapExactAmountIn(address(token1), address(pathUSD), 1e18, 0);
 
@@ -1365,20 +1364,26 @@ contract StablecoinDEXTest is BaseTest {
             assertEq(err, abi.encodeWithSelector(IStablecoinDEX.OrderDoesNotExist.selector));
         }
 
-        // No new flip order should have been created
-        // If a flip order was created, nextOrderId would have incremented
+        // A new flipped order SHOULD be created because the fix uses fillAmount (1e18)
+        // which Alice can cover from the proceeds she just received
         assertEq(
             exchange.nextOrderId(),
-            nextOrderIdBefore,
-            "No new order should be created - flip should not execute when internal balance is insufficient"
+            nextOrderIdBefore + 1,
+            "A new flipped order should be created using fillAmount"
         );
 
-        // Verify no liquidity exists at the flip tick (ask at tick 200)
-        (uint128 askHead, uint128 askTail, uint128 askLiquidity) =
+        // Verify liquidity exists at the flip tick (ask at tick 200) for 1e18 (fillAmount)
+        (uint128 askHead,, uint128 askLiquidity) =
             exchange.getTickLevel(address(token1), flipTick, false);
-        assertEq(askHead, 0, "No ask order should exist at flip tick");
-        assertEq(askTail, 0, "No ask order should exist at flip tick");
-        assertEq(askLiquidity, 0, "No liquidity should exist at flip tick");
+        assertGt(askHead, 0, "Ask order should exist at flip tick");
+        assertEq(
+            askLiquidity, 1e18, "Liquidity should be fillAmount (1e18), not order.amount (2e18)"
+        );
+
+        // Verify the flipped order is NOT a flip order (prevents ping-pong)
+        IStablecoinDEX.Order memory flippedOrder = exchange.getOrder(nextOrderIdBefore);
+        assertFalse(flippedOrder.isFlip, "Flipped order should not be a flip order");
+        assertEq(flippedOrder.amount, 1e18, "Flipped order amount should be fillAmount");
     }
 
     /// @notice Test that a maker blacklisted in the token they are buying cannot place a bid order

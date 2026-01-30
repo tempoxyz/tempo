@@ -574,16 +574,21 @@ contract StablecoinDEX is IStablecoinDEX {
             }
 
             // If flip order, place order at flip tick on opposite side
+            // Key invariants for solvency:
+            // 1. Use fillAmount (actual proceeds) not order.amount to ensure the flipped
+            //    order is fully backed by tokens the maker actually received.
+            // 2. The flipped order is NOT a flip order itself (isFlip = false) to prevent
+            //    ping-pong accumulation of rounding errors.
             if (order.isFlip) {
                 _placeOrder(
                     book.base,
                     book.quote,
-                    order.amount,
+                    fillAmount,
                     order.maker,
                     !order.isBid,
                     order.flipTick,
-                    true,
-                    order.tick,
+                    false,
+                    0,
                     false
                 );
             }

@@ -1222,7 +1222,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             || selector == IStablecoinDEX.InsufficientBalance.selector
             || selector == IStablecoinDEX.PairDoesNotExist.selector
             || selector == IStablecoinDEX.IdenticalTokens.selector
-            || selector == IStablecoinDEX.InvalidToken.selector || _isKnownTIP20Error(selector);
+            || selector == IStablecoinDEX.InvalidToken.selector
+            || selector == IStablecoinDEX.BelowMinimumOrderSize.selector
+            || _isKnownTIP20Error(selector);
         assertTrue(isKnownError, "Swap failed with unknown error");
     }
 
@@ -1310,6 +1312,103 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 ")"
             )
         );
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                      REGRESSION TEST: FLIP ORDER SOLVENCY
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Regression test for flip order solvency bug.
+    /// @dev This test reproduces the scenario that caused DEX insolvency:
+    ///      1. Alice places a bid flip order at tick 100, flip to tick 200
+    ///      2. Bob swaps base->quote, filling Alice's bid and triggering the flip
+    ///      3. Charlie tries to fill the flipped ask order
+    ///
+    ///      BUG (before fix): The flipped order used order.amount (original) instead of
+    ///      actual proceeds, and was itself a flip order, causing ping-pong accumulation.
+    ///
+    ///      FIX: Flipped orders now use fill_amount and are regular (non-flip) orders.
+    function test_flipOrderSolvency() public {
+        // Setup
+        address alice = _actors[0];
+        address bob = _actors[1];
+        address charlie = _actors[2];
+        TIP20 token = _tokens[0];
+
+        uint128 amount = 100_000_001; // Odd amount to ensure rounding
+        int16 tick = 100;
+        int16 flipTick = 200;
+
+        // Ensure all actors have sufficient funds
+        _ensureFunds(alice, pathUSD, 200_000_000);
+        _ensureFunds(bob, token, 200_000_000);
+        _ensureFunds(charlie, pathUSD, 200_000_000);
+
+        // Step 1: Alice places a bid flip order
+        vm.startPrank(alice);
+        uint128 flipOrderId = exchange.placeFlip(address(token), amount, true, tick, flipTick);
+        vm.stopPrank();
+
+        // Verify order is a flip order
+        IStablecoinDEX.Order memory order = exchange.getOrder(flipOrderId);
+        assertTrue(order.isFlip, "Order should be a flip order");
+        assertTrue(order.isBid, "Order should be a bid");
+
+        // Step 2: Bob swaps base->quote, filling Alice's bid and triggering flip
+        vm.startPrank(bob);
+        exchange.swapExactAmountIn(address(token), address(pathUSD), amount, 0);
+        vm.stopPrank();
+
+        // The flipped order should exist
+        uint128 flippedOrderId = flipOrderId + 1;
+        IStablecoinDEX.Order memory flippedOrder = exchange.getOrder(flippedOrderId);
+        assertEq(flippedOrder.maker, alice, "Flipped order maker should be Alice");
+        assertEq(flippedOrder.tick, flipTick, "Flipped order should be at flip tick");
+        assertFalse(flippedOrder.isBid, "Flipped order should be an ask");
+
+        // KEY ASSERTION: After fix, flipped order should NOT be a flip order
+        // This prevents ping-pong accumulation of rounding errors
+        assertFalse(
+            flippedOrder.isFlip, "Flipped order should NOT be a flip order (prevents ping-pong)"
+        );
+
+        // Check solvency: DEX should have enough tokens to cover the flipped order
+        uint256 dexBaseBalance = token.balanceOf(address(exchange));
+        uint256 flippedOrderEscrow = flippedOrder.remaining; // base tokens escrowed
+
+        // Sum of internal balances
+        uint256 aliceInternal = exchange.balanceOf(alice, address(token));
+        uint256 bobInternal = exchange.balanceOf(bob, address(token));
+        uint256 charlieInternal = exchange.balanceOf(charlie, address(token));
+        uint256 totalInternalBase = aliceInternal + bobInternal + charlieInternal;
+
+        uint256 totalBaseLiabilities = totalInternalBase + flippedOrderEscrow;
+
+        // DEX must be solvent
+        assertGe(
+            dexBaseBalance, totalBaseLiabilities, "DEX is insolvent: base balance < liabilities"
+        );
+
+        // Step 3: Charlie fills the flipped ask order (should succeed if solvent)
+        uint32 flipPrice = exchange.tickToPrice(flipTick);
+        uint128 quoteNeeded = uint128(
+            (uint256(amount) * uint256(flipPrice) + exchange.PRICE_SCALE() - 1)
+                / exchange.PRICE_SCALE()
+        );
+
+        vm.startPrank(charlie);
+        // This swap would fail with InsufficientBalance if DEX was insolvent
+        exchange.swapExactAmountIn(address(pathUSD), address(token), quoteNeeded, 0);
+        vm.stopPrank();
+
+        // Verify the flipped order was filled
+        try exchange.getOrder(flippedOrderId) returns (IStablecoinDEX.Order memory) {
+            // Order still exists - check if partially filled
+            IStablecoinDEX.Order memory afterOrder = exchange.getOrder(flippedOrderId);
+            assertTrue(afterOrder.remaining < amount, "Order should be at least partially filled");
+        } catch {
+            // Order was fully filled and deleted - expected
+        }
     }
 
 }

@@ -484,6 +484,96 @@ impl StablecoinDEX {
         self.orders[order.order_id()].write(order)
     }
 
+    /// Internal helper to place a regular (non-flip) order, optionally using only internal balance.
+    ///
+    /// This is used when creating the flipped order after a flip order is filled.
+    /// The flipped order is NOT itself a flip order to prevent ping-pong accumulation.
+    ///
+    /// # Arguments
+    /// * `sender` - The maker address
+    /// * `token` - The base token address
+    /// * `amount` - The order amount in base tokens
+    /// * `is_bid` - True for bid, false for ask
+    /// * `tick` - The price tick
+    /// * `internal_balance_only` - If true, only use internal balance (fail if insufficient)
+    fn place_order_internal(
+        &mut self,
+        sender: Address,
+        token: Address,
+        amount: u128,
+        is_bid: bool,
+        tick: i16,
+        internal_balance_only: bool,
+    ) -> Result<u128> {
+        let quote_token = TIP20Token::from_address(token)?.quote_token()?;
+        let book_key = compute_book_key(token, quote_token);
+
+        // Validate tick is within bounds and spacing
+        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
+            return Err(StablecoinDEXError::tick_out_of_bounds(tick).into());
+        }
+        if tick % TICK_SPACING != 0 {
+            return Err(StablecoinDEXError::invalid_tick().into());
+        }
+
+        // Validate order amount meets minimum requirement
+        if amount < MIN_ORDER_AMOUNT {
+            return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
+        }
+
+        // Calculate escrow amount and token based on order side
+        let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
+            let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
+                .ok_or(StablecoinDEXError::insufficient_balance())?;
+            (quote_token, quote_amount, token)
+        } else {
+            (token, amount, quote_token)
+        };
+
+        // Check policy on non-escrow token
+        TIP20Token::from_address(non_escrow_token)?
+            .ensure_transfer_authorized(sender, self.address)?;
+
+        // Debit escrow from internal balance or wallet
+        if internal_balance_only {
+            TIP20Token::from_address(escrow_token)?
+                .ensure_transfer_authorized(sender, self.address)?;
+            let user_balance = self.balance_of(sender, escrow_token)?;
+            if user_balance < escrow_amount {
+                return Err(StablecoinDEXError::insufficient_balance().into());
+            }
+            self.sub_balance(sender, escrow_token, escrow_amount)?;
+        } else {
+            self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
+        }
+
+        // Create the order (non-flip)
+        let order_id = self.next_order_id()?;
+        self.increment_next_order_id()?;
+        let order = if is_bid {
+            Order::new_bid(order_id, sender, book_key, amount, tick)
+        } else {
+            Order::new_ask(order_id, sender, book_key, amount, tick)
+        };
+        self.commit_order_to_book(order)?;
+
+        // Emit OrderPlaced event (isFlipOrder = false since this is not a flip order)
+        self.emit_event(StablecoinDEXEvents::OrderPlaced(
+            IStablecoinDEX::OrderPlaced {
+                orderId: order_id,
+                maker: sender,
+                token,
+                amount,
+                isBid: is_bid,
+                tick,
+                isFlipOrder: false,
+                flipTick: 0,
+            },
+        ))?;
+
+        Ok(order_id)
+    }
+
     /// Place a flip order that auto-flips when filled
     ///
     /// Flip orders automatically create a new order on the opposite side when completely filled.
@@ -688,18 +778,26 @@ impl StablecoinDEX {
         self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, false)?;
 
         if order.is_flip() {
-            // Create a new flip order with flipped side and swapped ticks
-            // Bid becomes Ask, Ask becomes Bid
-            // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
-            // Uses internal balance only, does not transfer from wallet
-            let _ = self.place_flip(
+            // Create a new order on the opposite side when flip order is filled.
+            // Key invariants for solvency:
+            // 1. Use fill_amount (actual proceeds) not order.amount() to ensure the flipped
+            //    order is fully backed by tokens the maker actually received.
+            // 2. The flipped order is NOT a flip order itself (is_flip = false) to prevent
+            //    ping-pong accumulation of rounding errors.
+            //
+            // For bid->ask flip: maker received fill_amount base tokens, escrow those for ask
+            // For ask->bid flip: maker received quote tokens, use fill_amount for bid size
+            let flipped_order_amount = fill_amount;
+
+            // Place a regular (non-flip) order at the flip tick
+            // Note: We use place() not place_flip() to ensure is_flip = false
+            let _ = self.place_order_internal(
                 order.maker(),
                 orderbook.base,
-                order.amount(),
+                flipped_order_amount,
                 !order.is_bid(),
                 order.flip_tick(),
-                order.tick(),
-                true,
+                true, // internal_balance_only - use the proceeds just credited
             );
         }
 
@@ -2354,7 +2452,17 @@ mod tests {
             let new_order = exchange.orders[new_order_id].read()?;
             assert_eq!(new_order.maker(), alice);
             assert_eq!(new_order.tick(), flip_tick);
-            assert_eq!(new_order.flip_tick(), tick);
+            // After fix: flipped orders are regular orders, not flip orders
+            // This prevents ping-pong accumulation of rounding errors
+            assert_eq!(
+                new_order.flip_tick(),
+                0,
+                "Flipped order should not be a flip order"
+            );
+            assert!(
+                !new_order.is_flip(),
+                "Flipped order should not be a flip order"
+            );
             assert!(new_order.is_ask());
             assert_eq!(new_order.amount(), amount);
             assert_eq!(new_order.remaining(), amount);
@@ -4107,6 +4215,373 @@ mod tests {
             exchange
                 .swap_exact_amount_out(bob, base_token, quote_token, 100009999, u128::MAX)
                 .expect("Swap should succeed");
+
+            Ok(())
+        })
+    }
+
+    /// Test demonstrating DEX insolvency from flip order rounding accumulation.
+    ///
+    /// This test shows that when flip orders are filled at non-zero ticks,
+    /// rounding differences between what the maker receives and what the flipped
+    /// order requires can cause the DEX to become insolvent.
+    ///
+    /// Bug: When a flip order is filled, it uses `order.amount()` (original size)
+    /// for the flipped order, but the maker only receives tokens based on
+    /// `fill_amount` with rounding. Over multiple flip cycles, this can cause
+    /// the DEX's actual token balance to be less than the sum of internal balances
+    /// plus escrowed amounts.
+    #[test]
+    fn test_flip_order_causes_insolvency() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random(); // Flip order maker
+            let bob = Address::random(); // Swapper who triggers the flip
+            let charlie = Address::random(); // Counter-party for flipped order
+            let admin = Address::random();
+
+            // Use an amount and tick that causes rounding issues
+            // At tick=100, price = 100100 (100000 + 100)
+            // For amount=100_000_001, quote escrow = ceil(100_000_001 * 100100 / 100000)
+            //   = ceil(10010000100100 / 100000) = ceil(100100001.001) = 100100002
+            // But maker receives base tokens = fill_amount = 100_000_001 (exact)
+            let amount = 100_000_001u128;
+            let tick = 100i16;
+            let flip_tick = 200i16;
+
+            let price = orderbook::tick_to_price(tick) as u128;
+            let escrow_quote = (amount * price).div_ceil(orderbook::PRICE_SCALE as u128);
+
+            // Setup tokens with ample balances
+            let large_balance = escrow_quote * 10;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(large_balance))
+                .with_mint(bob, U256::from(large_balance))
+                .with_mint(charlie, U256::from(large_balance))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .with_approval(charlie, exchange.address, U256::MAX)
+                .apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(large_balance))
+                .with_mint(bob, U256::from(large_balance))
+                .with_mint(charlie, U256::from(large_balance))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .with_approval(charlie, exchange.address, U256::MAX)
+                .apply()?;
+
+            exchange.create_pair(base_token)?;
+
+            let tip20_base = TIP20Token::from_address(base_token)?;
+            let tip20_quote = TIP20Token::from_address(quote_token)?;
+
+            // Step 1: Alice places a bid flip order
+            // She escrows quote tokens (pathUSD) to buy base tokens
+            // When filled, it will flip to an ask order at flip_tick
+            let flip_order_id = exchange.place_flip(
+                alice, base_token, amount, true, // is_bid
+                tick, flip_tick, false, // not internal_balance_only
+            )?;
+
+            // Verify the order was placed
+            let order = exchange.get_order(flip_order_id)?;
+            assert!(order.is_bid());
+            assert!(order.is_flip());
+            assert_eq!(order.amount(), amount);
+
+            // Step 2: Bob swaps base tokens for quote tokens, filling Alice's bid
+            // This triggers the flip: Alice's bid becomes an ask at flip_tick
+            // Bob uses his external balance (minted above), not internal balance
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            // The original flip order should now be deleted (filled)
+            let filled_order = exchange.orders[flip_order_id].read()?;
+            assert!(
+                filled_order.maker().is_zero(),
+                "Original order should be deleted"
+            );
+
+            // The flipped order should exist
+            let flipped_order_id = flip_order_id + 1;
+            let flipped_order = exchange.get_order(flipped_order_id)?;
+            assert!(flipped_order.is_ask());
+            assert_eq!(flipped_order.amount(), amount);
+            assert_eq!(flipped_order.tick(), flip_tick);
+
+            // Step 3: Check DEX solvency
+            // The DEX should hold enough tokens to cover:
+            // - All user internal balances
+            // - All escrowed amounts for open orders
+
+            // Get DEX's actual token balances
+            let dex_base_balance: u128 = tip20_base
+                .balance_of(ITIP20::balanceOfCall {
+                    account: exchange.address,
+                })?
+                .try_into()
+                .unwrap();
+            let dex_quote_balance: u128 = tip20_quote
+                .balance_of(ITIP20::balanceOfCall {
+                    account: exchange.address,
+                })?
+                .try_into()
+                .unwrap();
+
+            // Calculate total liabilities:
+            // Internal balances for all users
+            let alice_internal_base = exchange.balance_of(alice, base_token)?;
+            let alice_internal_quote = exchange.balance_of(alice, quote_token)?;
+            let bob_internal_base = exchange.balance_of(bob, base_token)?;
+            let bob_internal_quote = exchange.balance_of(bob, quote_token)?;
+            let charlie_internal_base = exchange.balance_of(charlie, base_token)?;
+            let charlie_internal_quote = exchange.balance_of(charlie, quote_token)?;
+
+            let total_internal_base =
+                alice_internal_base + bob_internal_base + charlie_internal_base;
+            let total_internal_quote =
+                alice_internal_quote + bob_internal_quote + charlie_internal_quote;
+
+            // Escrowed amounts for open orders
+            // The flipped order is an ask, so it escrows base tokens
+            let flipped_order_escrow = flipped_order.remaining(); // base tokens
+
+            // Total liabilities
+            let total_base_liabilities = total_internal_base + flipped_order_escrow;
+            let total_quote_liabilities = total_internal_quote;
+
+            println!("=== DEX Solvency Check ===");
+            println!("DEX base balance: {dex_base_balance}");
+            println!("DEX quote balance: {dex_quote_balance}");
+            println!("Total internal base: {total_internal_base}");
+            println!("Total internal quote: {total_internal_quote}");
+            println!("Flipped order escrow (base): {flipped_order_escrow}");
+            println!("Total base liabilities: {total_base_liabilities}");
+            println!("Total quote liabilities: {total_quote_liabilities}");
+
+            // The bug: DEX may not have enough base tokens
+            // When the bid was filled, Alice received `amount` base tokens to her internal balance
+            // But the flipped ask order also requires `amount` base tokens as escrow
+            // These should be the same tokens, but if there's any rounding mismatch...
+
+            if dex_base_balance < total_base_liabilities {
+                println!(
+                    "!!! INSOLVENCY DETECTED: DEX is short {} base tokens",
+                    total_base_liabilities - dex_base_balance
+                );
+            }
+
+            if dex_quote_balance < total_quote_liabilities {
+                println!(
+                    "!!! INSOLVENCY DETECTED: DEX is short {} quote tokens",
+                    total_quote_liabilities - dex_quote_balance
+                );
+            }
+
+            // Assert solvency (this should fail if there's a bug)
+            assert!(
+                dex_base_balance >= total_base_liabilities,
+                "DEX is insolvent in base token: has {dex_base_balance} but owes {total_base_liabilities}"
+            );
+
+            assert!(
+                dex_quote_balance >= total_quote_liabilities,
+                "DEX is insolvent in quote token: has {dex_quote_balance} but owes {total_quote_liabilities}"
+            );
+
+            // Step 4: Now try to trigger a withdrawal that would fail if insolvent
+            // Charlie fills the flipped ask order
+            let flip_price = orderbook::tick_to_price(flip_tick) as u128;
+            let quote_needed = (amount * flip_price).div_ceil(orderbook::PRICE_SCALE as u128);
+
+            exchange.set_balance(charlie, quote_token, quote_needed)?;
+
+            // This swap should succeed if the DEX is solvent
+            // It will fail with InsufficientBalance if the DEX doesn't have enough base tokens
+            let result =
+                exchange.swap_exact_amount_in(charlie, quote_token, base_token, quote_needed, 0);
+
+            match result {
+                Ok(_) => {
+                    println!("Swap succeeded - DEX appears solvent for this scenario");
+                }
+                Err(e) => {
+                    // Check if it's an insolvency error
+                    let error_str = format!("{e:?}");
+                    if error_str.contains("InsufficientBalance") {
+                        panic!(
+                            "DEX INSOLVENCY CONFIRMED: Cannot complete swap due to insufficient balance: {error_str}",
+                        );
+                    } else {
+                        // Some other error (e.g., insufficient liquidity is expected if order was already filled)
+                        println!("Swap failed with: {e:?}");
+                    }
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Test demonstrating insolvency through repeated flip order ping-pong.
+    ///
+    /// This test creates a scenario where flip orders continuously flip back and forth,
+    /// accumulating rounding errors until the DEX becomes insolvent.
+    #[test]
+    fn test_flip_order_pingpong_insolvency() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+
+            // Use amount and ticks that maximize rounding error per flip
+            // Each flip cycle should introduce a small discrepancy
+            let amount = 100_000_003u128; // Odd amount to ensure rounding
+            let tick_low = 50i16;
+            let tick_high = 150i16;
+
+            let price_high = orderbook::tick_to_price(tick_high) as u128;
+            let max_escrow = (amount * price_high * 2) / orderbook::PRICE_SCALE as u128;
+            let large_balance = max_escrow * 100;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(large_balance))
+                .with_mint(bob, U256::from(large_balance))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(large_balance))
+                .with_mint(bob, U256::from(large_balance))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .apply()?;
+
+            exchange.create_pair(base_token)?;
+
+            let tip20_base = TIP20Token::from_address(base_token)?;
+            let tip20_quote = TIP20Token::from_address(quote_token)?;
+
+            // Helper to check solvency
+            let check_solvency = |exchange: &StablecoinDEX,
+                                  label: &str|
+             -> eyre::Result<(i128, i128)> {
+                let dex_base: u128 = tip20_base
+                    .balance_of(ITIP20::balanceOfCall {
+                        account: exchange.address,
+                    })?
+                    .try_into()
+                    .unwrap();
+                let dex_quote: u128 = tip20_quote
+                    .balance_of(ITIP20::balanceOfCall {
+                        account: exchange.address,
+                    })?
+                    .try_into()
+                    .unwrap();
+
+                let alice_base = exchange.balance_of(alice, base_token)?;
+                let alice_quote = exchange.balance_of(alice, quote_token)?;
+                let bob_base = exchange.balance_of(bob, base_token)?;
+                let bob_quote = exchange.balance_of(bob, quote_token)?;
+
+                // Sum up escrowed amounts from all open orders
+                let mut escrowed_base = 0u128;
+                let mut escrowed_quote = 0u128;
+                let next_id = exchange.next_order_id()?;
+                for order_id in 1..next_id {
+                    if let Ok(order) = exchange.get_order(order_id) {
+                        if order.is_ask() {
+                            escrowed_base += order.remaining();
+                        } else {
+                            let price = orderbook::tick_to_price(order.tick()) as u128;
+                            escrowed_quote += (order.remaining() * price)
+                                .div_ceil(orderbook::PRICE_SCALE as u128);
+                        }
+                    }
+                }
+
+                let total_base_liab = alice_base + bob_base + escrowed_base;
+                let total_quote_liab = alice_quote + bob_quote + escrowed_quote;
+
+                let base_surplus = dex_base as i128 - total_base_liab as i128;
+                let quote_surplus = dex_quote as i128 - total_quote_liab as i128;
+
+                println!(
+                    "[{label}] Base: DEX={dex_base}, liab={total_base_liab}, surplus={base_surplus}"
+                );
+                println!(
+                    "[{label}] Quote: DEX={dex_quote}, liab={total_quote_liab}, surplus={quote_surplus}"
+                );
+
+                Ok((base_surplus, quote_surplus))
+            };
+
+            // Initial state
+            let (init_base, init_quote) = check_solvency(&exchange, "Initial")?;
+            assert!(init_base >= 0, "Initial base insolvency");
+            assert!(init_quote >= 0, "Initial quote insolvency");
+
+            // Place initial bid flip order: Alice wants to buy base at tick_low, flip to ask at tick_high
+            exchange.place_flip(alice, base_token, amount, true, tick_low, tick_high, false)?;
+
+            let (_after_place_base, _after_place_quote) = check_solvency(&exchange, "After place")?;
+
+            // Bob fills the bid by selling base (uses external balance from mint)
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            let (_after_flip1_base, _after_flip1_quote) =
+                check_solvency(&exchange, "After flip 1")?;
+
+            // Now there should be an ask flip order at tick_high
+            // Bob fills it by buying base with quote (uses external balance from mint)
+            let price_high_u128 = orderbook::tick_to_price(tick_high) as u128;
+            let quote_to_buy = (amount * price_high_u128).div_ceil(orderbook::PRICE_SCALE as u128);
+
+            // This should trigger the ask->bid flip
+            let result =
+                exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_to_buy, 0);
+
+            match result {
+                Ok(_) => {
+                    let (after_flip2_base, after_flip2_quote) =
+                        check_solvency(&exchange, "After flip 2")?;
+
+                    // Check for insolvency after two flips
+                    if after_flip2_base < 0 || after_flip2_quote < 0 {
+                        panic!(
+                            "INSOLVENCY after 2 flips: base_surplus={after_flip2_base}, quote_surplus={after_flip2_quote}"
+                        );
+                    }
+                }
+                Err(e) => {
+                    let error_str = format!("{e:?}");
+                    if error_str.contains("InsufficientBalance")
+                        || error_str.contains("insufficient_balance")
+                    {
+                        panic!("INSOLVENCY CONFIRMED during flip 2: {error_str}");
+                    }
+                    // Insufficient liquidity is acceptable if order was somehow not placed
+                    println!("Flip 2 swap failed: {e:?}");
+                }
+            }
 
             Ok(())
         })
