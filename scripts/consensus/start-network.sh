@@ -40,6 +40,12 @@ start_validator() {
   docker rm -f "$container_name" >/dev/null 2>&1 || true
 
   # Start the validator container
+  # Build extra args for metrics OTLP if TELEMETRY_OTLP is set
+  local metrics_args=""
+  if [[ -n "${TELEMETRY_OTLP:-}" ]]; then
+    metrics_args="--telemetry-otlp $TELEMETRY_OTLP"
+  fi
+
   docker run -d \
     --name "$container_name" \
     --network "$NETWORK_NAME" \
@@ -56,7 +62,8 @@ start_validator() {
     --http \
     --http.addr 0.0.0.0 \
     --http.port 8545 \
-    --http.api all
+    --http.api all \
+    $metrics_args
 
   echo "  ✓ Started $container_name on port $rpc_port"
 }
