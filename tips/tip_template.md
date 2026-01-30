@@ -8,6 +8,21 @@ related: <links or IDs>
 protocolVersion: <version at which TIP is scheduled to be included/was included>
 ---
 
+<!--
+  TIP NAMING CONVENTION
+  =====================
+  1. Save this file as: tips/draft-<your-slug>.md
+     Example: tips/draft-compound-transfer-policies.md
+
+  2. Create your PR - the TIP number will be your PR number
+     Example: PR #2400 → TIP-2400
+
+  3. On merge, CI automatically renames to: tips/tip-<PR_NUMBER>.md
+     and updates the frontmatter id field
+
+  DO NOT manually assign a TIP number - this prevents collisions!
+-->
+
 # TIP-XXXX: TIP Title
 
 ## Abstract
