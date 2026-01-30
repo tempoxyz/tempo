@@ -27,8 +27,8 @@ contract TIP403Registry {
     /// Counter for policy IDs
     uint64 public policyIdCounter;
 
-    /// Mapping of policy ID to policy data
-    mapping(uint64 => PolicyRecord) public policyRecords;
+    /// Mapping of policy ID to policy record (internal, not exposed in ABI)
+    mapping(uint64 => PolicyRecord) internal policyRecords;
 
     /// Nested mapping for policy sets: policy_id -> address -> is_in_set
     /// Used for whitelist/blacklist entries
