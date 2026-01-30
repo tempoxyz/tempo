@@ -20,6 +20,8 @@ pub struct PrometheusMetricsConfig {
     pub interval: SignedDuration,
     /// Labels to add to all metrics if possible -- i.e VictoriaMetrics `extra_labels` query string.
     pub labels: HashMap<String, String>,
+    /// Optional Authorization header value (e.g., "Basic <base64>").
+    pub auth_header: Option<String>,
 }
 
 /// Spawns a task that periodically pushes both consensus and execution metrics to Victoria Metrics.
@@ -52,6 +54,7 @@ pub fn install_prometheus_metrics(
     };
 
     let endpoint = format!("{}{}", config.endpoint, extra_labels);
+    let auth_header = config.auth_header;
 
     context.spawn(move |context| async move {
         use commonware_runtime::Clock as _;
@@ -67,15 +70,23 @@ pub fn install_prometheus_metrics(
             let body = format!("{}\n{}", consensus_metrics, reth_metrics);
 
             // Push to Victoria Metrics
-            let result = client
+            let mut request = client
                 .post(&endpoint)
                 .header("Content-Type", "text/plain")
-                .body(body)
-                .send()
-                .await;
+                .body(body);
 
-            if let Err(e) = result {
-                tracing::warn!(error = %e, "failed to push metrics");
+            if let Some(ref auth) = auth_header {
+                request = request.header("Authorization", auth);
+            }
+
+            match request.send().await {
+                Ok(response) if !response.status().is_success() => {
+                    tracing::warn!(status = %response.status(), "failed to push metrics");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to push metrics");
+                }
+                _ => {}
             }
         }
     });

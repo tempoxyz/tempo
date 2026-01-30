@@ -14,7 +14,8 @@ const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
 /// CLI arguments for telemetry configuration.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub(crate) struct TelemetryArgs {
-    /// Enables telemetry export (OTLP logs & Prometheus metrics push).
+    /// Enables telemetry export (OTLP logs & Prometheus metrics push). Coupled
+    /// to VictoriaMetrics which supports both with different api paths.
     ///
     /// The URL must include credentials: `https://user:pass@metrics.example.com`
     #[arg(long, value_name = "URL")]
@@ -37,6 +38,8 @@ pub(crate) struct TelemetryConfig {
     pub metrics_prometheus_url: String,
     /// The interval at which to push Prometheus metrics.
     pub metrics_prometheus_interval: SignedDuration,
+    /// Authorization header for metrics push (e.g., "Basic <base64>").
+    pub metrics_auth_header: Option<String>,
 }
 
 fn init_download_urls() {
@@ -115,12 +118,15 @@ pub(crate) fn parse_telemetry_config(
         ));
     }
 
-    // Set OTEL_EXPORTER_OTLP_HEADERS for OTLP authentication
+    // Build auth header for metrics push and OTLP logs
     let credentials = format!("{}:{}", username, password.unwrap());
+    let encoded = BASE64_STANDARD.encode(credentials.as_bytes());
+    let auth_header = format!("Basic {encoded}");
+
+    // Set OTEL_EXPORTER_OTLP_HEADERS for OTLP logs authentication
+    // SAFETY: This is called at startup before any other threads are spawned
     if std::env::var_os("OTEL_EXPORTER_OTLP_HEADERS").is_none() {
-        let encoded = BASE64_STANDARD.encode(credentials.as_bytes());
-        let header_value = format!("Authorization=Basic {encoded}");
-        // SAFETY: This is called at startup before any other threads are spawned
+        let header_value = format!("Authorization={auth_header}");
         unsafe {
             std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", header_value);
         }
@@ -131,8 +137,8 @@ pub(crate) fn parse_telemetry_config(
     url.set_password(None).ok();
     let base_url_no_creds = url.as_str().trim_end_matches('/');
 
-    // Build logs OTLP URL (standard OTLP HTTP path)
-    let logs_otlp_url = Url::parse(&format!("{base_url_no_creds}/v1/logs"))
+    // Build logs OTLP URL (Victoria Metrics OTLP path)
+    let logs_otlp_url = Url::parse(&format!("{base_url_no_creds}/opentelemetry/v1/logs"))
         .map_err(|e| eyre::eyre!("failed to construct logs OTLP URL: {e}"))?;
 
     // Build Victoria Metrics Prometheus import URL
@@ -143,5 +149,6 @@ pub(crate) fn parse_telemetry_config(
         logs_otlp_filter: DEFAULT_LOGS_OTLP_FILTER.to_string(),
         metrics_prometheus_url,
         metrics_prometheus_interval: args.telemetry_metrics_interval,
+        metrics_auth_header: Some(auth_header),
     }))
 }

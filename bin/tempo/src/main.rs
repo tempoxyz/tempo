@@ -216,6 +216,7 @@ fn main() -> eyre::Result<()> {
                         endpoint: config.metrics_prometheus_url,
                         interval: config.metrics_prometheus_interval,
                         labels,
+                        auth_header: config.metrics_auth_header,
                     };
 
                     install_prometheus_metrics(ctx.with_label("metrics_otlp"), prometheus_config)
