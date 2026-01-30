@@ -14,7 +14,7 @@ use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
-        TempoTransaction,
+        TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
         tt_signature::{PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
@@ -57,7 +57,7 @@ pub(crate) struct TxBuilder {
     /// Custom calls for AA transactions. If None, a default call is created from `kind` and `value`.
     calls: Option<Vec<Call>>,
     /// Authorization list for AA transactions.
-    authorization_list: Option<Vec<tempo_primitives::transaction::TempoSignedAuthorization>>,
+    authorization_list: Option<Vec<TempoSignedAuthorization>>,
 }
 
 impl Default for TxBuilder {
@@ -162,7 +162,7 @@ impl TxBuilder {
     /// Set the authorization list for the AA transaction.
     pub(crate) fn authorization_list(
         mut self,
-        authorization_list: Vec<tempo_primitives::transaction::TempoSignedAuthorization>,
+        authorization_list: Vec<TempoSignedAuthorization>,
     ) -> Self {
         self.authorization_list = Some(authorization_list);
         self
