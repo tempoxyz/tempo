@@ -224,6 +224,18 @@ struct AmmLiquidityCacheInner {
     slot_to_validator: HashMap<U256, Address>,
 }
 
+impl AmmLiquidityCache {
+    /// Returns true if the given token is in the unique_tokens list (validator tokens
+    /// used by recent block producers).
+    ///
+    /// Use this to filter validator token change events: only process changes where the
+    /// new token is already in use by actual block producers. This prevents permissionless
+    /// `setValidatorToken` calls from triggering mass pending transaction eviction.
+    pub fn is_active_validator_token(&self, token: &Address) -> bool {
+        self.inner.read().unique_tokens.contains(token)
+    }
+}
+
 #[cfg(any(test, feature = "test-utils"))]
 impl AmmLiquidityCache {
     /// Creates a new [`AmmLiquidityCache`] with pre-populated unique tokens for testing.
@@ -237,8 +249,9 @@ impl AmmLiquidityCache {
     }
 
     /// Returns true if the given token is in the unique_tokens list (validator tokens).
+    #[deprecated(note = "Use is_active_validator_token instead")]
     pub fn contains_unique_token(&self, token: &Address) -> bool {
-        self.inner.read().unique_tokens.contains(token)
+        self.is_active_validator_token(token)
     }
 }
 
@@ -500,5 +513,22 @@ mod tests {
         inner.slot_to_validator.insert(slot, validator);
 
         assert_eq!(inner.slot_to_validator.get(&slot), Some(&validator));
+    }
+
+    #[test]
+    fn test_is_active_validator_token() {
+        let active = address!("1111111111111111111111111111111111111111");
+        let inactive = address!("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF");
+
+        let cases = [
+            (vec![active], active, true, "active token in set"),
+            (vec![active], inactive, false, "inactive token not in set"),
+            (vec![], active, false, "empty set"),
+        ];
+
+        for (unique_tokens, query, expected, desc) in cases {
+            let cache = AmmLiquidityCache::with_unique_tokens(unique_tokens);
+            assert_eq!(cache.is_active_validator_token(&query), expected, "{desc}");
+        }
     }
 }

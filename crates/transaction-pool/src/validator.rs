@@ -3195,7 +3195,7 @@ mod tests {
 
         // Verify the bypass would apply: the token IS in unique_tokens
         assert!(
-            amm_cache.contains_unique_token(&paused_validator_token),
+            amm_cache.is_active_validator_token(&paused_validator_token),
             "Token should be in unique_tokens for this test"
         );
 
