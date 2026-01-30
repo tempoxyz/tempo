@@ -1222,7 +1222,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             || selector == IStablecoinDEX.InsufficientBalance.selector
             || selector == IStablecoinDEX.PairDoesNotExist.selector
             || selector == IStablecoinDEX.IdenticalTokens.selector
-            || selector == IStablecoinDEX.InvalidToken.selector || _isKnownTIP20Error(selector);
+            || selector == IStablecoinDEX.InvalidToken.selector
+            || selector == IStablecoinDEX.BelowMinimumOrderSize.selector
+            || _isKnownTIP20Error(selector);
         assertTrue(isKnownError, "Swap failed with unknown error");
     }
 
