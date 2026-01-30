@@ -44,6 +44,12 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         _actors = _buildActors(10);
 
         _initLogFile(LOG_FILE, "TIP20Factory Invariant Test Log");
+
+        // One-time constant checks (immutable after deployment)
+        // TEMPO-FAC8: isTIP20 consistency for system contracts
+        assertTrue(factory.isTIP20(address(pathUSD)), "TEMPO-FAC8: pathUSD should be TIP20");
+        assertFalse(factory.isTIP20(address(factory)), "TEMPO-FAC8: Factory should not be TIP20");
+        assertFalse(factory.isTIP20(address(amm)), "TEMPO-FAC8: AMM should not be TIP20");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -454,65 +460,47 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                          GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Run all invariant checks
+    /// @notice Run all invariant checks in unified loops
+    /// @dev Combines TEMPO-FAC2, FAC11, FAC12 into single pass over _createdTokens
+    ///      FAC8 system contract checks moved to setUp() as they're immutable
     function invariant_globalInvariants() public view {
-        _invariantAllCreatedTokensAreTIP20();
-        _invariantAddressFormat();
-        _invariantUsdTokensHaveUsdQuote();
-        _invariantSaltToTokenConsistency();
-        _invariantIsTIP20Consistency();
-    }
+        // Cache USD hash for comparison
+        bytes32 usdHash = keccak256(bytes("USD"));
 
-    /// @notice TEMPO-FAC2: All created tokens are recognized as TIP20
-    function _invariantAllCreatedTokensAreTIP20() internal view {
+        // Single pass over all created tokens
         for (uint256 i = 0; i < _createdTokens.length; i++) {
+            address tokenAddr = _createdTokens[i];
+            TIP20 token = TIP20(tokenAddr);
+
+            // TEMPO-FAC2: Created token is recognized as TIP20
             assertTrue(
-                factory.isTIP20(_createdTokens[i]),
-                "TEMPO-FAC2: Created token not recognized as TIP20"
+                factory.isTIP20(tokenAddr), "TEMPO-FAC2: Created token not recognized as TIP20"
             );
-        }
-    }
 
-    /// @notice TEMPO-FAC8: isTIP20 consistency - pathUSD and created tokens are TIP20, system contracts are not
-    function _invariantIsTIP20Consistency() internal view {
-        assertTrue(factory.isTIP20(address(pathUSD)), "TEMPO-FAC8: pathUSD should be TIP20");
-        assertFalse(factory.isTIP20(address(factory)), "TEMPO-FAC8: Factory should not be TIP20");
-        assertFalse(factory.isTIP20(address(amm)), "TEMPO-FAC8: AMM should not be TIP20");
-    }
-
-    /// @notice TEMPO-FAC11: All created tokens have correct address format
-    function _invariantAddressFormat() internal view {
-        for (uint256 i = 0; i < _createdTokens.length; i++) {
-            address token = _createdTokens[i];
-            uint160 addrValue = uint160(token);
+            // TEMPO-FAC11: Token address has correct prefix
+            uint160 addrValue = uint160(tokenAddr);
             uint96 prefix = uint96(addrValue >> 64);
-
             assertEq(
                 prefix,
                 0x20C000000000000000000000,
                 "TEMPO-FAC11: Token address has incorrect prefix"
             );
-        }
-    }
 
-    /// @notice TEMPO-FAC12: USD tokens must have USD quote tokens
-    function _invariantUsdTokensHaveUsdQuote() internal view {
-        for (uint256 i = 0; i < _createdTokens.length; i++) {
-            TIP20 token = TIP20(_createdTokens[i]);
-
-            // Check if this is a USD token
-            if (keccak256(bytes(token.currency())) == keccak256(bytes("USD"))) {
-                // Its quote token must also be USD
+            // TEMPO-FAC12: USD tokens must have USD quote tokens
+            if (keccak256(bytes(token.currency())) == usdHash) {
                 ITIP20 quote = token.quoteToken();
                 if (address(quote) != address(0)) {
                     assertEq(
                         keccak256(bytes(TIP20(address(quote)).currency())),
-                        keccak256(bytes("USD")),
+                        usdHash,
                         "TEMPO-FAC12: USD token has non-USD quote token"
                     );
                 }
             }
         }
+
+        // TEMPO-FAC1: Salt-to-token mapping consistency
+        _invariantSaltToTokenConsistency();
     }
 
     /// @notice TEMPO-FAC1: Salt-to-token mapping is consistent with factory
