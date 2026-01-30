@@ -3241,8 +3241,7 @@ mod tests {
         assert_eq!(
             gas_existing.initial_gas,
             BASE_INTRINSIC_GAS + EXISTING_NONCE_KEY_GAS,
-            "T1 existing 2D nonce key (nonce>0) should charge BASE + EXISTING_NONCE_KEY_GAS ({})",
-            EXISTING_NONCE_KEY_GAS
+            "T1 existing 2D nonce key (nonce>0) should charge BASE + EXISTING_NONCE_KEY_GAS ({EXISTING_NONCE_KEY_GAS})"
         );
 
         // Case 2: Regular nonce (nonce_key = 0) with nonce > 0 should NOT charge extra gas
@@ -3258,8 +3257,7 @@ mod tests {
         let gas_delta = gas_existing.initial_gas - gas_regular.initial_gas;
         assert_eq!(
             gas_delta, EXISTING_NONCE_KEY_GAS,
-            "Difference between existing 2D nonce and regular nonce should be EXISTING_NONCE_KEY_GAS ({})",
-            EXISTING_NONCE_KEY_GAS
+            "Difference between existing 2D nonce and regular nonce should be EXISTING_NONCE_KEY_GAS ({EXISTING_NONCE_KEY_GAS})"
         );
     }
 }
