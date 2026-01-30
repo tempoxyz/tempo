@@ -55,7 +55,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _nextOrderId = exchange.nextOrderId();
 
         _initLogFile(LOG_FILE, "StablecoinDEX Invariant Test Log");
-        _logBalances();
+        if (_loggingEnabled) _logBalances();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -111,13 +111,15 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _assertOrderCreated(orderId, actor, amount, tick, isBid);
 
         // Log the action
-        _logPlaceOrder(actor, orderId, amount, TIP20(token).symbol(), tick, isBid);
+        if (_loggingEnabled) {
+            _logPlaceOrder(actor, orderId, amount, TIP20(token).symbol(), tick, isBid);
+        }
 
         if (cancel) {
             _cancelAndVerifyRefund(
                 orderId, actor, token, amount, tick, isBid, actorBalanceBeforePlace
             );
-            _logCancelOrder(actor, orderId, isBid, TIP20(token).symbol());
+            if (_loggingEnabled) _logCancelOrder(actor, orderId, isBid, TIP20(token).symbol());
         } else {
             _placedOrders[actor].push(orderId);
 
@@ -127,7 +129,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
 
         vm.stopPrank();
-        _logBalances();
+        if (_loggingEnabled) _logBalances();
     }
 
     function placeOrder1(
@@ -252,11 +254,17 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         exchange.withdraw(token, amount);
         vm.stopPrank();
 
-        _log(
-            string.concat(
-                _getActorIndex(actor), " withdrew ", vm.toString(amount), " ", TIP20(token).symbol()
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    _getActorIndex(actor),
+                    " withdrew ",
+                    vm.toString(amount),
+                    " ",
+                    TIP20(token).symbol()
+                )
+            );
+        }
     }
 
     /// @dev Helper to cancel order and verify refund (TEMPO-DEX3)
@@ -430,10 +438,12 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _placedOrders[actor].push(orderId);
 
         // Log the action
-        _logFlipOrder(actor, orderId, amount, token.symbol(), tick, flipTick, isBid);
+        if (_loggingEnabled) {
+            _logFlipOrder(actor, orderId, amount, token.symbol(), tick, flipTick, isBid);
+        }
 
         vm.stopPrank();
-        _logBalances();
+        if (_loggingEnabled) _logBalances();
     }
 
     /// @dev Helper to log flip order placement to avoid stack too deep
@@ -446,6 +456,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         int16 flipTick,
         bool isBid
     ) internal {
+        if (!_loggingEnabled) return;
         string memory escrowToken = isBid ? "pathUSD" : tokenSymbol;
         string memory receiveToken = isBid ? tokenSymbol : "pathUSD";
         _log(
@@ -534,7 +545,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _nextOrderId = exchange.nextOrderId();
 
         vm.stopPrank();
-        _logBalances();
+        if (_loggingEnabled) _logBalances();
     }
 
     /// @notice Fuzz handler: Blacklists an actor, has another actor cancel their stale orders, then whitelists again
@@ -726,26 +737,28 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
 
         // Log dust remaining in DEX
-        string memory dustLog = string.concat(
-            "Dust remaining: pathUSD=", vm.toString(pathUSD.balanceOf(address(exchange)))
-        );
-        for (uint256 j = 0; j < _tokens.length; j++) {
+        if (_loggingEnabled) {
+            string memory dustLog = string.concat(
+                "Dust remaining: pathUSD=", vm.toString(pathUSD.balanceOf(address(exchange)))
+            );
+            for (uint256 j = 0; j < _tokens.length; j++) {
+                dustLog = string.concat(
+                    dustLog,
+                    ", ",
+                    _tokens[j].symbol(),
+                    "=",
+                    vm.toString(_tokens[j].balanceOf(address(exchange)))
+                );
+            }
             dustLog = string.concat(
                 dustLog,
-                ", ",
-                _tokens[j].symbol(),
-                "=",
-                vm.toString(_tokens[j].balanceOf(address(exchange)))
+                " | Total=",
+                vm.toString(pathUSD.balanceOf(address(exchange)) + totalBalance),
+                ", Swaps=",
+                vm.toString(_maxDust)
             );
+            _log(dustLog);
         }
-        dustLog = string.concat(
-            dustLog,
-            " | Total=",
-            vm.toString(pathUSD.balanceOf(address(exchange)) + totalBalance),
-            ", Swaps=",
-            vm.toString(_maxDust)
-        );
-        _log(dustLog);
 
         assertGe(
             _maxDust,
@@ -760,37 +773,37 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
     /// @notice Main invariant function called after each fuzz sequence
     /// @dev Verifies TEMPO-DEX6 (balance solvency), TEMPO-DEX7/11 (tick consistency), TEMPO-DEX8/9 (best tick)
+    ///      Optimized: unified loops over actors and tokens to reduce iteration overhead
     function invariantStablecoinDEX() public view {
-        // TEMPO-DEX6: Check pathUSD balance
-        uint256 dexPathUsdBalance = pathUSD.balanceOf(address(exchange));
-        uint256 totalUserPathUsd = 0;
-        for (uint256 i = 0; i < _actors.length; i++) {
-            totalUserPathUsd += exchange.balanceOf(_actors[i], address(pathUSD));
-        }
-        assertTrue(
-            dexPathUsdBalance >= totalUserPathUsd,
-            "TEMPO-DEX6: DEX pathUsd balance < sum of user internal balances"
-        );
-
-        // TEMPO-DEX6: Check each base token balance
-        for (uint256 t = 0; t < _tokens.length; t++) {
-            uint256 dexTokenBalance = _tokens[t].balanceOf(address(exchange));
-            uint256 totalUserTokenBalance = 0;
-            for (uint256 i = 0; i < _actors.length; i++) {
-                totalUserTokenBalance += exchange.balanceOf(_actors[i], address(_tokens[t]));
-            }
-            assertTrue(
-                dexTokenBalance >= totalUserTokenBalance,
-                "TEMPO-DEX6: DEX token balance < sum of user internal balances"
-            );
-        }
-
         // Compute expected escrowed amounts from all orders (including flip-created orders)
         (uint256 expectedPathUsdEscrowed, uint256[] memory expectedTokenEscrowed,) =
             _computeExpectedEscrow();
 
-        // Assert escrowed amounts: DEX balance = user internal balances + escrowed in active orders
-        // Allow tolerance for rounding during partial fills (can accumulate across multiple fills)
+        // Cache DEX balances and compute user totals in single pass
+        uint256 dexPathUsdBalance = pathUSD.balanceOf(address(exchange));
+        uint256 totalUserPathUsd = 0;
+        uint256[] memory dexTokenBalances = new uint256[](_tokens.length);
+        uint256[] memory totalUserTokenBalances = new uint256[](_tokens.length);
+
+        // Cache DEX token balances
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            dexTokenBalances[t] = _tokens[t].balanceOf(address(exchange));
+        }
+
+        // Single pass over actors to accumulate all user balances
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address actor = _actors[i];
+            totalUserPathUsd += exchange.balanceOf(actor, address(pathUSD));
+            for (uint256 t = 0; t < _tokens.length; t++) {
+                totalUserTokenBalances[t] += exchange.balanceOf(actor, address(_tokens[t]));
+            }
+        }
+
+        // TEMPO-DEX6: Check pathUSD balance solvency
+        assertTrue(
+            dexPathUsdBalance >= totalUserPathUsd,
+            "TEMPO-DEX6: DEX pathUsd balance < sum of user internal balances"
+        );
         assertApproxEqAbs(
             dexPathUsdBalance,
             totalUserPathUsd + expectedPathUsdEscrowed,
@@ -798,29 +811,27 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             "TEMPO-DEX6: DEX pathUSD balance != user balances + escrowed"
         );
 
-        // Check each base token escrow
+        // Single loop over tokens for all token-based checks
         for (uint256 t = 0; t < _tokens.length; t++) {
-            uint256 dexTokenBalance = _tokens[t].balanceOf(address(exchange));
-            uint256 totalUserTokenBalance = 0;
-            for (uint256 i = 0; i < _actors.length; i++) {
-                totalUserTokenBalance += exchange.balanceOf(_actors[i], address(_tokens[t]));
-            }
+            address tokenAddr = address(_tokens[t]);
+
+            // TEMPO-DEX6: Token balance solvency
+            assertTrue(
+                dexTokenBalances[t] >= totalUserTokenBalances[t],
+                "TEMPO-DEX6: DEX token balance < sum of user internal balances"
+            );
             assertApproxEqAbs(
-                dexTokenBalance,
-                totalUserTokenBalance + expectedTokenEscrowed[t],
+                dexTokenBalances[t],
+                totalUserTokenBalances[t] + expectedTokenEscrowed[t],
                 _maxDust,
                 "TEMPO-DEX6: DEX token balance != user balances + escrowed"
             );
-        }
 
-        // TEMPO-DEX8 & TEMPO-DEX9: Best bid/ask tick consistency for all tokens
-        for (uint256 t = 0; t < _tokens.length; t++) {
-            _assertBestTickConsistency(address(_tokens[t]));
-        }
+            // TEMPO-DEX8 & TEMPO-DEX9: Best bid/ask tick consistency
+            _assertBestTickConsistency(tokenAddr);
 
-        // TEMPO-DEX7 & TEMPO-DEX11: Tick level and bitmap consistency for all tokens
-        for (uint256 t = 0; t < _tokens.length; t++) {
-            _assertTickLevelConsistency(address(_tokens[t]));
+            // TEMPO-DEX7 & TEMPO-DEX11: Tick level and bitmap consistency
+            _assertTickLevelConsistency(tokenAddr);
         }
 
         // TEMPO-DEX20: Divisibility edge cases - all should have correct escrow
@@ -1245,6 +1256,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
     /// @dev Logs exchange balances for all tokens
     function _logBalances() internal {
+        if (!_loggingEnabled) return;
         _logContractBalances(address(exchange), "DEX");
     }
 
@@ -1257,6 +1269,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         int16 tick,
         bool isBid
     ) internal {
+        if (!_loggingEnabled) return;
         string memory escrowToken = isBid ? "pathUSD" : tokenSymbol;
         string memory receiveToken = isBid ? tokenSymbol : "pathUSD";
         _log(
@@ -1285,6 +1298,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     function _logCancelOrder(address actor, uint128 orderId, bool isBid, string memory tokenSymbol)
         internal
     {
+        if (!_loggingEnabled) return;
         string memory refundToken = isBid ? "pathUSD" : tokenSymbol;
         _log(
             string.concat(

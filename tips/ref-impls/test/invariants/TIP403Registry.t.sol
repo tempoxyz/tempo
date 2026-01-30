@@ -60,16 +60,20 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         _policyTypes[policyId] = policyType;
 
         if (isFallback) {
-            _log(
-                string.concat(
-                    "CREATE_POLICY[fallback]: ",
-                    _getActorIndex(actor),
-                    " created policy ",
-                    vm.toString(policyId),
-                    " type=",
-                    policyType == ITIP403Registry.PolicyType.WHITELIST ? "WHITELIST" : "BLACKLIST"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CREATE_POLICY[fallback]: ",
+                        _getActorIndex(actor),
+                        " created policy ",
+                        vm.toString(policyId),
+                        " type=",
+                        policyType == ITIP403Registry.PolicyType.WHITELIST
+                            ? "WHITELIST"
+                            : "BLACKLIST"
+                    )
+                );
+            }
         }
     }
 
@@ -147,6 +151,11 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         _actors = _buildActors(10);
 
         _initLogFile(LOG_FILE, "TIP403Registry Invariant Test Log");
+
+        // One-time constant checks (immutable after deployment)
+        // TEMPO-REG13: Special policies 0 and 1 always exist
+        assertTrue(registry.policyExists(0), "TEMPO-REG13: Policy 0 should always exist");
+        assertTrue(registry.policyExists(1), "TEMPO-REG13: Policy 1 should always exist");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -185,16 +194,18 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         assertEq(uint256(storedType), uint256(policyType), "TEMPO-REG4: Policy type mismatch");
         assertEq(storedAdmin, actor, "TEMPO-REG4: Policy admin mismatch");
 
-        _log(
-            string.concat(
-                "CREATE_POLICY: ",
-                _getActorIndex(actor),
-                " created policy ",
-                vm.toString(policyId),
-                " type=",
-                isWhitelist ? "WHITELIST" : "BLACKLIST"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "CREATE_POLICY: ",
+                    _getActorIndex(actor),
+                    " created policy ",
+                    vm.toString(policyId),
+                    " type=",
+                    isWhitelist ? "WHITELIST" : "BLACKLIST"
+                )
+            );
+        }
     }
 
     /// @notice Handler for creating policies with initial accounts
@@ -246,17 +257,19 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
                 }
             }
 
-            _log(
-                string.concat(
-                    "CREATE_POLICY_WITH_ACCOUNTS: ",
-                    _getActorIndex(actor),
-                    " created policy ",
-                    vm.toString(policyId),
-                    " with ",
-                    vm.toString(numAccounts),
-                    " accounts"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CREATE_POLICY_WITH_ACCOUNTS: ",
+                        _getActorIndex(actor),
+                        " created policy ",
+                        vm.toString(policyId),
+                        " with ",
+                        vm.toString(numAccounts),
+                        " accounts"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -278,16 +291,18 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             (, address storedAdmin) = registry.policyData(policyId);
             assertEq(storedAdmin, newAdmin, "TEMPO-REG6: Admin not updated correctly");
 
-            _log(
-                string.concat(
-                    "SET_ADMIN: policy ",
-                    vm.toString(policyId),
-                    " admin changed from ",
-                    _getActorIndex(currentAdmin),
-                    " to ",
-                    _getActorIndex(newAdmin)
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "SET_ADMIN: policy ",
+                        vm.toString(policyId),
+                        " admin changed from ",
+                        _getActorIndex(currentAdmin),
+                        " to ",
+                        _getActorIndex(newAdmin)
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -338,16 +353,18 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             bool authAfter = registry.isAuthorized(policyId, account);
             assertEq(authAfter, allowed, "TEMPO-REG8: Whitelist authorization mismatch");
 
-            _log(
-                string.concat(
-                    "MODIFY_WHITELIST: policy ",
-                    vm.toString(policyId),
-                    " ",
-                    _getActorIndex(account),
-                    " set to ",
-                    allowed ? "ALLOWED" : "DISALLOWED"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "MODIFY_WHITELIST: policy ",
+                        vm.toString(policyId),
+                        " ",
+                        _getActorIndex(account),
+                        " set to ",
+                        allowed ? "ALLOWED" : "DISALLOWED"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -377,16 +394,18 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             bool authAfter = registry.isAuthorized(policyId, account);
             assertEq(authAfter, !restricted, "TEMPO-REG9: Blacklist authorization mismatch");
 
-            _log(
-                string.concat(
-                    "MODIFY_BLACKLIST: policy ",
-                    vm.toString(policyId),
-                    " ",
-                    _getActorIndex(account),
-                    " set to ",
-                    restricted ? "RESTRICTED" : "UNRESTRICTED"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "MODIFY_BLACKLIST: policy ",
+                        vm.toString(policyId),
+                        " ",
+                        _getActorIndex(account),
+                        " set to ",
+                        restricted ? "RESTRICTED" : "UNRESTRICTED"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -518,95 +537,63 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             _assertKnownError(reason);
         }
 
-        _log(
-            string.concat(
-                "TRY_MODIFY_SPECIAL_POLICY: ",
-                _getActorIndex(actor),
-                " blocked on policy ",
-                vm.toString(policyId)
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_MODIFY_SPECIAL_POLICY: ",
+                    _getActorIndex(actor),
+                    " blocked on policy ",
+                    vm.toString(policyId)
+                )
+            );
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
                          GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Run all invariant checks
+    /// @notice Run all invariant checks in a single unified loop
+    /// @dev Combines TEMPO-REG3, REG15, REG16, REG19 checks
+    ///      Special policies check (REG13) moved to setUp() as they're immutable
     function invariant_globalInvariants() public {
-        _invariantCounterMonotonicity();
-        _invariantSpecialPoliciesExist();
-        _invariantCreatedPoliciesExist();
-        _invariantPolicyTypeImmutability();
-        _invariantPolicyMembershipConsistency();
-    }
-
-    /// @notice TEMPO-REG15: Policy counter only increases and equals 2 + totalPoliciesCreated
-    function _invariantCounterMonotonicity() internal {
+        // TEMPO-REG15: Counter monotonicity (done once, not per-policy)
         uint64 counter = registry.policyIdCounter();
-
-        // Counter starts at 2 (skipping special policies 0 and 1)
         assertTrue(counter >= 2, "TEMPO-REG15: Counter should be at least 2");
-
-        // TEMPO-REG15: Counter must equal exactly 2 + total policies created
         uint64 expectedCounter = 2 + _basePoliciesCreated + uint64(_totalPoliciesCreated);
         assertEq(
             counter, expectedCounter, "TEMPO-REG15: Counter must equal 2 + totalPoliciesCreated"
         );
-
-        // TEMPO-REG15: Counter must only increase (monotonicity)
         assertGe(counter, _lastSeenCounter, "TEMPO-REG15: Counter must never decrease");
         _lastSeenCounter = counter;
-    }
 
-    /// @notice TEMPO-REG13: Special policies 0 and 1 always exist
-    function _invariantSpecialPoliciesExist() internal view {
-        assertTrue(registry.policyExists(0), "TEMPO-REG13: Policy 0 should always exist");
-        assertTrue(registry.policyExists(1), "TEMPO-REG13: Policy 1 should always exist");
-    }
-
-    /// @notice TEMPO-REG3: All created policies exist
-    function _invariantCreatedPoliciesExist() internal view {
-        for (uint256 i = 0; i < _createdPolicies.length; i++) {
-            assertTrue(
-                registry.policyExists(_createdPolicies[i]),
-                "TEMPO-REG3: Created policy should exist"
-            );
-        }
-    }
-
-    /// @notice TEMPO-REG16: Policy type cannot change after creation
-    function _invariantPolicyTypeImmutability() internal view {
+        // Single loop over all created policies
         for (uint256 i = 0; i < _createdPolicies.length; i++) {
             uint64 policyId = _createdPolicies[i];
+
+            // TEMPO-REG3: Created policy exists
+            assertTrue(registry.policyExists(policyId), "TEMPO-REG3: Created policy should exist");
+
+            // TEMPO-REG16: Policy type immutability
             (ITIP403Registry.PolicyType currentType,) = registry.policyData(policyId);
             assertEq(
                 uint256(currentType),
                 uint256(_policyTypes[policyId]),
                 "TEMPO-REG16: Policy type should not change"
             );
-        }
-    }
 
-    /// @notice TEMPO-REG19: Ghost policy membership matches registry
-    function _invariantPolicyMembershipConsistency() internal view {
-        for (uint256 i = 0; i < _createdPolicies.length; i++) {
-            uint64 policyId = _createdPolicies[i];
-            ITIP403Registry.PolicyType policyType = _policyTypes[policyId];
+            // TEMPO-REG19: Ghost policy membership matches registry
             address[] memory accounts = _policyAccounts[policyId];
-
             for (uint256 j = 0; j < accounts.length; j++) {
                 address account = accounts[j];
                 bool ghostMember = _ghostPolicySet[policyId][account];
                 bool isAuthorized = registry.isAuthorized(policyId, account);
 
-                if (policyType == ITIP403Registry.PolicyType.WHITELIST) {
-                    // Whitelist: member = authorized
+                if (currentType == ITIP403Registry.PolicyType.WHITELIST) {
                     assertEq(
                         isAuthorized, ghostMember, "TEMPO-REG19: Whitelist membership mismatch"
                     );
                 } else {
-                    // Blacklist: member = NOT authorized
                     assertEq(
                         isAuthorized, !ghostMember, "TEMPO-REG19: Blacklist membership mismatch"
                     );
