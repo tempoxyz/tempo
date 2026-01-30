@@ -608,7 +608,7 @@ impl AA2dPool {
     fn decrement_sender_count(&mut self, sender: Address) {
         if let hash_map::Entry::Occupied(mut entry) = self.txs_by_sender.entry(sender) {
             let count = entry.get_mut();
-            *count = count.saturating_sub(1);
+            *count -= 1;
             if *count == 0 {
                 entry.remove();
             }
