@@ -41,6 +41,9 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @dev Log file path - must be set by child contract
     string internal _logFile;
 
+    /// @dev Whether logging is enabled (opt-in via LOG_INVARIANTS=true for local debugging)
+    bool internal _loggingEnabled;
+
     /// @dev All addresses that may hold token balances (for invariant checks)
     address[] internal _balanceHolders;
 
@@ -99,9 +102,21 @@ abstract contract InvariantBaseTest is BaseTest {
     }
 
     /// @notice Initialize log file with header
+    /// @dev Logging is opt-in via LOG_INVARIANTS=true env var (disabled by default for CI performance)
     /// @param logFile The log file path
     /// @param title The title for the log header
     function _initLogFile(string memory logFile, string memory title) internal {
+        // Logging is opt-in for local debugging (default off for CI performance)
+        try vm.envBool("LOG_INVARIANTS") returns (bool logEnabled) {
+            _loggingEnabled = logEnabled;
+        } catch {
+            _loggingEnabled = false; // Default to disabled for CI
+        }
+
+        if (!_loggingEnabled) {
+            return;
+        }
+
         _logFile = logFile;
         try vm.removeFile(_logFile) { } catch { }
         _log("================================================================================");
@@ -338,8 +353,11 @@ abstract contract InvariantBaseTest is BaseTest {
                               LOGGING
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Logs a message to the log file
+    /// @dev Logs a message to the log file (no-op if logging disabled)
     function _log(string memory message) internal {
+        if (!_loggingEnabled) {
+            return;
+        }
         vm.writeLine(_logFile, message);
     }
 
@@ -460,6 +478,39 @@ abstract contract InvariantBaseTest is BaseTest {
         return selector == ITIP20Factory.AddressReserved.selector
             || selector == ITIP20Factory.InvalidQuoteToken.selector
             || selector == ITIP20Factory.TokenAlreadyExists.selector || _isKnownTIP20Error(selector);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                       FACTORY ADDRESS HELPERS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Checks if a salt would produce a usable token address
+    /// @param actor The actor creating the token
+    /// @param salt The salt to check
+    /// @return available True if address is available for creation
+    /// @return existing Non-zero if token already exists at this address (for collision checks)
+    function _checkTokenAddress(address actor, bytes32 salt)
+        internal
+        view
+        returns (bool available, address existing)
+    {
+        try factory.getTokenAddress(actor, salt) returns (address predicted) {
+            if (predicted.code.length != 0) {
+                return (false, predicted); // Collision - return existing token
+            }
+            return (true, address(0)); // Available
+        } catch {
+            return (false, address(0)); // Reserved
+        }
+    }
+
+    /// @dev Checks if an address is in the reserved TIP20 range
+    /// @param addr The address to check
+    /// @return True if address is reserved (prefix 0x20C0... with lower 64 bits < 1024)
+    function _isReservedTIP20Address(address addr) internal pure returns (bool) {
+        bytes12 prefix = bytes12(bytes20(addr));
+        uint64 lowerBytes = uint64(uint160(addr));
+        return prefix == bytes12(0x20c000000000000000000000) && lowerBytes < 1024;
     }
 
     /// @dev Checks if an error is a known Nonce precompile error
