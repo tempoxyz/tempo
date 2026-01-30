@@ -167,18 +167,6 @@ impl AA2dPool {
             ));
         }
 
-        // Check per-sender limit before proceeding.
-        // Only reject if this is a new tx (not a replacement) and sender is at capacity.
-        let sender = transaction.sender();
-        let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
-        let is_replacement = self.by_id.contains_key(&tx_id);
-        if !is_replacement && sender_count >= self.config.max_txs_per_sender {
-            return Err(PoolError::new(
-                *transaction.hash(),
-                PoolErrorKind::SpammerExceededCapacity(sender),
-            ));
-        }
-
         // assume the transaction is not pending, will get updated later
         let tx = Arc::new(AA2dInternalTransaction {
             inner: PendingTransaction {
@@ -190,7 +178,9 @@ impl AA2dPool {
             is_pending: Rc::new(RefCell::new(false)),
         });
 
-        // try to insert the transaction
+        // Use entry API once to both check for replacement and insert.
+        // This avoids a separate contains_key lookup.
+        let sender = transaction.sender();
         let replaced = match self.by_id.entry(tx_id) {
             Entry::Occupied(mut entry) => {
                 // Ensure the replacement transaction is not underpriced
@@ -209,8 +199,17 @@ impl AA2dPool {
                 Some(entry.insert(Arc::clone(&tx)))
             }
             Entry::Vacant(entry) => {
+                // Check per-sender limit for new (non-replacement) transactions
+                let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
+                if sender_count >= self.config.max_txs_per_sender {
+                    return Err(PoolError::new(
+                        *transaction.hash(),
+                        PoolErrorKind::SpammerExceededCapacity(sender),
+                    ));
+                }
+
                 entry.insert(Arc::clone(&tx));
-                // Increment sender count for new (non-replacement) transactions
+                // Increment sender count for new transactions
                 *self.txs_by_sender.entry(sender).or_insert(0) += 1;
                 None
             }
