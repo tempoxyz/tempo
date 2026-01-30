@@ -113,16 +113,18 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
                 "TEMPO-VAL2: New validator index should be previous count"
             );
 
-            _log(
-                string.concat(
-                    "ADD_VALIDATOR: ",
-                    vm.toString(validatorAddr),
-                    " index=",
-                    vm.toString(countBefore),
-                    " active=",
-                    active ? "true" : "false"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "ADD_VALIDATOR: ",
+                        vm.toString(validatorAddr),
+                        " index=",
+                        vm.toString(countBefore),
+                        " active=",
+                        active ? "true" : "false"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownValidatorError(reason);
@@ -155,14 +157,16 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat(
-                "TRY_ADD_UNAUTHORIZED: ",
-                vm.toString(caller),
-                " blocked from adding ",
-                vm.toString(validatorAddr)
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_ADD_UNAUTHORIZED: ",
+                    vm.toString(caller),
+                    " blocked from adding ",
+                    vm.toString(validatorAddr)
+                )
+            );
+        }
     }
 
     /// @notice Handler for validator self-update
@@ -201,11 +205,13 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             }
             assertTrue(found, "TEMPO-VAL3: Updated validator should exist");
 
-            _log(
-                string.concat(
-                    "UPDATE_VALIDATOR: ", vm.toString(validatorAddr), " updated public key"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "UPDATE_VALIDATOR: ", vm.toString(validatorAddr), " updated public key"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownValidatorError(reason);
@@ -239,11 +245,13 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat(
-                "TRY_OWNER_UPDATE: Owner blocked from updating ", vm.toString(validatorAddr)
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_OWNER_UPDATE: Owner blocked from updating ", vm.toString(validatorAddr)
+                )
+            );
+        }
     }
 
     /// @notice Handler for changing validator status (owner only)
@@ -271,14 +279,16 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
                 }
             }
 
-            _log(
-                string.concat(
-                    "CHANGE_STATUS: ",
-                    vm.toString(validatorAddr),
-                    " -> ",
-                    newStatus ? "ACTIVE" : "INACTIVE"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CHANGE_STATUS: ",
+                        vm.toString(validatorAddr),
+                        " -> ",
+                        newStatus ? "ACTIVE" : "INACTIVE"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownValidatorError(reason);
@@ -308,11 +318,15 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat(
-                "TRY_SELF_STATUS_CHANGE: ", vm.toString(validatorAddr), " blocked from self-change"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_SELF_STATUS_CHANGE: ",
+                    vm.toString(validatorAddr),
+                    " blocked from self-change"
+                )
+            );
+        }
     }
 
     /// @notice Handler for changing owner
@@ -330,11 +344,13 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             // TEMPO-VAL7: Verify owner changed
             assertEq(validatorConfig.owner(), newOwner, "TEMPO-VAL7: Owner should be updated");
 
-            _log(
-                string.concat(
-                    "CHANGE_OWNER: ", vm.toString(oldOwner), " -> ", vm.toString(newOwner)
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CHANGE_OWNER: ", vm.toString(oldOwner), " -> ", vm.toString(newOwner)
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownValidatorError(reason);
@@ -363,11 +379,15 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat(
-                "TRY_CHANGE_OWNER_UNAUTHORIZED: ", vm.toString(caller), " blocked from ownership"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_CHANGE_OWNER_UNAUTHORIZED: ",
+                    vm.toString(caller),
+                    " blocked from ownership"
+                )
+            );
+        }
     }
 
     /// @notice Handler for adding duplicate validator
@@ -393,11 +413,13 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat(
-                "TRY_ADD_DUPLICATE: ", vm.toString(existingValidator), " correctly rejected"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_ADD_DUPLICATE: ", vm.toString(existingValidator), " correctly rejected"
+                )
+            );
+        }
     }
 
     /// @notice Handler for adding validator with zero public key
@@ -425,9 +447,13 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat("TRY_ZERO_PUBKEY: ", vm.toString(validatorAddr), " zero pubkey rejected")
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_ZERO_PUBKEY: ", vm.toString(validatorAddr), " zero pubkey rejected"
+                )
+            );
+        }
     }
 
     /// @notice Handler for validator rotation
@@ -485,11 +511,13 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             }
             assertTrue(found, "TEMPO-VAL11: Rotated validator should exist");
 
-            _log(
-                string.concat(
-                    "ROTATE_VALIDATOR: ", vm.toString(oldAddr), " -> ", vm.toString(newAddr)
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "ROTATE_VALIDATOR: ", vm.toString(oldAddr), " -> ", vm.toString(newAddr)
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownValidatorError(reason);
@@ -512,7 +540,9 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
                 "TEMPO-VAL12: DKG epoch should be set"
             );
 
-            _log(string.concat("SET_DKG_CEREMONY: epoch=", vm.toString(epoch)));
+            if (_loggingEnabled) {
+                _log(string.concat("SET_DKG_CEREMONY: epoch=", vm.toString(epoch)));
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownValidatorError(reason);
@@ -540,11 +570,13 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat(
-                "TRY_SET_DKG_UNAUTHORIZED: ", vm.toString(caller), " blocked from setting DKG"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_SET_DKG_UNAUTHORIZED: ", vm.toString(caller), " blocked from setting DKG"
+                )
+            );
+        }
     }
 
     /*//////////////////////////////////////////////////////////////

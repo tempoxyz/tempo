@@ -320,7 +320,7 @@ impl AA2dPool {
             transaction,
             replaced: None,
             promoted: vec![],
-            discarded: vec![],
+            discarded: self.discard(),
         }))
     }
 
@@ -907,22 +907,88 @@ impl AA2dPool {
             return vec![];
         }
 
-        // Scan the eviction set and collect tx_ids matching the desired pending state
-        let to_remove: Vec<_> = self
-            .by_eviction_order
-            .iter()
-            .filter(|key| key.is_pending() == evict_pending)
-            .map(|key| key.tx_id)
-            .take(count)
-            .collect();
+        let mut removed = Vec::with_capacity(count);
 
-        let mut removed = Vec::with_capacity(to_remove.len());
-        for id in to_remove {
-            if let Some(tx) = self.remove_transaction_by_id(&id) {
-                removed.push(tx);
+        if evict_pending {
+            // For pending eviction, consider both regular 2D txs and expiring nonce txs
+            for _ in 0..count {
+                if let Some(tx) = self.evict_one_pending() {
+                    removed.push(tx);
+                } else {
+                    break;
+                }
+            }
+        } else {
+            // For queued, only look at by_eviction_order (expiring nonce txs are always pending)
+            let to_remove: Vec<_> = self
+                .by_eviction_order
+                .iter()
+                .filter(|key| !key.is_pending())
+                .map(|key| key.tx_id)
+                .take(count)
+                .collect();
+
+            for id in to_remove {
+                if let Some(tx) = self.remove_transaction_by_id(&id) {
+                    removed.push(tx);
+                }
             }
         }
+
         removed
+    }
+
+    /// Evicts one pending transaction, considering both regular 2D and expiring nonce txs.
+    /// Evicts the transaction with lowest priority (worst transaction).
+    fn evict_one_pending(&mut self) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        // Find worst regular 2D pending tx from eviction order
+        let worst_2d = self
+            .by_eviction_order
+            .iter()
+            .find(|key| key.is_pending())
+            .map(|key| (key.tx_id, key.priority().clone()));
+
+        // Find worst expiring nonce tx (lowest priority)
+        let worst_expiring = self
+            .expiring_nonce_txs
+            .iter()
+            .min_by(|a, b| a.1.priority.cmp(&b.1.priority))
+            .map(|(hash, tx)| (*hash, tx.priority.clone()));
+
+        // Choose which one to evict based on priority (lower priority = evict first)
+        match (worst_2d, worst_expiring) {
+            (Some((id, priority_2d)), Some((hash, priority_exp))) => {
+                // Evict the one with lower priority
+                if priority_exp < priority_2d {
+                    self.evict_expiring_nonce_tx(&hash)
+                } else {
+                    self.evict_2d_pending_tx(&id)
+                }
+            }
+            (Some((id, _)), None) => self.evict_2d_pending_tx(&id),
+            (None, Some((hash, _))) => self.evict_expiring_nonce_tx(&hash),
+            (None, None) => None,
+        }
+    }
+
+    /// Evicts a regular 2D pending transaction by ID.
+    fn evict_2d_pending_tx(
+        &mut self,
+        id: &AA2dTransactionId,
+    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let tx = self.remove_transaction_by_id(id)?;
+        self.demote_descendants(id);
+        Some(tx)
+    }
+
+    /// Evicts an expiring nonce transaction by hash.
+    fn evict_expiring_nonce_tx(
+        &mut self,
+        hash: &TxHash,
+    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let pending_tx = self.expiring_nonce_txs.remove(hash)?;
+        self.by_hash.remove(hash);
+        Some(pending_tx.transaction)
     }
 
     /// Returns a reference to the metrics for this pool
@@ -4630,6 +4696,183 @@ mod tests {
             "tx7 and tx8 should both be queued due to gap at nonce 6"
         );
 
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn expiring_nonce_tx_increments_pending_count() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        // Create an expiring nonce transaction (nonce_key = U256::MAX)
+        let tx = TxBuilder::aa(sender).nonce_key(U256::MAX).build();
+        let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
+
+        // Add the expiring nonce transaction
+        let result = pool.add_transaction(Arc::new(valid_tx), 0, TempoHardfork::T1);
+        assert!(result.is_ok(), "Transaction should be added successfully");
+        assert!(
+            matches!(result.unwrap(), AddedTransaction::Pending(_)),
+            "Expiring nonce transaction should be pending"
+        );
+
+        // Verify counts - expiring nonce txs should increment pending_count
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 1, "Should have 1 pending transaction");
+        assert_eq!(queued, 0, "Should have 0 queued transactions");
+
+        // This will fail if pending_count wasn't incremented
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn expiring_nonce_tx_subject_to_eviction() {
+        // Create pool with very small pending limit
+        let config = AA2dPoolConfig {
+            pending_limit: SubPoolLimit {
+                max_txs: 2,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 10,
+                max_size: usize::MAX,
+            },
+            ..Default::default()
+        };
+        let mut pool = AA2dPool::new(config);
+        let sender = Address::random();
+
+        // Add 3 expiring nonce transactions - should evict to maintain limit of 2
+        for i in 0..3 {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::MAX)
+                .max_priority_fee(1_000_000_000 + i as u128 * 100_000_000)
+                .max_fee(2_000_000_000 + i as u128 * 100_000_000)
+                .build();
+            let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
+            let _ = pool.add_transaction(Arc::new(valid_tx), 0, TempoHardfork::T1);
+        }
+
+        // Should only have 2 transactions (evicted one to maintain limit)
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert!(
+            pending <= 2,
+            "Should have at most 2 pending transactions due to limit, got {pending}"
+        );
+        assert_eq!(queued, 0, "Should have 0 queued transactions");
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn remove_expiring_nonce_tx_decrements_pending_count() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        // Add two expiring nonce transactions
+        let tx1 = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
+        let valid_tx1 = wrap_valid_tx(tx1, TransactionOrigin::Local);
+        let tx1_hash = *valid_tx1.hash();
+
+        let tx2 = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .max_priority_fee(1_100_000_000)
+            .max_fee(2_200_000_000)
+            .build();
+        let valid_tx2 = wrap_valid_tx(tx2, TransactionOrigin::Local);
+
+        pool.add_transaction(Arc::new(valid_tx1), 0, TempoHardfork::T1)
+            .unwrap();
+        pool.add_transaction(Arc::new(valid_tx2), 0, TempoHardfork::T1)
+            .unwrap();
+
+        // Verify we have 2 pending
+        let (pending, _) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 2, "Should have 2 pending transactions");
+        pool.assert_invariants();
+
+        // Remove one via the included txs path
+        let removed = pool.remove_included_expiring_nonce_txs(std::iter::once(&tx1_hash));
+        assert_eq!(removed.len(), 1, "Should remove exactly 1 transaction");
+
+        // Verify pending count decremented
+        let (pending, _) = pool.pending_and_queued_txn_count();
+        assert_eq!(
+            pending, 1,
+            "Should have 1 pending transaction after removal"
+        );
+
+        // This will fail if pending_count wasn't decremented
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn remove_expiring_nonce_tx_by_hash_updates_pending_count() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
+        let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
+        let tx_hash = *valid_tx.hash();
+
+        pool.add_transaction(Arc::new(valid_tx), 0, TempoHardfork::T1)
+            .unwrap();
+
+        let (pending, _) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 1);
+        pool.assert_invariants();
+
+        // Remove via remove_transactions (uses remove_transaction_by_hash_no_demote)
+        let removed = pool.remove_transactions(std::iter::once(&tx_hash));
+        assert_eq!(removed.len(), 1);
+
+        let (pending, _) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 0);
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn remove_expiring_nonce_tx_by_sender_updates_pending_count() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx1 = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
+        let valid_tx1 = wrap_valid_tx(tx1, TransactionOrigin::Local);
+
+        let tx2 = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .max_priority_fee(1_100_000_000)
+            .max_fee(2_200_000_000)
+            .build();
+        let valid_tx2 = wrap_valid_tx(tx2, TransactionOrigin::Local);
+
+        pool.add_transaction(Arc::new(valid_tx1), 0, TempoHardfork::T1)
+            .unwrap();
+        pool.add_transaction(Arc::new(valid_tx2), 0, TempoHardfork::T1)
+            .unwrap();
+
+        let (pending, _) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 2);
+        pool.assert_invariants();
+
+        // Remove via remove_transactions_by_sender
+        let removed = pool.remove_transactions_by_sender(sender);
+        assert_eq!(removed.len(), 2);
+
+        let (pending, _) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 0);
         pool.assert_invariants();
     }
 }

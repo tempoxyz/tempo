@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -162,6 +162,10 @@ struct TempoPoolState {
     paused_pool: PausedFeeTokenPool,
     /// Tracks pending transaction staleness for DoS mitigation.
     pending_staleness: PendingStalenessTracker,
+    /// Tracks whether the T1 transition cleanup has been performed.
+    /// This is a one-time operation that removes transactions with max_fee_per_gas < T1 base fee.
+    /// Will be removed after T1 is activated on mainnet.
+    t1_transition_cleanup_done: bool,
 }
 
 impl TempoPoolState {
@@ -366,6 +370,26 @@ where
                 let bundle_state = tip.execution_outcome().state().state();
                 let tip_timestamp = tip.tip().header().timestamp();
 
+                // T1 transition: one-time cleanup of underpriced transactions.
+                // When T1 activates, transactions with max_fee_per_gas < 20 gwei become
+                // never-includable and should be evicted. This check runs once per node lifetime.
+                // TODO: Remove this after T1 is activated on mainnet.
+                if !state.t1_transition_cleanup_done {
+                    let chain_spec = pool.client().chain_spec();
+                    if chain_spec.is_t1_active_at_timestamp(tip_timestamp) {
+                        let evicted = evict_underpriced_transactions_for_t1(&pool);
+                        if evicted > 0 {
+                            debug!(
+                                target: "txpool",
+                                count = evicted,
+                                tip_timestamp,
+                                "T1 transition: evicted underpriced transactions (max_fee_per_gas < 20 gwei)"
+                            );
+                        }
+                        state.t1_transition_cleanup_done = true;
+                    }
+                }
+
                 // 1. Collect all block-level invalidation events
                 let mut updates = TempoPoolUpdates::from_chain(tip);
 
@@ -397,76 +421,97 @@ where
 
                 // 3. Handle fee token pause/unpause events
                 let pause_start = Instant::now();
+
+                // Collect pause tokens that need pool scanning.
+                // For pause events, we need to scan the pool. For unpause events, we
+                // only need to check the paused_pool (O(1) lookup by token).
+                let pause_tokens: Vec<Address> = updates
+                    .pause_events
+                    .iter()
+                    .filter_map(|(token, is_paused)| is_paused.then_some(*token))
+                    .collect();
+
+                // Process pause events: fetch pool transactions once for all pause tokens.
+                // This avoids the O(pause_events * pool_size) cost of fetching per event.
+                if !pause_tokens.is_empty() {
+                    let all_txs = pool.all_transactions();
+
+                    // Group transactions by fee token for efficient batch processing.
+                    // This single pass over all transactions handles all pause events.
+                    let mut by_token: HashMap<Address, Vec<TxHash>> = HashMap::new();
+                    for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
+                        if let Some(fee_token) = tx.transaction.inner().fee_token() {
+                            by_token.entry(fee_token).or_default().push(*tx.hash());
+                        }
+                    }
+
+                    // Process each pause token
+                    for token in pause_tokens {
+                        let Some(hashes_to_pause) = by_token.remove(&token) else {
+                            // No transactions use this fee token - skip
+                            continue;
+                        };
+
+                        let removed_txs = pool.remove_transactions(hashes_to_pause);
+                        let count = removed_txs.len();
+
+                        if count > 0 {
+                            let entries: Vec<_> = removed_txs
+                                .into_iter()
+                                .map(|tx| {
+                                    let valid_before = tx
+                                        .transaction
+                                        .inner()
+                                        .as_aa()
+                                        .and_then(|aa| aa.tx().valid_before);
+                                    PausedEntry { tx, valid_before }
+                                })
+                                .collect();
+
+                            state.paused_pool.insert_batch(token, entries);
+                            metrics.transactions_paused.increment(count as u64);
+                            debug!(
+                                target: "txpool",
+                                %token,
+                                count,
+                                "Moved transactions to paused pool (fee token paused)"
+                            );
+                        }
+                    }
+                }
+
+                // Process unpause events: O(1) lookup per token in paused_pool
                 for (token, is_paused) in &updates.pause_events {
                     if *is_paused {
-                        // Pause: remove from main pool and store in paused pool
-                        let all_txs = pool.all_transactions();
-                        let hashes_to_pause: Vec<_> = all_txs
-                            .pending
-                            .iter()
-                            .chain(all_txs.queued.iter())
-                            .filter_map(|tx| {
-                                tx.transaction.inner().fee_token().filter(|t| t == token).map(|_| {
-                                    *tx.hash()
-                                })
-                            })
-                            .collect();
+                        continue; // Already handled above
+                    }
 
-                        if !hashes_to_pause.is_empty() {
-                            let removed_txs = pool.remove_transactions(hashes_to_pause);
-                            let count = removed_txs.len();
+                    // Unpause: drain from paused pool and re-add to main pool
+                    let paused_entries = state.paused_pool.drain_token(token);
+                    if !paused_entries.is_empty() {
+                        let count = paused_entries.len();
+                        metrics.transactions_unpaused.increment(count as u64);
+                        let pool_clone = pool.clone();
+                        let token = *token;
+                        tokio::spawn(async move {
+                            let txs: Vec<_> = paused_entries
+                                .into_iter()
+                                .map(|e| e.tx.transaction.clone())
+                                .collect();
 
-                            if count > 0 {
-                                let entries: Vec<_> = removed_txs
-                                    .into_iter()
-                                    .map(|tx| {
-                                        let valid_before = tx
-                                            .transaction
-                                            .inner()
-                                            .as_aa()
-                                            .and_then(|aa| aa.tx().valid_before);
-                                        PausedEntry { tx, valid_before }
-                                    })
-                                    .collect();
+                            let results = pool_clone
+                                .add_external_transactions(txs)
+                                .await;
 
-                                state.paused_pool.insert_batch(*token, entries);
-                                metrics.transactions_paused.increment(count as u64);
-                                debug!(
-                                    target: "txpool",
-                                    %token,
-                                    count,
-                                    "Moved transactions to paused pool (fee token paused)"
-                                );
-                            }
-                        }
-                    } else {
-                        // Unpause: drain from paused pool and re-add to main pool
-                        let paused_entries = state.paused_pool.drain_token(token);
-                        if !paused_entries.is_empty() {
-                            let count = paused_entries.len();
-                            metrics.transactions_unpaused.increment(count as u64);
-                            let pool_clone = pool.clone();
-                            let token = *token;
-                            tokio::spawn(async move {
-                                let txs: Vec<_> = paused_entries
-                                    .into_iter()
-                                    .map(|e| e.tx.transaction.clone())
-                                    .collect();
-
-                                let results = pool_clone
-                                    .add_external_transactions(txs)
-                                    .await;
-
-                                let success = results.iter().filter(|r| r.is_ok()).count();
-                                debug!(
-                                    target: "txpool",
-                                    %token,
-                                    total = count,
-                                    success,
-                                    "Restored transactions from paused pool (fee token unpaused)"
-                                );
-                            });
-                        }
+                            let success = results.iter().filter(|r| r.is_ok()).count();
+                            debug!(
+                                target: "txpool",
+                                %token,
+                                total = count,
+                                success,
+                                "Restored transactions from paused pool (fee token unpaused)"
+                            );
+                        });
                     }
                 }
 
@@ -559,6 +604,37 @@ where
             }
         }
     }
+}
+
+/// Removes transactions with max_fee_per_gas below the T1 base fee from the pool.
+///
+/// This is a one-time cleanup performed when the T0 → T1 hardfork transition is detected.
+/// After T1 activation, transactions with max_fee_per_gas < 20 gwei are never includable
+/// and should be evicted from the pool.
+///
+/// # Note
+/// This function is temporary and will be removed after T1 is activated on mainnet.
+fn evict_underpriced_transactions_for_t1<Pool>(pool: &Pool) -> usize
+where
+    Pool: TransactionPool,
+{
+    let all_txs = pool.all_transactions();
+    let t1_base_fee = TEMPO_T1_BASE_FEE as u128;
+
+    let underpriced_hashes: Vec<TxHash> = all_txs
+        .pending
+        .iter()
+        .chain(all_txs.queued.iter())
+        .filter(|tx| tx.max_fee_per_gas() < t1_base_fee)
+        .map(|tx| *tx.hash())
+        .collect();
+
+    let count = underpriced_hashes.len();
+    if count > 0 {
+        pool.remove_transactions(underpriced_hashes);
+    }
+
+    count
 }
 
 /// Handles a reorg event by identifying orphaned AA 2D transactions from the old chain
