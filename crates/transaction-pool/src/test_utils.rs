@@ -68,7 +68,7 @@ impl Default for TxBuilder {
             gas_limit: 1_000_000,
             value: U256::ZERO,
             max_priority_fee_per_gas: 1_000_000_000,
-            max_fee_per_gas: 2_000_000_000,
+            max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's 20 gwei minimum
             fee_token: None,
             valid_after: None,
             valid_before: None,

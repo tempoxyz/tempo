@@ -205,6 +205,11 @@ pub enum TempoPoolTransactionError {
     InvalidValidAfter { valid_after: u64, max_allowed: u64 },
 
     #[error(
+        "max_fee_per_gas {max_fee_per_gas} is below the minimum base fee {min_base_fee} for the current hardfork"
+    )]
+    FeeCapBelowMinBaseFee { max_fee_per_gas: u128, min_base_fee: u64 },
+
+    #[error(
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
     )]
     Keychain(&'static str),
@@ -360,7 +365,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::NoCalls
-            | Self::CreateCallNotFirst => true,
+            | Self::CreateCallNotFirst
+            | Self::FeeCapBelowMinBaseFee { .. } => true,
         }
     }
 
@@ -603,9 +609,9 @@ mod tests {
             .build();
 
         // fee_token_cost = cost - value = gas spending
-        // gas spending = calc_gas_balance_spending(1_000_000, 2_000_000_000)
-        //              = (1_000_000 * 2_000_000_000) / 1_000_000_000_000 = 2000
-        let expected_fee_cost = U256::from(2000);
+        // gas spending = calc_gas_balance_spending(1_000_000, 20_000_000_000)
+        //              = (1_000_000 * 20_000_000_000) / 1_000_000_000_000 = 20000
+        let expected_fee_cost = U256::from(20000);
         assert_eq!(tx.fee_token_cost(), expected_fee_cost);
         assert_eq!(tx.inner.cost, expected_fee_cost + value);
     }
@@ -855,7 +861,7 @@ mod tests {
         let aa_tx = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
-            max_fee_per_gas: 2_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
             calls: vec![Call {
                 to: TxKind::Call(Address::random()),
@@ -890,7 +896,7 @@ mod tests {
         assert_eq!(tx.chain_id(), Some(1));
         assert_eq!(tx.nonce(), 0);
         assert_eq!(tx.gas_limit(), 1_000_000);
-        assert_eq!(tx.max_fee_per_gas(), 2_000_000_000);
+        assert_eq!(tx.max_fee_per_gas(), 20_000_000_000);
         assert_eq!(tx.max_priority_fee_per_gas(), Some(1_000_000_000));
         assert!(tx.is_dynamic_fee());
         assert!(!tx.is_create());

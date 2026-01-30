@@ -515,6 +515,29 @@ where
         Ok(())
     }
 
+    /// Validates that a transaction's max_fee_per_gas is at least the minimum base fee
+    /// for the current hardfork.
+    ///
+    /// - T0: 10 gwei minimum
+    /// - T1+: 20 gwei minimum
+    fn ensure_min_base_fee(
+        &self,
+        transaction: &TempoPooledTransaction,
+        spec: TempoHardfork,
+    ) -> Result<(), TempoPoolTransactionError> {
+        let min_base_fee = spec.base_fee();
+        let max_fee_per_gas = transaction.max_fee_per_gas();
+
+        if max_fee_per_gas < min_base_fee as u128 {
+            return Err(TempoPoolTransactionError::FeeCapBelowMinBaseFee {
+                max_fee_per_gas,
+                min_base_fee,
+            });
+        }
+
+        Ok(())
+    }
+
     fn validate_one(
         &self,
         origin: TransactionOrigin,
@@ -532,6 +555,14 @@ where
             return TransactionValidationOutcome::Error(
                 *transaction.hash(),
                 InvalidTransactionError::TxTypeNotSupported.into(),
+            );
+        }
+
+        // Validate that max_fee_per_gas meets the minimum base fee for the current hardfork.
+        if let Err(err) = self.ensure_min_base_fee(&transaction, spec) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
             );
         }
 
@@ -1301,7 +1332,7 @@ mod tests {
             let tx = TempoTransaction {
                 chain_id: 1,
                 max_priority_fee_per_gas: 1_000_000_000,
-                max_fee_per_gas: 2_000_000_000,
+                max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's minimum
                 gas_limit,
                 calls,
                 nonce_key: U256::ZERO,
@@ -1380,7 +1411,7 @@ mod tests {
             let tx = TempoTransaction {
                 chain_id: 1,
                 max_priority_fee_per_gas: 1_000_000_000,
-                max_fee_per_gas: 2_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
                 gas_limit,
                 calls,
                 nonce_key: TEMPO_EXPIRING_NONCE_KEY, // Expiring nonce
@@ -1532,6 +1563,141 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_fee_cap_below_min_base_fee_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // T0 base fee is 10 gwei (10_000_000_000 wei)
+        // Create a transaction with max_fee_per_gas below this
+        let transaction = TxBuilder::aa(Address::random())
+            .max_fee(1_000_000_000) // 1 gwei, below T0's 10 gwei
+            .max_priority_fee(1_000_000_000)
+            .build();
+
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::FeeCapBelowMinBaseFee { .. })
+                    ),
+                    "Expected FeeCapBelowMinBaseFee error, got: {err:?}"
+                );
+            }
+            _ => panic!(
+                "Expected Invalid outcome with FeeCapBelowMinBaseFee error, got: {outcome:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fee_cap_at_min_base_fee_passes() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // T0 base fee is 10 gwei (10_000_000_000 wei)
+        // Create a transaction with max_fee_per_gas exactly at minimum
+        let transaction = TxBuilder::aa(Address::random())
+            .max_fee(10_000_000_000) // exactly 10 gwei
+            .max_priority_fee(1_000_000_000)
+            .build();
+
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        // Should not fail with FeeCapBelowMinBaseFee
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::FeeCapBelowMinBaseFee { .. })
+                ),
+                "Should not fail with FeeCapBelowMinBaseFee when fee cap equals min base fee"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fee_cap_above_min_base_fee_passes() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // T0 base fee is 10 gwei (10_000_000_000 wei)
+        // Create a transaction with max_fee_per_gas above minimum
+        let transaction = TxBuilder::aa(Address::random())
+            .max_fee(20_000_000_000) // 20 gwei, above T0's 10 gwei
+            .max_priority_fee(1_000_000_000)
+            .build();
+
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        // Should not fail with FeeCapBelowMinBaseFee
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::FeeCapBelowMinBaseFee { .. })
+                ),
+                "Should not fail with FeeCapBelowMinBaseFee when fee cap is above min base fee"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_eip1559_fee_cap_below_min_base_fee_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // T0 base fee is 10 gwei, create EIP-1559 tx with lower fee
+        let transaction = TxBuilder::eip1559(Address::random())
+            .max_fee(1_000_000_000) // 1 gwei, below T0's 10 gwei
+            .max_priority_fee(1_000_000_000)
+            .build_eip1559();
+
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::FeeCapBelowMinBaseFee { .. })
+                    ),
+                    "Expected FeeCapBelowMinBaseFee error for EIP-1559 tx, got: {err:?}"
+                );
+            }
+            _ => panic!(
+                "Expected Invalid outcome with FeeCapBelowMinBaseFee error, got: {outcome:?}"
+            ),
+        }
+    }
+
     mod keychain_validation {
         use super::*;
         use alloy_primitives::{Signature, TxKind, address};
@@ -1560,7 +1726,7 @@ mod tests {
             let tx_aa = TempoTransaction {
                 chain_id: 42431, // MODERATO chain_id
                 max_priority_fee_per_gas: 1_000_000_000,
-                max_fee_per_gas: 2_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
                 gas_limit: 1_000_000,
                 calls: vec![Call {
                     to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
@@ -2046,7 +2212,7 @@ mod tests {
             let tx_aa = TempoTransaction {
                 chain_id: 42431,
                 max_priority_fee_per_gas: 1_000_000_000,
-                max_fee_per_gas: 2_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
                 gas_limit: 1_000_000,
                 calls: vec![Call {
                     to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
@@ -2757,7 +2923,7 @@ mod tests {
         let tx_aa = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
-            max_fee_per_gas: 2_000_000_000,
+            max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's minimum
             gas_limit: 1_000_000,
             calls: vec![Call {
                 to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
