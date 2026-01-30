@@ -220,6 +220,11 @@ where
             }));
         }
 
+        // Cache key expiry for pool maintenance eviction (only if finite expiry)
+        if authorized_key.expiry < u64::MAX {
+            transaction.set_key_expiry(Some(authorized_key.expiry));
+        }
+
         // Check spending limit for fee token if enforce_limits is enabled.
         // This prevents transactions that would exceed the spending limit from entering the pool.
         if authorized_key.enforce_limits {

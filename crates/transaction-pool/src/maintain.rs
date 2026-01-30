@@ -14,7 +14,7 @@ use futures::StreamExt;
 use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
-use reth_storage_api::{StateProvider, StateProviderFactory};
+use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -25,7 +25,6 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::TEMPO_T1_B
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    account_keychain::{AccountKeychain, AuthorizedKey},
     tip20::is_tip20_prefix,
 };
 use tempo_primitives::{AASigned, TempoPrimitives};
@@ -201,50 +200,19 @@ impl TempoPoolState {
 
     /// Track a keychain transaction's key expiry for eviction.
     ///
-    /// Reads the key's expiry from state and tracks it. Skips if:
-    /// - Transaction is not a keychain-signed AA transaction
-    /// - Transaction has a key_authorization (key is being provisioned, not yet in state)
-    /// - Key expiry cannot be read from state
-    fn track_key_expiry(&mut self, tx: &TempoPooledTransaction, state: &impl StateProvider) {
-        let Some(aa_tx) = tx.inner().as_aa() else {
+    /// Uses the key expiry cached on the transaction during validation.
+    /// Skips if expiry wasn't set (non-keychain tx, key never expires, etc.).
+    fn track_key_expiry(&mut self, tx: &TempoPooledTransaction) {
+        let Some(expiry) = tx.key_expiry() else {
             return;
         };
 
-        // Skip transactions that are provisioning a new key (expiry is in the tx, not state)
-        if aa_tx.tx().key_authorization.is_some() {
-            return;
-        }
-
-        // Only keychain-signed transactions need key expiry tracking
-        let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
+        let Some(subject) = tx.keychain_subject() else {
             return;
         };
-
-        // Recover the key_id from the signature
-        let Ok(key_id) = keychain_sig.key_id(&aa_tx.signature_hash()) else {
-            return;
-        };
-
-        let account = keychain_sig.user_address;
-
-        // Read the key's expiry from state
-        let storage_slot = AccountKeychain::new().keys[account][key_id].base_slot();
-        let Ok(Some(slot_value)) = state.storage(
-            tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS,
-            storage_slot.into(),
-        ) else {
-            return;
-        };
-
-        let authorized_key = AuthorizedKey::decode_from_slot(slot_value);
-
-        // Skip keys that never expire (expiry == 0 means key doesn't exist, expiry == u64::MAX means never expires)
-        if authorized_key.expiry == 0 || authorized_key.expiry == u64::MAX {
-            return;
-        }
 
         self.key_expiry
-            .track(account, key_id, authorized_key.expiry, *tx.hash());
+            .track(subject.account, subject.key_id, expiry, *tx.hash());
     }
 }
 
@@ -411,15 +379,9 @@ where
 
     // Populate expiry tracking with existing transactions to prevent race conditions at start-up
     let all_txs = pool.all_transactions();
-    if let Ok(state_provider) = pool.client().latest() {
-        for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-            state.track_expiry(tx.transaction.inner().as_aa());
-            state.track_key_expiry(&tx.transaction, &state_provider);
-        }
-    } else {
-        for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-            state.track_expiry(tx.transaction.inner().as_aa());
-        }
+    for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
+        state.track_expiry(tx.transaction.inner().as_aa());
+        state.track_key_expiry(&tx.transaction);
     }
 
     let amm_cache = pool.amm_liquidity_cache();
@@ -434,11 +396,7 @@ where
 
                 let tx = &tx_event.transaction.transaction;
                 state.track_expiry(tx.inner().as_aa());
-
-                // Track keychain key expiry (requires state read)
-                if let Ok(state_provider) = pool.client().latest() {
-                    state.track_key_expiry(tx, &state_provider);
-                }
+                state.track_key_expiry(tx);
             }
 
             // Process all maintenance operations on new block commit or reorg
