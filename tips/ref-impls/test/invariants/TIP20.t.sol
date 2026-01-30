@@ -81,6 +81,25 @@ contract TIP20InvariantTest is InvariantBaseTest {
         }
 
         _initLogFile(LOG_FILE, "TIP20 Invariant Test Log");
+
+        // One-time constant checks (immutable after deployment)
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            TIP20 token = _tokens[i];
+
+            // TEMPO-TIP21: Decimals is always 6
+            assertEq(token.decimals(), 6, "TEMPO-TIP21: Decimals should always be 6");
+
+            // Quote token graph must be acyclic (set at creation, never changes)
+            ITIP20 current = token.quoteToken();
+            uint256 maxDepth = 20;
+            uint256 depth = 0;
+            while (address(current) != address(0) && depth < maxDepth) {
+                assertTrue(address(current) != address(token), "Quote token cycle detected");
+                current = current.quoteToken();
+                depth++;
+            }
+            assertLt(depth, maxDepth, "Quote token chain too deep (possible cycle)");
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1494,133 +1513,57 @@ contract TIP20InvariantTest is InvariantBaseTest {
                          GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Run all invariant checks
+    /// @notice Run all invariant checks in a single unified loop
+    /// @dev Combines TEMPO-TIP18, TIP19, TIP20, TIP22, and rewards conservation checks
+    ///      Decimals (TIP21) and quote token acyclic checks moved to setUp() as they're immutable
     function invariant_globalInvariants() public view {
-        _invariantOptedInSupplyBounded();
-        _invariantDecimalsConstant();
-        _invariantSupplyCapEnforced();
-        _invariantRewardsConservation();
-        _invariantQuoteTokenAcyclic();
-        _invariantSupplyConservation();
-        _invariantBalanceSumEqualsSupply();
-    }
-
-    /// @notice TEMPO-TIP19: Opted-in supply <= total supply
-    function _invariantOptedInSupplyBounded() internal view {
         for (uint256 i = 0; i < _tokens.length; i++) {
             TIP20 token = _tokens[i];
+            address tokenAddr = address(token);
+            uint256 totalSupply = token.totalSupply();
+
+            // TEMPO-TIP19: Opted-in supply <= total supply
             assertLe(
                 token.optedInSupply(),
-                token.totalSupply(),
+                totalSupply,
                 "TEMPO-TIP19: Opted-in supply exceeds total supply"
             );
-        }
-    }
 
-    /// @notice TEMPO-TIP21: Decimals is always 6
-    function _invariantDecimalsConstant() internal view {
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            assertEq(_tokens[i].decimals(), 6, "TEMPO-TIP21: Decimals should always be 6");
-        }
-    }
+            // TEMPO-TIP22: Supply cap is enforced
+            assertLe(totalSupply, token.supplyCap(), "TEMPO-TIP22: Total supply exceeds supply cap");
 
-    /// @notice TEMPO-TIP22: Supply cap is enforced
-    function _invariantSupplyCapEnforced() internal view {
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            TIP20 token = _tokens[i];
-            assertLe(
-                token.totalSupply(),
-                token.supplyCap(),
-                "TEMPO-TIP22: Total supply exceeds supply cap"
-            );
-        }
-    }
-
-    /// @notice Rewards conservation: claimed <= distributed, dust bounded by O(holders * distributions)
-    function _invariantRewardsConservation() internal view {
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            TIP20 token = _tokens[i];
-            address tokenAddr = address(token);
-            uint256 distributed = _tokenRewardsDistributed[tokenAddr];
-            uint256 claimed = _tokenRewardsClaimed[tokenAddr];
-
-            assertLe(claimed, distributed, "Rewards claimed exceeds distributed");
-            if (distributed == 0) continue;
-
-            uint256 contractBalance = token.balanceOf(address(token));
-            uint256 expectedUnclaimed = distributed - claimed;
-
-            // Max dust = distributions * holders (1 unit per holder per distribution due to floor)
-            // Use total registered holders as conservative upper bound (more reliable than tracking opt-in count)
-            uint256 holderCount = _tokenHolders[tokenAddr].length;
-            uint256 maxDust =
-                _tokenDistributionCount[tokenAddr] * (holderCount > 0 ? holderCount : 1);
-
-            if (expectedUnclaimed > maxDust) {
-                assertGe(
-                    contractBalance,
-                    expectedUnclaimed - maxDust,
-                    "Reward dust exceeds theoretical bound"
-                );
-            }
-        }
-    }
-
-    /// @notice Quote token graph must be acyclic
-    function _invariantQuoteTokenAcyclic() internal view {
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            TIP20 token = _tokens[i];
-
-            // Walk the quote token chain, should terminate without cycle
-            ITIP20 current = token.quoteToken();
-            uint256 maxDepth = 20;
-            uint256 depth = 0;
-
-            while (address(current) != address(0) && depth < maxDepth) {
-                // Should never point back to itself
-                assertTrue(address(current) != address(token), "Quote token cycle detected");
-                current = current.quoteToken();
-                depth++;
-            }
-
-            // Should not hit max depth (indicates infinite loop)
-            assertLt(depth, maxDepth, "Quote token chain too deep (possible cycle)");
-        }
-    }
-
-    /// @notice TEMPO-TIP18: Supply conservation - totalSupply = mints - burns per token
-    function _invariantSupplyConservation() internal view {
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            TIP20 token = _tokens[i];
-            address tokenAddr = address(token);
-
-            // _tokenMintSum includes the initial supply from _buildActors (set in setUp)
+            // TEMPO-TIP18: Supply conservation - totalSupply = mints - burns
             uint256 expectedSupply = _tokenMintSum[tokenAddr] - _tokenBurnSum[tokenAddr];
+            assertEq(totalSupply, expectedSupply, "TEMPO-TIP18: Supply conservation violated");
 
-            assertEq(
-                token.totalSupply(), expectedSupply, "TEMPO-TIP18: Supply conservation violated"
-            );
-        }
-    }
-
-    /// @notice TEMPO-TIP20: Balance sum equals supply - sum of all holder balances equals totalSupply
-    /// @dev Iterates over all dynamically tracked token holders to ensure no balances are missed.
-    function _invariantBalanceSumEqualsSupply() internal view {
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            TIP20 token = _tokens[i];
-            address tokenAddr = address(token);
-            uint256 balanceSum = 0;
-
+            // TEMPO-TIP20: Balance sum equals supply
             address[] storage holders = _tokenHolders[tokenAddr];
+            uint256 balanceSum = 0;
             for (uint256 j = 0; j < holders.length; j++) {
                 balanceSum += token.balanceOf(holders[j]);
             }
+            assertEq(balanceSum, totalSupply, "TEMPO-TIP20: Balance sum does not equal totalSupply");
 
-            assertEq(
-                balanceSum,
-                token.totalSupply(),
-                "TEMPO-TIP20: Balance sum does not equal totalSupply"
-            );
+            // Rewards conservation: claimed <= distributed, dust bounded
+            uint256 distributed = _tokenRewardsDistributed[tokenAddr];
+            uint256 claimed = _tokenRewardsClaimed[tokenAddr];
+            assertLe(claimed, distributed, "Rewards claimed exceeds distributed");
+
+            if (distributed > 0) {
+                uint256 contractBalance = token.balanceOf(tokenAddr);
+                uint256 expectedUnclaimed = distributed - claimed;
+                uint256 holderCount = holders.length;
+                uint256 maxDust =
+                    _tokenDistributionCount[tokenAddr] * (holderCount > 0 ? holderCount : 1);
+
+                if (expectedUnclaimed > maxDust) {
+                    assertGe(
+                        contractBalance,
+                        expectedUnclaimed - maxDust,
+                        "Reward dust exceeds theoretical bound"
+                    );
+                }
+            }
         }
     }
 
