@@ -271,12 +271,13 @@ impl Default for PendingStalenessTracker {
 ///
 /// Consolidates these operations into a single event loop to avoid multiple tasks
 /// competing for canonical state updates and to minimize contention on pool locks.
-pub async fn maintain_tempo_pool<Client>(pool: TempoTransactionPool<Client>)
+pub async fn maintain_tempo_pool<Client, Evm>(pool: TempoTransactionPool<Client, Evm>)
 where
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec = TempoChainSpec>
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
+    Evm: reth_evm::ConfigureEvm + Send + Sync + std::fmt::Debug + 'static,
 {
     let mut state = TempoPoolState::default();
     let metrics = TempoPoolMaintenanceMetrics::default();
@@ -710,7 +711,6 @@ mod tests {
         Arc::new(Chain::new(
             blocks,
             ExecutionOutcome::default(),
-            Default::default(),
             Default::default(),
         ))
     }
