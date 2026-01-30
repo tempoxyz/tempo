@@ -443,6 +443,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         _invariantUsdTokensHaveUsdQuote();
         _invariantSaltToTokenConsistency();
         _invariantIsTIP20Consistency();
+        _invariantCoverageSanity();
     }
 
     /// @notice TEMPO-FAC2: All created tokens are recognized as TIP20
@@ -534,7 +535,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
     /// @notice Verify that key invariant paths were actually exercised
     /// @dev This invariant ensures the fuzzer is testing meaningful scenarios
-    function invariant_coverageSanity() public view {
+    function _invariantCoverageSanity() internal view {
         // Only check coverage if we've had enough runs (avoid early failures)
         if (_totalTokensCreated >= 5) {
             // At least some tokens should have been created
