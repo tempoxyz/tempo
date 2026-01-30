@@ -118,6 +118,11 @@ impl TIP403Registry {
         }
 
         let data = self.get_policy_data(call.policyId)?;
+
+        if data.is_compound() && !self.storage.spec().is_t1() {
+            return Err(TempoPrecompileError::under_overflow());
+        }
+
         Ok(ITIP403Registry::policyDataReturn {
             policyType: data
                 .policy_type
@@ -135,7 +140,7 @@ impl TIP403Registry {
         let data = self.get_policy_data(call.policyId)?;
 
         // Only compound policies have compound data
-        if data.policy_type != ITIP403Registry::PolicyType::COMPOUND as u8 {
+        if !data.is_compound() {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
@@ -153,6 +158,16 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::createPolicyCall,
     ) -> Result<u64> {
+        if self.storage.spec().is_t1()
+            && matches!(
+                call.policyType,
+                ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid
+            )
+        {
+            // COMPOUND policies are created via createCompoundPolicy
+            return Err(TIP403RegistryError::incompatible_policy_type().into());
+        }
+
         let new_policy_id = self.policy_id_counter()?;
 
         // Increment counter
@@ -238,7 +253,7 @@ impl TIP403Registry {
                     ))?;
                 }
                 ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
-                    // COMPOUND policies are created via createCompoundPolicy, not createPolicyWithAccounts
+                    // COMPOUND policies are created via createCompoundPolicy
                     return Err(TIP403RegistryError::incompatible_policy_type().into());
                 }
             }
@@ -505,9 +520,11 @@ impl TIP403Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::TempoPrecompileError;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
     use rand::Rng;
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {
@@ -642,12 +659,9 @@ mod tests {
             assert!(result.is_err());
 
             // Verify the error is PolicyNotFound
-            let err = result.unwrap_err();
             assert!(matches!(
-                err,
-                crate::error::TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::PolicyNotFound(_)
-                )
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotFound(_))
             ));
 
             Ok(())
@@ -708,7 +722,7 @@ mod tests {
 
     #[test]
     fn test_create_compound_policy() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         let admin = Address::random();
         let creator = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -1108,6 +1122,102 @@ mod tests {
             assert!(registry.is_authorized_as(compound_id, vendor, AuthRole::Recipient)?);
             // customer cannot receive transfers (no P2P)
             assert!(!registry.is_authorized_as(compound_id, customer, AuthRole::Recipient)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_policy_data_rejects_compound_policy_on_pre_t1() -> eyre::Result<()> {
+        let creator = Address::random();
+
+        // First, create a compound policy on T1
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let compound_id = StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: 1,
+                    recipientPolicyId: 1,
+                    mintRecipientPolicyId: 1,
+                },
+            )
+        })?;
+
+        // Now downgrade to T0 and try to read the compound policy data
+        let mut storage = storage.with_spec(TempoHardfork::T0);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+
+            let result = registry.policy_data(ITIP403Registry::policyDataCall {
+                policyId: compound_id,
+            });
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_policy_rejects_non_simple_policy_types() -> eyre::Result<()> {
+        let admin = Address::random();
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            for policy_type in [
+                ITIP403Registry::PolicyType::COMPOUND,
+                ITIP403Registry::PolicyType::__Invalid,
+            ] {
+                let result = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: policy_type,
+                    },
+                );
+                assert!(matches!(
+                    result.unwrap_err(),
+                    TempoPrecompileError::TIP403RegistryError(
+                        TIP403RegistryError::IncompatiblePolicyType(_)
+                    )
+                ));
+            }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_policy_with_accounts_rejects_non_simple_policy_types() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+        let account = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            for policy_type in [
+                ITIP403Registry::PolicyType::COMPOUND,
+                ITIP403Registry::PolicyType::__Invalid,
+            ] {
+                let result = registry.create_policy_with_accounts(
+                    admin,
+                    ITIP403Registry::createPolicyWithAccountsCall {
+                        admin,
+                        policyType: policy_type,
+                        accounts: vec![account],
+                    },
+                );
+                assert!(matches!(
+                    result.unwrap_err(),
+                    TempoPrecompileError::TIP403RegistryError(
+                        TIP403RegistryError::IncompatiblePolicyType(_)
+                    )
+                ));
+            }
 
             Ok(())
         })
