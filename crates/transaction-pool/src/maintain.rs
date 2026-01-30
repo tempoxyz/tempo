@@ -614,7 +614,6 @@ where
 ///
 /// # Note
 /// This function is temporary and will be removed after T1 is activated on mainnet.
-/// See: CHAIN-562
 fn evict_underpriced_transactions_for_t1<Pool>(pool: &Pool) -> usize
 where
     Pool: TransactionPool,
