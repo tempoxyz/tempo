@@ -28,11 +28,9 @@ impl Precompile for TIP403Registry {
                 }
                 ITIP403RegistryCalls::policyExists(call) => view(call, |c| self.policy_exists(c)),
                 ITIP403RegistryCalls::policyData(call) => view(call, |c| self.policy_data(c)),
-                ITIP403RegistryCalls::isAuthorized(call) => {
-                    view(call, |c| {
-                        self.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
-                    })
-                }
+                ITIP403RegistryCalls::isAuthorized(call) => view(call, |c| {
+                    self.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
+                }),
                 // TIP-1015: T1+ only
                 ITIP403RegistryCalls::isAuthorizedSender(call) => {
                     if !self.storage.spec().is_t1() {
