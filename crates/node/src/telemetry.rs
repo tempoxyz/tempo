@@ -14,12 +14,12 @@ use reth_tracing::tracing;
 
 /// Configuration for Prometheus metrics push export.
 pub struct PrometheusMetricsConfig {
+    /// Extra labels to add to all metrics if possible -- i.e VictoriaMetrics `extra_labels` query string.
+    pub extra_labels: HashMap<String, String>,
     /// The Prometheus export endpoint.
     pub endpoint: String,
     /// The interval at which to push metrics.
     pub interval: SignedDuration,
-    /// Labels to add to all metrics if possible -- i.e VictoriaMetrics `extra_labels` query string.
-    pub labels: HashMap<String, String>,
     /// Optional Authorization header value (e.g., "Basic <base64>").
     pub auth_header: Option<String>,
 }
@@ -42,11 +42,11 @@ pub fn install_prometheus_metrics(
     let client = reqwest::Client::new();
 
     // Build extra labels query string for Victoria Metrics
-    let extra_labels = if config.labels.is_empty() {
+    let extra_labels = if config.extra_labels.is_empty() {
         String::new()
     } else {
         let labels: Vec<String> = config
-            .labels
+            .extra_labels
             .iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();

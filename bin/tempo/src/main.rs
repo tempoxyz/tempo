@@ -205,17 +205,17 @@ fn main() -> eyre::Result<()> {
 
                 // Start the unified OTLP metrics exporter if configured
                 if let Some(config) = defaults::parse_telemetry_config(&args.telemetry)? {
-                    let mut labels = std::collections::HashMap::new();
+                    let mut extra_labels = std::collections::HashMap::new();
 
                     // Add consensus public key as node identifier
                     if let Ok(Some(public_key)) = args.consensus.public_key() {
-                        labels.insert("consensus_id".to_string(), public_key.to_string());
+                        extra_labels.insert("consensus_id".to_string(), public_key.to_string());
                     }
 
                     let prometheus_config = PrometheusMetricsConfig {
+                        extra_labels,
                         endpoint: config.metrics_prometheus_url,
                         interval: config.metrics_prometheus_interval,
-                        labels,
                         auth_header: config.metrics_auth_header,
                     };
 
