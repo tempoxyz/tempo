@@ -41,6 +41,9 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @dev Log file path - must be set by child contract
     string internal _logFile;
 
+    /// @dev Whether logging is enabled (set once from INVARIANT_LOG env var)
+    bool internal _loggingEnabled;
+
     /// @dev All addresses that may hold token balances (for invariant checks)
     address[] internal _balanceHolders;
 
@@ -101,7 +104,13 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @notice Initialize log file with header
     /// @param logFile The log file path
     /// @param title The title for the log header
+    /// @dev Logging is only enabled if INVARIANT_LOG=true env var is set
     function _initLogFile(string memory logFile, string memory title) internal {
+        // Read env var once during setup (default to false if not set)
+        _loggingEnabled = vm.envOr("INVARIANT_LOG", false);
+
+        if (!_loggingEnabled) return;
+
         _logFile = logFile;
         try vm.removeFile(_logFile) { } catch { }
         _log("================================================================================");
@@ -338,28 +347,33 @@ abstract contract InvariantBaseTest is BaseTest {
                               LOGGING
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Logs a message to the log file
+    /// @dev Logs a message to the log file (no-op if logging disabled)
     function _log(string memory message) internal {
+        if (!_loggingEnabled) return;
         vm.writeLine(_logFile, message);
     }
 
-    /// @dev Logs a handler entry to the log file
+    /// @dev Logs a handler entry to the log file (no-op if logging disabled)
     function _logHandlerEntry(string memory handler) internal {
+        if (!_loggingEnabled) return;
         vm.writeLine(_logFile, string.concat("CALL: ", handler));
     }
 
-    /// @dev Logs a skip reason to the log file
+    /// @dev Logs a skip reason to the log file (no-op if logging disabled)
     function _logSkip(string memory reason) internal {
+        if (!_loggingEnabled) return;
         vm.writeLine(_logFile, string.concat("SKIP: ", reason));
     }
 
-    /// @dev Logs a successful handler completion
+    /// @dev Logs a successful handler completion (no-op if logging disabled)
     function _logHandlerSuccess(string memory handler) internal {
+        if (!_loggingEnabled) return;
         vm.writeLine(_logFile, string.concat("SUCCESS: ", handler));
     }
 
-    /// @dev Logs a handler revert
+    /// @dev Logs a handler revert (no-op if logging disabled)
     function _logHandlerRevert(string memory handler, bytes4 selector) internal {
+        if (!_loggingEnabled) return;
         vm.writeLine(
             _logFile, string.concat("REVERT: ", handler, " selector=", vm.toString(selector))
         );
@@ -377,10 +391,11 @@ abstract contract InvariantBaseTest is BaseTest {
         return vm.toString(actor);
     }
 
-    /// @dev Logs contract balances for all tokens
+    /// @dev Logs contract balances for all tokens (no-op if logging disabled)
     /// @param contractAddr Contract address to check
     /// @param contractName Name for logging
     function _logContractBalances(address contractAddr, string memory contractName) internal {
+        if (!_loggingEnabled) return;
         string memory balanceStr = string.concat(
             contractName, " balances: pathUSD=", vm.toString(pathUSD.balanceOf(contractAddr))
         );

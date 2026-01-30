@@ -298,7 +298,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 "TEMPO-AMM4: Validator reserve mismatch after mint"
             );
 
-            _logMint(actor, liquidity, amount);
+            if (_loggingEnabled) _logMint(actor, liquidity, amount);
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -346,14 +346,16 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
             // Only log if it was actually PolicyForbids (the blacklist case we're testing)
             if (selector == ITIP20.PolicyForbids.selector) {
-                _log(
-                    string.concat(
-                        "TEMPO-AMM33: Correctly rejected blacklisted ",
-                        _getActorIndex(actor),
-                        " from minting ",
-                        _getTokenSymbol(validatorToken)
-                    )
-                );
+                if (_loggingEnabled) {
+                    _log(
+                        string.concat(
+                            "TEMPO-AMM33: Correctly rejected blacklisted ",
+                            _getActorIndex(actor),
+                            " from minting ",
+                            _getTokenSymbol(validatorToken)
+                        )
+                    );
+                }
             }
         }
     }
@@ -401,7 +403,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             _ghostBurnValidatorActual += amountValidatorToken;
 
             _assertBurnInvariants(ctx, amountUserToken, amountValidatorToken);
-            _logBurn(ctx.actor, ctx.liquidityToBurn, amountUserToken, amountValidatorToken);
+            if (_loggingEnabled) {
+                _logBurn(ctx.actor, ctx.liquidityToBurn, amountUserToken, amountValidatorToken);
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -517,7 +521,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             _markActorActive(ctx.actor);
 
             _assertRebalanceInvariants(ctx, amountIn);
-            _logRebalance(ctx.actor, amountIn, ctx.amountOut);
+            if (_loggingEnabled) _logRebalance(ctx.actor, amountIn, ctx.amountOut);
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -579,11 +583,16 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             address storedToken = amm.validatorTokens(actor);
             assertEq(storedToken, token, "TEMPO-FEE1: Validator token not set correctly");
 
-            _log(
-                string.concat(
-                    "SET_VALIDATOR_TOKEN: ", _getActorIndex(actor), " -> ", _getTokenSymbol(token)
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "SET_VALIDATOR_TOKEN: ",
+                        _getActorIndex(actor),
+                        " -> ",
+                        _getTokenSymbol(token)
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownFeeManagerError(reason);
@@ -608,11 +617,13 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             address storedToken = amm.userTokens(actor);
             assertEq(storedToken, token, "TEMPO-FEE2: User token not set correctly");
 
-            _log(
-                string.concat(
-                    "SET_USER_TOKEN: ", _getActorIndex(actor), " -> ", _getTokenSymbol(token)
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "SET_USER_TOKEN: ", _getActorIndex(actor), " -> ", _getTokenSymbol(token)
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownFeeManagerError(reason);
@@ -716,13 +727,15 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             vm.stopPrank();
             // If this succeeds, the invariant is that half_amount > MIN_LIQUIDITY is NOT required
             // (i.e., Solidity implementation differs from Rust)
-            _log(
-                string.concat(
-                    "FIRST_MINT_BOUNDARY: ",
-                    _getActorIndex(actor),
-                    " succeeded with boundary amount (half=MIN_LIQUIDITY)"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "FIRST_MINT_BOUNDARY: ",
+                        _getActorIndex(actor),
+                        " succeeded with boundary amount (half=MIN_LIQUIDITY)"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             // Expected: InsufficientLiquidity when half_amount <= MIN_LIQUIDITY
@@ -731,13 +744,15 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 IFeeAMM.InsufficientLiquidity.selector,
                 "First mint with half=MIN_LIQUIDITY should fail with InsufficientLiquidity"
             );
-            _log(
-                string.concat(
-                    "FIRST_MINT_BOUNDARY: ",
-                    _getActorIndex(actor),
-                    " correctly rejected at boundary"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "FIRST_MINT_BOUNDARY: ",
+                        _getActorIndex(actor),
+                        " correctly rejected at boundary"
+                    )
+                );
+            }
         }
 
         // Also test just above boundary: 2 * MIN_LIQUIDITY + 2 = 2002
@@ -751,13 +766,15 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             // Should succeed with liquidity = half_amount - MIN_LIQUIDITY = 1001 - 1000 = 1
             assertEq(liquidity, 1, "First mint just above boundary should yield liquidity of 1");
             _totalMints++;
-            _log(
-                string.concat(
-                    "FIRST_MINT_ABOVE_BOUNDARY: ",
-                    _getActorIndex(actor),
-                    " succeeded with liquidity=1"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "FIRST_MINT_ABOVE_BOUNDARY: ",
+                        _getActorIndex(actor),
+                        " succeeded with liquidity=1"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -803,17 +820,19 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 "TEMPO-AMM22: Rebalance with exact division should still add +1"
             );
 
-            _log(
-                string.concat(
-                    "EXACT_DIVISION_REBALANCE: amountOut=",
-                    vm.toString(amountOut),
-                    " amountIn=",
-                    vm.toString(amountIn),
-                    " (floor=",
-                    vm.toString(floorValue),
-                    ")"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "EXACT_DIVISION_REBALANCE: amountOut=",
+                        vm.toString(amountOut),
+                        " amountIn=",
+                        vm.toString(amountIn),
+                        " (floor=",
+                        vm.toString(floorValue),
+                        ")"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -932,7 +951,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 _ghostTotalFeesDistributed += collectedBefore; // Track for TEMPO-AMM29
             }
 
-            _logDistribute(validator, collectedBefore);
+            if (_loggingEnabled) _logDistribute(validator, collectedBefore);
         } catch (bytes memory reason) {
             _assertKnownFeeManagerError(reason);
         }
@@ -1040,9 +1059,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 _ghostFeeSwapTheoreticalDust += (feeAmount * (SCALE - M)) / SCALE;
                 _ghostFeeSwapActualDust += feeAmount - expectedOut;
 
-                _logFeeCollection(
-                    user, validator, feeAmount, expectedOut, userToken, validatorToken
-                );
+                if (_loggingEnabled) {
+                    _logFeeCollection(
+                        user, validator, feeAmount, expectedOut, userToken, validatorToken
+                    );
+                }
             } catch (bytes memory reason) {
                 _assertKnownError(reason);
             }
@@ -1066,7 +1087,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 _ghostTotalFeesCollected += feeAmount; // Track for TEMPO-AMM29
                 // No dust for same-token transfers
 
-                _logFeeCollectionSameToken(user, validator, feeAmount, userToken);
+                if (_loggingEnabled) {
+                    _logFeeCollectionSameToken(user, validator, feeAmount, userToken);
+                }
             } catch (bytes memory reason) {
                 _assertKnownError(reason);
             }
@@ -1082,6 +1105,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         address userToken,
         address validatorToken
     ) internal {
+        if (!_loggingEnabled) return;
         _log(
             string.concat(
                 "FEE_COLLECTION: ",
@@ -1107,6 +1131,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 feeAmount,
         address token
     ) internal {
+        if (!_loggingEnabled) return;
         _log(
             string.concat(
                 "FEE_COLLECTION: ",
@@ -1178,6 +1203,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @notice Called after each invariant run to log final state
     function afterInvariant() public {
+        // TEMPO-AMM24: All participants can exit - simulate full withdrawal
+        _verifyAllCanExit();
+
+        if (!_loggingEnabled) return;
+
         _log("");
         _log("--------------------------------------------------------------------------------");
         _log("                              Final State Summary");
@@ -1230,11 +1260,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
         // Precise dust tracking
         _logDustTracking();
-
         _logBalances();
-
-        // TEMPO-AMM24: All participants can exit - simulate full withdrawal
-        _verifyAllCanExit();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -2225,6 +2251,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Logs a mint action
     function _logMint(address actor, uint256 liquidity, uint256 amount) internal {
+        if (!_loggingEnabled) return;
         _log(
             string.concat(
                 "MINT: ",
@@ -2242,6 +2269,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     function _logBurn(address actor, uint256 liquidity, uint256 amountUser, uint256 amountValidator)
         internal
     {
+        if (!_loggingEnabled) return;
         _log(
             string.concat(
                 "BURN: ",
@@ -2259,6 +2287,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Logs a rebalance swap action
     function _logRebalance(address actor, uint256 amountIn, uint256 amountOut) internal {
+        if (!_loggingEnabled) return;
         _log(
             string.concat(
                 "REBALANCE: ",
@@ -2274,6 +2303,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Logs a fee distribution action
     function _logDistribute(address validator, uint256 amount) internal {
+        if (!_loggingEnabled) return;
         _log(
             string.concat(
                 "DISTRIBUTE_FEES: ",
@@ -2287,11 +2317,13 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Logs AMM balances for all tokens
     function _logBalances() internal {
+        if (!_loggingEnabled) return;
         _logContractBalances(address(amm), "AMM");
     }
 
     /// @dev Logs precise dust tracking information
     function _logDustTracking() internal {
+        if (!_loggingEnabled) return;
         // Fee swap dust analysis
         uint256 extraDust = _ghostFeeSwapActualDust > _ghostFeeSwapTheoreticalDust
             ? _ghostFeeSwapActualDust - _ghostFeeSwapTheoreticalDust

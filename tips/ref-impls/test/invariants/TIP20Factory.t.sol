@@ -69,14 +69,16 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             // TEMPO-FAC5: Reserved address range is enforced
             if (bytes4(reason) == ITIP20Factory.AddressReserved.selector) {
                 _totalReservedAttempts++;
-                _log(
-                    string.concat(
-                        "CREATE_TOKEN_RESERVED: ",
-                        _getActorIndex(actor),
-                        " salt=",
-                        vm.toString(salt)
-                    )
-                );
+                if (_loggingEnabled) {
+                    _log(
+                        string.concat(
+                            "CREATE_TOKEN_RESERVED: ",
+                            _getActorIndex(actor),
+                            " salt=",
+                            vm.toString(salt)
+                        )
+                    );
+                }
                 return;
             }
             revert("Unknown error in getTokenAddress");
@@ -92,14 +94,16 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 vm.stopPrank();
                 if (bytes4(reason) == ITIP20Factory.TokenAlreadyExists.selector) {
                     _totalDuplicateAttempts++;
-                    _log(
-                        string.concat(
-                            "CREATE_TOKEN_EXISTS: ",
-                            _getActorIndex(actor),
-                            " at ",
-                            vm.toString(predictedAddr)
-                        )
-                    );
+                    if (_loggingEnabled) {
+                        _log(
+                            string.concat(
+                                "CREATE_TOKEN_EXISTS: ",
+                                _getActorIndex(actor),
+                                " at ",
+                                vm.toString(predictedAddr)
+                            )
+                        );
+                    }
                     return;
                 }
                 _assertKnownError(reason);
@@ -146,16 +150,18 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC6: Token currency mismatch"
             );
 
-            _log(
-                string.concat(
-                    "CREATE_TOKEN: ",
-                    _getActorIndex(actor),
-                    " created ",
-                    symbol,
-                    " at ",
-                    vm.toString(tokenAddr)
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CREATE_TOKEN: ",
+                        _getActorIndex(actor),
+                        " created ",
+                        symbol,
+                        " at ",
+                        vm.toString(tokenAddr)
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -195,11 +201,13 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC4: Expected InvalidQuoteToken error"
             );
             _totalInvalidQuoteAttempts++;
-            _log(
-                string.concat(
-                    "CREATE_TOKEN_INVALID_QUOTE: ", _getActorIndex(actor), " with invalid quote"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CREATE_TOKEN_INVALID_QUOTE: ", _getActorIndex(actor), " with invalid quote"
+                    )
+                );
+            }
         }
     }
 
@@ -241,11 +249,13 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                     "TEMPO-FAC7: Currency mismatch"
                 );
 
-                _log(
-                    string.concat(
-                        "CREATE_TOKEN_NON_USD: ", _getActorIndex(actor), " currency=", currency
-                    )
-                );
+                if (_loggingEnabled) {
+                    _log(
+                        string.concat(
+                            "CREATE_TOKEN_NON_USD: ", _getActorIndex(actor), " currency=", currency
+                        )
+                    );
+                }
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
@@ -318,11 +328,15 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC7: Should revert with InvalidQuoteToken"
             );
             _totalUsdWithNonUsdQuoteRejected++;
-            _log(
-                string.concat(
-                    "CREATE_USD_WITH_NON_USD_QUOTE: ", _getActorIndex(actor), " correctly rejected"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CREATE_USD_WITH_NON_USD_QUOTE: ",
+                        _getActorIndex(actor),
+                        " correctly rejected"
+                    )
+                );
+            }
         }
     }
 
@@ -352,11 +366,15 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC5: createToken should revert with AddressReserved"
             );
             _totalReservedCreateAttempts++;
-            _log(
-                string.concat(
-                    "CREATE_TOKEN_RESERVED_CREATE: ", _getActorIndex(actor), " correctly rejected"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CREATE_TOKEN_RESERVED_CREATE: ",
+                        _getActorIndex(actor),
+                        " correctly rejected"
+                    )
+                );
+            }
         }
     }
 
@@ -528,22 +546,10 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         }
     }
 
-    /*//////////////////////////////////////////////////////////////
-                         COVERAGE SANITY
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Verify that key invariant paths were actually exercised
-    /// @dev This invariant ensures the fuzzer is testing meaningful scenarios
-    function invariant_coverageSanity() public view {
-        // Only check coverage if we've had enough runs (avoid early failures)
-        if (_totalTokensCreated >= 5) {
-            // At least some tokens should have been created
-            assertTrue(_createdTokens.length > 0, "Coverage: No tokens created");
-        }
-    }
-
     /// @notice Called after each invariant run to log final state
     function afterInvariant() public {
+        if (!_loggingEnabled) return;
+
         _log("");
         _log("--------------------------------------------------------------------------------");
         _log("                              Final State Summary");

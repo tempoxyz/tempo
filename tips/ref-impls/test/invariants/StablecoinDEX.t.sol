@@ -55,7 +55,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _nextOrderId = exchange.nextOrderId();
 
         _initLogFile(LOG_FILE, "StablecoinDEX Invariant Test Log");
-        _logBalances();
+        if (_loggingEnabled) _logBalances();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -111,13 +111,15 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _assertOrderCreated(orderId, actor, amount, tick, isBid);
 
         // Log the action
-        _logPlaceOrder(actor, orderId, amount, TIP20(token).symbol(), tick, isBid);
+        if (_loggingEnabled) {
+            _logPlaceOrder(actor, orderId, amount, TIP20(token).symbol(), tick, isBid);
+        }
 
         if (cancel) {
             _cancelAndVerifyRefund(
                 orderId, actor, token, amount, tick, isBid, actorBalanceBeforePlace
             );
-            _logCancelOrder(actor, orderId, isBid, TIP20(token).symbol());
+            if (_loggingEnabled) _logCancelOrder(actor, orderId, isBid, TIP20(token).symbol());
         } else {
             _placedOrders[actor].push(orderId);
 
@@ -127,7 +129,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
 
         vm.stopPrank();
-        _logBalances();
+        if (_loggingEnabled) _logBalances();
     }
 
     function placeOrder1(
@@ -252,11 +254,17 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         exchange.withdraw(token, amount);
         vm.stopPrank();
 
-        _log(
-            string.concat(
-                _getActorIndex(actor), " withdrew ", vm.toString(amount), " ", TIP20(token).symbol()
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    _getActorIndex(actor),
+                    " withdrew ",
+                    vm.toString(amount),
+                    " ",
+                    TIP20(token).symbol()
+                )
+            );
+        }
     }
 
     /// @dev Helper to cancel order and verify refund (TEMPO-DEX3)
@@ -430,10 +438,12 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _placedOrders[actor].push(orderId);
 
         // Log the action
-        _logFlipOrder(actor, orderId, amount, token.symbol(), tick, flipTick, isBid);
+        if (_loggingEnabled) {
+            _logFlipOrder(actor, orderId, amount, token.symbol(), tick, flipTick, isBid);
+        }
 
         vm.stopPrank();
-        _logBalances();
+        if (_loggingEnabled) _logBalances();
     }
 
     /// @dev Helper to log flip order placement to avoid stack too deep
@@ -446,6 +456,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         int16 flipTick,
         bool isBid
     ) internal {
+        if (!_loggingEnabled) return;
         string memory escrowToken = isBid ? "pathUSD" : tokenSymbol;
         string memory receiveToken = isBid ? tokenSymbol : "pathUSD";
         _log(
@@ -534,7 +545,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _nextOrderId = exchange.nextOrderId();
 
         vm.stopPrank();
-        _logBalances();
+        if (_loggingEnabled) _logBalances();
     }
 
     /// @notice Fuzz handler: Blacklists an actor, has another actor cancel their stale orders, then whitelists again
@@ -726,26 +737,28 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
 
         // Log dust remaining in DEX
-        string memory dustLog = string.concat(
-            "Dust remaining: pathUSD=", vm.toString(pathUSD.balanceOf(address(exchange)))
-        );
-        for (uint256 j = 0; j < _tokens.length; j++) {
+        if (_loggingEnabled) {
+            string memory dustLog = string.concat(
+                "Dust remaining: pathUSD=", vm.toString(pathUSD.balanceOf(address(exchange)))
+            );
+            for (uint256 j = 0; j < _tokens.length; j++) {
+                dustLog = string.concat(
+                    dustLog,
+                    ", ",
+                    _tokens[j].symbol(),
+                    "=",
+                    vm.toString(_tokens[j].balanceOf(address(exchange)))
+                );
+            }
             dustLog = string.concat(
                 dustLog,
-                ", ",
-                _tokens[j].symbol(),
-                "=",
-                vm.toString(_tokens[j].balanceOf(address(exchange)))
+                " | Total=",
+                vm.toString(pathUSD.balanceOf(address(exchange)) + totalBalance),
+                ", Swaps=",
+                vm.toString(_maxDust)
             );
+            _log(dustLog);
         }
-        dustLog = string.concat(
-            dustLog,
-            " | Total=",
-            vm.toString(pathUSD.balanceOf(address(exchange)) + totalBalance),
-            ", Swaps=",
-            vm.toString(_maxDust)
-        );
-        _log(dustLog);
 
         assertGe(
             _maxDust,
@@ -1245,6 +1258,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
     /// @dev Logs exchange balances for all tokens
     function _logBalances() internal {
+        if (!_loggingEnabled) return;
         _logContractBalances(address(exchange), "DEX");
     }
 
@@ -1257,6 +1271,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         int16 tick,
         bool isBid
     ) internal {
+        if (!_loggingEnabled) return;
         string memory escrowToken = isBid ? "pathUSD" : tokenSymbol;
         string memory receiveToken = isBid ? tokenSymbol : "pathUSD";
         _log(
@@ -1285,6 +1300,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     function _logCancelOrder(address actor, uint128 orderId, bool isBid, string memory tokenSymbol)
         internal
     {
+        if (!_loggingEnabled) return;
         string memory refundToken = isBid ? "pathUSD" : tokenSymbol;
         _log(
             string.concat(
