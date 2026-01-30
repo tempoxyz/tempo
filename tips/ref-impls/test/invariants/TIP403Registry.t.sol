@@ -151,6 +151,11 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         _actors = _buildActors(10);
 
         _initLogFile(LOG_FILE, "TIP403Registry Invariant Test Log");
+
+        // One-time constant checks (immutable after deployment)
+        // TEMPO-REG13: Special policies 0 and 1 always exist
+        assertTrue(registry.policyExists(0), "TEMPO-REG13: Policy 0 should always exist");
+        assertTrue(registry.policyExists(1), "TEMPO-REG13: Policy 1 should always exist");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -548,81 +553,47 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
                          GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Run all invariant checks
+    /// @notice Run all invariant checks in a single unified loop
+    /// @dev Combines TEMPO-REG3, REG15, REG16, REG19 checks
+    ///      Special policies check (REG13) moved to setUp() as they're immutable
     function invariant_globalInvariants() public {
-        _invariantCounterMonotonicity();
-        _invariantSpecialPoliciesExist();
-        _invariantCreatedPoliciesExist();
-        _invariantPolicyTypeImmutability();
-        _invariantPolicyMembershipConsistency();
-    }
-
-    /// @notice TEMPO-REG15: Policy counter only increases and equals 2 + totalPoliciesCreated
-    function _invariantCounterMonotonicity() internal {
+        // TEMPO-REG15: Counter monotonicity (done once, not per-policy)
         uint64 counter = registry.policyIdCounter();
-
-        // Counter starts at 2 (skipping special policies 0 and 1)
         assertTrue(counter >= 2, "TEMPO-REG15: Counter should be at least 2");
-
-        // TEMPO-REG15: Counter must equal exactly 2 + total policies created
         uint64 expectedCounter = 2 + _basePoliciesCreated + uint64(_totalPoliciesCreated);
         assertEq(
             counter, expectedCounter, "TEMPO-REG15: Counter must equal 2 + totalPoliciesCreated"
         );
-
-        // TEMPO-REG15: Counter must only increase (monotonicity)
         assertGe(counter, _lastSeenCounter, "TEMPO-REG15: Counter must never decrease");
         _lastSeenCounter = counter;
-    }
 
-    /// @notice TEMPO-REG13: Special policies 0 and 1 always exist
-    function _invariantSpecialPoliciesExist() internal view {
-        assertTrue(registry.policyExists(0), "TEMPO-REG13: Policy 0 should always exist");
-        assertTrue(registry.policyExists(1), "TEMPO-REG13: Policy 1 should always exist");
-    }
-
-    /// @notice TEMPO-REG3: All created policies exist
-    function _invariantCreatedPoliciesExist() internal view {
-        for (uint256 i = 0; i < _createdPolicies.length; i++) {
-            assertTrue(
-                registry.policyExists(_createdPolicies[i]),
-                "TEMPO-REG3: Created policy should exist"
-            );
-        }
-    }
-
-    /// @notice TEMPO-REG16: Policy type cannot change after creation
-    function _invariantPolicyTypeImmutability() internal view {
+        // Single loop over all created policies
         for (uint256 i = 0; i < _createdPolicies.length; i++) {
             uint64 policyId = _createdPolicies[i];
+
+            // TEMPO-REG3: Created policy exists
+            assertTrue(registry.policyExists(policyId), "TEMPO-REG3: Created policy should exist");
+
+            // TEMPO-REG16: Policy type immutability
             (ITIP403Registry.PolicyType currentType,) = registry.policyData(policyId);
             assertEq(
                 uint256(currentType),
                 uint256(_policyTypes[policyId]),
                 "TEMPO-REG16: Policy type should not change"
             );
-        }
-    }
 
-    /// @notice TEMPO-REG19: Ghost policy membership matches registry
-    function _invariantPolicyMembershipConsistency() internal view {
-        for (uint256 i = 0; i < _createdPolicies.length; i++) {
-            uint64 policyId = _createdPolicies[i];
-            ITIP403Registry.PolicyType policyType = _policyTypes[policyId];
+            // TEMPO-REG19: Ghost policy membership matches registry
             address[] memory accounts = _policyAccounts[policyId];
-
             for (uint256 j = 0; j < accounts.length; j++) {
                 address account = accounts[j];
                 bool ghostMember = _ghostPolicySet[policyId][account];
                 bool isAuthorized = registry.isAuthorized(policyId, account);
 
-                if (policyType == ITIP403Registry.PolicyType.WHITELIST) {
-                    // Whitelist: member = authorized
+                if (currentType == ITIP403Registry.PolicyType.WHITELIST) {
                     assertEq(
                         isAuthorized, ghostMember, "TEMPO-REG19: Whitelist membership mismatch"
                     );
                 } else {
-                    // Blacklist: member = NOT authorized
                     assertEq(
                         isAuthorized, !ghostMember, "TEMPO-REG19: Blacklist membership mismatch"
                     );
