@@ -207,7 +207,10 @@ pub enum TempoPoolTransactionError {
     #[error(
         "max_fee_per_gas {max_fee_per_gas} is below the minimum base fee {min_base_fee} for the current hardfork"
     )]
-    FeeCapBelowMinBaseFee { max_fee_per_gas: u128, min_base_fee: u64 },
+    FeeCapBelowMinBaseFee {
+        max_fee_per_gas: u128,
+        min_base_fee: u64,
+    },
 
     #[error(
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
