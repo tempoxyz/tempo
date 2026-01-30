@@ -358,15 +358,15 @@ fn compare_type_members(
         match solc_member_info.get(rust_member.name) {
             Some(solc_member) => {
                 // Compare absolute slot if base_slot is provided
-                if let Some(base) = base_slot {
-                    if let Ok(relative_slot) = parse_slot(&solc_member.slot) {
-                        let solc_slot = base + relative_slot;
-                        if solc_slot != rust_member.slot {
-                            errors.push(format!(
-                                "{}.{}: Solidity slot {} != Rust slot {}",
-                                context_name, rust_member.name, solc_slot, rust_member.slot
-                            ));
-                        }
+                if let Some(base) = base_slot
+                    && let Ok(relative_slot) = parse_slot(&solc_member.slot)
+                {
+                    let solc_slot = base + relative_slot;
+                    if solc_slot != rust_member.slot {
+                        errors.push(format!(
+                            "{}.{}: Solidity slot {} != Rust slot {}",
+                            context_name, rust_member.name, solc_slot, rust_member.slot
+                        ));
                     }
                 }
 
@@ -405,8 +405,7 @@ fn compare_type_members(
             .any(|rm| rm.name == solc_member_name)
         {
             errors.push(format!(
-                "{}.{} exists in Solidity but not in Rust",
-                context_name, solc_member_name
+                "{context_name}.{solc_member_name} exists in Solidity but not in Rust"
             ));
         }
     }
