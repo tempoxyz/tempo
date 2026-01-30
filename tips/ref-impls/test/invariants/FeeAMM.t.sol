@@ -231,6 +231,15 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         _actors = _buildActorsWithApprovals(20, address(amm));
 
         _initLogFile(LOG_FILE, "FeeAMM Invariant Test Log");
+
+        // TEMPO-AMM16: Verify fee rate constants once at setup (never change)
+        assertTrue(M == 9970, "TEMPO-AMM16: Fee swap rate M should be 9970");
+        assertTrue(N == 9985, "TEMPO-AMM16: Rebalance rate N should be 9985");
+        assertTrue(SCALE == 10_000, "TEMPO-AMM16: SCALE should be 10000");
+
+        // TEMPO-AMM21: Verify spread constants once at setup (never change)
+        assertTrue(M < N, "TEMPO-AMM21: M must be less than N for spread");
+        assertTrue(N - M == SPREAD, "TEMPO-AMM21: Spread should be 15 bps");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1272,9 +1281,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         _invariantPoolSolvency();
         _invariantLiquidityAccounting();
         _invariantMinLiquidityLocked();
-        _invariantFeeRates();
         _invariantReservesBoundedByU128();
-        _invariantSpreadPreventsArbitrage();
         _invariantRebalanceRoundingFavorsPool();
         _invariantBurnRoundingFavorsPool();
         _invariantCollectedFeesNotExceedBalance();
@@ -1391,16 +1398,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice TEMPO-AMM16: Fee rates are correctly applied (matches Rust constants)
-    function _invariantFeeRates() internal pure {
-        // Fee swap rate: m = 0.9970 means 0.30% fee
-        // Rebalance rate: n = 0.9985 means 0.15% fee
-        // These are constants, so just verify they're set correctly
-        assertTrue(M == 9970, "TEMPO-AMM16: Fee swap rate M should be 9970");
-        assertTrue(N == 9985, "TEMPO-AMM16: Rebalance rate N should be 9985");
-        assertTrue(SCALE == 10_000, "TEMPO-AMM16: SCALE should be 10000");
-    }
-
     /// @notice TEMPO-AMM20: Reserves are always bounded by uint128
     function _invariantReservesBoundedByU128() internal view {
         uint256 MAX_U128 = type(uint128).max;
@@ -1424,20 +1421,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 );
             }
         }
-    }
-
-    /// @notice TEMPO-AMM21: Spread between fee swap and rebalance prevents arbitrage
-    function _invariantSpreadPreventsArbitrage() internal pure {
-        // For any amount X:
-        // Fee swap: X -> (X * M / SCALE)
-        // Rebalance: to get X back, need (X * N / SCALE + 1)
-        // For arbitrage: fee_out >= rebalance_in
-        // X * M / SCALE >= X * N / SCALE + 1
-        // Since M < N, this is never true
-
-        assertTrue(M < N, "TEMPO-AMM21: M must be less than N for spread");
-        // Spread = N - M = 9985 - 9970 = 15 basis points
-        assertTrue(N - M == SPREAD, "TEMPO-AMM21: Spread should be 15 bps");
     }
 
     /// @notice TEMPO-AMM22: Rebalance swap rounding always favors the pool
