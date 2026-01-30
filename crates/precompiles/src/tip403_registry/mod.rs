@@ -160,6 +160,14 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::createPolicyCall,
     ) -> Result<u64> {
+        // COMPOUND policies must be created via createCompoundPolicy
+        if matches!(
+            call.policyType,
+            ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid
+        ) {
+            return Err(TIP403RegistryError::incompatible_policy_type().into());
+        }
+
         let new_policy_id = self.policy_id_counter()?;
 
         // Increment counter
@@ -1115,6 +1123,210 @@ mod tests {
             assert!(registry.is_authorized_as(compound_id, vendor, AuthRole::Recipient)?);
             // customer cannot receive transfers (no P2P)
             assert!(!registry.is_authorized_as(compound_id, customer, AuthRole::Recipient)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_policy_rejects_compound_type() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Attempting to create a COMPOUND policy via createPolicy should fail
+            let result = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::COMPOUND,
+                },
+            );
+
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string().contains("IncompatiblePolicyType"),
+                "Expected IncompatiblePolicyType error, got: {err}"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_policy_rejects_invalid_type() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Attempting to create a policy with __Invalid type should fail
+            let result = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::__Invalid,
+                },
+            );
+
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string().contains("IncompatiblePolicyType"),
+                "Expected IncompatiblePolicyType error, got: {err}"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_policy_with_accounts_rejects_compound_type() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Attempting to create a COMPOUND policy via createPolicyWithAccounts should fail
+            let result = registry.create_policy_with_accounts(
+                admin,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::COMPOUND,
+                    accounts: vec![user],
+                },
+            );
+
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string().contains("IncompatiblePolicyType"),
+                "Expected IncompatiblePolicyType error, got: {err}"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_authorized_on_non_existent_policy_returns_false() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+
+            // Policy ID 999 doesn't exist - should return false (deny), not panic
+            // This is because reading uninitialized storage returns zeroed PolicyData
+            // which has policy_type = 0 (WHITELIST) and user is not in the empty set
+            let result = registry.is_authorized_as(999, user, AuthRole::Transfer)?;
+            assert!(!result, "Non-existent policy should deny authorization");
+
+            // Same for all auth roles
+            assert!(!registry.is_authorized_as(999, user, AuthRole::Sender)?);
+            assert!(!registry.is_authorized_as(999, user, AuthRole::Recipient)?);
+            assert!(!registry.is_authorized_as(999, user, AuthRole::MintRecipient)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_builtin_policies_work_for_all_auth_roles() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+
+            // Policy 0 (always-reject) should reject for all roles
+            assert!(!registry.is_authorized_as(0, user, AuthRole::Transfer)?);
+            assert!(!registry.is_authorized_as(0, user, AuthRole::Sender)?);
+            assert!(!registry.is_authorized_as(0, user, AuthRole::Recipient)?);
+            assert!(!registry.is_authorized_as(0, user, AuthRole::MintRecipient)?);
+
+            // Policy 1 (always-allow) should allow for all roles
+            assert!(registry.is_authorized_as(1, user, AuthRole::Transfer)?);
+            assert!(registry.is_authorized_as(1, user, AuthRole::Sender)?);
+            assert!(registry.is_authorized_as(1, user, AuthRole::Recipient)?);
+            assert!(registry.is_authorized_as(1, user, AuthRole::MintRecipient)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_simple_policy_returns_same_result_for_all_auth_roles() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create whitelist policy and add user
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+
+            // Before adding to whitelist: all roles should deny
+            assert!(!registry.is_authorized_as(policy_id, user, AuthRole::Transfer)?);
+            assert!(!registry.is_authorized_as(policy_id, user, AuthRole::Sender)?);
+            assert!(!registry.is_authorized_as(policy_id, user, AuthRole::Recipient)?);
+            assert!(!registry.is_authorized_as(policy_id, user, AuthRole::MintRecipient)?);
+
+            // Add user to whitelist
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: policy_id,
+                    account: user,
+                    allowed: true,
+                },
+            )?;
+
+            // After adding to whitelist: all roles should allow
+            assert!(registry.is_authorized_as(policy_id, user, AuthRole::Transfer)?);
+            assert!(registry.is_authorized_as(policy_id, user, AuthRole::Sender)?);
+            assert!(registry.is_authorized_as(policy_id, user, AuthRole::Recipient)?);
+            assert!(registry.is_authorized_as(policy_id, user, AuthRole::MintRecipient)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compound_policy_transfer_short_circuits_on_sender_failure() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create compound policy where:
+            // - sender = policy 0 (always-reject)
+            // - recipient = policy 1 (always-allow)
+            let compound_id = registry.create_compound_policy(
+                admin,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: 0,
+                    recipientPolicyId: 1,
+                    mintRecipientPolicyId: 1,
+                },
+            )?;
+
+            // Transfer should fail (sender rejected) - short-circuits before recipient check
+            assert!(!registry.is_authorized_as(compound_id, user, AuthRole::Transfer)?);
+
+            // Sender explicitly fails
+            assert!(!registry.is_authorized_as(compound_id, user, AuthRole::Sender)?);
+
+            // Recipient would pass if checked
+            assert!(registry.is_authorized_as(compound_id, user, AuthRole::Recipient)?);
 
             Ok(())
         })

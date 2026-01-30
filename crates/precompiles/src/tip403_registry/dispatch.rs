@@ -114,7 +114,7 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
         tip403_registry::ITIP403Registry,
     };
-    use alloy::sol_types::{SolCall, SolValue};
+    use alloy::{hex, sol_types::{SolCall, SolValue}};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
@@ -572,6 +572,88 @@ mod tests {
             );
 
             assert_full_coverage([unsupported]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_policy_with_invalid_enum_value_reverts_with_incompatible_policy_type(
+    ) -> eyre::Result<()> {
+        // This test verifies what happens when raw calldata contains an invalid
+        // enum value (e.g., 99 when only 0=WHITELIST, 1=BLACKLIST, 2=COMPOUND are valid).
+        // The ABI decoder maps unknown values to __Invalid, and the function logic
+        // returns IncompatiblePolicyType error.
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Manually construct calldata for createPolicy with policyType = 99 (invalid)
+            let selector = ITIP403Registry::createPolicyCall::SELECTOR;
+            let mut calldata = Vec::with_capacity(68);
+            calldata.extend_from_slice(&selector);
+            // admin address (32 bytes, left-padded)
+            calldata.extend_from_slice(&[0u8; 12]); // padding
+            calldata.extend_from_slice(admin.as_slice()); // 20 bytes
+            // policyType = 99 (invalid enum value)
+            let mut policy_type_bytes = [0u8; 32];
+            policy_type_bytes[31] = 99;
+            calldata.extend_from_slice(&policy_type_bytes);
+
+            let result = registry.call(&calldata, admin);
+
+            // Should succeed but return a reverted output with IncompatiblePolicyType error
+            assert!(result.is_ok(), "call should not error");
+            let output = result.unwrap();
+            assert!(output.reverted, "should revert on invalid enum");
+
+            // Verify the error is IncompatiblePolicyType (selector 0xf1011ef5)
+            assert_eq!(
+                hex::encode(&output.bytes),
+                "f1011ef5",
+                "should revert with IncompatiblePolicyType error"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_policy_with_compound_type_reverts_with_incompatible_policy_type(
+    ) -> eyre::Result<()> {
+        // This test verifies that passing COMPOUND (2) to createPolicy returns
+        // IncompatiblePolicyType, matching the behavior for other invalid enum values.
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Manually construct calldata for createPolicy with policyType = 2 (COMPOUND)
+            let selector = ITIP403Registry::createPolicyCall::SELECTOR;
+            let mut calldata = Vec::with_capacity(68);
+            calldata.extend_from_slice(&selector);
+            // admin address (32 bytes, left-padded)
+            calldata.extend_from_slice(&[0u8; 12]); // padding
+            calldata.extend_from_slice(admin.as_slice()); // 20 bytes
+            // policyType = 2 (COMPOUND)
+            let mut policy_type_bytes = [0u8; 32];
+            policy_type_bytes[31] = 2;
+            calldata.extend_from_slice(&policy_type_bytes);
+
+            let result = registry.call(&calldata, admin);
+
+            // Should succeed but return a reverted output with IncompatiblePolicyType error
+            assert!(result.is_ok(), "call should not error");
+            let output = result.unwrap();
+            assert!(output.reverted, "should revert on COMPOUND type");
+
+            // Verify the error is IncompatiblePolicyType (selector 0xf1011ef5)
+            assert_eq!(
+                hex::encode(&output.bytes),
+                "f1011ef5",
+                "should revert with IncompatiblePolicyType error"
+            );
 
             Ok(())
         })
