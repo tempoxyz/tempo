@@ -190,7 +190,7 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::createPolicyCall,
     ) -> Result<u64> {
-        let policy_type_to_store = self.validate_policy_type(call.policyType)?;
+        let policy_type = self.validate_policy_type(call.policyType)?;
 
         let new_policy_id = self.policy_id_counter()?;
 
@@ -203,7 +203,7 @@ impl TIP403Registry {
 
         // Store policy data
         self.policy_records[new_policy_id].base.write(PolicyData {
-            policy_type: policy_type_to_store,
+            policy_type: policy_type,
             admin: call.admin,
         })?;
 
@@ -233,7 +233,7 @@ impl TIP403Registry {
         call: ITIP403Registry::createPolicyWithAccountsCall,
     ) -> Result<u64> {
         let (admin, policy_type) = (call.admin, call.policyType);
-        let policy_type_to_store = self.validate_policy_type(policy_type)?;
+        let policy_type = self.validate_policy_type(policy_type)?;
 
         let new_policy_id = self.policy_id_counter()?;
 
@@ -248,7 +248,7 @@ impl TIP403Registry {
         self.set_policy_data(
             new_policy_id,
             PolicyData {
-                policy_type: policy_type_to_store,
+                policy_type: policy_type,
                 admin,
             },
         )?;
