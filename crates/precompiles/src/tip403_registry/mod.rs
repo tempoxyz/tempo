@@ -168,24 +168,18 @@ impl TIP403Registry {
     /// Pre-T1: Converts any value >= 2 to 255 (__Invalid) to match original ABI decoding
     /// behavior where unknown enum values became __Invalid(255).
     /// T1+: Only allows WHITELIST and BLACKLIST; COMPOUND must use createCompoundPolicy.
-    fn validate_policy_type(
+    fn validate_simple_policy_type(
         &self,
         policy_type: ITIP403Registry::PolicyType,
     ) -> Result<u8> {
+        let policy_type = policy_type as u8;
         if self.storage.spec().is_t1() {
-            match policy_type {
-                ITIP403Registry::PolicyType::WHITELIST | ITIP403Registry::PolicyType::BLACKLIST => {
-                    Ok(policy_type as u8)
-                }
-                ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
-                    Err(TIP403RegistryError::incompatible_policy_type().into())
-                }
+            if policy_type >= 2 {
+                return Err(TIP403RegistryError::incompatible_policy_type().into());
             }
+            Ok(policy_type)
         } else {
-            match policy_type as u8 {
-                0 | 1 => Ok(policy_type as u8),
-                _ => Ok(255u8),
-            }
+            Ok(if policy_type >= 2 { 255u8 } else { policy_type })
         }
     }
 
@@ -194,7 +188,7 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::createPolicyCall,
     ) -> Result<u64> {
-        let policy_type = self.validate_policy_type(call.policyType)?;
+        let policy_type = self.validate_simple_policy_type(call.policyType)?;
 
         let new_policy_id = self.policy_id_counter()?;
 
@@ -237,7 +231,7 @@ impl TIP403Registry {
         call: ITIP403Registry::createPolicyWithAccountsCall,
     ) -> Result<u64> {
         let admin = call.admin;
-        let policy_type = self.validate_policy_type(call.policyType)?;
+        let policy_type = self.validate_simple_policy_type(call.policyType)?;
 
         let new_policy_id = self.policy_id_counter()?;
 
