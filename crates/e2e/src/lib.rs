@@ -34,9 +34,11 @@ use tempo_commonware_node::{consensus, feed::FeedStateHandle};
 
 pub mod execution_runtime;
 pub use execution_runtime::ExecutionNodeConfig;
+pub mod test_network;
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+pub use test_network::TestNetwork;
 pub use testing_node::TestingNode;
 
 #[cfg(test)]

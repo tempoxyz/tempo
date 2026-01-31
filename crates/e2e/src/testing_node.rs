@@ -1,6 +1,9 @@
 //! A testing node that can start and stop both consensus and execution layers.
 
-use crate::execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, ExecutionRuntimeHandle};
+use crate::{
+    execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, ExecutionRuntimeHandle},
+    test_network::TestNetwork,
+};
 use alloy_primitives::Address;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
@@ -15,12 +18,7 @@ use reth_ethereum::{
 };
 use reth_node_builder::NodeTypesWithDBAdapter;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
-use tempo_commonware_node::{
-    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
-    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
-    consensus,
-};
+use tempo_commonware_node::{P2pNetwork, consensus};
 use tempo_node::node::TempoNode;
 use tracing::{debug, instrument};
 
@@ -223,57 +221,20 @@ where
             .await
             .expect("must be able to start the engine");
 
-        let votes = self
-            .oracle
-            .control(self.public_key.clone())
-            .register(VOTES_CHANNEL_IDENT, VOTES_LIMIT)
+        let mut network = TestNetwork::new(self.oracle.clone(), self.public_key.clone());
+        let channels = network
+            .register_channels()
             .await
-            .unwrap();
-        let certificates = self
-            .oracle
-            .control(self.public_key.clone())
-            .register(CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT)
-            .await
-            .unwrap();
-        let resolver = self
-            .oracle
-            .control(self.public_key.clone())
-            .register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT)
-            .await
-            .unwrap();
-        let broadcast = self
-            .oracle
-            .control(self.public_key.clone())
-            .register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT)
-            .await
-            .unwrap();
-        let marshal = self
-            .oracle
-            .control(self.public_key.clone())
-            .register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT)
-            .await
-            .unwrap();
-        let dkg = self
-            .oracle
-            .control(self.public_key.clone())
-            .register(DKG_CHANNEL_IDENT, DKG_LIMIT)
-            .await
-            .unwrap();
-        let subblocks = self
-            .oracle
-            .control(self.public_key.clone())
-            .register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT)
-            .await
-            .unwrap();
+            .expect("must be able to register channels");
 
         let consensus_handle = engine.start(
-            votes,
-            certificates,
-            resolver,
-            broadcast,
-            marshal,
-            dkg,
-            subblocks,
+            channels.votes,
+            channels.certificates,
+            channels.resolver,
+            channels.broadcaster,
+            channels.marshal,
+            channels.dkg,
+            channels.subblocks,
         );
 
         self.consensus_handle = Some(consensus_handle);
