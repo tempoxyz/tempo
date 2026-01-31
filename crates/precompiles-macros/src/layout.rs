@@ -171,6 +171,20 @@ pub(crate) fn gen_constructor(
                 Ok(())
             }
 
+            /// Lazily initializes the precompile if it hasn't been initialized yet.
+            ///
+            /// This checks if the precompile has bytecode deployed at its address.
+            /// If not, it automatically calls `__initialize()` to set the marker bytecode.
+            /// This enables precompiles to work without requiring manual initialization
+            /// during genesis block generation.
+            #[inline(always)]
+            pub fn __ensure_initialized(&mut self) -> crate::error::Result<()> {
+                if !self.storage.has_code(self.address)? {
+                    self.__initialize()?;
+                }
+                Ok(())
+            }
+
             #[inline(always)]
             fn emit_event(&mut self, event: impl ::alloy::primitives::IntoLogData) -> crate::error::Result<()> {
                 self.storage.emit_event(self.address, event.into_log_data())
