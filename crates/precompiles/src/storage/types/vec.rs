@@ -282,7 +282,7 @@ where
         }
 
         let (data_start, address) = (self.data_slot(), self.address);
-        Ok(Some(self.cache.get_or_insert(index, || {
+        Ok(Some(self.cache.get_or_insert(&index, || {
             Self::compute_handler(data_start, address, index)
         })))
     }
@@ -358,7 +358,7 @@ where
     fn index(&self, index: usize) -> &Self::Output {
         let (data_start, address) = (self.data_slot(), self.address);
         self.cache
-            .get_or_insert(index, || Self::compute_handler(data_start, address, index))
+            .get_or_insert(&index, || Self::compute_handler(data_start, address, index))
     }
 }
 
@@ -373,7 +373,7 @@ where
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         let (data_start, address) = (self.data_slot(), self.address);
         self.cache
-            .get_or_insert_mut(index, || Self::compute_handler(data_start, address, index))
+            .get_or_insert_mut(&index, || Self::compute_handler(data_start, address, index))
     }
 }
 
