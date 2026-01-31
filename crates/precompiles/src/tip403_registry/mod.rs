@@ -162,16 +162,12 @@ impl TIP403Registry {
         })
     }
 
-
     /// Validates and returns the policy type to store, handling backward compatibility.
     ///
     /// Pre-T1: Converts any value >= 2 to 255 (__Invalid) to match original ABI decoding
     /// behavior where unknown enum values became __Invalid(255).
     /// T1+: Only allows WHITELIST and BLACKLIST; COMPOUND must use createCompoundPolicy.
-    fn validate_simple_policy_type(
-        &self,
-        policy_type: ITIP403Registry::PolicyType,
-    ) -> Result<u8> {
+    fn validate_simple_policy_type(&self, policy_type: ITIP403Registry::PolicyType) -> Result<u8> {
         let policy_type = policy_type as u8;
         if self.storage.spec().is_t1() {
             if policy_type >= 2 {
@@ -243,13 +239,7 @@ impl TIP403Registry {
         )?;
 
         // Store policy data
-        self.set_policy_data(
-            new_policy_id,
-            PolicyData {
-                policy_type,
-                admin,
-            },
-        )?;
+        self.set_policy_data(new_policy_id, PolicyData { policy_type, admin })?;
 
         // Set initial accounts - only emit events for valid policy types
         // Pre-T1 with invalid types: accounts are added but no events emitted (matches original)
@@ -1365,8 +1355,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t1_create_policy_with_accounts_invalid_type_adds_accounts_no_events(
-    ) -> eyre::Result<()> {
+    fn test_pre_t1_create_policy_with_accounts_invalid_type_adds_accounts_no_events()
+    -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         let admin = Address::random();
         let account1 = Address::random();
