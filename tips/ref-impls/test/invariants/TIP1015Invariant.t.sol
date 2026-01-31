@@ -168,13 +168,13 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         vm.startPrank(admin);
 
-        vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyDoesNotExist.selector, nonExistentPolicy));
+        vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy));
         registry.createCompoundPolicy(nonExistentPolicy, whitelistPolicy, whitelistPolicy);
 
-        vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyDoesNotExist.selector, nonExistentPolicy));
+        vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy));
         registry.createCompoundPolicy(whitelistPolicy, nonExistentPolicy, whitelistPolicy);
 
-        vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyDoesNotExist.selector, nonExistentPolicy));
+        vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy));
         registry.createCompoundPolicy(whitelistPolicy, whitelistPolicy, nonExistentPolicy);
 
         vm.stopPrank();

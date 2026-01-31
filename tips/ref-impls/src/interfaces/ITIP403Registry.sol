@@ -36,10 +36,6 @@ interface ITIP403Registry {
     /// @notice TIP-1015: Error when a compound policy references a non-simple policy
     error PolicyNotSimple();
 
-    /// @notice TIP-1015: Error when a referenced policy does not exist
-    /// @param policyId The policy ID that was not found
-    error PolicyDoesNotExist(uint64 policyId);
-
     /// @notice Emitted when a policy's admin is updated
     /// @param policyId The ID of the policy that was updated
     /// @param updater The address that performed the update

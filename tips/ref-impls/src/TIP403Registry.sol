@@ -248,7 +248,7 @@ contract TIP403Registry is ITIP403Registry {
             return;
         }
 
-        require(policyId < policyIdCounter, PolicyDoesNotExist(policyId));
+        require(policyId < policyIdCounter, PolicyNotFound(policyId));
 
         PolicyData memory data = _policyData[policyId];
         require(data.policyType != PolicyType.COMPOUND, PolicyNotSimple());
