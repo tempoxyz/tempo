@@ -19,6 +19,7 @@ crate::sol! {
             Secp256k1,
             P256,
             WebAuthn,
+            Multisig,
         }
 
         /// Token spending limit structure

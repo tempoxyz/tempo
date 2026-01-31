@@ -12117,6 +12117,7 @@ dependencies = [
  "alloy-serde",
  "alloy-signer",
  "alloy-signer-local",
+ "alloy-sol-types",
  "arbitrary",
  "base64 0.22.1",
  "derive_more",
