@@ -83,7 +83,7 @@ impl TIP403Registry {
         if !self.policy_exists(ITIP403Registry::policyExistsCall {
             policyId: call.policyId,
         })? {
-            return Err(TIP403RegistryError::policy_not_found().into());
+            return Err(self.policy_not_found_error(call.policyId));
         }
 
         let data = self.get_policy_data(call.policyId)?;
@@ -317,6 +317,17 @@ impl TIP403Registry {
         self.policy_set[policy_id][account].write(value)
     }
 
+    /// Returns the appropriate PolicyNotFound error based on hardfork.
+    /// Pre-T1: PolicyNotFound() (no parameter)
+    /// T1+: PolicyIdNotFound(policyId)
+    fn policy_not_found_error(&self, policy_id: u64) -> TempoPrecompileError {
+        if self.storage.spec().is_t1() {
+            TIP403RegistryError::policy_id_not_found(policy_id).into()
+        } else {
+            TIP403RegistryError::policy_not_found().into()
+        }
+    }
+
     fn is_authorized_internal(&self, policy_id: u64, user: Address) -> Result<bool> {
         // Special case for always-allow and always-reject policies
         if policy_id < 2 {
@@ -348,6 +359,7 @@ mod tests {
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
     use rand::Rng;
+    use tempo_chainspec::TempoHardfork;
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {
@@ -488,8 +500,8 @@ mod tests {
     }
 
     #[test]
-    fn test_policy_data_reverts_for_non_existent_policy() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_policy_data_reverts_for_non_existent_policy_pre_t1() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();
 
@@ -497,12 +509,35 @@ mod tests {
             let result = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 100 });
             assert!(result.is_err());
 
-            // Verify the error is PolicyNotFound
+            // Verify the error is PolicyNotFound (no parameter, pre-T1)
             let err = result.unwrap_err();
             assert!(matches!(
                 err,
                 crate::error::TempoPrecompileError::TIP403RegistryError(
                     TIP403RegistryError::PolicyNotFound(_)
+                )
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_policy_data_reverts_for_non_existent_policy_t1() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+
+            // Test that querying a non-existent policy ID reverts
+            let result = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 100 });
+            assert!(result.is_err());
+
+            // Verify the error is PolicyIdNotFound (with policy ID, T1+)
+            let err = result.unwrap_err();
+            assert!(matches!(
+                err,
+                crate::error::TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::PolicyIdNotFound(_)
                 )
             ));
 
