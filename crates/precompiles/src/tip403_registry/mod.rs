@@ -83,7 +83,7 @@ impl TIP403Registry {
         if !self.policy_exists(ITIP403Registry::policyExistsCall {
             policyId: call.policyId,
         })? {
-            return Err(TIP403RegistryError::policy_not_found(call.policyId).into());
+            return Err(TIP403RegistryError::policy_not_found().into());
         }
 
         let data = self.get_policy_data(call.policyId)?;
