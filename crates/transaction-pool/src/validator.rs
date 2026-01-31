@@ -878,7 +878,7 @@ pub fn ensure_intrinsic_gas_tempo_tx(
     );
 
     // TIP-1000: Storage pricing updates for launch
-    // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+    // EIP-7702 authorization list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
     // no need for v1 fork check as gas_params would be zero
     for auth in tx.authorization_list().unwrap_or_default() {
         if auth.nonce == 0 {

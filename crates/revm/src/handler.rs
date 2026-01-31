@@ -1218,7 +1218,7 @@ where
                 tx.authorization_list_len() as u64,
             );
             // TIP-1000: Storage pricing updates for launch
-            // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+            // EIP-7702 authorization list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
             // no need for v1 fork check as gas_params would be zero
             for auth in tx.authorization_list() {
                 if auth.nonce == 0 {
@@ -1344,7 +1344,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     for auth in authorization_list {
         gas.initial_gas += tempo_signature_verification_gas(auth.signature());
         // TIP-1000: Storage pricing updates for launch
-        // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+        // EIP-7702 authorization list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
         if auth.nonce == 0 {
             gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
         }
