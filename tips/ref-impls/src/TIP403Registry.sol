@@ -151,7 +151,7 @@ contract TIP403Registry is ITIP403Registry {
         view
         returns (PolicyType policyType, address admin)
     {
-        require(policyExists(policyId), PolicyNotFound());
+        require(policyExists(policyId), PolicyNotFound(policyId));
 
         PolicyData memory data = _policyData[policyId];
         return (data.policyType, data.admin);
@@ -248,7 +248,7 @@ contract TIP403Registry is ITIP403Registry {
             return;
         }
 
-        require(policyId < policyIdCounter, PolicyDoesNotExist());
+        require(policyId < policyIdCounter, PolicyDoesNotExist(policyId));
 
         PolicyData memory data = _policyData[policyId];
         require(data.policyType != PolicyType.COMPOUND, PolicyNotSimple());
