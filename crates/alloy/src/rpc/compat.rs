@@ -283,6 +283,15 @@ fn create_mock_primitive_signature(
                 pub_key_y: alloy_primitives::B256::ZERO,
             })
         }
+        SignatureType::EvmContract => {
+            // EvmContract keys don't use cryptographic signatures - they use contract calls.
+            // For gas estimation, return a minimal secp256k1 signature as placeholder.
+            PrimitiveSignature::Secp256k1(Signature::new(
+                alloy_primitives::U256::ZERO,
+                alloy_primitives::U256::ZERO,
+                false,
+            ))
+        }
     }
 }
 

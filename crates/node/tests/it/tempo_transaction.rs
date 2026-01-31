@@ -268,6 +268,7 @@ fn create_signed_key_authorization(
         key_id: Address::random(), // Random key being authorized
         expiry: None,              // Never expires
         limits,
+        contract_salt: None,
     };
 
     // Sign the key authorization
@@ -594,6 +595,7 @@ fn create_key_authorization(
         key_id: access_key_addr,
         expiry,
         limits: spending_limits,
+        contract_salt: None,
     };
 
     // Root key signs the authorization
@@ -3403,6 +3405,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         key_id: access_key_addr,
         expiry: None, // Never expires
         limits: Some(spending_limits.clone()),
+        contract_salt: None,
     }
     .signature_hash();
 
@@ -3416,6 +3419,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         key_id: access_key_addr, // Address derived from P256 public key
         expiry: None,            // Never expires
         limits: Some(spending_limits),
+        contract_salt: None,
     }
     .into_signed(PrimitiveSignature::Secp256k1(root_auth_signature));
 
@@ -5254,6 +5258,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         key_id: addr_3,
         expiry: None, // Never expires
         limits: Some(spending_limits.clone()),
+        contract_salt: None,
     }
     .signature_hash();
 
@@ -5270,6 +5275,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         key_id: addr_3,
         expiry: None, // Never expires
         limits: Some(spending_limits.clone()),
+        contract_salt: None,
     }
     .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: B256::from_slice(&wrong_sig_bytes[0..32]),
