@@ -16,6 +16,18 @@ contract TIP403Registry is ITIP403Registry {
     mapping(uint64 => mapping(address => bool)) internal policySet;
 
     /*//////////////////////////////////////////////////////////////
+                      TIP-1015: COMPOUND POLICY STORAGE
+    //////////////////////////////////////////////////////////////*/
+
+    struct CompoundPolicyData {
+        uint64 senderPolicyId;
+        uint64 recipientPolicyId;
+        uint64 mintRecipientPolicyId;
+    }
+
+    mapping(uint64 => CompoundPolicyData) internal _compoundPolicyData;
+
+    /*//////////////////////////////////////////////////////////////
                       GENERAL POLICY ADMINISTRATION
     //////////////////////////////////////////////////////////////*/
 
@@ -23,6 +35,12 @@ contract TIP403Registry is ITIP403Registry {
         public
         returns (uint64 newPolicyId)
     {
+        // Only allow WHITELIST or BLACKLIST - use createCompoundPolicy for COMPOUND
+        require(
+            policyType == PolicyType.WHITELIST || policyType == PolicyType.BLACKLIST,
+            IncompatiblePolicyType()
+        );
+
         _policyData[newPolicyId = policyIdCounter++] =
             PolicyData({ policyType: policyType, admin: admin });
 
@@ -35,6 +53,12 @@ contract TIP403Registry is ITIP403Registry {
         PolicyType policyType,
         address[] calldata accounts
     ) public returns (uint64 newPolicyId) {
+        // Only allow WHITELIST or BLACKLIST - use createCompoundPolicy for COMPOUND
+        require(
+            policyType == PolicyType.WHITELIST || policyType == PolicyType.BLACKLIST,
+            IncompatiblePolicyType()
+        );
+
         newPolicyId = policyIdCounter++;
 
         _policyData[newPolicyId] = PolicyData({ policyType: policyType, admin: admin });
@@ -112,6 +136,11 @@ contract TIP403Registry is ITIP403Registry {
 
         PolicyData memory data = _policyData[policyId];
 
+        // TIP-1015: For compound policies, check both sender and recipient
+        if (data.policyType == PolicyType.COMPOUND) {
+            return isAuthorizedSender(policyId, user) && isAuthorizedRecipient(policyId, user);
+        }
+
         return data.policyType == PolicyType.WHITELIST
             ? policySet[policyId][user]
             : !policySet[policyId][user];
@@ -126,6 +155,113 @@ contract TIP403Registry is ITIP403Registry {
 
         PolicyData memory data = _policyData[policyId];
         return (data.policyType, data.admin);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                      TIP-1015: COMPOUND POLICIES
+    //////////////////////////////////////////////////////////////*/
+
+    function createCompoundPolicy(
+        uint64 senderPolicyId,
+        uint64 recipientPolicyId,
+        uint64 mintRecipientPolicyId
+    ) external returns (uint64 newPolicyId) {
+        _validateSimplePolicy(senderPolicyId);
+        _validateSimplePolicy(recipientPolicyId);
+        _validateSimplePolicy(mintRecipientPolicyId);
+
+        newPolicyId = policyIdCounter++;
+
+        _policyData[newPolicyId] =
+            PolicyData({ policyType: PolicyType.COMPOUND, admin: address(0) });
+
+        _compoundPolicyData[newPolicyId] = CompoundPolicyData({
+            senderPolicyId: senderPolicyId,
+            recipientPolicyId: recipientPolicyId,
+            mintRecipientPolicyId: mintRecipientPolicyId
+        });
+
+        emit CompoundPolicyCreated(
+            newPolicyId, msg.sender, senderPolicyId, recipientPolicyId, mintRecipientPolicyId
+        );
+    }
+
+    function isAuthorizedSender(uint64 policyId, address user) public view returns (bool) {
+        if (policyId < 2) {
+            return policyId == 1;
+        }
+
+        PolicyData memory data = _policyData[policyId];
+
+        if (data.policyType == PolicyType.COMPOUND) {
+            return isAuthorized(_compoundPolicyData[policyId].senderPolicyId, user);
+        }
+
+        return _isAuthorizedSimple(policyId, user, data);
+    }
+
+    function isAuthorizedRecipient(uint64 policyId, address user) public view returns (bool) {
+        if (policyId < 2) {
+            return policyId == 1;
+        }
+
+        PolicyData memory data = _policyData[policyId];
+
+        if (data.policyType == PolicyType.COMPOUND) {
+            return isAuthorized(_compoundPolicyData[policyId].recipientPolicyId, user);
+        }
+
+        return _isAuthorizedSimple(policyId, user, data);
+    }
+
+    function isAuthorizedMintRecipient(uint64 policyId, address user) public view returns (bool) {
+        if (policyId < 2) {
+            return policyId == 1;
+        }
+
+        PolicyData memory data = _policyData[policyId];
+
+        if (data.policyType == PolicyType.COMPOUND) {
+            return isAuthorized(_compoundPolicyData[policyId].mintRecipientPolicyId, user);
+        }
+
+        return _isAuthorizedSimple(policyId, user, data);
+    }
+
+    function compoundPolicyData(uint64 policyId)
+        external
+        view
+        returns (uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId)
+    {
+        require(_policyData[policyId].policyType == PolicyType.COMPOUND, IncompatiblePolicyType());
+
+        CompoundPolicyData memory data = _compoundPolicyData[policyId];
+        return (data.senderPolicyId, data.recipientPolicyId, data.mintRecipientPolicyId);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                      TIP-1015: INTERNAL HELPERS
+    //////////////////////////////////////////////////////////////*/
+
+    function _validateSimplePolicy(uint64 policyId) internal view {
+        if (policyId < 2) {
+            return;
+        }
+
+        require(policyId < policyIdCounter, PolicyNotFound());
+
+        PolicyData memory data = _policyData[policyId];
+        require(data.policyType != PolicyType.COMPOUND, PolicyNotSimple());
+    }
+
+    function _isAuthorizedSimple(uint64 policyId, address user, PolicyData memory data)
+        internal
+        view
+        returns (bool)
+    {
+        return data.policyType == PolicyType.WHITELIST
+            ? policySet[policyId][user]
+            : !policySet[policyId][user];
     }
 
 }
