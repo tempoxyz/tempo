@@ -201,7 +201,7 @@ impl TIP403Registry {
 
         // Store policy data
         self.policy_records[new_policy_id].base.write(PolicyData {
-            policy_type: policy_type,
+            policy_type,
             admin: call.admin,
         })?;
 
