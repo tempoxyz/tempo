@@ -1,0 +1,26 @@
+[package]
+name = "tempo-storage-stats"
+description = "CLI tool to analyze storage consumption by address in the Tempo database"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+clap.workspace = true
+eyre.workspace = true
+indicatif.workspace = true
+rayon.workspace = true
+reth-db.workspace = true
+reth-db-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "storage-stats"
+path = "src/main.rs"
