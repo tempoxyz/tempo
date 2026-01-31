@@ -162,32 +162,35 @@ impl TIP403Registry {
         })
     }
 
+    /// Validates and returns the policy type to store, handling backward compatibility.
+    ///
+    /// Pre-T1: Converts any value >= 2 to 255 (__Invalid) to match original ABI decoding
+    /// behavior where unknown enum values became __Invalid(255).
+    /// T1+: Only allows WHITELIST and BLACKLIST; COMPOUND must use createCompoundPolicy.
+    fn validate_policy_type(
+        &self,
+        policy_type: ITIP403Registry::PolicyType,
+    ) -> Result<u8> {
+        if !self.storage.spec().is_t1() {
+            Ok(if policy_type as u8 >= 2 { 255u8 } else { policy_type as u8 })
+        } else {
+            if !matches!(
+                policy_type,
+                ITIP403Registry::PolicyType::WHITELIST | ITIP403Registry::PolicyType::BLACKLIST
+            ) {
+                return Err(TIP403RegistryError::incompatible_policy_type().into());
+            }
+            Ok(policy_type as u8)
+        }
+    }
+
     // State-changing functions
     pub fn create_policy(
         &mut self,
         msg_sender: Address,
         call: ITIP403Registry::createPolicyCall,
     ) -> Result<u64> {
-        // Determine the policy_type to store, handling backward compatibility
-        let policy_type_to_store = if !self.storage.spec().is_t1() {
-            // Pre-T1: Convert any value >= 2 to 255 (__Invalid) to match original ABI
-            // decoding behavior where unknown enum values became __Invalid(255).
-            // This preserves re-execution compatibility for historical transactions.
-            if call.policyType as u8 >= 2 {
-                255u8
-            } else {
-                call.policyType as u8
-            }
-        } else {
-            // T1+: Only allow WHITELIST and BLACKLIST; COMPOUND must use createCompoundPolicy
-            if !matches!(
-                call.policyType,
-                ITIP403Registry::PolicyType::WHITELIST | ITIP403Registry::PolicyType::BLACKLIST
-            ) {
-                return Err(TIP403RegistryError::incompatible_policy_type().into());
-            }
-            call.policyType as u8
-        };
+        let policy_type_to_store = self.validate_policy_type(call.policyType)?;
 
         let new_policy_id = self.policy_id_counter()?;
 
@@ -230,26 +233,7 @@ impl TIP403Registry {
         call: ITIP403Registry::createPolicyWithAccountsCall,
     ) -> Result<u64> {
         let (admin, policy_type) = (call.admin, call.policyType);
-
-        // Determine the policy_type to store, handling backward compatibility
-        let policy_type_to_store = if !self.storage.spec().is_t1() {
-            // Pre-T1: Convert any value >= 2 to 255 (__Invalid) to match original ABI
-            // decoding behavior where unknown enum values became __Invalid(255).
-            if policy_type as u8 >= 2 {
-                255u8
-            } else {
-                policy_type as u8
-            }
-        } else {
-            // T1+: Only allow WHITELIST and BLACKLIST; COMPOUND must use createCompoundPolicy
-            if !matches!(
-                policy_type,
-                ITIP403Registry::PolicyType::WHITELIST | ITIP403Registry::PolicyType::BLACKLIST
-            ) {
-                return Err(TIP403RegistryError::incompatible_policy_type().into());
-            }
-            policy_type as u8
-        };
+        let policy_type_to_store = self.validate_policy_type(policy_type)?;
 
         let new_policy_id = self.policy_id_counter()?;
 
@@ -297,7 +281,7 @@ impl TIP403Registry {
                 }
                 ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
                     // Pre-T1: This is unreachable since we already returned error above for T1+
-                    // and pre-T1 stores as __Invalid but continues execution
+                    return Err(TIP403RegistryError::incompatible_policy_type().into());
                 }
             }
         }
