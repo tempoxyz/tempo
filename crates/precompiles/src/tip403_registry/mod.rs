@@ -280,6 +280,7 @@ impl TIP403Registry {
                 ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
                     // Pre-T1: no events emitted for invalid types, accounts still added
                     // T1+: unreachable since validate_policy_type already rejected
+                    return Err(TIP403RegistryError::incompatible_policy_type().into());
                 }
             }
         }
