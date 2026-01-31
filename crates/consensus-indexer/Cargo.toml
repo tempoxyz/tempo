@@ -1,0 +1,30 @@
+[package]
+name = "consensus-indexer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+eyre.workspace = true
+jsonrpsee = { workspace = true, features = ["server", "client"] }
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+alloy-primitives.workspace = true
+tempo-node.workspace = true
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+tempo-commonware-node.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true
+tempo-node.workspace = true
+
+[lints]
+workspace = true
