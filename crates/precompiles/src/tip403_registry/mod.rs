@@ -201,12 +201,13 @@ impl TIP403Registry {
             admin: call.admin,
         })?;
 
-        // Emit events
+        // Emit events - use validated policy_type (not call.policyType) to ensure
+        // consistent event emission across hardforks
         self.emit_event(TIP403RegistryEvent::PolicyCreated(
             ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
                 updater: msg_sender,
-                policyType: call.policyType,
+                policyType: policy_type.try_into().unwrap_or(ITIP403Registry::PolicyType::__Invalid),
             },
         ))?;
 
@@ -274,12 +275,13 @@ impl TIP403Registry {
             }
         }
 
-        // Emit policy creation events
+        // Emit policy creation events - use validated policy_type (not call.policyType)
+        // to ensure consistent event emission across hardforks
         self.emit_event(TIP403RegistryEvent::PolicyCreated(
             ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
                 updater: msg_sender,
-                policyType: call.policyType,
+                policyType: policy_type.try_into().unwrap_or(ITIP403Registry::PolicyType::__Invalid),
             },
         ))?;
 
