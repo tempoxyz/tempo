@@ -28,7 +28,8 @@ contract TIP403Registry {
     uint64 public policyIdCounter;
 
     /// Mapping of policy ID to policy record (internal, not exposed in ABI)
-    mapping(uint64 => PolicyRecord) internal policyRecords;
+    /// Field named `policyData` for storage slot compatibility with pre-TIP-1015 layout
+    mapping(uint64 => PolicyRecord) internal policyData;
 
     /// Nested mapping for policy sets: policy_id -> address -> is_in_set
     /// Used for whitelist/blacklist entries
