@@ -665,7 +665,7 @@ contract TIP20Test is BaseTest {
         }
     }
 
-    function testFuzz_ChangeTransferPolicyId_RevertsIf_PolicyDoesNotExist(uint64 policyId) public {
+    function testFuzz_ChangeTransferPolicyId_RevertsIf_PolicyNotFound(uint64 policyId) public {
         vm.assume(policyId >= registry.policyIdCounter());
         vm.prank(admin);
         try token.changeTransferPolicyId(policyId) {

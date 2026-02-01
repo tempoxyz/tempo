@@ -4,7 +4,7 @@
       "storage-layout": {
         "storage": [
           {
-            "astId": 10,
+            "astId": 24,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
             "label": "policyIdCounter",
             "offset": 0,
@@ -12,15 +12,15 @@
             "type": "t_uint64"
           },
           {
-            "astId": 16,
+            "astId": 30,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
-            "label": "policyData",
+            "label": "policyRecords",
             "offset": 0,
             "slot": "1",
-            "type": "t_mapping(t_uint64,t_struct(PolicyData)7_storage)"
+            "type": "t_mapping(t_uint64,t_struct(PolicyRecord)21_storage)"
           },
           {
-            "astId": 23,
+            "astId": 37,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
             "label": "policySet",
             "offset": 0,
@@ -53,12 +53,43 @@
             "numberOfBytes": "32",
             "value": "t_mapping(t_address,t_bool)"
           },
-          "t_mapping(t_uint64,t_struct(PolicyData)7_storage)": {
+          "t_mapping(t_uint64,t_struct(PolicyRecord)21_storage)": {
             "encoding": "mapping",
             "key": "t_uint64",
-            "label": "mapping(uint64 => struct TIP403Registry.PolicyData)",
+            "label": "mapping(uint64 => struct TIP403Registry.PolicyRecord)",
             "numberOfBytes": "32",
-            "value": "t_struct(PolicyData)7_storage"
+            "value": "t_struct(PolicyRecord)21_storage"
+          },
+          "t_struct(CompoundPolicyData)14_storage": {
+            "encoding": "inplace",
+            "label": "struct TIP403Registry.CompoundPolicyData",
+            "members": [
+              {
+                "astId": 9,
+                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+                "label": "senderPolicyId",
+                "offset": 0,
+                "slot": "0",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 11,
+                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+                "label": "recipientPolicyId",
+                "offset": 8,
+                "slot": "0",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 13,
+                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+                "label": "mintRecipientPolicyId",
+                "offset": 16,
+                "slot": "0",
+                "type": "t_uint64"
+              }
+            ],
+            "numberOfBytes": "32"
           },
           "t_struct(PolicyData)7_storage": {
             "encoding": "inplace",
@@ -83,6 +114,29 @@
             ],
             "numberOfBytes": "32"
           },
+          "t_struct(PolicyRecord)21_storage": {
+            "encoding": "inplace",
+            "label": "struct TIP403Registry.PolicyRecord",
+            "members": [
+              {
+                "astId": 17,
+                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+                "label": "base",
+                "offset": 0,
+                "slot": "0",
+                "type": "t_struct(PolicyData)7_storage"
+              },
+              {
+                "astId": 20,
+                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+                "label": "compound",
+                "offset": 0,
+                "slot": "1",
+                "type": "t_struct(CompoundPolicyData)14_storage"
+              }
+            ],
+            "numberOfBytes": "64"
+          },
           "t_uint64": {
             "encoding": "inplace",
             "label": "uint64",
@@ -97,5 +151,5 @@
       }
     }
   },
-  "version": "0.8.30+commit.73712a01.Darwin.appleclang"
+  "version": "0.8.33+commit.64118f21.Darwin.appleclang"
 }
