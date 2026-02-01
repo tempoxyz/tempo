@@ -11,39 +11,34 @@ use utils::*;
 
 #[test]
 fn test_tip403_registry_layout() {
-    use tempo_precompiles::tip403_registry::{__packing_policy_record::*, slots};
+    use tempo_precompiles::tip403_registry::slots;
 
     let sol_path = testdata("tip403_registry.sol");
     let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
-    let rust_layout = layout_fields!(policy_id_counter, policy_records, policy_set);
+    let rust_layout =
+        layout_fields!(policy_id_counter, policy_data, policy_set, compound_policy_data);
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
     }
 
-    // Verify `PolicyRecord` struct members (nested under policyRecords mapping)
-    let base_slot = slots::POLICY_RECORDS;
-    let rust_policy_record = struct_fields!(base_slot, base, compound);
-    if let Err(errors) = compare_struct_members(&solc_layout, "policyRecords", &rust_policy_record)
-    {
-        panic_layout_mismatch("PolicyRecord struct layout", errors, &sol_path);
-    }
-
-    // Verify `PolicyData` struct members (nested in PolicyRecord.base)
+    // Verify `PolicyData` struct members (nested in policyData mapping)
     {
         use tempo_precompiles::tip403_registry::__packing_policy_data::*;
+        let base_slot = slots::POLICY_DATA;
         let rust_policy_data = struct_fields!(base_slot, policy_type, admin);
         if let Err(errors) =
-            compare_nested_struct_type(&solc_layout, "PolicyData", &rust_policy_data)
+            compare_struct_members(&solc_layout, "policyData", &rust_policy_data)
         {
             panic_layout_mismatch("PolicyData struct layout", errors, &sol_path);
         }
     }
 
-    // Verify `CompoundPolicyData` struct members (nested in PolicyRecord.compound)
+    // Verify `CompoundPolicyData` struct members (nested in compoundPolicyData mapping)
     {
         use tempo_precompiles::tip403_registry::__packing_compound_policy_data::*;
+        let base_slot = slots::COMPOUND_POLICY_DATA;
         let rust_compound = struct_fields!(
             base_slot,
             sender_policy_id,
@@ -51,7 +46,7 @@ fn test_tip403_registry_layout() {
             mint_recipient_policy_id
         );
         if let Err(errors) =
-            compare_nested_struct_type(&solc_layout, "CompoundPolicyData", &rust_compound)
+            compare_struct_members(&solc_layout, "compoundPolicyData", &rust_compound)
         {
             panic_layout_mismatch("CompoundPolicyData struct layout", errors, &sol_path);
         }
@@ -221,19 +216,20 @@ fn export_all_storage_constants() {
 
     // TIP403 Registry
     {
-        use tempo_precompiles::tip403_registry::{__packing_policy_record::*, slots};
+        use tempo_precompiles::tip403_registry::slots;
 
-        let fields = layout_fields!(policy_id_counter, policy_records, policy_set);
-        let base_slot = slots::POLICY_RECORDS;
-        let policy_record_struct = struct_fields!(base_slot, base, compound);
+        let fields =
+            layout_fields!(policy_id_counter, policy_data, policy_set, compound_policy_data);
 
         let policy_data_struct = {
             use tempo_precompiles::tip403_registry::__packing_policy_data::*;
+            let base_slot = slots::POLICY_DATA;
             struct_fields!(base_slot, policy_type, admin)
         };
 
         let compound_policy_data_struct = {
             use tempo_precompiles::tip403_registry::__packing_compound_policy_data::*;
+            let base_slot = slots::COMPOUND_POLICY_DATA;
             struct_fields!(
                 base_slot,
                 sender_policy_id,
@@ -247,7 +243,6 @@ fn export_all_storage_constants() {
             json!({
                 "fields": fields.iter().map(field_to_json).collect::<Vec<_>>(),
                 "structs": {
-                    "policyRecords": policy_record_struct.iter().map(field_to_json).collect::<Vec<_>>(),
                     "policyData": policy_data_struct.iter().map(field_to_json).collect::<Vec<_>>(),
                     "compoundPolicyData": compound_policy_data_struct.iter().map(field_to_json).collect::<Vec<_>>()
                 }

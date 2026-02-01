@@ -17,20 +17,19 @@ contract TIP403Registry {
         uint64 mintRecipientPolicyId;
     }
 
-    struct PolicyRecord {
-        PolicyData base;
-        CompoundPolicyData compound;
-    }
-
     // ========== Storage ==========
 
     /// Counter for policy IDs
     uint64 public policyIdCounter;
 
-    /// Mapping of policy ID to policy record (internal, not exposed in ABI)
-    mapping(uint64 => PolicyRecord) internal policyRecords;
+    /// Mapping of policy ID to policy data
+    mapping(uint64 => PolicyData) internal policyData;
 
     /// Nested mapping for policy sets: policy_id -> address -> is_in_set
     /// Used for whitelist/blacklist entries
     mapping(uint64 => mapping(address => bool)) public policySet;
+
+    /// Compound policy data (TIP-1015). Only relevant when policyType == COMPOUND.
+    /// Stored in a separate mapping to preserve storage slot compatibility for policyData.
+    mapping(uint64 => CompoundPolicyData) internal compoundPolicyData;
 }

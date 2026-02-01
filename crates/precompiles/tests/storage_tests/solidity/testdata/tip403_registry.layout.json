@@ -4,7 +4,7 @@
       "storage-layout": {
         "storage": [
           {
-            "astId": 24,
+            "astId": 19,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
             "label": "policyIdCounter",
             "offset": 0,
@@ -12,20 +12,28 @@
             "type": "t_uint64"
           },
           {
-            "astId": 30,
+            "astId": 25,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
-            "label": "policyRecords",
+            "label": "policyData",
             "offset": 0,
             "slot": "1",
-            "type": "t_mapping(t_uint64,t_struct(PolicyRecord)21_storage)"
+            "type": "t_mapping(t_uint64,t_struct(PolicyData)7_storage)"
           },
           {
-            "astId": 37,
+            "astId": 32,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
             "label": "policySet",
             "offset": 0,
             "slot": "2",
             "type": "t_mapping(t_uint64,t_mapping(t_address,t_bool))"
+          },
+          {
+            "astId": 38,
+            "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+            "label": "compoundPolicyData",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_mapping(t_uint64,t_struct(CompoundPolicyData)14_storage)"
           }
         ],
         "types": {
@@ -53,12 +61,19 @@
             "numberOfBytes": "32",
             "value": "t_mapping(t_address,t_bool)"
           },
-          "t_mapping(t_uint64,t_struct(PolicyRecord)21_storage)": {
+          "t_mapping(t_uint64,t_struct(PolicyData)7_storage)": {
             "encoding": "mapping",
             "key": "t_uint64",
-            "label": "mapping(uint64 => struct TIP403Registry.PolicyRecord)",
+            "label": "mapping(uint64 => struct TIP403Registry.PolicyData)",
             "numberOfBytes": "32",
-            "value": "t_struct(PolicyRecord)21_storage"
+            "value": "t_struct(PolicyData)7_storage"
+          },
+          "t_mapping(t_uint64,t_struct(CompoundPolicyData)14_storage)": {
+            "encoding": "mapping",
+            "key": "t_uint64",
+            "label": "mapping(uint64 => struct TIP403Registry.CompoundPolicyData)",
+            "numberOfBytes": "32",
+            "value": "t_struct(CompoundPolicyData)14_storage"
           },
           "t_struct(CompoundPolicyData)14_storage": {
             "encoding": "inplace",
@@ -113,29 +128,6 @@
               }
             ],
             "numberOfBytes": "32"
-          },
-          "t_struct(PolicyRecord)21_storage": {
-            "encoding": "inplace",
-            "label": "struct TIP403Registry.PolicyRecord",
-            "members": [
-              {
-                "astId": 17,
-                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
-                "label": "base",
-                "offset": 0,
-                "slot": "0",
-                "type": "t_struct(PolicyData)7_storage"
-              },
-              {
-                "astId": 20,
-                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
-                "label": "compound",
-                "offset": 0,
-                "slot": "1",
-                "type": "t_struct(CompoundPolicyData)14_storage"
-              }
-            ],
-            "numberOfBytes": "64"
           },
           "t_uint64": {
             "encoding": "inplace",
