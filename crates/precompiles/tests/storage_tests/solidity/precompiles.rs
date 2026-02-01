@@ -17,8 +17,12 @@ fn test_tip403_registry_layout() {
     let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
-    let rust_layout =
-        layout_fields!(policy_id_counter, policy_data, policy_set, compound_policy_data);
+    let rust_layout = layout_fields!(
+        policy_id_counter,
+        policy_data,
+        policy_set,
+        compound_policy_data
+    );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
     }
@@ -28,9 +32,7 @@ fn test_tip403_registry_layout() {
         use tempo_precompiles::tip403_registry::__packing_policy_data::*;
         let base_slot = slots::POLICY_DATA;
         let rust_policy_data = struct_fields!(base_slot, policy_type, admin);
-        if let Err(errors) =
-            compare_struct_members(&solc_layout, "policyData", &rust_policy_data)
-        {
+        if let Err(errors) = compare_struct_members(&solc_layout, "policyData", &rust_policy_data) {
             panic_layout_mismatch("PolicyData struct layout", errors, &sol_path);
         }
     }
@@ -218,8 +220,12 @@ fn export_all_storage_constants() {
     {
         use tempo_precompiles::tip403_registry::slots;
 
-        let fields =
-            layout_fields!(policy_id_counter, policy_data, policy_set, compound_policy_data);
+        let fields = layout_fields!(
+            policy_id_counter,
+            policy_data,
+            policy_set,
+            compound_policy_data
+        );
 
         let policy_data_struct = {
             use tempo_precompiles::tip403_registry::__packing_policy_data::*;

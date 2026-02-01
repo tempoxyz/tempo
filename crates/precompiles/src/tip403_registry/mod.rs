@@ -190,10 +190,13 @@ impl TIP403Registry {
         )?;
 
         // Store policy data
-        self.set_policy_data(new_policy_id, PolicyData {
-            policy_type,
-            admin: call.admin,
-        })?;
+        self.set_policy_data(
+            new_policy_id,
+            PolicyData {
+                policy_type,
+                admin: call.admin,
+            },
+        )?;
 
         self.emit_event(TIP403RegistryEvent::PolicyCreated(
             ITIP403Registry::PolicyCreated {
@@ -399,10 +402,13 @@ impl TIP403Registry {
         )?;
 
         // Store policy data with COMPOUND type
-        self.set_policy_data(new_policy_id, PolicyData {
-            policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-            admin: Address::ZERO,
-        })?;
+        self.set_policy_data(
+            new_policy_id,
+            PolicyData {
+                policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                admin: Address::ZERO,
+            },
+        )?;
 
         // Store compound policy data separately
         self.compound_policy_data[new_policy_id].write(CompoundPolicyData {

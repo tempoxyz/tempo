@@ -295,6 +295,7 @@ pub(super) fn compare_struct_members(
 /// * `solc_layout` - The parsed Solidity storage layout
 /// * `type_name_pattern` - A substring to match against type names (e.g., "PolicyData")
 /// * `rust_member_fields` - The expected Rust member layout from `struct_fields!`
+#[allow(dead_code)]
 pub(super) fn compare_nested_struct_type(
     solc_layout: &StorageLayout,
     type_name_pattern: &str,
