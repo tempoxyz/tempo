@@ -1618,8 +1618,6 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            // Pre-T1: create policy with COMPOUND (value 2) - should store as 255
-            // and emit PolicyCreated with policyType = __Invalid (255)
             let policy_id = registry.create_policy(
                 admin,
                 ITIP403Registry::createPolicyCall {
@@ -1628,14 +1626,12 @@ mod tests {
                 },
             )?;
 
-            // Verify the stored policy_type is 255
             let data = registry.get_policy_data(policy_id)?;
             assert_eq!(data.policy_type, 255u8);
 
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // Check emitted events
         let events = storage.events.get(&TIP403_REGISTRY_ADDRESS).unwrap();
         let policy_created_log = Log::new_unchecked(
             TIP403_REGISTRY_ADDRESS,
@@ -1644,12 +1640,8 @@ mod tests {
         );
         let decoded = ITIP403Registry::PolicyCreated::decode_log(&policy_created_log)?;
 
-        // Event should have policyType = __Invalid (255), NOT COMPOUND (2)
-        assert_eq!(
-            decoded.policyType,
-            ITIP403Registry::PolicyType::__Invalid,
-            "Pre-T1: PolicyCreated event should emit __Invalid (255) for policy_type >= 2"
-        );
+        // should emit 255, not 2
+        assert_eq!(decoded.policyType, ITIP403Registry::PolicyType::__Invalid);
 
         Ok(())
     }
@@ -1664,7 +1656,6 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            // Pre-T1: create policy with __Invalid (value 255) - should store as 255
             let policy_id = registry.create_policy_with_accounts(
                 admin,
                 ITIP403Registry::createPolicyWithAccountsCall {
@@ -1674,14 +1665,12 @@ mod tests {
                 },
             )?;
 
-            // Verify the stored policy_type is 255
             let data = registry.get_policy_data(policy_id)?;
             assert_eq!(data.policy_type, 255u8);
 
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // Find the PolicyCreated event (skip any account-related events)
         let events = storage.events.get(&TIP403_REGISTRY_ADDRESS).unwrap();
         let policy_created_event = events.iter().find(|e| {
             let log =
@@ -1696,11 +1685,7 @@ mod tests {
         );
         let decoded = ITIP403Registry::PolicyCreated::decode_log(&log)?;
 
-        assert_eq!(
-            decoded.policyType,
-            ITIP403Registry::PolicyType::__Invalid,
-            "Pre-T1: PolicyCreated event should emit __Invalid (255) for policy_type >= 2"
-        );
+        assert_eq!(decoded.policyType, ITIP403Registry::PolicyType::__Invalid);
 
         Ok(())
     }
@@ -1713,8 +1698,6 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            // T1+: COMPOUND (2) and __Invalid (255) should be rejected by create_policy
-            // (COMPOUND must use createCompoundPolicy instead)
             for policy_type in [
                 ITIP403Registry::PolicyType::COMPOUND,
                 ITIP403Registry::PolicyType::__Invalid,
@@ -1726,10 +1709,7 @@ mod tests {
                         policyType: policy_type,
                     },
                 );
-                assert!(
-                    result.is_err(),
-                    "T1+: create_policy should reject policy_type {policy_type:?}"
-                );
+                assert!(result.is_err());
             }
 
             Ok(())
@@ -1744,7 +1724,6 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            // Create WHITELIST policy
             registry.create_policy(
                 admin,
                 ITIP403Registry::createPolicyCall {
@@ -1753,7 +1732,6 @@ mod tests {
                 },
             )?;
 
-            // Create BLACKLIST policy
             registry.create_policy(
                 admin,
                 ITIP403Registry::createPolicyCall {
@@ -1765,33 +1743,24 @@ mod tests {
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // Check emitted events
         let events = storage.events.get(&TIP403_REGISTRY_ADDRESS).unwrap();
 
-        // First PolicyCreated should be WHITELIST
+        // events[0] = PolicyCreated, events[1] = PolicyAdminUpdated, events[2] = PolicyCreated
         let whitelist_log = Log::new_unchecked(
             TIP403_REGISTRY_ADDRESS,
             events[0].topics().to_vec(),
             events[0].data.clone(),
         );
         let whitelist_decoded = ITIP403Registry::PolicyCreated::decode_log(&whitelist_log)?;
-        assert_eq!(
-            whitelist_decoded.policyType,
-            ITIP403Registry::PolicyType::WHITELIST
-        );
+        assert_eq!(whitelist_decoded.policyType, ITIP403Registry::PolicyType::WHITELIST);
 
-        // Third event (index 2) should be the second PolicyCreated with BLACKLIST
-        // (index 1 is PolicyAdminUpdated for the first policy)
         let blacklist_log = Log::new_unchecked(
             TIP403_REGISTRY_ADDRESS,
             events[2].topics().to_vec(),
             events[2].data.clone(),
         );
         let blacklist_decoded = ITIP403Registry::PolicyCreated::decode_log(&blacklist_log)?;
-        assert_eq!(
-            blacklist_decoded.policyType,
-            ITIP403Registry::PolicyType::BLACKLIST
-        );
+        assert_eq!(blacklist_decoded.policyType, ITIP403Registry::PolicyType::BLACKLIST);
 
         Ok(())
     }
