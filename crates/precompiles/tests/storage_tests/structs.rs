@@ -290,3 +290,240 @@ proptest! {
         })?;
     }
 }
+
+mod nested_struct_sload_tests {
+    use super::*;
+    use tempo_precompiles::storage::Mapping;
+
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
+    pub struct BaseData {
+        pub policy_type: u8,
+        pub admin: Address,
+    }
+
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
+    pub struct CompoundData {
+        pub sender_policy_id: u64,
+        pub recipient_policy_id: u64,
+        pub mint_recipient_policy_id: u64,
+    }
+
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
+    pub struct NestedRecord {
+        pub base: BaseData,
+        pub compound: CompoundData,
+    }
+
+    #[contract]
+    pub struct NestedLayout {
+        pub records: Mapping<u64, NestedRecord>,
+    }
+
+    /// This test demonstrates the root cause of the gas regression:
+    /// Mappings always occupy exactly 1 slot for their base, regardless of value type.
+    /// The nested struct approach does NOT cause slot calculation differences.
+    #[test]
+    fn test_mapping_base_slots_unaffected_by_value_type() {
+        mod flat {
+            use super::*;
+
+            #[contract]
+            pub struct FlatLayout {
+                pub policy_id_counter: u64,
+                pub policy_data: Mapping<u64, BaseData>,
+                pub policy_set: Mapping<u64, Mapping<Address, bool>>,
+            }
+        }
+
+        mod nested {
+            use super::*;
+
+            #[contract]
+            pub struct NestedLayoutWithFollowing {
+                pub policy_id_counter: u64,
+                pub policy_records: Mapping<u64, NestedRecord>,
+                pub policy_set: Mapping<u64, Mapping<Address, bool>>,
+            }
+        }
+
+        // Flat layout: policy_id_counter at slot 0, policy_data at slot 1, policy_set at slot 2
+        assert_eq!(
+            flat::slots::POLICY_ID_COUNTER,
+            U256::from(0),
+            "FlatLayout: policy_id_counter should be at slot 0"
+        );
+        assert_eq!(
+            flat::slots::POLICY_DATA,
+            U256::from(1),
+            "FlatLayout: policy_data should be at slot 1"
+        );
+        assert_eq!(
+            flat::slots::POLICY_SET,
+            U256::from(2),
+            "FlatLayout: policy_set should be at slot 2"
+        );
+
+        // Nested layout: same slot assignments
+        assert_eq!(
+            nested::slots::POLICY_ID_COUNTER,
+            U256::from(0),
+            "NestedLayoutWithFollowing: policy_id_counter should be at slot 0"
+        );
+        assert_eq!(
+            nested::slots::POLICY_RECORDS,
+            U256::from(1),
+            "NestedLayoutWithFollowing: policy_records should be at slot 1"
+        );
+        assert_eq!(
+            nested::slots::POLICY_SET,
+            U256::from(2),
+            "NestedLayoutWithFollowing: policy_set should be at slot 2"
+        );
+        
+        // Both layouts have identical slot assignments!
+        // This is because Mapping<K, V>::SLOTS = 1 regardless of V's size
+    }
+
+    /// Test that the actual keccak hash for mapping lookups is identical
+    /// when using flat vs nested value types, since the base slot is the same.
+    #[test]
+    fn test_mapping_lookup_slot_hash_identical() {
+        use alloy::primitives::keccak256;
+
+        mod flat {
+            use super::*;
+
+            #[contract]
+            pub struct FlatLayout {
+                pub policy_id_counter: u64,
+                pub policy_data: Mapping<u64, BaseData>,
+                pub policy_set: Mapping<u64, Mapping<Address, bool>>,
+            }
+        }
+
+        mod nested {
+            use super::*;
+
+            #[contract]
+            pub struct NestedLayoutWithFollowing {
+                pub policy_id_counter: u64,
+                pub policy_records: Mapping<u64, NestedRecord>,
+                pub policy_set: Mapping<u64, Mapping<Address, bool>>,
+            }
+        }
+
+        // Both should have policy_set at slot 2
+        assert_eq!(flat::slots::POLICY_SET, U256::from(2));
+        assert_eq!(nested::slots::POLICY_SET, U256::from(2));
+        assert_eq!(flat::slots::POLICY_SET, nested::slots::POLICY_SET);
+
+        // Compute the actual slot hash for policy_set[42]
+        let key: u64 = 42;
+        let flat_base = flat::slots::POLICY_SET;
+        let nested_base = nested::slots::POLICY_SET;
+
+        // Slot hash = keccak256(key || base_slot)
+        let mut flat_input = [0u8; 64];
+        flat_input[24..32].copy_from_slice(&key.to_be_bytes());
+        flat_input[32..64].copy_from_slice(&flat_base.to_be_bytes::<32>());
+        let flat_slot = keccak256(&flat_input);
+
+        let mut nested_input = [0u8; 64];
+        nested_input[24..32].copy_from_slice(&key.to_be_bytes());
+        nested_input[32..64].copy_from_slice(&nested_base.to_be_bytes::<32>());
+        let nested_slot = keccak256(&nested_input);
+
+        assert_eq!(
+            flat_slot, nested_slot,
+            "The slot hash for policy_set[42] should be identical in both layouts"
+        );
+    }
+
+    /// Demonstrates SLOAD behavior for nested structs in mappings.
+    ///
+    /// This test shows that when accessing a nested field like `mapping[key].base.read()`,
+    /// the storage system correctly loads ONLY the slots for the `.base` field, not the
+    /// entire parent struct.
+    ///
+    /// This is critical for gas efficiency: if we read the entire `PolicyRecord` struct
+    /// (which includes both `base` and `compound` data), we would incur extra SLOADs
+    /// for data we don't need.
+    #[test]
+    fn test_nested_struct_partial_read_sload_count() {
+        let (mut storage, address) = setup_storage();
+        let mut layout = NestedLayout::__new(address);
+
+        StorageCtx::enter(&mut storage, || {
+            let record = NestedRecord {
+                base: BaseData {
+                    policy_type: 1,
+                    admin: test_address(0x42),
+                },
+                compound: CompoundData {
+                    sender_policy_id: 100,
+                    recipient_policy_id: 200,
+                    mint_recipient_policy_id: 300,
+                },
+            };
+
+            layout.records[1].write(record).unwrap();
+        });
+
+        storage.reset_sload_count();
+
+        StorageCtx::enter(&mut storage, || {
+            let base_data = layout.records[1].base.read().unwrap();
+            assert_eq!(base_data.policy_type, 1);
+            assert_eq!(base_data.admin, test_address(0x42));
+        });
+
+        let sload_count = storage.sload_count();
+
+        assert_eq!(
+            sload_count, 1,
+            "Reading only .base should perform 1 SLOAD (BaseData fits in one slot). \
+             Got {} SLOADs - if this is 2, the macro is loading the entire NestedRecord!",
+            sload_count
+        );
+    }
+
+    /// Demonstrates that reading the full nested struct loads all slots.
+    #[test]
+    fn test_nested_struct_full_read_sload_count() {
+        let (mut storage, address) = setup_storage();
+        let mut layout = NestedLayout::__new(address);
+
+        StorageCtx::enter(&mut storage, || {
+            let record = NestedRecord {
+                base: BaseData {
+                    policy_type: 1,
+                    admin: test_address(0x42),
+                },
+                compound: CompoundData {
+                    sender_policy_id: 100,
+                    recipient_policy_id: 200,
+                    mint_recipient_policy_id: 300,
+                },
+            };
+
+            layout.records[1].write(record).unwrap();
+        });
+
+        storage.reset_sload_count();
+
+        StorageCtx::enter(&mut storage, || {
+            let full_record = layout.records[1].read().unwrap();
+            assert_eq!(full_record.base.policy_type, 1);
+            assert_eq!(full_record.compound.sender_policy_id, 100);
+        });
+
+        let sload_count = storage.sload_count();
+
+        assert_eq!(
+            sload_count, 2,
+            "Reading full NestedRecord should perform 2 SLOADs (one per struct field slot). \
+             BaseData = 1 slot, CompoundData = 1 slot. Got {} SLOADs.",
+            sload_count
+        );
+    }
+}
