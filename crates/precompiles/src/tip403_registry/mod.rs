@@ -201,12 +201,13 @@ impl TIP403Registry {
             admin: call.admin,
         })?;
 
-        // Emit events
         self.emit_event(TIP403RegistryEvent::PolicyCreated(
             ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
                 updater: msg_sender,
-                policyType: call.policyType,
+                policyType: policy_type
+                    .try_into()
+                    .unwrap_or(ITIP403Registry::PolicyType::__Invalid),
             },
         ))?;
 
@@ -274,12 +275,13 @@ impl TIP403Registry {
             }
         }
 
-        // Emit policy creation events
         self.emit_event(TIP403RegistryEvent::PolicyCreated(
             ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
                 updater: msg_sender,
-                policyType: call.policyType,
+                policyType: policy_type
+                    .try_into()
+                    .unwrap_or(ITIP403Registry::PolicyType::__Invalid),
             },
         ))?;
 
@@ -581,9 +583,13 @@ mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };
-    use alloy::primitives::Address;
+    use alloy::{
+        primitives::{Address, Log},
+        sol_types::SolEvent,
+    };
     use rand::Rng;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {
@@ -1602,5 +1608,170 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_pre_t1_create_policy_event_emits_invalid() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::COMPOUND,
+                },
+            )?;
+
+            let data = registry.get_policy_data(policy_id)?;
+            assert_eq!(data.policy_type, 255u8);
+
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        let events = storage.events.get(&TIP403_REGISTRY_ADDRESS).unwrap();
+        let policy_created_log = Log::new_unchecked(
+            TIP403_REGISTRY_ADDRESS,
+            events[0].topics().to_vec(),
+            events[0].data.clone(),
+        );
+        let decoded = ITIP403Registry::PolicyCreated::decode_log(&policy_created_log)?;
+
+        // should emit 255, not 2
+        assert_eq!(decoded.policyType, ITIP403Registry::PolicyType::__Invalid);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pre_t1_create_policy_with_accounts_event_emits_invalid() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        let admin = Address::random();
+        let account = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            let policy_id = registry.create_policy_with_accounts(
+                admin,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::__Invalid,
+                    accounts: vec![account],
+                },
+            )?;
+
+            let data = registry.get_policy_data(policy_id)?;
+            assert_eq!(data.policy_type, 255u8);
+
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        let events = storage.events.get(&TIP403_REGISTRY_ADDRESS).unwrap();
+        let policy_created_event = events.iter().find(|e| {
+            let log =
+                Log::new_unchecked(TIP403_REGISTRY_ADDRESS, e.topics().to_vec(), e.data.clone());
+            ITIP403Registry::PolicyCreated::decode_log(&log).is_ok()
+        });
+
+        let log = Log::new_unchecked(
+            TIP403_REGISTRY_ADDRESS,
+            policy_created_event.unwrap().topics().to_vec(),
+            policy_created_event.unwrap().data.clone(),
+        );
+        let decoded = ITIP403Registry::PolicyCreated::decode_log(&log)?;
+
+        assert_eq!(decoded.policyType, ITIP403Registry::PolicyType::__Invalid);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t1_create_policy_rejects_invalid_types() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            for policy_type in [
+                ITIP403Registry::PolicyType::COMPOUND,
+                ITIP403Registry::PolicyType::__Invalid,
+            ] {
+                let result = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: policy_type,
+                    },
+                );
+                assert!(matches!(
+                    result.unwrap_err(),
+                    TempoPrecompileError::TIP403RegistryError(
+                        TIP403RegistryError::IncompatiblePolicyType(_)
+                    )
+                ));
+            }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t1_create_policy_emits_correct_type() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+
+            registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        let events = storage.events.get(&TIP403_REGISTRY_ADDRESS).unwrap();
+
+        // events[0] = PolicyCreated, events[1] = PolicyAdminUpdated, events[2] = PolicyCreated
+        let whitelist_log = Log::new_unchecked(
+            TIP403_REGISTRY_ADDRESS,
+            events[0].topics().to_vec(),
+            events[0].data.clone(),
+        );
+        let whitelist_decoded = ITIP403Registry::PolicyCreated::decode_log(&whitelist_log)?;
+        assert_eq!(
+            whitelist_decoded.policyType,
+            ITIP403Registry::PolicyType::WHITELIST
+        );
+
+        let blacklist_log = Log::new_unchecked(
+            TIP403_REGISTRY_ADDRESS,
+            events[2].topics().to_vec(),
+            events[2].data.clone(),
+        );
+        let blacklist_decoded = ITIP403Registry::PolicyCreated::decode_log(&blacklist_log)?;
+        assert_eq!(
+            blacklist_decoded.policyType,
+            ITIP403Registry::PolicyType::BLACKLIST
+        );
+
+        Ok(())
     }
 }
