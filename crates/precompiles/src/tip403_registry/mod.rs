@@ -1611,7 +1611,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t1_policy_created_event_emits_invalid_for_policy_type_gte_2() -> eyre::Result<()> {
+    fn test_pre_t1_create_policy_event_emits_invalid() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         let admin = Address::random();
 
@@ -1655,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t1_policy_created_with_accounts_event_emits_invalid_for_policy_type_gte_2()
+    fn test_pre_t1_create_policy_with_accounts_event_emits_invalid()
     -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         let admin = Address::random();
@@ -1706,7 +1706,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t1_policy_created_event_rejects_policy_type_gte_2() -> eyre::Result<()> {
+    fn test_t1_create_policy_rejects_invalid_types() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         let admin = Address::random();
 
@@ -1737,7 +1737,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t1_valid_policy_types_emit_correct_event() -> eyre::Result<()> {
+    fn test_t1_create_policy_emits_correct_type() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         let admin = Address::random();
 
