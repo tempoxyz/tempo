@@ -14,7 +14,7 @@ use alloy::primitives::{Address, U256};
 #[contract(addr = TIP403_REGISTRY_ADDRESS)]
 pub struct TIP403Registry {
     policy_id_counter: u64,
-    policy_records: Mapping<u64, PolicyRecord>,
+    policy_data: Mapping<u64, PolicyRecord>,
     policy_set: Mapping<u64, Mapping<Address, bool>>,
 }
 
@@ -154,7 +154,7 @@ impl TIP403Registry {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
-        let compound = self.policy_records[call.policyId].compound.read()?;
+        let compound = self.policy_data[call.policyId].compound.read()?;
         Ok(ITIP403Registry::compoundPolicyDataReturn {
             senderPolicyId: compound.sender_policy_id,
             recipientPolicyId: compound.recipient_policy_id,
@@ -196,7 +196,7 @@ impl TIP403Registry {
         )?;
 
         // Store policy data
-        self.policy_records[new_policy_id].base.write(PolicyData {
+        self.policy_data[new_policy_id].base.write(PolicyData {
             policy_type,
             admin: call.admin,
         })?;
@@ -405,7 +405,7 @@ impl TIP403Registry {
         )?;
 
         // Store policy record with COMPOUND type and compound data
-        self.policy_records[new_policy_id].write(PolicyRecord {
+        self.policy_data[new_policy_id].write(PolicyRecord {
             base: PolicyData {
                 policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
                 admin: Address::ZERO,
@@ -440,7 +440,7 @@ impl TIP403Registry {
         let data = self.get_policy_data(policy_id)?;
 
         if data.is_compound() {
-            let compound = self.policy_records[policy_id].compound.read()?;
+            let compound = self.policy_data[policy_id].compound.read()?;
             return match role {
                 AuthRole::Sender => {
                     self.is_authorized_simple_policy(compound.sender_policy_id, user)
@@ -533,11 +533,11 @@ impl TIP403Registry {
 
     // Internal helper functions
     fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
-        self.policy_records[policy_id].base.read()
+        self.policy_data[policy_id].base.read()
     }
 
     fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
-        self.policy_records[policy_id].base.write(data)
+        self.policy_data[policy_id].base.write(data)
     }
 
     fn set_policy_set(&mut self, policy_id: u64, account: Address, value: bool) -> Result<()> {

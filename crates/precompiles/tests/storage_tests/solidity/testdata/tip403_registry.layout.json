@@ -14,7 +14,7 @@
           {
             "astId": 30,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
-            "label": "policyRecords",
+            "label": "policyData",
             "offset": 0,
             "slot": "1",
             "type": "t_mapping(t_uint64,t_struct(PolicyRecord)21_storage)"
