@@ -207,7 +207,9 @@ impl TIP403Registry {
             ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
                 updater: msg_sender,
-                policyType: policy_type.try_into().unwrap_or(ITIP403Registry::PolicyType::__Invalid),
+                policyType: policy_type
+                    .try_into()
+                    .unwrap_or(ITIP403Registry::PolicyType::__Invalid),
             },
         ))?;
 
@@ -281,7 +283,9 @@ impl TIP403Registry {
             ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
                 updater: msg_sender,
-                policyType: policy_type.try_into().unwrap_or(ITIP403Registry::PolicyType::__Invalid),
+                policyType: policy_type
+                    .try_into()
+                    .unwrap_or(ITIP403Registry::PolicyType::__Invalid),
             },
         ))?;
 
@@ -583,7 +587,10 @@ mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };
-    use alloy::{primitives::{Address, Log}, sol_types::SolEvent};
+    use alloy::{
+        primitives::{Address, Log},
+        sol_types::SolEvent,
+    };
     use rand::Rng;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
@@ -1681,11 +1688,8 @@ mod tests {
         // Find the PolicyCreated event (skip any account-related events)
         let events = storage.events.get(&TIP403_REGISTRY_ADDRESS).unwrap();
         let policy_created_event = events.iter().find(|e| {
-            let log = Log::new_unchecked(
-                TIP403_REGISTRY_ADDRESS,
-                e.topics().to_vec(),
-                e.data.clone(),
-            );
+            let log =
+                Log::new_unchecked(TIP403_REGISTRY_ADDRESS, e.topics().to_vec(), e.data.clone());
             ITIP403Registry::PolicyCreated::decode_log(&log).is_ok()
         });
 
