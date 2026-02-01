@@ -1732,8 +1732,7 @@ mod tests {
                 );
                 assert!(
                     result.is_err(),
-                    "T1+: create_policy should reject policy_type {:?}",
-                    policy_type
+                    "T1+: create_policy should reject policy_type {policy_type:?}"
                 );
             }
 
