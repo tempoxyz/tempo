@@ -1647,8 +1647,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t1_create_policy_with_accounts_event_emits_invalid()
-    -> eyre::Result<()> {
+    fn test_pre_t1_create_policy_with_accounts_event_emits_invalid() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         let admin = Address::random();
         let account = Address::random();
@@ -1757,7 +1756,10 @@ mod tests {
             events[0].data.clone(),
         );
         let whitelist_decoded = ITIP403Registry::PolicyCreated::decode_log(&whitelist_log)?;
-        assert_eq!(whitelist_decoded.policyType, ITIP403Registry::PolicyType::WHITELIST);
+        assert_eq!(
+            whitelist_decoded.policyType,
+            ITIP403Registry::PolicyType::WHITELIST
+        );
 
         let blacklist_log = Log::new_unchecked(
             TIP403_REGISTRY_ADDRESS,
@@ -1765,7 +1767,10 @@ mod tests {
             events[2].data.clone(),
         );
         let blacklist_decoded = ITIP403Registry::PolicyCreated::decode_log(&blacklist_log)?;
-        assert_eq!(blacklist_decoded.policyType, ITIP403Registry::PolicyType::BLACKLIST);
+        assert_eq!(
+            blacklist_decoded.policyType,
+            ITIP403Registry::PolicyType::BLACKLIST
+        );
 
         Ok(())
     }
