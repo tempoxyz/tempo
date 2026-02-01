@@ -1,6 +1,8 @@
-use alloy::primitives::{Address, LogData, U256};
+use alloy::primitives::{
+    Address, LogData, U256,
+    map::{AddressMap, HashMap},
+};
 use revm::state::{AccountInfo, Bytecode};
-use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
@@ -8,8 +10,8 @@ use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
-    accounts: HashMap<Address, AccountInfo>,
-    pub events: HashMap<Address, Vec<LogData>>,
+    accounts: AddressMap<AccountInfo>,
+    pub events: AddressMap<Vec<LogData>>,
     chain_id: u64,
     timestamp: U256,
     beneficiary: Address,
@@ -24,10 +26,10 @@ impl HashMapStorageProvider {
 
     pub fn new_with_spec(chain_id: u64, spec: TempoHardfork) -> Self {
         Self {
-            internals: HashMap::new(),
-            transient: HashMap::new(),
-            accounts: HashMap::new(),
-            events: HashMap::new(),
+            internals: Default::default(),
+            transient: Default::default(),
+            accounts: Default::default(),
+            events: Default::default(),
             chain_id,
             #[expect(clippy::disallowed_methods)]
             timestamp: U256::from(

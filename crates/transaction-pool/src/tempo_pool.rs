@@ -7,7 +7,10 @@ use crate::{
     tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
-use alloy_primitives::{Address, B256, TxHash, map::HashMap};
+use alloy_primitives::{
+    Address, B256, TxHash,
+    map::{AddressMap, HashMap},
+};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
@@ -25,7 +28,7 @@ use reth_transaction_pool::{
     identifier::TransactionId,
 };
 use revm::database::BundleAccount;
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 
 /// Tempo transaction pool that routes based on nonce_key
@@ -172,7 +175,7 @@ where
         };
 
         // Cache policy lookups per fee token to avoid redundant storage reads
-        let mut policy_cache: HashMap<Address, u64> = HashMap::default();
+        let mut policy_cache: AddressMap<u64> = AddressMap::default();
 
         // Filter validator token changes to only those from active validators.
         // This prevents DoS via permissionless setValidatorToken: we only process
@@ -951,7 +954,7 @@ where
         txs
     }
 
-    fn unique_senders(&self) -> HashSet<Address> {
+    fn unique_senders(&self) -> std::collections::HashSet<Address> {
         let mut senders = self.protocol_pool.unique_senders();
         senders.extend(self.aa_2d_pool.read().senders_iter().copied());
         senders
