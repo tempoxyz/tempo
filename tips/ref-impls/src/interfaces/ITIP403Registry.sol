@@ -28,7 +28,8 @@ interface ITIP403Registry {
     error IncompatiblePolicyType();
 
     /// @notice Error when querying a policy that does not exist
-    error PolicyNotFound();
+    /// @param policyId The policy ID that was not found
+    error PolicyNotFound(uint64 policyId);
 
     /// @notice Emitted when a policy's admin is updated
     /// @param policyId The ID of the policy that was updated
