@@ -1709,7 +1709,12 @@ mod tests {
                         policyType: policy_type,
                     },
                 );
-                assert!(result.is_err());
+                assert!(matches!(
+                    result.unwrap_err(),
+                    TempoPrecompileError::TIP403RegistryError(
+                        TIP403RegistryError::IncompatiblePolicyType(_)
+                    )
+                ));
             }
 
             Ok(())
