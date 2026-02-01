@@ -25,8 +25,7 @@ fn test_tip403_registry_layout() {
     // Verify `PolicyRecord` struct members (nested under policyData mapping)
     let base_slot = slots::POLICY_DATA;
     let rust_policy_record = struct_fields!(base_slot, base, compound);
-    if let Err(errors) = compare_struct_members(&solc_layout, "policyData", &rust_policy_record)
-    {
+    if let Err(errors) = compare_struct_members(&solc_layout, "policyData", &rust_policy_record) {
         panic_layout_mismatch("PolicyRecord struct layout", errors, &sol_path);
     }
 
