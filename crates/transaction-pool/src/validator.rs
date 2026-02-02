@@ -392,6 +392,12 @@ where
         // Add nonce gas based on hardfork
         // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
         if spec.is_t1() {
+            // TIP-1000: Account creation cost for the new contract account
+            // Contract accounts have their nonce set to 1 on creation (0 -> 1 transition)
+            if aa_env.aa_calls.first().is_some_and(|c| c.to.is_create()) {
+                init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+            }
+
             // Expiring nonce transactions
             if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                 init_and_floor_gas.initial_gas += EXPIRING_NONCE_GAS;

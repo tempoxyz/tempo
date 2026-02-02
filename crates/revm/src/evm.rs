@@ -1687,7 +1687,7 @@ mod tests {
         // T1 costs: CREATE cost (500k) + new account for sender (250k) + new account for contract (250k)
         let tx = TxBuilder::new()
             .create(&initcode)
-            .gas_limit(1_000_000)
+            .gas_limit(1_500_000)
             .build();
 
         let signed_tx = key_pair.sign_tx(tx)?;
@@ -1696,9 +1696,57 @@ mod tests {
         let result = evm.transact_commit(tx_env)?;
         assert!(result.is_success(), "CREATE transaction should succeed");
 
-        // With TIP-1000: CREATE cost (500k) + new account for sender (250k) + base costs
+        // With TIP-1000: CREATE cost (500k) + new account for sender (250k) + new account for contract (250k) + base costs
         let gas_used = result.gas_used();
-        assert_eq!(gas_used, 778720, "T1 CREATE contract gas should be exact");
+        assert_eq!(gas_used, 1028720, "T1 CREATE contract gas should be exact");
+
+        Ok(())
+    }
+
+    /// Test that CREATE contract account creation cost (250k) is only charged after T1 hardfork.
+    /// Pre-T1: no contract account creation cost in intrinsic gas
+    /// Post-T1: 250k charged for contract account (nonce 0 -> 1 transition)
+    #[test]
+    fn test_create_contract_account_cost_hardfork_gating() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        // Simple initcode: PUSH1 0x00 PUSH1 0x00 RETURN (deploys empty contract)
+        let initcode = vec![0x60, 0x00, 0x60, 0x00, 0xF3];
+
+        // Pre-T1: no contract account creation cost (but still has sender account creation cost)
+        let mut evm_pre_t1 = create_funded_evm(caller);
+        let tx_pre = TxBuilder::new()
+            .create(&initcode)
+            .gas_limit(500_000)
+            .build();
+
+        let signed_tx_pre = key_pair.sign_tx(tx_pre)?;
+        let tx_env_pre = TempoTxEnv::from_recovered_tx(&signed_tx_pre, caller);
+        let result_pre = evm_pre_t1.transact_commit(tx_env_pre)?;
+        assert!(result_pre.is_success(), "Pre-T1 CREATE should succeed");
+        let gas_pre_t1 = result_pre.gas_used();
+
+        // Post-T1: includes 250k contract account creation cost
+        let mut evm_t1 = create_funded_evm_t1(caller);
+        let tx_t1 = TxBuilder::new()
+            .create(&initcode)
+            .gas_limit(1_500_000)
+            .build();
+
+        let signed_tx_t1 = key_pair.sign_tx(tx_t1)?;
+        let tx_env_t1 = TempoTxEnv::from_recovered_tx(&signed_tx_t1, caller);
+        let result_t1 = evm_t1.transact_commit(tx_env_t1)?;
+        assert!(result_t1.is_success(), "T1 CREATE should succeed");
+        let gas_t1 = result_t1.gas_used();
+
+        // T1 costs more due to:
+        // 1. Higher CREATE cost (500k vs 32k = +468k)
+        // 2. Higher sender account creation cost (250k vs 0 = +250k)
+        // 3. Contract account creation cost (250k vs 0 = +250k)
+        // 4. Higher code deposit cost (1000/byte vs 200/byte)
+        assert_eq!(gas_pre_t1, 60720, "Pre-T1 CREATE gas should be exact");
+        assert_eq!(gas_t1, 1028720, "T1 CREATE gas should be exact");
 
         Ok(())
     }

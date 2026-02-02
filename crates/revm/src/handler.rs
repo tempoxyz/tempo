@@ -1232,6 +1232,12 @@ where
                 init_gas.initial_gas += gas_params.get(GasId::new_account_cost());
             }
 
+            // TIP-1000: Account creation cost for the new contract account
+            // Contract accounts have their nonce set to 1 on creation (0 -> 1 transition)
+            if spec.is_t1() && tx.kind().is_create() {
+                init_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+            }
+
             if evm.ctx.cfg.is_eip7623_disabled() {
                 init_gas.floor_gas = 0u64;
             }
@@ -1442,6 +1448,12 @@ where
     // Calculate 2D nonce gas if nonce_key is non-zero
     // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
     if spec.is_t1() {
+        // TIP-1000: Account creation cost for the new contract account
+        // Contract accounts have their nonce set to 1 on creation (0 -> 1 transition)
+        if aa_env.aa_calls.first().is_some_and(|c| c.to.is_create()) {
+            batch_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+        }
+
         if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
             // Calculate nonce gas based on nonce type:
             // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
@@ -1992,8 +2004,9 @@ mod tests {
             0, 0, 0,
         );
 
-        // AA CREATE should match normal CREATE exactly
-        assert_eq!(gas.initial_gas, base_gas.initial_gas,);
+        // AA CREATE should match normal CREATE exactly (pre-T1, no contract account creation cost)
+        // TIP-1000 contract account creation cost is only added in T1 via validate_aa_initial_tx_gas
+        assert_eq!(gas.initial_gas, base_gas.initial_gas);
     }
 
     #[test]
