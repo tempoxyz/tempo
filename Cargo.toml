@@ -9,11 +9,13 @@ publish = false
 members = [
   "bin/tempo",
   "bin/tempo-bench",
+  "bin/tempo-consensus-indexer",
   "bin/tempo-sidecar",
   "crates/alloy",
   "crates/chainspec",
   "crates/commonware-node",
   "crates/commonware-node-config",
+  "crates/consensus-indexer",
   "crates/dkg-onchain-artifacts",
   "crates/consensus",
   "crates/eyre",
@@ -117,6 +119,7 @@ tempo-primitives = { path = "crates/primitives", default-features = false, featu
 tempo-contracts = { path = "crates/contracts", default-features = false }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
+consensus-indexer = { path = "crates/consensus-indexer", default-features = false }
 
 # reth v1.10.1
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "c59a120" }
@@ -238,6 +241,7 @@ tokio = { version = "1.45.1", features = ["full"] }
 tokio-util = "0.7.16"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "macros", "chrono", "uuid"] }
 criterion = "0.7.0"
 test-case = "3"
 secp256k1 = "0.30.0"
