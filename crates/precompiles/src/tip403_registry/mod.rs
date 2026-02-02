@@ -448,8 +448,10 @@ impl TIP403Registry {
                     self.is_authorized_simple_policy(compound.mint_recipient_policy_id, user)
                 }
                 AuthRole::Transfer => {
-                    if !self.is_authorized_simple_policy(compound.sender_policy_id, user)? {
-                        // Short-circuit: if sender fails, skip recipient check
+                    // (spec: +T1) short-circuit and skip recipient check if sender fails
+                    if !self.is_authorized_simple_policy(compound.sender_policy_id, user)?
+                        && self.storage.spec().is_t1()
+                    {
                         return Ok(false);
                     }
                     self.is_authorized_simple_policy(compound.recipient_policy_id, user)
@@ -480,11 +482,12 @@ impl TIP403Registry {
 
     /// Authorization check for simple (non-compound) policies
     fn is_simple(&self, policy_id: u64, user: Address, data: &PolicyData) -> Result<bool> {
-        let policy_type = data.policy_type()?;
-
+        // NOTE: read `policy_set` BEFORE checking policy type to match original gas consumption.
+        // Pre-T1: the old code read policy_set first, then failed on invalid policy types.
+        // This order must be preserved for block re-execution compatibility.
         let is_in_set = self.policy_set[policy_id][user].read()?;
 
-        match policy_type {
+        match data.policy_type()? {
             PolicyType::WHITELIST => Ok(is_in_set),
             PolicyType::BLACKLIST => Ok(!is_in_set),
             PolicyType::COMPOUND => Ok(false),
