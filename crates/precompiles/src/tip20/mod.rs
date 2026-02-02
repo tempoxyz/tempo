@@ -14,7 +14,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
-    tip403_registry::{ITIP403Registry, TIP403Registry},
+    tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
     hex,
@@ -339,11 +339,9 @@ impl TIP20Token {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
-        // Check if the `to` address is authorized to receive tokens
-        if !TIP403Registry::new().is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: self.transfer_policy_id()?,
-            user: to,
-        })? {
+        // Check if the `to` address is authorized to receive minted tokens
+        let policy_id = self.transfer_policy_id()?;
+        if !TIP403Registry::new().is_authorized_as(policy_id, to, AuthRole::mint_recipient())? {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -414,11 +412,9 @@ impl TIP20Token {
             return Err(TIP20Error::protected_address().into());
         }
 
-        // Check if the address is blocked from transferring
-        if TIP403Registry::new().is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: self.transfer_policy_id()?,
-            user: call.from,
-        })? {
+        // Check if the address is blocked from transferring (sender authorization)
+        let policy_id = self.transfer_policy_id()?;
+        if TIP403Registry::new().is_authorized_as(policy_id, call.from, AuthRole::sender())? {
             // Only allow burning from addresses that are blocked from transferring
             return Err(TIP20Error::policy_forbids().into());
         }
@@ -679,23 +675,18 @@ impl TIP20Token {
     }
 
     /// Checks if the transfer is authorized.
+    /// TIP-1015: For T1+, uses directional sender/recipient checks.
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
-        let transfer_policy_id = self.transfer_policy_id()?;
+        let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
 
-        // Check if 'from' address is authorized
-        let from_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: transfer_policy_id,
-            user: from,
-        })?;
-
-        // Check if 'to' address is authorized
-        let to_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: transfer_policy_id,
-            user: to,
-        })?;
-
-        Ok(from_authorized && to_authorized)
+        // (spec: +T1) short-circuit and skip recipient check if sender fails
+        if !registry.is_authorized_as(policy_id, from, AuthRole::sender())?
+            && self.storage.spec().is_t1()
+        {
+            return Ok(false);
+        }
+        registry.is_authorized_as(policy_id, to, AuthRole::recipient())
     }
 
     /// Ensures the transfer is authorized.
