@@ -1791,9 +1791,8 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             // Non-existent policy should return PolicyNotFound
-            let result = registry.compound_policy_data(ITIP403Registry::compoundPolicyDataCall {
-                policyId: 999,
-            });
+            let result = registry
+                .compound_policy_data(ITIP403Registry::compoundPolicyDataCall { policyId: 999 });
             assert!(matches!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotFound(_))
