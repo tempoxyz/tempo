@@ -107,18 +107,19 @@ pub async fn run_consensus_stack(
         .transpose()?
         .unwrap_or(MARSHAL_LIMIT);
 
-    let (mut network, oracle) = instantiate_network(
-        context,
-        signing_key.clone().into_inner(),
-        config.listen_address,
-        config.mailbox_size,
-        config.max_message_size_bytes,
-        config.bypass_ip_check,
-        config.use_local_defaults,
+    let network_config = NetworkConfig {
+        signing_key: signing_key.clone().into_inner(),
+        listen_addr: config.listen_address,
+        mailbox_size: config.mailbox_size,
+        max_message_size: config.max_message_size_bytes,
+        bypass_ip_check: config.bypass_ip_check,
+        use_local_p2p_defaults: config.use_local_p2p_defaults,
         p2p_overrides,
-    )
-    .await
-    .wrap_err("failed to start network")?;
+    };
+
+    let (mut network, oracle) = instantiate_network(context, network_config)
+        .await
+        .wrap_err("failed to start network")?;
 
     let message_backlog = config.message_backlog;
     let votes = network.register(VOTES_CHANNEL_IDENT, VOTES_LIMIT, message_backlog);
@@ -234,15 +235,21 @@ pub struct P2POverrides {
     pub handshake_per_ip_min_period: Option<Duration>,
 }
 
+/// Configuration for instantiating the P2P network.
+#[derive(Debug, Clone)]
+pub struct NetworkConfig {
+    pub signing_key: PrivateKey,
+    pub listen_addr: SocketAddr,
+    pub mailbox_size: usize,
+    pub max_message_size: u32,
+    pub bypass_ip_check: bool,
+    pub use_local_p2p_defaults: bool,
+    pub p2p_overrides: P2POverrides,
+}
+
 async fn instantiate_network(
     context: &commonware_runtime::tokio::Context,
-    signing_key: PrivateKey,
-    listen_addr: SocketAddr,
-    mailbox_size: usize,
-    max_message_size: u32,
-    bypass_ip_check: bool,
-    use_local_defaults: bool,
-    overrides: P2POverrides,
+    config: NetworkConfig,
 ) -> eyre::Result<(
     lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
     lookup::Oracle<PublicKey>,
@@ -251,34 +258,49 @@ async fn instantiate_network(
     // where `NAMESPACE` is used at all. We follow alto's example for now.
     let p2p_namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
 
-    let default_config = if use_local_defaults {
-        lookup::Config::local(signing_key, &p2p_namespace, listen_addr, max_message_size)
+    let default_config = if config.use_local_p2p_defaults {
+        lookup::Config::local(
+            config.signing_key,
+            &p2p_namespace,
+            config.listen_addr,
+            config.max_message_size,
+        )
     } else {
-        lookup::Config::recommended(signing_key, &p2p_namespace, listen_addr, max_message_size)
+        lookup::Config::recommended(
+            config.signing_key,
+            &p2p_namespace,
+            config.listen_addr,
+            config.max_message_size,
+        )
     };
 
-    let dial_frequency = overrides
+    let dial_frequency = config
+        .p2p_overrides
         .dial_frequency
         .unwrap_or(default_config.dial_frequency);
-    let query_frequency = overrides
+    let query_frequency = config
+        .p2p_overrides
         .query_frequency
         .unwrap_or(default_config.query_frequency);
-    let ping_frequency = overrides
+    let ping_frequency = config
+        .p2p_overrides
         .ping_frequency
         .unwrap_or(default_config.ping_frequency);
-    let connection_min_period_quota = overrides
+    let connection_min_period_quota = config
+        .p2p_overrides
         .connection_min_period
         .and_then(commonware_runtime::Quota::with_period)
         .unwrap_or(default_config.allowed_connection_rate_per_peer);
-    let handshake_per_ip_min_period_quota = overrides
+    let handshake_per_ip_min_period_quota = config
+        .p2p_overrides
         .handshake_per_ip_min_period
         .and_then(commonware_runtime::Quota::with_period)
         .unwrap_or(default_config.allowed_handshake_rate_per_ip);
 
     let p2p_cfg = lookup::Config {
-        mailbox_size,
+        mailbox_size: config.mailbox_size,
         tracked_peer_sets: PEERSETS_TO_TRACK,
-        bypass_ip_check,
+        bypass_ip_check: config.bypass_ip_check,
         dial_frequency,
         query_frequency,
         ping_frequency,

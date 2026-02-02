@@ -120,7 +120,7 @@ pub struct Args {
     /// Use P2P defaults optimized for local network environments.
     /// Only enable in non-production network nodes.
     #[arg(long = "consensus.use-local-p2p-defaults", default_value_t = false)]
-    pub use_local_defaults: bool,
+    pub use_local_p2p_defaults: bool,
 
     /// How often to attempt dialing peers. Lower values mean faster peer discovery.
     /// Recommended: 1s, Local: 500ms
