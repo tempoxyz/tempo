@@ -269,8 +269,8 @@ impl TIP403Registry {
                     ))?;
                 }
                 ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
-                    // Pre-T1: no events emitted for invalid types, accounts still added
-                    // T1+: unreachable since validate_simple_policy_type already rejected
+                    // T1+: unreachable since `validate_simple_policy_type` already rejected
+                    return Err(TIP403RegistryError::incompatible_policy_type().into());
                 }
             }
         }
@@ -1360,32 +1360,45 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t1_create_policy_with_accounts_invalid_type_adds_accounts_no_events()
-    -> eyre::Result<()> {
+    fn test_pre_t1_create_policy_with_accounts_invalid_type_behavior() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-        let account1 = Address::random();
-        let account2 = Address::random();
+        let (admin, account) = (Address::random(), Address::random());
+
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            // Pre-T1: create policy with COMPOUND type - should succeed
+            // With non-empty accounts: reverts with IncompatiblePolicyType
+            for policy_type in [
+                ITIP403Registry::PolicyType::COMPOUND,
+                ITIP403Registry::PolicyType::__Invalid,
+            ] {
+                let result = registry.create_policy_with_accounts(
+                    admin,
+                    ITIP403Registry::createPolicyWithAccountsCall {
+                        admin,
+                        policyType: policy_type,
+                        accounts: vec![account],
+                    },
+                );
+                assert!(matches!(
+                    result.unwrap_err(),
+                    TempoPrecompileError::TIP403RegistryError(
+                        TIP403RegistryError::IncompatiblePolicyType(_)
+                    )
+                ));
+            }
+
+            // With empty accounts: succeeds (loop never enters revert path)
             let policy_id = registry.create_policy_with_accounts(
                 admin,
                 ITIP403Registry::createPolicyWithAccountsCall {
                     admin,
-                    policyType: ITIP403Registry::PolicyType::COMPOUND,
-                    accounts: vec![account1, account2],
+                    policyType: ITIP403Registry::PolicyType::__Invalid,
+                    accounts: vec![],
                 },
             )?;
-
-            // Verify policy was created with type 255
             let data = registry.get_policy_data(policy_id)?;
             assert_eq!(data.policy_type, 255u8);
-
-            // Verify accounts were added to the policy set
-            assert!(registry.policy_set[policy_id][account1].read()?);
-            assert!(registry.policy_set[policy_id][account2].read()?);
 
             Ok(())
         })
@@ -1641,49 +1654,6 @@ mod tests {
         let decoded = ITIP403Registry::PolicyCreated::decode_log(&policy_created_log)?;
 
         // should emit 255, not 2
-        assert_eq!(decoded.policyType, ITIP403Registry::PolicyType::__Invalid);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_pre_t1_create_policy_with_accounts_event_emits_invalid() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-        let account = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            let policy_id = registry.create_policy_with_accounts(
-                admin,
-                ITIP403Registry::createPolicyWithAccountsCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::__Invalid,
-                    accounts: vec![account],
-                },
-            )?;
-
-            let data = registry.get_policy_data(policy_id)?;
-            assert_eq!(data.policy_type, 255u8);
-
-            Ok::<_, TempoPrecompileError>(())
-        })?;
-
-        let events = storage.events.get(&TIP403_REGISTRY_ADDRESS).unwrap();
-        let policy_created_event = events.iter().find(|e| {
-            let log =
-                Log::new_unchecked(TIP403_REGISTRY_ADDRESS, e.topics().to_vec(), e.data.clone());
-            ITIP403Registry::PolicyCreated::decode_log(&log).is_ok()
-        });
-
-        let log = Log::new_unchecked(
-            TIP403_REGISTRY_ADDRESS,
-            policy_created_event.unwrap().topics().to_vec(),
-            policy_created_event.unwrap().data.clone(),
-        );
-        let decoded = ITIP403Registry::PolicyCreated::decode_log(&log)?;
-
         assert_eq!(decoded.policyType, ITIP403Registry::PolicyType::__Invalid);
 
         Ok(())
