@@ -628,6 +628,36 @@ contract StablecoinDEX is IStablecoinDEX {
         }
     }
 
+    /// @notice Decrement user's internal balance only (no external transfer fallback)
+    /// @dev Used for intermediate hop token consumption in multi-hop swaps
+    /// @param user The user to debit from
+    /// @param token The token to debit
+    /// @param amount The amount to debit
+    function _decrementInternalBalance(address user, address token, uint128 amount) internal {
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        if (
+            !TIP403_REGISTRY.isAuthorized(policyId, user)
+                || !TIP403_REGISTRY.isAuthorized(policyId, address(this))
+        ) {
+            revert ITIP20.PolicyForbids();
+        }
+
+        uint128 userBalance = balances[user][token];
+        if (userBalance < amount) {
+            revert IStablecoinDEX.InsufficientBalance();
+        }
+        balances[user][token] -= amount;
+    }
+
+    /// @notice Credit user's internal balance
+    /// @dev Used for intermediate hop token crediting in multi-hop swaps
+    /// @param user The user to credit
+    /// @param token The token to credit
+    /// @param amount The amount to credit
+    function _creditInternalBalance(address user, address token, uint128 amount) internal {
+        balances[user][token] += amount;
+    }
+
     /// @notice Swap tokens for exact amount out (supports multi-hop routing)
     /// @param tokenIn Token to spend
     /// @param tokenOut Token to buy
@@ -642,13 +672,24 @@ contract StablecoinDEX is IStablecoinDEX {
     ) external returns (uint128 amountIn) {
         (bytes32[] memory route, bool[] memory directions) = findTradePath(tokenIn, tokenOut);
 
-        // Work backwards from output to calculate input needed - intermediate amounts are TRANSITORY
+        // For multi-hop swaps, we need to track intermediate token flows for proper accounting
+        // We work backwards filling orders, then settle intermediate balances forwards
+
+        // First pass: fill orders backwards to determine amounts at each hop
+        // Store the hop outputs for settlement
+        uint128[] memory hopOutputs = new uint128[](route.length);
+        uint128[] memory hopInputs = new uint128[](route.length);
+
         uint128 amount = amountOut;
         for (uint256 i = route.length; i > 0; i--) {
             bytes32 key = route[i - 1];
             bool baseForQuote = directions[i - 1];
             Orderbook storage book = books[key];
-            amount = _fillOrdersExactOut(key, book, baseForQuote, amount);
+
+            hopOutputs[i - 1] = amount;
+            uint128 hopIn = _fillOrdersExactOut(key, book, baseForQuote, amount);
+            hopInputs[i - 1] = hopIn;
+            amount = hopIn;
         }
 
         amountIn = amount;
@@ -656,7 +697,28 @@ contract StablecoinDEX is IStablecoinDEX {
             revert IStablecoinDEX.MaxInputExceeded();
         }
 
+        // Second pass: settle intermediate balances forwards
+        // For multi-hop, credit output of hop i, then debit it as input of hop i+1
+        for (uint256 i = 0; i < route.length; i++) {
+            bytes32 key = route[i];
+            bool baseForQuote = directions[i];
+            Orderbook storage book = books[key];
+
+            address hopOutToken = baseForQuote ? book.quote : book.base;
+
+            // For intermediate hops (not the last), the output needs to be credited
+            // then consumed by the next hop
+            if (i + 1 < route.length) {
+                // Credit output from this hop
+                _creditInternalBalance(msg.sender, hopOutToken, hopOutputs[i]);
+                // Debit for next hop's input (which equals this hop's output)
+                _decrementInternalBalance(msg.sender, hopOutToken, hopOutputs[i]);
+            }
+        }
+
+        // Take the initial input token from the user
         _decrementBalanceOrTransferFrom(msg.sender, tokenIn, amountIn);
+        // Transfer the final output token to the user
         ITIP20(tokenOut).transfer(msg.sender, amountOut);
     }
 
@@ -698,13 +760,34 @@ contract StablecoinDEX is IStablecoinDEX {
     ) external returns (uint128 amountOut) {
         (bytes32[] memory route, bool[] memory directions) = findTradePath(tokenIn, tokenOut);
 
-        // Work forwards from input to calculate output - intermediate amounts are TRANSITORY
+        // For multi-hop swaps, intermediate tokens must flow through internal balances
+        // to ensure proper accounting and prevent insolvency
         uint128 amount = amountIn;
         for (uint256 i = 0; i < route.length; i++) {
             bytes32 key = route[i];
             bool baseForQuote = directions[i];
             Orderbook storage book = books[key];
-            amount = _fillOrdersExactIn(key, book, baseForQuote, amount);
+
+            // Determine input/output tokens for this hop
+            address hopInToken = baseForQuote ? book.base : book.quote;
+            address hopOutToken = baseForQuote ? book.quote : book.base;
+
+            // For intermediate hops (i > 0), consume from internal balance
+            // The previous hop credited us with the intermediate token
+            if (i > 0) {
+                _decrementInternalBalance(msg.sender, hopInToken, amount);
+            }
+
+            // Execute the hop
+            uint128 hopOut = _fillOrdersExactIn(key, book, baseForQuote, amount);
+
+            // For intermediate hops (not the last), credit output to internal balance
+            // The next hop will consume this
+            if (i + 1 < route.length) {
+                _creditInternalBalance(msg.sender, hopOutToken, hopOut);
+            }
+
+            amount = hopOut;
         }
 
         amountOut = amount;
@@ -712,7 +795,9 @@ contract StablecoinDEX is IStablecoinDEX {
             revert IStablecoinDEX.InsufficientOutput();
         }
 
+        // Take the initial input token from the user
         _decrementBalanceOrTransferFrom(msg.sender, tokenIn, amountIn);
+        // Transfer the final output token to the user
         ITIP20(tokenOut).transfer(msg.sender, amountOut);
     }
 

@@ -1986,4 +1986,196 @@ contract StablecoinDEXTest is BaseTest {
         );
     }
 
+    /*//////////////////////////////////////////////////////////////
+                    MULTI-HOP SOLVENCY BUG TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Helper to directly set internal balance via storage manipulation
+    /// Storage layout: books (slot 0), orders (slot 1), balances (slot 2), nextOrderId (slot 3)
+    function _setInternalBalance(address user, address token, uint128 amount) internal {
+        uint256 BALANCES_SLOT = 2;
+        bytes32 slot1 = keccak256(abi.encode(user, BALANCES_SLOT));
+        bytes32 slot2 = keccak256(abi.encode(token, slot1));
+        vm.store(address(exchange), slot2, bytes32(uint256(amount)));
+    }
+
+    /// @notice Test that multi-hop swaps maintain solvency through proper internal balance tracking
+    /// @dev After the fix, intermediate tokens flow through internal balances:
+    ///      1. Hop 1 output is credited to taker's internal balance
+    ///      2. Hop 2 input is debited from taker's internal balance
+    ///      This ensures makers on hop2 receive pathUSD that was properly sourced from hop1's escrow
+    function test_MultiHopSwap_MaintainsSolvency() public {
+        // Create the second pair needed for routing: token2/pathUSD
+        exchange.createPair(address(token2));
+
+        // Give bob token2 so he can place an ASK on token2/pathUSD
+        vm.startPrank(admin);
+        token2.grantRole(_ISSUER_ROLE, admin);
+        token2.mint(bob, INITIAL_BALANCE);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        token2.approve(address(exchange), type(uint256).max);
+
+        uint128 amountIn = 1e18;
+        int16 tick = 0; // price = 1.0
+
+        // Hop 1 liquidity: bob bids on token1/pathUSD (escrows pathUSD from wallet)
+        vm.prank(bob);
+        exchange.place(address(token1), amountIn, true, tick);
+
+        // DEX should have received pathUSD from the BID escrow
+        uint256 dexPathUsdAfterBid = pathUSD.balanceOf(address(exchange));
+        assertGt(dexPathUsdAfterBid, 0, "DEX received pathUSD from BID escrow");
+
+        // Hop 2 liquidity: bob asks on token2/pathUSD (escrows token2 into DEX)
+        vm.prank(bob);
+        exchange.place(address(token2), amountIn, false, tick);
+
+        // Record bob's pathUSD internal balance before swap
+        uint128 bobPathUsdBeforeSwap = exchange.balanceOf(bob, address(pathUSD));
+
+        // Execute multi-hop swap: token1 -> pathUSD -> token2
+        vm.prank(alice);
+        uint128 amountOut =
+            exchange.swapExactAmountIn(address(token1), address(token2), amountIn, 0);
+        assertEq(amountOut, amountIn, "tick=0 => 1:1 across both hops");
+
+        // --- SOLVENCY CHECK ---
+        // Bob is credited pathUSD on hop2 (for his ASK order being filled)
+        uint128 bobPathUsdAfterSwap = exchange.balanceOf(bob, address(pathUSD));
+
+        // Bob should have been credited pathUSD for the hop2 ASK fill
+        assertGt(bobPathUsdAfterSwap, bobPathUsdBeforeSwap, "hop2 should credit maker with pathUSD");
+
+        // WITH THE FIX: DEX pathUSD balance should cover all internal balances
+        uint256 dexPathUsdBalance = pathUSD.balanceOf(address(exchange));
+
+        // The key solvency invariant: DEX balance >= all internal balances
+        assertGe(
+            dexPathUsdBalance,
+            bobPathUsdAfterSwap,
+            "SOLVENCY: DEX pathUSD balance covers internal liabilities"
+        );
+
+        // Bob should be able to withdraw his pathUSD
+        vm.prank(bob);
+        exchange.withdraw(address(pathUSD), bobPathUsdAfterSwap);
+
+        // After withdrawal, bob's internal balance should be 0
+        assertEq(exchange.balanceOf(bob, address(pathUSD)), 0, "bob withdrew all pathUSD");
+    }
+
+    /// @notice Solvency invariant: DEX token balance must cover all internal balances + escrows
+    /// @dev This test verifies the solvency invariant holds for multi-hop swaps after the fix
+    function test_MultiHopSwap_SolvencyInvariantHolds() public {
+        // Create the second pair
+        exchange.createPair(address(token2));
+
+        vm.startPrank(admin);
+        token2.grantRole(_ISSUER_ROLE, admin);
+        token2.mint(bob, INITIAL_BALANCE);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        token2.approve(address(exchange), type(uint256).max);
+
+        uint128 orderAmount = 1e18;
+        int16 tick = 0;
+
+        // Hop 1: Bob places BID on token1/pathUSD (escrows pathUSD)
+        vm.prank(bob);
+        exchange.place(address(token1), orderAmount, true, tick);
+
+        // Hop 2: Bob places ASK on token2/pathUSD (escrows token2)
+        vm.prank(bob);
+        exchange.place(address(token2), orderAmount, false, tick);
+
+        // Capture DEX pathUSD balance BEFORE swap
+        uint256 dexPathUsdBeforeSwap = pathUSD.balanceOf(address(exchange));
+
+        // The BID order escrowed pathUSD, so DEX should have it
+        assertGt(dexPathUsdBeforeSwap, 0, "DEX should have pathUSD from BID escrow");
+
+        // Execute multi-hop swap: token1 -> pathUSD -> token2
+        vm.prank(alice);
+        exchange.swapExactAmountIn(address(token1), address(token2), orderAmount, 0);
+
+        // After swap with fix:
+        // - Hop1 BID filled: bob received token1, taker's internal pathUSD credited
+        // - Hop2 ASK filled: taker's internal pathUSD debited, bob received pathUSD credit
+        // The pathUSD flow is now properly tracked
+
+        // Check bob's internal pathUSD balance
+        uint128 bobPathUsd = exchange.balanceOf(bob, address(pathUSD));
+
+        // Check DEX's actual pathUSD balance
+        uint256 dexPathUsd = pathUSD.balanceOf(address(exchange));
+
+        // With the fix: DEX pathUSD balance >= bob's internal pathUSD balance
+        assertGe(
+            dexPathUsd, bobPathUsd, "SOLVENCY: DEX pathUSD balance covers bob's internal balance"
+        );
+
+        // Bob can successfully withdraw his pathUSD
+        if (bobPathUsd > 0) {
+            vm.prank(bob);
+            exchange.withdraw(address(pathUSD), bobPathUsd);
+            assertEq(exchange.balanceOf(bob, address(pathUSD)), 0, "bob withdrew successfully");
+        }
+    }
+
+    /// @notice Test multi-hop swapExactAmountOut also maintains solvency
+    function test_MultiHopSwapExactOut_MaintainsSolvency() public {
+        // Create the second pair
+        exchange.createPair(address(token2));
+
+        vm.startPrank(admin);
+        token2.grantRole(_ISSUER_ROLE, admin);
+        token2.mint(bob, INITIAL_BALANCE);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        token2.approve(address(exchange), type(uint256).max);
+
+        uint128 orderAmount = 1e18;
+        int16 tick = 0;
+
+        // Hop 1: Bob places BID on token1/pathUSD (escrows pathUSD)
+        vm.prank(bob);
+        exchange.place(address(token1), orderAmount, true, tick);
+
+        // Hop 2: Bob places ASK on token2/pathUSD (escrows token2)
+        vm.prank(bob);
+        exchange.place(address(token2), orderAmount, false, tick);
+
+        // Execute multi-hop swap with exact output
+        vm.prank(alice);
+        uint128 amountIn = exchange.swapExactAmountOut(
+            address(token1), address(token2), orderAmount, type(uint128).max
+        );
+
+        // Should have consumed approximately 1:1 (tick = 0)
+        assertEq(amountIn, orderAmount, "tick=0 => 1:1 input/output");
+
+        // Check bob's internal pathUSD balance
+        uint128 bobPathUsd = exchange.balanceOf(bob, address(pathUSD));
+
+        // Check DEX's actual pathUSD balance
+        uint256 dexPathUsd = pathUSD.balanceOf(address(exchange));
+
+        // Solvency invariant must hold
+        assertGe(
+            dexPathUsd,
+            bobPathUsd,
+            "SOLVENCY: DEX pathUSD balance covers bob's internal balance after swapExactOut"
+        );
+
+        // Bob can withdraw
+        if (bobPathUsd > 0) {
+            vm.prank(bob);
+            exchange.withdraw(address(pathUSD), bobPathUsd);
+        }
+    }
+
 }

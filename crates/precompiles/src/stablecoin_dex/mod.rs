@@ -192,6 +192,40 @@ impl StablecoinDEX {
         }
     }
 
+    /// Decrement user's internal balance only (no external transfer fallback)
+    /// Used for intermediate hop token consumption in multi-hop swaps
+    fn decrement_internal_balance(
+        &mut self,
+        user: Address,
+        token: Address,
+        amount: u128,
+    ) -> Result<()> {
+        TIP20Token::from_address(token)?.ensure_transfer_authorized(user, self.address)?;
+
+        let user_balance = self.balance_of(user, token)?;
+        if user_balance < amount {
+            return Err(StablecoinDEXError::insufficient_balance().into());
+        }
+        self.set_balance(
+            user,
+            token,
+            user_balance
+                .checked_sub(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )
+    }
+
+    /// Credit user's internal balance
+    /// Used for intermediate hop token crediting in multi-hop swaps
+    fn credit_internal_balance(
+        &mut self,
+        user: Address,
+        token: Address,
+        amount: u128,
+    ) -> Result<()> {
+        self.increment_balance(user, token, amount)
+    }
+
     pub fn quote_swap_exact_amount_out(
         &self,
         token_in: Address,
@@ -238,15 +272,41 @@ impl StablecoinDEX {
     ) -> Result<u128> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
+        let route_len = route.len();
 
-        // Deduct input tokens from sender (only once, at the start)
-        self.decrement_balance_or_transfer_from(sender, token_in, amount_in)?;
-
-        // Execute swaps for each hop - intermediate balances are transitory
+        // For multi-hop swaps, intermediate tokens must flow through internal balances
+        // to ensure proper accounting and prevent insolvency
         let mut amount = amount_in;
-        for (book_key, base_for_quote) in route {
-            // Fill orders for this hop - no min check on intermediate hops
-            amount = self.fill_orders_exact_in(book_key, base_for_quote, amount, sender)?;
+        for (i, (book_key, base_for_quote)) in route.into_iter().enumerate() {
+            // Determine input/output tokens for this hop
+            let orderbook = self.books[book_key].read()?;
+            let hop_in_token = if base_for_quote {
+                orderbook.base
+            } else {
+                orderbook.quote
+            };
+            let hop_out_token = if base_for_quote {
+                orderbook.quote
+            } else {
+                orderbook.base
+            };
+
+            // For intermediate hops (i > 0), consume from internal balance
+            // The previous hop credited us with the intermediate token
+            if i > 0 {
+                self.decrement_internal_balance(sender, hop_in_token, amount)?;
+            }
+
+            // Execute the hop
+            let hop_out = self.fill_orders_exact_in(book_key, base_for_quote, amount, sender)?;
+
+            // For intermediate hops (not the last), credit output to internal balance
+            // The next hop will consume this
+            if i + 1 < route_len {
+                self.credit_internal_balance(sender, hop_out_token, hop_out)?;
+            }
+
+            amount = hop_out;
         }
 
         // Check final output meets minimum requirement
@@ -254,6 +314,9 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::insufficient_output().into());
         }
 
+        // Take the initial input token from the user
+        self.decrement_balance_or_transfer_from(sender, token_in, amount_in)?;
+        // Transfer the final output token to the user
         self.transfer(token_out, sender, amount)?;
 
         Ok(amount)
@@ -269,24 +332,53 @@ impl StablecoinDEX {
     ) -> Result<u128> {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
+        let route_len = route.len();
 
-        // Work backwards from output to calculate input needed - intermediate amounts are TRANSITORY
+        // For multi-hop swaps, we need to track intermediate token flows for proper accounting
+        // We work backwards filling orders, then settle intermediate balances forwards
+
+        // First pass: fill orders backwards to determine amounts at each hop
+        // Store the hop outputs for settlement
+        let mut hop_outputs: Vec<u128> = vec![0; route_len];
+
         let mut amount = amount_out;
-        for (book_key, base_for_quote) in route.iter().rev() {
+        for (i, (book_key, base_for_quote)) in route.iter().rev().enumerate() {
+            let reverse_idx = route_len - 1 - i;
+            hop_outputs[reverse_idx] = amount;
             amount = self.fill_orders_exact_out(*book_key, *base_for_quote, amount, sender)?;
         }
 
-        if amount > max_amount_in {
+        let amount_in = amount;
+        if amount_in > max_amount_in {
             return Err(StablecoinDEXError::max_input_exceeded().into());
         }
 
-        // Deduct input tokens ONCE at end
-        self.decrement_balance_or_transfer_from(sender, token_in, amount)?;
+        // Second pass: settle intermediate balances forwards
+        // For multi-hop, credit output of hop i, then debit it as input of hop i+1
+        for (i, (book_key, base_for_quote)) in route.iter().enumerate() {
+            let orderbook = self.books[*book_key].read()?;
+            let hop_out_token = if *base_for_quote {
+                orderbook.quote
+            } else {
+                orderbook.base
+            };
 
-        // Transfer only final output ONCE at end
+            // For intermediate hops (not the last), the output needs to be credited
+            // then consumed by the next hop
+            if i + 1 < route_len {
+                // Credit output from this hop
+                self.credit_internal_balance(sender, hop_out_token, hop_outputs[i])?;
+                // Debit for next hop's input (which equals this hop's output)
+                self.decrement_internal_balance(sender, hop_out_token, hop_outputs[i])?;
+            }
+        }
+
+        // Take the initial input token from the user
+        self.decrement_balance_or_transfer_from(sender, token_in, amount_in)?;
+        // Transfer the final output token to the user
         self.transfer(token_out, sender, amount_out)?;
 
-        Ok(amount)
+        Ok(amount_in)
     }
 
     /// Get price level information
