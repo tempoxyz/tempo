@@ -356,6 +356,7 @@ where
         &self,
         transaction: &TempoPooledTransaction,
         spec: TempoHardfork,
+        state_provider: &impl StateProvider,
     ) -> Result<(), TempoPoolTransactionError> {
         let Some(aa_tx) = transaction.inner().as_aa() else {
             return Ok(());
@@ -395,6 +396,21 @@ where
             // Expiring nonce transactions
             if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                 init_and_floor_gas.initial_gas += EXPIRING_NONCE_GAS;
+
+                // CHAIN-577 fix: For expiring nonce CREATE transactions, also charge new_account_cost
+                // if the account's protocol nonce is 0, because CREATE execution bumps the protocol
+                // nonce from 0 to 1 (new account transition per TIP-1000).
+                let is_create = tx.calls.first().is_some_and(|c| c.to.is_create());
+                if is_create {
+                    let sender = transaction.sender();
+                    let protocol_nonce = state_provider
+                        .account_nonce(&sender)
+                        .map_err(|e| TempoPoolTransactionError::StateProviderError(e.to_string()))?
+                        .unwrap_or(0);
+                    if protocol_nonce == 0 {
+                        init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+                    }
+                }
             } else if tx.nonce == 0 {
                 // TIP-1000: Storage pricing updates for launch
                 // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
@@ -625,7 +641,7 @@ where
             // This ensures the gas limit covers all AA-specific costs (per-call overhead,
             // signature verification, etc.) to prevent mempool DoS attacks where transactions
             // pass pool validation but fail at execution time.
-            if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec) {
+            if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec, &state_provider) {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
                     InvalidPoolTransactionError::other(err),

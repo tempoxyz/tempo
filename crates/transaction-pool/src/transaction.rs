@@ -333,6 +333,10 @@ pub enum TempoPoolTransactionError {
     )]
     ExpiringNonceValidBeforeTooFar { valid_before: u64, max_allowed: u64 },
 
+    /// Thrown when there is an error accessing state provider during validation.
+    #[error("State provider error: {0}")]
+    StateProviderError(String),
+
     /// Thrown when an expiring nonce transaction's hash has already been seen (replay).
     #[error("Expiring nonce transaction replay: tx hash already seen and not expired")]
     ExpiringNonceReplay,
@@ -396,7 +400,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::NoCalls
             | Self::CreateCallWithAuthorizationList
             | Self::CreateCallNotFirst
-            | Self::FeeCapBelowMinBaseFee { .. } => true,
+            | Self::FeeCapBelowMinBaseFee { .. }
+            | Self::StateProviderError(_) => true,
         }
     }
 

@@ -1408,26 +1408,58 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
 /// - Signature type (secp256k1: 21k, P256: 26k, WebAuthn: 26k + calldata)
 /// - Batch call costs (per-call overhead, calldata, CREATE, value transfers)
 fn validate_aa_initial_tx_gas<DB, I>(
-    evm: &TempoEvm<DB, I>,
+    evm: &mut TempoEvm<DB, I>,
 ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>>
 where
     DB: alloy_evm::Database,
 {
-    let (_, tx, cfg, _, _, _, _) = evm.ctx_ref().all();
-    let gas_limit = tx.gas_limit();
-    let gas_params = cfg.gas_params();
-    let spec = *cfg.spec();
+    // Extract values from context first to avoid borrow conflicts
+    let (
+        gas_limit,
+        gas_params,
+        spec,
+        nonce_key,
+        tx_nonce,
+        is_expiring_nonce_create,
+        caller,
+        max_initcode_size,
+        aa_env_clone,
+    ) = {
+        let (_, tx, cfg, _, _, _, _) = evm.ctx_ref().all();
+        let gas_limit = tx.gas_limit();
+        let gas_params = cfg.gas_params().clone();
+        let spec = *cfg.spec();
+        let max_initcode_size = cfg.max_initcode_size();
+        let caller = tx.caller();
+        let tx_nonce = tx.nonce;
 
-    // This function should only be called for AA transactions
-    let aa_env = tx
-        .tempo_tx_env
-        .as_ref()
-        .expect("validate_aa_initial_tx_gas called for non-AA transaction");
+        // This function should only be called for AA transactions
+        let aa_env = tx
+            .tempo_tx_env
+            .as_ref()
+            .expect("validate_aa_initial_tx_gas called for non-AA transaction");
 
-    let calls = &aa_env.aa_calls;
+        let nonce_key = aa_env.nonce_key;
+        let is_expiring_nonce_create = nonce_key == TEMPO_EXPIRING_NONCE_KEY
+            && aa_env.aa_calls.first().is_some_and(|c| c.to.is_create());
+        let aa_env_clone = aa_env.clone();
+
+        (
+            gas_limit,
+            gas_params,
+            spec,
+            nonce_key,
+            tx_nonce,
+            is_expiring_nonce_create,
+            caller,
+            max_initcode_size,
+            aa_env_clone,
+        )
+    };
+
+    let calls = &aa_env_clone.aa_calls;
 
     // Validate all CREATE calls' initcode size upfront (EIP-3860)
-    let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
     for call in calls {
         if call.to.is_create() && call.input.len() > max_initcode_size {
             return Err(InvalidTransaction::CreateInitCodeSizeLimit.into());
@@ -1435,32 +1467,45 @@ where
     }
 
     // Calculate batch intrinsic gas using helper
-    let mut batch_gas = calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list())?;
+    let mut batch_gas = calculate_aa_batch_intrinsic_gas(
+        &aa_env_clone,
+        &gas_params,
+        evm.ctx_ref().tx().access_list(),
+    )?;
 
     let mut nonce_2d_gas = 0;
 
     // Calculate 2D nonce gas if nonce_key is non-zero
     // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
     if spec.is_t1() {
-        if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+        if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
             // Calculate nonce gas based on nonce type:
             // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
             // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
             // - Regular nonce (nonce_key == 0): no additional gas
             batch_gas.initial_gas += EXPIRING_NONCE_GAS;
-        } else if tx.nonce == 0 {
+
+            // CHAIN-577 fix: For expiring nonce CREATE transactions, also charge new_account_cost
+            // if the account's protocol nonce is 0, because CREATE execution bumps the protocol
+            // nonce from 0 to 1 (new account transition per TIP-1000).
+            if is_expiring_nonce_create {
+                // Load the caller's account to check protocol nonce
+                let caller_account = evm.ctx().journal_mut().load_account(caller)?;
+                if caller_account.data.info.nonce == 0 {
+                    batch_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+                }
+            }
+        } else if tx_nonce == 0 {
             // TIP-1000: Storage pricing updates for launch
             // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
             batch_gas.initial_gas += gas_params.get(GasId::new_account_cost());
-        } else if !aa_env.nonce_key.is_zero() {
+        } else if !nonce_key.is_zero() {
             // Existing 2D nonce key usage (nonce > 0): cold SLOAD + warm SSTORE reset
             // TIP-1000 Invariant 3: existing state updates must charge 5,000 gas
             batch_gas.initial_gas += EXISTING_NONCE_KEY_GAS;
         }
-    } else if let Some(aa_env) = &tx.tempo_tx_env
-        && !aa_env.nonce_key.is_zero()
-    {
-        nonce_2d_gas = if tx.nonce() == 0 {
+    } else if !nonce_key.is_zero() {
+        nonce_2d_gas = if tx_nonce == 0 {
             // New key - cold SLOAD + SSTORE set (0 -> non-zero)
             NEW_NONCE_KEY_GAS
         } else {
@@ -3281,6 +3326,130 @@ mod tests {
         assert_eq!(
             gas_delta, EXISTING_NONCE_KEY_GAS,
             "Difference between existing 2D nonce and regular nonce should be EXISTING_NONCE_KEY_GAS ({EXISTING_NONCE_KEY_GAS})"
+        );
+    }
+
+    /// Test that T1 hardfork correctly charges 250k gas for expiring nonce CREATE transactions
+    /// when the account's protocol nonce is 0.
+    ///
+    /// This test validates the fix for CHAIN-577:
+    /// "AA CREATE transactions using expiring nonce are not charged the 250,000 gas new account cost
+    /// when the account's protocol nonce is 0, even though CREATE execution bumps the protocol nonce
+    /// from 0 to 1."
+    ///
+    /// Per TIP-1000, the new account cost (250k) should apply when the account's nonce transitions
+    /// from 0 to 1, which happens during CREATE transactions.
+    #[test]
+    fn test_t1_expiring_nonce_create_charges_new_account_cost() {
+        use crate::gas_params::tempo_gas_params;
+        use revm::{context_interface::cfg::GasId, handler::Handler};
+
+        // Create T1 config with TIP-1000 gas params
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+
+        let new_account_cost = cfg.gas_params.get(GasId::new_account_cost());
+        assert_eq!(
+            new_account_cost, 250_000,
+            "T1 new account cost should be 250k"
+        );
+
+        // Helper to create EVM context for testing with specified call type
+        let make_evm = |cfg: CfgEnv<TempoHardfork>, nonce_key: U256, is_create: bool| {
+            let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+            let call = if is_create {
+                Call {
+                    to: TxKind::Create,
+                    value: U256::ZERO,
+                    input: Bytes::from(vec![0xef]), // Minimal initcode
+                }
+            } else {
+                Call {
+                    to: TxKind::Call(Address::new([0xAA; 20])),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }
+            };
+            let ctx = Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(TempoTxEnv {
+                    inner: revm::context::TxEnv {
+                        gas_limit: 10_000_000,
+                        nonce: 0, // Expiring nonce requires tx.nonce == 0
+                        ..Default::default()
+                    },
+                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        aa_calls: vec![call],
+                        nonce_key,
+                        valid_before: Some(u64::MAX), // Required for expiring nonce
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .with_new_journal(journal);
+            TempoEvm::<_, ()>::new(ctx, ())
+        };
+
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        // Case 1: Expiring nonce CALL transaction - should only charge EXPIRING_NONCE_GAS
+        let mut evm_expiring_call = make_evm(cfg.clone(), TEMPO_EXPIRING_NONCE_KEY, false);
+        let gas_expiring_call = handler
+            .validate_initial_tx_gas(&mut evm_expiring_call)
+            .unwrap();
+
+        // Case 2: Expiring nonce CREATE transaction - should charge EXPIRING_NONCE_GAS + new_account_cost
+        let mut evm_expiring_create = make_evm(cfg.clone(), TEMPO_EXPIRING_NONCE_KEY, true);
+        let gas_expiring_create = handler
+            .validate_initial_tx_gas(&mut evm_expiring_create)
+            .unwrap();
+
+        // The CREATE tx should charge 250k more than the CALL tx (for new account cost)
+        // Note: CREATE also has additional costs (500k create cost, initcode cost), but we're
+        // specifically testing that the new_account_cost is added for expiring nonce CREATE
+        // when account's protocol nonce is 0.
+        //
+        // For comparison, a 2D nonce CREATE with nonce=0 should have the same gas as
+        // expiring nonce CREATE (both should charge new_account_cost for protocol nonce 0->1)
+
+        // Case 3: 2D nonce CREATE with nonce=0 for comparison
+        let mut evm_2d_nonce_create = make_evm(cfg.clone(), U256::from(42), true);
+        let _gas_2d_nonce_create = handler
+            .validate_initial_tx_gas(&mut evm_2d_nonce_create)
+            .unwrap();
+
+        // The expiring nonce CREATE should have new_account_cost just like 2D nonce CREATE
+        // The only difference should be EXPIRING_NONCE_GAS vs new_account_cost for nonce handling
+        // Expiring nonce: EXPIRING_NONCE_GAS + new_account_cost (for CREATE)
+        // 2D nonce with nonce=0: new_account_cost (includes both nonce key creation and account creation)
+        //
+        // Actually, for 2D nonce with nonce=0, the 250k already covers account creation.
+        // For expiring nonce, we need to add EXPIRING_NONCE_GAS (for nonce tracking) + new_account_cost
+        // (for the account creation that happens during CREATE).
+
+        let gas_delta = gas_expiring_create.initial_gas - gas_expiring_call.initial_gas;
+
+        // The difference between CREATE and CALL should include new_account_cost plus CREATE-specific costs
+        // CREATE costs: 500k base + initcode cost + calldata gas (1 byte = 16 gas for non-zero)
+        // But we're specifically testing that new_account_cost is ALSO added
+        let create_cost = cfg.gas_params.create_cost(); // 500k for T1
+        let initcode_cost = cfg.gas_params.tx_initcode_cost(1); // 1 byte initcode
+        let calldata_gas = 16u64; // 0xef is non-zero byte, costs 16 gas
+
+        // For a CALL, we should only have: base + EXPIRING_NONCE_GAS
+        // For a CREATE with protocol nonce 0, we should have: base + EXPIRING_NONCE_GAS + new_account_cost + create_cost + initcode + calldata
+
+        // The delta should include new_account_cost (250k) + create_cost (500k) + initcode_cost + calldata_gas
+        let expected_delta = new_account_cost + create_cost + initcode_cost + calldata_gas;
+
+        assert_eq!(
+            gas_delta, expected_delta,
+            "Expiring nonce CREATE should charge {expected_delta} more than CALL \
+            (new_account_cost={new_account_cost} + create_cost={create_cost} + initcode_cost={initcode_cost} + calldata_gas={calldata_gas}), \
+            but got delta={gas_delta}"
         );
     }
 }
