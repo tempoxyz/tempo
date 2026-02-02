@@ -3,7 +3,6 @@ use alloy_evm::{EvmInternals, EvmInternalsError};
 use revm::{
     context::{Block, CfgEnv},
     context_interface::cfg::{GasParams, gas},
-    interpreter::instructions::WARM_STORAGE_READ_COST,
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -98,7 +97,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .load_account_mut_skip_cold_load(address, false)?;
 
         // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        deduct_gas(&mut self.gas_remaining, WARM_STORAGE_READ_COST)?;
+        deduct_gas(
+            &mut self.gas_remaining,
+            self.gas_params.warm_storage_read_cost(),
+        )?;
 
         // dynamic gas
         if account.is_cold {
@@ -145,8 +147,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        // Static gas is not part of gas_params yet.
-        self.deduct_gas(WARM_STORAGE_READ_COST)?;
+        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
         self.internals.tstore(address, key, value);
         Ok(())
     }
@@ -183,7 +184,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         };
 
         // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        self.deduct_gas(WARM_STORAGE_READ_COST)?;
+        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
 
         if is_cold {
             self.deduct_gas(additional_cost)?;
@@ -194,7 +195,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        self.deduct_gas(WARM_STORAGE_READ_COST)?;
+        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
 
         Ok(self.internals.tload(address, key))
     }
