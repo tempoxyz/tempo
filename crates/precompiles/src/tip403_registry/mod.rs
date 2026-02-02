@@ -269,8 +269,8 @@ impl TIP403Registry {
                     ))?;
                 }
                 ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
-                    // Pre-T1: no events emitted for invalid types, accounts still added
-                    // T1+: unreachable since validate_simple_policy_type already rejected
+                    // T1+: unreachable since `validate_simple_policy_type` already rejected
+                    return Err(TIP403RegistryError::incompatible_policy_type().into());
                 }
             }
         }
@@ -1774,4 +1774,56 @@ mod tests {
 
         Ok(())
     }
+<<<<<<< Updated upstream
+=======
+
+    #[test]
+    fn test_compound_policy_data_rejects_simple_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create a simple whitelist policy
+            let simple_policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+
+            // Querying compound_policy_data on a simple policy should return IncompatiblePolicyType
+            let result = registry.compound_policy_data(ITIP403Registry::compoundPolicyDataCall {
+                policyId: simple_policy_id,
+            });
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::IncompatiblePolicyType(_)
+                )
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compound_policy_data_rejects_non_existent_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+
+            // Querying compound_policy_data on a non-existent policy should return PolicyNotFound
+            let result = registry
+                .compound_policy_data(ITIP403Registry::compoundPolicyDataCall { policyId: 999 });
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotFound(_))
+            ));
+
+            Ok(())
+        })
+    }
+>>>>>>> Stashed changes
 }
