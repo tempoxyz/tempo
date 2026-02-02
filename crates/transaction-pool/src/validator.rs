@@ -404,17 +404,17 @@ where
             }
             // In CREATE tx with 2d nonce, check if account.nonce is 0, if so, add 250,000 gas.
             // This covers caller creation of account.
-            if !tx.nonce_key.is_zero() && tx.is_create() {
-                if state_provider
+            if !tx.nonce_key.is_zero()
+                && tx.is_create()
+                // in case of provider error, we assume the account nonce is 0 and charge additional gas.
+                && state_provider
                     .account_nonce(&sender)
-                    // in case of provider error, we assume the account nonce is 0 and charge additional gas.
                     .ok()
                     .flatten()
                     .unwrap_or_default()
                     == 0
-                {
-                    init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
-                }
+            {
+                init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
             }
         } else if !tx.nonce_key.is_zero() {
             // Pre-T1: Add 2D nonce gas if nonce_key is non-zero
