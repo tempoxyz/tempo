@@ -4,20 +4,17 @@
 //! - Commonware's runtime context (`context.encode()`)
 //! - Reth's prometheus recorder (`handle.render()`)
 
-use std::collections::HashMap;
-
 use commonware_runtime::{Metrics as _, Spawner as _, tokio::Context};
 use eyre::WrapErr as _;
 use jiff::SignedDuration;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_tracing::tracing;
+use url::Url;
 
 /// Configuration for Prometheus metrics push export.
 pub struct PrometheusMetricsConfig {
-    /// Extra labels to add to all metrics if possible -- i.e VictoriaMetrics `extra_labels` query string.
-    pub extra_labels: HashMap<String, String>,
     /// The Prometheus export endpoint.
-    pub endpoint: String,
+    pub endpoint: Url,
     /// The interval at which to push metrics.
     pub interval: SignedDuration,
     /// Optional Authorization header value
@@ -37,29 +34,16 @@ pub fn install_prometheus_metrics(
     let interval: std::time::Duration = config
         .interval
         .try_into()
-        .wrap_err("metrics interval must be positive")?;
+        .wrap_err("invalid metrics duration")?;
 
     let client = reqwest::Client::new();
 
-    // Build extra labels query string for Victoria Metrics
-    let extra_labels = if config.extra_labels.is_empty() {
-        String::new()
-    } else {
-        let labels: Vec<String> = config
-            .extra_labels
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
-        format!("?extra_label={}", labels.join("&extra_label="))
-    };
-
-    let endpoint = format!("{}{}", config.endpoint, extra_labels);
+    let endpoint = config.endpoint.to_string();
     let auth_header = config.auth_header;
 
+    let reth_recorder = install_prometheus_recorder();
     context.spawn(move |context| async move {
         use commonware_runtime::Clock as _;
-
-        let reth_recorder = install_prometheus_recorder();
 
         loop {
             context.sleep(interval).await;
@@ -81,10 +65,13 @@ pub fn install_prometheus_metrics(
 
             match request.send().await {
                 Ok(response) if !response.status().is_success() => {
-                    tracing::warn!(status = %response.status(), "failed to push metrics");
+                    tracing::warn_span!("metrics_export").in_scope(
+                        || tracing::warn!(status = %response.status(), "failed to push metrics"),
+                    );
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to push metrics");
+                    tracing::warn_span!("metrics_export")
+                        .in_scope(|| tracing::warn!(error = %e, "failed to push metrics"));
                 }
                 _ => {}
             }

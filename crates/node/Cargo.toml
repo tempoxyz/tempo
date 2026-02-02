@@ -55,6 +55,7 @@ futures.workspace = true
 jiff = { workspace = true, features = ["std"] }
 reqwest.workspace = true
 tokio.workspace = true
+url.workspace = true
 serde.workspace = true
 jsonrpsee.workspace = true
 

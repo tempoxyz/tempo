@@ -18,8 +18,8 @@ pub(crate) struct TelemetryArgs {
     /// to VictoriaMetrics which supports both with different api paths.
     ///
     /// The URL must include credentials: `https://user:pass@metrics.example.com`
-    #[arg(long, value_name = "URL")]
-    pub telemetry_url: Option<String>,
+    #[arg(long, value_name = "URL", conflicts_with = "logs.otlp")]
+    pub telemetry_url: Option<Url>,
 
     /// The interval at which to push Prometheus metrics.
     #[arg(long, default_value = "10s")]
@@ -35,7 +35,7 @@ pub(crate) struct TelemetryConfig {
     pub logs_otlp_filter: String,
     /// Prometheus metrics push endpoint (without credentials).
     /// Used for both consensus and execution metrics.
-    pub metrics_prometheus_url: String,
+    pub metrics_prometheus_url: Url,
     /// The interval at which to push Prometheus metrics.
     pub metrics_prometheus_interval: SignedDuration,
     /// Authorization header for metrics push
@@ -101,16 +101,13 @@ pub(crate) fn init_defaults() {
 pub(crate) fn parse_telemetry_config(
     args: &TelemetryArgs,
 ) -> eyre::Result<Option<TelemetryConfig>> {
-    let Some(ref telemetry_url) = args.telemetry_url else {
+    let Some(telemetry_url) = &args.telemetry_url else {
         return Ok(None);
     };
 
-    let mut url =
-        Url::parse(telemetry_url).map_err(|e| eyre::eyre!("--telemetry-url: invalid URL: {e}"))?;
-
     // Extract credentials - both username and password are required
-    let username = url.username();
-    let password = url.password();
+    let username = telemetry_url.username();
+    let password = telemetry_url.password();
     if username.is_empty() || password.is_none() {
         return Err(eyre::eyre!(
             "--telemetry-url must include credentials (username and password).\n\
@@ -133,16 +130,19 @@ pub(crate) fn parse_telemetry_config(
     }
 
     // Build URL without credentials
-    url.set_username("").ok();
-    url.set_password(None).ok();
-    let base_url_no_creds = url.as_str().trim_end_matches('/');
+    let mut base_url_no_creds = telemetry_url.clone();
+    base_url_no_creds.set_username("").ok();
+    base_url_no_creds.set_password(None).ok();
 
     // Build logs OTLP URL (Victoria Metrics OTLP path)
-    let logs_otlp_url = Url::parse(&format!("{base_url_no_creds}/opentelemetry/v1/logs"))
+    let logs_otlp_url = base_url_no_creds
+        .join("opentelemetry/v1/logs")
         .map_err(|e| eyre::eyre!("failed to construct logs OTLP URL: {e}"))?;
 
     // Build metrics prometheus URL (Victoria Metrics Prometheus import path)
-    let metrics_prometheus_url = format!("{base_url_no_creds}/api/v1/import/prometheus");
+    let metrics_prometheus_url = base_url_no_creds
+        .join("api/v1/import/prometheus")
+        .map_err(|e| eyre::eyre!("failed to construct metrics URL: {e}"))?;
 
     Ok(Some(TelemetryConfig {
         logs_otlp_url,

@@ -122,21 +122,16 @@ fn main() -> eyre::Result<()> {
     >::parse();
 
     // If telemetry is enabled, set logs OTLP and check for conflicts
-    if let Commands::Node(ref node_cmd) = cli.command
-        && let Some(config) = defaults::parse_telemetry_config(&node_cmd.ext.telemetry)?
+    if let Commands::Node(node_cmd) = &cli.command
+        && let Some(config) = defaults::parse_telemetry_config(&node_cmd.ext.telemetry)
+            .wrap_err("failed to parse telemetry config")?
     {
-        if cli.traces.logs_otlp.is_some() {
-            return Err(eyre::eyre!(
-                "--telemetry-url and --logs.otlp cannot both be specified"
-            ));
-        }
-
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
         cli.traces.logs_otlp = Some(config.logs_otlp_url);
         cli.traces.logs_otlp_filter = config
             .logs_otlp_filter
             .parse()
-            .expect("invalid default logs filter");
+            .wrap_err("invalid default logs filter")?;
     }
 
     let is_node = matches!(cli.command, Commands::Node(_));
@@ -205,15 +200,7 @@ fn main() -> eyre::Result<()> {
 
                 // Start the unified metrics exporter if configured
                 if let Some(config) = defaults::parse_telemetry_config(&args.telemetry)? {
-                    let mut extra_labels = std::collections::HashMap::new();
-
-                    // Add consensus public key as node identifier
-                    if let Ok(Some(public_key)) = args.consensus.public_key() {
-                        extra_labels.insert("consensus_id".to_string(), public_key.to_string());
-                    }
-
                     let prometheus_config = PrometheusMetricsConfig {
-                        extra_labels,
                         endpoint: config.metrics_prometheus_url,
                         interval: config.metrics_prometheus_interval,
                         auth_header: config.metrics_auth_header,
