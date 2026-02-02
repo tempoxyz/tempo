@@ -43,10 +43,6 @@ contract TIP1015Test is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        if (isTempo) {
-            return;
-        }
-
         sender = makeAddr("sender");
         recipient = makeAddr("recipient");
         mintRecipient = makeAddr("mintRecipient");
@@ -98,18 +94,11 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
     }
 
-    modifier onlySolidityImpl() {
-        if (isTempo) {
-            return;
-        }
-        _;
-    }
-
     /*//////////////////////////////////////////////////////////////
                     INVARIANT 1: Simple Policy Constraint
     //////////////////////////////////////////////////////////////*/
 
-    function test_invariant1_cannotReferenceCompoundPolicy() public onlySolidityImpl {
+    function test_invariant1_cannotReferenceCompoundPolicy() public {
         vm.startPrank(admin);
 
         uint64 cp = registry.createCompoundPolicy(whitelistPolicy, blacklistPolicy, whitelistPolicy);
@@ -126,7 +115,7 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
     }
 
-    function test_invariant1_canReferenceSimplePolicies() public onlySolidityImpl {
+    function test_invariant1_canReferenceSimplePolicies() public {
         vm.startPrank(admin);
 
         uint64 cp = registry.createCompoundPolicy(whitelistPolicy, blacklistPolicy, senderOnlyPolicy);
@@ -144,7 +133,7 @@ contract TIP1015Test is BaseTest {
                     INVARIANT 2: Immutability
     //////////////////////////////////////////////////////////////*/
 
-    function test_invariant2_compoundPolicyHasNoAdmin() public onlySolidityImpl {
+    function test_invariant2_compoundPolicyHasNoAdmin() public {
         vm.startPrank(admin);
 
         uint64 cp = registry.createCompoundPolicy(whitelistPolicy, whitelistPolicy, whitelistPolicy);
@@ -157,7 +146,7 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
     }
 
-    function test_invariant2_cannotModifyCompoundPolicy() public onlySolidityImpl {
+    function test_invariant2_cannotModifyCompoundPolicy() public {
         vm.startPrank(admin);
         uint64 cp = registry.createCompoundPolicy(whitelistPolicy, whitelistPolicy, whitelistPolicy);
         vm.stopPrank();
@@ -173,7 +162,7 @@ contract TIP1015Test is BaseTest {
                     INVARIANT 3: Existence Check
     //////////////////////////////////////////////////////////////*/
 
-    function test_invariant3_revertsOnNonExistentPolicy() public onlySolidityImpl {
+    function test_invariant3_revertsOnNonExistentPolicy() public {
         uint64 nonExistentPolicy = 99_999;
 
         vm.startPrank(admin);
@@ -194,7 +183,7 @@ contract TIP1015Test is BaseTest {
                     INVARIANT 4: Delegation Correctness
     //////////////////////////////////////////////////////////////*/
 
-    function test_invariant4_simplePolicyEquivalence() public onlySolidityImpl {
+    function test_invariant4_simplePolicyEquivalence() public {
         bool senderAuth = registry.isAuthorizedSender(whitelistPolicy, whitelistedUser);
         bool recipientAuth = registry.isAuthorizedRecipient(whitelistPolicy, whitelistedUser);
         bool mintAuth = registry.isAuthorizedMintRecipient(whitelistPolicy, whitelistedUser);
@@ -221,7 +210,7 @@ contract TIP1015Test is BaseTest {
 
     function testFuzz_invariant4_simplePolicyEquivalence(uint256 policySeed, address user)
         public
-        onlySolidityImpl
+       
     {
         vm.assume(user != address(0));
 
@@ -255,7 +244,7 @@ contract TIP1015Test is BaseTest {
                     INVARIANT 5: isAuthorized Equivalence
     //////////////////////////////////////////////////////////////*/
 
-    function test_invariant5_isAuthorizedEquivalence() public onlySolidityImpl {
+    function test_invariant5_isAuthorizedEquivalence() public {
         vm.startPrank(admin);
 
         uint64 cp = registry.createCompoundPolicy(
@@ -285,7 +274,7 @@ contract TIP1015Test is BaseTest {
         assertFalse(isAuth);
     }
 
-    function testFuzz_invariant5_isAuthorizedEquivalence(address user) public onlySolidityImpl {
+    function testFuzz_invariant5_isAuthorizedEquivalence(address user) public {
         vm.assume(user != address(0));
 
         vm.startPrank(admin);
@@ -303,7 +292,7 @@ contract TIP1015Test is BaseTest {
                     INVARIANT 6: Built-in Policy Compatibility
     //////////////////////////////////////////////////////////////*/
 
-    function test_invariant6_canReferenceBuiltinPolicies() public onlySolidityImpl {
+    function test_invariant6_canReferenceBuiltinPolicies() public {
         uint64 alwaysReject = 0;
         uint64 alwaysAllow = 1;
 
@@ -326,7 +315,7 @@ contract TIP1015Test is BaseTest {
                     USE CASE TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function test_vendorCreditsUseCase() public onlySolidityImpl {
+    function test_vendorCreditsUseCase() public {
         address vendor = makeAddr("vendor");
         address customer = makeAddr("customer");
         address randomPerson = makeAddr("randomPerson");
@@ -351,7 +340,7 @@ contract TIP1015Test is BaseTest {
         assertFalse(registry.isAuthorizedRecipient(vendorPolicy, randomPerson));
     }
 
-    function test_asymmetricSenderRestriction() public onlySolidityImpl {
+    function test_asymmetricSenderRestriction() public {
         address sanctionedUser = makeAddr("sanctionedUser");
         address normalUser = makeAddr("normalUser");
 
@@ -375,7 +364,7 @@ contract TIP1015Test is BaseTest {
                     TIP-20 MINT INTEGRATION TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function test_mint_succeeds_authorizedMintRecipient_simplePolicy() public onlySolidityImpl {
+    function test_mint_succeeds_authorizedMintRecipient_simplePolicy() public {
         vm.startPrank(admin);
 
         TIP20 simpleToken =
@@ -389,7 +378,7 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
     }
 
-    function test_mint_fails_unauthorizedMintRecipient_simplePolicy() public onlySolidityImpl {
+    function test_mint_fails_unauthorizedMintRecipient_simplePolicy() public {
         vm.startPrank(admin);
 
         TIP20 simpleToken = TIP20(
@@ -404,21 +393,21 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
     }
 
-    function test_mint_succeeds_authorizedMintRecipient_compoundPolicy() public onlySolidityImpl {
+    function test_mint_succeeds_authorizedMintRecipient_compoundPolicy() public {
         vm.startPrank(admin);
         compoundToken.mint(mintRecipient, 1000);
         assertEq(compoundToken.balanceOf(mintRecipient), 1000);
         vm.stopPrank();
     }
 
-    function test_mint_fails_unauthorizedMintRecipient_compoundPolicy() public onlySolidityImpl {
+    function test_mint_fails_unauthorizedMintRecipient_compoundPolicy() public {
         vm.startPrank(admin);
         vm.expectRevert(ITIP20.PolicyForbids.selector);
         compoundToken.mint(blockedUser, 1000);
         vm.stopPrank();
     }
 
-    function test_mint_usesCorrectSubPolicy() public onlySolidityImpl {
+    function test_mint_usesCorrectSubPolicy() public {
         vm.startPrank(admin);
 
         vm.expectRevert(ITIP20.PolicyForbids.selector);
@@ -434,7 +423,7 @@ contract TIP1015Test is BaseTest {
                     TIP-20 TRANSFER INTEGRATION TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function test_transfer_succeeds_bothAuthorized_simplePolicy() public onlySolidityImpl {
+    function test_transfer_succeeds_bothAuthorized_simplePolicy() public {
         vm.startPrank(admin);
 
         TIP20 simpleToken =
@@ -452,7 +441,7 @@ contract TIP1015Test is BaseTest {
         assertEq(simpleToken.balanceOf(recipient), 500);
     }
 
-    function test_transfer_fails_senderBlacklisted_simplePolicy() public onlySolidityImpl {
+    function test_transfer_fails_senderBlacklisted_simplePolicy() public {
         vm.startPrank(admin);
 
         TIP20 simpleToken =
@@ -469,7 +458,7 @@ contract TIP1015Test is BaseTest {
         simpleToken.transfer(recipient, 500);
     }
 
-    function test_transfer_succeeds_bothAuthorized_compoundPolicy() public onlySolidityImpl {
+    function test_transfer_succeeds_bothAuthorized_compoundPolicy() public {
         vm.startPrank(admin);
 
         registry.modifyPolicyWhitelist(mintRecipientWhitelist, sender, true);
@@ -484,7 +473,7 @@ contract TIP1015Test is BaseTest {
         assertEq(compoundToken.balanceOf(recipient), 500);
     }
 
-    function test_transfer_fails_senderUnauthorized_compoundPolicy() public onlySolidityImpl {
+    function test_transfer_fails_senderUnauthorized_compoundPolicy() public {
         vm.startPrank(admin);
 
         TIP20 testToken =
@@ -504,7 +493,7 @@ contract TIP1015Test is BaseTest {
         testToken.transfer(recipient, 500);
     }
 
-    function test_transfer_fails_recipientUnauthorized_compoundPolicy() public onlySolidityImpl {
+    function test_transfer_fails_recipientUnauthorized_compoundPolicy() public {
         vm.startPrank(admin);
 
         TIP20 testToken =
@@ -521,7 +510,7 @@ contract TIP1015Test is BaseTest {
         testToken.transfer(blockedUser, 500);
     }
 
-    function test_transfer_asymmetricCompound_blockedCanReceiveNotSend() public onlySolidityImpl {
+    function test_transfer_asymmetricCompound_blockedCanReceiveNotSend() public {
         vm.startPrank(admin);
 
         TIP20 testToken =
@@ -547,7 +536,7 @@ contract TIP1015Test is BaseTest {
                     TIP-20 BURN_BLOCKED INTEGRATION TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function test_burnBlocked_succeeds_blockedSender_simplePolicy() public onlySolidityImpl {
+    function test_burnBlocked_succeeds_blockedSender_simplePolicy() public {
         vm.startPrank(admin);
 
         TIP20 testToken =
@@ -565,7 +554,7 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
     }
 
-    function test_burnBlocked_fails_authorizedSender_simplePolicy() public onlySolidityImpl {
+    function test_burnBlocked_fails_authorizedSender_simplePolicy() public {
         vm.startPrank(admin);
 
         TIP20 testToken =
@@ -581,7 +570,7 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
     }
 
-    function test_burnBlocked_succeeds_blockedSender_compoundPolicy() public onlySolidityImpl {
+    function test_burnBlocked_succeeds_blockedSender_compoundPolicy() public {
         vm.startPrank(admin);
 
         TIP20 testToken =
@@ -599,7 +588,7 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
     }
 
-    function test_burnBlocked_fails_authorizedSender_compoundPolicy() public onlySolidityImpl {
+    function test_burnBlocked_fails_authorizedSender_compoundPolicy() public {
         vm.startPrank(admin);
 
         TIP20 testToken =
@@ -617,7 +606,7 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
     }
 
-    function test_burnBlocked_checksCorrectSubPolicy() public onlySolidityImpl {
+    function test_burnBlocked_checksCorrectSubPolicy() public {
         vm.startPrank(admin);
 
         uint64 recipientBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
@@ -644,7 +633,7 @@ contract TIP1015Test is BaseTest {
                     DEX CANCEL_STALE_ORDER TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function test_cancelStaleOrder_succeeds_blockedMaker_simplePolicy() public onlySolidityImpl {
+    function test_cancelStaleOrder_succeeds_blockedMaker_simplePolicy() public {
         uint128 MIN_ORDER = 100_000_000;
 
         vm.startPrank(admin);
@@ -681,7 +670,7 @@ contract TIP1015Test is BaseTest {
         exchange.cancelStaleOrder(orderId);
     }
 
-    function test_cancelStaleOrder_fails_authorizedMaker_simplePolicy() public onlySolidityImpl {
+    function test_cancelStaleOrder_fails_authorizedMaker_simplePolicy() public {
         uint128 MIN_ORDER = 100_000_000;
 
         vm.startPrank(admin);
@@ -713,7 +702,7 @@ contract TIP1015Test is BaseTest {
         exchange.cancelStaleOrder(orderId);
     }
 
-    function test_cancelStaleOrder_succeeds_blockedMaker_compoundPolicy() public onlySolidityImpl {
+    function test_cancelStaleOrder_succeeds_blockedMaker_compoundPolicy() public {
         uint128 MIN_ORDER = 100_000_000;
 
         vm.startPrank(admin);
@@ -760,7 +749,7 @@ contract TIP1015Test is BaseTest {
         bool senderInWhitelist,
         bool recipientInWhitelist,
         uint256 amount
-    ) public onlySolidityImpl {
+    ) public {
         amount = bound(amount, 1, 1_000_000);
 
         address testSender = makeAddr("fuzzSender");
@@ -812,7 +801,7 @@ contract TIP1015Test is BaseTest {
         bool inRecipientPolicy,
         bool inMintPolicy,
         uint256 amount
-    ) public onlySolidityImpl {
+    ) public {
         amount = bound(amount, 1, 1_000_000);
 
         address testMintRecipient = makeAddr("fuzzMintRecipient");

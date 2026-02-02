@@ -47,10 +47,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     function setUp() public override {
         super.setUp();
 
-        if (isTempo) {
-            return;
-        }
-
         targetContract(address(this));
         _setupInvariantBase();
 
@@ -72,18 +68,11 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         _initLogFile(LOG_FILE, "TIP-1015 Compound Policy Invariant Test Log");
     }
 
-    modifier onlySolidityImpl() {
-        if (isTempo) {
-            return;
-        }
-        _;
-    }
-
     /*//////////////////////////////////////////////////////////////
                             FUZZ HANDLERS
     //////////////////////////////////////////////////////////////*/
 
-    function createSimplePolicy(uint256 actorSeed, bool isWhitelist) external onlySolidityImpl {
+    function createSimplePolicy(uint256 actorSeed, bool isWhitelist) external {
         address actor = _selectActor(actorSeed);
         ITIP403Registry.PolicyType ptype = isWhitelist
             ? ITIP403Registry.PolicyType.WHITELIST
@@ -114,7 +103,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         uint256 senderSeed,
         uint256 recipientSeed,
         uint256 mintSeed
-    ) external onlySolidityImpl {
+    ) external {
         if (_simplePolicies.length < 3) return;
 
         uint64 sPid = _selectSimplePolicy(senderSeed);
@@ -161,7 +150,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         }
     }
 
-    function createCompoundWithBuiltins(uint256 seed) external onlySolidityImpl {
+    function createCompoundWithBuiltins(uint256 seed) external {
         uint64 alwaysReject = 0;
         uint64 alwaysAllow = 1;
 
@@ -196,7 +185,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         }
     }
 
-    function tryCreateCompoundWithCompound(uint256 seed) external onlySolidityImpl {
+    function tryCreateCompoundWithCompound(uint256 seed) external {
         if (_compoundPolicies.length == 0) return;
 
         uint64 compoundRef = _compoundPolicies[seed % _compoundPolicies.length];
@@ -234,7 +223,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         }
     }
 
-    function tryCreateCompoundWithNonExistent(uint256 seed) external onlySolidityImpl {
+    function tryCreateCompoundWithNonExistent(uint256 seed) external {
         uint64 counter = registry.policyIdCounter();
         uint64 nonExistent = counter + uint64(bound(seed, 1, 1000));
         uint64 simplePid = _simplePolicies.length > 0
@@ -273,7 +262,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     function modifySimplePolicy(uint256 policySeed, uint256 accountSeed, bool add)
         external
-        onlySolidityImpl
+       
     {
         if (_simplePolicies.length == 0) return;
 
@@ -314,7 +303,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     function tryModifyCompoundPolicy(uint256 policySeed, uint256 accountSeed)
         external
-        onlySolidityImpl
+       
     {
         if (_compoundPolicies.length == 0) return;
 
@@ -341,7 +330,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     function checkSimplePolicyEquivalence(uint256 policySeed, uint256 accountSeed)
         external
         view
-        onlySolidityImpl
+       
     {
         if (_simplePolicies.length == 0) return;
 
@@ -359,7 +348,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     function checkCompoundIsAuthorizedEquivalence(uint256 policySeed, uint256 accountSeed)
         external
         view
-        onlySolidityImpl
+       
     {
         if (_compoundPolicies.length == 0) return;
 
@@ -380,7 +369,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     function checkCompoundDelegation(uint256 policySeed, uint256 accountSeed)
         external
         view
-        onlySolidityImpl
+       
     {
         if (_compoundPolicies.length == 0) return;
 
@@ -404,7 +393,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         assertEq(actualMint, expectedMint, "Compound mint delegation broken");
     }
 
-    function createTokenWithCompoundPolicy(uint256 policySeed) external onlySolidityImpl {
+    function createTokenWithCompoundPolicy(uint256 policySeed) external {
         if (_compoundPolicies.length == 0) return;
 
         uint64 pid = _compoundPolicies[policySeed % _compoundPolicies.length];
@@ -444,7 +433,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     function mintToAuthorizedRecipient(uint256 tokenSeed, uint256 recipientSeed, uint256 amount)
         external
-        onlySolidityImpl
+       
     {
         if (_compoundTokens.length == 0) return;
 
@@ -494,7 +483,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     /// @notice Combined invariant check - single loop through compound policies
     /// @dev Checks TEMPO-1015-2, TEMPO-1015-3, TEMPO-1015-5, TEMPO-1015-6 in one pass
-    function invariant_globalInvariants() public view onlySolidityImpl {
+    function invariant_globalInvariants() public view {
         _invariantSimplePolicyEquivalence();
         _invariantCompoundPoliciesCombined();
     }
