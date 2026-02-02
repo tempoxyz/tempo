@@ -681,12 +681,12 @@ impl TIP20Token {
         let registry = TIP403Registry::new();
 
         // (spec: +T1) short-circuit and skip recipient check if sender fails
-        if !registry.is_authorized_as(policy_id, from, AuthRole::sender())?
-            && self.storage.spec().is_t1()
-        {
+        let sender_auth = registry.is_authorized_as(policy_id, from, AuthRole::sender())?;
+        if self.storage.spec().is_t1() && !sender_auth {
             return Ok(false);
         }
-        registry.is_authorized_as(policy_id, to, AuthRole::recipient())
+        let recipient_auth = registry.is_authorized_as(policy_id, to, AuthRole::recipient())?;
+        Ok(sender_auth && recipient_auth)
     }
 
     /// Ensures the transfer is authorized.
@@ -1896,6 +1896,89 @@ pub(crate) mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_is_transfer_authorized() -> eyre::Result<()> {
+        use tempo_chainspec::hardfork::TempoHardfork;
+
+        let admin = Address::random();
+        let sender = Address::random();
+        let recipient = Address::random();
+
+        for hardfork in [TempoHardfork::T0, TempoHardfork::T1] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+
+            StorageCtx::enter(&mut storage, || {
+                let token = TIP20Setup::path_usd(admin).apply()?;
+
+                // Initialize TIP403 registry and create a whitelist policy
+                let mut registry = TIP403Registry::new();
+                registry.initialize()?;
+
+                let policy_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: ITIP403Registry::PolicyType::WHITELIST,
+                    },
+                )?;
+
+                // Assign token to use this policy
+                let mut token = token;
+                token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy_id,
+                    },
+                )?;
+
+                // Sender not whitelisted, recipient whitelisted
+                registry.modify_policy_whitelist(
+                    admin,
+                    ITIP403Registry::modifyPolicyWhitelistCall {
+                        policyId: policy_id,
+                        account: recipient,
+                        allowed: true,
+                    },
+                )?;
+                assert!(!token.is_transfer_authorized(sender, recipient)?);
+
+                // Sender whitelisted, recipient not whitelisted
+                registry.modify_policy_whitelist(
+                    admin,
+                    ITIP403Registry::modifyPolicyWhitelistCall {
+                        policyId: policy_id,
+                        account: sender,
+                        allowed: true,
+                    },
+                )?;
+                registry.modify_policy_whitelist(
+                    admin,
+                    ITIP403Registry::modifyPolicyWhitelistCall {
+                        policyId: policy_id,
+                        account: recipient,
+                        allowed: false,
+                    },
+                )?;
+                assert!(!token.is_transfer_authorized(sender, recipient)?);
+
+                // Both whitelisted
+                registry.modify_policy_whitelist(
+                    admin,
+                    ITIP403Registry::modifyPolicyWhitelistCall {
+                        policyId: policy_id,
+                        account: recipient,
+                        allowed: true,
+                    },
+                )?;
+                assert!(token.is_transfer_authorized(sender, recipient)?);
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
+
+        Ok(())
     }
 
     #[test]
