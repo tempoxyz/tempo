@@ -149,8 +149,8 @@ pub struct Args {
 
     /// Rate limit for the marshal actor when backfilling (messages per second).
     /// Default: 8
-    #[arg(long = "consensus.marshal-rate-per-sec", default_value_t = 8)]
-    pub marshal_rate_per_sec: u32,
+    #[arg(long = "consensus.marshal-rate-per-sec")]
+    pub marshal_rate_per_sec: Option<u32>,
 
     /// The interval at which to broadcast subblocks to the next proposer.
     /// Each built subblock is immediately broadcasted to the next proposer (if it's known).

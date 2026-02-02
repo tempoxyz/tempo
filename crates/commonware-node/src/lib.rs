@@ -61,31 +61,31 @@ pub async fn run_consensus_stack(
 
     let p2p_dial_frequency = config
         .p2p_dial_frequency
-        .map(|d| d.unsigned_abs().try_into())
+        .map(|d| d.try_into())
         .transpose()
         .wrap_err("invalid dial frequency duration")?;
 
     let p2p_query_frequency = config
         .p2p_query_frequency
-        .map(|d| d.unsigned_abs().try_into())
+        .map(|d| d.try_into())
         .transpose()
         .wrap_err("invalid query frequency duration")?;
 
     let p2p_ping_frequency = config
         .p2p_ping_frequency
-        .map(|d| d.unsigned_abs().try_into())
+        .map(|d| d.try_into())
         .transpose()
         .wrap_err("invalid ping frequency duration")?;
 
     let p2p_connection_min_period: Option<Duration> = config
         .p2p_connection_min_period
-        .map(|d| d.unsigned_abs().try_into())
+        .map(|d| d.try_into())
         .transpose()
         .wrap_err("invalid connection min period duration")?;
 
     let p2p_handshake_per_ip_min_period: Option<Duration> = config
         .p2p_handshake_per_ip_min_period
-        .map(|d| d.unsigned_abs().try_into())
+        .map(|d| d.try_into())
         .transpose()
         .wrap_err("invalid handshake min period duration")?;
 
@@ -97,10 +97,15 @@ pub async fn run_consensus_stack(
         handshake_per_ip_min_period: p2p_handshake_per_ip_min_period,
     };
 
-    let marshal_quota = commonware_runtime::Quota::per_second(
-        std::num::NonZeroU32::new(config.marshal_rate_per_sec)
-            .ok_or_eyre("marshal rate per sec must be non-zero")?,
-    );
+    let marshal_quota = config
+        .marshal_rate_per_sec
+        .map(|rate| {
+            std::num::NonZeroU32::new(rate)
+                .map(commonware_runtime::Quota::per_second)
+                .ok_or_eyre("marshal rate per sec must be non-zero")
+        })
+        .transpose()?
+        .unwrap_or(MARSHAL_LIMIT);
 
     let (mut network, oracle) = instantiate_network(
         context,
