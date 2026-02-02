@@ -680,7 +680,10 @@ impl TIP20Token {
         let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
 
-        if !registry.is_authorized_as(policy_id, from, AuthRole::sender())? {
+        // (spec: +T1) short-circuit and skip recipient check if sender fails
+        if !registry.is_authorized_as(policy_id, from, AuthRole::sender())?
+            && self.storage.spec().is_t1()
+        {
             return Ok(false);
         }
         registry.is_authorized_as(policy_id, to, AuthRole::recipient())
