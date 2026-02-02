@@ -151,7 +151,15 @@ impl TIP403Registry {
 
         // Only compound policies have compound data
         if !data.is_compound() {
-            return Err(TIP403RegistryError::incompatible_policy_type().into());
+            // Check if the policy exists for error clarity
+            let err = if self.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: call.policyId,
+            })? {
+                TIP403RegistryError::incompatible_policy_type()
+            } else {
+                TIP403RegistryError::policy_not_found()
+            };
+            return Err(err.into());
         }
 
         let compound = self.policy_records[call.policyId].compound.read()?;
@@ -1743,5 +1751,42 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_compound_policy_data_error_cases() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Non-existent policy should return PolicyNotFound
+            let result = registry
+                .compound_policy_data(ITIP403Registry::compoundPolicyDataCall { policyId: 999 });
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotFound(_))
+            ));
+
+            // Simple policy should return IncompatiblePolicyType
+            let simple_policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            let result = registry.compound_policy_data(ITIP403Registry::compoundPolicyDataCall {
+                policyId: simple_policy_id,
+            });
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::IncompatiblePolicyType(_)
+                )
+            ));
+
+            Ok(())
+        })
     }
 }
