@@ -328,10 +328,16 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             revert("TEMPO-FAC7: USD token with non-USD quote should fail");
         } catch (bytes memory reason) {
             vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                ITIP20Factory.InvalidQuoteToken.selector,
-                "TEMPO-FAC7: Should revert with InvalidQuoteToken"
+            // Accept either InvalidQuoteToken or TokenAlreadyExists since validation order
+            // may vary between Solidity spec and Rust precompile. The precompile checks
+            // TokenAlreadyExists before InvalidQuoteToken, so if the computed address
+            // collides with an existing token, we get TokenAlreadyExists instead.
+            bytes4 selector = bytes4(reason);
+            bool isExpectedError = selector == ITIP20Factory.InvalidQuoteToken.selector
+                || selector == ITIP20Factory.TokenAlreadyExists.selector;
+            assertTrue(
+                isExpectedError,
+                "TEMPO-FAC7: Should revert with InvalidQuoteToken or TokenAlreadyExists"
             );
             _totalUsdWithNonUsdQuoteRejected++;
             if (_loggingEnabled) {

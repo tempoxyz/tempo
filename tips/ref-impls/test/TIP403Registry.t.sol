@@ -677,9 +677,7 @@ contract TIP403RegistryTest is BaseTest {
         try registry.policyData(999) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(
-                err, abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector)
-            );
+            assertEq(err, abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector));
         }
     }
 
