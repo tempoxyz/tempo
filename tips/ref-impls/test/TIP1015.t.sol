@@ -72,17 +72,9 @@ contract TIP1015Test is BaseTest {
             senderOnlyPolicy, recipientOnlyPolicy, mintRecipientWhitelist
         );
 
-        asymmetricCompound = registry.createCompoundPolicy(
-            senderBlacklist,
-            1,
-            1
-        );
+        asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
 
-        vendorCreditsPolicy = registry.createCompoundPolicy(
-            1,
-            recipientOnlyPolicy,
-            1
-        );
+        vendorCreditsPolicy = registry.createCompoundPolicy(1, recipientOnlyPolicy, 1);
 
         compoundToken = TIP20(
             factory.createToken("COMPOUND", "CMP", "USD", pathUSD, admin, bytes32("compound"))
@@ -118,7 +110,8 @@ contract TIP1015Test is BaseTest {
     function test_invariant1_canReferenceSimplePolicies() public {
         vm.startPrank(admin);
 
-        uint64 cp = registry.createCompoundPolicy(whitelistPolicy, blacklistPolicy, senderOnlyPolicy);
+        uint64 cp =
+            registry.createCompoundPolicy(whitelistPolicy, blacklistPolicy, senderOnlyPolicy);
 
         (uint64 senderPid, uint64 recipientPid, uint64 mintPid) = registry.compoundPolicyData(cp);
 
@@ -167,13 +160,19 @@ contract TIP1015Test is BaseTest {
 
         vm.startPrank(admin);
 
-        vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy));
+        vm.expectRevert(
+            abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy)
+        );
         registry.createCompoundPolicy(nonExistentPolicy, whitelistPolicy, whitelistPolicy);
 
-        vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy));
+        vm.expectRevert(
+            abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy)
+        );
         registry.createCompoundPolicy(whitelistPolicy, nonExistentPolicy, whitelistPolicy);
 
-        vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy));
+        vm.expectRevert(
+            abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy)
+        );
         registry.createCompoundPolicy(whitelistPolicy, whitelistPolicy, nonExistentPolicy);
 
         vm.stopPrank();
@@ -208,10 +207,7 @@ contract TIP1015Test is BaseTest {
         assertEq(recipientAuth, mintAuth);
     }
 
-    function testFuzz_invariant4_simplePolicyEquivalence(uint256 policySeed, address user)
-        public
-       
-    {
+    function testFuzz_invariant4_simplePolicyEquivalence(uint256 policySeed, address user) public {
         vm.assume(user != address(0));
 
         vm.startPrank(admin);
@@ -247,11 +243,8 @@ contract TIP1015Test is BaseTest {
     function test_invariant5_isAuthorizedEquivalence() public {
         vm.startPrank(admin);
 
-        uint64 cp = registry.createCompoundPolicy(
-            senderOnlyPolicy,
-            recipientOnlyPolicy,
-            whitelistPolicy
-        );
+        uint64 cp =
+            registry.createCompoundPolicy(senderOnlyPolicy, recipientOnlyPolicy, whitelistPolicy);
 
         vm.stopPrank();
 
@@ -609,7 +602,8 @@ contract TIP1015Test is BaseTest {
     function test_burnBlocked_checksCorrectSubPolicy() public {
         vm.startPrank(admin);
 
-        uint64 recipientBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        uint64 recipientBlacklist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
         registry.modifyPolicyBlacklist(recipientBlacklist, blockedUser, true);
 
         uint64 recipientBlockedCompound = registry.createCompoundPolicy(1, recipientBlacklist, 1);
@@ -661,7 +655,8 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
 
         vm.startPrank(pathUSDAdmin);
-        uint64 makerBlacklist = registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
+        uint64 makerBlacklist =
+            registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
         registry.modifyPolicyBlacklist(makerBlacklist, sender, true);
         pathUSD.changeTransferPolicyId(makerBlacklist);
         vm.stopPrank();
@@ -730,7 +725,8 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
 
         vm.startPrank(pathUSDAdmin);
-        uint64 senderOnlyBL = registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
+        uint64 senderOnlyBL =
+            registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
         registry.modifyPolicyBlacklist(senderOnlyBL, sender, true);
 
         uint64 staleCompound = registry.createCompoundPolicy(senderOnlyBL, 1, 1);
