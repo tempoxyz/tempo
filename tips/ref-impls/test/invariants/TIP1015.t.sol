@@ -96,16 +96,18 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         _simplePolicies.push(pid);
         _policyTypes[pid] = ptype;
 
-        _log(
-            string.concat(
-                "CREATE_SIMPLE_POLICY: ",
-                _getActorIndex(actor),
-                " created policy ",
-                vm.toString(pid),
-                " type=",
-                isWhitelist ? "WHITELIST" : "BLACKLIST"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "CREATE_SIMPLE_POLICY: ",
+                    _getActorIndex(actor),
+                    " created policy ",
+                    vm.toString(pid),
+                    " type=",
+                    isWhitelist ? "WHITELIST" : "BLACKLIST"
+                )
+            );
+        }
     }
 
     function createCompoundPolicy(
@@ -139,18 +141,20 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             assertEq(storedR, rPid, "Recipient policy mismatch");
             assertEq(storedM, mPid, "MintRecipient policy mismatch");
 
-            _log(
-                string.concat(
-                    "CREATE_COMPOUND_POLICY: compound=",
-                    vm.toString(compoundPid),
-                    " sender=",
-                    vm.toString(sPid),
-                    " recipient=",
-                    vm.toString(rPid),
-                    " mint=",
-                    vm.toString(mPid)
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CREATE_COMPOUND_POLICY: compound=",
+                        vm.toString(compoundPid),
+                        " sender=",
+                        vm.toString(sPid),
+                        " recipient=",
+                        vm.toString(rPid),
+                        " mint=",
+                        vm.toString(mPid)
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownRegistryRevert(reason);
@@ -176,18 +180,20 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         _compoundMintPolicy[compoundPid] = mPid;
         _totalCompoundPoliciesCreated++;
 
-        _log(
-            string.concat(
-                "CREATE_COMPOUND_WITH_BUILTINS: compound=",
-                vm.toString(compoundPid),
-                " sender=",
-                vm.toString(sPid),
-                " recipient=",
-                vm.toString(rPid),
-                " mint=",
-                vm.toString(mPid)
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "CREATE_COMPOUND_WITH_BUILTINS: compound=",
+                    vm.toString(compoundPid),
+                    " sender=",
+                    vm.toString(sPid),
+                    " recipient=",
+                    vm.toString(rPid),
+                    " mint=",
+                    vm.toString(mPid)
+                )
+            );
+        }
     }
 
     function tryCreateCompoundWithCompound(uint256 seed) external onlySolidityImpl {
@@ -215,15 +221,17 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         vm.stopPrank();
 
-        _log(
-            string.concat(
-                "TRY_CREATE_COMPOUND_WITH_COMPOUND: position=",
-                vm.toString(position),
-                " compoundRef=",
-                vm.toString(compoundRef),
-                " (correctly reverted)"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_CREATE_COMPOUND_WITH_COMPOUND: position=",
+                    vm.toString(position),
+                    " compoundRef=",
+                    vm.toString(compoundRef),
+                    " (correctly reverted)"
+                )
+            );
+        }
     }
 
     function tryCreateCompoundWithNonExistent(uint256 seed) external onlySolidityImpl {
@@ -250,15 +258,17 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         vm.stopPrank();
 
-        _log(
-            string.concat(
-                "TRY_CREATE_COMPOUND_WITH_NONEXISTENT: position=",
-                vm.toString(position),
-                " nonExistent=",
-                vm.toString(nonExistent),
-                " (correctly reverted)"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_CREATE_COMPOUND_WITH_NONEXISTENT: position=",
+                    vm.toString(position),
+                    " nonExistent=",
+                    vm.toString(nonExistent),
+                    " (correctly reverted)"
+                )
+            );
+        }
     }
 
     function modifySimplePolicy(uint256 policySeed, uint256 accountSeed, bool add)
@@ -288,16 +298,18 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             _policyAccounts[pid].push(account);
         }
 
-        _log(
-            string.concat(
-                "MODIFY_SIMPLE_POLICY: policy=",
-                vm.toString(pid),
-                " account=",
-                _getActorIndex(account),
-                " add=",
-                add ? "true" : "false"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "MODIFY_SIMPLE_POLICY: policy=",
+                    vm.toString(pid),
+                    " account=",
+                    _getActorIndex(account),
+                    " add=",
+                    add ? "true" : "false"
+                )
+            );
+        }
     }
 
     function tryModifyCompoundPolicy(uint256 policySeed, uint256 accountSeed)
@@ -315,17 +327,20 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         vm.expectRevert();
         registry.modifyPolicyBlacklist(pid, account, true);
 
-        _log(
-            string.concat(
-                "TRY_MODIFY_COMPOUND_POLICY: policy=",
-                vm.toString(pid),
-                " (correctly reverted)"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_MODIFY_COMPOUND_POLICY: policy=",
+                    vm.toString(pid),
+                    " (correctly reverted)"
+                )
+            );
+        }
     }
 
     function checkSimplePolicyEquivalence(uint256 policySeed, uint256 accountSeed)
         external
+        view
         onlySolidityImpl
     {
         if (_simplePolicies.length == 0) return;
@@ -343,6 +358,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     function checkCompoundIsAuthorizedEquivalence(uint256 policySeed, uint256 accountSeed)
         external
+        view
         onlySolidityImpl
     {
         if (_compoundPolicies.length == 0) return;
@@ -363,6 +379,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     function checkCompoundDelegation(uint256 policySeed, uint256 accountSeed)
         external
+        view
         onlySolidityImpl
     {
         if (_compoundPolicies.length == 0) return;
@@ -413,14 +430,16 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         _compoundTokens.push(token);
         _tokenPolicy[address(token)] = pid;
 
-        _log(
-            string.concat(
-                "CREATE_TOKEN_WITH_COMPOUND: token=",
-                vm.toString(address(token)),
-                " policy=",
-                vm.toString(pid)
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "CREATE_TOKEN_WITH_COMPOUND: token=",
+                    vm.toString(address(token)),
+                    " policy=",
+                    vm.toString(pid)
+                )
+            );
+        }
     }
 
     function mintToAuthorizedRecipient(uint256 tokenSeed, uint256 recipientSeed, uint256 amount)
@@ -441,25 +460,29 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         if (authorized) {
             token.mint(recipient, amount);
-            _log(
-                string.concat(
-                    "MINT: recipient=",
-                    _getActorIndex(recipient),
-                    " amount=",
-                    vm.toString(amount),
-                    " (authorized)"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "MINT: recipient=",
+                        _getActorIndex(recipient),
+                        " amount=",
+                        vm.toString(amount),
+                        " (authorized)"
+                    )
+                );
+            }
         } else {
             vm.expectRevert(ITIP20.PolicyForbids.selector);
             token.mint(recipient, amount);
-            _log(
-                string.concat(
-                    "MINT: recipient=",
-                    _getActorIndex(recipient),
-                    " (unauthorized, correctly reverted)"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "MINT: recipient=",
+                        _getActorIndex(recipient),
+                        " (unauthorized, correctly reverted)"
+                    )
+                );
+            }
         }
 
         vm.stopPrank();
@@ -469,37 +492,14 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                          GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_globalInvariants() public onlySolidityImpl {
-        _invariantCompoundPoliciesExist();
-        _invariantCompoundPoliciesImmutable();
+    /// @notice Combined invariant check - single loop through compound policies
+    /// @dev Checks TEMPO-1015-2, TEMPO-1015-3, TEMPO-1015-5, TEMPO-1015-6 in one pass
+    function invariant_globalInvariants() public view onlySolidityImpl {
         _invariantSimplePolicyEquivalence();
-        _invariantCompoundIsAuthorizedEquivalence();
-        _invariantCompoundDelegationCorrect();
+        _invariantCompoundPoliciesCombined();
     }
 
-    function _invariantCompoundPoliciesExist() internal view {
-        for (uint256 i = 0; i < _compoundPolicies.length; i++) {
-            assertTrue(
-                registry.policyExists(_compoundPolicies[i]),
-                "TEMPO-1015-3: Compound policy should exist"
-            );
-        }
-    }
-
-    function _invariantCompoundPoliciesImmutable() internal view {
-        for (uint256 i = 0; i < _compoundPolicies.length; i++) {
-            uint64 pid = _compoundPolicies[i];
-            (ITIP403Registry.PolicyType ptype, address policyAdmin) = registry.policyData(pid);
-
-            assertEq(
-                uint8(ptype),
-                uint8(ITIP403Registry.PolicyType.COMPOUND),
-                "TEMPO-1015-2: Type should be COMPOUND"
-            );
-            assertEq(policyAdmin, address(0), "TEMPO-1015-2: Compound should have no admin");
-        }
-    }
-
+    /// @dev TEMPO-1015-4: Simple policy equivalence - all directional auth functions return same value
     function _invariantSimplePolicyEquivalence() internal view {
         for (uint256 i = 0; i < _simplePolicies.length; i++) {
             uint64 pid = _simplePolicies[i];
@@ -517,48 +517,48 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         }
     }
 
-    function _invariantCompoundIsAuthorizedEquivalence() internal view {
+    /// @dev Combined compound policy invariants - single loop checks:
+    ///      TEMPO-1015-2: Immutability (type=COMPOUND, admin=0)
+    ///      TEMPO-1015-3: Existence (policyExists returns true)
+    ///      TEMPO-1015-5: isAuthorized = sender && recipient
+    ///      TEMPO-1015-6: Delegation correctness
+    function _invariantCompoundPoliciesCombined() internal view {
         for (uint256 i = 0; i < _compoundPolicies.length; i++) {
             uint64 pid = _compoundPolicies[i];
 
-            for (uint256 j = 0; j < _actors.length; j++) {
-                address account = _actors[j];
+            // TEMPO-1015-3: Existence
+            assertTrue(registry.policyExists(pid), "TEMPO-1015-3: Compound policy should exist");
 
-                bool senderAuth = registry.isAuthorizedSender(pid, account);
-                bool recipientAuth = registry.isAuthorizedRecipient(pid, account);
-                bool isAuth = registry.isAuthorized(pid, account);
+            // TEMPO-1015-2: Immutability
+            (ITIP403Registry.PolicyType ptype, address policyAdmin) = registry.policyData(pid);
+            assertEq(uint8(ptype), uint8(ITIP403Registry.PolicyType.COMPOUND), "TEMPO-1015-2: Type should be COMPOUND");
+            assertEq(policyAdmin, address(0), "TEMPO-1015-2: Compound should have no admin");
 
-                assertEq(
-                    isAuth,
-                    senderAuth && recipientAuth,
-                    "TEMPO-1015-5: isAuthorized != sender && recipient"
-                );
-            }
-        }
-    }
-
-    function _invariantCompoundDelegationCorrect() internal view {
-        for (uint256 i = 0; i < _compoundPolicies.length; i++) {
-            uint64 pid = _compoundPolicies[i];
-
+            // Get sub-policies for delegation check
             uint64 senderPid = _compoundSenderPolicy[pid];
             uint64 recipientPid = _compoundRecipientPolicy[pid];
             uint64 mintPid = _compoundMintPolicy[pid];
 
+            // Check all actors for TEMPO-1015-5 and TEMPO-1015-6
             for (uint256 j = 0; j < _actors.length; j++) {
                 address account = _actors[j];
-
-                bool expectedSender = registry.isAuthorized(senderPid, account);
-                bool expectedRecipient = registry.isAuthorized(recipientPid, account);
-                bool expectedMint = registry.isAuthorized(mintPid, account);
 
                 bool actualSender = registry.isAuthorizedSender(pid, account);
                 bool actualRecipient = registry.isAuthorizedRecipient(pid, account);
                 bool actualMint = registry.isAuthorizedMintRecipient(pid, account);
+                bool isAuth = registry.isAuthorized(pid, account);
 
-                assertEq(actualSender, expectedSender, "Compound sender delegation mismatch");
-                assertEq(actualRecipient, expectedRecipient, "Compound recipient delegation mismatch");
-                assertEq(actualMint, expectedMint, "Compound mint delegation mismatch");
+                // TEMPO-1015-5: isAuthorized equivalence
+                assertEq(isAuth, actualSender && actualRecipient, "TEMPO-1015-5: isAuthorized != sender && recipient");
+
+                // TEMPO-1015-6: Delegation correctness
+                bool expectedSender = registry.isAuthorized(senderPid, account);
+                bool expectedRecipient = registry.isAuthorized(recipientPid, account);
+                bool expectedMint = registry.isAuthorized(mintPid, account);
+
+                assertEq(actualSender, expectedSender, "TEMPO-1015-6: Sender delegation mismatch");
+                assertEq(actualRecipient, expectedRecipient, "TEMPO-1015-6: Recipient delegation mismatch");
+                assertEq(actualMint, expectedMint, "TEMPO-1015-6: Mint delegation mismatch");
             }
         }
     }
