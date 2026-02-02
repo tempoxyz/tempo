@@ -1,9 +1,9 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-};
+use std::{collections::VecDeque, sync::Arc};
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{
+    Address, U256,
+    map::{AddressMap, HashMap, U256Map},
+};
 use parking_lot::RwLock;
 use reth_primitives_traits::{BlockHeader, SealedHeader};
 use reth_provider::{
@@ -212,7 +212,7 @@ struct AmmLiquidityCacheInner {
     cache: HashMap<(Address, Address), U256>,
 
     /// Reverse index for mapping AMM slot to a pool.
-    slot_to_pool: HashMap<U256, (Address, Address)>,
+    slot_to_pool: U256Map<(Address, Address)>,
 
     /// Latest observed validator tokens.
     last_seen_tokens: VecDeque<Address>,
@@ -227,10 +227,10 @@ struct AmmLiquidityCacheInner {
     unique_validators: Vec<Address>,
 
     /// cache for validator fee token preferences configured in the fee manager
-    validator_preferences: HashMap<Address, Address>,
+    validator_preferences: AddressMap<Address>,
 
     /// Reverse index for mapping validator preference slot to validator address.
-    slot_to_validator: HashMap<U256, Address>,
+    slot_to_validator: U256Map<Address>,
 }
 
 impl AmmLiquidityCache {

@@ -1,6 +1,9 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
 use crate::{metrics::AA2dPoolMetrics, transaction::TempoPooledTransaction};
-use alloy_primitives::{Address, B256, TxHash, U256, map::HashMap};
+use alloy_primitives::{
+    Address, B256, TxHash, U256,
+    map::{AddressMap, HashMap, HashSet, U256Map},
+};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
 use reth_transaction_pool::{
@@ -16,7 +19,6 @@ use std::{
     collections::{
         BTreeMap, BTreeSet,
         Bound::{Excluded, Unbounded},
-        HashSet,
         btree_map::Entry,
         hash_map,
     },
@@ -61,7 +63,7 @@ pub struct AA2dPool {
     /// ```
     ///
     /// This identifies the account and nonce key based on the slot in the `NonceManager`.
-    slot_to_seq_id: HashMap<U256, AASequenceId>,
+    slot_to_seq_id: U256Map<AASequenceId>,
     /// Reverse index for cleaning up `slots_to_seq_id`.
     seq_id_to_slot: HashMap<AASequenceId, U256>,
     /// Settings for this sub-pool.
@@ -78,7 +80,7 @@ pub struct AA2dPool {
     ///
     /// Bounded by pool size (max unique senders = pending_limit + queued_limit).
     /// Entries are removed when count reaches 0 via `decrement_sender_count`.
-    txs_by_sender: HashMap<Address, usize>,
+    txs_by_sender: AddressMap<usize>,
 }
 
 impl Default for AA2dPool {

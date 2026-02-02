@@ -8,7 +8,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_evm::FromRecoveredTx;
-use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes};
+use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes, map::AddressMap};
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
@@ -16,7 +16,6 @@ use reth_transaction_pool::{
     error::PoolTransactionError,
 };
 use std::{
-    collections::HashMap,
     convert::Infallible,
     fmt::Debug,
     sync::{Arc, OnceLock},
@@ -956,7 +955,7 @@ mod tests {
 #[derive(Debug, Clone, Default)]
 pub struct RevokedKeys {
     /// Map from account to list of revoked key_ids.
-    by_account: HashMap<Address, Vec<Address>>,
+    by_account: AddressMap<Vec<Address>>,
 }
 
 impl RevokedKeys {
@@ -995,7 +994,7 @@ impl RevokedKeys {
 #[derive(Debug, Clone, Default)]
 pub struct SpendingLimitUpdates {
     /// Map from account to list of (key_id, token) pairs that had limit changes.
-    by_account: HashMap<Address, Vec<(Address, Address)>>,
+    by_account: AddressMap<Vec<(Address, Address)>>,
 }
 
 impl SpendingLimitUpdates {

@@ -8,7 +8,10 @@ use crate::{
     tt_2d_pool::AASequenceId,
 };
 use alloy_consensus::transaction::TxHashRef;
-use alloy_primitives::{Address, TxHash};
+use alloy_primitives::{
+    Address, TxHash,
+    map::{AddressMap, B256Set, HashMap, HashSet},
+};
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
 use reth_chainspec::ChainSpecProvider;
@@ -16,11 +19,7 @@ use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
@@ -315,7 +314,7 @@ impl KeyExpiryTracker {
         let key = KeyId { account, key_id };
 
         match self.key_to_txs.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
+            alloy_primitives::map::Entry::Occupied(mut entry) => {
                 let (existing_expiry, txs) = entry.get_mut();
                 debug_assert_eq!(
                     *existing_expiry, expiry,
@@ -323,7 +322,7 @@ impl KeyExpiryTracker {
                 );
                 txs.insert(tx_hash);
             }
-            std::collections::hash_map::Entry::Vacant(entry) => {
+            alloy_primitives::map::Entry::Vacant(entry) => {
                 entry.insert((expiry, [tx_hash].into_iter().collect()));
                 self.expiry_map.entry(expiry).or_default().insert(key);
             }
@@ -546,7 +545,7 @@ where
 
                     // Group transactions by fee token for efficient batch processing.
                     // This single pass over all transactions handles all pause events.
-                    let mut by_token: HashMap<Address, Vec<TxHash>> = HashMap::new();
+                    let mut by_token: AddressMap<Vec<TxHash>> = AddressMap::default();
                     for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
                         if let Some(fee_token) = tx.transaction.inner().fee_token() {
                             by_token.entry(fee_token).or_default().push(*tx.hash());
@@ -764,10 +763,10 @@ where
     let (old_blocks, _) = old_chain.inner();
 
     // Collect transaction hashes from the new chain to identify what's still mined
-    let new_mined_hashes: HashSet<TxHash> = new_blocks.transaction_hashes().collect();
+    let new_mined_hashes: B256Set = new_blocks.transaction_hashes().collect();
 
     let mut orphaned_txs = Vec::new();
-    let mut affected_seq_ids = HashSet::new();
+    let mut affected_seq_ids = HashSet::default();
 
     // Find AA 2D transactions from the old chain that are NOT in the new chain
     for tx in old_blocks.transactions_ecrecovered() {
