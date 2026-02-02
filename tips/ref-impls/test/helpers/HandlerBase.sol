@@ -177,7 +177,7 @@ abstract contract HandlerBase is InvariantBase {
         uint64 actualNonce = nonce.getNonce(account, nonceKey);
         if (actualNonce > previousNonce) {
             ghost_2dNonce[account][nonceKey] = actualNonce;
-            ghost_2dNonceUsed[account][nonceKey] = true;
+            _mark2dNonceKeyUsed(account, nonceKey);
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_total2dNonceTxs++;
@@ -350,7 +350,7 @@ abstract contract HandlerBase is InvariantBase {
         uint64 actualNonce = nonce.getNonce(account, nonceKey);
         if (actualNonce > previousNonce) {
             ghost_2dNonce[account][nonceKey] = actualNonce;
-            ghost_2dNonceUsed[account][nonceKey] = true;
+            _mark2dNonceKeyUsed(account, nonceKey);
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_total2dNonceTxs++;
@@ -375,7 +375,7 @@ abstract contract HandlerBase is InvariantBase {
         uint64 actualNonce = nonce.getNonce(account, nonceKey);
         if (actualNonce > ghost_2dNonce[account][nonceKey]) {
             ghost_2dNonce[account][nonceKey] = actualNonce;
-            ghost_2dNonceUsed[account][nonceKey] = true;
+            _mark2dNonceKeyUsed(account, nonceKey);
             ghost_total2dNonceTxs++;
         }
     }
@@ -464,7 +464,7 @@ abstract contract HandlerBase is InvariantBase {
         uint64 actualNonce = nonce.getNonce(sender, nonceKey);
         if (actualNonce > previousNonce) {
             ghost_2dNonce[sender][nonceKey] = actualNonce;
-            ghost_2dNonceUsed[sender][nonceKey] = true;
+            _mark2dNonceKeyUsed(sender, nonceKey);
             ghost_totalTxExecuted++;
             ghost_totalCreatesExecuted++;
             ghost_total2dNonceTxs++;
