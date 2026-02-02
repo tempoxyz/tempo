@@ -1783,8 +1783,7 @@ mod tests {
         let gas_difference = result1.gas_used() - result2.gas_used();
         assert_eq!(
             gas_difference, 250_000,
-            "Gas difference should be exactly new_account_cost (250,000), got {}",
-            gas_difference
+            "Gas difference should be exactly new_account_cost (250,000), got {gas_difference:?}",
         );
 
         Ok(())
