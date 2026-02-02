@@ -1703,6 +1703,93 @@ mod tests {
         Ok(())
     }
 
+    /// Test AA transaction gas for CREATE with 2D nonce (nonce_key != 0).
+    /// When caller account nonce is 0, an additional 250k gas is charged for account creation.
+    /// Uses T1 hardfork for TIP-1000 gas costs.
+    #[test]
+    fn test_aa_tx_gas_create_with_2d_nonce() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        let mut evm = create_funded_evm_t1(caller);
+
+        // Simple initcode: PUSH1 0x00 PUSH1 0x00 RETURN (deploys empty contract)
+        let initcode = vec![0x60, 0x00, 0x60, 0x00, 0xF3];
+        let nonce_key_2d = U256::from(42);
+
+        // Test 1: CREATE tx with 2D nonce, caller account nonce = 0
+        // Should include: CREATE cost (500k) + new account for sender (250k) + 2D nonce sender creation (250k)
+        let tx1 = TxBuilder::new()
+            .create(&initcode)
+            .nonce_key(nonce_key_2d)
+            .gas_limit(2_000_000)
+            .build();
+
+        // Verify that account nonce is 0 before transaction
+        assert_eq!(
+            evm.ctx
+                .db()
+                .basic_ref(caller)
+                .ok()
+                .flatten()
+                .map(|a| a.nonce)
+                .unwrap_or(0),
+            0,
+            "Caller account nonce should be 0 before first tx"
+        );
+
+        let signed_tx1 = key_pair.sign_tx(tx1)?;
+        let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
+
+        let result1 = evm.transact_commit(tx_env1)?;
+        assert!(result1.is_success(), "CREATE with 2D nonce should succeed");
+
+        // With TIP-1000: CREATE cost (500k) + new account (250k) + 2D nonce sender creation (250k) + base
+        assert_eq!(
+            result1.gas_used(),
+            1028720,
+            "T1 CREATE with 2D nonce (caller.nonce=0) gas should be exact"
+        );
+
+        // Test 2: Second CREATE tx with 2D nonce (different nonce_key)
+        // Caller account nonce is now 1, so no extra 250k for caller account creation
+        // Should include: CREATE cost (500k) + new account for sender (250k from nonce==0 check)
+        // but NOT the extra 250k for 2D nonce caller creation since account.nonce != 0
+        let nonce_key_2d_2 = U256::from(43);
+        let tx2 = TxBuilder::new()
+            .create(&initcode)
+            .nonce_key(nonce_key_2d_2)
+            .nonce(0) // 2D nonce = 0 (new key, starts at 0)
+            .gas_limit(2_000_000)
+            .build();
+
+        let signed_tx2 = key_pair.sign_tx(tx2)?;
+        let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
+
+        let result2 = evm.transact_commit(tx_env2)?;
+        assert!(
+            result2.is_success(),
+            "Second CREATE with 2D nonce should succeed"
+        );
+
+        // With TIP-1000: CREATE cost (500k) + new account (250k) + base (no extra 250k since caller.nonce != 0)
+        assert_eq!(
+            result2.gas_used(),
+            778720,
+            "T1 CREATE with 2D nonce (caller.nonce=1) gas should be exact"
+        );
+
+        // Verify the gas difference is exactly 250,000 (new_account_cost)
+        let gas_difference = result1.gas_used() - result2.gas_used();
+        assert_eq!(
+            gas_difference, 250_000,
+            "Gas difference should be exactly new_account_cost (250,000), got {}",
+            gas_difference
+        );
+
+        Ok(())
+    }
+
     /// Test gas comparison between single call and multiple calls.
     /// Uses T1 hardfork for TIP-1000 gas costs.
     #[test]
