@@ -1833,29 +1833,42 @@ mod tests {
             .valid_before(Some(valid_before))
             .gas_limit(2_000_000)
             .build();
-        let result1 = evm1.transact_commit(TempoTxEnv::from_recovered_tx(&key_pair.sign_tx(tx1)?, caller))?;
+        let result1 = evm1.transact_commit(TempoTxEnv::from_recovered_tx(
+            &key_pair.sign_tx(tx1)?,
+            caller,
+        ))?;
         assert!(result1.is_success());
         let gas_nonce_zero = result1.gas_used();
 
         // CREATE with caller.nonce == 1 (no extra 250k)
         let mut evm2 = create_funded_evm_t1_with_timestamp(caller, timestamp);
-        evm2.ctx.db_mut().insert_account_info(caller, AccountInfo {
-            balance: U256::from(DEFAULT_BALANCE),
-            nonce: 1,
-            ..Default::default()
-        });
+        evm2.ctx.db_mut().insert_account_info(
+            caller,
+            AccountInfo {
+                balance: U256::from(DEFAULT_BALANCE),
+                nonce: 1,
+                ..Default::default()
+            },
+        );
         let tx2 = TxBuilder::new()
             .create(&initcode)
             .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
             .valid_before(Some(valid_before))
             .gas_limit(2_000_000)
             .build();
-        let result2 = evm2.transact_commit(TempoTxEnv::from_recovered_tx(&key_pair.sign_tx(tx2)?, caller))?;
+        let result2 = evm2.transact_commit(TempoTxEnv::from_recovered_tx(
+            &key_pair.sign_tx(tx2)?,
+            caller,
+        ))?;
         assert!(result2.is_success());
         let gas_nonce_one = result2.gas_used();
 
         // The fix adds 250k when caller.nonce == 0 for CREATE with non-zero nonce_key
-        assert_eq!(gas_nonce_zero - gas_nonce_one, 250_000, "new_account_cost not charged");
+        assert_eq!(
+            gas_nonce_zero - gas_nonce_one,
+            250_000,
+            "new_account_cost not charged"
+        );
 
         Ok(())
     }
