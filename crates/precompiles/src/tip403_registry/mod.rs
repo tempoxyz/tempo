@@ -1,7 +1,10 @@
 pub mod dispatch;
 
 use crate::StorageCtx;
-pub use tempo_contracts::precompiles::{ITIP403Registry, TIP403RegistryError, TIP403RegistryEvent};
+pub use tempo_contracts::precompiles::{
+    ITIP403Registry::{self, PolicyType},
+    TIP403RegistryError, TIP403RegistryEvent,
+};
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
@@ -85,9 +88,28 @@ impl PolicyData {
             .expect("unable to insert 'admin'")
     }
 
+    /// Decodes the raw `policy_type` u8 to a `PolicyType` enum.
+    ///
+    /// - **T1+**: fails on invalid values (early revert)
+    /// - **Pre-T1**: returns `__Invalid` for unknown values (defer error to caller)
+    fn policy_type(&self) -> Result<PolicyType> {
+        let is_t1 = StorageCtx.spec().is_t1();
+        match self.policy_type.try_into() {
+            Err(_) => {
+                if is_t1 {
+                    Err(TempoPrecompileError::under_overflow())
+                } else {
+                    Ok(PolicyType::__Invalid)
+                }
+            }
+            Ok(PolicyType::COMPOUND) if !is_t1 => Ok(PolicyType::__Invalid),
+            Ok(policy_type) => Ok(policy_type),
+        }
+    }
+
     /// Returns `true` if the policy data indicates a compound policy
     fn is_compound(&self) -> bool {
-        self.policy_type == ITIP403Registry::PolicyType::COMPOUND as u8
+        self.policy_type == PolicyType::COMPOUND as u8
     }
 }
 
@@ -126,18 +148,13 @@ impl TIP403Registry {
         }
 
         let data = self.get_policy_data(call.policyId)?;
+        let policy_type = data.policy_type()?;
 
-        // Pre-T1: any policy_type >= 2 should revert to match original try_into behavior
-        // where unknown enum values (which became 255/__Invalid) would fail conversion.
-        if data.policy_type >= 2 && !self.storage.spec().is_t1() {
-            return Err(TempoPrecompileError::under_overflow());
-        }
+        // Ensure invalid policy types revert in pre-T1
+        policy_type.ensure_is_valid()?;
 
         Ok(ITIP403Registry::policyDataReturn {
-            policyType: data
-                .policy_type
-                .try_into()
-                .map_err(|_| TempoPrecompileError::under_overflow())?,
+            policyType: policy_type,
             admin: data.admin,
         })
     }
@@ -162,29 +179,12 @@ impl TIP403Registry {
         })
     }
 
-    /// Validates and returns the policy type to store, handling backward compatibility.
-    ///
-    /// Pre-T1: Converts any value >= 2 to 255 (__Invalid) to match original ABI decoding
-    /// behavior where unknown enum values became __Invalid(255).
-    /// T1+: Only allows WHITELIST and BLACKLIST; COMPOUND must use createCompoundPolicy.
-    fn validate_simple_policy_type(&self, policy_type: ITIP403Registry::PolicyType) -> Result<u8> {
-        let policy_type = policy_type as u8;
-        if self.storage.spec().is_t1() {
-            if policy_type >= 2 {
-                return Err(TIP403RegistryError::incompatible_policy_type().into());
-            }
-            Ok(policy_type)
-        } else {
-            Ok(if policy_type >= 2 { 255u8 } else { policy_type })
-        }
-    }
-
     pub fn create_policy(
         &mut self,
         msg_sender: Address,
         call: ITIP403Registry::createPolicyCall,
     ) -> Result<u64> {
-        let policy_type = self.validate_simple_policy_type(call.policyType)?;
+        let policy_type = call.policyType.ensure_is_simple()?;
 
         let new_policy_id = self.policy_id_counter()?;
 
@@ -205,9 +205,7 @@ impl TIP403Registry {
             ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
                 updater: msg_sender,
-                policyType: policy_type
-                    .try_into()
-                    .unwrap_or(ITIP403Registry::PolicyType::__Invalid),
+                policyType: policy_type.try_into().unwrap_or(PolicyType::__Invalid),
             },
         ))?;
 
@@ -228,7 +226,7 @@ impl TIP403Registry {
         call: ITIP403Registry::createPolicyWithAccountsCall,
     ) -> Result<u64> {
         let admin = call.admin;
-        let policy_type = self.validate_simple_policy_type(call.policyType)?;
+        let policy_type = call.policyType.ensure_is_simple()?;
 
         let new_policy_id = self.policy_id_counter()?;
 
@@ -248,7 +246,7 @@ impl TIP403Registry {
             self.set_policy_set(new_policy_id, *account, true)?;
 
             match call.policyType {
-                ITIP403Registry::PolicyType::WHITELIST => {
+                PolicyType::WHITELIST => {
                     self.emit_event(TIP403RegistryEvent::WhitelistUpdated(
                         ITIP403Registry::WhitelistUpdated {
                             policyId: new_policy_id,
@@ -258,7 +256,7 @@ impl TIP403Registry {
                         },
                     ))?;
                 }
-                ITIP403Registry::PolicyType::BLACKLIST => {
+                PolicyType::BLACKLIST => {
                     self.emit_event(TIP403RegistryEvent::BlacklistUpdated(
                         ITIP403Registry::BlacklistUpdated {
                             policyId: new_policy_id,
@@ -268,9 +266,9 @@ impl TIP403Registry {
                         },
                     ))?;
                 }
-                ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
+                PolicyType::COMPOUND | PolicyType::__Invalid => {
                     // Pre-T1: no events emitted for invalid types, accounts still added
-                    // T1+: unreachable since validate_simple_policy_type already rejected
+                    // T1+: unreachable since `ensure_is_simple()` already rejected
                 }
             }
         }
@@ -279,9 +277,7 @@ impl TIP403Registry {
             ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
                 updater: msg_sender,
-                policyType: policy_type
-                    .try_into()
-                    .unwrap_or(ITIP403Registry::PolicyType::__Invalid),
+                policyType: policy_type.try_into().unwrap_or(PolicyType::__Invalid),
             },
         ))?;
 
@@ -339,7 +335,7 @@ impl TIP403Registry {
         }
 
         // Check policy type
-        if data.policy_type != ITIP403Registry::PolicyType::WHITELIST as u8 {
+        if !matches!(data.policy_type()?, PolicyType::WHITELIST) {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
@@ -368,7 +364,7 @@ impl TIP403Registry {
         }
 
         // Check policy type
-        if data.policy_type != ITIP403Registry::PolicyType::BLACKLIST as u8 {
+        if !matches!(data.policy_type()?, PolicyType::BLACKLIST) {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
 
@@ -407,7 +403,7 @@ impl TIP403Registry {
         // Store policy record with COMPOUND type and compound data
         self.policy_records[new_policy_id].write(PolicyRecord {
             base: PolicyData {
-                policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
+                policy_type: PolicyType::COMPOUND as u8,
                 admin: Address::ZERO,
             },
             compound: CompoundPolicyData {
@@ -484,30 +480,16 @@ impl TIP403Registry {
 
     /// Authorization check for simple (non-compound) policies
     fn is_simple(&self, policy_id: u64, user: Address, data: &PolicyData) -> Result<bool> {
-        // Pre-T1: any policy_type >= 2 should revert to match original try_into behavior
-        // where unknown enum values (stored as 255/__Invalid) would fail conversion.
-        if data.policy_type >= 2 && !self.storage.spec().is_t1() {
-            return Err(TempoPrecompileError::under_overflow());
-        }
+        let policy_type = data.policy_type()?;
 
         let is_in_set = self.policy_set[policy_id][user].read()?;
 
-        let auth = match data
-            .policy_type
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?
-        {
-            ITIP403Registry::PolicyType::WHITELIST => is_in_set,
-            ITIP403Registry::PolicyType::BLACKLIST => !is_in_set,
-            ITIP403Registry::PolicyType::COMPOUND => false,
-            ITIP403Registry::PolicyType::__Invalid => {
-                // This should be unreachable since try_into would fail for invalid values,
-                // but explicitly error for safety
-                return Err(TempoPrecompileError::under_overflow());
-            }
-        };
-
-        Ok(auth)
+        match policy_type {
+            PolicyType::WHITELIST => Ok(is_in_set),
+            PolicyType::BLACKLIST => Ok(!is_in_set),
+            PolicyType::COMPOUND => Ok(false),
+            PolicyType::__Invalid => Err(TempoPrecompileError::under_overflow()),
+        }
     }
 
     /// Validates that a policy ID references an existing simple policy (not compound)
@@ -573,6 +555,39 @@ impl AuthRole {
     /// Hardfork-aware: returns `MintRecipient` for T1+, `Transfer` for pre-T1.
     pub fn mint_recipient() -> Self {
         Self::transfer_or(Self::MintRecipient)
+    }
+}
+
+trait PolicyTypeExt {
+    fn ensure_is_simple(&self) -> Result<u8>;
+    fn ensure_is_valid(&self) -> Result<()>;
+}
+
+impl PolicyTypeExt for PolicyType {
+    /// Validates and returns the policy type to store, handling backward compatibility.
+    ///
+    /// Pre-T1: Converts `COMPOUND` and `__Invalid` to 255 to match original ABI decoding behavior.
+    /// T1+: Only allows `WHITELIST` and `BLACKLIST`.
+    fn ensure_is_simple(&self) -> Result<u8> {
+        match self {
+            Self::WHITELIST | Self::BLACKLIST => Ok(*self as u8),
+            Self::COMPOUND | Self::__Invalid => {
+                if StorageCtx.spec().is_t1() {
+                    Err(TIP403RegistryError::incompatible_policy_type().into())
+                } else {
+                    Ok(Self::__Invalid as u8)
+                }
+            }
+        }
+    }
+
+    /// Validates that the policy type is not invalid.
+    fn ensure_is_valid(&self) -> Result<()> {
+        if matches!(self, Self::__Invalid) {
+            Err(TempoPrecompileError::under_overflow())
+        } else {
+            Ok(())
+        }
     }
 }
 
