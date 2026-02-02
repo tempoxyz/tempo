@@ -321,6 +321,30 @@ mod tests {
         evm
     }
 
+    /// Create an EVM with T1 hardfork, a specific timestamp, and a funded account.
+    fn create_funded_evm_t1_with_timestamp(
+        address: Address,
+        timestamp: u64,
+    ) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+
+        let mut block = TempoBlockEnv::default();
+        block.inner.timestamp = U256::from(timestamp);
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(block)
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
     /// Create an EVM instance with a custom inspector.
     fn create_evm_with_inspector<I>(inspector: I) -> TempoEvm<CacheDB<EmptyDB>, I> {
         let db = CacheDB::new(EmptyDB::new());
@@ -1785,6 +1809,53 @@ mod tests {
             gas_difference, 250_000,
             "Gas difference should be exactly new_account_cost (250,000), got {gas_difference:?}",
         );
+
+        Ok(())
+    }
+
+    /// Test that CREATE with expiring nonce charges 250k new_account_cost when caller.nonce == 0.
+    /// This validates the fix for audit issue #182.
+    #[test]
+    fn test_aa_tx_gas_create_with_expiring_nonce() -> eyre::Result<()> {
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let initcode = vec![0x60, 0x00, 0x60, 0x00, 0xF3]; // PUSH0 PUSH0 RETURN
+        let timestamp = 1000u64;
+        let valid_before = timestamp + 30;
+
+        // CREATE with caller.nonce == 0 (should charge extra 250k)
+        let mut evm1 = create_funded_evm_t1_with_timestamp(caller, timestamp);
+        let tx1 = TxBuilder::new()
+            .create(&initcode)
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .valid_before(Some(valid_before))
+            .gas_limit(2_000_000)
+            .build();
+        let result1 = evm1.transact_commit(TempoTxEnv::from_recovered_tx(&key_pair.sign_tx(tx1)?, caller))?;
+        assert!(result1.is_success());
+        let gas_nonce_zero = result1.gas_used();
+
+        // CREATE with caller.nonce == 1 (no extra 250k)
+        let mut evm2 = create_funded_evm_t1_with_timestamp(caller, timestamp);
+        evm2.ctx.db_mut().insert_account_info(caller, AccountInfo {
+            balance: U256::from(DEFAULT_BALANCE),
+            nonce: 1,
+            ..Default::default()
+        });
+        let tx2 = TxBuilder::new()
+            .create(&initcode)
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .valid_before(Some(valid_before))
+            .gas_limit(2_000_000)
+            .build();
+        let result2 = evm2.transact_commit(TempoTxEnv::from_recovered_tx(&key_pair.sign_tx(tx2)?, caller))?;
+        assert!(result2.is_success());
+        let gas_nonce_one = result2.gas_used();
+
+        // The fix adds 250k when caller.nonce == 0 for CREATE with non-zero nonce_key
+        assert_eq!(gas_nonce_zero - gas_nonce_one, 250_000, "new_account_cost not charged");
 
         Ok(())
     }
