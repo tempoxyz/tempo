@@ -16,7 +16,7 @@ pub(crate) mod utils;
 
 pub(crate) mod subblocks;
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
@@ -59,6 +59,49 @@ pub async fn run_consensus_stack(
         .signing_key()?
         .ok_or_eyre("required option `consensus.signing-key` not set")?;
 
+    let p2p_dial_frequency = config
+        .p2p_dial_frequency
+        .map(|d| d.unsigned_abs().try_into())
+        .transpose()
+        .wrap_err("invalid dial frequency duration")?;
+
+    let p2p_query_frequency = config
+        .p2p_query_frequency
+        .map(|d| d.unsigned_abs().try_into())
+        .transpose()
+        .wrap_err("invalid query frequency duration")?;
+
+    let p2p_ping_frequency = config
+        .p2p_ping_frequency
+        .map(|d| d.unsigned_abs().try_into())
+        .transpose()
+        .wrap_err("invalid ping frequency duration")?;
+
+    let p2p_connection_min_period: Option<Duration> = config
+        .p2p_connection_min_period
+        .map(|d| d.unsigned_abs().try_into())
+        .transpose()
+        .wrap_err("invalid connection min period duration")?;
+
+    let p2p_handshake_per_ip_min_period: Option<Duration> = config
+        .p2p_handshake_per_ip_min_period
+        .map(|d| d.unsigned_abs().try_into())
+        .transpose()
+        .wrap_err("invalid handshake min period duration")?;
+
+    let p2p_overrides = P2POverrides {
+        dial_frequency: p2p_dial_frequency,
+        query_frequency: p2p_query_frequency,
+        ping_frequency: p2p_ping_frequency,
+        connection_min_period: p2p_connection_min_period,
+        handshake_per_ip_min_period: p2p_handshake_per_ip_min_period,
+    };
+
+    let marshal_quota = commonware_runtime::Quota::per_second(
+        std::num::NonZeroU32::new(config.marshal_rate_per_sec)
+            .ok_or_eyre("marshal rate per sec must be non-zero")?,
+    );
+
     let (mut network, oracle) = instantiate_network(
         context,
         signing_key.clone().into_inner(),
@@ -67,6 +110,7 @@ pub async fn run_consensus_stack(
         config.max_message_size_bytes,
         config.bypass_ip_check,
         config.use_local_defaults,
+        p2p_overrides,
     )
     .await
     .wrap_err("failed to start network")?;
@@ -84,7 +128,7 @@ pub async fn run_consensus_stack(
         BROADCASTER_LIMIT,
         message_backlog,
     );
-    let marshal = network.register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, message_backlog);
+    let marshal = network.register(MARSHAL_CHANNEL_IDENT, marshal_quota, message_backlog);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
@@ -175,6 +219,16 @@ pub async fn run_consensus_stack(
     }
 }
 
+/// Optional overrides for P2P network settings.
+#[derive(Debug, Default, Clone)]
+pub struct P2POverrides {
+    pub dial_frequency: Option<Duration>,
+    pub query_frequency: Option<Duration>,
+    pub ping_frequency: Option<Duration>,
+    pub connection_min_period: Option<Duration>,
+    pub handshake_per_ip_min_period: Option<Duration>,
+}
+
 async fn instantiate_network(
     context: &commonware_runtime::tokio::Context,
     signing_key: PrivateKey,
@@ -183,6 +237,7 @@ async fn instantiate_network(
     max_message_size: u32,
     bypass_ip_check: bool,
     use_local_defaults: bool,
+    overrides: P2POverrides,
 ) -> eyre::Result<(
     lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
     lookup::Oracle<PublicKey>,
@@ -197,10 +252,33 @@ async fn instantiate_network(
         lookup::Config::recommended(signing_key, &p2p_namespace, listen_addr, max_message_size)
     };
 
+    let dial_frequency = overrides
+        .dial_frequency
+        .unwrap_or(default_config.dial_frequency);
+    let query_frequency = overrides
+        .query_frequency
+        .unwrap_or(default_config.query_frequency);
+    let ping_frequency = overrides
+        .ping_frequency
+        .unwrap_or(default_config.ping_frequency);
+    let connection_min_period_quota = overrides
+        .connection_min_period
+        .and_then(commonware_runtime::Quota::with_period)
+        .unwrap_or(default_config.allowed_connection_rate_per_peer);
+    let handshake_per_ip_min_period_quota = overrides
+        .handshake_per_ip_min_period
+        .and_then(commonware_runtime::Quota::with_period)
+        .unwrap_or(default_config.allowed_handshake_rate_per_ip);
+
     let p2p_cfg = lookup::Config {
         mailbox_size,
         tracked_peer_sets: PEERSETS_TO_TRACK,
         bypass_ip_check,
+        dial_frequency,
+        query_frequency,
+        ping_frequency,
+        allowed_connection_rate_per_peer: connection_min_period_quota,
+        allowed_handshake_rate_per_ip: handshake_per_ip_min_period_quota,
         ..default_config
     };
 

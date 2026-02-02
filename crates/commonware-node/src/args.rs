@@ -122,6 +122,36 @@ pub struct Args {
     #[arg(long = "consensus.use-local-p2p-defaults", default_value_t = false)]
     pub use_local_defaults: bool,
 
+    /// How often to attempt dialing peers. Lower values mean faster peer discovery.
+    /// Recommended: 1s, Local: 500ms
+    #[arg(long = "consensus.p2p-dial-frequency")]
+    pub p2p_dial_frequency: Option<jiff::SignedDuration>,
+
+    /// How often to query for new dialable peers. Also limits re-dial rate per peer.
+    /// Recommended: 60s, Local: 30s
+    #[arg(long = "consensus.p2p-query-frequency")]
+    pub p2p_query_frequency: Option<jiff::SignedDuration>,
+
+    /// How often to send ping messages to peers for liveness detection.
+    /// Recommended: 50s, Local: 5s
+    #[arg(long = "consensus.p2p-ping-frequency")]
+    pub p2p_ping_frequency: Option<jiff::SignedDuration>,
+
+    /// Minimum time between connection attempts to the same peer.
+    /// Recommended: 60s (1/min), Local: 1s (1/sec)
+    #[arg(long = "consensus.p2p-connection-min-period")]
+    pub p2p_connection_min_period: Option<jiff::SignedDuration>,
+
+    /// Minimum time between handshake attempts from a single IP address.
+    /// Recommended: 5s (1 per 5s), Local: 1s (1/sec)
+    #[arg(long = "consensus.p2p-handshake-per-ip-min-period")]
+    pub p2p_handshake_per_ip_min_period: Option<jiff::SignedDuration>,
+
+    /// Rate limit for the marshal actor when backfilling (messages per second).
+    /// Default: 8
+    #[arg(long = "consensus.marshal-rate-per-sec", default_value_t = 8)]
+    pub marshal_rate_per_sec: u32,
+
     /// The interval at which to broadcast subblocks to the next proposer.
     /// Each built subblock is immediately broadcasted to the next proposer (if it's known).
     /// We broadcast subblock every `subblock-broadcast-interval` to ensure the next

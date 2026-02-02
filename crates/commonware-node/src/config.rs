@@ -30,7 +30,6 @@ pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); //
 pub const BROADCASTER_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
 pub const DKG_LIMIT: Quota = Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
-pub const MARSHAL_LIMIT: Quota = Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
 pub const VOTES_LIMIT: Quota = Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
 pub const CERTIFICATES_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
