@@ -197,18 +197,36 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         vm.startPrank(admin);
 
+        bool reverted;
+        bytes4 errorSelector;
+
         if (position == 0) {
-            vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
-            registry.createCompoundPolicy(compoundRef, simplePid, simplePid);
+            try registry.createCompoundPolicy(compoundRef, simplePid, simplePid) returns (uint64) {
+                reverted = false;
+            } catch (bytes memory reason) {
+                reverted = true;
+                errorSelector = bytes4(reason);
+            }
         } else if (position == 1) {
-            vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
-            registry.createCompoundPolicy(simplePid, compoundRef, simplePid);
+            try registry.createCompoundPolicy(simplePid, compoundRef, simplePid) returns (uint64) {
+                reverted = false;
+            } catch (bytes memory reason) {
+                reverted = true;
+                errorSelector = bytes4(reason);
+            }
         } else {
-            vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
-            registry.createCompoundPolicy(simplePid, simplePid, compoundRef);
+            try registry.createCompoundPolicy(simplePid, simplePid, compoundRef) returns (uint64) {
+                reverted = false;
+            } catch (bytes memory reason) {
+                reverted = true;
+                errorSelector = bytes4(reason);
+            }
         }
 
         vm.stopPrank();
+
+        assertTrue(reverted, "TEMPO-1015-1: Should revert with compound in compound");
+        assertEq(errorSelector, ITIP403Registry.PolicyNotSimple.selector, "TEMPO-1015-1: Wrong error");
 
         if (_loggingEnabled) {
             _log(
@@ -234,18 +252,40 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         vm.startPrank(admin);
 
+        bool reverted;
+        bytes memory revertReason;
+
         if (position == 0) {
-            vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistent));
-            registry.createCompoundPolicy(nonExistent, simplePid, simplePid);
+            try registry.createCompoundPolicy(nonExistent, simplePid, simplePid) returns (uint64) {
+                reverted = false;
+            } catch (bytes memory reason) {
+                reverted = true;
+                revertReason = reason;
+            }
         } else if (position == 1) {
-            vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistent));
-            registry.createCompoundPolicy(simplePid, nonExistent, simplePid);
+            try registry.createCompoundPolicy(simplePid, nonExistent, simplePid) returns (uint64) {
+                reverted = false;
+            } catch (bytes memory reason) {
+                reverted = true;
+                revertReason = reason;
+            }
         } else {
-            vm.expectRevert(abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistent));
-            registry.createCompoundPolicy(simplePid, simplePid, nonExistent);
+            try registry.createCompoundPolicy(simplePid, simplePid, nonExistent) returns (uint64) {
+                reverted = false;
+            } catch (bytes memory reason) {
+                reverted = true;
+                revertReason = reason;
+            }
         }
 
         vm.stopPrank();
+
+        assertTrue(reverted, "TEMPO-1015-3: Should revert for non-existent policy");
+        assertEq(
+            bytes4(revertReason),
+            ITIP403Registry.PolicyNotFound.selector,
+            "TEMPO-1015-3: Wrong error selector"
+        );
 
         if (_loggingEnabled) {
             _log(
@@ -310,11 +350,21 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         uint64 pid = _compoundPolicies[policySeed % _compoundPolicies.length];
         address account = _selectActor(accountSeed);
 
-        vm.expectRevert();
-        registry.modifyPolicyWhitelist(pid, account, true);
+        bool whitelistReverted;
+        try registry.modifyPolicyWhitelist(pid, account, true) {
+            whitelistReverted = false;
+        } catch {
+            whitelistReverted = true;
+        }
+        assertTrue(whitelistReverted, "TEMPO-1015-2: modifyPolicyWhitelist should revert for compound");
 
-        vm.expectRevert();
-        registry.modifyPolicyBlacklist(pid, account, true);
+        bool blacklistReverted;
+        try registry.modifyPolicyBlacklist(pid, account, true) {
+            blacklistReverted = false;
+        } catch {
+            blacklistReverted = true;
+        }
+        assertTrue(blacklistReverted, "TEMPO-1015-2: modifyPolicyBlacklist should revert for compound");
 
         if (_loggingEnabled) {
             _log(
@@ -461,8 +511,17 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                 );
             }
         } else {
-            vm.expectRevert(ITIP20.PolicyForbids.selector);
-            token.mint(recipient, amount);
+            bool reverted;
+            bytes4 errorSelector;
+            try token.mint(recipient, amount) {
+                reverted = false;
+            } catch (bytes memory reason) {
+                reverted = true;
+                errorSelector = bytes4(reason);
+            }
+            assertTrue(reverted, "Mint should revert for unauthorized recipient");
+            assertEq(errorSelector, ITIP20.PolicyForbids.selector, "Wrong error for unauthorized mint");
+
             if (_loggingEnabled) {
                 _log(
                     string.concat(
