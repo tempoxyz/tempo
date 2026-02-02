@@ -1061,11 +1061,12 @@ impl StablecoinDEX {
         };
 
         let policy_id = TIP20Token::from_address(token)?.transfer_policy_id()?;
-        if TIP403Registry::new().is_authorized_as(policy_id, order.maker(), AuthRole::sender())? {
-            return Err(StablecoinDEXError::order_not_stale().into());
+        // Invalid policy ids throw under_overflow. Treat as unauthorized to clear the orders.
+        match TIP403Registry::new().is_authorized_as(policy_id, order.maker(), AuthRole::sender()) {
+            Ok(true) => Err(StablecoinDEXError::order_not_stale().into()),
+            Err(e) if e != TempoPrecompileError::under_overflow() => Err(e),
+            _ => self.cancel_active_order(order),
         }
-
-        self.cancel_active_order(order)
     }
 
     /// Withdraw tokens from exchange balance
