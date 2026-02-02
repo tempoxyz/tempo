@@ -121,17 +121,11 @@ fn main() -> eyre::Result<()> {
         tempo_cmd::TempoSubcommand,
     >::parse();
 
-    // If telemetry is enabled, set logs OTLP and check for conflicts
+    // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     if let Commands::Node(node_cmd) = &cli.command
         && let Some(config) = defaults::parse_telemetry_config(&node_cmd.ext.telemetry)
             .wrap_err("failed to parse telemetry config")?
     {
-        // Check for conflicts: --telemetry-url and --logs-otlp are mutually exclusive
-        if cli.traces.logs_otlp.is_some() {
-            return Err(eyre::eyre!(
-                "--telemetry-url and --logs-otlp cannot be used together"
-            ));
-        }
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
         cli.traces.logs_otlp = Some(config.logs_otlp_url);
         cli.traces.logs_otlp_filter = config
