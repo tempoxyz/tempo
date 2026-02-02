@@ -174,6 +174,20 @@ where
         // Cache policy lookups per fee token to avoid redundant storage reads
         let mut policy_cache: HashMap<Address, u64> = HashMap::default();
 
+        // Filter validator token changes to only those from active validators.
+        // This prevents DoS via permissionless setValidatorToken: we only process
+        // token changes from validators who have actually produced recent blocks.
+        let amm_cache = self.amm_liquidity_cache();
+        let active_validator_token_changes: Vec<Address> = updates
+            .validator_token_changes
+            .iter()
+            .filter_map(|&(validator, new_token)| {
+                amm_cache
+                    .is_active_validator(&validator)
+                    .then_some(new_token)
+            })
+            .collect();
+
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
         let mut spending_limit_count = 0;
@@ -208,7 +222,12 @@ where
             }
 
             // Check 3: Validator token changes (check liquidity for all transactions)
-            if let Some(ref provider) = state_provider {
+            // NOTE: Only process changes from validators whose new token is already in use
+            // by actual block producers. This prevents permissionless setValidatorToken calls
+            // from triggering mass eviction.
+            if let Some(ref provider) = state_provider
+                && !active_validator_token_changes.is_empty()
+            {
                 let user_token = tx
                     .transaction
                     .inner()
@@ -221,7 +240,7 @@ where
                     Err(_) => continue,
                 };
 
-                for &(_validator, new_validator_token) in &updates.validator_token_changes {
+                for &new_validator_token in &active_validator_token_changes {
                     if user_token == new_validator_token {
                         continue;
                     }

@@ -14,7 +14,7 @@ use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
-        TempoTransaction,
+        TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
         tt_signature::{PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
@@ -56,6 +56,8 @@ pub(crate) struct TxBuilder {
     chain_id: u64,
     /// Custom calls for AA transactions. If None, a default call is created from `kind` and `value`.
     calls: Option<Vec<Call>>,
+    /// Authorization list for AA transactions.
+    authorization_list: Option<Vec<TempoSignedAuthorization>>,
 }
 
 impl Default for TxBuilder {
@@ -68,12 +70,13 @@ impl Default for TxBuilder {
             gas_limit: 1_000_000,
             value: U256::ZERO,
             max_priority_fee_per_gas: 1_000_000_000,
-            max_fee_per_gas: 2_000_000_000,
+            max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's 20 gwei minimum
             fee_token: None,
             valid_after: None,
             valid_before: None,
             chain_id: 42431, // MODERATO chain_id
             calls: None,
+            authorization_list: None,
         }
     }
 }
@@ -156,6 +159,15 @@ impl TxBuilder {
         self
     }
 
+    /// Set the authorization list for the AA transaction.
+    pub(crate) fn authorization_list(
+        mut self,
+        authorization_list: Vec<TempoSignedAuthorization>,
+    ) -> Self {
+        self.authorization_list = Some(authorization_list);
+        self
+    }
+
     /// Build an AA transaction.
     pub(crate) fn build(self) -> TempoPooledTransaction {
         let calls = self.calls.unwrap_or_else(|| {
@@ -179,7 +191,7 @@ impl TxBuilder {
             valid_after: self.valid_after,
             valid_before: self.valid_before,
             access_list: Default::default(),
-            tempo_authorization_list: vec![],
+            tempo_authorization_list: self.authorization_list.unwrap_or_default(),
             key_authorization: None,
         };
 
