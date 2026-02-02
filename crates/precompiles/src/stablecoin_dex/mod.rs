@@ -402,8 +402,9 @@ impl StablecoinDEX {
         };
 
         // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from)
+        // Direction: DEX → sender (order placer receives non-escrow token when filled)
         TIP20Token::from_address(non_escrow_token)?
-            .ensure_transfer_authorized(sender, self.address)?;
+            .ensure_transfer_authorized(self.address, sender)?;
 
         // Debit from user's balance or transfer from wallet
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
@@ -550,8 +551,9 @@ impl StablecoinDEX {
         };
 
         // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from or below)
+        // Direction: DEX → sender (order placer receives non-escrow token when filled)
         TIP20Token::from_address(non_escrow_token)?
-            .ensure_transfer_authorized(sender, self.address)?;
+            .ensure_transfer_authorized(self.address, sender)?;
 
         // Debit from user's balance only. This is set to true after a flip order is filled and the
         // subsequent flip order is being placed.
