@@ -820,12 +820,14 @@ where
             // Create gas_params with only sstore increase for key authorization
             let gas_params = if spec.is_t1() {
                 static TABLE: OnceLock<GasParams> = OnceLock::new();
-                // only enabled SSTORE gas param for T1 fork in keychain.
+                // only enabled SSTORE and warm storage read gas params for T1 fork in keychain.
                 TABLE
                     .get_or_init(|| {
                         let mut table = [0u64; 256];
                         table[GasId::sstore_set_without_load_cost().as_usize()] =
                             cfg.gas_params.get(GasId::sstore_set_without_load_cost());
+                        table[GasId::warm_storage_read_cost().as_usize()] =
+                            cfg.gas_params.get(GasId::warm_storage_read_cost());
                         GasParams::new(Arc::new(table))
                     })
                     .clone()
