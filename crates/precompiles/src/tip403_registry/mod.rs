@@ -448,10 +448,10 @@ impl TIP403Registry {
                     self.is_authorized_simple_policy(compound.mint_recipient_policy_id, user)
                 }
                 AuthRole::Transfer => {
+                    // (spec: +T1) short-circuit and skip recipient check if sender fails
                     if !self.is_authorized_simple_policy(compound.sender_policy_id, user)?
                         && self.storage.spec().is_t1()
                     {
-                        // (spec: +T1) short-circuit and skip recipient check if sender fails
                         return Ok(false);
                     }
                     self.is_authorized_simple_policy(compound.recipient_policy_id, user)
