@@ -261,7 +261,7 @@ fn get_identity_transition_proof_after_full_dkg() {
         assert!(
             finalization.verify(
                 &mut context,
-                &Scheme::certificate_verifier(b"TEMPO_FINALIZE", old_pubkey),
+                &Scheme::certificate_verifier(tempo_commonware_node::NAMESPACE, old_pubkey),
                 &commonware_parallel::Sequential
             ),
             "BLS signature verification failed"
