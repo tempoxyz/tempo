@@ -24,7 +24,7 @@ pub mod tt_2d_pool;
 pub use maintain::TempoPoolUpdates;
 
 pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};
-pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig, AASequenceId};
+pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig, AASequenceId, DEFAULT_MAX_TXS_PER_SENDER};
 
 #[cfg(test)]
 pub(crate) mod test_utils;

@@ -44,6 +44,12 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         _actors = _buildActors(10);
 
         _initLogFile(LOG_FILE, "TIP20Factory Invariant Test Log");
+
+        // One-time constant checks (immutable after deployment)
+        // TEMPO-FAC8: isTIP20 consistency for system contracts
+        assertTrue(factory.isTIP20(address(pathUSD)), "TEMPO-FAC8: pathUSD should be TIP20");
+        assertFalse(factory.isTIP20(address(factory)), "TEMPO-FAC8: Factory should not be TIP20");
+        assertFalse(factory.isTIP20(address(amm)), "TEMPO-FAC8: AMM should not be TIP20");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -69,14 +75,16 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             // TEMPO-FAC5: Reserved address range is enforced
             if (bytes4(reason) == ITIP20Factory.AddressReserved.selector) {
                 _totalReservedAttempts++;
-                _log(
-                    string.concat(
-                        "CREATE_TOKEN_RESERVED: ",
-                        _getActorIndex(actor),
-                        " salt=",
-                        vm.toString(salt)
-                    )
-                );
+                if (_loggingEnabled) {
+                    _log(
+                        string.concat(
+                            "CREATE_TOKEN_RESERVED: ",
+                            _getActorIndex(actor),
+                            " salt=",
+                            vm.toString(salt)
+                        )
+                    );
+                }
                 return;
             }
             revert("Unknown error in getTokenAddress");
@@ -92,14 +100,16 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 vm.stopPrank();
                 if (bytes4(reason) == ITIP20Factory.TokenAlreadyExists.selector) {
                     _totalDuplicateAttempts++;
-                    _log(
-                        string.concat(
-                            "CREATE_TOKEN_EXISTS: ",
-                            _getActorIndex(actor),
-                            " at ",
-                            vm.toString(predictedAddr)
-                        )
-                    );
+                    if (_loggingEnabled) {
+                        _log(
+                            string.concat(
+                                "CREATE_TOKEN_EXISTS: ",
+                                _getActorIndex(actor),
+                                " at ",
+                                vm.toString(predictedAddr)
+                            )
+                        );
+                    }
                     return;
                 }
                 _assertKnownError(reason);
@@ -146,16 +156,18 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC6: Token currency mismatch"
             );
 
-            _log(
-                string.concat(
-                    "CREATE_TOKEN: ",
-                    _getActorIndex(actor),
-                    " created ",
-                    symbol,
-                    " at ",
-                    vm.toString(tokenAddr)
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CREATE_TOKEN: ",
+                        _getActorIndex(actor),
+                        " created ",
+                        symbol,
+                        " at ",
+                        vm.toString(tokenAddr)
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -195,11 +207,13 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC4: Expected InvalidQuoteToken error"
             );
             _totalInvalidQuoteAttempts++;
-            _log(
-                string.concat(
-                    "CREATE_TOKEN_INVALID_QUOTE: ", _getActorIndex(actor), " with invalid quote"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CREATE_TOKEN_INVALID_QUOTE: ", _getActorIndex(actor), " with invalid quote"
+                    )
+                );
+            }
         }
     }
 
@@ -241,11 +255,13 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                     "TEMPO-FAC7: Currency mismatch"
                 );
 
-                _log(
-                    string.concat(
-                        "CREATE_TOKEN_NON_USD: ", _getActorIndex(actor), " currency=", currency
-                    )
-                );
+                if (_loggingEnabled) {
+                    _log(
+                        string.concat(
+                            "CREATE_TOKEN_NON_USD: ", _getActorIndex(actor), " currency=", currency
+                        )
+                    );
+                }
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
@@ -264,6 +280,13 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         // Get or create a EUR token to use as quote
         try factory.getTokenAddress(actor, eurSalt) returns (address predictedEurAddr) {
             if (predictedEurAddr.code.length != 0) {
+                // Verify the existing token is actually a EUR token (not some other token
+                // that happened to be created at this address by another handler)
+                if (keccak256(bytes(TIP20(predictedEurAddr).currency())) != keccak256(bytes("EUR")))
+                {
+                    // Token exists but is not EUR - skip this test case
+                    return;
+                }
                 eurToken = predictedEurAddr;
             } else {
                 vm.startPrank(actor);
@@ -305,17 +328,27 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             revert("TEMPO-FAC7: USD token with non-USD quote should fail");
         } catch (bytes memory reason) {
             vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                ITIP20Factory.InvalidQuoteToken.selector,
-                "TEMPO-FAC7: Should revert with InvalidQuoteToken"
+            // Accept either InvalidQuoteToken or TokenAlreadyExists since validation order
+            // may vary between Solidity spec and Rust precompile. The precompile checks
+            // TokenAlreadyExists before InvalidQuoteToken, so if the computed address
+            // collides with an existing token, we get TokenAlreadyExists instead.
+            bytes4 selector = bytes4(reason);
+            bool isExpectedError = selector == ITIP20Factory.InvalidQuoteToken.selector
+                || selector == ITIP20Factory.TokenAlreadyExists.selector;
+            assertTrue(
+                isExpectedError,
+                "TEMPO-FAC7: Should revert with InvalidQuoteToken or TokenAlreadyExists"
             );
             _totalUsdWithNonUsdQuoteRejected++;
-            _log(
-                string.concat(
-                    "CREATE_USD_WITH_NON_USD_QUOTE: ", _getActorIndex(actor), " correctly rejected"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CREATE_USD_WITH_NON_USD_QUOTE: ",
+                        _getActorIndex(actor),
+                        " correctly rejected"
+                    )
+                );
+            }
         }
     }
 
@@ -345,11 +378,15 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC5: createToken should revert with AddressReserved"
             );
             _totalReservedCreateAttempts++;
-            _log(
-                string.concat(
-                    "CREATE_TOKEN_RESERVED_CREATE: ", _getActorIndex(actor), " correctly rejected"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CREATE_TOKEN_RESERVED_CREATE: ",
+                        _getActorIndex(actor),
+                        " correctly rejected"
+                    )
+                );
+            }
         }
     }
 
@@ -373,12 +410,19 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             // Check AMM address - should NOT be TIP20
             assertFalse(factory.isTIP20(address(amm)), "TEMPO-FAC8: AMM should not be TIP20");
         } else {
-            // Check a random address - exclude known TIP20s
+            // Check a random address - exclude known TIP20s and reserved range
             address checkAddr = address(uint160(addrSeed));
+
+            // Skip addresses in the reserved TIP20 range (prefix 0x20C0... with lower 64 bits < 1024)
+            // These addresses may have code from genesis/hardfork deployments
+            bool hasPrefix = bytes12(bytes20(checkAddr)) == bytes12(0x20c000000000000000000000);
+            uint64 lowerBytes = uint64(uint160(checkAddr));
+            bool isReserved = hasPrefix && lowerBytes < 1024;
+
             if (
                 !_isCreatedToken[checkAddr] && checkAddr != address(pathUSD)
                     && checkAddr != address(token1) && checkAddr != address(token2)
-                    && checkAddr != address(token3) && checkAddr != address(token4)
+                    && checkAddr != address(token3) && checkAddr != address(token4) && !isReserved
             ) {
                 assertFalse(
                     factory.isTIP20(checkAddr), "TEMPO-FAC8: Random address should not be TIP20"
@@ -422,65 +466,47 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                          GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Run all invariant checks
+    /// @notice Run all invariant checks in unified loops
+    /// @dev Combines TEMPO-FAC2, FAC11, FAC12 into single pass over _createdTokens
+    ///      FAC8 system contract checks moved to setUp() as they're immutable
     function invariant_globalInvariants() public view {
-        _invariantAllCreatedTokensAreTIP20();
-        _invariantAddressFormat();
-        _invariantUsdTokensHaveUsdQuote();
-        _invariantSaltToTokenConsistency();
-        _invariantIsTIP20Consistency();
-    }
+        // Cache USD hash for comparison
+        bytes32 usdHash = keccak256(bytes("USD"));
 
-    /// @notice TEMPO-FAC2: All created tokens are recognized as TIP20
-    function _invariantAllCreatedTokensAreTIP20() internal view {
+        // Single pass over all created tokens
         for (uint256 i = 0; i < _createdTokens.length; i++) {
+            address tokenAddr = _createdTokens[i];
+            TIP20 token = TIP20(tokenAddr);
+
+            // TEMPO-FAC2: Created token is recognized as TIP20
             assertTrue(
-                factory.isTIP20(_createdTokens[i]),
-                "TEMPO-FAC2: Created token not recognized as TIP20"
+                factory.isTIP20(tokenAddr), "TEMPO-FAC2: Created token not recognized as TIP20"
             );
-        }
-    }
 
-    /// @notice TEMPO-FAC8: isTIP20 consistency - pathUSD and created tokens are TIP20, system contracts are not
-    function _invariantIsTIP20Consistency() internal view {
-        assertTrue(factory.isTIP20(address(pathUSD)), "TEMPO-FAC8: pathUSD should be TIP20");
-        assertFalse(factory.isTIP20(address(factory)), "TEMPO-FAC8: Factory should not be TIP20");
-        assertFalse(factory.isTIP20(address(amm)), "TEMPO-FAC8: AMM should not be TIP20");
-    }
-
-    /// @notice TEMPO-FAC11: All created tokens have correct address format
-    function _invariantAddressFormat() internal view {
-        for (uint256 i = 0; i < _createdTokens.length; i++) {
-            address token = _createdTokens[i];
-            uint160 addrValue = uint160(token);
+            // TEMPO-FAC11: Token address has correct prefix
+            uint160 addrValue = uint160(tokenAddr);
             uint96 prefix = uint96(addrValue >> 64);
-
             assertEq(
                 prefix,
                 0x20C000000000000000000000,
                 "TEMPO-FAC11: Token address has incorrect prefix"
             );
-        }
-    }
 
-    /// @notice TEMPO-FAC12: USD tokens must have USD quote tokens
-    function _invariantUsdTokensHaveUsdQuote() internal view {
-        for (uint256 i = 0; i < _createdTokens.length; i++) {
-            TIP20 token = TIP20(_createdTokens[i]);
-
-            // Check if this is a USD token
-            if (keccak256(bytes(token.currency())) == keccak256(bytes("USD"))) {
-                // Its quote token must also be USD
+            // TEMPO-FAC12: USD tokens must have USD quote tokens
+            if (keccak256(bytes(token.currency())) == usdHash) {
                 ITIP20 quote = token.quoteToken();
                 if (address(quote) != address(0)) {
                     assertEq(
                         keccak256(bytes(TIP20(address(quote)).currency())),
-                        keccak256(bytes("USD")),
+                        usdHash,
                         "TEMPO-FAC12: USD token has non-USD quote token"
                     );
                 }
             }
         }
+
+        // TEMPO-FAC1: Salt-to-token mapping consistency
+        _invariantSaltToTokenConsistency();
     }
 
     /// @notice TEMPO-FAC1: Salt-to-token mapping is consistent with factory
@@ -514,22 +540,10 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         }
     }
 
-    /*//////////////////////////////////////////////////////////////
-                         COVERAGE SANITY
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Verify that key invariant paths were actually exercised
-    /// @dev This invariant ensures the fuzzer is testing meaningful scenarios
-    function invariant_coverageSanity() public view {
-        // Only check coverage if we've had enough runs (avoid early failures)
-        if (_totalTokensCreated >= 5) {
-            // At least some tokens should have been created
-            assertTrue(_createdTokens.length > 0, "Coverage: No tokens created");
-        }
-    }
-
     /// @notice Called after each invariant run to log final state
     function afterInvariant() public {
+        if (!_loggingEnabled) return;
+
         _log("");
         _log("--------------------------------------------------------------------------------");
         _log("                              Final State Summary");

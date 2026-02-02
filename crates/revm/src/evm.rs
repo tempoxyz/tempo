@@ -215,7 +215,7 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::TempoEvmFactory;
     use tempo_precompiles::{
-        NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+        AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
         nonce::NonceManager,
         storage::{Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
         test_util::TIP20Setup,
@@ -1859,6 +1859,185 @@ mod tests {
             let result = evm.inspect_one_system_call_with_caller(caller, contract, Bytes::new())?;
             assert!(result.is_success());
             assert!(evm.inspector.call_count() > 0);
+        }
+
+        Ok(())
+    }
+
+    /// Test that key_authorization works correctly with T1 hardfork.
+    ///
+    /// This test verifies the key_authorization flow works in the T1 EVM.
+    /// It ensures that:
+    /// 1. Keys are NOT authorized when transaction fails due to insufficient gas
+    /// 2. Keys ARE authorized when transaction succeeds with sufficient gas
+    ///
+    /// Related fix: The handler creates a checkpoint before key_authorization
+    /// precompile execution and reverts it on OOG. This ensures storage consistency.
+    #[test]
+    fn test_key_authorization_t1() -> eyre::Result<()> {
+        use tempo_precompiles::account_keychain::AccountKeychain;
+
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        // Create a T1 EVM (the fix only applies to T1)
+        let mut evm = create_funded_evm_t1(caller);
+
+        // Set up TIP20 for fee payment
+        let block = TempoBlockEnv::default();
+        {
+            let ctx = &mut evm.ctx;
+            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+            StorageCtx::enter(&mut provider, || {
+                TIP20Setup::path_usd(caller)
+                    .with_issuer(caller)
+                    .with_mint(caller, U256::from(10_000_000))
+                    .apply()
+            })?;
+        }
+
+        // ==================== Test 1: INSUFFICIENT gas ====================
+        // First, try with insufficient gas - key should NOT be authorized
+
+        let access_key = P256KeyPair::random();
+        let key_auth = KeyAuthorization {
+            chain_id: 1,
+            key_type: SignatureType::WebAuthn,
+            key_id: access_key.address,
+            expiry: None,
+            limits: None,
+        };
+        let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
+        let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
+
+        // Verify key does NOT exist before the transaction
+        {
+            let ctx = &mut evm.ctx;
+            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+            let key_exists = StorageCtx::enter(&mut provider, || {
+                let keychain = AccountKeychain::default();
+                keychain.keys[caller][access_key.address].read()
+            })?;
+            assert_eq!(
+                key_exists.expiry, 0,
+                "Key should not exist before transaction"
+            );
+        }
+
+        let signed_auth = key_pair.create_signed_authorization(Address::repeat_byte(0x42))?;
+
+        // Insufficient gas - will cause OOG during key_authorization processing
+        let tx_low_gas = TxBuilder::new()
+            .call_identity(&[0x01])
+            .authorization(signed_auth)
+            .key_authorization(signed_key_auth)
+            .gas_limit(589_000)
+            .build();
+
+        let signed_tx_low = key_pair.sign_tx(tx_low_gas)?;
+        let tx_env_low = TempoTxEnv::from_recovered_tx(&signed_tx_low, caller);
+
+        // Execute the transaction - it should fail due to insufficient gas
+        let result_low = evm.transact_commit(tx_env_low);
+
+        // Transaction should fail (either rejected or OOG)
+        match &result_low {
+            Ok(result) => {
+                assert_eq!(result.gas_used(), 589_000, "Gas used should be gas limit");
+                assert!(
+                    !result.is_success(),
+                    "Transaction with insufficient gas should fail"
+                );
+            }
+            Err(e) => {
+                // Transaction rejected during validation - must be InsufficientGasForIntrinsicCost
+                assert!(
+                    matches!(
+                        e,
+                        revm::context::result::EVMError::Transaction(
+                            TempoInvalidTransaction::InsufficientGasForIntrinsicCost { .. }
+                        )
+                    ),
+                    "Expected InsufficientGasForIntrinsicCost, got: {e:?}"
+                );
+            }
+        }
+
+        // CRITICAL: Verify the key was NOT authorized
+        // This tests that storage changes are properly reverted on failure
+        {
+            let ctx = &mut evm.ctx;
+            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+            let key_after_fail = StorageCtx::enter(&mut provider, || {
+                let keychain = AccountKeychain::default();
+                keychain.keys[caller][access_key.address].read()
+            })?;
+
+            assert_eq!(
+                key_after_fail,
+                AuthorizedKey::default(),
+                "Key should NOT be authorized when transaction fails due to insufficient gas"
+            );
+        }
+
+        // ==================== Test 2: SUFFICIENT gas ====================
+        // Now try with sufficient gas - key should be authorized
+
+        let access_key2 = P256KeyPair::random();
+        let key_auth2 = KeyAuthorization {
+            chain_id: 1,
+            key_type: SignatureType::WebAuthn,
+            key_id: access_key2.address,
+            expiry: None, // Never expires (u64::MAX)
+            limits: None, // No spending limits
+        };
+        let key_auth_sig2 = key_pair.sign_webauthn(key_auth2.signature_hash().as_slice())?;
+        let signed_key_auth2 = key_auth2.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig2));
+
+        let signed_auth2 = key_pair.create_signed_authorization(Address::repeat_byte(0x43))?;
+
+        // Execute transaction with sufficient gas
+        let tx = TxBuilder::new()
+            .call_identity(&[0x01])
+            .authorization(signed_auth2)
+            .key_authorization(signed_key_auth2)
+            .nonce(1)
+            .gas_limit(1_000_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let result = evm.transact_commit(tx_env)?;
+        assert!(result.is_success(), "Transaction should succeed");
+        assert_eq!(
+            result.gas_used(),
+            587177,
+            "T1 key authorization gas should be exact"
+        );
+
+        // Verify the key was authorized
+        {
+            let ctx = &mut evm.ctx;
+            let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+            let key_after_success = StorageCtx::enter(&mut provider, || {
+                let keychain = AccountKeychain::default();
+                keychain.keys[caller][access_key2.address].read()
+            })?;
+
+            assert_eq!(
+                key_after_success.expiry,
+                u64::MAX,
+                "Key should be authorized after successful transaction"
+            );
         }
 
         Ok(())

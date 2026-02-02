@@ -68,18 +68,19 @@ abstract contract InvariantChecker is HandlerBase {
 
     /// @notice Verify 2D nonce invariants for a single account
     /// @param account The account to verify
+    /// @dev Optimized: iterates only used keys via ghost_account2dNonceKeys array
     function _verify2dNonceForAccount(address account) internal view {
         // N6 & N7: Check each used 2D nonce key
-        for (uint256 key = 1; key <= 100; key++) {
-            if (ghost_2dNonceUsed[account][key]) {
-                uint64 actual = nonce.getNonce(account, key);
-                uint256 expected = ghost_2dNonce[account][key];
+        uint256[] storage keys = ghost_account2dNonceKeys[account];
+        for (uint256 i = 0; i < keys.length; i++) {
+            uint256 key = keys[i];
+            uint64 actual = nonce.getNonce(account, key);
+            uint256 expected = ghost_2dNonce[account][key];
 
-                // N6: 2D nonce keys are independent - actual should match expected
-                assertEq(actual, expected, "N6: 2D nonce value mismatch");
+            // N6: 2D nonce keys are independent - actual should match expected
+            assertEq(actual, expected, "N6: 2D nonce value mismatch");
 
-                // N7: 2D nonces never decrease (implicit - ghost only increments)
-            }
+            // N7: 2D nonces never decrease (implicit - ghost only increments)
         }
     }
 

@@ -11,20 +11,19 @@
 //! 2. Add `is_vivace()` method to `TempoHardfork` impl
 //! 3. Add `is_vivace_active_at_timestamp()` to `TempoHardforks` trait
 //! 4. Update `tempo_hardfork_at()` to check for the new hardfork first (latest hardfork is checked first)
-//! 5. Add `TempoHardfork::Vivace => Self::OSAKA` (or appropriate SpecId) in `From<TempoHardfork> for SpecId`
-//! 6. Update `From<SpecId> for TempoHardfork` to check for the new hardfork first
-//! 7. Add test `test_is_vivace` and update existing `is_*` tests to include the new variant
+//! 5. Update `From<TempoHardfork> for SpecId` if the new hardfork requires a different Ethereum SpecId
+//! 6. Add test `test_is_vivace` and update existing `is_*` tests to include the new variant
 //!
 //! ### In `spec.rs`:
-//! 8. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo`
-//! 9. Extract `vivace_time` in `TempoChainSpec::from_genesis`
-//! 10. Add `(TempoHardfork::Vivace, vivace_time)` to `tempo_forks` vec
-//! 11. Update tests to include `"vivaceTime": <timestamp>` in genesis JSON
+//! 7. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo`
+//! 8. Extract `vivace_time` in `TempoChainSpec::from_genesis`
+//! 9. Add `(TempoHardfork::Vivace, vivace_time)` to `tempo_forks` vec
+//! 10. Update tests to include `"vivaceTime": <timestamp>` in genesis JSON
 //!
 //! ### In genesis files and generator:
-//! 12. Add `"vivaceTime": 0` to `genesis/dev.json`
-//! 13. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
-//! 14. Add insertion of `"vivaceTime"` to chain_config.extra_fields
+//! 11. Add `"vivaceTime": 0` to `genesis/dev.json`
+//! 12. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
+//! 13. Add insertion of `"vivaceTime"` to chain_config.extra_fields
 //!
 //! ## Current State
 //!
@@ -132,14 +131,11 @@ impl From<&TempoHardfork> for SpecId {
 }
 
 impl From<SpecId> for TempoHardfork {
-    fn from(spec: SpecId) -> Self {
-        if spec.is_enabled_in(SpecId::from(Self::T1)) {
-            Self::T1
-        } else if spec.is_enabled_in(SpecId::from(Self::T0)) {
-            Self::T0
-        } else {
-            Self::Genesis
-        }
+    fn from(_spec: SpecId) -> Self {
+        // All Tempo hardforks map to SpecId::OSAKA, so we cannot derive the hardfork from SpecId.
+        // Default to the default hardfork when converting from SpecId.
+        // The actual hardfork should be passed explicitly where needed.
+        Self::default()
     }
 }
 

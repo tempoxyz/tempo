@@ -33,7 +33,7 @@ jobs:
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
             echo "coverage=false" >> "$GITHUB_OUTPUT"
             echo "Skipping coverage: not a pull_request event (event: ${{ github.event_name }})"
-          elif git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -qE '^crates/(precompiles|contracts)/'; then
+          elif git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/ref-impls/)'; then
             echo "coverage=true" >> "$GITHUB_OUTPUT"
             echo "Running coverage: precompiles/contracts changed"
           else

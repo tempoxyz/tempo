@@ -19,9 +19,96 @@ library TxBuilder {
     using LegacyTransactionLib for LegacyTransaction;
     using TempoTransactionLib for TempoTransaction;
 
+    // ============ Default Transaction Parameters ============
+
     uint64 constant DEFAULT_GAS_LIMIT = 100_000;
+    uint64 constant DEFAULT_CREATE_GAS_LIMIT = 1_500_000;
     uint256 constant DEFAULT_GAS_PRICE = 100;
-    uint64 constant DEFAULT_CREATE_GAS_LIMIT = 500_000;
+    uint64 constant GAS_LIMIT_BUFFER = 100_000;
+
+    // ============ EVM Gas Constants ============
+
+    uint64 constant TX_BASE_COST = 21_000;
+    uint64 constant COLD_ACCOUNT_ACCESS = 2600;
+    uint64 constant CALLDATA_ZERO_BYTE = 4;
+    uint64 constant CALLDATA_NONZERO_BYTE = 16;
+    uint64 constant INITCODE_WORD_COST = 2;
+    uint64 constant ACCESS_LIST_ADDR_COST = 2400;
+    uint64 constant ACCESS_LIST_SLOT_COST = 1900;
+    uint64 constant ECRECOVER_GAS = 3000;
+    uint64 constant P256_EXTRA_GAS = 5000;
+    uint64 constant KEY_AUTH_BASE_GAS = 27_000;
+    uint64 constant KEY_AUTH_PER_LIMIT_GAS = 22_000;
+
+    // ============ TIP-1000 Gas Constants (Hardfork: T1) ============
+
+    uint64 constant ACCOUNT_CREATION_COST = 250_000; // nonce 0→1
+    uint64 constant STATE_CREATION_COST = 250_000; // SSTORE zero→non-zero
+    uint64 constant CREATE_BASE_COST = 500_000; // CREATE/CREATE2 base
+    uint64 constant CODE_DEPOSIT_COST = 1000; // per byte
+    uint64 constant CREATE_FIELDS_COST = 500_000; // keccak + codesize (2 × 250,000)
+
+    // ============ Gas Calculation Helpers ============
+
+    /// @notice Calculate calldata gas cost (4 per zero byte, 16 per non-zero)
+    function calldataGas(bytes memory data) internal pure returns (uint64 gas) {
+        for (uint256 i = 0; i < data.length; i++) {
+            gas += data[i] == 0 ? CALLDATA_ZERO_BYTE : CALLDATA_NONZERO_BYTE;
+        }
+    }
+
+    /// @notice Calculate initcode gas cost (2 gas per 32-byte word)
+    function initcodeGas(bytes memory initcode) internal pure returns (uint64) {
+        return uint64(((initcode.length + 31) / 32) * INITCODE_WORD_COST);
+    }
+
+    /// @notice Calculate CREATE intrinsic gas (TIP-1000)
+    /// @param initcode The contract creation bytecode
+    /// @param nonce The sender's current nonce (0 = first tx, account creation cost applies)
+    function createGas(bytes memory initcode, uint64 nonce) internal pure returns (uint64) {
+        uint64 gas = TX_BASE_COST + CREATE_BASE_COST;
+
+        if (nonce == 0) {
+            gas += ACCOUNT_CREATION_COST;
+        }
+
+        gas += calldataGas(initcode);
+        gas += initcodeGas(initcode);
+
+        return gas;
+    }
+
+    /// @notice Calculate CALL intrinsic gas (TIP-1000)
+    /// @param data The calldata
+    /// @param nonce The sender's current nonce (0 = first tx, account creation cost applies)
+    function callGas(bytes memory data, uint64 nonce) internal pure returns (uint64) {
+        uint64 gas = TX_BASE_COST;
+
+        if (nonce == 0) {
+            gas += ACCOUNT_CREATION_COST;
+        }
+
+        gas += calldataGas(data);
+
+        return gas;
+    }
+
+    /// @notice Estimate gas for multicall (TIP-1000)
+    /// @param calls The calls in the batch
+    /// @param nonce The sender's current nonce (0 = first tx, account creation cost applies)
+    function multicallGas(TempoCall[] memory calls, uint64 nonce) internal pure returns (uint64) {
+        uint64 gas = TX_BASE_COST;
+
+        if (nonce == 0) {
+            gas += ACCOUNT_CREATION_COST;
+        }
+
+        for (uint256 i = 0; i < calls.length; i++) {
+            gas += calldataGas(calls[i].data);
+        }
+
+        return gas;
+    }
 
     uint8 constant SIGNATURE_TYPE_P256 = 0x01;
     uint8 constant SIGNATURE_TYPE_WEBAUTHN = 0x02;
@@ -62,8 +149,8 @@ library TxBuilder {
         uint256 privateKey
     ) internal view returns (bytes memory) {
         LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(DEFAULT_GAS_LIMIT).withTo(to)
-            .withData(data);
+            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(callGas(data, nonce) + GAS_LIMIT_BUFFER)
+            .withTo(to).withData(data);
 
         return _signLegacy(vmRlp, vm, tx_, privateKey);
     }
@@ -93,8 +180,9 @@ library TxBuilder {
         uint256 privateKey
     ) internal view returns (bytes memory) {
         LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(DEFAULT_CREATE_GAS_LIMIT)
-            .withTo(address(0)).withData(initcode);
+            .withGasPrice(DEFAULT_GAS_PRICE)
+            .withGasLimit(createGas(initcode, nonce) + GAS_LIMIT_BUFFER).withTo(address(0))
+            .withData(initcode);
 
         return _signLegacy(vmRlp, vm, tx_, privateKey);
     }
@@ -115,136 +203,6 @@ library TxBuilder {
         return _signLegacy(vmRlp, vm, tx_, privateKey);
     }
 
-    // ============ Legacy Transactions with P256 ============
-
-    /// @notice Build and sign a legacy CALL transaction with P256 signature
-    function buildLegacyCallP256(
-        VmRlp vmRlp,
-        Vm vm,
-        address to,
-        bytes memory data,
-        uint64 nonce,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(DEFAULT_GAS_LIMIT).withTo(to)
-            .withData(data);
-
-        return _signLegacyP256(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
-    }
-
-    /// @notice Build and sign a legacy CREATE transaction with P256 signature
-    function buildLegacyCreateP256(
-        VmRlp vmRlp,
-        Vm vm,
-        bytes memory initcode,
-        uint64 nonce,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(DEFAULT_CREATE_GAS_LIMIT)
-            .withTo(address(0)).withData(initcode);
-
-        return _signLegacyP256(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
-    }
-
-    // ============ Legacy Transactions with WebAuthn ============
-
-    /// @notice Build and sign a legacy CALL transaction with WebAuthn signature
-    function buildLegacyCallWebAuthn(
-        VmRlp vmRlp,
-        Vm vm,
-        address to,
-        bytes memory data,
-        uint64 nonce,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(DEFAULT_GAS_LIMIT).withTo(to)
-            .withData(data);
-
-        return _signLegacyWebAuthn(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
-    }
-
-    /// @notice Build and sign a legacy CREATE transaction with WebAuthn signature
-    function buildLegacyCreateWebAuthn(
-        VmRlp vmRlp,
-        Vm vm,
-        bytes memory initcode,
-        uint64 nonce,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(DEFAULT_CREATE_GAS_LIMIT)
-            .withTo(address(0)).withData(initcode);
-
-        return _signLegacyWebAuthn(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
-    }
-
-    // ============ Legacy Transactions with Keychain (Access Key) ============
-
-    /// @notice Build and sign a legacy CALL transaction with Keychain signature (secp256k1 access key)
-    function buildLegacyCallKeychain(
-        VmRlp vmRlp,
-        Vm vm,
-        address to,
-        bytes memory data,
-        uint64 nonce,
-        uint256 accessKeyPrivateKey,
-        address userAddress
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(DEFAULT_GAS_LIMIT).withTo(to)
-            .withData(data);
-
-        return _signLegacyKeychain(vmRlp, vm, tx_, accessKeyPrivateKey, userAddress);
-    }
-
-    /// @notice Build and sign a legacy CALL transaction with Keychain P256 signature
-    function buildLegacyCallKeychainP256(
-        VmRlp vmRlp,
-        Vm vm,
-        address to,
-        bytes memory data,
-        uint64 nonce,
-        uint256 accessKeyP256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY,
-        address userAddress
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(DEFAULT_GAS_LIMIT).withTo(to)
-            .withData(data);
-
-        return _signLegacyKeychainP256(
-            vmRlp, vm, tx_, accessKeyP256PrivateKey, pubKeyX, pubKeyY, userAddress
-        );
-    }
-
-    /// @notice Build and sign a legacy CREATE transaction with Keychain signature
-    function buildLegacyCreateKeychain(
-        VmRlp vmRlp,
-        Vm vm,
-        bytes memory initcode,
-        uint64 nonce,
-        uint256 accessKeyPrivateKey,
-        address userAddress
-    ) internal view returns (bytes memory) {
-        LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
-            .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(DEFAULT_CREATE_GAS_LIMIT)
-            .withTo(address(0)).withData(initcode);
-
-        return _signLegacyKeychain(vmRlp, vm, tx_, accessKeyPrivateKey, userAddress);
-    }
-
     // ============ Tempo Transactions with Secp256k1 ============
 
     /// @notice Build and sign a Tempo single-call transaction with secp256k1
@@ -262,8 +220,8 @@ library TxBuilder {
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_GAS_LIMIT).withCalls(calls).withNonceKey(nonceKey)
-            .withNonce(txNonce);
+            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
+            .withNonceKey(nonceKey).withNonce(txNonce);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
     }
@@ -277,10 +235,11 @@ library TxBuilder {
         uint64 txNonce,
         uint256 privateKey
     ) internal view returns (bytes memory) {
+        uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
+
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_GAS_LIMIT * uint64(calls.length)).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(txNonce);
+            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
     }
@@ -304,8 +263,8 @@ library TxBuilder {
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_GAS_LIMIT).withCalls(calls).withNonceKey(nonceKey)
-            .withNonce(txNonce);
+            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
+            .withNonceKey(nonceKey).withNonce(txNonce);
 
         return _signTempoP256(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
     }
@@ -321,10 +280,11 @@ library TxBuilder {
         bytes32 pubKeyX,
         bytes32 pubKeyY
     ) internal view returns (bytes memory) {
+        uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
+
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_GAS_LIMIT * uint64(calls.length)).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(txNonce);
+            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
 
         return _signTempoP256(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
     }
@@ -348,8 +308,8 @@ library TxBuilder {
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_GAS_LIMIT).withCalls(calls).withNonceKey(nonceKey)
-            .withNonce(txNonce);
+            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
+            .withNonceKey(nonceKey).withNonce(txNonce);
 
         return _signTempoWebAuthn(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
     }
@@ -365,10 +325,11 @@ library TxBuilder {
         bytes32 pubKeyX,
         bytes32 pubKeyY
     ) internal view returns (bytes memory) {
+        uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
+
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_GAS_LIMIT * uint64(calls.length)).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(txNonce);
+            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
 
         return _signTempoWebAuthn(vmRlp, vm, tx_, p256PrivateKey, pubKeyX, pubKeyY);
     }
@@ -391,8 +352,8 @@ library TxBuilder {
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_GAS_LIMIT).withCalls(calls).withNonceKey(nonceKey)
-            .withNonce(txNonce);
+            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
+            .withNonceKey(nonceKey).withNonce(txNonce);
 
         return _signTempoKeychain(vmRlp, vm, tx_, accessKeyPrivateKey, userAddress);
     }
@@ -407,10 +368,12 @@ library TxBuilder {
         uint256 accessKeyPrivateKey,
         address userAddress
     ) internal view returns (bytes memory) {
+        uint64 gasLimit =
+            multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
+
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_GAS_LIMIT * uint64(calls.length)).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(txNonce);
+            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
 
         return _signTempoKeychain(vmRlp, vm, tx_, accessKeyPrivateKey, userAddress);
     }
@@ -433,8 +396,8 @@ library TxBuilder {
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_GAS_LIMIT).withCalls(calls).withNonceKey(nonceKey)
-            .withNonce(txNonce);
+            .withGasLimit(callGas(data, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
+            .withNonceKey(nonceKey).withNonce(txNonce);
 
         return _signTempoKeychainP256(
             vmRlp, vm, tx_, accessKeyP256PrivateKey, pubKeyX, pubKeyY, userAddress
@@ -457,8 +420,8 @@ library TxBuilder {
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_CREATE_GAS_LIMIT).withCalls(calls).withNonceKey(nonceKey)
-            .withNonce(txNonce);
+            .withGasLimit(createGas(initcode, txNonce) + GAS_LIMIT_BUFFER).withCalls(calls)
+            .withNonceKey(nonceKey).withNonce(txNonce);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
     }
@@ -498,10 +461,12 @@ library TxBuilder {
         calls[0] = TempoCall({ to: callTarget, value: 0, data: callData });
         calls[1] = TempoCall({ to: address(0), value: 0, data: initcode }); // CREATE as second call
 
+        // Mixed CALL + CREATE: use createGas for the CREATE + buffer for the CALL
+        uint64 gasLimit = createGas(initcode, txNonce) + GAS_LIMIT_BUFFER + DEFAULT_GAS_LIMIT;
+
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
-            .withGasLimit(DEFAULT_CREATE_GAS_LIMIT + DEFAULT_GAS_LIMIT).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(txNonce);
+            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
 
         return _signTempo(vmRlp, vm, tx_, privateKey);
     }
@@ -598,97 +563,6 @@ library TxBuilder {
         );
     }
 
-    function _signLegacyP256(
-        VmRlp vmRlp,
-        Vm vm,
-        LegacyTransaction memory tx_,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        return signLegacy(
-            vmRlp,
-            vm,
-            tx_,
-            SigningParams(SigningStrategy.P256, p256PrivateKey, pubKeyX, pubKeyY, address(0))
-        );
-    }
-
-    function _signLegacyWebAuthn(
-        VmRlp vmRlp,
-        Vm vm,
-        LegacyTransaction memory tx_,
-        uint256 p256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
-        return signLegacy(
-            vmRlp,
-            vm,
-            tx_,
-            SigningParams(SigningStrategy.WebAuthn, p256PrivateKey, pubKeyX, pubKeyY, address(0))
-        );
-    }
-
-    function _signLegacyKeychain(
-        VmRlp vmRlp,
-        Vm vm,
-        LegacyTransaction memory tx_,
-        uint256 accessKeyPrivateKey,
-        address userAddress
-    ) internal view returns (bytes memory) {
-        return signLegacy(
-            vmRlp,
-            vm,
-            tx_,
-            SigningParams(
-                SigningStrategy.KeychainSecp256k1,
-                accessKeyPrivateKey,
-                bytes32(0),
-                bytes32(0),
-                userAddress
-            )
-        );
-    }
-
-    function _signLegacyKeychainP256(
-        VmRlp vmRlp,
-        Vm vm,
-        LegacyTransaction memory tx_,
-        uint256 accessKeyP256PrivateKey,
-        bytes32 pubKeyX,
-        bytes32 pubKeyY,
-        address userAddress
-    ) internal view returns (bytes memory) {
-        return signLegacy(
-            vmRlp,
-            vm,
-            tx_,
-            SigningParams(
-                SigningStrategy.KeychainP256, accessKeyP256PrivateKey, pubKeyX, pubKeyY, userAddress
-            )
-        );
-    }
-
-    // ============ RLP Encoding Helpers ============
-
-    function _encodeSignedLegacy(VmRlp vmRlp, LegacyTransaction memory tx_, bytes memory signature)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        bytes[] memory items = new bytes[](7);
-        items[0] = TxRlp.encodeUint(tx_.nonce);
-        items[1] = TxRlp.encodeUint(tx_.gasPrice);
-        items[2] = TxRlp.encodeUint(tx_.gasLimit);
-        items[3] = tx_.to == address(0) ? TxRlp.encodeNone() : TxRlp.encodeAddress(tx_.to);
-        items[4] = TxRlp.encodeUint(tx_.value);
-        items[5] = tx_.data;
-        items[6] = signature;
-
-        return TxRlp.encodeList(vmRlp, items);
-    }
-
     // ============ Unified Signing (Internal) ============
 
     /// @dev Create signature bytes for any strategy
@@ -748,23 +622,23 @@ library TxBuilder {
         return abi.encodePacked(SIGNATURE_TYPE_WEBAUTHN, webauthnData, r, s, pubKeyX, pubKeyY);
     }
 
-    /// @notice Sign a legacy tx with unified params
+    /// @notice Sign a legacy tx with unified params (only secp256k1 supported)
     function signLegacy(
         VmRlp vmRlp,
         Vm vm,
         LegacyTransaction memory tx_,
         SigningParams memory params
     ) internal view returns (bytes memory) {
+        require(
+            params.strategy == SigningStrategy.Secp256k1,
+            "Legacy transactions only support secp256k1 signatures"
+        );
+
         bytes memory unsignedTx = tx_.encode(vmRlp);
         bytes32 txHash = keccak256(unsignedTx);
 
-        if (params.strategy == SigningStrategy.Secp256k1) {
-            (uint8 v, bytes32 r, bytes32 s) = vm.sign(params.privateKey, txHash);
-            return tx_.encodeWithSignature(vmRlp, v, r, s);
-        }
-
-        bytes memory signature = _createSignature(vm, txHash, params);
-        return _encodeSignedLegacy(vmRlp, tx_, signature);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(params.privateKey, txHash);
+        return tx_.encodeWithSignature(vmRlp, v, r, s);
     }
 
     /// @notice Sign a tempo tx with unified params
