@@ -45,6 +45,11 @@ pub fn install_prometheus_metrics(
     context.spawn(move |context| async move {
         use commonware_runtime::Clock as _;
 
+        let span = tracing::info_span!("metrics_exporter", %endpoint);
+        let _guard = span.enter();
+
+        tracing::info!("started");
+
         loop {
             context.sleep(interval).await;
 
@@ -65,13 +70,10 @@ pub fn install_prometheus_metrics(
 
             match request.send().await {
                 Ok(response) if !response.status().is_success() => {
-                    tracing::warn_span!("metrics_export").in_scope(
-                        || tracing::warn!(status = %response.status(), "failed to push metrics"),
-                    );
+                    tracing::warn!(status = %response.status(), "metrics export failed");
                 }
                 Err(e) => {
-                    tracing::warn_span!("metrics_export")
-                        .in_scope(|| tracing::warn!(error = %e, "failed to push metrics"));
+                    tracing::warn!(error = %e, "metrics export failed");
                 }
                 _ => {}
             }
