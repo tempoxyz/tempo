@@ -1,5 +1,7 @@
 use reth_cli_commands::download::DownloadDefaults;
-use reth_ethereum::node::core::args::{DefaultPayloadBuilderValues, DefaultTxPoolValues};
+use reth_ethereum::node::core::args::{
+    DefaultEngineValues, DefaultPayloadBuilderValues, DefaultTxPoolValues,
+};
 use std::{borrow::Cow, time::Duration};
 use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -52,8 +54,24 @@ fn init_txpool_defaults() {
         .expect("failed to initialize txpool defaults");
 }
 
+/// How many canonical blocks ahead of the last persisted block before flushing to disk.
+/// Higher = better write batching but more memory; lower = frequent writes.
+const PERSIST_THRESHOLD: u64 = 16;
+
+/// Reorgs shallower than this depth stay entirely in memory (no disk I/O).
+const REORG_SAFE_DEPTH: u64 = 8;
+
+fn init_engine_defaults() {
+    DefaultEngineValues::default()
+        .with_persistence_threshold(PERSIST_THRESHOLD)
+        .with_memory_block_buffer_target(REORG_SAFE_DEPTH)
+        .try_init()
+        .expect("failed to initialize engine defaults");
+}
+
 pub(crate) fn init_defaults() {
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();
+    init_engine_defaults();
 }
