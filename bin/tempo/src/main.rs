@@ -23,6 +23,7 @@ mod tempo_cmd;
 
 use clap::Parser;
 use eyre::WrapErr as _;
+use futures::future::{Either, pending};
 use reth_ethereum::evm::revm::primitives::B256;
 use reth_ethereum_cli::Cli;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
@@ -214,7 +215,6 @@ fn main() -> eyre::Result<()> {
             .wrap_err("failed launching execution node")?;
 
         // Spawn consensus after execution node is ready
-        // Handle is kept alive - consensus panics on failure (like spawn_critical)
         let consensus_handle = if args.consensus.is_enabled(is_dev_mode, is_follow_mode) {
             Some(ConsensusNode::new(args.consensus, node, feed_state).spawn())
         } else {
@@ -228,20 +228,15 @@ fn main() -> eyre::Result<()> {
 
         info!("Tempo node started");
 
-        // Wait for shutdown
-        tokio::select! {
-            _ = node_exit_future => {
-                info!("execution node exited");
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("received shutdown signal");
-            }
-        }
+        let (consensus_handle, consensus_exit) = match consensus_handle {
+            Some((h, f)) => (Some(h), Either::Left(f)),
+            None => (None, Either::Right(pending())),
+        };
 
-        // Gracefully shutdown consensus and wait for it to finish
-        if let Some(handle) = consensus_handle {
-            handle.shutdown();
-            handle.join()?;
+        tokio::select! {
+            _ = node_exit_future => info!("execution node exited"),
+            _ = consensus_exit => info!("consensus node exited"),
+            _ = tokio::signal::ctrl_c() => info!("received shutdown signal"),
         }
 
         #[cfg(feature = "pyroscope")]
@@ -249,6 +244,9 @@ fn main() -> eyre::Result<()> {
             agent.shutdown();
         }
 
+        if let Some(h) = consensus_handle {
+            h.shutdown()?;
+        }
         Ok(())
     })
     .wrap_err("execution node failed")

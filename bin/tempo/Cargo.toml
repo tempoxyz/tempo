@@ -47,6 +47,7 @@ reth-node-builder.workspace = true
 reth-rpc-server-types.workspace = true
 clap.workspace = true
 eyre.workspace = true
+futures.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 pyroscope = { workspace = true, optional = true }

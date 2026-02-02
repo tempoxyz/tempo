@@ -33,7 +33,7 @@ pub use crate::{
 };
 
 pub use args::Args;
-pub use node::{ConsensusNode, ConsensusNodeHandle};
+pub use node::{ConsensusExitFuture, ConsensusNode, ConsensusNodeHandle};
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,

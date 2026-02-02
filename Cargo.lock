@@ -11651,6 +11651,7 @@ dependencies = [
  "commonware-math",
  "commonware-utils",
  "eyre",
+ "futures",
  "pyroscope",
  "pyroscope_pprofrs",
  "rand 0.8.5",

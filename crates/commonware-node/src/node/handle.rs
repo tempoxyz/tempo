@@ -1,50 +1,39 @@
 //! Handle to a spawned consensus node.
+//!
+//! Provides bidirectional control: signal shutdown to the consensus thread,
+//! and be notified when it exits (success, error, or panic).
 
+use eyre::eyre;
 use std::thread::JoinHandle;
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
+/// Future that completes when the consensus node exits.
+pub type ConsensusExitFuture = oneshot::Receiver<eyre::Result<()>>;
+
 /// Handle to a spawned consensus node.
-///
-/// This handle provides control over the consensus node lifecycle:
-/// - Call [`shutdown`](Self::shutdown) to trigger graceful shutdown
-/// - Call [`join`](Self::join) to wait for the thread to complete
-/// - Dropping the handle does NOT stop consensus
 pub struct ConsensusNodeHandle {
-    thread_handle: Option<JoinHandle<eyre::Result<()>>>,
     shutdown_token: CancellationToken,
+    thread_handle: JoinHandle<eyre::Result<()>>,
 }
 
 impl ConsensusNodeHandle {
-    /// Create a new handle with its shutdown token.
-    /// The thread handle is attached later via `with_thread`.
-    pub(super) fn create() -> (Self, CancellationToken) {
-        let shutdown_token = CancellationToken::new();
-        let handle = Self {
-            thread_handle: None,
-            shutdown_token: shutdown_token.clone(),
-        };
-        (handle, shutdown_token)
+    pub(crate) fn new(
+        shutdown_token: CancellationToken,
+        thread_handle: JoinHandle<eyre::Result<()>>,
+    ) -> Self {
+        Self {
+            shutdown_token,
+            thread_handle,
+        }
     }
 
-    /// Attach the thread handle after spawning.
-    pub(super) fn with_thread(mut self, thread_handle: JoinHandle<eyre::Result<()>>) -> Self {
-        self.thread_handle = Some(thread_handle);
-        self
-    }
-
-    /// Signal the consensus node to shut down gracefully.
-    ///
-    /// This triggers the internal cancellation token. The consensus stack
-    /// will exit its event loop and the thread will complete.
-    pub fn shutdown(&self) {
+    /// Signal shutdown and wait for the thread. Returns `Err` if the consensus thread failed already.
+    pub fn shutdown(self) -> eyre::Result<()> {
         self.shutdown_token.cancel();
-    }
-
-    /// Wait for the consensus node thread to complete.
-    pub fn join(self) -> eyre::Result<()> {
-        match self.thread_handle.expect("thread handle not set").join() {
+        match self.thread_handle.join() {
             Ok(result) => result,
-            Err(panic_payload) => std::panic::resume_unwind(panic_payload),
+            Err(_) => Err(eyre!("consensus thread panicked")),
         }
     }
 }
