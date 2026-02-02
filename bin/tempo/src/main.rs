@@ -47,7 +47,7 @@ use tokio::sync::oneshot;
 use tracing::{info, info_span};
 
 // TODO: migrate this to tempo_node eventually.
-#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 struct TempoArgs {
     /// Follow this specific RPC node for block hashes.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
