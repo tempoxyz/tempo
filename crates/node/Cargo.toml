@@ -42,7 +42,6 @@ reth-engine-local.workspace = true
 
 alloy-serde.workspace = true
 alloy-eips.workspace = true
-alloy-network.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy.workspace = true
 alloy-primitives.workspace = true
@@ -58,6 +57,7 @@ jsonrpsee.workspace = true
 [dev-dependencies]
 tempo-e2e.workspace = true
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
+alloy-network.workspace = true
 tempo-precompiles.workspace = true
 alloy-rpc-types-engine.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
