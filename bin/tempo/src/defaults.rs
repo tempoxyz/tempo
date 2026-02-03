@@ -41,7 +41,7 @@ impl TelemetryArgs {
         let password = telemetry_url.password().expect("ensured when parsing args");
 
         // Build auth header for metrics push and OTLP logs
-        let credentials = format!("{}:{}", username, password);
+        let credentials = format!("{username}:{password}");
         let encoded = BASE64_STANDARD.encode(credentials.as_bytes());
         let auth_header = format!("Basic {encoded}");
 
