@@ -7,7 +7,7 @@ use tempo_precompiles_macros::contract;
 use crate::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    tip20::{TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
+    tip20::{MAX_TIP20_METADATA_LEN, TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
 };
 use alloy::{
     primitives::{Address, B256, keccak256},
@@ -408,6 +408,61 @@ mod tests {
                     salt: call2.salt,
                 }),
             ]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_metadata_length_ok() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            let path_usd = TIP20Setup::path_usd(sender).apply()?;
+
+            let name = "A".repeat(MAX_TIP20_METADATA_LEN);
+            let call = ITIP20Factory::createTokenCall {
+                name,
+                symbol: "TEST".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: path_usd.address(),
+                admin: sender,
+                salt: B256::random(),
+            };
+
+            let token_addr = factory.create_token(sender, call)?;
+            assert!(factory.is_tip20(token_addr)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_metadata_length_too_long() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            let path_usd = TIP20Setup::path_usd(sender).apply()?;
+
+            let name = "A".repeat(MAX_TIP20_METADATA_LEN + 1);
+            let call = ITIP20Factory::createTokenCall {
+                name,
+                symbol: "TEST".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: path_usd.address(),
+                admin: sender,
+                salt: B256::random(),
+            };
+
+            match factory.create_token(sender, call) {
+                Err(err) => assert_eq!(
+                    err,
+                    TempoPrecompileError::TIP20(TIP20Error::string_too_long())
+                ),
+                Ok(token_addr) => panic!("expected StringTooLong error, got {token_addr:?}"),
+            }
 
             Ok(())
         })

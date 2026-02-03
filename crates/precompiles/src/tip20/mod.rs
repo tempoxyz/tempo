@@ -32,6 +32,8 @@ const TIP20_DECIMALS: u8 = 6;
 
 /// USD currency string constant
 pub const USD_CURRENCY: &str = "USD";
+/// Maximum byte length for TIP20 metadata fields (name, symbol, currency).
+pub const MAX_TIP20_METADATA_LEN: usize = 64;
 
 /// TIP20 token address prefix (12 bytes)
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
@@ -621,6 +623,8 @@ impl TIP20Token {
     ) -> Result<()> {
         trace!(%name, address=%self.address, "Initializing token");
 
+        ensure_metadata_len(name, symbol, currency)?;
+
         // must ensure the account is not empty, by setting some code
         self.__initialize()?;
 
@@ -841,6 +845,17 @@ impl TIP20Token {
             .ok_or(TIP20Error::supply_cap_exceeded())?;
         self.set_balance(to, new_to_balance)
     }
+}
+
+#[inline]
+fn ensure_metadata_len(name: &str, symbol: &str, currency: &str) -> Result<()> {
+    if name.as_bytes().len() > MAX_TIP20_METADATA_LEN
+        || symbol.as_bytes().len() > MAX_TIP20_METADATA_LEN
+        || currency.as_bytes().len() > MAX_TIP20_METADATA_LEN
+    {
+        return Err(TIP20Error::string_too_long().into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
