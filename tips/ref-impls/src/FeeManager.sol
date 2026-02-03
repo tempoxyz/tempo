@@ -2,10 +2,10 @@
 pragma solidity >=0.8.13 <0.9.0;
 
 import { FeeAMM } from "./FeeAMM.sol";
+import { TIP403Registry } from "./TIP403Registry.sol";
 import { IERC20 } from "./interfaces/IERC20.sol";
 import { IFeeManager } from "./interfaces/IFeeManager.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
-import { TIP403Registry } from "./TIP403Registry.sol";
 
 contract FeeManager is IFeeManager, FeeAMM {
 
