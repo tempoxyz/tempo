@@ -940,14 +940,17 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             uint128 amountOut
         ) {
             uint64 ordersFilled = _countOrderFilledEvents();
-            _maxDust += ordersFilled;
+            // For multi-hop swaps, each hop can add dust from rounding (not just per order)
+            uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
+            _maxDust += ordersFilled + hops;
 
-            // TEMPO-DEX18: Each swap can increase dust by at most 1 per order filled
+            // TEMPO-DEX18: Each swap can increase dust by at most 1 per order filled + 1 per hop
+            // (rounding occurs at each hop, not just at hop boundaries)
             uint256 dustAfterSwap = _computeDust();
             assertLe(
                 dustAfterSwap,
-                _dustBeforeSwap + ordersFilled,
-                "TEMPO-DEX18: swap increased dust by more than 1 per order filled"
+                _dustBeforeSwap + ordersFilled + hops,
+                "TEMPO-DEX18: swap increased dust by more than expected (1 per order + 1 per hop)"
             );
             // TEMPO-DEX4: amountOut >= minAmountOut
             assertTrue(
@@ -1011,14 +1014,17 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             uint128 amountIn
         ) {
             uint64 ordersFilled = _countOrderFilledEvents();
-            _maxDust += ordersFilled;
+            // For multi-hop swaps, each hop can add dust from rounding (not just per order)
+            uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
+            _maxDust += ordersFilled + hops;
 
-            // TEMPO-DEX18: Each swap can increase dust by at most 1 per order filled
+            // TEMPO-DEX18: Each swap can increase dust by at most 1 per order filled + 1 per hop
+            // (rounding occurs at each hop, not just at hop boundaries)
             uint256 dustAfterSwap = _computeDust();
             assertLe(
                 dustAfterSwap,
-                _dustBeforeSwap + ordersFilled,
-                "TEMPO-DEX18: swap increased dust by more than 1 per order filled"
+                _dustBeforeSwap + ordersFilled + hops,
+                "TEMPO-DEX18: swap increased dust by more than expected (1 per order + 1 per hop)"
             );
 
             // TEMPO-DEX5: amountIn <= maxAmountIn
