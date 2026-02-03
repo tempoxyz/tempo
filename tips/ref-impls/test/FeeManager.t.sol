@@ -4,6 +4,7 @@ pragma solidity >=0.8.13 <0.9.0;
 import { FeeManager } from "../src/FeeManager.sol";
 import { TIP20 } from "../src/TIP20.sol";
 import { IFeeManager } from "../src/interfaces/IFeeManager.sol";
+import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
 import { ITIP20 } from "../src/interfaces/ITIP20.sol";
 import { BaseTest } from "./BaseTest.t.sol";
 
@@ -210,6 +211,46 @@ contract FeeManagerTest is BaseTest {
             }
         } catch {
             // Expected to revert
+        }
+    }
+
+    function test_collectFeePreTx_RevertsIf_FeePayerNotAuthorizedSender() public {
+        // Blacklist user as sender on the fee token.
+        address[] memory accounts = new address[](1);
+        accounts[0] = user;
+        uint64 policyId =
+            registry.createPolicyWithAccounts(admin, ITIP403Registry.PolicyType.BLACKLIST, accounts);
+
+        vm.prank(admin);
+        userToken.changeTransferPolicyId(policyId);
+
+        vm.prank(address(0));
+        vm.coinbase(validator);
+
+        try amm.collectFeePreTx(user, address(userToken), 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+    }
+
+    function test_collectFeePreTx_RevertsIf_FeeManagerNotAuthorizedRecipient() public {
+        // Whitelist user but not FeeManager as recipient on the fee token.
+        address[] memory accounts = new address[](1);
+        accounts[0] = user;
+        uint64 policyId =
+            registry.createPolicyWithAccounts(admin, ITIP403Registry.PolicyType.WHITELIST, accounts);
+
+        vm.prank(admin);
+        userToken.changeTransferPolicyId(policyId);
+
+        vm.prank(address(0));
+        vm.coinbase(validator);
+
+        try amm.collectFeePreTx(user, address(userToken), 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
         }
     }
 
