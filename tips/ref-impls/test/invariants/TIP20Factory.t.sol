@@ -540,7 +540,6 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         }
     }
 
-
     /// @notice Called after each invariant run to log final state
     function afterInvariant() public {
         if (!_loggingEnabled) return;
