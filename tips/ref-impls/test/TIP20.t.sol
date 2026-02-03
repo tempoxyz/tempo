@@ -2272,12 +2272,14 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 recipientWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
         uint64 mintWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
 
         registry.modifyPolicyWhitelist(mintWhitelist, charlie, true);
 
-        uint64 compound = registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
+        uint64 compound =
+            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
 
         TIP20 compoundToken = TIP20(
             factory.createToken("COMPOUND", "CMP", "USD", pathUSD, admin, bytes32("compound"))
@@ -2295,12 +2297,14 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 recipientWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
         uint64 mintWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
 
         // charlie is NOT in mintWhitelist
 
-        uint64 compound = registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
+        uint64 compound =
+            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
 
         TIP20 compoundToken = TIP20(
             factory.createToken("COMPOUND2", "CMP2", "USD", pathUSD, admin, bytes32("compound2"))
@@ -2318,7 +2322,8 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 recipientWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
 
         registry.modifyPolicyWhitelist(senderWhitelist, alice, true);
         registry.modifyPolicyWhitelist(recipientWhitelist, bob, true);
@@ -2368,7 +2373,8 @@ contract TIP20Test is BaseTest {
     function test_Transfer_Fails_RecipientUnauthorized_CompoundPolicy() public {
         vm.startPrank(admin);
 
-        uint64 recipientWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
         // bob is NOT in recipientWhitelist
 
         uint64 compound = registry.createCompoundPolicy(1, recipientWhitelist, 1);
@@ -2397,9 +2403,8 @@ contract TIP20Test is BaseTest {
         // charlie blocked from sending, but anyone can receive
         uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
 
-        TIP20 compoundToken = TIP20(
-            factory.createToken("ASYM", "ASY", "USD", pathUSD, admin, bytes32("asym"))
-        );
+        TIP20 compoundToken =
+            TIP20(factory.createToken("ASYM", "ASY", "USD", pathUSD, admin, bytes32("asym")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
         compoundToken.mint(alice, 1000);
@@ -2427,9 +2432,8 @@ contract TIP20Test is BaseTest {
 
         uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
 
-        TIP20 compoundToken = TIP20(
-            factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1"))
-        );
+        TIP20 compoundToken =
+            TIP20(factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
@@ -2450,9 +2454,8 @@ contract TIP20Test is BaseTest {
 
         uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
 
-        TIP20 compoundToken = TIP20(
-            factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2"))
-        );
+        TIP20 compoundToken =
+            TIP20(factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
@@ -2469,14 +2472,14 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         // Create compound where only recipient is blocked, sender is allowed
-        uint64 recipientBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        uint64 recipientBlacklist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
         registry.modifyPolicyBlacklist(recipientBlacklist, charlie, true);
 
         uint64 recipientBlockedCompound = registry.createCompoundPolicy(1, recipientBlacklist, 1);
 
-        TIP20 compoundToken = TIP20(
-            factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3"))
-        );
+        TIP20 compoundToken =
+            TIP20(factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);

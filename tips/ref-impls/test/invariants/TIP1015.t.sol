@@ -473,6 +473,33 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @notice Opt an actor into rewards - critical for testing reward distribution/claim flows
+    function optIntoRewards(uint256 tokenSeed, uint256 actorSeed) external {
+        if (_compoundTokens.length == 0) return;
+
+        TIP20 token = _compoundTokens[tokenSeed % _compoundTokens.length];
+        uint64 pid = _tokenPolicy[address(token)];
+        address actor = _selectActor(actorSeed);
+
+        // Need sender + recipient auth to opt in
+        bool senderAuth = registry.isAuthorizedSender(pid, actor);
+        bool recipientAuth = registry.isAuthorizedRecipient(pid, actor);
+        if (!senderAuth || !recipientAuth) return;
+
+        // Ensure actor has balance (required for opt-in to matter)
+        if (token.balanceOf(actor) == 0) {
+            if (!registry.isAuthorizedMintRecipient(pid, actor)) return;
+            vm.prank(admin);
+            try token.mint(actor, 10_000) { }
+            catch {
+                return;
+            }
+        }
+
+        vm.prank(actor);
+        try token.setRewardRecipient(actor) { } catch { }
+    }
+
     function mintToAuthorizedRecipient(uint256 tokenSeed, uint256 recipientSeed, uint256 amount)
         public
     {
@@ -661,6 +688,18 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         // Skip if no opted-in supply
         if (token.optedInSupply() == 0) return;
 
+        // Occasionally test with deauthorized sender to hit unauthorized branch (40% chance)
+        uint64 senderPid = _compoundSenderPolicy[pid];
+        bool shouldTestUnauthorized = (senderSeed % 5 < 2) && senderPid >= 2;
+        bool wasAuthorized = false;
+
+        if (shouldTestUnauthorized) {
+            wasAuthorized = registry.isAuthorizedSender(pid, sender);
+            if (wasAuthorized) {
+                _authorize(senderPid, sender, false);
+            }
+        }
+
         bool senderAuth = registry.isAuthorizedSender(pid, sender);
         bool contractRecipientAuth = registry.isAuthorizedRecipient(pid, address(token));
 
@@ -702,6 +741,11 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                     }
                 }
             }
+        }
+
+        // Restore authorization if we deauthorized for testing
+        if (shouldTestUnauthorized && wasAuthorized) {
+            _authorize(senderPid, sender, true);
         }
     }
 
@@ -750,6 +794,18 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         // Skip if no opted-in supply
         if (token.optedInSupply() == 0) return;
 
+        // Occasionally test with deauthorized claimer to hit unauthorized branch (20% chance)
+        uint64 recipientPid = _compoundRecipientPolicy[pid];
+        bool shouldTestUnauthorized = (claimerSeed % 5 == 0) && recipientPid >= 2;
+        bool wasAuthorized = false;
+
+        if (shouldTestUnauthorized) {
+            wasAuthorized = registry.isAuthorizedRecipient(pid, claimer);
+            if (wasAuthorized) {
+                _authorize(recipientPid, claimer, false);
+            }
+        }
+
         bool contractSenderAuth = registry.isAuthorizedSender(pid, address(token));
         bool claimerRecipientAuth = registry.isAuthorizedRecipient(pid, claimer);
 
@@ -787,6 +843,11 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                     }
                 }
             }
+        }
+
+        // Restore authorization if we deauthorized for testing
+        if (shouldTestUnauthorized && wasAuthorized) {
+            _authorize(recipientPid, claimer, true);
         }
     }
 
@@ -852,6 +913,17 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         if (!cachedMakerMint) _authorize(mintPid, maker, false);
         if (!cachedMakerPathUsdMint) _authorize(_pathUsdPolicyId, maker, false);
 
+        // Occasionally deauthorize maker to hit blocked branch (40% chance)
+        bool shouldTestBlocked = (makerSeed % 5 < 2) && senderPid >= 2;
+        bool wasAuthorizedForBlock = false;
+
+        if (shouldTestBlocked) {
+            wasAuthorizedForBlock = registry.isAuthorizedSender(pid, maker);
+            if (wasAuthorizedForBlock) {
+                _authorize(senderPid, maker, false);
+            }
+        }
+
         // Now test cancelStaleOrder
         bool senderAuth = registry.isAuthorizedSender(pid, maker);
 
@@ -868,6 +940,11 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                     "Wrong error for cancelStaleOrder"
                 );
             }
+        }
+
+        // Restore authorization if we deauthorized for testing
+        if (shouldTestBlocked && wasAuthorizedForBlock) {
+            _authorize(senderPid, maker, true);
         }
     }
 

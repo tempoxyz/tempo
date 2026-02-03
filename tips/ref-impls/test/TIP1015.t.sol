@@ -96,13 +96,13 @@ contract TIP1015Test is BaseTest {
         uint64 cp = registry.createCompoundPolicy(whitelistPolicy, blacklistPolicy, whitelistPolicy);
 
         vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
-        registry.createCompoundPolicy(cp, whitelistPolicy, whitelistPolicy);
+        this.createCompoundPolicyExternal(cp, whitelistPolicy, whitelistPolicy);
 
         vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
-        registry.createCompoundPolicy(whitelistPolicy, cp, whitelistPolicy);
+        this.createCompoundPolicyExternal(whitelistPolicy, cp, whitelistPolicy);
 
         vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
-        registry.createCompoundPolicy(whitelistPolicy, whitelistPolicy, cp);
+        this.createCompoundPolicyExternal(whitelistPolicy, whitelistPolicy, cp);
 
         vm.stopPrank();
     }
@@ -145,10 +145,10 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
 
         vm.expectRevert();
-        registry.modifyPolicyWhitelist(cp, neutralUser, true);
+        this.modifyPolicyWhitelistExternal(cp, neutralUser, true);
 
         vm.expectRevert();
-        registry.modifyPolicyBlacklist(cp, neutralUser, true);
+        this.modifyPolicyBlacklistExternal(cp, neutralUser, true);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -163,17 +163,17 @@ contract TIP1015Test is BaseTest {
         vm.expectRevert(
             abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy)
         );
-        registry.createCompoundPolicy(nonExistentPolicy, whitelistPolicy, whitelistPolicy);
+        this.createCompoundPolicyExternal(nonExistentPolicy, whitelistPolicy, whitelistPolicy);
 
         vm.expectRevert(
             abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy)
         );
-        registry.createCompoundPolicy(whitelistPolicy, nonExistentPolicy, whitelistPolicy);
+        this.createCompoundPolicyExternal(whitelistPolicy, nonExistentPolicy, whitelistPolicy);
 
         vm.expectRevert(
             abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector, nonExistentPolicy)
         );
-        registry.createCompoundPolicy(whitelistPolicy, whitelistPolicy, nonExistentPolicy);
+        this.createCompoundPolicyExternal(whitelistPolicy, whitelistPolicy, nonExistentPolicy);
 
         vm.stopPrank();
     }
@@ -378,12 +378,13 @@ contract TIP1015Test is BaseTest {
             factory.createToken("SIMPLE2", "SMP2", "USD", pathUSD, admin, bytes32("simple2"))
         );
         simpleToken.grantRole(_ISSUER_ROLE, admin);
+        simpleToken.grantRole(_ISSUER_ROLE, address(this));
         simpleToken.changeTransferPolicyId(mintRecipientWhitelist);
 
-        vm.expectRevert(ITIP20.PolicyForbids.selector);
-        simpleToken.mint(blockedUser, 1000);
-
         vm.stopPrank();
+
+        vm.expectRevert(ITIP20.PolicyForbids.selector);
+        this.mintExternal(simpleToken, blockedUser, 1000);
     }
 
     function test_mint_succeeds_authorizedMintRecipient_compoundPolicy() public {
@@ -394,22 +395,16 @@ contract TIP1015Test is BaseTest {
     }
 
     function test_mint_fails_unauthorizedMintRecipient_compoundPolicy() public {
-        vm.startPrank(admin);
         vm.expectRevert(ITIP20.PolicyForbids.selector);
-        compoundToken.mint(blockedUser, 1000);
-        vm.stopPrank();
+        this.mintExternal(compoundToken, blockedUser, 1000);
     }
 
     function test_mint_usesCorrectSubPolicy() public {
-        vm.startPrank(admin);
+        vm.expectRevert(ITIP20.PolicyForbids.selector);
+        this.mintExternal(compoundToken, sender, 1000);
 
         vm.expectRevert(ITIP20.PolicyForbids.selector);
-        compoundToken.mint(sender, 1000);
-
-        vm.expectRevert(ITIP20.PolicyForbids.selector);
-        compoundToken.mint(recipient, 1000);
-
-        vm.stopPrank();
+        this.mintExternal(compoundToken, recipient, 1000);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -447,8 +442,10 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
 
         vm.prank(blockedUser);
+        simpleToken.approve(address(this), type(uint256).max);
+
         vm.expectRevert(ITIP20.PolicyForbids.selector);
-        simpleToken.transfer(recipient, 500);
+        this.transferFromExternal(simpleToken, blockedUser, recipient, 500);
     }
 
     function test_transfer_succeeds_bothAuthorized_compoundPolicy() public {
@@ -482,8 +479,10 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
 
         vm.prank(blockedUser);
+        testToken.approve(address(this), type(uint256).max);
+
         vm.expectRevert(ITIP20.PolicyForbids.selector);
-        testToken.transfer(recipient, 500);
+        this.transferFromExternal(testToken, blockedUser, recipient, 500);
     }
 
     function test_transfer_fails_recipientUnauthorized_compoundPolicy() public {
@@ -499,8 +498,10 @@ contract TIP1015Test is BaseTest {
         vm.stopPrank();
 
         vm.prank(sender);
+        testToken.approve(address(this), type(uint256).max);
+
         vm.expectRevert(ITIP20.PolicyForbids.selector);
-        testToken.transfer(blockedUser, 500);
+        this.transferFromExternal(testToken, sender, blockedUser, 500);
     }
 
     function test_transfer_asymmetricCompound_blockedCanReceiveNotSend() public {
@@ -521,8 +522,10 @@ contract TIP1015Test is BaseTest {
         assertEq(testToken.balanceOf(blockedUser), 700);
 
         vm.prank(blockedUser);
+        testToken.approve(address(this), type(uint256).max);
+
         vm.expectRevert(ITIP20.PolicyForbids.selector);
-        testToken.transfer(sender, 100);
+        this.transferFromExternal(testToken, blockedUser, sender, 100);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -554,13 +557,14 @@ contract TIP1015Test is BaseTest {
             TIP20(factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2")));
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
+        testToken.grantRole(_BURN_BLOCKED_ROLE, address(this));
         testToken.changeTransferPolicyId(1);
         testToken.mint(sender, 1000);
 
-        vm.expectRevert(ITIP20.PolicyForbids.selector);
-        testToken.burnBlocked(sender, 500);
-
         vm.stopPrank();
+
+        vm.expectRevert(ITIP20.PolicyForbids.selector);
+        this.burnBlockedExternal(testToken, sender, 500);
     }
 
     function test_burnBlocked_succeeds_blockedSender_compoundPolicy() public {
@@ -588,15 +592,16 @@ contract TIP1015Test is BaseTest {
             TIP20(factory.createToken("BURN4", "BRN4", "USD", pathUSD, admin, bytes32("burn4")));
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
+        testToken.grantRole(_BURN_BLOCKED_ROLE, address(this));
 
         testToken.changeTransferPolicyId(1);
         testToken.mint(sender, 1000);
         testToken.changeTransferPolicyId(asymmetricCompound);
 
-        vm.expectRevert(ITIP20.PolicyForbids.selector);
-        testToken.burnBlocked(sender, 500);
-
         vm.stopPrank();
+
+        vm.expectRevert(ITIP20.PolicyForbids.selector);
+        this.burnBlockedExternal(testToken, sender, 500);
     }
 
     function test_burnBlocked_checksCorrectSubPolicy() public {
@@ -612,15 +617,16 @@ contract TIP1015Test is BaseTest {
             TIP20(factory.createToken("BURN5", "BRN5", "USD", pathUSD, admin, bytes32("burn5")));
         testToken.grantRole(_ISSUER_ROLE, admin);
         testToken.grantRole(_BURN_BLOCKED_ROLE, admin);
+        testToken.grantRole(_BURN_BLOCKED_ROLE, address(this));
 
         testToken.changeTransferPolicyId(1);
         testToken.mint(blockedUser, 1000);
         testToken.changeTransferPolicyId(recipientBlockedCompound);
 
-        vm.expectRevert(ITIP20.PolicyForbids.selector);
-        testToken.burnBlocked(blockedUser, 500);
-
         vm.stopPrank();
+
+        vm.expectRevert(ITIP20.PolicyForbids.selector);
+        this.burnBlockedExternal(testToken, blockedUser, 500);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -692,9 +698,8 @@ contract TIP1015Test is BaseTest {
         uint128 orderId = exchange.place(address(baseToken), MIN_ORDER, true, 0);
         vm.stopPrank();
 
-        vm.prank(recipient);
         vm.expectRevert(IStablecoinDEX.OrderNotStale.selector);
-        exchange.cancelStaleOrder(orderId);
+        this.cancelStaleOrderExternal(orderId);
     }
 
     function test_cancelStaleOrder_succeeds_blockedMaker_compoundPolicy() public {
@@ -782,13 +787,16 @@ contract TIP1015Test is BaseTest {
 
         vm.stopPrank();
 
-        vm.prank(testSender);
         if (senderInWhitelist && recipientInWhitelist) {
+            vm.prank(testSender);
             fuzzToken.transfer(testRecipient, amount);
             assertEq(fuzzToken.balanceOf(testRecipient), amount);
         } else {
+            vm.prank(testSender);
+            fuzzToken.approve(address(this), type(uint256).max);
+
             vm.expectRevert(ITIP20.PolicyForbids.selector);
-            fuzzToken.transfer(testRecipient, amount);
+            this.transferFromExternal(fuzzToken, testSender, testRecipient, amount);
         }
     }
 
@@ -831,17 +839,18 @@ contract TIP1015Test is BaseTest {
             )
         );
         fuzzToken.grantRole(_ISSUER_ROLE, admin);
+        fuzzToken.grantRole(_ISSUER_ROLE, address(this));
         fuzzToken.changeTransferPolicyId(fuzzCompound);
 
+        vm.stopPrank();
+
         if (inMintPolicy) {
-            fuzzToken.mint(testMintRecipient, amount);
+            this.mintExternal(fuzzToken, testMintRecipient, amount);
             assertEq(fuzzToken.balanceOf(testMintRecipient), amount);
         } else {
             vm.expectRevert(ITIP20.PolicyForbids.selector);
-            fuzzToken.mint(testMintRecipient, amount);
+            this.mintExternal(fuzzToken, testMintRecipient, amount);
         }
-
-        vm.stopPrank();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -885,9 +894,8 @@ contract TIP1015Test is BaseTest {
         assertTrue(registry.isAuthorizedSender(testCompound, sender));
         assertFalse(registry.isAuthorizedRecipient(testCompound, address(rewardToken)));
 
-        vm.prank(sender);
         vm.expectRevert(ITIP20.PolicyForbids.selector);
-        rewardToken.distributeReward(100);
+        this.distributeRewardAsExternal(rewardToken, sender, 100);
 
         // Case 2: sender NOT authorized, contract authorized as recipient -> reverts
         vm.prank(admin);
@@ -896,9 +904,8 @@ contract TIP1015Test is BaseTest {
         assertFalse(registry.isAuthorizedSender(testCompound, blockedUser));
         assertTrue(registry.isAuthorizedRecipient(testCompound, address(rewardToken)));
 
-        vm.prank(blockedUser);
         vm.expectRevert(ITIP20.PolicyForbids.selector);
-        rewardToken.distributeReward(100);
+        this.distributeRewardAsExternal(rewardToken, blockedUser, 100);
 
         // Case 3: both authorized -> succeeds
         assertTrue(registry.isAuthorizedSender(testCompound, sender));
@@ -955,9 +962,8 @@ contract TIP1015Test is BaseTest {
         assertFalse(registry.isAuthorizedSender(testCompound, address(rewardToken)));
         assertFalse(registry.isAuthorizedRecipient(testCompound, recipient));
 
-        vm.prank(recipient);
         vm.expectRevert(ITIP20.PolicyForbids.selector);
-        rewardToken.claimRewards();
+        this.claimRewardsAsExternal(rewardToken, recipient);
 
         // Case 2: contract authorized as sender, recipient NOT authorized -> reverts
         vm.prank(admin);
@@ -966,9 +972,8 @@ contract TIP1015Test is BaseTest {
         assertTrue(registry.isAuthorizedSender(testCompound, address(rewardToken)));
         assertFalse(registry.isAuthorizedRecipient(testCompound, recipient));
 
-        vm.prank(recipient);
         vm.expectRevert(ITIP20.PolicyForbids.selector);
-        rewardToken.claimRewards();
+        this.claimRewardsAsExternal(rewardToken, recipient);
 
         // Case 3: contract NOT authorized as sender, recipient authorized -> reverts
         vm.startPrank(admin);
@@ -979,9 +984,8 @@ contract TIP1015Test is BaseTest {
         assertFalse(registry.isAuthorizedSender(testCompound, address(rewardToken)));
         assertTrue(registry.isAuthorizedRecipient(testCompound, recipient));
 
-        vm.prank(recipient);
         vm.expectRevert(ITIP20.PolicyForbids.selector);
-        rewardToken.claimRewards();
+        this.claimRewardsAsExternal(rewardToken, recipient);
 
         // Case 4: both authorized -> succeeds
         vm.prank(admin);
@@ -1054,13 +1058,13 @@ contract TIP1015Test is BaseTest {
 
         vm.stopPrank();
 
-        vm.prank(testSender);
         if (senderAuthorized && contractAuthorizedAsRecipient) {
+            vm.prank(testSender);
             fuzzToken.distributeReward(amount);
             assertEq(fuzzToken.balanceOf(address(fuzzToken)), amount);
         } else {
             vm.expectRevert(ITIP20.PolicyForbids.selector);
-            fuzzToken.distributeReward(amount);
+            this.distributeRewardAsExternal(fuzzToken, testSender, amount);
         }
     }
 
@@ -1115,14 +1119,68 @@ contract TIP1015Test is BaseTest {
 
         vm.stopPrank();
 
-        vm.prank(testRecipient);
         if (contractAuthorizedAsSender && recipientAuthorized) {
+            vm.prank(testRecipient);
             uint256 claimed = fuzzToken.claimRewards();
             assertGt(claimed, 0);
         } else {
             vm.expectRevert(ITIP20.PolicyForbids.selector);
-            fuzzToken.claimRewards();
+            this.claimRewardsAsExternal(fuzzToken, testRecipient);
         }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        EXTERNAL CALL HELPERS
+    //////////////////////////////////////////////////////////////*/
+
+    function mintExternal(TIP20 token, address to, uint256 amount) external {
+        token.mint(to, amount);
+    }
+
+    function transferExternal(TIP20 token, address to, uint256 amount) external {
+        token.transfer(to, amount);
+    }
+
+    function transferFromExternal(TIP20 token, address from, address to, uint256 amount) external {
+        token.transferFrom(from, to, amount);
+    }
+
+    function burnBlockedExternal(TIP20 token, address from, uint256 amount) external {
+        token.burnBlocked(from, amount);
+    }
+
+    function distributeRewardExternal(TIP20 token, uint256 amount) external {
+        token.distributeReward(amount);
+    }
+
+    function distributeRewardAsExternal(TIP20 token, address caller, uint256 amount) external {
+        vm.prank(caller);
+        token.distributeReward(amount);
+    }
+
+    function claimRewardsExternal(TIP20 token) external returns (uint256) {
+        return token.claimRewards();
+    }
+
+    function claimRewardsAsExternal(TIP20 token, address caller) external returns (uint256) {
+        vm.prank(caller);
+        return token.claimRewards();
+    }
+
+    function createCompoundPolicyExternal(uint64 s, uint64 r, uint64 m) external returns (uint64) {
+        return registry.createCompoundPolicy(s, r, m);
+    }
+
+    function modifyPolicyWhitelistExternal(uint64 pid, address account, bool allowed) external {
+        registry.modifyPolicyWhitelist(pid, account, allowed);
+    }
+
+    function modifyPolicyBlacklistExternal(uint64 pid, address account, bool restricted) external {
+        registry.modifyPolicyBlacklist(pid, account, restricted);
+    }
+
+    function cancelStaleOrderExternal(uint128 orderId) external {
+        exchange.cancelStaleOrder(orderId);
     }
 
 }

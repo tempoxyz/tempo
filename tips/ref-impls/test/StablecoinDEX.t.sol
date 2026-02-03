@@ -2005,7 +2005,10 @@ contract StablecoinDEXTest is BaseTest {
         registry.modifyPolicyBlacklist(senderBlacklist, alice, true);
 
         // Alice is now blocked as sender
-        assertFalse(registry.isAuthorizedSender(compoundPolicy, alice), "Alice should not be authorized as sender");
+        assertFalse(
+            registry.isAuthorizedSender(compoundPolicy, alice),
+            "Alice should not be authorized as sender"
+        );
 
         // Cancel the stale order - should succeed because alice can't send
         vm.prank(bob);
@@ -2015,7 +2018,8 @@ contract StablecoinDEXTest is BaseTest {
     /// @notice Test cancelStaleOrder fails with compound policy when maker only blocked as recipient
     function test_CancelStaleOrder_Fails_MakerOnlyBlockedAsRecipient_CompoundPolicy() public {
         // Create compound policy: sender always-allow, recipient blacklist, mint always-allow
-        uint64 recipientBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        uint64 recipientBlacklist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
 
         uint64 compoundPolicy = registry.createCompoundPolicy(1, recipientBlacklist, 1);
 
@@ -2031,8 +2035,14 @@ contract StablecoinDEXTest is BaseTest {
         registry.modifyPolicyBlacklist(recipientBlacklist, alice, true);
 
         // Alice is authorized as sender, just not as recipient
-        assertTrue(registry.isAuthorizedSender(compoundPolicy, alice), "Alice should be authorized as sender");
-        assertFalse(registry.isAuthorizedRecipient(compoundPolicy, alice), "Alice should not be authorized as recipient");
+        assertTrue(
+            registry.isAuthorizedSender(compoundPolicy, alice),
+            "Alice should be authorized as sender"
+        );
+        assertFalse(
+            registry.isAuthorizedRecipient(compoundPolicy, alice),
+            "Alice should not be authorized as recipient"
+        );
 
         // Cancel should fail - alice can still send (order not stale)
         vm.prank(bob);
