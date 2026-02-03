@@ -1,5 +1,15 @@
 # Tempo Improvement Proposals (TIPs)
 
+## Title Standards
+
+- **Title**: Max 44 characters, a few words (not a complete sentence), Title Case
+- **Description**: Max 140 characters, one short sentence
+- Neither should include the word "standard" or the TIP number (exceptions: TIP-20, TIP-403)
+
+Examples:
+- Good: "Compound Transfer Policies"
+- Bad: "TIP-1015: A Standard for Compound Transfer Policies for TIP-20 Tokens"
+
 ## Creating a New TIP
 
 1. Copy template: `cp tips/tip_template.md tips/draft-<slug>.md`
