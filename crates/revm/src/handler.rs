@@ -602,7 +602,6 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
-        let initial_gas = evm.initial_gas;
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
@@ -653,6 +652,21 @@ where
 
         // modify account nonce and touch the account.
         caller_account.touch();
+
+        // add additional gas for CREATE tx with 2d nonce and account nonce is 0.
+        // This case would create a new account for caller.
+        if !nonce_key.is_zero() && tx.kind().is_create() && caller_account.nonce() == 0 {
+            evm.initial_gas += cfg.gas_params().get(GasId::new_account_cost());
+
+            // do the gas limit check again.
+            if tx.gas_limit() < evm.initial_gas {
+                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                    gas_limit: tx.gas_limit(),
+                    intrinsic_gas: evm.initial_gas,
+                }
+                .into());
+            }
+        }
 
         if is_expiring_nonce {
             // Expiring nonce transaction - use tx hash for replay protection
@@ -812,7 +826,7 @@ where
             // TIP-1000: Only apply gas metering for T1 hardfork.
             // For pre-T1 chains, use unlimited gas to maintain backward compatibility.
             let gas_limit = if spec.is_t1() {
-                tx.gas_limit() - initial_gas
+                tx.gas_limit() - evm.initial_gas
             } else {
                 u64::MAX
             };

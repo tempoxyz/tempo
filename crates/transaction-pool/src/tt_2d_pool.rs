@@ -921,6 +921,9 @@ impl AA2dPool {
     ///
     /// Evicts queued transactions first (up to queued_limit), then pending if needed.
     /// Counts are computed lazily by scanning the eviction set.
+    ///
+    /// Note: Only `max_txs` is enforced here; `max_size` is intentionally not checked for 2D pools
+    /// since the protocol pool already enforces size-based limits as a primary defense.
     fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
@@ -1488,7 +1491,10 @@ impl BestAA2dTransactions {
                 continue;
             }
             // Advance transaction that just got unlocked, if any.
-            if let Some(unlocked) = self.by_id.get(&id.unlocks()) {
+            // Skip for expiring nonce transactions as they are always independent.
+            if !id.seq_id.is_expiring_nonce()
+                && let Some(unlocked) = self.by_id.get(&id.unlocks())
+            {
                 self.independent.insert(unlocked.clone());
             }
             return Some((best.transaction, best.priority));
@@ -1537,6 +1543,14 @@ impl AASequenceId {
     /// Creates a new instance with the address and nonce key.
     pub const fn new(address: Address, nonce_key: U256) -> Self {
         Self { address, nonce_key }
+    }
+
+    /// Returns `true` if this sequence ID represents an expiring nonce transaction.
+    ///
+    /// Expiring nonce transactions use `nonce_key == U256::MAX` and are always independent,
+    /// meaning they don't have sequential nonce dependencies.
+    pub(crate) fn is_expiring_nonce(&self) -> bool {
+        self.nonce_key == U256::MAX
     }
 
     const fn start_bound(self) -> std::ops::Bound<AA2dTransactionId> {
@@ -3495,6 +3509,32 @@ mod tests {
 
         // The sequence should be in the invalid set, so next tx from same sender should be skipped
         // But since we already consumed tx0, we'd get tx1 next - but the sequence is now invalid
+    }
+
+    #[test]
+    fn test_best_transactions_expiring_nonce_independent() {
+        // Expiring nonce transactions (nonce_key == U256::MAX) are always independent
+        // and should not trigger unlock logic for dependent transactions
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        // Add expiring nonce transaction
+        let tx = TxBuilder::aa(sender).nonce_key(U256::MAX).nonce(0).build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let mut best = pool.best_transactions();
+
+        // Should return the transaction
+        let first = best.next();
+        assert!(first.is_some());
+
+        // No more transactions
+        assert!(best.next().is_none());
     }
 
     // ============================================
