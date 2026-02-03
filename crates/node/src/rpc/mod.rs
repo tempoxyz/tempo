@@ -5,6 +5,7 @@ pub mod eth_ext;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
+use alloy_eips::{BlockId, eip2718::Encodable2718};
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
@@ -14,7 +15,8 @@ use reth_errors::RethError;
 use reth_primitives_traits::{
     Recovered, TransactionMeta, TxTy, WithEncoded, transaction::TxHashRef,
 };
-use reth_rpc_eth_api::{FromEthApiError, RpcTxReq};
+use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
+use reth_rpc_eth_types::SignError;
 use reth_transaction_pool::PoolPooledTx;
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
@@ -25,9 +27,10 @@ pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::{node::TempoNode, rpc::error::TempoEthApiError};
 use alloy::{
-    consensus::TxReceipt,
+    consensus::{BlockHeader, TxReceipt},
     primitives::{U256, uint},
 };
+use alloy_network::TransactionBuilder;
 use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -41,7 +44,7 @@ use reth_node_builder::{
     NodeAdapter,
     rpc::{EthApiBuilder, EthApiCtx},
 };
-use reth_provider::{ChainSpecProvider, ProviderError};
+use reth_provider::{BlockReaderIdExt, ChainSpecProvider, ProviderError};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
@@ -372,25 +375,70 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
         &self,
         mut request: RpcTxReq<Self::NetworkTypes>,
     ) -> Result<FillTransaction<TxTy<Self::Primitives>>, Self::Error> {
-        if let Some(nonce_key) = request.nonce_key
-            && request.nonce.is_none()
-            && !nonce_key.is_zero()
-        {
-            let slot =
-                NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
-            request.nonce = Some(
-                self.spawn_blocking_io(move |this| {
-                    this.latest_state()?
-                        .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())
-                        .map_err(Self::Error::from_eth_err)
-                })
-                .await?
-                .unwrap_or_default()
-                .saturating_to(),
-            );
+        let from = match TransactionBuilder::from(&request) {
+            Some(from) => from,
+            None => return Err(SignError::NoAccount.into_eth_err()),
+        };
+
+        if TransactionBuilder::value(&request).is_none() {
+            request.set_value(U256::ZERO);
         }
 
-        Ok(self.inner.fill_transaction(request).await?)
+        if request.nonce.is_none() {
+            if let Some(nonce_key) = request.nonce_key
+                && !nonce_key.is_zero()
+            {
+                let slot = NonceManager::new().nonces[from][nonce_key].slot();
+                request.nonce = Some(
+                    self.spawn_blocking_io(move |this| {
+                        this.latest_state()?
+                            .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())
+                            .map_err(Self::Error::from_eth_err)
+                    })
+                    .await?
+                    .unwrap_or_default()
+                    .saturating_to(),
+                );
+            } else {
+                let nonce = self.next_available_nonce(from).await?;
+                request.set_nonce(nonce);
+            }
+        }
+
+        let chain_id = self.chain_id();
+        request.set_chain_id(chain_id.to());
+
+        if TransactionBuilder::gas_limit(&request).is_none() {
+            let estimated_gas =
+                EstimateCall::estimate_gas_at(self, request.clone(), BlockId::pending(), None)
+                    .await?;
+            request.set_gas_limit(estimated_gas.to());
+        }
+
+        if TransactionBuilder::gas_price(&request).is_none() {
+            let tip = if let Some(tip) = TransactionBuilder::max_priority_fee_per_gas(&request) {
+                tip
+            } else {
+                let tip = LoadFee::suggested_priority_fee(self).await?.to::<u128>();
+                request.set_max_priority_fee_per_gas(tip);
+                tip
+            };
+            if TransactionBuilder::max_fee_per_gas(&request).is_none() {
+                let header = self
+                    .provider()
+                    .latest_header()
+                    .map_err(Self::Error::from_eth_err)?;
+                let base_fee = header
+                    .and_then(|h| h.base_fee_per_gas())
+                    .unwrap_or_default();
+                request.set_max_fee_per_gas(base_fee as u128 + tip);
+            }
+        }
+
+        let tx = self.converter().build_simulate_v1_transaction(request)?;
+        let raw = tx.encoded_2718().into();
+
+        Ok(FillTransaction { raw, tx })
     }
 }
 
