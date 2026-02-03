@@ -34,7 +34,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls-native-roots",
 ] }
 metrics-exporter-prometheus = { version = "0.17.2", default-features = false }
-metrics = "0.24.2"
+metrics = "0.24.3"
 poem = "3.1.12"
 rand_distr = "0.5.1"
 tempo-telemetry-util.workspace = true
