@@ -1,5 +1,7 @@
 name: Specs
 
+permissions: {}
+
 on:
   push:
     branches: [main]
@@ -24,6 +26,8 @@ jobs:
   check-precompiles:
     name: Check precompiles changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       coverage: ${{ steps.check.outputs.coverage }}
     steps:
@@ -52,6 +56,8 @@ jobs:
   build:
     name: Forge Build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -71,6 +77,8 @@ jobs:
   lint:
     name: Forge Fmt
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -87,6 +95,8 @@ jobs:
   test:
     name: Forge Test (Solidity)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -105,6 +115,8 @@ jobs:
     needs: check-precompiles
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
       - name: Checkout tempo
         uses: actions/checkout@v6
@@ -199,6 +211,7 @@ jobs:
     name: specs success
     runs-on: ubuntu-latest
     if: always()
+    permissions: {}
     needs:
       - check-precompiles
       - build

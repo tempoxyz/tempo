@@ -1,5 +1,7 @@
 name: Precompiles Coverage
 
+permissions: {}
+
 on:
   workflow_call:
     inputs:
@@ -12,14 +14,12 @@ on:
         required: false
         type: number
 
-permissions:
-  pull-requests: write
-  actions: read
-
 jobs:
   wait-for-test:
     name: Wait for Test workflow
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
     steps:
       - name: Wait for Test workflow to complete
         uses: actions/github-script@v7
@@ -72,6 +72,10 @@ jobs:
     name: Merge Precompiles Coverage
     runs-on: ubuntu-latest
     needs: [wait-for-test]
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v6
         with:

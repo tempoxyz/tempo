@@ -1,5 +1,7 @@
 name: Build binaries
 
+permissions: {}
+
 on:
   workflow_dispatch:
     inputs:
@@ -25,11 +27,13 @@ jobs:
   build:
     name: Build
     runs-on: depot-ubuntu-latest-16
+    permissions:
+      contents: read
     strategy:
       matrix:
         binary: [tempo, tempo-bench, tempo-sidecar]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -40,7 +44,7 @@ jobs:
           tool: just
       - name: Build
         run: just build ${{ matrix.binary }} "--profile ${{ inputs.profile || 'dev' }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         id: binary_upload
         with:
           if-no-files-found: "error"

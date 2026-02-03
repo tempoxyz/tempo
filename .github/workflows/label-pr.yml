@@ -1,5 +1,7 @@
 name: Label PRs
 
+permissions: {}
+
 on:
   pull_request:
     types: [opened]

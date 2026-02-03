@@ -1,5 +1,7 @@
 name: Test
 
+permissions: {}
+
 on:
   push:
     branches: [main]
@@ -20,6 +22,8 @@ jobs:
   check-precompiles:
     name: Check precompiles changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       coverage: ${{ steps.check.outputs.coverage }}
     steps:
@@ -49,6 +53,8 @@ jobs:
     name: Genesis generation
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -79,6 +85,8 @@ jobs:
     needs: check-precompiles
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -138,6 +146,8 @@ jobs:
     name: MSRV
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -156,6 +166,7 @@ jobs:
     name: test success
     runs-on: ubuntu-latest
     if: always()
+    permissions: {}
     needs:
       - check-precompiles
       - test

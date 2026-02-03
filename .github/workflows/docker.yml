@@ -1,5 +1,7 @@
 name: Docker Build
 
+permissions: {}
+
 on:
   push:
     branches:

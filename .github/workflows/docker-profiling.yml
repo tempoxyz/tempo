@@ -1,5 +1,7 @@
 name: Docker Build (Profiling)
 
+permissions: {}
+
 on:
   workflow_dispatch:
     inputs:
