@@ -14,7 +14,8 @@ use jsonrpsee::{
 };
 
 pub use types::{
-    CertifiedBlock, ConsensusFeed, ConsensusState, Event, IdentityProofError, IdentityTransition,
+    CertifiedBlock, ConsensusFeed, ConsensusState, DkgOutcomeData, DkgOutcomeError,
+    DkgOutcomeQuery, DkgOutcomeResponse, Event, IdentityProofError, IdentityTransition,
     IdentityTransitionResponse, Query, TransitionProofData,
 };
 
@@ -51,6 +52,13 @@ pub trait TempoConsensusApi {
         from_epoch: Option<u64>,
         full: Option<bool>,
     ) -> RpcResult<IdentityTransitionResponse>;
+
+    /// Get DKG outcome for an epoch.
+    ///
+    /// Use `"latest"` to get the most recent finalized epoch outcome,
+    /// or `{"epoch": N}` to fetch a historical outcome.
+    #[method(name = "getDkgOutcome")]
+    async fn get_dkg_outcome(&self, query: DkgOutcomeQuery) -> RpcResult<DkgOutcomeResponse>;
 }
 
 /// Tempo consensus RPC implementation.
@@ -115,6 +123,13 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
     ) -> RpcResult<IdentityTransitionResponse> {
         self.consensus_feed
             .get_identity_transition_proof(from_epoch, full.unwrap_or(false))
+            .await
+            .map_err(|e| ErrorObject::owned(INTERNAL_ERROR_CODE, e.to_string(), None::<()>))
+    }
+
+    async fn get_dkg_outcome(&self, query: DkgOutcomeQuery) -> RpcResult<DkgOutcomeResponse> {
+        self.consensus_feed
+            .get_dkg_outcome(query)
             .await
             .map_err(|e| ErrorObject::owned(INTERNAL_ERROR_CODE, e.to_string(), None::<()>))
     }
