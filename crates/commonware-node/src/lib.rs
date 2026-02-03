@@ -177,11 +177,10 @@ async fn instantiate_network(
 )> {
     // TODO: Find out why `union_unique` should be used. This is the only place
     // where `NAMESPACE` is used at all. We follow alto's example for now.
-    let p2p_namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
-
-    let p2p_cfg = lookup::Config {
+    let namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
+    let cfg = lookup::Config {
+        namespace,
         crypto: signing_key,
-        namespace: p2p_namespace,
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
         mailbox_size: config.mailbox_size,
@@ -224,22 +223,22 @@ async fn instantiate_network(
                 .try_into()
                 .wrap_err("invalid connection min period duration")?,
         )
-        .expect("connection min period must be non-zero"),
+        .ok_or_eyre("connection min period must be non-zero")?,
         allowed_handshake_rate_per_ip: commonware_runtime::Quota::with_period(
             config
                 .handshake_per_ip_min_period
                 .try_into()
                 .wrap_err("invalid handshake per ip min period duration")?,
         )
-        .expect("handshake per ip min period must be non-zero"),
+        .ok_or_eyre("handshake per ip min period must be non-zero")?,
         allowed_handshake_rate_per_subnet: commonware_runtime::Quota::with_period(
             config
                 .handshake_per_subnet_min_period
                 .try_into()
                 .wrap_err("invalid handshake per subnet min period duration")?,
         )
-        .expect("handshake per subnet min period must be non-zero"),
+        .ok_or_eyre("handshake per subnet min period must be non-zero")?,
     };
 
-    Ok(lookup::Network::new(context.with_label("network"), p2p_cfg))
+    Ok(lookup::Network::new(context.with_label("network"), cfg))
 }
