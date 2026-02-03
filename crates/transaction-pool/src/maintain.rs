@@ -51,7 +51,9 @@ pub struct TempoPoolUpdates {
     /// When a user changes their fee token preference via `setUserToken()`, pending
     /// transactions from that user that don't have an explicit fee_token set may now
     /// resolve to a different token at execution time, causing fee payment failures.
-    pub user_token_changes: Vec<Address>,
+    /// Uses a set since a user can emit multiple events in the same block; we only need to
+    /// process each user once. No cleanup needed as this is ephemeral per-block data.
+    pub user_token_changes: HashSet<Address>,
     /// TIP403 blacklist additions: (policy_id, account).
     pub blacklist_additions: Vec<(u64, Address)>,
     /// TIP403 whitelist removals: (policy_id, account).
@@ -112,7 +114,7 @@ impl TempoPoolUpdates {
                         .validator_token_changes
                         .push((event.validator, event.token));
                 } else if let Ok(event) = IFeeManager::UserTokenSet::decode_log(log) {
-                    updates.user_token_changes.push(event.user);
+                    updates.user_token_changes.insert(event.user);
                 }
             }
             // TIP403 blacklist additions and whitelist removals
