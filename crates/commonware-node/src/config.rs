@@ -40,4 +40,3 @@ pub const SUBBLOCKS_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
 
 pub const NAMESPACE: &[u8] = b"TEMPO";
-
