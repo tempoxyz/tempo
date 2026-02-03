@@ -109,7 +109,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: tempoxyz/tempo-foundry
-          ref: 5551b3a76064ff0a51ea4d5cdae37f9f1405fd32
+          ref: 8314911ae7c21523b897fa4032990bc367b27dd7
           path: tempo-foundry
 
       - name: Setup Rust
