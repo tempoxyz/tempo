@@ -5,7 +5,7 @@ import { ITIP403Registry } from "./interfaces/ITIP403Registry.sol";
 
 contract TIP403Registry is ITIP403Registry {
 
-    uint64 internal _policyIdCounter; // Defaults to 0; getter returns max(2).
+    uint64 public policyIdCounter = 2; // Skip special policies (documented in isAuthorized).
 
     /*//////////////////////////////////////////////////////////////
                       TIP-1015: UNIFIED POLICY STORAGE
@@ -44,8 +44,7 @@ contract TIP403Registry is ITIP403Registry {
             IncompatiblePolicyType()
         );
 
-        newPolicyId = _nextPolicyId();
-        _policyIdCounter = newPolicyId + 1;
+        newPolicyId = policyIdCounter++;
 
         policyRecords[newPolicyId].base = PolicyData({ policyType: policyType, admin: admin });
 
@@ -64,8 +63,7 @@ contract TIP403Registry is ITIP403Registry {
             IncompatiblePolicyType()
         );
 
-        newPolicyId = _nextPolicyId();
-        _policyIdCounter = newPolicyId + 1;
+        newPolicyId = policyIdCounter++;
 
         policyRecords[newPolicyId].base = PolicyData({ policyType: policyType, admin: admin });
 
@@ -129,7 +127,7 @@ contract TIP403Registry is ITIP403Registry {
         }
 
         // Check if policy ID is within the range of created policies
-        return policyId < policyIdCounter();
+        return policyId < policyIdCounter;
     }
 
     function isAuthorized(uint64 policyId, address user) public view returns (bool) {
@@ -181,8 +179,7 @@ contract TIP403Registry is ITIP403Registry {
         _validateSimplePolicy(recipientPolicyId);
         _validateSimplePolicy(mintRecipientPolicyId);
 
-        newPolicyId = _nextPolicyId();
-        _policyIdCounter = newPolicyId + 1;
+        newPolicyId = policyIdCounter++;
 
         policyRecords[newPolicyId].base =
             PolicyData({ policyType: PolicyType.COMPOUND, admin: address(0) });
@@ -265,7 +262,7 @@ contract TIP403Registry is ITIP403Registry {
             return;
         }
 
-        require(policyId < policyIdCounter(), PolicyNotFound());
+        require(policyId < policyIdCounter, PolicyNotFound());
 
         PolicyData memory data = policyRecords[policyId].base;
         require(data.policyType != PolicyType.COMPOUND, PolicyNotSimple());
@@ -279,16 +276,6 @@ contract TIP403Registry is ITIP403Registry {
         return data.policyType == PolicyType.WHITELIST
             ? policySet[policyId][user]
             : !policySet[policyId][user];
-    }
-
-    function policyIdCounter() public view returns (uint64) {
-        uint64 counter = _policyIdCounter;
-        return counter < 2 ? 2 : counter;
-    }
-
-    function _nextPolicyId() internal view returns (uint64) {
-        uint64 counter = _policyIdCounter;
-        return counter < 2 ? 2 : counter;
     }
 
 }
