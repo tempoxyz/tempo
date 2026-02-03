@@ -192,8 +192,10 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // No actor has an active key - create one as fallback
         account = _selectActor(actorSeed);
+        uint256 boundedKeyIdSeed = keyIdSeed % _potentialKeyIds.length;
         for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-            address candidateKey = _potentialKeyIds[(keyIdSeed + i) % _potentialKeyIds.length];
+            address candidateKey =
+                _potentialKeyIds[(boundedKeyIdSeed + i) % _potentialKeyIds.length];
             // Can't reauthorize revoked keys (TEMPO-KEY4)
             if (!_ghostKeyRevoked[account][candidateKey]) {
                 _createKeyInternal(account, candidateKey, true);
