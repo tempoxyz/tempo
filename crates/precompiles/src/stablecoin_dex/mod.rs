@@ -4064,7 +4064,7 @@ mod tests {
 
     #[test]
     fn test_compound_policy_non_escrow_token_direction() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;

@@ -567,12 +567,12 @@ impl PolicyTypeExt for PolicyType {
     /// Validates and returns the policy type to store, handling backward compatibility.
     ///
     /// Pre-T1: Converts `COMPOUND` and `__Invalid` to 255 to match original ABI decoding behavior.
-    /// T1+: Only allows `WHITELIST` and `BLACKLIST`.
+    /// T2+: Only allows `WHITELIST` and `BLACKLIST`.
     fn ensure_is_simple(&self) -> Result<u8> {
         match self {
             Self::WHITELIST | Self::BLACKLIST => Ok(*self as u8),
             Self::COMPOUND | Self::__Invalid => {
-                if StorageCtx.spec().is_t1() {
+                if StorageCtx.spec().is_t2() {
                     Err(TIP403RegistryError::incompatible_policy_type().into())
                 } else {
                     Ok(Self::__Invalid as u8)
