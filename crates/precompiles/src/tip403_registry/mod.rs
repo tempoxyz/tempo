@@ -1595,8 +1595,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t1_validate_policy_type_returns_correct_u8() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+    fn test_t2_validate_policy_type_returns_correct_u8() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
@@ -1762,8 +1762,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t1_create_policy_rejects_invalid_types() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+    fn test_t2_create_policy_rejects_invalid_types() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -1793,8 +1793,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t1_create_policy_emits_correct_type() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+    fn test_t2_create_policy_emits_correct_type() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -1849,7 +1849,7 @@ mod tests {
 
     #[test]
     fn test_compound_policy_data_error_cases() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
