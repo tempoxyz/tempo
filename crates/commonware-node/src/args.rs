@@ -111,8 +111,8 @@ pub struct Args {
 
     /// Use defaults optimized for local network environments.
     /// Only enable in non-production network nodes.
-    #[arg(long = "consensus.use-local-p2p-defaults", default_value_t = false)]
-    pub use_local_p2p_defaults: bool,
+    #[arg(long = "consensus.use-local-defaults", default_value_t = false)]
+    pub use_local_defaults: bool,
 
     /// Reduces security by disabling IP-based connection filtering.
     /// Connections are still authenticated via public key cryptography, but
@@ -126,7 +126,7 @@ pub struct Args {
     #[arg(
         long = "consensus.allow-private-ips",
         default_value_t = false,
-        default_value_if("use_local_p2p_defaults", "true", "true")
+        default_value_if("use_local_defaults", "true", "true")
     )]
     pub allow_private_ips: bool,
 
@@ -145,7 +145,7 @@ pub struct Args {
     #[arg(
         long = "consensus.dial-interval",
         default_value = "1s",
-        default_value_if("use_local_p2p_defaults", "true", "500ms")
+        default_value_if("use_local_defaults", "true", "500ms")
     )]
     pub dial_interval: jiff::SignedDuration,
 
@@ -154,7 +154,7 @@ pub struct Args {
     #[arg(
         long = "consensus.query-interval",
         default_value = "60s",
-        default_value_if("use_local_p2p_defaults", "true", "30s")
+        default_value_if("use_local_defaults", "true", "30s")
     )]
     pub query_interval: jiff::SignedDuration,
 
@@ -163,7 +163,7 @@ pub struct Args {
     #[arg(
         long = "consensus.ping-interval",
         default_value = "50s",
-        default_value_if("use_local_p2p_defaults", "true", "5s")
+        default_value_if("use_local_defaults", "true", "5s")
     )]
     pub ping_interval: jiff::SignedDuration,
 
@@ -172,7 +172,7 @@ pub struct Args {
     #[arg(
         long = "consensus.connection-min-period",
         default_value = "60s",
-        default_value_if("use_local_p2p_defaults", "true", "1s")
+        default_value_if("use_local_defaults", "true", "1s")
     )]
     pub connection_min_period: jiff::SignedDuration,
 
@@ -181,7 +181,7 @@ pub struct Args {
     #[arg(
         long = "consensus.handshake-per-ip-min-period",
         default_value = "5s",
-        default_value_if("use_local_p2p_defaults", "true", "62ms")
+        default_value_if("use_local_defaults", "true", "62ms")
     )]
     pub handshake_per_ip_min_period: jiff::SignedDuration,
 
@@ -190,7 +190,7 @@ pub struct Args {
     #[arg(
         long = "consensus.handshake-per-subnet-min-period",
         default_value = "15ms",
-        default_value_if("use_local_p2p_defaults", "true", "7ms")
+        default_value_if("use_local_defaults", "true", "7ms")
     )]
     pub handshake_per_subnet_min_period: jiff::SignedDuration,
 
@@ -209,7 +209,7 @@ pub struct Args {
     #[arg(
         long = "consensus.handshake-max-concurrent",
         default_value = "512",
-        default_value_if("use_local_p2p_defaults", "true", "1024")
+        default_value_if("use_local_defaults", "true", "1024")
     )]
     pub handshake_max_concurrent: std::num::NonZeroU32,
 
@@ -223,7 +223,7 @@ pub struct Args {
     #[arg(
         long = "consensus.block-duration",
         default_value = "4h",
-        default_value_if("use_local_p2p_defaults", "true", "1h")
+        default_value_if("use_local_defaults", "true", "1h")
     )]
     pub block_duration: jiff::SignedDuration,
 
