@@ -3,6 +3,7 @@
 //! # Usage
 //! ```rust,ignore
 //! let (handle, exit_future) = ConsensusNode::new(args.consensus, node, feed_state)
+//!     .with_telemetry_config(telemetry_config)
 //!     .spawn();
 //!
 //! handle.shutdown()?;   // shutdown (if needed) and wait; propagates panics/errors
@@ -18,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, info_span};
 
 use crate::{args::Args, feed::FeedStateHandle, run_consensus_stack};
-use tempo_node::TempoFullNode;
+use tempo_node::{TempoFullNode, telemetry::{PrometheusMetricsConfig, install_prometheus_metrics}};
 
 pub(crate) mod handle;
 
@@ -30,6 +31,7 @@ pub struct ConsensusNode {
     execution_node: TempoFullNode,
     feed_state: FeedStateHandle,
     storage_directory: PathBuf,
+    telemetry_config: Option<PrometheusMetricsConfig>,
 }
 
 impl ConsensusNode {
@@ -50,7 +52,14 @@ impl ConsensusNode {
             execution_node,
             feed_state,
             storage_directory,
+            telemetry_config: None,
         }
+    }
+
+    /// Set the telemetry configuration for Prometheus metrics export.
+    pub fn with_telemetry_config(mut self, config: Option<PrometheusMetricsConfig>) -> Self {
+        self.telemetry_config = config;
+        self
     }
 
     /// Spawns the consensus node in a dedicated thread.
@@ -70,6 +79,7 @@ impl ConsensusNode {
             execution_node,
             feed_state,
             storage_directory,
+            telemetry_config,
         } = self;
 
         let shutdown_token = CancellationToken::new();
@@ -90,6 +100,12 @@ impl ConsensusNode {
 
                 let mut metrics_server =
                     crate::metrics::install(ctx.with_label("metrics"), args.metrics_address).fuse();
+
+                // Start the unified metrics exporter if configured
+                if let Some(config) = telemetry_config {
+                    install_prometheus_metrics(ctx.with_label("telemetry_metrics"), config)
+                        .wrap_err("failed to start Prometheus metrics exporter")?;
+                }
 
                 let consensus_stack = run_consensus_stack(&ctx, args, execution_node, feed_state);
                 tokio::pin!(consensus_stack);

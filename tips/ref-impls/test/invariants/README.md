@@ -92,6 +92,7 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 - **TEMPO-AMM21**: Spread between fee swap (M) and rebalance (N) prevents arbitrage - M < N with 15 bps spread.
 - **TEMPO-AMM22**: Rebalance swap rounding always favors the pool - the +1 in the formula ensures pool never loses to rounding, even when `(amountOut * N) % SCALE == 0` (exact division case).
 
+
 - **TEMPO-AMM23**: Burn rounding dust accumulates in pool - integer division rounds down, so users receive <= theoretical amount.
 - **TEMPO-AMM24**: All participants can exit with solvency guaranteed. After distributing all fees and burning all LP positions:
 
@@ -339,6 +340,66 @@ The ValidatorConfig precompile manages the set of validators that participate in
 - **TEMPO-VAL14**: Owner consistency - contract owner always matches ghost state.
 - **TEMPO-VAL15**: Validator data consistency - all validator data (active status, public key, index) matches ghost state.
 - **TEMPO-VAL16**: Index consistency - each validator's index matches the ghost-tracked index assigned at creation.
+
+## AccountKeychain
+
+The AccountKeychain precompile manages authorized Access Keys for accounts, enabling Root Keys to provision scoped secondary keys with expiry timestamps and per-TIP20 token spending limits.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-KEY13**: Key data consistency - all key data (expiry, enforceLimits, signatureType) matches ghost state for tracked keys.
+- **TEMPO-KEY14**: Spending limit consistency - all spending limits match ghost state for active keys with limits enforced.
+- **TEMPO-KEY15**: Revocation permanence - revoked keys remain revoked (isRevoked stays true).
+- **TEMPO-KEY16**: Signature type consistency - key signature type matches ghost state for all active keys.
+
+### Per-Handler Assertions
+
+These verify correct behavior when the specific function is called:
+
+#### Key Authorization
+
+- **TEMPO-KEY1**: Key authorization - `authorizeKey` correctly stores key info (keyId, expiry, signatureType, enforceLimits).
+- **TEMPO-KEY2**: Spending limit initialization - initial spending limits are correctly stored when `enforceLimits` is true.
+
+#### Key Revocation
+
+- **TEMPO-KEY3**: Key revocation - `revokeKey` marks key as revoked and clears expiry.
+- **TEMPO-KEY4**: Revocation finality - revoked keys cannot be reauthorized (reverts with `KeyAlreadyRevoked`).
+
+#### Spending Limits
+
+- **TEMPO-KEY5**: Limit update - `updateSpendingLimit` correctly updates the spending limit for a token.
+- **TEMPO-KEY6**: Limit enforcement activation - calling `updateSpendingLimit` on a key with `enforceLimits=false` enables limit enforcement.
+
+#### Input Validation
+
+- **TEMPO-KEY7**: Zero key rejection - authorizing a key with `keyId=address(0)` reverts with `ZeroPublicKey`.
+- **TEMPO-KEY8**: Duplicate key rejection - authorizing a key that already exists reverts with `KeyAlreadyExists`.
+- **TEMPO-KEY9**: Non-existent key revocation - revoking a key that doesn't exist reverts with `KeyNotFound`.
+
+#### Isolation
+
+- **TEMPO-KEY10**: Account isolation - keys are scoped per account; the same keyId can be authorized for different accounts with different settings.
+- **TEMPO-KEY11**: Transaction key context - `getTransactionKey` returns `address(0)` when called outside of a transaction signed by an access key.
+- **TEMPO-KEY12**: Non-existent key defaults - `getKey` for a non-existent key returns default values (keyId=0, expiry=0, enforceLimits=false).
+
+#### Expiry Boundaries
+
+- **TEMPO-KEY17**: Expiry at current timestamp is expired - Rust uses `timestamp >= expiry` so `expiry == block.timestamp` counts as expired.
+- **TEMPO-KEY18**: Operations on expired keys fail with `KeyExpired` - `updateSpendingLimit` on a key where `timestamp >= expiry` reverts.
+
+#### Signature Type Validation
+
+- **TEMPO-KEY19**: Invalid signature type rejection - enum values >= 3 are invalid and revert with `InvalidSignatureType`.
+
+#### Transaction Context
+
+> **Note**: KEY20/21 cannot be tested in Foundry invariant tests because `transaction_key` uses transient storage (TSTORE/TLOAD) which `vm.store` cannot modify. These invariants require integration tests in `crates/node/tests/it/` that submit real signed transactions.
+
+- **TEMPO-KEY20**: Main-key-only administration - `authorizeKey`, `revokeKey`, and `updateSpendingLimit` require `transaction_key == 0` (Root Key context). When called with a non-zero transaction key (i.e., from an Access Key), these operations revert with `UnauthorizedCaller`. This ensures only the Root Key can manage Access Keys.
+- **TEMPO-KEY21**: Spending limit tx_origin enforcement - spending limits are only consumed when `msg_sender == tx_origin`. Contract-initiated transfers (where msg_sender is a contract, not the signing EOA) do not consume the EOA's spending limit. This prevents contracts from unexpectedly draining a user's spending limits.
 
 ## TIP20
 

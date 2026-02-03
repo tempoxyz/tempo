@@ -25,7 +25,7 @@ use clap::Parser;
 use eyre::WrapErr as _;
 use futures::future::{Either, pending};
 use reth_ethereum::evm::revm::primitives::B256;
-use reth_ethereum_cli::Cli;
+use reth_ethereum_cli::{Cli, Commands};
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use std::sync::Arc;
@@ -41,17 +41,21 @@ use tempo_node::{
     TempoNodeArgs,
     node::TempoNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
+    telemetry::PrometheusMetricsConfig,
 };
 use tracing::info;
 
 // TODO: migrate this to tempo_node eventually.
-#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 struct TempoArgs {
     /// Follow this specific RPC node for block hashes.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     /// When set, consensus is skipped and the node follows the remote chain.
     #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
     pub follow: Option<String>,
+
+    #[command(flatten)]
+    pub telemetry: defaults::TelemetryArgs,
 
     #[command(flatten)]
     pub consensus: tempo_commonware_node::Args,
@@ -109,12 +113,31 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let cli = Cli::<
+    let mut cli = Cli::<
         TempoChainSpecParser,
         TempoArgs,
         DefaultRpcModuleValidator,
         tempo_cmd::TempoSubcommand,
     >::parse();
+
+    // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
+    let telemetry_config = if let Commands::Node(node_cmd) = &cli.command
+        && let Some(config) = node_cmd
+            .ext
+            .telemetry
+            .try_to_config()
+            .wrap_err("failed to parse telemetry config")?
+    {
+        // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
+        cli.traces.logs_otlp = Some(config.logs_otlp_url.clone());
+        cli.traces.logs_otlp_filter = config
+            .logs_otlp_filter
+            .parse()
+            .wrap_err("invalid default logs filter")?;
+        Some(config)
+    } else {
+        None
+    };
 
     let components = |spec: Arc<TempoChainSpec>| {
         (
@@ -216,7 +239,17 @@ fn main() -> eyre::Result<()> {
 
         // Spawn consensus after execution node is ready
         let consensus_handle = if args.consensus.is_enabled(is_dev_mode, is_follow_mode) {
-            Some(ConsensusNode::new(args.consensus, node, feed_state).spawn())
+            // Convert telemetry config to prometheus metrics config for consensus
+            let prometheus_config = telemetry_config.map(|config| PrometheusMetricsConfig {
+                endpoint: config.metrics_prometheus_url,
+                interval: config.metrics_prometheus_interval,
+                auth_header: config.metrics_auth_header,
+            });
+            Some(
+                ConsensusNode::new(args.consensus, node, feed_state)
+                    .with_telemetry_config(prometheus_config)
+                    .spawn(),
+            )
         } else {
             info!(
                 dev_mode = is_dev_mode,

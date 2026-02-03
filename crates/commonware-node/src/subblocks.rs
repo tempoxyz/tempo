@@ -7,7 +7,7 @@ use commonware_consensus::{
     Epochable, Reporter, Viewable,
     simplex::{
         elector::Random,
-        scheme::bls12381_threshold::vrf::{Scheme, Signature},
+        scheme::bls12381_threshold::vrf::{Certificate, Scheme},
         types::Activity,
     },
     types::{Epocher as _, FixedEpocher, Height, Round, View},
@@ -20,7 +20,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{Receiver, Recipients, Sender};
-use commonware_runtime::{Handle, Metrics, Pacer, Spawner};
+use commonware_runtime::{Handle, IoBuf, Metrics, Pacer, Spawner};
 use eyre::{Context, OptionExt};
 use futures::{FutureExt as _, StreamExt, channel::mpsc};
 use indexmap::IndexMap;
@@ -100,7 +100,7 @@ pub(crate) struct Actor<TContext> {
     epoch_strategy: FixedEpocher,
 
     /// Current consensus tip. Includes highest observed round, digest and certificate.
-    consensus_tip: Option<(Round, BlockHash, Signature<MinSig>)>,
+    consensus_tip: Option<(Round, BlockHash, Certificate<MinSig>)>,
 
     /// Collected subblocks keyed by validator public key.
     subblocks: IndexMap<B256, RecoveredSubBlock>,
@@ -315,17 +315,10 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             Round::new(epoch_of_next_block, View::new(1))
         };
 
-        let seed_signature = if next_round.view() == View::new(1) {
-            // First view does not have a seed.
-            None
-        } else {
-            Some(certificate.seed_signature)
-        };
-
         let next_proposer = Random::select_leader::<MinSig>(
             next_round,
             scheme.participants().len() as u32,
-            seed_signature,
+            certificate.get().map(|signature| signature.seed_signature),
         );
         let next_proposer = scheme.participants()[next_proposer.get() as usize].clone();
 
@@ -381,7 +374,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
     async fn on_network_message(
         &mut self,
         sender: PublicKey,
-        message: bytes::Bytes,
+        message: IoBuf,
         network_tx: &mut impl Sender<PublicKey = PublicKey>,
     ) -> eyre::Result<()> {
         let message =
@@ -632,12 +625,12 @@ impl SubblocksMessage {
     }
 
     /// Decodes a message from the given [`bytes::Bytes`].
-    fn decode(message: bytes::Bytes) -> alloy_rlp::Result<Self> {
+    fn decode(message: IoBuf) -> alloy_rlp::Result<Self> {
         if message.len() == 32 {
-            let hash = B256::from_slice(&message);
+            let hash = B256::from_slice(message.as_ref());
             Ok(Self::Ack(hash))
         } else {
-            let subblock = SignedSubBlock::decode(&mut &*message)?;
+            let subblock = SignedSubBlock::decode(&mut message.as_ref())?;
             Ok(Self::Subblock(subblock))
         }
     }
