@@ -186,55 +186,55 @@ async fn instantiate_network(
         max_message_size: config.max_message_size_bytes,
         mailbox_size: config.mailbox_size,
         bypass_ip_check: config.bypass_ip_check,
-        allow_private_ips: config.p2p_allow_private_ips,
-        allow_dns: config.p2p_allow_dns,
-        tracked_peer_sets: config.p2p_tracked_peer_sets,
+        allow_private_ips: config.allow_private_ips,
+        allow_dns: config.allow_dns,
+        tracked_peer_sets: config.peer_set_epoch_depth,
         synchrony_bound: config
-            .p2p_synchrony_bound
+            .synchrony_bound
             .try_into()
             .wrap_err("invalid synchrony bound duration")?,
         max_handshake_age: config
-            .p2p_max_handshake_age
+            .max_handshake_age
             .try_into()
             .wrap_err("invalid max handshake age duration")?,
         handshake_timeout: config
-            .p2p_handshake_timeout
+            .handshake_timeout
             .try_into()
             .wrap_err("invalid handshake timeout duration")?,
-        max_concurrent_handshakes: config.p2p_max_concurrent_handshakes,
+        max_concurrent_handshakes: config.max_concurrent_handshakes,
         block_duration: config
-            .p2p_block_duration
+            .block_duration
             .try_into()
             .wrap_err("invalid block duration")?,
         dial_frequency: config
-            .p2p_dial_interval
+            .dial_interval
             .try_into()
             .wrap_err("invalid dial interval duration")?,
         query_frequency: config
-            .p2p_query_interval
+            .query_interval
             .try_into()
             .wrap_err("invalid query interval duration")?,
         ping_frequency: config
-            .p2p_ping_interval
+            .ping_interval
             .try_into()
             .wrap_err("invalid ping interval duration")?,
         allowed_connection_rate_per_peer: commonware_runtime::Quota::with_period(
             config
-                .p2p_connection_min_period
+                .connection_min_period
                 .try_into()
                 .wrap_err("invalid connection min period duration")?,
         )
         .expect("connection min period must be non-zero"),
         allowed_handshake_rate_per_ip: commonware_runtime::Quota::with_period(
             config
-                .p2p_handshake_per_ip_min_period
+                .handshake_per_ip_min_period
                 .try_into()
                 .wrap_err("invalid handshake per ip min period duration")?,
         )
         .expect("handshake per ip min period must be non-zero"),
         allowed_handshake_rate_per_subnet: commonware_runtime::Quota::with_period(
             config
-                .p2p_handshake_per_subnet_min_period
+                .handshake_per_subnet_min_period
                 .try_into()
                 .wrap_err("invalid handshake per subnet min period duration")?,
         )

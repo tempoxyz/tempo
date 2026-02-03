@@ -35,27 +35,26 @@ pub struct Args {
     #[arg(long = "consensus.max-message-size-bytes", default_value_t = DEFAULT_MAX_MESSAGE_SIZE_BYTES)]
     pub max_message_size_bytes: u32,
 
-    // pub storage_directory: camino::Utf8PathBuf,
     /// The number of worker threads assigned to consensus.
     #[arg(long = "consensus.worker-threads", default_value_t = 3)]
     pub worker_threads: usize,
 
-    /// The maximum number of messages that can be cute on the various consensus
-    /// p2p channels before blocking.
+    /// The maximum number of messages that can be queued on the various consensus
+    /// channels before blocking.
     #[arg(long = "consensus.message-backlog", default_value_t = 16_384)]
     pub message_backlog: usize,
 
     /// The overall number of items that can be received on the various consensus
-    /// p2p channels before blocking.
+    /// channels before blocking.
     #[arg(long = "consensus.mailbox-size", default_value_t = 16_384)]
     pub mailbox_size: usize,
 
     /// The maximum number of blocks that will be buffered per peer. Used to
-    /// send and receive blocks over the p2p network of the consensus layer.
+    /// send and receive blocks over the network of the consensus layer.
     #[arg(long = "consensus.deque-size", default_value_t = 10)]
     pub deque_size: usize,
 
-    /// The fee recipien that will be specified by this node. Will use the
+    /// The fee recipient that will be specified by this node. Will use the
     /// coinbase address in genesis if not set.
     #[arg(
         long = "consensus.fee-recipient",
@@ -63,7 +62,7 @@ pub struct Args {
     )]
     pub fee_recipient: Option<alloy_primitives::Address>,
 
-    // The amount of time to wait for a peer to respond to a consensus request.
+    /// The amount of time to wait for a peer to respond to a consensus request.
     #[arg(long = "consensus.wait-for-peer-response", default_value = "2s")]
     pub wait_for_peer_response: jiff::SignedDuration,
 
@@ -110,6 +109,11 @@ pub struct Args {
     #[arg(long = "consensus.time-to-build-subblock", default_value = "100ms")]
     pub time_to_build_subblock: jiff::SignedDuration,
 
+    /// Use defaults optimized for local network environments.
+    /// Only enable in non-production network nodes.
+    #[arg(long = "consensus.use-local-p2p-defaults", default_value_t = false)]
+    pub use_local_p2p_defaults: bool,
+
     /// Reduces security by disabling IP-based connection filtering.
     /// Connections are still authenticated via public key cryptography, but
     /// anyone can attempt handshakes, increasing exposure to DoS attacks.
@@ -117,116 +121,111 @@ pub struct Args {
     #[arg(long = "consensus.bypass-ip-check", default_value_t = false)]
     pub bypass_ip_check: bool,
 
-    /// Use P2P defaults optimized for local network environments.
-    /// Only enable in non-production network nodes.
-    #[arg(long = "consensus.use-local-p2p-defaults", default_value_t = false)]
-    pub use_local_p2p_defaults: bool,
+    /// Whether to allow connections with private IP addresses.
+    /// [default: false, local: true]
+    #[arg(
+        long = "consensus.allow-private-ips",
+        default_value_t = false,
+        default_value_if("use_local_p2p_defaults", "true", "true")
+    )]
+    pub allow_private_ips: bool,
+
+    /// Whether to allow DNS-based ingress addresses.
+    /// [default: true]
+    #[arg(long = "consensus.allow-dns", default_value_t = true)]
+    pub allow_dns: bool,
+
+    /// Time into the future that a timestamp can be and still be considered valid.
+    /// [default: 5s]
+    #[arg(long = "consensus.synchrony-bound", default_value = "5s")]
+    pub synchrony_bound: jiff::SignedDuration,
 
     /// How often to attempt dialing peers. Lower values mean faster peer discovery.
     /// [default: 1s, local: 500ms]
     #[arg(
-        long = "consensus.p2p-dial-interval",
+        long = "consensus.dial-interval",
         default_value = "1s",
         default_value_if("use_local_p2p_defaults", "true", "500ms")
     )]
-    pub p2p_dial_interval: jiff::SignedDuration,
+    pub dial_interval: jiff::SignedDuration,
 
     /// How often to query for new dialable peers. Also limits re-dial rate per peer.
     /// [default: 60s, local: 30s]
     #[arg(
-        long = "consensus.p2p-query-interval",
+        long = "consensus.query-interval",
         default_value = "60s",
         default_value_if("use_local_p2p_defaults", "true", "30s")
     )]
-    pub p2p_query_interval: jiff::SignedDuration,
+    pub query_interval: jiff::SignedDuration,
 
     /// How often to send ping messages to peers for liveness detection.
     /// [default: 50s, local: 5s]
     #[arg(
-        long = "consensus.p2p-ping-interval",
+        long = "consensus.ping-interval",
         default_value = "50s",
         default_value_if("use_local_p2p_defaults", "true", "5s")
     )]
-    pub p2p_ping_interval: jiff::SignedDuration,
+    pub ping_interval: jiff::SignedDuration,
 
     /// Minimum time between connection attempts to the same peer.
     /// [default: 60s, local: 1s]
     #[arg(
-        long = "consensus.p2p-connection-min-period",
+        long = "consensus.connection-min-period",
         default_value = "60s",
         default_value_if("use_local_p2p_defaults", "true", "1s")
     )]
-    pub p2p_connection_min_period: jiff::SignedDuration,
+    pub connection_min_period: jiff::SignedDuration,
 
     /// Minimum time between handshake attempts from a single IP address.
     /// [default: 5s, local: 62ms]
     #[arg(
-        long = "consensus.p2p-handshake-per-ip-min-period",
+        long = "consensus.handshake-per-ip-min-period",
         default_value = "5s",
         default_value_if("use_local_p2p_defaults", "true", "62ms")
     )]
-    pub p2p_handshake_per_ip_min_period: jiff::SignedDuration,
+    pub handshake_per_ip_min_period: jiff::SignedDuration,
 
     /// Minimum time between handshake attempts from a single subnet.
     /// [default: 15ms, local: 7ms]
     #[arg(
-        long = "consensus.p2p-handshake-per-subnet-min-period",
+        long = "consensus.handshake-per-subnet-min-period",
         default_value = "15ms",
         default_value_if("use_local_p2p_defaults", "true", "7ms")
     )]
-    pub p2p_handshake_per_subnet_min_period: jiff::SignedDuration,
-
-    /// Whether to allow connections with private IP addresses.
-    /// [default: false, local: true]
-    #[arg(
-        long = "consensus.p2p-allow-private-ips",
-        default_value_t = false,
-        default_value_if("use_local_p2p_defaults", "true", "true")
-    )]
-    pub p2p_allow_private_ips: bool,
-
-    /// Whether to allow DNS-based ingress addresses.
-    /// [default: true]
-    #[arg(long = "consensus.p2p-allow-dns", default_value_t = true)]
-    pub p2p_allow_dns: bool,
-
-    /// Time into the future that a timestamp can be and still be considered valid.
-    /// [default: 5s]
-    #[arg(long = "consensus.p2p-synchrony-bound", default_value = "5s")]
-    pub p2p_synchrony_bound: jiff::SignedDuration,
+    pub handshake_per_subnet_min_period: jiff::SignedDuration,
 
     /// Duration after which a handshake message is considered stale.
     /// [default: 10s]
-    #[arg(long = "consensus.p2p-max-handshake-age", default_value = "10s")]
-    pub p2p_max_handshake_age: jiff::SignedDuration,
+    #[arg(long = "consensus.max-handshake-age", default_value = "10s")]
+    pub max_handshake_age: jiff::SignedDuration,
 
     /// Timeout for the handshake process.
     /// [default: 5s]
-    #[arg(long = "consensus.p2p-handshake-timeout", default_value = "5s")]
-    pub p2p_handshake_timeout: jiff::SignedDuration,
+    #[arg(long = "consensus.handshake-timeout", default_value = "5s")]
+    pub handshake_timeout: jiff::SignedDuration,
 
     /// Maximum number of concurrent handshake attempts allowed.
     /// [default: 512, local: 1024]
     #[arg(
-        long = "consensus.p2p-max-concurrent-handshakes",
+        long = "consensus.max-concurrent-handshakes",
         default_value = "512",
         default_value_if("use_local_p2p_defaults", "true", "1024")
     )]
-    pub p2p_max_concurrent_handshakes: std::num::NonZeroU32,
+    pub max_concurrent_handshakes: std::num::NonZeroU32,
 
-    /// Number of peer sets to track for maintaining connections.
+    /// Number of epoch peer sets to maintain connections for.
     /// [default: 4]
-    #[arg(long = "consensus.p2p-tracked-peer-sets", default_value_t = 4)]
-    pub p2p_tracked_peer_sets: usize,
+    #[arg(long = "consensus.peer-set-epoch-depth", default_value_t = 4)]
+    pub peer_set_epoch_depth: usize,
 
     /// Duration after which a blocked peer is allowed to reconnect.
     /// [default: 4h, local: 1h]
     #[arg(
-        long = "consensus.p2p-block-duration",
+        long = "consensus.block-duration",
         default_value = "4h",
         default_value_if("use_local_p2p_defaults", "true", "1h")
     )]
-    pub p2p_block_duration: jiff::SignedDuration,
+    pub block_duration: jiff::SignedDuration,
 
     /// Rate limit when backfilling blocks (requests per second).
     /// [default: 8]
