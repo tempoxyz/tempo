@@ -38,6 +38,9 @@ pub enum SignatureType {
     Secp256k1 = 0,
     P256 = 1,
     WebAuthn = 2,
+    /// Contract-based signature verification via ITempoSigner interface.
+    /// Uses an EVM contract call to validate authorization instead of cryptographic signature.
+    EvmContract = 3,
 }
 
 impl From<SignatureType> for u8 {
@@ -46,6 +49,7 @@ impl From<SignatureType> for u8 {
             SignatureType::Secp256k1 => 0,
             SignatureType::P256 => 1,
             SignatureType::WebAuthn => 2,
+            SignatureType::EvmContract => 3,
         }
     }
 }
@@ -67,6 +71,7 @@ impl alloy_rlp::Decodable for SignatureType {
             0 => Ok(Self::Secp256k1),
             1 => Ok(Self::P256),
             2 => Ok(Self::WebAuthn),
+            3 => Ok(Self::EvmContract),
             _ => Err(alloy_rlp::Error::Custom("Invalid signature type")),
         }
     }
@@ -1619,6 +1624,7 @@ mod tests {
                 limit: U256::from(10000),
             }]),
             key_id: address!("0000000000000000000000000000000000000004"),
+            contract_salt: None,
         }
         .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
 

@@ -961,6 +961,7 @@ mod tests {
             key_id: caller,
             expiry: None,
             limits: None,
+            contract_salt: None,
         };
         let key_auth_webauthn_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth =
