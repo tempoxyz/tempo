@@ -47,6 +47,11 @@ pub struct TempoPoolUpdates {
     pub spending_limit_changes: SpendingLimitUpdates,
     /// Validator token preference changes: (validator, new_token).
     pub validator_token_changes: Vec<(Address, Address)>,
+    /// User token preference changes.
+    /// When a user changes their fee token preference via `setUserToken()`, pending
+    /// transactions from that user that don't have an explicit fee_token set may now
+    /// resolve to a different token at execution time, causing fee payment failures.
+    pub user_token_changes: Vec<Address>,
     /// TIP403 blacklist additions: (policy_id, account).
     pub blacklist_additions: Vec<(u64, Address)>,
     /// TIP403 whitelist removals: (policy_id, account).
@@ -67,6 +72,7 @@ impl TempoPoolUpdates {
             && self.revoked_keys.is_empty()
             && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
+            && self.user_token_changes.is_empty()
             && self.blacklist_additions.is_empty()
             && self.whitelist_removals.is_empty()
             && self.pause_events.is_empty()
@@ -99,12 +105,14 @@ impl TempoPoolUpdates {
                     );
                 }
             }
-            // Validator token changes
+            // Validator and user token changes
             else if log.address == TIP_FEE_MANAGER_ADDRESS {
                 if let Ok(event) = IFeeManager::ValidatorTokenSet::decode_log(log) {
                     updates
                         .validator_token_changes
                         .push((event.validator, event.token));
+                } else if let Ok(event) = IFeeManager::UserTokenSet::decode_log(log) {
+                    updates.user_token_changes.push(event.user);
                 }
             }
             // TIP403 blacklist additions and whitelist removals
@@ -139,6 +147,7 @@ impl TempoPoolUpdates {
         !self.revoked_keys.is_empty()
             || !self.spending_limit_changes.is_empty()
             || !self.validator_token_changes.is_empty()
+            || !self.user_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
     }
@@ -675,6 +684,7 @@ where
                         revoked_keys = updates.revoked_keys.len(),
                         spending_limit_changes = updates.spending_limit_changes.len(),
                         validator_token_changes = updates.validator_token_changes.len(),
+                        user_token_changes = updates.user_token_changes.len(),
                         blacklist_additions = updates.blacklist_additions.len(),
                         whitelist_removals = updates.whitelist_removals.len(),
                         "Processing transaction invalidation events"
