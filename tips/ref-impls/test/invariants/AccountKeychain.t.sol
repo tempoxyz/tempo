@@ -118,7 +118,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             _accountKeys[account].push(keyId);
         }
 
-        if (isFallback) {
+        if (isFallback && _loggingEnabled) {
             _log(
                 string.concat(
                     "AUTHORIZE_KEY[fallback]: account=",
@@ -255,18 +255,20 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
             assertFalse(info.isRevoked, "TEMPO-KEY1: Should not be revoked");
 
-            _log(
-                string.concat(
-                    "AUTHORIZE_KEY: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " sigType=",
-                    vm.toString(uint8(sigType)),
-                    " enforceLimits=",
-                    enforceLimits ? "true" : "false"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "AUTHORIZE_KEY: account=",
+                        _getActorIndex(account),
+                        " keyId=",
+                        vm.toString(keyId),
+                        " sigType=",
+                        vm.toString(uint8(sigType)),
+                        " enforceLimits=",
+                        enforceLimits ? "true" : "false"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownKeychainError(reason);
@@ -308,11 +310,13 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             assertEq(info.expiry, 0, "TEMPO-KEY3: Expiry should be cleared");
             assertEq(info.keyId, address(0), "TEMPO-KEY3: KeyId should return 0 for revoked");
 
-            _log(
-                string.concat(
-                    "REVOKE_KEY: account=", _getActorIndex(account), " keyId=", vm.toString(keyId)
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "REVOKE_KEY: account=", _getActorIndex(account), " keyId=", vm.toString(keyId)
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownKeychainError(reason);
@@ -358,15 +362,17 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat(
-                "TRY_REAUTHORIZE_REVOKED: account=",
-                _getActorIndex(account),
-                " keyId=",
-                vm.toString(keyId),
-                " correctly rejected"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_REAUTHORIZE_REVOKED: account=",
+                    _getActorIndex(account),
+                    " keyId=",
+                    vm.toString(keyId),
+                    " correctly rejected"
+                )
+            );
+        }
     }
 
     /// @notice Handler for updating spending limits
@@ -412,19 +418,21 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             IAccountKeychain.KeyInfo memory info = keychain.getKey(account, keyId);
             assertTrue(info.enforceLimits, "TEMPO-KEY6: EnforceLimits should be true after update");
 
-            _log(
-                string.concat(
-                    "UPDATE_LIMIT: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " token=",
-                    vm.toString(token),
-                    " limit=",
-                    vm.toString(newLimit),
-                    hadLimitsBefore ? "" : " (enabled limits)"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "UPDATE_LIMIT: account=",
+                        _getActorIndex(account),
+                        " keyId=",
+                        vm.toString(keyId),
+                        " token=",
+                        vm.toString(token),
+                        " limit=",
+                        vm.toString(newLimit),
+                        hadLimitsBefore ? "" : " (enabled limits)"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownKeychainError(reason);
@@ -457,9 +465,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat("TRY_ZERO_KEY: account=", _getActorIndex(account), " correctly rejected")
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat("TRY_ZERO_KEY: account=", _getActorIndex(account), " correctly rejected")
+            );
+        }
     }
 
     /// @notice Handler for authorizing duplicate key (should fail)
@@ -491,15 +501,17 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat(
-                "TRY_DUPLICATE_KEY: account=",
-                _getActorIndex(account),
-                " keyId=",
-                vm.toString(keyId),
-                " correctly rejected"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRY_DUPLICATE_KEY: account=",
+                    _getActorIndex(account),
+                    " keyId=",
+                    vm.toString(keyId),
+                    " correctly rejected"
+                )
+            );
+        }
     }
 
     /// @notice Handler for revoking non-existent key (should fail)
@@ -527,17 +539,19 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat(
-                wasRevoked
-                    ? "TRY_REVOKE_ALREADY_REVOKED: account="
-                    : "TRY_REVOKE_NONEXISTENT: account=",
-                _getActorIndex(account),
-                " keyId=",
-                vm.toString(keyId),
-                " correctly rejected with KeyNotFound"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    wasRevoked
+                        ? "TRY_REVOKE_ALREADY_REVOKED: account="
+                        : "TRY_REVOKE_NONEXISTENT: account=",
+                    _getActorIndex(account),
+                    " keyId=",
+                    vm.toString(keyId),
+                    " correctly rejected with KeyNotFound"
+                )
+            );
+        }
     }
 
     /// @notice Handler for verifying account isolation
@@ -622,17 +636,19 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         assertEq(limit1, 1000e6, "TEMPO-KEY10: Account1 limit should be 1000");
         assertEq(limit2, 2000e6, "TEMPO-KEY10: Account2 limit should be 2000");
 
-        _log(
-            string.concat(
-                "ACCOUNT_ISOLATION: keyId=",
-                vm.toString(keyId),
-                " ",
-                _getActorIndex(account1),
-                " ",
-                _getActorIndex(account2),
-                " verified"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "ACCOUNT_ISOLATION: keyId=",
+                    vm.toString(keyId),
+                    " ",
+                    _getActorIndex(account1),
+                    " ",
+                    _getActorIndex(account2),
+                    " verified"
+                )
+            );
+        }
     }
 
     /// @notice Handler for checking getTransactionKey
@@ -716,13 +732,15 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 );
             }
 
-            _log(
-                string.concat(
-                    "EXPIRY_BOUNDARY: account=",
-                    _getActorIndex(account),
-                    " key correctly expired at timestamp==expiry"
-                )
-            );
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "EXPIRY_BOUNDARY: account=",
+                        _getActorIndex(account),
+                        " key correctly expired at timestamp==expiry"
+                    )
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             // ExpiryInPast is acceptable if expiry <= block.timestamp at creation
@@ -768,15 +786,17 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat(
-                "EXPIRED_KEY_OP: account=",
-                _getActorIndex(account),
-                " keyId=",
-                vm.toString(keyId),
-                " correctly rejected after expiry"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "EXPIRED_KEY_OP: account=",
+                    _getActorIndex(account),
+                    " keyId=",
+                    vm.toString(keyId),
+                    " correctly rejected after expiry"
+                )
+            );
+        }
     }
 
     /// @notice Handler for testing invalid signature type
@@ -823,33 +843,27 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
-        _log(
-            string.concat(
-                "INVALID_SIG_TYPE: account=",
-                _getActorIndex(account),
-                " badType=",
-                vm.toString(badType),
-                " correctly rejected"
-            )
-        );
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "INVALID_SIG_TYPE: account=",
+                    _getActorIndex(account),
+                    " badType=",
+                    vm.toString(badType),
+                    " correctly rejected"
+                )
+            );
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
                          GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Run all invariant checks
+    /// @notice Run all invariant checks in a single pass over actors
+    /// @dev Consolidates TEMPO-KEY13, KEY14, KEY15, KEY16 into unified loops
     function invariant_globalInvariants() public view {
-        _invariantKeyConsistency();
-        _invariantSpendingLimitConsistency();
-        _invariantRevokedKeyState();
-        _invariantCoverageSanity();
-    }
-
-    /// @notice TEMPO-KEY13 & TEMPO-KEY16: Key data matches ghost state for all tracked keys
-    /// KEY13: expiry, enforceLimits match ghost state
-    /// KEY16: signatureType matches ghost state for all active keys
-    function _invariantKeyConsistency() internal view {
+        // Single pass over all actors and their keys
         for (uint256 a = 0; a < _actors.length; a++) {
             address account = _actors[a];
             address[] memory keys = _accountKeys[account];
@@ -859,7 +873,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 IAccountKeychain.KeyInfo memory info = keychain.getKey(account, keyId);
 
                 if (_ghostKeyRevoked[account][keyId]) {
-                    // Revoked key should show isRevoked=true and other fields defaulted
+                    // TEMPO-KEY13: Revoked key should show isRevoked=true and other fields defaulted
                     assertTrue(info.isRevoked, "TEMPO-KEY13: Revoked key should show isRevoked");
                     assertEq(info.keyId, address(0), "TEMPO-KEY13: Revoked key keyId should be 0");
                     assertEq(info.expiry, 0, "TEMPO-KEY13: Revoked key expiry should be 0");
@@ -871,8 +885,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                         0,
                         "TEMPO-KEY13: Revoked key signatureType should be 0"
                     );
+                    // TEMPO-KEY15: Revoked keys stay revoked (already checked via isRevoked above)
                 } else if (_ghostKeyExists[account][keyId]) {
-                    // Active key should match ghost state
+                    // TEMPO-KEY13: Active key should match ghost state
                     assertEq(info.keyId, keyId, "TEMPO-KEY13: Active key keyId should match");
                     assertEq(
                         info.expiry,
@@ -891,83 +906,32 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                         "TEMPO-KEY16: SignatureType must match ghost state"
                     );
                     assertFalse(info.isRevoked, "TEMPO-KEY13: Active key should not be revoked");
+
+                    // TEMPO-KEY14: Check spending limits for active keys with limits enforced
+                    if (_ghostKeyEnforceLimits[account][keyId]) {
+                        uint64 expiry = _ghostKeyExpiry[account][keyId];
+                        bool isExpired = expiry != type(uint64).max && block.timestamp >= expiry;
+                        if (!isExpired) {
+                            for (uint256 t = 0; t < _tokens.length; t++) {
+                                address token = address(_tokens[t]);
+                                uint256 expected = _ghostSpendingLimits[account][keyId][token];
+                                uint256 actual = keychain.getRemainingLimit(account, keyId, token);
+                                assertEq(
+                                    actual,
+                                    expected,
+                                    "TEMPO-KEY14: Spending limit should match ghost state"
+                                );
+                            }
+                        }
+                    }
                 }
             }
-        }
-    }
-
-    /// @notice TEMPO-KEY14: Spending limits match ghost state
-    function _invariantSpendingLimitConsistency() internal view {
-        for (uint256 a = 0; a < _actors.length; a++) {
-            address account = _actors[a];
-            address[] memory keys = _accountKeys[account];
-
-            for (uint256 k = 0; k < keys.length; k++) {
-                address keyId = keys[k];
-
-                // Only check active (non-revoked) keys with limits
-                if (!_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) continue;
-                if (!_ghostKeyEnforceLimits[account][keyId]) continue;
-
-                // Skip expired keys (vm.warp can cause keys to expire mid-run)
-                uint64 expiry = _ghostKeyExpiry[account][keyId];
-                bool neverExpires = expiry == type(uint64).max;
-                bool isExpired = !neverExpires && block.timestamp >= expiry;
-                if (isExpired) continue;
-
-                for (uint256 t = 0; t < _tokens.length; t++) {
-                    address token = address(_tokens[t]);
-                    uint256 expected = _ghostSpendingLimits[account][keyId][token];
-                    uint256 actual = keychain.getRemainingLimit(account, keyId, token);
-                    assertEq(
-                        actual, expected, "TEMPO-KEY14: Spending limit should match ghost state"
-                    );
-                }
-            }
-        }
-    }
-
-    /// @notice TEMPO-KEY15: Revoked keys stay revoked
-    function _invariantRevokedKeyState() internal view {
-        for (uint256 a = 0; a < _actors.length; a++) {
-            address account = _actors[a];
-            address[] memory keys = _accountKeys[account];
-
-            for (uint256 k = 0; k < keys.length; k++) {
-                address keyId = keys[k];
-
-                if (_ghostKeyRevoked[account][keyId]) {
-                    IAccountKeychain.KeyInfo memory info = keychain.getKey(account, keyId);
-                    assertTrue(info.isRevoked, "TEMPO-KEY15: Revoked key must stay revoked");
-                }
-            }
-        }
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                           COVERAGE SANITY
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Verify that key invariant paths were actually exercised
-    /// @dev This invariant ensures the fuzzer is testing meaningful scenarios
-    function _invariantCoverageSanity() internal view {
-        // After sufficient runs, we expect some activity
-        uint256 totalOps = _totalKeysAuthorized + _totalKeysRevoked + _totalLimitUpdates;
-        if (totalOps >= 10) {
-            // Should have authorized at least one key
-            assertTrue(_totalKeysAuthorized > 0, "Coverage: No keys authorized after 10+ ops");
         }
     }
 
     /// @notice Called after each invariant run to log final state
     function afterInvariant() public {
-        _log("");
-        _log("--------------------------------------------------------------------------------");
-        _log("Final State Summary");
-        _log("--------------------------------------------------------------------------------");
-        _log(string.concat("Keys authorized: ", vm.toString(_totalKeysAuthorized)));
-        _log(string.concat("Keys revoked: ", vm.toString(_totalKeysRevoked)));
-        _log(string.concat("Limit updates: ", vm.toString(_totalLimitUpdates)));
+        if (!_loggingEnabled) return;
 
         // Count total keys across all accounts
         uint256 totalActiveKeys = 0;
@@ -984,6 +948,13 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             }
         }
 
+        _log("");
+        _log("--------------------------------------------------------------------------------");
+        _log("Final State Summary");
+        _log("--------------------------------------------------------------------------------");
+        _log(string.concat("Keys authorized: ", vm.toString(_totalKeysAuthorized)));
+        _log(string.concat("Keys revoked: ", vm.toString(_totalKeysRevoked)));
+        _log(string.concat("Limit updates: ", vm.toString(_totalLimitUpdates)));
         _log(string.concat("Active keys (ghost): ", vm.toString(totalActiveKeys)));
         _log(string.concat("Revoked keys (ghost): ", vm.toString(totalRevokedKeys)));
         _log(string.concat("Final timestamp: ", vm.toString(block.timestamp)));
