@@ -8,7 +8,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_evm::FromRecoveredTx;
-use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes};
+use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes, map::AddressMap};
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
@@ -16,7 +16,6 @@ use reth_transaction_pool::{
     error::PoolTransactionError,
 };
 use std::{
-    collections::HashMap,
     convert::Infallible,
     fmt::Debug,
     sync::{Arc, OnceLock},
@@ -38,6 +37,11 @@ pub struct TempoPooledTransaction {
     nonce_key_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
+    /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
+    ///
+    /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
+    /// `None` for non-keychain transactions or keys that never expire.
+    key_expiry: OnceLock<Option<u64>>,
 }
 
 impl TempoPooledTransaction {
@@ -58,6 +62,7 @@ impl TempoPooledTransaction {
             is_payment,
             nonce_key_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
+            key_expiry: OnceLock::new(),
         }
     }
 
@@ -174,6 +179,23 @@ impl TempoPooledTransaction {
             tx: Arc::new(self.inner.transaction),
         }
     }
+
+    /// Sets the keychain key expiry timestamp for this transaction.
+    ///
+    /// Called during validation when we read the AuthorizedKey from state.
+    /// Pass `Some(expiry)` for keys with finite expiry, `None` for non-keychain txs
+    /// or keys that never expire.
+    pub fn set_key_expiry(&self, expiry: Option<u64>) {
+        let _ = self.key_expiry.set(expiry);
+    }
+
+    /// Returns the keychain key expiry timestamp, if set during validation.
+    ///
+    /// Returns `Some(expiry)` for keychain transactions with finite expiry.
+    /// Returns `None` if not a keychain tx, key never expires, or not yet validated.
+    pub fn key_expiry(&self) -> Option<u64> {
+        self.key_expiry.get().copied().flatten()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -264,6 +286,10 @@ pub enum TempoPoolTransactionError {
     /// Thrown when a call in an AA transaction is the second call and is a CREATE.
     #[error("CREATE calls must be the first call in an AA transaction")]
     CreateCallNotFirst,
+
+    /// Thrown when an AA transaction contains both a CREATE call and an authorization list.
+    #[error("CREATE calls are not allowed in the same transaction that has an authorization list")]
+    CreateCallWithAuthorizationList,
 
     /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
     #[error(
@@ -368,6 +394,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::NoCalls
+            | Self::CreateCallWithAuthorizationList
             | Self::CreateCallNotFirst
             | Self::FeeCapBelowMinBaseFee { .. } => true,
         }
@@ -928,7 +955,7 @@ mod tests {
 #[derive(Debug, Clone, Default)]
 pub struct RevokedKeys {
     /// Map from account to list of revoked key_ids.
-    by_account: HashMap<Address, Vec<Address>>,
+    by_account: AddressMap<Vec<Address>>,
 }
 
 impl RevokedKeys {
@@ -967,7 +994,7 @@ impl RevokedKeys {
 #[derive(Debug, Clone, Default)]
 pub struct SpendingLimitUpdates {
     /// Map from account to list of (key_id, token) pairs that had limit changes.
-    by_account: HashMap<Address, Vec<(Address, Address)>>,
+    by_account: AddressMap<Vec<(Address, Address)>>,
 }
 
 impl SpendingLimitUpdates {

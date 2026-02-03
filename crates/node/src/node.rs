@@ -444,6 +444,7 @@ where
             price_bump_config: pool_config.price_bumps,
             pending_limit: pool_config.pending_limit,
             queued_limit: pool_config.queued_limit,
+            max_txs_per_sender: pool_config.max_account_slots,
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;

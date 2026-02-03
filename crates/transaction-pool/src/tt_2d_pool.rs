@@ -1,6 +1,9 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
 use crate::{metrics::AA2dPoolMetrics, transaction::TempoPooledTransaction};
-use alloy_primitives::{Address, B256, TxHash, U256, map::HashMap};
+use alloy_primitives::{
+    Address, B256, TxHash, U256,
+    map::{AddressMap, HashMap, HashSet, U256Map},
+};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
 use reth_transaction_pool::{
@@ -16,7 +19,6 @@ use std::{
     collections::{
         BTreeMap, BTreeSet,
         Bound::{Excluded, Unbounded},
-        HashSet,
         btree_map::Entry,
         hash_map,
     },
@@ -61,7 +63,7 @@ pub struct AA2dPool {
     /// ```
     ///
     /// This identifies the account and nonce key based on the slot in the `NonceManager`.
-    slot_to_seq_id: HashMap<U256, AASequenceId>,
+    slot_to_seq_id: U256Map<AASequenceId>,
     /// Reverse index for cleaning up `slots_to_seq_id`.
     seq_id_to_slot: HashMap<AASequenceId, U256>,
     /// Settings for this sub-pool.
@@ -74,6 +76,11 @@ pub struct AA2dPool {
     /// so we can maintain this ordering incrementally. At eviction time, we scan
     /// this set checking `is_pending` to find queued or pending transactions.
     by_eviction_order: BTreeSet<EvictionKey>,
+    /// Tracks the number of transactions per sender for DoS protection.
+    ///
+    /// Bounded by pool size (max unique senders = pending_limit + queued_limit).
+    /// Entries are removed when count reaches 0 via `decrement_sender_count`.
+    txs_by_sender: AddressMap<usize>,
 }
 
 impl Default for AA2dPool {
@@ -96,13 +103,14 @@ impl AA2dPool {
             config,
             metrics: AA2dPoolMetrics::default(),
             by_eviction_order: Default::default(),
+            txs_by_sender: Default::default(),
         }
     }
 
     /// Updates all metrics to reflect the current state of the pool
     fn update_metrics(&self) {
         let (pending, queued) = self.pending_and_queued_txn_count();
-        let total = self.by_id.len();
+        let total = self.by_id.len() + self.expiring_nonce_txs.len();
         self.metrics.set_transaction_counts(total, pending, queued);
     }
 
@@ -172,7 +180,9 @@ impl AA2dPool {
             is_pending: Rc::new(RefCell::new(false)),
         });
 
-        // try to insert the transaction
+        // Use entry API once to both check for replacement and insert.
+        // This avoids a separate contains_key lookup.
+        let sender = transaction.sender();
         let replaced = match self.by_id.entry(tx_id) {
             Entry::Occupied(mut entry) => {
                 // Ensure the replacement transaction is not underpriced
@@ -191,7 +201,18 @@ impl AA2dPool {
                 Some(entry.insert(Arc::clone(&tx)))
             }
             Entry::Vacant(entry) => {
+                // Check per-sender limit for new (non-replacement) transactions
+                let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
+                if sender_count >= self.config.max_txs_per_sender {
+                    return Err(PoolError::new(
+                        *transaction.hash(),
+                        PoolErrorKind::SpammerExceededCapacity(sender),
+                    ));
+                }
+
                 entry.insert(Arc::clone(&tx));
+                // Increment sender count for new transactions
+                *self.txs_by_sender.entry(sender).or_insert(0) += 1;
                 None
             }
         };
@@ -299,6 +320,16 @@ impl AA2dPool {
             return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
         }
 
+        // Check per-sender limit
+        let sender = transaction.sender();
+        let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
+        if sender_count >= self.config.max_txs_per_sender {
+            return Err(PoolError::new(
+                tx_hash,
+                PoolErrorKind::SpammerExceededCapacity(sender),
+            ));
+        }
+
         // Create pending transaction
         let pending_tx = PendingTransaction {
             submission_id: self.next_id(),
@@ -310,6 +341,9 @@ impl AA2dPool {
         // Insert into expiring nonce map and by_hash
         self.expiring_nonce_txs.insert(tx_hash, pending_tx);
         self.by_hash.insert(tx_hash, transaction.clone());
+
+        // Increment sender count
+        *self.txs_by_sender.entry(sender).or_insert(0) += 1;
 
         trace!(target: "txpool", hash = %tx_hash, "Added expiring nonce transaction");
 
@@ -563,8 +597,24 @@ impl AA2dPool {
         }
 
         self.remove_independent(id);
-        self.by_hash.remove(tx.inner.transaction.hash());
-        Some(tx.inner.transaction.clone())
+        let removed_tx = tx.inner.transaction.clone();
+        self.by_hash.remove(removed_tx.hash());
+
+        // Decrement sender count
+        self.decrement_sender_count(removed_tx.sender());
+
+        Some(removed_tx)
+    }
+
+    /// Decrements the transaction count for a sender, removing the entry if it reaches zero.
+    fn decrement_sender_count(&mut self, sender: Address) {
+        if let hash_map::Entry::Occupied(mut entry) = self.txs_by_sender.entry(sender) {
+            let count = entry.get_mut();
+            *count -= 1;
+            if *count == 0 {
+                entry.remove();
+            }
+        }
     }
 
     /// Removes the independent transaction if it matches the given id.
@@ -656,6 +706,8 @@ impl AA2dPool {
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
             self.expiring_nonce_txs.remove(tx_hash);
+            // Decrement sender count for expiring nonce txs
+            self.decrement_sender_count(tx.sender());
             return Some((tx, None));
         }
 
@@ -729,6 +781,7 @@ impl AA2dPool {
                 let hash = *tx.hash();
                 if self.expiring_nonce_txs.remove(&hash).is_some() {
                     self.by_hash.remove(&hash);
+                    self.decrement_sender_count(tx.sender());
                     removed.push(tx);
                 }
             } else if let Some(tx) = tx
@@ -988,6 +1041,7 @@ impl AA2dPool {
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let pending_tx = self.expiring_nonce_txs.remove(hash)?;
         self.by_hash.remove(hash);
+        self.decrement_sender_count(pending_tx.transaction.sender());
         Some(pending_tx.transaction)
     }
 
@@ -1008,6 +1062,7 @@ impl AA2dPool {
         for tx_hash in tx_hashes {
             if let Some(pending_tx) = self.expiring_nonce_txs.remove(tx_hash) {
                 self.by_hash.remove(tx_hash);
+                self.decrement_sender_count(pending_tx.transaction.sender());
                 removed.push(pending_tx.transaction);
             }
         }
@@ -1263,8 +1318,13 @@ impl AA2dPool {
     }
 }
 
+/// Default maximum number of transactions per sender in the AA 2D pool.
+///
+/// This limit prevents a single sender from monopolizing pool capacity.
+pub const DEFAULT_MAX_TXS_PER_SENDER: usize = 16;
+
 /// Settings for the [`AA2dPoolConfig`]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AA2dPoolConfig {
     /// Price bump (in %) for the transaction pool underpriced check.
     pub price_bump_config: PriceBumpConfig,
@@ -1272,6 +1332,21 @@ pub struct AA2dPoolConfig {
     pub pending_limit: SubPoolLimit,
     /// Maximum number of queued (non-executable) transactions
     pub queued_limit: SubPoolLimit,
+    /// Maximum number of transactions per sender.
+    ///
+    /// Prevents a single sender from monopolizing pool capacity (DoS protection).
+    pub max_txs_per_sender: usize,
+}
+
+impl Default for AA2dPoolConfig {
+    fn default() -> Self {
+        Self {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit::default(),
+            queued_limit: SubPoolLimit::default(),
+            max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1413,7 +1488,10 @@ impl BestAA2dTransactions {
                 continue;
             }
             // Advance transaction that just got unlocked, if any.
-            if let Some(unlocked) = self.by_id.get(&id.unlocks()) {
+            // Skip for expiring nonce transactions as they are always independent.
+            if !id.seq_id.is_expiring_nonce()
+                && let Some(unlocked) = self.by_id.get(&id.unlocks())
+            {
                 self.independent.insert(unlocked.clone());
             }
             return Some((best.transaction, best.priority));
@@ -1462,6 +1540,14 @@ impl AASequenceId {
     /// Creates a new instance with the address and nonce key.
     pub const fn new(address: Address, nonce_key: U256) -> Self {
         Self { address, nonce_key }
+    }
+
+    /// Returns `true` if this sequence ID represents an expiring nonce transaction.
+    ///
+    /// Expiring nonce transactions use `nonce_key == U256::MAX` and are always independent,
+    /// meaning they don't have sequential nonce dependencies.
+    pub(crate) fn is_expiring_nonce(&self) -> bool {
+        self.nonce_key == U256::MAX
     }
 
     const fn start_bound(self) -> std::ops::Bound<AA2dTransactionId> {
@@ -3422,6 +3508,32 @@ mod tests {
         // But since we already consumed tx0, we'd get tx1 next - but the sequence is now invalid
     }
 
+    #[test]
+    fn test_best_transactions_expiring_nonce_independent() {
+        // Expiring nonce transactions (nonce_key == U256::MAX) are always independent
+        // and should not trigger unlock logic for dependent transactions
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        // Add expiring nonce transaction
+        let tx = TxBuilder::aa(sender).nonce_key(U256::MAX).nonce(0).build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let mut best = pool.best_transactions();
+
+        // Should return the transaction
+        let first = best.next();
+        assert!(first.is_some());
+
+        // No more transactions
+        assert!(best.next().is_none());
+    }
+
     // ============================================
     // Remove transactions tests
     // ============================================
@@ -3779,6 +3891,7 @@ mod tests {
                 max_txs: 10000,
                 max_size: usize::MAX,
             },
+            max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -3812,6 +3925,7 @@ mod tests {
                 max_txs: 10000,
                 max_size: usize::MAX,
             },
+            max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -3879,6 +3993,7 @@ mod tests {
                 max_txs: 2,
                 max_size: usize::MAX,
             },
+            max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -3920,6 +4035,7 @@ mod tests {
                 max_txs: 3,
                 max_size: usize::MAX,
             },
+            max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -3956,6 +4072,7 @@ mod tests {
                 max_txs: 10,
                 max_size: usize::MAX,
             },
+            max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -3989,6 +4106,7 @@ mod tests {
                 max_txs: 2,
                 max_size: usize::MAX,
             },
+            max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -4048,6 +4166,7 @@ mod tests {
                 max_txs: 10,
                 max_size: usize::MAX,
             },
+            max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
         let mut pool = AA2dPool::new(config);
 
@@ -4133,6 +4252,231 @@ mod tests {
             "Low priority tx should be evicted"
         );
         assert!(pool.contains(&trigger_hash), "Trigger tx should be kept");
+
+        pool.assert_invariants();
+    }
+
+    /// Tests that a sender cannot exceed the per-sender transaction limit.
+    #[test]
+    fn test_per_sender_limit_rejects_excess_transactions() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            max_txs_per_sender: 3,
+        };
+        let mut pool = AA2dPool::new(config);
+        let sender = Address::random();
+
+        // Add transactions up to the limit
+        for nonce in 0..3u64 {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::ZERO)
+                .nonce(nonce)
+                .build();
+            let result = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
+            assert!(result.is_ok(), "Transaction {nonce} should be accepted");
+        }
+
+        // The 4th transaction from the same sender should be rejected
+        let tx = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(3).build();
+        let result = pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        );
+        assert!(result.is_err(), "4th transaction should be rejected");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(_)),
+            "Error should be SpammerExceededCapacity, got {:?}",
+            err.kind
+        );
+
+        // A different sender should still be able to add transactions
+        let other_sender = Address::random();
+        let tx = TxBuilder::aa(other_sender).nonce_key(U256::ZERO).build();
+        let result = pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        );
+        assert!(result.is_ok(), "Different sender should be accepted");
+
+        pool.assert_invariants();
+    }
+
+    /// Tests that replacing a transaction doesn't count against the per-sender limit.
+    #[test]
+    fn test_per_sender_limit_allows_replacement() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            max_txs_per_sender: 2,
+        };
+        let mut pool = AA2dPool::new(config);
+        let sender = Address::random();
+
+        // Add 2 transactions to reach the limit
+        for nonce in 0..2u64 {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::ZERO)
+                .nonce(nonce)
+                .build();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        // Replace the first transaction with a higher fee (should succeed)
+        let replacement_tx = TxBuilder::aa(sender)
+            .nonce_key(U256::ZERO)
+            .nonce(0)
+            .max_fee(100_000_000_000) // Higher fee to pass replacement check
+            .max_priority_fee(50_000_000_000)
+            .build();
+        let result = pool.add_transaction(
+            Arc::new(wrap_valid_tx(replacement_tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        );
+        assert!(
+            result.is_ok(),
+            "Replacement should be allowed even at limit"
+        );
+
+        pool.assert_invariants();
+    }
+
+    /// Tests that removing a transaction frees up a slot for the sender.
+    #[test]
+    fn test_per_sender_limit_freed_after_removal() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            max_txs_per_sender: 2,
+        };
+        let mut pool = AA2dPool::new(config);
+        let sender = Address::random();
+
+        // Add 2 transactions to reach the limit
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(0).build();
+        let tx1_hash = *tx1.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let tx2 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // 3rd should fail
+        let tx3 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(2).build();
+        let result = pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx3.clone(), TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        );
+        assert!(result.is_err(), "3rd should be rejected at limit");
+
+        // Remove the first transaction
+        pool.remove_transactions(std::iter::once(&tx1_hash));
+
+        // Now adding the 3rd should succeed
+        let result = pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        );
+        assert!(result.is_ok(), "3rd should succeed after removal");
+
+        pool.assert_invariants();
+    }
+
+    /// Tests that expiring nonce transactions also respect per-sender limits.
+    #[test]
+    fn test_per_sender_limit_includes_expiring_nonce_txs() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            max_txs_per_sender: 2,
+        };
+        let mut pool = AA2dPool::new(config);
+        let sender = Address::random();
+
+        // Add one regular 2D nonce tx
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(0).build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Add one expiring nonce tx (nonce_key = U256::MAX)
+        let tx2 = TxBuilder::aa(sender).nonce_key(U256::MAX).nonce(0).build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // The 3rd transaction (either type) should be rejected
+        let tx3 = TxBuilder::aa(sender)
+            .nonce_key(U256::from(1))
+            .nonce(0)
+            .build();
+        let result = pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        );
+        assert!(
+            result.is_err(),
+            "3rd tx should be rejected due to per-sender limit"
+        );
 
         pool.assert_invariants();
     }
