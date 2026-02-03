@@ -160,7 +160,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         uint256 startIdx = seed % keys.length;
         for (uint256 i = 0; i < keys.length; i++) {
-            uint256 idx = (startIdx + i) % keys.length;
+            // Use modulo directly to avoid overflow when startIdx + i wraps
+            uint256 idx = addmod(startIdx, i, keys.length);
             address candidate = keys[idx];
             if (_ghostKeyExists[account][candidate] && !_ghostKeyRevoked[account][candidate]) {
                 return (candidate, true);
@@ -182,7 +183,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         // First, iterate over actors to find one with an existing active key
         uint256 startActorIdx = actorSeed % _actors.length;
         for (uint256 a = 0; a < _actors.length; a++) {
-            address candidate = _actors[(startActorIdx + a) % _actors.length];
+            // Use addmod to avoid overflow when startActorIdx + a wraps
+            uint256 idx = addmod(startActorIdx, a, _actors.length);
+            address candidate = _actors[idx];
             bool found;
             (keyId, found) = _findActiveKey(candidate, keyIdSeed);
             if (found) {
@@ -192,8 +195,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // No actor has an active key - create one as fallback
         account = _selectActor(actorSeed);
+        uint256 startKeyIdx = keyIdSeed % _potentialKeyIds.length;
         for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-            address candidateKey = _potentialKeyIds[(keyIdSeed + i) % _potentialKeyIds.length];
+            // Use addmod to avoid overflow when startKeyIdx + i wraps
+            uint256 idx = addmod(startKeyIdx, i, _potentialKeyIds.length);
+            address candidateKey = _potentialKeyIds[idx];
             // Can't reauthorize revoked keys (TEMPO-KEY4)
             if (!_ghostKeyRevoked[account][candidateKey]) {
                 _createKeyInternal(account, candidateKey, true);
@@ -351,11 +357,16 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         address keyOwner = address(0);
         uint256 startActorIdx = accountSeed % _actors.length;
         for (uint256 a = 0; a < _actors.length && keyId == address(0); a++) {
-            address candidate = _actors[(startActorIdx + a) % _actors.length];
+            // Use addmod to avoid overflow
+            uint256 actorIdx = addmod(startActorIdx, a, _actors.length);
+            address candidate = _actors[actorIdx];
             address[] memory keys = _accountKeys[candidate];
-            uint256 startKeyIdx = keyIdSeed % (keys.length > 0 ? keys.length : 1);
+            if (keys.length == 0) continue;
+            uint256 startKeyIdx = keyIdSeed % keys.length;
             for (uint256 k = 0; k < keys.length; k++) {
-                address potentialKey = keys[(startKeyIdx + k) % keys.length];
+                // Use addmod to avoid overflow
+                uint256 keyIdx = addmod(startKeyIdx, k, keys.length);
+                address potentialKey = keys[keyIdx];
                 if (_ghostKeyRevoked[candidate][potentialKey]) {
                     keyId = potentialKey;
                     keyOwner = candidate;
@@ -368,8 +379,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             // No revoked key found - create and revoke one as fallback
             account = _selectActor(accountSeed);
             // Find an unused keyId for this account
+            uint256 startKeyIdx = keyIdSeed % _potentialKeyIds.length;
             for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-                address candidateKey = _potentialKeyIds[(keyIdSeed + i) % _potentialKeyIds.length];
+                // Use addmod to avoid overflow
+                uint256 idx = addmod(startKeyIdx, i, _potentialKeyIds.length);
+                address candidateKey = _potentialKeyIds[idx];
                 if (
                     !_ghostKeyExists[account][candidateKey]
                         && !_ghostKeyRevoked[account][candidateKey]
