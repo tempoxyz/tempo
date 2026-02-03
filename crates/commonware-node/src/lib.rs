@@ -56,7 +56,7 @@ pub async fn run_consensus_stack(
         .signing_key()?
         .ok_or_eyre("required option `consensus.signing-key` not set")?;
 
-    let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_rate_per_sec);
+    let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
 
     let (mut network, oracle) =
         instantiate_network(context, &config, signing_key.clone().into_inner())
@@ -193,9 +193,9 @@ async fn instantiate_network(
             .try_into()
             .wrap_err("invalid synchrony bound duration")?,
         max_handshake_age: config
-            .max_handshake_age
+            .handshake_max_age
             .try_into()
-            .wrap_err("invalid max handshake age duration")?,
+            .wrap_err("invalid handshake max age duration")?,
         handshake_timeout: config
             .handshake_timeout
             .try_into()

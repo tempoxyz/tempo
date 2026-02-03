@@ -196,8 +196,8 @@ pub struct Args {
 
     /// Duration after which a handshake message is considered stale.
     /// [default: 10s]
-    #[arg(long = "consensus.max-handshake-age", default_value = "10s")]
-    pub max_handshake_age: jiff::SignedDuration,
+    #[arg(long = "consensus.handshake-max-age", default_value = "10s")]
+    pub handshake_max_age: jiff::SignedDuration,
 
     /// Timeout for the handshake process.
     /// [default: 5s]
@@ -229,8 +229,8 @@ pub struct Args {
 
     /// Rate limit when backfilling blocks (requests per second).
     /// [default: 8]
-    #[arg(long = "consensus.backfill-rate-per-sec", default_value = "8")]
-    pub backfill_rate_per_sec: std::num::NonZeroU32,
+    #[arg(long = "consensus.backfill-frequency", default_value = "8")]
+    pub backfill_frequency: std::num::NonZeroU32,
 
     /// The interval at which to broadcast subblocks to the next proposer.
     /// Each built subblock is immediately broadcasted to the next proposer (if it's known).
