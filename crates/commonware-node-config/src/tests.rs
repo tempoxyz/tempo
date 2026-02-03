@@ -20,8 +20,10 @@ fn signing_key_snapshot() {
 fn signing_key_roundtrip() {
     let signing_key: SigningKey = PrivateKey::from_seed(42).into();
     assert_eq!(
-        signing_key,
-        SigningKey::try_from_hex(&signing_key.to_string()).unwrap(),
+        signing_key.public_key(),
+        SigningKey::try_from_hex(&signing_key.to_string())
+            .unwrap()
+            .public_key(),
     );
 }
 
