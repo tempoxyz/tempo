@@ -235,13 +235,20 @@ interface IValidatorConfigV2 {
     ///        Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
     function setNextFullDkgCeremony(uint64 epoch) external;
 
-    /// @notice Initialize V2 from V1 state (callable by anyone)
-    /// @dev If already initialized, this is a no-op. Reads validators from V1 and
-    ///      populates V2 storage. Copies owner, validators, and nextDkgCeremony from V1.
+    /// @notice Migrate validators from V1 to V2 (owner only)
+    /// @dev Can be called multiple times to batch migration. Each call migrates validators
+    ///      from startIndex to endIndex (exclusive). Does not set initialized flag.
     ///      Active V1 validators get addedAtHeight=hardforkHeight and deletedAtHeight=0.
     ///      Inactive V1 validators get addedAtHeight=hardforkHeight and deletedAtHeight=hardforkHeight.
-    ///      The hardforkHeight is an immutable value set at contract deployment.
-    function initialize() external;
+    /// @param startIndex Start index in V1 validators array (inclusive)
+    /// @param endIndex End index in V1 validators array (exclusive)
+    function migrateValidators(uint64 startIndex, uint64 endIndex) external;
+
+    /// @notice Finalize migration and enable V2 (owner only)
+    /// @dev Can only be called after all validators have been migrated via migrateValidators.
+    ///      Sets initialized=true. After this call, CL reads from V2 instead of V1.
+    ///      Also copies owner and nextDkgCeremony from V1 if not already set.
+    function finalizeMigration() external;
 
     /// @notice Check if V2 has been initialized from V1
     /// @return True if initialized, false otherwise
@@ -493,77 +500,74 @@ This section describes the migration strategy from ValidatorConfig V1 to V2.
 
 The migration uses a two-pronged approach:
 
-1. **New hardfork ("Allegro")**: Timestamp-based activation that switches
-   consensus from reading V1 to V2
-2. **Lazy initialization**: On first write, V2 automatically
-   populates itself from V1 state
+1. **New hardfork ("Allegro")**: Timestamp-based activation
+2. **Manual migration**: Admin migrates validators in batches, then flips the
+   `initialized` flag. CL reads from V1 until the flag is set.
 
 ## Hardfork-Based Switching
 
-The DKG manager determines which contract to read based on the block timestamp
-at the boundary height:
+The CL determines which contract to read based on:
+1. Whether Allegro hardfork is active (timestamp-based)
+2. Whether V2 is initialized (reads `isInitialized()` from V2)
 
 ```
 if chainspec.is_allegro_active_at_timestamp(block.timestamp) {
-    read_from_contract_v2_at_height(height)
+    if v2.isInitialized() {
+        read_from_contract_v2_at_height(height)
+    } else {
+        read_from_contract_at_height(height)  // V1 until migration complete
+    }
 } else {
     read_from_contract_at_height(height)  // V1
 }
 ```
 
-This ensures all nodes switch deterministically at the same point.
+This ensures:
+- All nodes switch deterministically at hardfork time
+- CL continues reading V1 until admin completes migration and flips the flag
 
-## Lazy Initialization
+## Manual Migration
 
-V2 uses lazy initialization to automatically populate from V1 on first write.
-The `initialized` bit (bit 255 of slot 0) tracks whether initialization has
-occurred.
+V2 uses manual migration where the admin explicitly migrates validators in
+batches and then flips the `initialized` flag. The `initialized` bit (bit 255
+of slot 0) tracks whether migration is complete.
 
-### Read Behavior (Before Initialization)
+### CL Read Behavior
 
-When `initialized == false`, read functions delegate entirely to V1 without
-modifying V2 state:
+The CL checks `v2.isInitialized()` to determine which contract to read:
 
-- `getValidators()`: Calls `v1.getValidators()` and converts to V2 format
-- `getActiveValidators()`: Calls `v1.getValidators()` and filters by `active == true`
-- `validatorCount()`: Returns `v1.getValidators().length`
-- `validatorByIndex(index)`: Returns `v1.getValidators()[index]` converted to V2 format
-- `validatorByAddress(addr)`: Filters `v1.getValidators()` by address
-- `validatorByPublicKey(pubkey)`: Filters `v1.getValidators()` by public key
-- `getNextFullDkgCeremony()`: Calls `v1.getNextFullDkgCeremony()`
+- **Before `initialized == true`**: CL reads directly from V1
+- **After `initialized == true`**: CL reads from V2
 
-### Write Behavior (Triggers Initialization)
+This is handled entirely in the CL logic, not in the V2 precompile. The V2
+precompile does NOT proxy reads to V1.
 
-The following write functions trigger initialization if `initialized == false`:
+### Migration Functions (Owner Only)
 
-- `addValidator(...)`
-- `deleteValidator(...)`
-- `rotateValidator(...)`
-- `initialize()` (explicit initialization)
+**`migrateValidators(startIndex, endIndex)`**:
+- Reads validators from V1 at indices `[startIndex, endIndex)`
+- For each V1 validator:
+  - Creates a V2 validator entry with:
+    - `publicKey`: copied from V1
+    - `validatorAddress`: copied from V1
+    - `inboundAddress`: copied from V1
+    - `outboundAddress`: copied from V1
+    - `index`: assigned sequentially
+    - `addedAtHeight`: set to `hardforkHeight`
+    - `deletedAtHeight`: set to `hardforkHeight` if V1 `active == false`, otherwise 0
+  - Adds to `validatorsArray`
+  - Populates lookup maps (`validators[addr]`, `pubkeyToIndex[pubkey]`)
+- Can be called multiple times to batch migration across multiple transactions
+- Does NOT set `initialized` flag
 
-When any of these functions is called and `initialized == false`, the
-following **Initialization Procedure** executes:
-
-1. Read all validators from ValidatorConfig V1 at
-   `0xCCCCCCCC00000000000000000000000000000000`
-2. For each V1 validator (both active and inactive):
-   - Create a V2 validator entry with:
-     - `publicKey`: copied from V1
-     - `validatorAddress`: copied from V1
-     - `inboundAddress`: copied from V1
-     - `outboundAddress`: copied from V1
-     - `index`: assigned sequentially (0, 1, 2, ...)
-     - `addedAtHeight`: set to `hardforkHeight`
-     - `deletedAtHeight`: set to `hardforkHeight` if V1 `active == false`, otherwise 0
-   - Add to `validatorsArray`
-   - Populate lookup maps (`validators[addr]`, `pubkeyToIndex[pubkey]`)
-3. Copy `owner` from V1 to V2
-4. Copy `nextDkgCeremony` from V1 to V2
-5. Set `initialized = true` (bit 255 of slot 0)
-6. Proceed with the original write operation
+**`finalizeMigration()`**:
+- Copies `owner` from V1 to V2 (if not already set)
+- Copies `nextDkgCeremony` from V1 to V2
+- Sets `initialized = true` (bit 255 of slot 0)
+- After this call, CL reads from V2 instead of V1
 
 ```solidity
-// V1 interface used during initialization and read delegation
+// V1 interface used during migration
 interface IValidatorConfigV1 {
     struct Validator {
         bytes32 publicKey;
@@ -582,27 +586,26 @@ interface IValidatorConfigV1 {
 
 ### Properties
 
-- **Read-through before init**: Reads delegate to V1 with no state changes
-- **Write-triggered init**: First write copies V1 state to V2, then executes
-- **One-time**: Initialization executes exactly once; subsequent writes skip it
-- **Atomic**: The entire initialization + write completes in a single transaction
-- **Transparent**: Callers do not need to know whether initialization occurred
+- **CL reads V1 until flag flipped**: No read proxying in V2 precompile
+- **Batched migration**: Can split migration across multiple transactions
+- **Owner controlled**: Only admin can migrate and finalize
+- **No tx gas limit risk**: Migration can be batched to fit within gas limits
 - **No signatures required**: V1 validators are imported without Ed25519 signatures
   (they were already validated in V1)
 - **All validators imported**: Both active and inactive V1 validators are
-    imported; inactive ones have `addedAtHeight == deletedAtHeight == hardforkHeight`
+  imported; inactive ones have `addedAtHeight == deletedAtHeight == hardforkHeight`
 
 ## Timeline
 
 ```
-Before Fork           Post-Fork (reads)         First V2 Write           After Initialization
+Before Fork           Post-Fork (V2 not init)    Admin Migration           After finalizeMigration
      │                      │                          │                          │
-     │  DKG reads V1        │  V2 reads proxy to V1    │  Init + write executes   │  V2 reads from V2
-     │                      │  (no state change)       │  V2 populated from V1    │  initialized=1
+     │  CL reads V1         │  CL reads V1             │  migrateValidators()     │  CL reads V2
+     │                      │  (isInitialized=false)   │  (batched txs)           │  isInitialized=true
      │                      │                          │                          │
 ─────┴──────────────────────┴──────────────────────────┴──────────────────────────┴───────────────►
-                            │                          │
-                      allegroTime               addValidator/etc
+                            │                          │                          │
+                      allegroTime              migrateValidators()      finalizeMigration()
 ```
 
 ## Migration Steps
@@ -613,10 +616,16 @@ Existing networks are defined as those with hardfork_timestamp > timestamp_at_ge
 
 1. **Release new node software** with Allegro hardfork support
 2. **Schedule the fork** by updating chainspec with target `allegroTime`
-3. **At fork activation**: V2 reads proxy through to V1 (no state changes needed)
-4. **On first write** (e.g., `addValidator`, `deleteValidator`): V2 automatically
-   copies V1 state, sets `initialized = true`, then executes the write
-5. **Post-init**: All reads/writes use V2 state directly
+3. **At fork activation**: CL reads from V1 (since `isInitialized() == false`)
+4. **Admin migrates validators** by calling `migrateValidators(start, end)` in batches
+   - Can split across multiple transactions to stay within gas limits
+   - Example: `migrateValidators(0, 10)`, `migrateValidators(10, 20)`, etc.
+5. **Admin finalizes migration** by calling `finalizeMigration()`
+   - Sets `initialized = true`
+   - CL now reads from V2
+6. **Post-migration**: All reads/writes use V2 state directly
+
+**Important**: Complete migration before an epoch boundary to avoid disrupting DKG.
 
 ### For New Networks
 
@@ -679,39 +688,50 @@ The test suite must cover:
 27. **Filter logic**: Caller can correctly filter by
     `addedAtHeight <= H && (deletedAtHeight == 0 || deletedAtHeight > H)`
 
-### Lazy Initialization
+### Manual Migration
 
-28. **Read delegation before init**: When `initialized == false`, `getValidators`,
-    `getActiveValidators`, `validatorCount`, `validatorByIndex`, `validatorByAddress`,
-    `validatorByPublicKey`, `getNextFullDkgCeremony` all delegate to V1 without
-    modifying V2 state
-29. **Write triggers init**: `addValidator`, `deleteValidator`, `rotateValidator`,
-    `initialize()` trigger initialization on first call; subsequent calls skip init
-30. **All validators imported on init**: Both V1 active and inactive validators are
-    imported; inactive ones have `addedAtHeight == deletedAtHeight == hardforkHeight`
-31. **DKG ceremony copied on init**: V2 `getNextFullDkgCeremony()` matches V1 after init
+28. **migrateValidators imports validators**: Calling `migrateValidators(0, n)`
+    correctly imports validators from V1 at those indices
+29. **migrateValidators is batched**: Multiple calls to `migrateValidators` with
+    non-overlapping ranges correctly imports all validators
+30. **migrateValidators owner only**: Non-owner cannot call `migrateValidators`
+31. **All validators imported on migration**: Both V1 active and inactive validators
+    are imported; inactive ones have `addedAtHeight == deletedAtHeight == hardforkHeight`
 32. **addedAtHeight set correctly**: Imported validators have
-    `addedAtHeight == hardforkHeight` at initialization time
-33. **Owner copied on init**: V2 `owner()` matches V1 after initialization
-34. **V1 to V2 format conversion**: Reads before init correctly convert V1 format
-    (`active` bool) to V2 format (using `deletedAtHeight`)
-35. **isInitialized returns correct value**: Returns false before init, true after
+    `addedAtHeight == hardforkHeight` at migration time
+33. **finalizeMigration sets flag**: After `finalizeMigration()`, `isInitialized()` returns true
+34. **finalizeMigration copies owner**: V2 `owner()` matches V1 after `finalizeMigration()`
+35. **finalizeMigration copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
+    after `finalizeMigration()`
+36. **finalizeMigration owner only**: Non-owner cannot call `finalizeMigration`
+37. **isInitialized returns correct value**: Returns false before finalize, true after
+38. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`
+    revert if `isInitialized() == false` (only migration functions allowed)
 
 ---
 
 # Security Issues
 
-## Gas Limits on Initialization
+## Gas Limits on Migration
 
-Each validator imported during initialization requires 11 SSTOREs (validator struct
-fields, array push, pubkey mapping). This places an upper bound on the number of 
-validators that can be migrated in a single transaction:
+Each validator imported during migration requires 11 SSTOREs (validator struct
+fields, array push, pubkey mapping). With the batched `migrateValidators` approach,
+this is no longer a blocking issue:
 
 ```
-maxValidators = min(txGasLimit, blockGasLimit) / (11 * SSTORE_COST)
+validatorsPerTx = min(txGasLimit, blockGasLimit) / (11 * SSTORE_COST)
 ```
 
-With current gas costs (~20,000 gas per cold SSTORE), this limits migration to
-roughly `30,000,000 / (11 * 20,000) ≈ 136` validators per transaction at typical
-block gas limits. Networks with more validators may need to consider batched
-initialization or increased gas limits during the migration block.
+With current gas costs (~20,000 gas per cold SSTORE), each transaction can migrate
+roughly `30,000,000 / (11 * 20,000) ≈ 136` validators. For networks with more
+validators, simply call `migrateValidators` multiple times with different ranges.
+
+## Migration Timing
+
+The migration must be completed (including `finalizeMigration()`) before an epoch
+boundary to avoid disrupting DKG. The admin should:
+
+1. Schedule migration during a period with no imminent epoch transitions
+2. Monitor the current epoch and time remaining
+3. Complete all `migrateValidators` calls and `finalizeMigration` atomically if
+   possible, or ensure sufficient time buffer
