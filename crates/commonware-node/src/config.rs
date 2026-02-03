@@ -41,5 +41,3 @@ pub const SUBBLOCKS_LIMIT: Quota =
 
 pub const NAMESPACE: &[u8] = b"TEMPO";
 
-/// The number of peer sets that will be active in the lookup p2p network.
-pub(crate) const PEERSETS_TO_TRACK: usize = 3;

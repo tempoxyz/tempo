@@ -123,34 +123,115 @@ pub struct Args {
     pub use_local_p2p_defaults: bool,
 
     /// How often to attempt dialing peers. Lower values mean faster peer discovery.
-    /// Recommended: 1s, Local: 500ms
-    #[arg(long = "consensus.p2p-dial-frequency")]
-    pub p2p_dial_frequency: Option<jiff::SignedDuration>,
+    /// [default: 1s, local: 500ms]
+    #[arg(
+        long = "consensus.p2p-dial-interval",
+        default_value = "1s",
+        default_value_if("use_local_p2p_defaults", "true", "500ms")
+    )]
+    pub p2p_dial_interval: jiff::SignedDuration,
 
     /// How often to query for new dialable peers. Also limits re-dial rate per peer.
-    /// Recommended: 60s, Local: 30s
-    #[arg(long = "consensus.p2p-query-frequency")]
-    pub p2p_query_frequency: Option<jiff::SignedDuration>,
+    /// [default: 60s, local: 30s]
+    #[arg(
+        long = "consensus.p2p-query-interval",
+        default_value = "60s",
+        default_value_if("use_local_p2p_defaults", "true", "30s")
+    )]
+    pub p2p_query_interval: jiff::SignedDuration,
 
     /// How often to send ping messages to peers for liveness detection.
-    /// Recommended: 50s, Local: 5s
-    #[arg(long = "consensus.p2p-ping-frequency")]
-    pub p2p_ping_frequency: Option<jiff::SignedDuration>,
+    /// [default: 50s, local: 5s]
+    #[arg(
+        long = "consensus.p2p-ping-interval",
+        default_value = "50s",
+        default_value_if("use_local_p2p_defaults", "true", "5s")
+    )]
+    pub p2p_ping_interval: jiff::SignedDuration,
 
     /// Minimum time between connection attempts to the same peer.
-    /// Recommended: 60s (1/min), Local: 1s (1/sec)
-    #[arg(long = "consensus.p2p-connection-min-period")]
-    pub p2p_connection_min_period: Option<jiff::SignedDuration>,
+    /// [default: 60s, local: 1s]
+    #[arg(
+        long = "consensus.p2p-connection-min-period",
+        default_value = "60s",
+        default_value_if("use_local_p2p_defaults", "true", "1s")
+    )]
+    pub p2p_connection_min_period: jiff::SignedDuration,
 
     /// Minimum time between handshake attempts from a single IP address.
-    /// Recommended: 5s (1 per 5s), Local: 1s (1/sec)
-    #[arg(long = "consensus.p2p-handshake-per-ip-min-period")]
-    pub p2p_handshake_per_ip_min_period: Option<jiff::SignedDuration>,
+    /// [default: 5s, local: 62ms]
+    #[arg(
+        long = "consensus.p2p-handshake-per-ip-min-period",
+        default_value = "5s",
+        default_value_if("use_local_p2p_defaults", "true", "62ms")
+    )]
+    pub p2p_handshake_per_ip_min_period: jiff::SignedDuration,
 
-    /// Rate limit for the marshal actor when backfilling (messages per second).
-    /// Default: 8
-    #[arg(long = "consensus.marshal-rate-per-sec")]
-    pub marshal_rate_per_sec: Option<u32>,
+    /// Minimum time between handshake attempts from a single subnet.
+    /// [default: 15ms, local: 7ms]
+    #[arg(
+        long = "consensus.p2p-handshake-per-subnet-min-period",
+        default_value = "15ms",
+        default_value_if("use_local_p2p_defaults", "true", "7ms")
+    )]
+    pub p2p_handshake_per_subnet_min_period: jiff::SignedDuration,
+
+    /// Whether to allow connections with private IP addresses.
+    /// [default: false, local: true]
+    #[arg(
+        long = "consensus.p2p-allow-private-ips",
+        default_value_t = false,
+        default_value_if("use_local_p2p_defaults", "true", "true")
+    )]
+    pub p2p_allow_private_ips: bool,
+
+    /// Whether to allow DNS-based ingress addresses.
+    /// [default: true]
+    #[arg(long = "consensus.p2p-allow-dns", default_value_t = true)]
+    pub p2p_allow_dns: bool,
+
+    /// Time into the future that a timestamp can be and still be considered valid.
+    /// [default: 5s]
+    #[arg(long = "consensus.p2p-synchrony-bound", default_value = "5s")]
+    pub p2p_synchrony_bound: jiff::SignedDuration,
+
+    /// Duration after which a handshake message is considered stale.
+    /// [default: 10s]
+    #[arg(long = "consensus.p2p-max-handshake-age", default_value = "10s")]
+    pub p2p_max_handshake_age: jiff::SignedDuration,
+
+    /// Timeout for the handshake process.
+    /// [default: 5s]
+    #[arg(long = "consensus.p2p-handshake-timeout", default_value = "5s")]
+    pub p2p_handshake_timeout: jiff::SignedDuration,
+
+    /// Maximum number of concurrent handshake attempts allowed.
+    /// [default: 512, local: 1024]
+    #[arg(
+        long = "consensus.p2p-max-concurrent-handshakes",
+        default_value = "512",
+        default_value_if("use_local_p2p_defaults", "true", "1024")
+    )]
+    pub p2p_max_concurrent_handshakes: std::num::NonZeroU32,
+
+    /// Number of peer sets to track for maintaining connections.
+    /// [default: 4]
+    #[arg(long = "consensus.p2p-tracked-peer-sets", default_value_t = 4)]
+    pub p2p_tracked_peer_sets: usize,
+
+    /// Duration after which a blocked peer is allowed to reconnect.
+    /// [default: 4h, local: 1h]
+    #[arg(
+        long = "consensus.p2p-block-duration",
+        default_value = "4h",
+        default_value_if("use_local_p2p_defaults", "true", "1h")
+    )]
+    pub p2p_block_duration: jiff::SignedDuration,
+
+    /// Rate limit when backfilling blocks (requests per second).
+    /// [default: 8]
+    #[arg(long = "consensus.backfill-rate-per-sec", default_value = "8")]
+    pub backfill_rate_per_sec: std::num::NonZeroU32,
 
     /// The interval at which to broadcast subblocks to the next proposer.
     /// Each built subblock is immediately broadcasted to the next proposer (if it's known).
