@@ -27,18 +27,21 @@ jobs:
     outputs:
       coverage: ${{ steps.check.outputs.coverage }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Check for precompiles changes
         id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           # Only run coverage on pull_request events when precompiles/contracts changed
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "coverage=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping coverage: not a pull_request event (event: ${{ github.event_name }})"
-          elif git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/ref-impls/)'; then
+            echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
+          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/ref-impls/)'; then
             echo "coverage=true" >> "$GITHUB_OUTPUT"
             echo "Running coverage: precompiles/contracts changed"
           else
@@ -50,7 +53,7 @@ jobs:
     name: Forge Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
           persist-credentials: false
@@ -69,7 +72,7 @@ jobs:
     name: Forge Fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
           persist-credentials: false
@@ -85,7 +88,7 @@ jobs:
     name: Forge Test (Solidity)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
           persist-credentials: false
@@ -104,14 +107,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout tempo
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v6
         with:
           submodules: recursive
           path: tempo
           persist-credentials: false
 
       - name: Checkout tempo-foundry
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v6
         with:
           repository: tempoxyz/tempo-foundry
           ref: tempo
@@ -184,7 +187,7 @@ jobs:
 
       - name: Upload forge coverage artifacts
         if: needs.check-precompiles.outputs.coverage == 'true'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@v4
         with:
           name: forge-test-coverage
           path: |
