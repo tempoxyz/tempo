@@ -65,18 +65,14 @@ pub fn install_prometheus_metrics(
                 request = request.header("Authorization", auth);
             }
 
-            match request.send().await {
+            let res = request.send().await;
+            tracing::warn_span!("metrics_exporter", %endpoint).in_scope(|| match res {
                 Ok(response) if !response.status().is_success() => {
-                    tracing::warn_span!("metrics_exporter", %endpoint).in_scope(
-                        || tracing::warn!(status = %response.status(), "metrics export failed"),
-                    );
+                    tracing::warn!(status = %response.status(), "metrics endpoint returned failure")
                 }
-                Err(e) => {
-                    tracing::warn_span!("metrics_exporter", %endpoint)
-                        .in_scope(|| tracing::warn!(error = %e, "metrics export failed"));
-                }
+                Err(reason) => tracing::warn!(%reason, "metrics export failed"),
                 _ => {}
-            }
+            });
         }
     });
 
