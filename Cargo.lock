@@ -967,9 +967,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-trie"
-version = "0.9.3"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "428aa0f0e0658ff091f8f667c406e034b431cb10abd39de4f507520968acc499"
+checksum = "4d7fd448ab0a017de542de1dcca7a58e7019fe0e7a34ed3f9543ebddf6aceffa"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -979,9 +979,10 @@ dependencies = [
  "derive_more",
  "nybbles",
  "proptest",
- "proptest-derive 0.5.1",
+ "proptest-derive 0.7.0",
  "serde",
  "smallvec",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -2880,9 +2881,9 @@ checksum = "417bef24afe1460300965a25ff4a24b8b45ad011948302ec221e8a0a81eb2c79"
 
 [[package]]
 name = "cpp_demangle"
-version = "0.4.5"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2bb79cb74d735044c972aae58ed0aaa9a837e85b01106a54c39e42e97f62253"
+checksum = "0667304c32ea56cb4cd6d2d7c0cfe9a2f8041229db8c033af7f8d69492429def"
 dependencies = [
  "cfg-if",
 ]
@@ -3097,9 +3098,9 @@ dependencies = [
 
 [[package]]
 name = "crypto-common"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3"
+checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
  "rand_core 0.6.4",
@@ -3319,7 +3320,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.114",
 ]
 
 [[package]]
@@ -4241,9 +4242,9 @@ checksum = "42012b0f064e01aa58b545fe3727f90f7dd4020f4a3ea735b50344965f5a57e9"
 
 [[package]]
 name = "generic-array"
-version = "0.14.9"
+version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bb6743198531e02858aeaea5398fcc883e71851fcbcb5a2f773e2fb6cb1edf2"
+checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
@@ -4721,7 +4722,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.5",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -7112,9 +7113,9 @@ dependencies = [
 
 [[package]]
 name = "proptest-derive"
-version = "0.5.1"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ee1c9ac207483d5e7db4940700de86a9aae46ef90c48b57f99fe7edb8345e49"
+checksum = "095a99f75c69734802359b682be8daaf8980296731f6470434ea2c652af1dd30"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7123,9 +7124,9 @@ dependencies = [
 
 [[package]]
 name = "proptest-derive"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "095a99f75c69734802359b682be8daaf8980296731f6470434ea2c652af1dd30"
+checksum = "fb6dc647500e84a25a85b100e76c85b8ace114c209432dc174f20aac11d4ed6c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7653,7 +7654,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
- "webpki-roots 1.0.5",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -10891,7 +10892,7 @@ dependencies = [
  "rustls-webpki",
  "security-framework",
  "security-framework-sys",
- "webpki-root-certs 1.0.5",
+ "webpki-root-certs 1.0.6",
  "windows-sys 0.61.2",
 ]
 
@@ -11612,9 +11613,9 @@ checksum = "734676eb262c623cec13c3155096e08d1f8f29adce39ba17948b18dad1e54142"
 
 [[package]]
 name = "symbolic-common"
-version = "12.17.1"
+version = "12.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "520cf51c674f8b93d533f80832babe413214bb766b6d7cb74ee99ad2971f8467"
+checksum = "751a2823d606b5d0a7616499e4130a516ebd01a44f39811be2b9600936509c23"
 dependencies = [
  "debugid",
  "memmap2",
@@ -11624,9 +11625,9 @@ dependencies = [
 
 [[package]]
 name = "symbolic-demangle"
-version = "12.17.1"
+version = "12.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f0de2ee0ffa2641e17ba715ad51d48b9259778176517979cb38b6aa86fa7425"
+checksum = "79b237cfbe320601dd24b4ac817a5b68bb28f5508e33f08d42be0682cadc8ac9"
 dependencies = [
  "cpp_demangle",
  "rustc-demangle",
@@ -11758,7 +11759,7 @@ dependencies = [
 
 [[package]]
 name = "tempo"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -11807,7 +11808,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-alloy"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -11840,7 +11841,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-bench"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -11867,7 +11868,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-chainspec"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy-eips",
  "alloy-evm",
@@ -11885,7 +11886,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-commonware-node"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -11938,7 +11939,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-commonware-node-config"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -11950,7 +11951,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -11968,7 +11969,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-contracts"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy-contract",
  "alloy-primitives",
@@ -11979,7 +11980,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-dkg-onchain-artifacts"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -11993,7 +11994,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-e2e"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -12037,7 +12038,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-evm"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -12067,7 +12068,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-eyre"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "eyre",
  "indenter",
@@ -12075,7 +12076,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-faucet"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy",
  "async-trait",
@@ -12088,7 +12089,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-node"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -12151,7 +12152,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-builder"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -12181,7 +12182,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-types"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
@@ -12198,7 +12199,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -12224,7 +12225,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles-macros"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy",
  "proc-macro2",
@@ -12234,7 +12235,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-primitives"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -12267,7 +12268,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-revm"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -12297,7 +12298,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-sidecar"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy",
  "clap",
@@ -12320,7 +12321,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-telemetry-util"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "eyre",
  "jiff",
@@ -12329,7 +12330,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-transaction-pool"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -12365,7 +12366,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-xtask"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -13501,14 +13502,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75c7f0ef91146ebfb530314f5f1d24528d7f0767efbfd31dce919275413e393e"
 dependencies = [
- "webpki-root-certs 1.0.5",
+ "webpki-root-certs 1.0.6",
 ]
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.5"
+version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36a29fc0408b113f68cf32637857ab740edfafdf460c326cd2afaa2d84cc05dc"
+checksum = "804f18a4ac2676ffb4e8b5b5fa9ae38af06df08162314f96a68d2a363e21a8ca"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -13519,14 +13520,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
 dependencies = [
- "webpki-roots 1.0.5",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.5"
+version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12bed680863276c63889429bfd6cab3b99943659923822de1c8a39c49e4d722c"
+checksum = "22cfaf3c063993ff62e73cb4311efde4db1efb31ab78a3e5c457939ad5cc0bed"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -14278,18 +14279,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.37"
+version = "0.8.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7456cf00f0685ad319c5b1693f291a650eaf345e941d082fc4e03df8a03996ac"
+checksum = "57cf3aa6855b23711ee9852dfc97dfaa51c45feaba5b645d0c777414d494a961"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.37"
+version = "0.8.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1328722bbf2115db7e19d69ebcc15e795719e2d66b60827c6a69a117365e37a0"
+checksum = "8a616990af1a287837c4fe6596ad77ef57948f787e46ce28e166facc0cc1cb75"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -404,8 +404,12 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         amount = uint128(bound(amount, 100_000_000, 10_000_000_000));
 
         // Ensure funds for the token being escrowed (pathUSD for bids, base token for asks)
+        // For bids, escrow = baseToQuoteCeil(amount, tick), so we need to ensure enough funds
         if (isBid) {
-            _ensureFunds(actor, pathUSD, amount);
+            uint32 price = exchange.tickToPrice(tick);
+            uint256 escrowAmount =
+                (uint256(amount) * price + exchange.PRICE_SCALE() - 1) / exchange.PRICE_SCALE();
+            _ensureFunds(actor, pathUSD, escrowAmount);
         } else {
             _ensureFunds(actor, token, amount);
         }
