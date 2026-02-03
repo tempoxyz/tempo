@@ -388,20 +388,30 @@ mod tests {
         );
 
         let moderato_genesis = super::TempoChainSpecParser::parse("moderato")
-            .expect("the mainnet chainspec must always be well formed");
+            .expect("the moderato chainspec must always be well formed");
 
-        // Should always return Genesis
+        // Before T0/T1 activation (1770303600 = Feb 5th 2026 16:00 CET)
         assert_eq!(
             moderato_genesis.tempo_hardfork_at(0),
             TempoHardfork::Genesis
         );
         assert_eq!(
-            moderato_genesis.tempo_hardfork_at(1000),
+            moderato_genesis.tempo_hardfork_at(1770303599),
             TempoHardfork::Genesis
+        );
+
+        // At and after T0/T1 activation
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1770303600),
+            TempoHardfork::T1
+        );
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1770303601),
+            TempoHardfork::T1
         );
         assert_eq!(
             moderato_genesis.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::Genesis
+            TempoHardfork::T1
         );
 
         let testnet_chainspec = super::TempoChainSpecParser::parse("testnet")
