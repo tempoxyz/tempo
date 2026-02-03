@@ -346,8 +346,8 @@ fn create_p256_authorization(
 
     // Extract P256 public key coordinates
     let encoded_point = verifying_key.to_encoded_point(false);
-    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
-    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_ref());
+    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_ref());
 
     // Derive P256 address
     let authority_addr =
@@ -362,7 +362,7 @@ fn create_p256_authorization(
     let sig_hash = compute_authorization_signature_hash(&auth);
 
     // Sign with P256 (using pre-hash)
-    let pre_hashed = Sha256::digest(sig_hash.as_slice());
+    let pre_hashed = Sha256::digest(sig_hash);
     let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
     let sig_bytes = signature.to_bytes();
 
@@ -401,8 +401,8 @@ fn create_webauthn_authorization(
 
     // Extract WebAuthn public key coordinates
     let encoded_point = verifying_key.to_encoded_point(false);
-    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
-    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_ref());
+    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_ref());
 
     // Derive WebAuthn address (same derivation as P256)
     let authority_addr =
@@ -509,8 +509,8 @@ async fn setup_test_with_p256_funded_account(
 
     // Extract public key coordinates
     let encoded_point = verifying_key.to_encoded_point(false);
-    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
-    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_ref());
+    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_ref());
 
     // Derive the P256 signer's address
     let signer_addr =
@@ -569,8 +569,8 @@ fn generate_p256_access_key() -> (
     let signing_key = SigningKey::random(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
     let encoded_point = verifying_key.to_encoded_point(false);
-    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
-    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_ref());
+    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_ref());
     let key_addr =
         tempo_primitives::transaction::tt_signature::derive_p256_address(&pub_key_x, &pub_key_y);
     (signing_key, pub_key_x, pub_key_y, key_addr)
@@ -632,7 +632,7 @@ fn sign_aa_tx_with_p256_access_key(
     use tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash;
 
     let sig_hash = tx.signature_hash();
-    let pre_hashed = Sha256::digest(sig_hash.as_slice());
+    let pre_hashed = Sha256::digest(sig_hash);
     let p256_signature: p256::ecdsa::Signature =
         access_key_signing_key.sign_prehash(&pre_hashed)?;
     let sig_bytes = p256_signature.to_bytes();
@@ -754,7 +754,7 @@ fn sign_aa_tx_p256(
     use tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash;
 
     let sig_hash = tx.signature_hash();
-    let pre_hashed = Sha256::digest(sig_hash.as_slice());
+    let pre_hashed = Sha256::digest(sig_hash);
     let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
     let sig_bytes = p256_signature.to_bytes();
 
@@ -1794,9 +1794,9 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     // Extract correct public key coordinates
     let correct_encoded_point = correct_verifying_key.to_encoded_point(false);
     let correct_pub_key_x =
-        alloy::primitives::B256::from_slice(correct_encoded_point.x().unwrap().as_slice());
+        alloy::primitives::B256::from_slice(correct_encoded_point.x().unwrap().as_ref());
     let correct_pub_key_y =
-        alloy::primitives::B256::from_slice(correct_encoded_point.y().unwrap().as_slice());
+        alloy::primitives::B256::from_slice(correct_encoded_point.y().unwrap().as_ref());
 
     // Generate a different (wrong) P256 key pair
     let wrong_signing_key = SigningKey::random(&mut OsRng);
@@ -1805,9 +1805,9 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     // Extract wrong public key coordinates
     let wrong_encoded_point = wrong_verifying_key.to_encoded_point(false);
     let wrong_pub_key_x =
-        alloy::primitives::B256::from_slice(wrong_encoded_point.x().unwrap().as_slice());
+        alloy::primitives::B256::from_slice(wrong_encoded_point.x().unwrap().as_ref());
     let wrong_pub_key_y =
-        alloy::primitives::B256::from_slice(wrong_encoded_point.y().unwrap().as_slice());
+        alloy::primitives::B256::from_slice(wrong_encoded_point.y().unwrap().as_ref());
 
     // Use TEST_MNEMONIC account to fund the WebAuthn signers
     let funder_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
@@ -3339,10 +3339,8 @@ async fn test_aa_access_key() -> eyre::Result<()> {
 
     // Extract access key public key coordinates
     let encoded_point = access_key_verifying_key.to_encoded_point(false);
-    let access_pub_key_x =
-        alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
-    let access_pub_key_y =
-        alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+    let access_pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_ref());
+    let access_pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_ref());
 
     // Derive the access key's address
     let access_key_addr = tempo_primitives::transaction::tt_signature::derive_p256_address(
@@ -3471,7 +3469,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     println!("  Transaction signature hash: {sig_hash}");
 
     // Pre-hash for P256 signature
-    let pre_hashed = Sha256::digest(sig_hash.as_slice());
+    let pre_hashed = Sha256::digest(sig_hash);
 
     // Sign with the access key
     let p256_signature: p256::ecdsa::Signature =
@@ -4969,8 +4967,8 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     let authorized_key_signing_key = SigningKey::random(&mut OsRng);
     let authorized_key_verifying_key = authorized_key_signing_key.verifying_key();
     let authorized_encoded_point = authorized_key_verifying_key.to_encoded_point(false);
-    let authorized_pub_key_x = B256::from_slice(authorized_encoded_point.x().unwrap().as_slice());
-    let authorized_pub_key_y = B256::from_slice(authorized_encoded_point.y().unwrap().as_slice());
+    let authorized_pub_key_x = B256::from_slice(authorized_encoded_point.x().unwrap().as_ref());
+    let authorized_pub_key_y = B256::from_slice(authorized_encoded_point.y().unwrap().as_ref());
     let authorized_key_addr = tempo_primitives::transaction::tt_signature::derive_p256_address(
         &authorized_pub_key_x,
         &authorized_pub_key_y,
@@ -4979,10 +4977,8 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     let unauthorized_key_signing_key = SigningKey::random(&mut OsRng);
     let unauthorized_key_verifying_key = unauthorized_key_signing_key.verifying_key();
     let unauthorized_encoded_point = unauthorized_key_verifying_key.to_encoded_point(false);
-    let unauthorized_pub_key_x =
-        B256::from_slice(unauthorized_encoded_point.x().unwrap().as_slice());
-    let unauthorized_pub_key_y =
-        B256::from_slice(unauthorized_encoded_point.y().unwrap().as_slice());
+    let unauthorized_pub_key_x = B256::from_slice(unauthorized_encoded_point.x().unwrap().as_ref());
+    let unauthorized_pub_key_y = B256::from_slice(unauthorized_encoded_point.y().unwrap().as_ref());
     let unauthorized_key_addr = tempo_primitives::transaction::tt_signature::derive_p256_address(
         &unauthorized_pub_key_x,
         &unauthorized_pub_key_y,
@@ -5259,7 +5255,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
 
     // Sign with wrong key (should be root_key_signer)
     use sha2::{Digest, Sha256};
-    let wrong_sig_hash = B256::from_slice(&Sha256::digest(auth_message_hash.as_slice()));
+    let wrong_sig_hash = B256::from_slice(Sha256::digest(auth_message_hash).as_ref());
     let wrong_signature: p256::ecdsa::Signature =
         wrong_signer.sign_prehash(wrong_sig_hash.as_slice())?;
     let wrong_sig_bytes = wrong_signature.to_bytes();

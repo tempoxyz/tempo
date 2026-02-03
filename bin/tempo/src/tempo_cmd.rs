@@ -71,7 +71,7 @@ pub(crate) struct GeneratePrivateKey {
 impl GeneratePrivateKey {
     fn run(self) -> eyre::Result<()> {
         let Self { output, force } = self;
-        let signing_key = PrivateKey::random(&mut rand::thread_rng());
+        let signing_key = PrivateKey::random(&mut rand_08::thread_rng());
         let public_key = signing_key.public_key();
         let signing_key = SigningKey::from(signing_key);
         OpenOptions::new()
