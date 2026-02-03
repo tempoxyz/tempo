@@ -98,7 +98,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481 # v2.9.4
         with:
-          tool: nextest@0.9.123-b.2
+          tool: nextest@0.9.124
       # Build and run tests WITH coverage (only when precompiles changed)
       - name: Build and compile tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
