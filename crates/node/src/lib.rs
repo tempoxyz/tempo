@@ -10,7 +10,6 @@ pub use crate::node::{DEFAULT_AA_VALID_AFTER_MAX_SECS, TempoNodeArgs, TempoPoolB
 use crate::node::{TempoAddOns, TempoNode};
 use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
-use std::sync::Arc;
 
 pub mod engine;
 pub mod node;
@@ -22,7 +21,12 @@ pub use tempo_primitives as primitives;
 
 mod version;
 
-type TempoNodeAdapter = NodeAdapter<RethFullAdapter<Arc<DatabaseEnv>, TempoNode>>;
+/// Generic node adapter type that can be parametrized by DB type.
+pub type TempoNodeAdapterWith<DB> = NodeAdapter<RethFullAdapter<DB, TempoNode>>;
 
-/// Type alias for a launched tempo node.
-pub type TempoFullNode = FullNode<TempoNodeAdapter, TempoAddOns<TempoNodeAdapter>>;
+/// Generic full node type that can be parametrized by DB type.
+pub type TempoFullNodeWith<DB> =
+    FullNode<TempoNodeAdapterWith<DB>, TempoAddOns<TempoNodeAdapterWith<DB>>>;
+
+/// Type alias for a launched tempo node (production).
+pub type TempoFullNode = TempoFullNodeWith<DatabaseEnv>;

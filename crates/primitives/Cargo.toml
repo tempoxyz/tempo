@@ -33,7 +33,7 @@ alloy-network = { workspace = true, optional = true }
 # Utils
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 derive_more.workspace = true
-modular-bitfield = { version = "0.11.2", optional = true }
+modular-bitfield = { version = "0.13.1", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
