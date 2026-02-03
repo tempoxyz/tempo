@@ -653,19 +653,20 @@ where
         // modify account nonce and touch the account.
         caller_account.touch();
 
-        // add additional gas for CREATE tx with 2d nonce and account nonce is 0.
-        // This case would create a new account for caller.
-        if !nonce_key.is_zero() && tx.kind().is_create() && caller_account.nonce() == 0 {
-            evm.initial_gas += cfg.gas_params().get(GasId::new_account_cost());
-
-            // do the gas limit check again.
-            if tx.gas_limit() < evm.initial_gas {
-                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                    gas_limit: tx.gas_limit(),
-                    intrinsic_gas: evm.initial_gas,
-                }
-                .into());
-            }
+        // Refund CREATE + 2D nonce account creation cost (250k) if account already exists.
+        // validate_aa_initial_tx_gas charges this conservatively for all CREATE + 2D nonce txs
+        // since it cannot access state. Now that we have the actual account, we refund if
+        // the account already exists (nonce > 0), ensuring accurate gas charging.
+        if spec.is_t1()
+            && !nonce_key.is_zero()
+            && caller_account.nonce() > 0
+            && tx
+                .tempo_tx_env
+                .as_ref()
+                .map(|aa| aa.aa_calls.iter().any(|call| call.to.is_create()))
+                .unwrap_or(false)
+        {
+            evm.initial_gas -= cfg.gas_params().get(GasId::new_account_cost());
         }
 
         if is_expiring_nonce {
@@ -1472,6 +1473,15 @@ where
             // Existing 2D nonce key usage (nonce > 0): cold SLOAD + warm SSTORE reset
             // TIP-1000 Invariant 3: existing state updates must charge 5,000 gas
             batch_gas.initial_gas += EXISTING_NONCE_KEY_GAS;
+        }
+
+        // Conservative gas estimation for CREATE with 2D nonce.
+        // When caller's account nonce is 0 and tx has CREATE calls, account creation costs 250k.
+        // We charge unconditionally here since we cannot access state. If the account already
+        // exists (nonce > 0), validate_against_state_and_deduct_caller refunds this 250k.
+        let has_create_call = calls.iter().any(|call| call.to.is_create());
+        if !aa_env.nonce_key.is_zero() && has_create_call {
+            batch_gas.initial_gas += gas_params.get(GasId::new_account_cost());
         }
     } else if let Some(aa_env) = &tx.tempo_tx_env
         && !aa_env.nonce_key.is_zero()
