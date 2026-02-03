@@ -450,8 +450,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     /// @notice Distributes rewards to opted-in token holders.
     function distributeReward(uint256 amount) external virtual notPaused {
         if (amount == 0) revert InvalidAmount();
-        // TIP-1015: Use sender authorization (caller is sending tokens to contract)
-        if (!TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, msg.sender)) {
+        // TIP-1015: Use directional authorization for sender -> contract transfer
+        if (
+            !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, msg.sender)
+                || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, address(this))
+        ) {
             revert PolicyForbids();
         }
 
@@ -490,9 +493,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function claimRewards() external virtual notPaused returns (uint256 maxAmount) {
+        // TIP-1015: Use directional authorization for contract -> recipient transfer
         if (
-            !TIP403_REGISTRY.isAuthorized(transferPolicyId, address(this))
-                || !TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)
+            !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, address(this))
+                || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, msg.sender)
         ) {
             revert PolicyForbids();
         }
