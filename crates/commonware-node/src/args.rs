@@ -207,11 +207,11 @@ pub struct Args {
     /// Maximum number of concurrent handshake attempts allowed.
     /// [default: 512, local: 1024]
     #[arg(
-        long = "consensus.max-concurrent-handshakes",
+        long = "consensus.handshake-max-concurrent",
         default_value = "512",
         default_value_if("use_local_p2p_defaults", "true", "1024")
     )]
-    pub max_concurrent_handshakes: std::num::NonZeroU32,
+    pub handshake_max_concurrent: std::num::NonZeroU32,
 
     /// Number of epoch peer sets to maintain connections for.
     /// [default: 4]

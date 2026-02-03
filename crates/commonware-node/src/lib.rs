@@ -200,7 +200,7 @@ async fn instantiate_network(
             .handshake_timeout
             .try_into()
             .wrap_err("invalid handshake timeout duration")?,
-        max_concurrent_handshakes: config.max_concurrent_handshakes,
+        max_concurrent_handshakes: config.handshake_max_concurrent,
         block_duration: config
             .block_duration
             .try_into()
