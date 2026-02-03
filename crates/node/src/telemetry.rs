@@ -66,7 +66,7 @@ pub fn install_prometheus_metrics(
             }
 
             let res = request.send().await;
-            tracing::warn_span!("metrics_exporter", %endpoint).in_scope(|| match res {
+            tracing::info_span!("metrics_exporter", %endpoint).in_scope(|| match res {
                 Ok(response) if !response.status().is_success() => {
                     tracing::warn!(status = %response.status(), "metrics endpoint returned failure")
                 }

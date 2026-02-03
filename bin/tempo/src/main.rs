@@ -122,16 +122,21 @@ fn main() -> eyre::Result<()> {
     >::parse();
 
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
+    let mut telemetry_config = None;
     if let Commands::Node(node_cmd) = &cli.command
-        && let Some(config) = defaults::parse_telemetry_config(&node_cmd.ext.telemetry)
+        && let Some(config) = node_cmd
+            .ext
+            .telemetry
+            .try_to_config()
             .wrap_err("failed to parse telemetry config")?
     {
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
-        cli.traces.logs_otlp = Some(config.logs_otlp_url);
+        cli.traces.logs_otlp = Some(config.logs_otlp_url.clone());
         cli.traces.logs_otlp_filter = config
             .logs_otlp_filter
             .parse()
             .wrap_err("invalid default logs filter")?;
+        telemetry_config.replace(config);
     }
 
     let is_node = matches!(cli.command, Commands::Node(_));
@@ -199,7 +204,7 @@ fn main() -> eyre::Result<()> {
                 .fuse();
 
                 // Start the unified metrics exporter if configured
-                if let Some(config) = defaults::parse_telemetry_config(&args.telemetry)? {
+                if let Some(config) = telemetry_config {
                     let prometheus_config = PrometheusMetricsConfig {
                         endpoint: config.metrics_prometheus_url,
                         interval: config.metrics_prometheus_interval,
