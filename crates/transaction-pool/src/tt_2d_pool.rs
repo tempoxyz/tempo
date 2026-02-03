@@ -921,6 +921,9 @@ impl AA2dPool {
     ///
     /// Evicts queued transactions first (up to queued_limit), then pending if needed.
     /// Counts are computed lazily by scanning the eviction set.
+    ///
+    /// Note: Only `max_txs` is enforced here; `max_size` is intentionally not checked for 2D pools
+    /// since the protocol pool already enforces size-based limits as a primary defense.
     fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
