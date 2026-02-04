@@ -1,6 +1,7 @@
 pub mod account_keychain;
 pub mod common_errors;
 pub mod nonce;
+pub mod signature_verification;
 pub mod stablecoin_dex;
 pub mod tip20;
 pub mod tip20_factory;
@@ -12,6 +13,7 @@ pub use account_keychain::*;
 use alloy_primitives::{Address, address};
 pub use common_errors::*;
 pub use nonce::*;
+pub use signature_verification::*;
 pub use stablecoin_dex::*;
 pub use tip_fee_manager::*;
 pub use tip20::*;
@@ -31,3 +33,5 @@ pub const VALIDATOR_CONFIG_ADDRESS: Address =
     address!("0xCCCCCCCC00000000000000000000000000000000");
 pub const ACCOUNT_KEYCHAIN_ADDRESS: Address =
     address!("0xAAAAAAAA00000000000000000000000000000000");
+pub const SIGNATURE_VERIFICATION_ADDRESS: Address =
+    address!("0x5165300000000000000000000000000000000000");

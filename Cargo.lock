@@ -12137,6 +12137,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles-macros",
+ "tempo-primitives",
  "thiserror 2.0.18",
  "tracing",
 ]
