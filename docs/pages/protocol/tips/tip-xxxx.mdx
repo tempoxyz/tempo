@@ -558,7 +558,6 @@ precompile does NOT proxy reads to V1.
   - `deletedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
 - Adds to `validatorsArray`
 - Populates lookup maps (`validators[addr]`, `pubkeyToIndex[pubkey]`)
-- Does NOT set `initialized` flag
 
 **`initialize()`**:
 - Copies `nextDkgCeremony` from V1 to V2
