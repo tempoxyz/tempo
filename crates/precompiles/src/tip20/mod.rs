@@ -13,7 +13,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
-    tip20_factory::{ITIP20Factory, TIP20Factory},
+    tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
@@ -1641,7 +1641,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let _path_usd = TIP20Setup::path_usd(sender).apply()?;
 
-            use crate::tip20_factory::abi::ITIP20Factory;
+            use crate::tip20_factory::ITIP20Factory::traits::*;
             let created_tip20 = TIP20Factory::new().create_token(
                 sender,
                 "Test Token".to_string(),

@@ -7,7 +7,7 @@ mod tests {
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
-        tip20_factory::{TIP20Factory, abi::Calls},
+        tip20_factory::{ITIP20Factory::Calls, TIP20Factory},
     };
 
     #[test]

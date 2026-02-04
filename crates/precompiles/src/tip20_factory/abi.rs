@@ -2,9 +2,9 @@
 
 use tempo_precompiles_macros::abi;
 
-#[abi(dispatch)]
-#[rustfmt::skip]
-pub mod abi {
+#[abi(no_reexport)]
+#[allow(non_snake_case)]
+pub mod ITIP20Factory {
     #[cfg(feature = "precompile")]
     use crate::error::Result;
 
@@ -31,7 +31,7 @@ pub mod abi {
     }
 
     /// TIP20 Factory interface for creating TIP20 tokens.
-    pub trait ITIP20Factory {
+    pub trait Interface {
         /// Creates a new TIP20 token with the given parameters.
         /// Returns the address of the newly created token.
         fn create_token(&mut self, name: String, symbol: String, currency: String, quote_token: Address, admin: Address, salt: B256) -> Result<Address>;
@@ -43,5 +43,3 @@ pub mod abi {
         fn get_token_address(&self, sender: Address, salt: B256) -> Result<Address>;
     }
 }
-
-pub use abi::*;

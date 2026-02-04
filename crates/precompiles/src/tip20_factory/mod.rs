@@ -25,7 +25,7 @@ const TIP20_PREFIX_BYTES: [u8; 12] = [
     0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-#[contract(addr = TIP20_FACTORY_ADDRESS, abi, dispatch)]
+#[contract(addr = TIP20_FACTORY_ADDRESS, abi = ITIP20Factory, dispatch)]
 pub struct TIP20Factory {}
 
 /// Computes the deterministic TIP20 address from sender and salt.
@@ -107,7 +107,7 @@ impl TIP20Factory {
         let mut token = TIP20Token::from_address(address)?;
         token.initialize(admin, name, symbol, currency, quote_token, admin)?;
 
-        self.emit_event(TIP20FactoryEvent::TokenCreated(abi::TokenCreated {
+        self.emit_event(TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
             token: address,
             name: name.into(),
             symbol: symbol.into(),
@@ -132,7 +132,7 @@ impl TIP20Factory {
     }
 }
 
-impl abi::ITIP20Factory for TIP20Factory {
+impl ITIP20Factory::Interface for TIP20Factory {
     fn create_token(
         &mut self,
         msg_sender: Address,
@@ -182,7 +182,7 @@ impl abi::ITIP20Factory for TIP20Factory {
             admin,
         )?;
 
-        self.emit_event(TIP20FactoryEvent::TokenCreated(abi::TokenCreated {
+        self.emit_event(TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
             token: token_address,
             name,
             symbol,
@@ -393,7 +393,7 @@ mod tests {
 
             // Verify event emission
             factory.assert_emitted_events(vec![
-                TIP20FactoryEvent::TokenCreated(abi::TokenCreated {
+                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
                     token: token_addr_1,
                     name: "Test Token 1".into(),
                     symbol: "TEST1".into(),
@@ -402,7 +402,7 @@ mod tests {
                     admin: sender,
                     salt: salt1.into(),
                 }),
-                TIP20FactoryEvent::TokenCreated(abi::TokenCreated {
+                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
                     token: token_addr_2,
                     name: "Test Token 2".into(),
                     symbol: "TEST2".into(),
@@ -530,7 +530,7 @@ mod tests {
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20Factory(TIP20FactoryError::TokenAlreadyExists(
-                    abi::TokenAlreadyExists { token }
+                    ITIP20Factory::TokenAlreadyExists { token }
                 ))
             );
 

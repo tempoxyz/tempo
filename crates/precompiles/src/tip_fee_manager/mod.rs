@@ -6,7 +6,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
-    tip20_factory::{ITIP20Factory, TIP20Factory},
+    tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
 };
 use alloy::primitives::B256;
 pub use tempo_contracts::precompiles::{
