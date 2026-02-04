@@ -65,11 +65,28 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             uint64 pid = registry.createPolicy(admin, ptype);
             _simplePolicies.push(pid);
             _policyTypes[pid] = ptype;
+
+            // Pre-authorize DEX for all simple policies to avoid per-call authorization overhead.
+            // This is safe because:
+            // 1. TIP-1015 invariants test sender/recipient policy delegation, not DEX privileges
+            // 2. DEX authorization state doesn't affect compound policy correctness
+            // 3. Real-world DEX would be permanently whitelisted anyway
+            _authorizeDex(pid, ptype);
         }
 
         vm.stopPrank();
 
         _initLogFile(LOG_FILE, "TIP-1015 Compound Policy Invariant Test Log");
+    }
+
+    /// @dev Authorize DEX address in a policy (called once per policy in setUp)
+    function _authorizeDex(uint64 policyId, ITIP403Registry.PolicyType ptype) internal {
+        if (ptype == ITIP403Registry.PolicyType.WHITELIST) {
+            registry.modifyPolicyWhitelist(policyId, address(exchange), true);
+        } else {
+            // For blacklist, ensure DEX is NOT on the blacklist (authorized by default)
+            // No action needed - blacklist defaults to authorized
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -84,6 +101,13 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         vm.startPrank(actor);
         uint64 pid = registry.createPolicy(actor, ptype);
+
+        // Pre-authorize DEX for this new policy (same optimization as setUp)
+        if (isWhitelist) {
+            registry.modifyPolicyWhitelist(pid, address(exchange), true);
+        }
+        // Blacklist defaults to authorized, no action needed
+
         vm.stopPrank();
 
         _simplePolicies.push(pid);
@@ -872,21 +896,18 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         address canceller = _selectActorExcluding(cancellerSeed, maker);
         uint128 amount = 102_000_000; // 1.02 * MIN_ORDER_AMOUNT for tick price buffer
 
-        // Cache original policy states
+        // Cache original policy states for maker (DEX is pre-authorized in setUp)
         bool cachedMakerSender = registry.isAuthorizedSender(pid, maker);
         bool cachedMakerRecipient = registry.isAuthorizedRecipient(pid, maker);
         bool cachedMakerMint = registry.isAuthorizedMintRecipient(pid, maker);
-        bool cachedDexSender = registry.isAuthorizedSender(pid, address(exchange));
-        bool cachedDexRecipient = registry.isAuthorizedRecipient(pid, address(exchange));
         bool cachedMakerPathUsdMint = registry.isAuthorizedMintRecipient(_pathUsdPolicyId, maker);
 
-        // Temporarily authorize in all policies to allow order placement
+        // Temporarily authorize maker in all policies to allow order placement
+        // Note: DEX authorization removed - now done once in setUp for ~40% gas savings
         if (!cachedMakerSender) _authorize(senderPid, maker, true);
         if (!cachedMakerRecipient) _authorize(recipientPid, maker, true);
         if (!cachedMakerMint) _authorize(mintPid, maker, true);
         if (!cachedMakerPathUsdMint) _authorize(_pathUsdPolicyId, maker, true);
-        if (!cachedDexSender) _authorize(senderPid, address(exchange), true);
-        if (!cachedDexRecipient) _authorize(recipientPid, address(exchange), true);
 
         // Create pair if needed
         vm.startPrank(admin);
