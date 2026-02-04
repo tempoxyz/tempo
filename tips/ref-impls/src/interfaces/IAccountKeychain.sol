@@ -10,6 +10,8 @@ pragma solidity >=0.8.13 <0.9.0;
  * transactions on behalf of the account. Access Keys can be scoped by:
  * - Expiry timestamp (when the key becomes invalid)
  * - Per-TIP20 token spending limits that deplete as the key spends
+ * - Periodic spending limits that reset automatically (TIP-1011, T2+)
+ * - Destination address scoping (TIP-1011, T2+)
  *
  * Only the Root Key can call authorizeKey, revokeKey, and updateSpendingLimit.
  * This restriction is enforced by the protocol at transaction validation time.
@@ -35,6 +37,15 @@ interface IAccountKeychain {
     struct TokenLimit {
         address token; // TIP20 token address
         uint256 amount; // Spending limit amount
+    }
+
+    /// @notice Token spending limit info with period data (TIP-1011)
+    struct TokenLimitInfo {
+        address token;      // TIP20 token address
+        uint256 remaining;  // Remaining allowance in current period
+        uint256 limit;      // Per-period limit (or lifetime limit if period == 0)
+        uint64 period;      // Period duration in seconds (0 = one-time limit)
+        uint64 periodEnd;   // Timestamp when current period expires
     }
 
     /// @notice Key information structure
@@ -63,6 +74,16 @@ interface IAccountKeychain {
         address indexed account, address indexed publicKey, address indexed token, uint256 newLimit
     );
 
+    /// @notice Emitted when a periodic limit is set (TIP-1011, T2+)
+    event PeriodicLimitSet(
+        address indexed account, address indexed publicKey, address indexed token, uint256 limit, uint64 period
+    );
+
+    /// @notice Emitted when allowed destinations are updated (TIP-1011, T2+)
+    event AllowedDestinationsUpdated(
+        address indexed account, address indexed publicKey, address[] destinations
+    );
+
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -77,6 +98,8 @@ interface IAccountKeychain {
     error ZeroPublicKey();
     error ExpiryInPast();
     error UnauthorizedCaller();
+    error DestinationNotAllowed(address destination);
+    error InvalidPeriod();
 
     /*//////////////////////////////////////////////////////////////
                         MANAGEMENT FUNCTIONS
@@ -118,6 +141,24 @@ interface IAccountKeychain {
      */
     function updateSpendingLimit(address keyId, address token, uint256 newLimit) external;
 
+    /**
+     * @notice Set a periodic spending limit for a key-token pair (TIP-1011, T2+)
+     * @dev MUST only be called in transactions signed by the Root Key
+     * @param keyId The key identifier
+     * @param token The token address
+     * @param limit The per-period spending limit
+     * @param period The period duration in seconds (must be > 0)
+     */
+    function setPeriodicLimit(address keyId, address token, uint256 limit, uint64 period) external;
+
+    /**
+     * @notice Set allowed destinations for a key (TIP-1011, T2+)
+     * @dev MUST only be called in transactions signed by the Root Key
+     * @param keyId The key identifier
+     * @param destinations Array of allowed destination addresses (empty = unrestricted)
+     */
+    function setAllowedDestinations(address keyId, address[] calldata destinations) external;
+
     /*//////////////////////////////////////////////////////////////
                         VIEW FUNCTIONS
     //////////////////////////////////////////////////////////////*/
@@ -141,6 +182,29 @@ interface IAccountKeychain {
         external
         view
         returns (uint256);
+
+    /**
+     * @notice Get spending limit info including period data (TIP-1011, T2+)
+     * @param account The account address
+     * @param keyId The key identifier
+     * @param token The token address
+     * @return info TokenLimitInfo with remaining, limit, period, and periodEnd
+     */
+    function getLimitInfo(address account, address keyId, address token)
+        external
+        view
+        returns (TokenLimitInfo memory info);
+
+    /**
+     * @notice Get allowed destinations for a key (TIP-1011, T2+)
+     * @param account The account address
+     * @param keyId The key identifier
+     * @return destinations Array of allowed addresses (empty = unrestricted)
+     */
+    function getAllowedDestinations(address account, address keyId)
+        external
+        view
+        returns (address[] memory destinations);
 
     /**
      * @notice Get the transaction key used in the current transaction

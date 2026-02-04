@@ -961,6 +961,7 @@ mod tests {
             key_id: caller,
             expiry: None,
             limits: None,
+            allowed_destinations: None,
         };
         let key_auth_webauthn_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth =
@@ -2078,6 +2079,7 @@ mod tests {
             key_id: access_key.address,
             expiry: None,
             limits: None,
+            allowed_destinations: None,
         };
         let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
@@ -2166,6 +2168,7 @@ mod tests {
             key_id: access_key2.address,
             expiry: None, // Never expires (u64::MAX)
             limits: None, // No spending limits
+            allowed_destinations: None,
         };
         let key_auth_sig2 = key_pair.sign_webauthn(key_auth2.signature_hash().as_slice())?;
         let signed_key_auth2 = key_auth2.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig2));

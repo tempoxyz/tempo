@@ -25,9 +25,29 @@ impl Precompile for AccountKeychain {
                         self.update_spending_limit(sender, c)
                     })
                 }
+                // TIP-1011: Periodic spending limits (T2+)
+                IAccountKeychainCalls::setPeriodicLimit(call) => {
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.set_periodic_limit(sender, c)
+                    })
+                }
+                // TIP-1011: Destination scoping (T2+)
+                IAccountKeychainCalls::setAllowedDestinations(call) => {
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.set_allowed_destinations(sender, c)
+                    })
+                }
                 IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
                 IAccountKeychainCalls::getRemainingLimit(call) => {
                     view(call, |c| self.get_remaining_limit(c))
+                }
+                // TIP-1011: Get limit info with period data (T2+)
+                IAccountKeychainCalls::getLimitInfo(call) => {
+                    view(call, |c| self.get_limit_info(c))
+                }
+                // TIP-1011: Get allowed destinations (T2+)
+                IAccountKeychainCalls::getAllowedDestinations(call) => {
+                    view(call, |c| self.get_allowed_destinations(c))
                 }
                 IAccountKeychainCalls::getTransactionKey(call) => {
                     view(call, |c| self.get_transaction_key(c, msg_sender))

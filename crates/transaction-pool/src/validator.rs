@@ -2152,6 +2152,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None, // never expires
                 limits: None, // unlimited
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2196,6 +2197,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None,
                 limits: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2243,6 +2245,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None,
                 limits: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2287,6 +2290,7 @@ mod tests {
                 key_id: different_key_id, // Different from access_key_address
                 expiry: None,
                 limits: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2336,6 +2340,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None,
                 limits: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2634,6 +2639,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: Some(current_time - 1), // Expired
                 limits: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2682,6 +2688,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: Some(current_time), // Expired at exactly current time
                 limits: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2729,6 +2736,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: Some(current_time + 100), // Valid (in the future)
                 limits: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2774,6 +2782,7 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None, // Never expires
                 limits: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();

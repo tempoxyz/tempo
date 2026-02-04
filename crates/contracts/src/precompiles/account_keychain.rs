@@ -9,6 +9,8 @@ crate::sol! {
     /// - Different signature types (secp256k1, P256, WebAuthn)
     /// - Expiry times for key rotation
     /// - Per-token spending limits for security
+    /// - Periodic spending limits that reset automatically (TIP-1011)
+    /// - Destination address scoping (TIP-1011)
     ///
     /// Only the main account key can authorize/revoke keys, while secondary keys
     /// can be used for regular transactions within their spending limits.
@@ -27,6 +29,15 @@ crate::sol! {
             uint256 amount;
         }
 
+        /// Token spending limit with period info (TIP-1011)
+        struct TokenLimitInfo {
+            address token;
+            uint256 remaining;     // Remaining allowance in current period
+            uint256 limit;         // Per-period limit (or lifetime limit if period == 0)
+            uint64 period;         // Period duration in seconds (0 = one-time limit)
+            uint64 periodEnd;      // Timestamp when current period expires
+        }
+
         /// Key information structure
         struct KeyInfo {
             SignatureType signatureType;
@@ -35,6 +46,7 @@ crate::sol! {
             bool enforceLimits;
             bool isRevoked;
         }
+
         /// Emitted when a new key is authorized
         event KeyAuthorized(address indexed account, address indexed publicKey, uint8 signatureType, uint64 expiry);
 
@@ -43,6 +55,12 @@ crate::sol! {
 
         /// Emitted when a spending limit is updated
         event SpendingLimitUpdated(address indexed account, address indexed publicKey, address indexed token, uint256 newLimit);
+
+        /// Emitted when a periodic limit is set (TIP-1011)
+        event PeriodicLimitSet(address indexed account, address indexed publicKey, address indexed token, uint256 limit, uint64 period);
+
+        /// Emitted when allowed destinations are updated (TIP-1011)
+        event AllowedDestinationsUpdated(address indexed account, address indexed publicKey, address[] destinations);
 
         /// Authorize a new key for the caller's account
         /// @param keyId The key identifier (address derived from public key)
@@ -72,6 +90,26 @@ crate::sol! {
             uint256 newLimit
         ) external;
 
+        /// Set a periodic spending limit for a key-token pair (TIP-1011, T2+)
+        /// @param keyId The key identifier
+        /// @param token The token address
+        /// @param limit The per-period spending limit
+        /// @param period The period duration in seconds
+        function setPeriodicLimit(
+            address keyId,
+            address token,
+            uint256 limit,
+            uint64 period
+        ) external;
+
+        /// Set allowed destinations for a key (TIP-1011, T2+)
+        /// @param keyId The key identifier
+        /// @param destinations Array of allowed destination addresses (empty = unrestricted)
+        function setAllowedDestinations(
+            address keyId,
+            address[] calldata destinations
+        ) external;
+
         /// Get key information
         /// @param account The account address
         /// @param publicKey The public key
@@ -89,6 +127,26 @@ crate::sol! {
             address token
         ) external view returns (uint256);
 
+        /// Get spending limit info including period data (TIP-1011, T2+)
+        /// @param account The account address
+        /// @param keyId The key identifier
+        /// @param token The token address
+        /// @return info TokenLimitInfo with remaining, limit, period, and periodEnd
+        function getLimitInfo(
+            address account,
+            address keyId,
+            address token
+        ) external view returns (TokenLimitInfo memory info);
+
+        /// Get allowed destinations for a key (TIP-1011, T2+)
+        /// @param account The account address
+        /// @param keyId The key identifier
+        /// @return destinations Array of allowed addresses (empty = unrestricted)
+        function getAllowedDestinations(
+            address account,
+            address keyId
+        ) external view returns (address[] memory destinations);
+
         /// Get the key used in the current transaction
         /// @return The keyId used in the current transaction
         function getTransactionKey() external view returns (address);
@@ -104,6 +162,8 @@ crate::sol! {
         error ExpiryInPast();
         error KeyAlreadyRevoked();
         error SignatureTypeMismatch(uint8 expected, uint8 actual);
+        error DestinationNotAllowed(address destination);
+        error InvalidPeriod();
     }
 }
 
@@ -158,5 +218,15 @@ impl AccountKeychainError {
     /// This prevents replay attacks where a revoked key's authorization is reused.
     pub const fn key_already_revoked() -> Self {
         Self::KeyAlreadyRevoked(IAccountKeychain::KeyAlreadyRevoked {})
+    }
+
+    /// Creates an error for destination not allowed (TIP-1011).
+    pub const fn destination_not_allowed(destination: alloy_primitives::Address) -> Self {
+        Self::DestinationNotAllowed(IAccountKeychain::DestinationNotAllowed { destination })
+    }
+
+    /// Creates an error for invalid period (TIP-1011).
+    pub const fn invalid_period() -> Self {
+        Self::InvalidPeriod(IAccountKeychain::InvalidPeriod {})
     }
 }

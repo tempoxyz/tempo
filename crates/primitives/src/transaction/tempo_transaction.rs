@@ -1614,11 +1614,12 @@ mod tests {
             chain_id: 1, // Test chain ID
             key_type: SignatureType::Secp256k1,
             expiry: Some(1234567890),
-            limits: Some(vec![crate::transaction::TokenLimit {
-                token: address!("0000000000000000000000000000000000000003"),
-                limit: U256::from(10000),
-            }]),
+            limits: Some(vec![crate::transaction::TokenLimit::one_time(
+                address!("0000000000000000000000000000000000000003"),
+                U256::from(10000),
+            )]),
             key_id: address!("0000000000000000000000000000000000000004"),
+            allowed_destinations: None,
         }
         .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
 

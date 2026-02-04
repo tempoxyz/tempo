@@ -7,8 +7,10 @@ use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent};
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,
     IAccountKeychain::{
-        KeyInfo, SignatureType, TokenLimit, authorizeKeyCall, getKeyCall, getRemainingLimitCall,
-        getTransactionKeyCall, revokeKeyCall, updateSpendingLimitCall,
+        KeyInfo, SignatureType, TokenLimit, TokenLimitInfo, authorizeKeyCall,
+        getAllowedDestinationsCall, getKeyCall, getLimitInfoCall, getRemainingLimitCall,
+        getTransactionKeyCall, revokeKeyCall, setAllowedDestinationsCall, setPeriodicLimitCall,
+        updateSpendingLimitCall,
     },
 };
 
@@ -97,9 +99,23 @@ impl AuthorizedKey {
 pub struct AccountKeychain {
     // keys[account][keyId] -> AuthorizedKey
     keys: Mapping<Address, Mapping<Address, AuthorizedKey>>,
-    // spendingLimits[(account, keyId)][token] -> amount
+    // spendingLimits[(account, keyId)][token] -> remaining amount (remainingInPeriod for periodic limits)
     // Using a hash of account and keyId as the key to avoid triple nesting
     spending_limits: Mapping<B256, Mapping<Address, U256>>,
+
+    // TIP-1011: Periodic spending limit fields
+    // spending_limit_max[(account, keyId)][token] -> per-period cap (0 for one-time limits)
+    spending_limit_max: Mapping<B256, Mapping<Address, U256>>,
+    // spending_limit_period[(account, keyId)][token] -> period duration in seconds (0 for one-time limits)
+    spending_limit_period: Mapping<B256, Mapping<Address, u64>>,
+    // spending_limit_period_end[(account, keyId)][token] -> timestamp when current period expires
+    spending_limit_period_end: Mapping<B256, Mapping<Address, u64>>,
+
+    // TIP-1011: Destination address scoping
+    // allowed_destinations_len[(account, keyId)] -> number of allowed destinations (0 = unrestricted)
+    allowed_destinations_len: Mapping<B256, u64>,
+    // allowed_destinations[(account, keyId)][index] -> allowed destination address
+    allowed_destinations: Mapping<B256, Mapping<u64, Address>>,
 
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
@@ -414,6 +430,9 @@ impl AccountKeychain {
     }
 
     /// Internal: Verify and update spending for a token transfer
+    ///
+    /// For periodic limits (TIP-1011, T2+), this method will reset the limit
+    /// if the current period has expired.
     pub fn verify_and_update_spending(
         &mut self,
         account: Address,
@@ -436,7 +455,27 @@ impl AccountKeychain {
 
         // Check and update spending limit
         let limit_key = Self::spending_limit_key(account, key_id);
-        let remaining = self.spending_limits[limit_key][token].read()?;
+        let mut remaining = self.spending_limits[limit_key][token].read()?;
+
+        // TIP-1011: Check for periodic limit reset (T2+)
+        if self.storage.spec().is_t2() {
+            let period = self.spending_limit_period[limit_key][token].read()?;
+            if period > 0 {
+                let period_end = self.spending_limit_period_end[limit_key][token].read()?;
+                let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+
+                if current_timestamp >= period_end {
+                    // Reset period
+                    let limit_max = self.spending_limit_max[limit_key][token].read()?;
+                    remaining = limit_max;
+
+                    // Update period_end to next period
+                    let new_period_end = current_timestamp.saturating_add(period);
+                    self.spending_limit_period_end[limit_key][token].write(new_period_end)?;
+                    self.spending_limits[limit_key][token].write(remaining)?;
+                }
+            }
+        }
 
         if amount > remaining {
             return Err(AccountKeychainError::spending_limit_exceeded().into());
@@ -444,6 +483,181 @@ impl AccountKeychain {
 
         // Update remaining limit
         self.spending_limits[limit_key][token].write(remaining - amount)
+    }
+
+    /// Set a periodic spending limit for a key-token pair (TIP-1011, T2+)
+    pub fn set_periodic_limit(
+        &mut self,
+        msg_sender: Address,
+        call: setPeriodicLimitCall,
+    ) -> Result<()> {
+        // Require T2 hardfork
+        if !self.storage.spec().is_t2() {
+            return Err(AccountKeychainError::unauthorized_caller().into());
+        }
+
+        let transaction_key = self.transaction_key.t_read()?;
+        if transaction_key != Address::ZERO {
+            return Err(AccountKeychainError::unauthorized_caller().into());
+        }
+
+        // Period must be > 0 for periodic limits
+        if call.period == 0 {
+            return Err(AccountKeychainError::invalid_period().into());
+        }
+
+        // Verify key exists and is active
+        let mut key = self.load_active_key(msg_sender, call.keyId)?;
+
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        if current_timestamp >= key.expiry {
+            return Err(AccountKeychainError::key_expired().into());
+        }
+
+        // Enable limits if not already enabled
+        if !key.enforce_limits {
+            key.enforce_limits = true;
+            self.keys[msg_sender][call.keyId].write(key)?;
+        }
+
+        // Set periodic limit fields
+        let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
+        self.spending_limit_max[limit_key][call.token].write(call.limit)?;
+        self.spending_limit_period[limit_key][call.token].write(call.period)?;
+
+        // Set initial period end and remaining
+        let period_end = current_timestamp.saturating_add(call.period);
+        self.spending_limit_period_end[limit_key][call.token].write(period_end)?;
+        self.spending_limits[limit_key][call.token].write(call.limit)?;
+
+        // Emit event
+        self.emit_event(AccountKeychainEvent::PeriodicLimitSet(
+            IAccountKeychain::PeriodicLimitSet {
+                account: msg_sender,
+                publicKey: call.keyId,
+                token: call.token,
+                limit: call.limit,
+                period: call.period,
+            },
+        ))
+    }
+
+    /// Set allowed destinations for a key (TIP-1011, T2+)
+    pub fn set_allowed_destinations(
+        &mut self,
+        msg_sender: Address,
+        call: setAllowedDestinationsCall,
+    ) -> Result<()> {
+        // Require T2 hardfork
+        if !self.storage.spec().is_t2() {
+            return Err(AccountKeychainError::unauthorized_caller().into());
+        }
+
+        let transaction_key = self.transaction_key.t_read()?;
+        if transaction_key != Address::ZERO {
+            return Err(AccountKeychainError::unauthorized_caller().into());
+        }
+
+        // Verify key exists and is active
+        let key = self.load_active_key(msg_sender, call.keyId)?;
+
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        if current_timestamp >= key.expiry {
+            return Err(AccountKeychainError::key_expired().into());
+        }
+
+        let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
+
+        // Store new destinations
+        let len = call.destinations.len() as u64;
+        self.allowed_destinations_len[limit_key].write(len)?;
+
+        for (i, dest) in call.destinations.iter().enumerate() {
+            self.allowed_destinations[limit_key][i as u64].write(*dest)?;
+        }
+
+        // Emit event
+        self.emit_event(AccountKeychainEvent::AllowedDestinationsUpdated(
+            IAccountKeychain::AllowedDestinationsUpdated {
+                account: msg_sender,
+                publicKey: call.keyId,
+                destinations: call.destinations,
+            },
+        ))
+    }
+
+    /// Get spending limit info including period data (TIP-1011, T2+)
+    pub fn get_limit_info(&self, call: getLimitInfoCall) -> Result<TokenLimitInfo> {
+        let limit_key = Self::spending_limit_key(call.account, call.keyId);
+
+        let remaining = self.spending_limits[limit_key][call.token].read()?;
+        let limit = self.spending_limit_max[limit_key][call.token].read()?;
+        let period = self.spending_limit_period[limit_key][call.token].read()?;
+        let period_end = self.spending_limit_period_end[limit_key][call.token].read()?;
+
+        // For one-time limits (period == 0), limit_max is 0, so use remaining as the "limit"
+        let effective_limit = if period == 0 { remaining } else { limit };
+
+        Ok(TokenLimitInfo {
+            token: call.token,
+            remaining,
+            limit: effective_limit,
+            period,
+            periodEnd: period_end,
+        })
+    }
+
+    /// Get allowed destinations for a key (TIP-1011, T2+)
+    pub fn get_allowed_destinations(&self, call: getAllowedDestinationsCall) -> Result<Vec<Address>> {
+        let limit_key = Self::spending_limit_key(call.account, call.keyId);
+        let len = self.allowed_destinations_len[limit_key].read()?;
+
+        let mut destinations = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            let dest = self.allowed_destinations[limit_key][i].read()?;
+            destinations.push(dest);
+        }
+
+        Ok(destinations)
+    }
+
+    /// Validate that a destination is allowed for this key (TIP-1011, T2+)
+    ///
+    /// Returns Ok(()) if:
+    /// - T2 is not active (pre-hardfork behavior)
+    /// - Key is using the main key (Address::ZERO)
+    /// - Key has no destination restrictions (allowed_destinations is empty)
+    /// - Destination is in the allowed list
+    ///
+    /// Returns Err(DestinationNotAllowed) otherwise.
+    pub fn validate_destination(&self, account: Address, key_id: Address, destination: Address) -> Result<()> {
+        // Pre-T2: no destination validation
+        if !self.storage.spec().is_t2() {
+            return Ok(());
+        }
+
+        // Main key has no restrictions
+        if key_id == Address::ZERO {
+            return Ok(());
+        }
+
+        let limit_key = Self::spending_limit_key(account, key_id);
+        let len = self.allowed_destinations_len[limit_key].read()?;
+
+        // Empty list = unrestricted
+        if len == 0 {
+            return Ok(());
+        }
+
+        // Check if destination is in allowed list
+        for i in 0..len {
+            let allowed = self.allowed_destinations[limit_key][i].read()?;
+            if allowed == destination {
+                return Ok(());
+            }
+        }
+
+        Err(AccountKeychainError::destination_not_allowed(destination).into())
     }
 
     /// Authorize a token transfer with access key spending limits
@@ -1154,6 +1368,253 @@ mod tests {
                 none_result.is_ok(),
                 "Validation should succeed when signature type check is skipped (pre-T1)"
             );
+
+            Ok(())
+        })
+    }
+
+    // ==================== TIP-1011 Tests ====================
+
+    #[test]
+    fn test_periodic_limit_reset() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup: Use main key for authorization
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            // Authorize key with enforce limits
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Set periodic limit: 100 tokens per 3600 seconds (1 hour)
+            let periodic_call = setPeriodicLimitCall {
+                keyId: key_id,
+                token,
+                limit: U256::from(100),
+                period: 3600,
+            };
+            keychain.set_periodic_limit(account, periodic_call)?;
+
+            // Verify initial state
+            let info = keychain.get_limit_info(getLimitInfoCall {
+                account,
+                keyId: key_id,
+                token,
+            })?;
+            assert_eq!(info.remaining, U256::from(100));
+            assert_eq!(info.limit, U256::from(100));
+            assert_eq!(info.period, 3600);
+            assert!(info.periodEnd > 0);
+
+            // Spend some tokens using access key
+            keychain.set_transaction_key(key_id)?;
+            keychain.verify_and_update_spending(account, key_id, token, U256::from(30))?;
+
+            // Verify remaining decreased
+            let info_after = keychain.get_limit_info(getLimitInfoCall {
+                account,
+                keyId: key_id,
+                token,
+            })?;
+            assert_eq!(info_after.remaining, U256::from(70));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_destination_scoping() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let account = Address::random();
+        let key_id = Address::random();
+        let allowed_dest = Address::random();
+        let disallowed_dest = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Authorize key
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Set allowed destinations
+            let dest_call = setAllowedDestinationsCall {
+                keyId: key_id,
+                destinations: vec![allowed_dest],
+            };
+            keychain.set_allowed_destinations(account, dest_call)?;
+
+            // Verify destinations are stored
+            let destinations = keychain.get_allowed_destinations(getAllowedDestinationsCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert_eq!(destinations.len(), 1);
+            assert_eq!(destinations[0], allowed_dest);
+
+            // Validate allowed destination succeeds
+            keychain.validate_destination(account, key_id, allowed_dest)?;
+
+            // Validate disallowed destination fails
+            let result = keychain.validate_destination(account, key_id, disallowed_dest);
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                TempoPrecompileError::AccountKeychainError(e) => {
+                    assert!(
+                        matches!(e, AccountKeychainError::DestinationNotAllowed(_)),
+                        "Expected DestinationNotAllowed error, got: {e:?}"
+                    );
+                }
+                e => panic!("Expected AccountKeychainError, got: {e:?}"),
+            }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_empty_destinations_is_unrestricted() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let account = Address::random();
+        let key_id = Address::random();
+        let any_dest = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Authorize key
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Set empty destinations (unrestricted)
+            let dest_call = setAllowedDestinationsCall {
+                keyId: key_id,
+                destinations: vec![],
+            };
+            keychain.set_allowed_destinations(account, dest_call)?;
+
+            // Any destination should be allowed
+            keychain.validate_destination(account, key_id, any_dest)?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_tip1011_requires_t2_hardfork() -> eyre::Result<()> {
+        // Test with T1 hardfork (pre-T2)
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Authorize key
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // setPeriodicLimit should fail pre-T2
+            let periodic_call = setPeriodicLimitCall {
+                keyId: key_id,
+                token,
+                limit: U256::from(100),
+                period: 3600,
+            };
+            let result = keychain.set_periodic_limit(account, periodic_call);
+            assert!(result.is_err(), "setPeriodicLimit should fail pre-T2");
+
+            // setAllowedDestinations should fail pre-T2
+            let dest_call = setAllowedDestinationsCall {
+                keyId: key_id,
+                destinations: vec![Address::random()],
+            };
+            let result = keychain.set_allowed_destinations(account, dest_call);
+            assert!(result.is_err(), "setAllowedDestinations should fail pre-T2");
+
+            // validate_destination should succeed (no restrictions pre-T2)
+            keychain.validate_destination(account, key_id, Address::random())?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_invalid_period_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Period of 0 should fail
+            let periodic_call = setPeriodicLimitCall {
+                keyId: key_id,
+                token,
+                limit: U256::from(100),
+                period: 0,
+            };
+            let result = keychain.set_periodic_limit(account, periodic_call);
+            assert!(result.is_err(), "Period of 0 should be rejected");
 
             Ok(())
         })
