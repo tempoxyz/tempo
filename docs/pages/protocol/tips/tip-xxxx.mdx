@@ -242,14 +242,22 @@ interface IValidatorConfigV2 {
     ///      Active V1 validators get addedAtHeight=0 and deletedAtHeight=0.
     ///      Inactive V1 validators get addedAtHeight=deletedAtHeight=block.timestamp at migration time.
     /// @param valConfigV1Idx Index of the validator in V1 validators array (must equal current validatorsArray.length)
-    /// @param valAddress The validator address to use in V2 (replaces the V1 validator address)
-    function migrateValidator(uint64 valConfigV1Idx, address valAddress) external;
+    function migrateValidator(uint64 valConfigV1Idx) external;
 
     /// @notice Initialize V2 and enable reads (owner only)
     /// @dev Should only be called after all validators have been migrated via migrateValidator.
     ///      Sets initialized=true. After this call, CL reads from V2 instead of V1.
     ///      Copies nextDkgCeremony from V1.
+    ///      Reverts if V2 validators count < V1 validators count (ensures all validators migrated).
     function initialize() external;
+
+    /// @notice Set the validator address for a validator (owner only)
+    /// @dev Allows owner to change the address of an existing validator.
+    ///      The new address must not already exist in the validator set.
+    ///      The old address is replaced in all lookup maps.
+    /// @param validatorIndex The index of the validator in the validatorsArray
+    /// @param newAddress The new address to assign to the validator
+    function setValidatorAddress(uint64 validatorIndex, address newAddress) external;
 
     /// @notice Check if V2 has been initialized from V1
     /// @return True if initialized, false otherwise
@@ -479,7 +487,7 @@ The following invariants must always hold:
    changes.
 
 10. **Owner authorization**: Only the owner can call `addValidator`,
-    `deleteValidator`, `changeOwner`, and `setNextFullDkgCeremony`.
+    `deleteValidator`, `changeOwner`, `setNextFullDkgCeremony`, and `setValidatorAddress`.
 
 11. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
     transition from 0 to 1, never back to 0.
@@ -490,6 +498,10 @@ The following invariants must always hold:
 13. **Atomic rotation**: `rotateValidator` atomically deletes the old validator
     (setting its `deletedAtHeight`) and adds a new validator entry. Both
     operations occur in the same transaction with the same block height.
+
+14. **Address update**: `setValidatorAddress` updates the address of an existing
+    validator without changing any other fields. This is useful for updating
+    addresses post-migration or correcting address assignments.
 
 ---
 
@@ -545,26 +557,34 @@ precompile does NOT proxy reads to V1.
 
 ### Migration Functions (Owner Only)
 
-**`migrateValidator(valConfigV1Idx, valAddress)`**:
+**`migrateValidator(valConfigV1Idx)`**:
 - Reverts if `isInitialized() == true`
 - Reverts if `valConfigV1Idx != validatorsArray.length` (ensures sequential migration)
 - On first call (when `validatorsArray.length == 0`), copies `owner` from V1 if V2 owner is `address(0)`
 - Reads the validator from V1 at index `valConfigV1Idx`
 - Creates a V2 validator entry with:
   - `publicKey`: copied from V1
-  - `validatorAddress`: set to `valAddress` (provided parameter, not copied from V1)
+  - `validatorAddress`: copied from V1
   - `inboundAddress`: copied from V1
   - `outboundAddress`: copied from V1
   - `index`: set to `valConfigV1Idx`
   - `addedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
   - `deletedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
 - Adds to `validatorsArray`
-- Populates lookup maps (`validators[valAddress]`, `pubkeyToIndex[pubkey]`)
+- Populates lookup maps (`validators[validatorAddress]`, `pubkeyToIndex[pubkey]`)
 
 **`initialize()`**:
+- Reverts if `validatorsArray.length < V1.getValidators().length` (ensures all validators migrated)
 - Copies `nextDkgCeremony` from V1 to V2
 - Sets `initialized = true` (bit 255 of slot 0)
 - After this call, CL reads from V2 instead of V1
+
+**`setValidatorAddress(validatorIndex, newAddress)`**:
+- Reverts if caller is not owner
+- Reverts if `validatorIndex >= validatorsArray.length`
+- Reverts if `newAddress` already exists in the validator set
+- Updates the validator at `validatorIndex` with the new address
+- Updates lookup maps: removes old address entry, adds new address entry
 
 ```solidity
 // V1 interface used during migration
@@ -588,12 +608,14 @@ interface IValidatorConfigV1 {
 
 - **Per-validator migration**: Each validator is migrated with a separate tx
 - **Owner controlled**: Only admin can migrate and initialize
-- **Validator address provided**: The V2 validator address is provided as a parameter, not copied from V1
+- **Validator address copied**: The V2 validator address is copied from V1
+- **Address changeable post-migration**: Owner can update validator addresses via `setValidatorAddress`
 - **No signatures required**: V1 validators are imported without Ed25519 signatures
   (they were already validated in V1)
 - **All validators imported**: Both active and inactive V1 validators are
   imported; inactive ones have `addedAtHeight == deletedAtHeight == block.timestamp`,
   active ones have `addedAtHeight == 0` (indicating they were active before V2 existed)
+- **Initialize validates migration**: `initialize()` reverts if not all V1 validators have been migrated
 
 ## Timeline
 
@@ -617,9 +639,10 @@ Existing networks are defined as those with hardfork_timestamp > timestamp_at_ge
 1. **Release new node software** with Allegro hardfork support
 2. **Schedule the fork** by updating chainspec with target `allegroTime`
 3. **At fork activation**: CL reads from V1 (since `isInitialized() == false`)
-4. **Admin migrates validators** by calling `migrateValidator(valConfigV1Idx, valAddress)` for each validator
+4. **Admin migrates validators** by calling `migrateValidator(valConfigV1Idx)` for each validator
    - One transaction per validator
-   - Example: `migrateValidator(0, addr0)`, `migrateValidator(1, addr1)`, `migrateValidator(2, addr2)`, etc.
+   - Example: `migrateValidator(0)`, `migrateValidator(1)`, `migrateValidator(2)`, etc.
+   - Validator addresses are copied from V1
 5. **Admin calls `initialize()`**
    - Sets `initialized = true`
    - CL now reads from V2
@@ -691,11 +714,10 @@ The test suite must cover:
 
 ### Manual Migration
 
-28. **migrateValidator imports validator**: Calling `migrateValidator(i, addr)`
-    correctly imports validator at index i from V1 with the provided address
-29. **migrateValidator uses provided address**: The V2 validator uses `valAddress` parameter,
-    not the address from V1
-30. **migrateValidator reverts on duplicate**: Calling `migrateValidator(i, addr)` reverts
+28. **migrateValidator imports validator**: Calling `migrateValidator(i)`
+    correctly imports validator at index i from V1 with the same address
+29. **migrateValidator copies address from V1**: The V2 validator uses the address from V1
+30. **migrateValidator reverts on duplicate**: Calling `migrateValidator(i)` reverts
     if `i != validatorsArray.length`
 31. **migrateValidator reverts if initialized**: Calling `migrateValidator` reverts
     if `isInitialized() == true`
@@ -711,8 +733,18 @@ The test suite must cover:
     after `initialize()`
 38. **initialize owner only**: Non-owner cannot call `initialize`
 39. **isInitialized returns correct value**: Returns false before initialize, true after
-40. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`
-    revert if `isInitialized() == false` (only migration functions allowed)
+40. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`,
+    `setValidatorAddress` revert if `isInitialized() == false` (only migration functions allowed)
+41. **initialize reverts if not all migrated**: `initialize()` reverts if
+    `validatorsArray.length < V1.getValidators().length`
+
+### setValidatorAddress
+
+42. **setValidatorAddress updates address**: Successfully updates validator address
+43. **setValidatorAddress owner only**: Non-owner cannot call `setValidatorAddress`
+44. **setValidatorAddress reverts on invalid index**: Reverts if `validatorIndex >= validatorsArray.length`
+45. **setValidatorAddress reverts on duplicate address**: Reverts if `newAddress` already exists
+46. **setValidatorAddress updates lookup maps**: Old address is removed, new address is added to lookup
 
 ---
 
