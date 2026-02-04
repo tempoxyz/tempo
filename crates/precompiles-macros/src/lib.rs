@@ -3,10 +3,13 @@
 //! This crate provides:
 //! - `#[contract]` macro that transforms a storage schema into a fully-functional contract
 //! - `#[derive(Storable)]` macro for multi-slot storage structs
+//! - `#[abi]` macro for unified module-level Solidity ABI type generation
 //! - `storable_alloy_ints!` macro for generating alloy integer storage implementations
 //! - `storable_alloy_bytes!` macro for generating alloy FixedBytes storage implementations
 //! - `storable_rust_ints!` macro for generating standard Rust integer storage implementations
 
+mod abi;
+mod composition;
 mod layout;
 mod packing;
 mod storable;
@@ -16,7 +19,7 @@ mod utils;
 
 use alloy::primitives::U256;
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{
     Data, DeriveInput, Expr, Fields, Ident, Token, Type, Visibility,
     parse::{Parse, ParseStream, Parser},
@@ -27,31 +30,55 @@ use syn::{
 use crate::utils::extract_attributes;
 
 /// Configuration parsed from `#[contract(...)]` attribute arguments.
+#[derive(Default)]
 struct ContractConfig {
     /// Optional address expression for generating `Self::new()` and `Default`.
     address: Option<Expr>,
+    /// ABI module name. If `Some`, links to that module for ABI types.
+    /// Use `abi` for default module name, or `abi = IFeeManager` for custom name.
+    abi: Option<Ident>,
+    /// Whether to generate `Dispatch` and `Precompile` impls (requires `abi`).
+    dispatch: bool,
 }
 
 impl Parse for ContractConfig {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        if input.is_empty() {
-            return Ok(Self { address: None });
+        let mut config = Self::default();
+
+        while !input.is_empty() {
+            let ident: Ident = input.parse()?;
+            match ident.to_string().as_str() {
+                "addr" | "address" => {
+                    input.parse::<Token![=]>()?;
+                    config.address = Some(input.parse()?);
+                }
+                "abi" => {
+                    if input.peek(Token![=]) {
+                        input.parse::<Token![=]>()?;
+                        config.abi = Some(input.parse()?);
+                    } else {
+                        config.abi = Some(format_ident!("abi"));
+                    }
+                }
+                "dispatch" => {
+                    config.dispatch = true;
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!(
+                            "unknown attribute `{other}`, expected `addr`, `abi`, or `dispatch`"
+                        ),
+                    ));
+                }
+            }
+
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
         }
 
-        let ident: Ident = input.parse()?;
-        if ident != "addr" && ident != "address" {
-            return Err(syn::Error::new(
-                ident.span(),
-                "only `addr` attribute is supported",
-            ));
-        }
-
-        input.parse::<Token![=]>()?;
-        let address: Expr = input.parse()?;
-
-        Ok(Self {
-            address: Some(address),
-        })
+        Ok(config)
     }
 }
 
@@ -61,7 +88,15 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 /// easily interact with the EVM storage.
 /// Its packing and encoding schemes aim to be an exact representation of the storage model used by Solidity.
 ///
-/// # Input: Storage Layout
+/// # Attributes
+///
+/// - `#[contract]` - Basic contract with storage accessors
+/// - `#[contract(addr = EXPR)]` - Contract with fixed address (generates `new()` and `Default`)
+/// - `#[contract(abi)]` - Link to a sibling `#[abi] pub mod abi { ... }` module (generates type aliases and `IConstants` impl)
+/// - `#[contract(abi = IFeeManager)]` - Link to a custom-named ABI module instead of `abi`
+/// - `#[contract(abi, dispatch)]` - Same as above plus `Dispatch` and `Precompile` impls (adds initialization check for dynamic precompiles)
+///
+/// # Storage Layout Example
 ///
 /// ```ignore
 /// #[contract]
@@ -76,39 +111,272 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 /// }
 /// ```
 ///
-/// # Output: Contract with accessible storage via getter and setter methods.
+/// # Generated Types
 ///
 /// The macro generates:
 /// 1. Transformed struct with generic parameters and runtime fields
 /// 2. Constructor: `__new(address, storage)`
 /// 3. Type-safe (private) getter and setter methods
 ///
+/// # ABI Composition
+///
+/// When using `#[contract(abi(mod1, mod2, ...))]`, the macro generates unified types from
+/// multiple `#[abi]` modules:
+///
+/// ```ignore
+/// #[contract(abi(types::tip20, types::roles_auth, types::rewards))]
+/// pub struct TIP20Token { ... }
+///
+/// // Generates:
+/// // - `TIP20TokenCalls` - Unified calls enum with variants for each module
+/// // - `TIP20TokenError` - Unified error enum with `From` impls
+/// // - `TIP20TokenEvent` - Unified event enum with `IntoLogData` impl
+/// ```
+///
+/// **Generated `{Name}Calls`:**
+/// - `SELECTORS: &[[u8; 4]]` - Flattened selectors from all modules
+/// - `valid_selector(sel) -> bool` - Check if selector matches any module
+/// - `abi_decode(data) -> Result<Self>` - Decode by selector routing
+/// - `SolInterface` trait impl
+///
+/// **Generated `{Name}Error`:**
+/// - `SELECTORS: &[[u8; 4]]` - All error selectors
+/// - `selector(&self) -> [u8; 4]` - Get selector for this error
+/// - `From<module::Error>` impls for ergonomic error conversion
+/// - `SolInterface` trait impl
+///
+/// **Generated `{Name}Event`:**
+/// - `SELECTORS: &[B256]` - All event topic0 hashes
+/// - `From<module::Event>` impls
+/// - `IntoLogData` trait impl
+///
 /// # Requirements
 ///
 /// - No duplicate slot assignments
 /// - Unique field names, excluding the reserved ones: `address`, `storage`, `msg_sender`.
 /// - All field types must implement `Storable`, and mapping keys must implement `StorageKey`.
+/// - For `abi(...)`: All referenced modules must be `#[abi]` modules with `Calls`, `Error`, and `Event` types.
 #[proc_macro_attribute]
 pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
     let config = parse_macro_input!(attr as ContractConfig);
     let input = parse_macro_input!(item as DeriveInput);
 
-    match gen_contract_output(input, config.address.as_ref()) {
+    match gen_contract_output(input, &config) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
 }
 
-/// Main code generation function with optional call trait generation
+/// Configuration parsed from `#[abi(...)]` attribute arguments.
+#[derive(Default)]
+pub(crate) struct SolidityConfig {
+    /// Disable auto re-export of module contents.
+    pub no_reexport: bool,
+    /// Generate Dispatch trait and precompile_call helper (requires revm).
+    pub dispatch: bool,
+}
+
+impl Parse for SolidityConfig {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut config = Self::default();
+
+        while !input.is_empty() {
+            let ident: Ident = input.parse()?;
+            match ident.to_string().as_str() {
+                "no_reexport" => {
+                    config.no_reexport = true;
+                }
+                "dispatch" => {
+                    config.dispatch = true;
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!(
+                            "unknown attribute `{other}`, expected `no_reexport` or `dispatch`"
+                        ),
+                    ));
+                }
+            }
+
+            // Consume optional trailing comma
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        Ok(config)
+    }
+}
+
+/// Unified module macro for generating Solidity-compatible types.
+///
+/// This macro processes an entire module containing Solidity ABI type definitions,
+/// enabling correct selector computation for functions with struct parameters
+/// and proper EIP-712 component tracking for nested structs.
+///
+/// # Attributes
+///
+/// - `#[abi]` - Default behavior with auto re-exports
+/// - `#[abi(dispatch)]` - Generate `Dispatch` trait and `precompile_call` helper (requires `revm`)
+/// - `#[abi(no_reexport)]` - Disable auto re-export behavior
+///
+/// # Auto Re-exports
+///
+/// By default, the macro generates sibling re-export items after the module:
+///
+/// ```ignore
+/// #[abi]
+/// pub mod tip20 { ... }
+///
+/// // Auto-generated:
+/// pub use self::tip20::*;
+/// #[allow(non_snake_case)]
+/// pub mod ITip20 { pub use super::tip20::*; }
+/// ```
+///
+/// The interface alias uses PascalCase naming: `tip20` → `ITip20`, `roles_auth` → `IRolesAuth`.
+///
+/// Use `#[abi(no_reexport)]` to disable this behavior.
+///
+/// # Naming Conventions
+///
+/// | Item Type | Required Name | Cardinality |
+/// |-----------|---------------|-------------|
+/// | Interface trait | `Interface` | 0 or 1 |
+/// | Error enum | `Error` | 0 or 1 |
+/// | Event enum | `Event` | 0 or 1 |
+/// | Structs | Any valid identifier | 0 or more |
+/// | Other enums | Any valid identifier | 0 or more (unit variants only) |
+/// | Constants | Any (const/static) | 0 or more |
+///
+/// # Generated Types
+///
+/// **Always generated** (for `#[contract(abi)]` composition):
+/// - `Error` enum with `SELECTORS`, `valid_selector()`, `selector()` (dummy if not defined)
+/// - `Event` enum with `SELECTORS`, `IntoLogData` impl (dummy if not defined)
+/// - `Calls` enum with `SELECTORS`, `valid_selector()`, `abi_decode()` (dummy if not defined)
+///
+/// For each struct:
+/// - `SolStruct`, `SolType`, `SolValue`, `EventTopic` implementations
+///
+/// For unit enums (non-Error/Event):
+/// - `#[repr(u8)]` with explicit discriminants
+/// - `From<Enum> for u8` and `TryFrom<u8> for Enum`
+/// - `SolType` implementation (encodes as uint8)
+///
+/// For Error enum:
+/// - Individual error structs with `SolError` implementations
+/// - Container `Error` enum with `SolInterface` implementation
+/// - Snake_case constructor methods
+///
+/// For Event enum:
+/// - Individual event structs with `SolEvent` implementations
+/// - Container `Event` enum with `IntoLogData` implementation
+/// - Use `#[indexed]` on fields to mark them as indexed topics
+///
+/// For Interface trait:
+/// - `{camelCaseName}Call` structs with `SolCall` implementations
+/// - `Calls` enum with `SolInterface` implementation
+/// - Trait with `msg_sender: Address` auto-injected for `&mut self` methods
+///
+/// For constants (const/static items):
+/// - `{CONSTANT_NAME}Call` structs for each constant
+/// - `IConstants` trait with getter methods
+/// - `ConstantsCalls` enum merged into unified `Calls`
+///
+/// # Dummy Types
+///
+/// When a module doesn't define `Error`, `Event`, or `Interface`, the macro generates
+/// empty "dummy" types to ensure compatibility with `#[contract(abi)]` composition:
+///
+/// ```ignore
+/// #[abi]
+/// pub mod rewards {
+///     pub trait Interface {
+///         fn claim_rewards(&mut self) -> Result<U256>;
+///     }
+/// }
+/// // Generates real Calls enum + dummy Error and Event enums
+/// ```
+///
+/// Dummy types implement the required API with empty selectors:
+/// - `Error::SELECTORS` = `&[]`, `valid_selector()` returns `false`
+/// - `Event::SELECTORS` = `&[]`
+/// - `Calls` (if no Interface) = empty enum with `abi_decode()` returning error
+///
+/// # Example
+///
+/// ```ignore
+/// #[abi]
+/// pub mod abi {
+///     use super::*;
+///
+///     pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
+///
+///     #[derive(Clone, Debug)]
+///     pub struct Transfer {
+///         pub from: Address,
+///         pub to: Address,
+///         pub amount: U256,
+///     }
+///
+///     pub enum PolicyType {
+///         Whitelist,  // = 0
+///         Blacklist,  // = 1
+///     }
+///
+///     pub enum Error {
+///         Unauthorized,
+///         InsufficientBalance { available: U256, required: U256 },
+///     }
+///
+///     pub enum Event {
+///         RoleMembershipUpdated {
+///             #[indexed] role: B256,
+///             #[indexed] account: Address,
+///             sender: Address,
+///             has_role: bool,
+///         },
+///     }
+///
+///     pub trait Interface {
+///         fn has_role(&self, account: Address, role: B256) -> Result<bool>;
+///         fn grant_role(&mut self, role: B256, account: Address) -> Result<()>;
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn abi(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let config = parse_macro_input!(attr as SolidityConfig);
+    let input = parse_macro_input!(item as syn::ItemMod);
+
+    match abi::expand(input, config) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 fn gen_contract_output(
     input: DeriveInput,
-    address: Option<&Expr>,
+    config: &ContractConfig,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let (ident, vis) = (input.ident.clone(), input.vis.clone());
     let fields = parse_fields(input)?;
 
-    let storage_output = gen_contract_storage(&ident, &vis, &fields, address)?;
-    Ok(quote! { #storage_output })
+    let storage_output = gen_contract_storage(&ident, &vis, &fields, config.address.as_ref())?;
+
+    let abi_aliases = if let Some(abi_mod) = &config.abi {
+        let is_dynamic = config.address.is_none();
+        composition::generate_abi_aliases(&ident, abi_mod, config.dispatch, is_dynamic)?
+    } else {
+        proc_macro2::TokenStream::new()
+    };
+
+    Ok(quote! {
+        #storage_output
+        #abi_aliases
+    })
 }
 
 /// Information extracted from a field in the storage schema

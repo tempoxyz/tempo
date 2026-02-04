@@ -186,6 +186,9 @@ alloy-rpc-types-eth = { version = "1.4.3" }
 alloy-serde = "1.4.3"
 alloy-signer = "1.4.3"
 alloy-signer-local = "1.4.3"
+alloy-sol-macro = "1.5"
+alloy-sol-macro-expander = "1.5"
+alloy-sol-macro-input = "1.5"
 alloy-sol-types = "1.5.0"
 alloy-transport = "1.4.3"
 
@@ -338,3 +341,8 @@ commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev =
 commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "a1b60388c0bbc9126aa9934ec6ebade6ec344552"}
 commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "a1b60388c0bbc9126aa9934ec6ebade6ec344552"}
 commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "a1b60388c0bbc9126aa9934ec6ebade6ec344552"}
+
+# Alloy fork with public codegen types for #[abi] macro
+alloy-sol-macro-expander = { git = "https://github.com/0xrusowsky/alloy-core", branch = "rus/sol-macro-codegen" }
+alloy-sol-macro-input = { git = "https://github.com/0xrusowsky/alloy-core", branch = "rus/sol-macro-codegen" }
+
