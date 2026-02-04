@@ -269,6 +269,11 @@ contract AccountKeychain is IAccountKeychain {
             revert KeyNotFound();
         }
 
+        // Check if key has expired
+        if (block.timestamp >= key.expiry) {
+            revert KeyExpired();
+        }
+
         // If enforceLimits is false, this key has unlimited spending
         if (!key.enforceLimits) {
             return;
