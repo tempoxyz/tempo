@@ -43,6 +43,7 @@ pub mod ITIP20Factory {
     pub trait Interface {
         /// Creates a new TIP20 token with the given parameters.
         /// Returns the address of the newly created token.
+        #[msg_sender]
         fn create_token(
             &mut self,
             name: String,

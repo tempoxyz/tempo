@@ -9,7 +9,7 @@ use tempo_precompiles_macros::contract;
 
 use crate::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
-    error::{Result, TempoPrecompileError},
+    error::Result,
     storage::ContractStorage,
     tip20::{TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
 };
@@ -74,9 +74,7 @@ impl TIP20Factory {
 
         // Validate that the address is not already deployed
         if self.is_tip20(address)? {
-            return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::token_already_exists(address),
-            ));
+            return Err(TIP20FactoryError::token_already_exists(address).into());
         }
 
         // quote_token must be address(0) or a valid TIP20
@@ -100,24 +98,20 @@ impl TIP20Factory {
         padded.copy_from_slice(&address.as_slice()[12..]);
         let lower_bytes = u64::from_be_bytes(padded);
         if lower_bytes >= RESERVED_SIZE {
-            return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::address_not_reserved(),
-            ));
+            return Err(TIP20FactoryError::address_not_reserved().into());
         }
 
         let mut token = TIP20Token::from_address(address)?;
         token.initialize(admin, name, symbol, currency, quote_token, admin)?;
 
-        self.emit_event(TIP20FactoryEvent::TokenCreated(
-            ITIP20Factory::TokenCreated {
-                token: address,
-                name: name.into(),
-                symbol: symbol.into(),
-                currency: currency.into(),
-                quote_token,
-                admin,
-                salt: B256::ZERO,
-            },
+        self.emit_event(TIP20FactoryEvent::token_created(
+            address,
+            name.into(),
+            symbol.into(),
+            currency.into(),
+            quote_token,
+            admin,
+            B256::ZERO,
         ))?;
 
         Ok(address)
@@ -141,9 +135,7 @@ impl ITIP20Factory::Interface for TIP20Factory {
         let (token_address, lower_bytes) = compute_tip20_address(msg_sender, salt);
 
         if self.is_tip20(token_address)? {
-            return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::token_already_exists(token_address),
-            ));
+            return Err(TIP20FactoryError::token_already_exists(token_address).into());
         }
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
@@ -160,9 +152,7 @@ impl ITIP20Factory::Interface for TIP20Factory {
 
         // Check if address is in reserved range
         if lower_bytes < RESERVED_SIZE {
-            return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::address_reserved(),
-            ));
+            return Err(TIP20FactoryError::address_reserved().into());
         }
 
         TIP20Token::from_address(token_address)?.initialize(
@@ -174,16 +164,14 @@ impl ITIP20Factory::Interface for TIP20Factory {
             admin,
         )?;
 
-        self.emit_event(TIP20FactoryEvent::TokenCreated(
-            ITIP20Factory::TokenCreated {
-                token: token_address,
-                name,
-                symbol,
-                currency,
-                quote_token,
-                admin,
-                salt,
-            },
+        self.emit_event(TIP20FactoryEvent::token_created(
+            token_address,
+            name,
+            symbol,
+            currency,
+            quote_token,
+            admin,
+            salt,
         ))?;
 
         Ok(token_address)
@@ -202,9 +190,7 @@ impl ITIP20Factory::Interface for TIP20Factory {
 
         // Check if address would be in reserved range
         if lower_bytes < RESERVED_SIZE {
-            return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::address_reserved(),
-            ));
+            return Err(TIP20FactoryError::address_reserved().into());
         }
 
         Ok(address)
@@ -391,24 +377,24 @@ mod tests {
 
             // Verify event emission
             factory.assert_emitted_events(vec![
-                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
-                    token: token_addr_1,
-                    name: "Test Token 1".into(),
-                    symbol: "TEST1".into(),
-                    currency: "USD".into(),
-                    quote_token: path_usd.address(),
-                    admin: sender,
-                    salt: salt1.into(),
-                }),
-                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
-                    token: token_addr_2,
-                    name: "Test Token 2".into(),
-                    symbol: "TEST2".into(),
-                    currency: "USD".into(),
-                    quote_token: path_usd.address(),
-                    admin: sender,
-                    salt: salt2.into(),
-                }),
+                TIP20FactoryEvent::token_created(
+                    token_addr_1,
+                    "Test Token 1".into(),
+                    "TEST1".into(),
+                    "USD".into(),
+                    path_usd.address(),
+                    sender,
+                    salt1.into(),
+                ),
+                TIP20FactoryEvent::token_created(
+                    token_addr_2,
+                    "Test Token 2".into(),
+                    "TEST2".into(),
+                    "USD".into(),
+                    path_usd.address(),
+                    sender,
+                    salt2.into(),
+                ),
             ]);
 
             Ok(())
@@ -434,7 +420,7 @@ mod tests {
             );
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+                TIP20Error::invalid_quote_token().into()
             );
             Ok(())
         })
@@ -462,7 +448,7 @@ mod tests {
             );
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+                TIP20Error::invalid_quote_token().into()
             );
             Ok(())
         })
@@ -491,7 +477,7 @@ mod tests {
             );
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+                TIP20Error::invalid_quote_token().into()
             );
             Ok(())
         })
@@ -527,9 +513,7 @@ mod tests {
             );
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20Factory(TIP20FactoryError::TokenAlreadyExists(
-                    ITIP20Factory::TokenAlreadyExists { token }
-                ))
+                TIP20FactoryError::token_already_exists(token).into()
             );
 
             Ok(())
@@ -554,10 +538,7 @@ mod tests {
                 admin,
             );
 
-            assert_eq!(
-                result.unwrap_err(),
-                TempoPrecompileError::TIP20(TIP20Error::invalid_token())
-            );
+            assert_eq!(result.unwrap_err(), TIP20Error::invalid_token().into());
 
             Ok(())
         })
@@ -592,9 +573,7 @@ mod tests {
 
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20Factory(TIP20FactoryError::token_already_exists(
-                    PATH_USD_ADDRESS
-                ))
+                TIP20FactoryError::token_already_exists(PATH_USD_ADDRESS).into()
             );
 
             Ok(())
@@ -625,7 +604,7 @@ mod tests {
 
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+                TIP20Error::invalid_quote_token().into()
             );
 
             Ok(())
@@ -655,7 +634,7 @@ mod tests {
 
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20Factory(TIP20FactoryError::address_not_reserved())
+                TIP20FactoryError::address_not_reserved().into()
             );
 
             Ok(())
@@ -680,12 +659,10 @@ mod tests {
                 address!("20C0000000000000000000000000000000000001"),
                 admin,
             );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
-                    _
-                )))
-            ));
+            assert_eq!(
+                result.unwrap_err(),
+                TIP20Error::invalid_quote_token().into()
+            );
 
             // Only possible to deploy PATH_USD (the first token) without a quote token
             factory.create_token_reserved_address(
@@ -727,12 +704,10 @@ mod tests {
                 other_usd,
                 admin,
             );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
-                    _
-                )))
-            ));
+            assert_eq!(
+                result.unwrap_err(),
+                TIP20Error::invalid_quote_token().into()
+            );
 
             factory.create_token_reserved_address(
                 PATH_USD_ADDRESS,
