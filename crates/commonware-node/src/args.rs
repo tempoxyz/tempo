@@ -1,9 +1,9 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
 use std::{net::SocketAddr, path::PathBuf, sync::OnceLock};
 
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{bls12381::primitives::group::Share, ed25519::PublicKey};
 use eyre::Context;
-use tempo_commonware_node_config::SigningKey;
+use tempo_commonware_node_config::{SigningKey, SigningShare};
 
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
@@ -148,6 +148,11 @@ pub struct Args {
 }
 
 impl Args {
+    /// Returns true if consensus should run.
+    pub fn is_enabled(&self, is_dev_mode: bool, is_follow_mode: bool) -> bool {
+        !is_dev_mode && !is_follow_mode
+    }
+
     /// Returns the signing key loaded from specified file.
     pub(crate) fn signing_key(&self) -> eyre::Result<Option<SigningKey>> {
         if let Some(signing_key) = self.loaded_signing_key.get() {
@@ -177,5 +182,22 @@ impl Args {
         Ok(self
             .signing_key()?
             .map(|signing_key| signing_key.public_key()))
+    }
+
+    /// Returns the BLS threshold signing share loaded from the configured file, if any.
+    pub(crate) fn signing_share(&self) -> eyre::Result<Option<Share>> {
+        Ok(self
+            .signing_share
+            .as_ref()
+            .map(|path| {
+                SigningShare::read_from_file(path).wrap_err_with(|| {
+                    format!(
+                        "failed reading private bls12-381 key share from file `{}`",
+                        path.display()
+                    )
+                })
+            })
+            .transpose()?
+            .map(|s| s.into_inner()))
     }
 }

@@ -33,9 +33,7 @@ commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-math.workspace = true
-commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
-futures = { workspace = true, features = ["executor"] }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -51,9 +49,9 @@ reth-node-builder.workspace = true
 reth-rpc-server-types.workspace = true
 clap.workspace = true
 eyre.workspace = true
+futures.workspace = true
 jiff.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
 tracing.workspace = true
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }

@@ -11690,7 +11690,6 @@ dependencies = [
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-math",
- "commonware-runtime",
  "commonware-utils",
  "eyre",
  "futures",
@@ -11719,7 +11718,6 @@ dependencies = [
  "tempo-faucet",
  "tempo-node",
  "tokio",
- "tokio-util",
  "tracing",
  "url",
 ]
@@ -11852,6 +11850,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-telemetry-util",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

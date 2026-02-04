@@ -12,28 +12,28 @@ pub(crate) mod epoch;
 pub(crate) mod executor;
 pub mod feed;
 pub mod metrics;
+pub mod node;
+pub mod p2p;
 pub(crate) mod utils;
 
 pub(crate) mod subblocks;
 
-use std::net::SocketAddr;
-
-use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
-use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
-use tempo_commonware_node_config::SigningShare;
 use tempo_node::TempoFullNode;
 
-use crate::config::PEERSETS_TO_TRACK;
-pub use crate::config::{
-    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
-    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, NAMESPACE,
-    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
-    VOTES_CHANNEL_IDENT, VOTES_LIMIT,
+pub use crate::{
+    config::{
+        BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT,
+        CERTIFICATES_LIMIT, DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT,
+        NAMESPACE, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT,
+        SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
+    },
+    p2p::{Channels, P2pNetwork, TempoNetworkBuilder},
 };
 
 pub use args::Args;
+pub use node::{ConsensusExitFuture, ConsensusNode, ConsensusNodeHandle};
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
@@ -41,127 +41,68 @@ pub async fn run_consensus_stack(
     execution_node: TempoFullNode,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
-    let share = config
-        .signing_share
-        .as_ref()
-        .map(|share| {
-            SigningShare::read_from_file(share).wrap_err_with(|| {
-                format!(
-                    "failed reading private bls12-381 key share from file `{}`",
-                    share.display()
-                )
-            })
-        })
-        .transpose()?
-        .map(|signing_share| signing_share.into_inner());
+    let share = config.signing_share()?;
 
     let signing_key = config
         .signing_key()?
         .ok_or_eyre("required option `consensus.signing-key` not set")?;
 
-    let (mut network, oracle) = instantiate_network(
-        context,
-        signing_key.clone().into_inner(),
-        config.listen_address,
-        config.mailbox_size,
-        config.max_message_size_bytes,
-        config.bypass_ip_check,
-        config.use_local_defaults,
-    )
-    .await
-    .wrap_err("failed to start network")?;
+    let mut net = TempoNetworkBuilder::default()
+        .with_signing_key(signing_key.clone().into_inner())
+        .with_listen_address(config.listen_address)
+        .with_mailbox_size(config.mailbox_size)
+        .with_max_message_size(config.max_message_size_bytes)
+        .with_bypass_ip_check(config.bypass_ip_check)
+        .with_use_local_defaults(config.use_local_defaults)
+        .with_message_backlog(config.message_backlog)
+        .build(context)
+        .wrap_err("failed to build network")?;
 
-    let message_backlog = config.message_backlog;
-    let votes = network.register(VOTES_CHANNEL_IDENT, VOTES_LIMIT, message_backlog);
-    let certificates = network.register(
-        CERTIFICATES_CHANNEL_IDENT,
-        CERTIFICATES_LIMIT,
-        message_backlog,
-    );
-    let resolver = network.register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, message_backlog);
-    let broadcaster = network.register(
-        BROADCASTER_CHANNEL_IDENT,
-        BROADCASTER_LIMIT,
-        message_backlog,
-    );
-    let marshal = network.register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, message_backlog);
-    let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
-    let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
+    let channels = net.register_channels().await?;
 
-    let fee_recipient = config
-        .fee_recipient
-        .ok_or_eyre("required option `consensus.fee-recipient` not set")?;
-
-    let consensus_engine = crate::consensus::engine::Builder {
-        fee_recipient,
-
+    let consensus_engine = crate::consensus::Builder {
+        fee_recipient: config
+            .fee_recipient
+            .ok_or_eyre("required option `consensus.fee-recipient` not set")?,
         execution_node: Some(execution_node),
-        blocker: oracle.clone(),
-        peer_manager: oracle.clone(),
-        // TODO: Set this through config?
+        blocker: net.blocker(),
+        peer_manager: net.peer_manager(),
         partition_prefix: "engine".into(),
         signer: signing_key.into_inner(),
         share,
-
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
-
-        time_to_propose: config.wait_for_proposal.try_into().wrap_err(
-            "failed converting argument wait-for-proposal to regular duration; \
-            was it negative or chosen too large?",
-        )?,
-        time_to_collect_notarizations: config.wait_for_notarizations.try_into().wrap_err(
-            "failed converting argument wait-for-notarizations to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        time_to_retry_nullify_broadcast: config.wait_to_rebroadcast_nullify.try_into().wrap_err(
-            "failed converting argument wait-to-rebroadcast-nullify to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        time_for_peer_response: config.wait_for_peer_response.try_into().wrap_err(
-            "failed converting argument wait-for-peer-response to regular \
-            duration; was it negative or chosen too large",
-        )?,
+        time_to_propose: config.wait_for_proposal.try_into()?,
+        time_to_collect_notarizations: config.wait_for_notarizations.try_into()?,
+        time_to_retry_nullify_broadcast: config.wait_to_rebroadcast_nullify.try_into()?,
+        time_for_peer_response: config.wait_for_peer_response.try_into()?,
         views_to_track: config.views_to_track,
         views_until_leader_skip: config.inactive_views_until_leader_skip,
-        new_payload_wait_time: config.time_to_build_proposal.try_into().wrap_err(
-            "failed converting argument time-to-build-proposal to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        time_to_build_subblock: config.time_to_build_subblock.try_into().wrap_err(
-            "failed converting argument time-to-build-subblock to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        subblock_broadcast_interval: config.subblock_broadcast_interval.try_into().wrap_err(
-            "failed converting argument subblock-broadcast-interval to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        fcu_heartbeat_interval: config.fcu_heartbeat_interval.try_into().wrap_err(
-            "failed converting argument fcu-heartbeat-interval to regular \
-            duration; was it negative or chosen too large",
-        )?,
-
+        new_payload_wait_time: config.time_to_build_proposal.try_into()?,
+        time_to_build_subblock: config.time_to_build_subblock.try_into()?,
+        subblock_broadcast_interval: config.subblock_broadcast_interval.try_into()?,
+        fcu_heartbeat_interval: config.fcu_heartbeat_interval.try_into()?,
         feed_state,
     }
     .try_init(context.with_label("engine"))
     .await
     .wrap_err("failed initializing consensus engine")?;
 
-    let (network, consensus_engine) = (
-        network.start(),
+    let (network_handle, consensus_engine) = (
+        net.start(),
         consensus_engine.start(
-            votes,
-            certificates,
-            resolver,
-            broadcaster,
-            marshal,
-            dkg,
-            subblocks,
+            channels.votes,
+            channels.certificates,
+            channels.resolver,
+            channels.broadcaster,
+            channels.marshal,
+            channels.dkg,
+            channels.subblocks,
         ),
     );
 
     tokio::select! {
-        ret = network => {
+        ret = network_handle => {
             ret.map_err(eyre::Report::from)
                 .and_then(|()| Err(eyre!("exited unexpectedly")))
                 .wrap_err("network task failed")
@@ -173,36 +114,4 @@ pub async fn run_consensus_stack(
                 .wrap_err("consensus engine task failed")
         }
     }
-}
-
-async fn instantiate_network(
-    context: &commonware_runtime::tokio::Context,
-    signing_key: PrivateKey,
-    listen_addr: SocketAddr,
-    mailbox_size: usize,
-    max_message_size: u32,
-    bypass_ip_check: bool,
-    use_local_defaults: bool,
-) -> eyre::Result<(
-    lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
-    lookup::Oracle<PublicKey>,
-)> {
-    // TODO: Find out why `union_unique` should be used. This is the only place
-    // where `NAMESPACE` is used at all. We follow alto's example for now.
-    let p2p_namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
-
-    let default_config = if use_local_defaults {
-        lookup::Config::local(signing_key, &p2p_namespace, listen_addr, max_message_size)
-    } else {
-        lookup::Config::recommended(signing_key, &p2p_namespace, listen_addr, max_message_size)
-    };
-
-    let p2p_cfg = lookup::Config {
-        mailbox_size,
-        tracked_peer_sets: PEERSETS_TO_TRACK,
-        bypass_ip_check,
-        ..default_config
-    };
-
-    Ok(lookup::Network::new(context.with_label("network"), p2p_cfg))
 }

@@ -22,16 +22,15 @@ mod defaults;
 mod tempo_cmd;
 
 use clap::Parser;
-use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
-use futures::{FutureExt as _, future::FusedFuture as _};
-use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
-use reth_ethereum_cli::Cli;
+use futures::future::{Either, pending};
+use reth_ethereum::evm::revm::primitives::B256;
+use reth_ethereum_cli::{Cli, Commands};
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
-use std::{sync::Arc, thread};
+use std::sync::Arc;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
+use tempo_commonware_node::{ConsensusNode, feed as consensus_feed};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_faucet::{
@@ -39,19 +38,19 @@ use tempo_faucet::{
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
 };
 use tempo_node::{
-    TempoFullNode, TempoNodeArgs,
+    TempoNodeArgs,
     node::TempoNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
-    telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
+    telemetry::PrometheusMetricsConfig,
 };
-use tokio::sync::oneshot;
-use tracing::{info, info_span};
+use tracing::info;
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
 struct TempoArgs {
     /// Follow this specific RPC node for block hashes.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
+    /// When set, consensus is skipped and the node follows the remote chain.
     #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
     pub follow: Option<String>,
 
@@ -122,8 +121,7 @@ fn main() -> eyre::Result<()> {
     >::parse();
 
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
-    let mut telemetry_config = None;
-    if let Commands::Node(node_cmd) = &cli.command
+    let telemetry_config = if let Commands::Node(node_cmd) = &cli.command
         && let Some(config) = node_cmd
             .ext
             .telemetry
@@ -136,120 +134,10 @@ fn main() -> eyre::Result<()> {
             .logs_otlp_filter
             .parse()
             .wrap_err("invalid default logs filter")?;
-        telemetry_config.replace(config);
-    }
-
-    let is_node = matches!(cli.command, Commands::Node(_));
-
-    let (args_and_node_handle_tx, args_and_node_handle_rx) =
-        oneshot::channel::<(TempoFullNode, TempoArgs)>();
-    let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
-
-    let shutdown_token = tokio_util::sync::CancellationToken::new();
-    let cl_feed_state = consensus_feed::FeedStateHandle::new();
-
-    let shutdown_token_clone = shutdown_token.clone();
-    let cl_feed_state_clone = cl_feed_state.clone();
-    let consensus_handle = thread::spawn(move || {
-        // Exit early if we are not executing `tempo node` command.
-        if !is_node {
-            return Ok(());
-        }
-
-        let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err(
-            "channel closed before consensus-relevant command line args \
-                and a handle to the execution node could be received",
-        )?;
-
-        let ret = if node.config.dev.dev || args.follow.is_some() {
-            // When --follow is used (with or without a URL), skip consensus stack
-            futures::executor::block_on(async move {
-                shutdown_token_clone.cancelled().await;
-                Ok(())
-            })
-        } else {
-            let consensus_storage = args.consensus.storage_dir.clone().unwrap_or_else(|| {
-                node.config
-                    .datadir
-                    .clone()
-                    .resolve_datadir(node.chain_spec().chain())
-                    .data_dir()
-                    .join("consensus")
-            });
-
-            info_span!("prepare_consensus").in_scope(|| {
-                info!(
-                    path = %consensus_storage.display(),
-                    "determined directory for consensus data",
-                )
-            });
-
-            let runtime_config = commonware_runtime::tokio::Config::default()
-                .with_tcp_nodelay(Some(true))
-                .with_worker_threads(args.consensus.worker_threads)
-                .with_storage_directory(consensus_storage)
-                .with_catch_panics(true);
-
-            let runner = commonware_runtime::tokio::Runner::new(runtime_config);
-
-            runner.start(async move |ctx| {
-                // Ensure all consensus metrics are prefixed. Shadow `ctx` to
-                // not forget.
-                let ctx = ctx.with_label("consensus");
-
-                let mut metrics_server = tempo_commonware_node::metrics::install(
-                    ctx.with_label("metrics"),
-                    args.consensus.metrics_address,
-                )
-                .fuse();
-
-                // Start the unified metrics exporter if configured
-                if let Some(config) = telemetry_config {
-                    let prometheus_config = PrometheusMetricsConfig {
-                        endpoint: config.metrics_prometheus_url,
-                        interval: config.metrics_prometheus_interval,
-                        auth_header: config.metrics_auth_header,
-                    };
-
-                    install_prometheus_metrics(
-                        ctx.with_label("telemetry_metrics"),
-                        prometheus_config,
-                    )
-                    .wrap_err("failed to start Prometheus metrics exporter")?;
-                }
-
-                let consensus_stack =
-                    run_consensus_stack(&ctx, args.consensus, node, cl_feed_state_clone);
-                tokio::pin!(consensus_stack);
-                loop {
-                    tokio::select!(
-                        biased;
-
-                        () = shutdown_token_clone.cancelled() => {
-                            break Ok(());
-                        }
-
-                        ret = &mut consensus_stack => {
-                            break ret.and_then(|()| Err(eyre::eyre!(
-                                "consensus stack exited unexpectedly"))
-                            )
-                            .wrap_err("consensus stack failed");
-                        }
-
-                        ret = &mut metrics_server, if !metrics_server.is_terminated() => {
-                            let reason = match ret.wrap_err("task_panicked") {
-                                Ok(Ok(())) => "unexpected regular exit".to_string(),
-                                Ok(Err(err)) | Err(err) => format!("{err}"),
-                            };
-                            tracing::warn!(reason, "the metrics server exited");
-                        }
-                    )
-                }
-            })
-        };
-        let _ = consensus_dead_tx.send(());
-        ret
-    });
+        Some(config)
+    } else {
+        None
+    };
 
     let components = |spec: Arc<TempoChainSpec>| {
         (
@@ -257,6 +145,9 @@ fn main() -> eyre::Result<()> {
             TempoConsensus::new(spec),
         )
     };
+
+    // Feed state for RPC consensus info - shared between RPC and consensus
+    let feed_state = consensus_feed::FeedStateHandle::new();
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         let faucet_args = args.faucet_args.clone();
@@ -293,6 +184,10 @@ fn main() -> eyre::Result<()> {
             None
         };
 
+        // Determine if consensus should run
+        let is_dev_mode = builder.config().dev.dev;
+        let is_follow_mode = args.follow.is_some();
+
         let NodeHandle {
             node,
             node_exit_future,
@@ -317,41 +212,64 @@ fn main() -> eyre::Result<()> {
 
                 builder
             })
-            .extend_rpc_modules(move |ctx| {
-                if faucet_args.enabled {
-                    let ext = TempoFaucetExt::new(
-                        faucet_args.addresses(),
-                        faucet_args.amount(),
-                        faucet_args.provider(),
-                    );
+            .extend_rpc_modules({
+                let feed_state = feed_state.clone();
+                move |ctx| {
+                    if faucet_args.enabled {
+                        let ext = TempoFaucetExt::new(
+                            faucet_args.addresses(),
+                            faucet_args.amount(),
+                            faucet_args.provider(),
+                        );
 
-                    ctx.modules.merge_configured(ext.into_rpc())?;
+                        ctx.modules.merge_configured(ext.into_rpc())?;
+                    }
+
+                    if validator_key.is_some() {
+                        ctx.modules
+                            .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
+                    }
+
+                    Ok(())
                 }
-
-                if validator_key.is_some() {
-                    ctx.modules
-                        .merge_configured(TempoConsensusRpc::new(cl_feed_state).into_rpc())?;
-                }
-
-                Ok(())
             })
             .launch_with_debug_capabilities()
             .await
             .wrap_err("failed launching execution node")?;
 
-        let _ = args_and_node_handle_tx.send((node, args));
+        // Spawn consensus after execution node is ready
+        let consensus_handle = if args.consensus.is_enabled(is_dev_mode, is_follow_mode) {
+            // Convert telemetry config to prometheus metrics config for consensus
+            let prometheus_config = telemetry_config.map(|config| PrometheusMetricsConfig {
+                endpoint: config.metrics_prometheus_url,
+                interval: config.metrics_prometheus_interval,
+                auth_header: config.metrics_auth_header,
+            });
+            Some(
+                ConsensusNode::new(args.consensus, node, feed_state)
+                    .with_telemetry_config(prometheus_config)
+                    .spawn(),
+            )
+        } else {
+            info!(
+                dev_mode = is_dev_mode,
+                follow_mode = is_follow_mode,
+                "skipping consensus - running in dev/follow mode"
+            );
+            None
+        };
 
-        // TODO: emit these inside a span
+        info!("Tempo node started");
+
+        let (consensus_handle, consensus_exit) = match consensus_handle {
+            Some((h, f)) => (Some(h), Either::Left(f)),
+            None => (None, Either::Right(pending())),
+        };
+
         tokio::select! {
-            _ = node_exit_future => {
-                tracing::info!("execution node exited");
-            }
-            _ = &mut consensus_dead_rx => {
-                tracing::info!("consensus node exited");
-            }
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("received shutdown signal");
-            }
+            _ = node_exit_future => info!("execution node exited"),
+            _ = consensus_exit => info!("consensus node exited"),
+            _ = tokio::signal::ctrl_c() => info!("received shutdown signal"),
         }
 
         #[cfg(feature = "pyroscope")]
@@ -359,16 +277,10 @@ fn main() -> eyre::Result<()> {
             agent.shutdown();
         }
 
+        if let Some(h) = consensus_handle {
+            h.shutdown()?;
+        }
         Ok(())
     })
-    .wrap_err("execution node failed")?;
-
-    shutdown_token.cancel();
-
-    match consensus_handle.join() {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => eprintln!("consensus task exited with error:\n{err:?}"),
-        Err(unwind) => std::panic::resume_unwind(unwind),
-    }
-    Ok(())
+    .wrap_err("execution node failed")
 }
