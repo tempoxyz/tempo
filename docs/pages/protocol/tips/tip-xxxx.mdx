@@ -500,8 +500,8 @@ This section describes the migration strategy from ValidatorConfig V1 to V2.
 The migration uses a two-pronged approach:
 
 1. **New hardfork ("Allegro")**: Timestamp-based activation
-2. **Manual migration**: Admin migrates validators in batches, then flips the
-   `initialized` flag. CL reads from V1 until the flag is set.
+2. **Manual migration**: Admin migrates validators one at a time, then calls
+   `initialize()` to flip the flag. CL reads from V1 until the flag is set.
 
 ## Hardfork-Based Switching
 
