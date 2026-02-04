@@ -31,9 +31,9 @@ impl Precompile for TIP403Registry {
                 ITIP403RegistryCalls::isAuthorized(call) => view(call, |c| {
                     self.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
                 }),
-                // TIP-1015: T1+ only
+                // TIP-1015: T2+ only
                 ITIP403RegistryCalls::isAuthorizedSender(call) => {
-                    if !self.storage.spec().is_t1() {
+                    if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             isAuthorizedSenderCall::SELECTOR,
                             self.storage.gas_used(),
@@ -44,7 +44,7 @@ impl Precompile for TIP403Registry {
                     })
                 }
                 ITIP403RegistryCalls::isAuthorizedRecipient(call) => {
-                    if !self.storage.spec().is_t1() {
+                    if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             isAuthorizedRecipientCall::SELECTOR,
                             self.storage.gas_used(),
@@ -55,7 +55,7 @@ impl Precompile for TIP403Registry {
                     })
                 }
                 ITIP403RegistryCalls::isAuthorizedMintRecipient(call) => {
-                    if !self.storage.spec().is_t1() {
+                    if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             isAuthorizedMintRecipientCall::SELECTOR,
                             self.storage.gas_used(),
@@ -66,7 +66,7 @@ impl Precompile for TIP403Registry {
                     })
                 }
                 ITIP403RegistryCalls::compoundPolicyData(call) => {
-                    if !self.storage.spec().is_t1() {
+                    if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             compoundPolicyDataCall::SELECTOR,
                             self.storage.gas_used(),
@@ -91,9 +91,9 @@ impl Precompile for TIP403Registry {
                 ITIP403RegistryCalls::modifyPolicyBlacklist(call) => {
                     mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c))
                 }
-                // TIP-1015: T1+ only
+                // TIP-1015: T2+ only
                 ITIP403RegistryCalls::createCompoundPolicy(call) => {
-                    if !self.storage.spec().is_t1() {
+                    if !self.storage.spec().is_t2() {
                         return unknown_selector(
                             createCompoundPolicyCall::SELECTOR,
                             self.storage.gas_used(),
@@ -559,8 +559,8 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        // Use T1 to test all selectors including TIP-1015 compound policy functions
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        // Use T2 to test all selectors including TIP-1015 compound policy functions
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 

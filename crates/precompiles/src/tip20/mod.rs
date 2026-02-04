@@ -675,14 +675,14 @@ impl TIP20Token {
     }
 
     /// Checks if the transfer is authorized.
-    /// TIP-1015: For T1+, uses directional sender/recipient checks.
+    /// TIP-1015: For T2+, uses directional sender/recipient checks.
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
         let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
 
-        // (spec: +T1) short-circuit and skip recipient check if sender fails
+        // (spec: +T2) short-circuit and skip recipient check if sender fails
         let sender_auth = registry.is_authorized_as(policy_id, from, AuthRole::sender())?;
-        if self.storage.spec().is_t1() && !sender_auth {
+        if self.storage.spec().is_t2() && !sender_auth {
             return Ok(false);
         }
         let recipient_auth = registry.is_authorized_as(policy_id, to, AuthRole::recipient())?;

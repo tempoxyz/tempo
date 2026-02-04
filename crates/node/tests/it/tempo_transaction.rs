@@ -6691,3 +6691,116 @@ async fn test_eth_fill_transaction() -> eyre::Result<()> {
 
     Ok(())
 }
+
+/// Regression test for fill_transaction with 2D nonce when protocol nonce > 2D nonce.
+///
+/// Verifies that eth_fillTransaction correctly uses the 2D nonce from the nonce manager
+/// storage, not the protocol nonce from the account basic info.
+///
+/// Setup: An account sends 5 transactions to get protocol nonce = 5, then calls
+/// eth_fillTransaction with a new nonce key (2D nonce = 0). The filled transaction
+/// should have nonce = 0 (2D nonce), not nonce = 5 (protocol nonce).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_fill_transaction_2d_nonce_with_high_protocol_nonce() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing eth_fillTransaction with 2D nonce (protocol nonce > 2D nonce) ===\n");
+
+    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
+    let chain_id = provider.get_chain_id().await?;
+
+    // First, send several transactions to bump the protocol nonce
+    // This simulates the scenario where an account has been active (high protocol nonce)
+    // but is now using a new 2D nonce key (low 2D nonce)
+    println!("Sending transactions to bump protocol nonce...");
+    let recipient = Address::random();
+
+    for i in 0..5 {
+        let tx = TempoTransaction {
+            chain_id,
+            nonce: i,
+            gas_limit: 300_000,
+            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128 + 1_000_000,
+            max_priority_fee_per_gas: 1_000_000,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            calls: vec![Call {
+                to: recipient.into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+
+        let sig_hash = tx.signature_hash();
+        let signature = alice_signer.sign_hash_sync(&sig_hash)?;
+        let signed = AASigned::new_unhashed(
+            tx,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        );
+        let envelope: TempoTxEnvelope = signed.into();
+        let encoded = envelope.encoded_2718();
+
+        let tx_hash = setup.node.rpc.inject_tx(encoded.into()).await?;
+        setup.node.advance_block().await?;
+        tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
+        println!(
+            "  Transaction {} confirmed (hash: {:?}), nonce now: {}",
+            i,
+            tx_hash,
+            i + 1
+        );
+    }
+
+    // Verify protocol nonce is now 5
+    let protocol_nonce = provider.get_transaction_count(alice_addr).await?;
+    println!("Protocol nonce after transactions: {protocol_nonce}");
+    assert_eq!(protocol_nonce, 5, "Protocol nonce should be 5");
+
+    // Now call fill_transaction with a 2D nonce key
+    // The 2D nonce for this key is 0 (never used), but protocol nonce is 5
+    let nonce_key = U256::from(12345); // Arbitrary nonce key that hasn't been used
+
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    let valid_before = current_timestamp + 60;
+    let valid_after = current_timestamp - 10;
+
+    let request = serde_json::json!({
+        "from": alice_addr,
+        "type": "0x76",
+        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
+        "validBefore": format!("0x{valid_before:x}"),
+        "validAfter": format!("0x{valid_after:x}"),
+        "nonceKey": format!("{nonce_key:#x}"),
+        "keyType": "secp256k1"
+    });
+
+    let response: serde_json::Value = provider
+        .raw_request("eth_fillTransaction".into(), [request])
+        .await?;
+
+    let tx = response
+        .get("tx")
+        .expect("response should contain 'tx' field");
+
+    let filled_nonce = tx
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(999));
+
+    assert_eq!(
+        filled_nonce,
+        Some(0),
+        "Nonce should be 0 (2D nonce), not 5 (protocol nonce)"
+    );
+    assert!(tx.get("gas").is_some(), "tx should have gas filled");
+
+    Ok(())
+}
