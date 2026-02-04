@@ -45,6 +45,8 @@ hardfork!(
         T0,
         /// T1 hardfork - adds expiring nonce transactions
         T1,
+        /// T2 hardfork - adds compound transfer policies (TIP-1015)
+        T2,
     }
 );
 
@@ -59,6 +61,11 @@ impl TempoHardfork {
         *self >= Self::T1
     }
 
+    /// Returns true if this hardfork is T2 or later.
+    pub fn is_t2(&self) -> bool {
+        *self >= Self::T2
+    }
+
     /// Returns the base fee for this hardfork in attodollars.
     ///
     /// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
@@ -68,7 +75,7 @@ impl TempoHardfork {
     /// Economic conversion: basefee × gas_used / 10^12 = cost in microdollars (TIP-20 tokens)
     pub const fn base_fee(&self) -> u64 {
         match self {
-            Self::T1 => crate::spec::TEMPO_T1_BASE_FEE,
+            Self::T1 | Self::T2 => crate::spec::TEMPO_T1_BASE_FEE,
             Self::T0 | Self::Genesis => crate::spec::TEMPO_T0_BASE_FEE,
         }
     }
@@ -78,7 +85,7 @@ impl TempoHardfork {
     /// - Pre-T1: None
     pub const fn general_gas_limit(&self) -> Option<u64> {
         match self {
-            Self::T1 => Some(30_000_000),
+            Self::T1 | Self::T2 => Some(30_000_000),
             Self::T0 | Self::Genesis => None,
         }
     }
@@ -91,6 +98,9 @@ pub trait TempoHardforks: EthereumHardforks {
 
     /// Retrieves the Tempo hardfork active at a given timestamp.
     fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+        if self.is_t2_active_at_timestamp(timestamp) {
+            return TempoHardfork::T2;
+        }
         if self.is_t1_active_at_timestamp(timestamp) {
             return TempoHardfork::T1;
         }
@@ -109,6 +119,12 @@ pub trait TempoHardforks: EthereumHardforks {
     /// Returns true if T1 is active at the given timestamp.
     fn is_t1_active_at_timestamp(&self, timestamp: u64) -> bool {
         self.tempo_fork_activation(TempoHardfork::T1)
+            .active_at_timestamp(timestamp)
+    }
+
+    /// Returns true if T2 is active at the given timestamp.
+    fn is_t2_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::T2)
             .active_at_timestamp(timestamp)
     }
 
@@ -153,6 +169,7 @@ mod tests {
         assert_eq!(TempoHardfork::Genesis.name(), "Genesis");
         assert_eq!(TempoHardfork::T0.name(), "T0");
         assert_eq!(TempoHardfork::T1.name(), "T1");
+        assert_eq!(TempoHardfork::T2.name(), "T2");
     }
 
     #[test]
@@ -160,6 +177,7 @@ mod tests {
         assert!(!TempoHardfork::Genesis.is_t0());
         assert!(TempoHardfork::T0.is_t0());
         assert!(TempoHardfork::T1.is_t0());
+        assert!(TempoHardfork::T2.is_t0());
     }
 
     #[test]
@@ -167,6 +185,15 @@ mod tests {
         assert!(!TempoHardfork::Genesis.is_t1());
         assert!(!TempoHardfork::T0.is_t1());
         assert!(TempoHardfork::T1.is_t1());
+        assert!(TempoHardfork::T2.is_t1());
+    }
+
+    #[test]
+    fn test_is_t2() {
+        assert!(!TempoHardfork::Genesis.is_t2());
+        assert!(!TempoHardfork::T0.is_t2());
+        assert!(!TempoHardfork::T1.is_t2());
+        assert!(TempoHardfork::T2.is_t2());
     }
 
     #[test]

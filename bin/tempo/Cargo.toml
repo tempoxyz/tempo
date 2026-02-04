@@ -13,6 +13,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+base64.workspace = true
+url.workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
 tempo-commonware-node.workspace = true
@@ -49,6 +51,7 @@ reth-node-builder.workspace = true
 reth-rpc-server-types.workspace = true
 clap.workspace = true
 eyre.workspace = true
+jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
@@ -60,7 +63,7 @@ name = "tempo"
 path = "src/main.rs"
 
 [features]
-default = ["asm-keccak", "jemalloc"]
+default = ["asm-keccak", "jemalloc", "otlp"]
 
 asm-keccak = [
 	"alloy-primitives/asm-keccak",
@@ -71,6 +74,7 @@ asm-keccak = [
 
 otlp = [
 	"reth-ethereum-cli/otlp",
+	"reth-ethereum-cli/otlp-logs",
 	"reth-ethereum/otlp",
 	"tempo-node/otlp"
 ]

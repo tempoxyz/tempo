@@ -49,7 +49,6 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         feeToken.grantRole(_ISSUER_ROLE, admin);
         for (uint256 i = 0; i < actors.length; i++) {
             feeToken.mint(actors[i], 100_000_000e6);
-            ghost_feeTokenBalance[actors[i]] = 100_000_000e6;
         }
         vm.stopPrank();
 

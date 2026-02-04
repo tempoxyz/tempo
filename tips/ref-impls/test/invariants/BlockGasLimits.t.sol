@@ -243,24 +243,20 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
 
     /// @notice Create initcode that deploys a contract of target runtime size
     /// @param targetSize Target runtime bytecode size
+    /// @dev Optimized: new bytes() is zero-initialized, so we skip the O(n) loops
     function _createInitcodeOfSize(uint256 targetSize) internal pure returns (bytes memory) {
-        // Runtime code: just padding with INVALID (0xFE) opcodes
-        // This is valid bytecode that will deploy successfully
-        bytes memory runtime = new bytes(targetSize);
-        for (uint256 i = 0; i < targetSize; i++) {
-            runtime[i] = 0x00; // STOP opcode - safe no-op
-        }
-
         // Initcode structure:
         // PUSH2 <size>   ; 3 bytes
-        // PUSH1 0x0a     ; 2 bytes (offset where runtime starts)
+        // PUSH1 0x0e     ; 2 bytes (offset where runtime starts = 14)
         // PUSH1 0x00     ; 2 bytes (memory destination)
         // CODECOPY       ; 1 byte
         // PUSH2 <size>   ; 3 bytes
         // PUSH1 0x00     ; 2 bytes
         // RETURN         ; 1 byte
-        // <runtime>      ; targetSize bytes
+        // <runtime>      ; targetSize bytes (zeros = STOP opcodes)
 
+        // Allocate initcode directly - new bytes() is zero-initialized
+        // so runtime portion is already 0x00 (STOP opcode)
         bytes memory initcode = new bytes(14 + targetSize);
 
         // PUSH2 size (big endian)
@@ -291,11 +287,7 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
         // RETURN
         initcode[13] = 0xf3;
 
-        // Copy runtime code
-        for (uint256 i = 0; i < targetSize; i++) {
-            initcode[14 + i] = runtime[i];
-        }
-
+        // Runtime portion (bytes 14+) is already zero-initialized (0x00 = STOP)
         return initcode;
     }
 

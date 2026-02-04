@@ -230,13 +230,15 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Test that transactions are evicted when a validator changes their token preference
-/// to a token with insufficient liquidity for the user's fee token.
+/// Test that transactions are NOT evicted when a non-active validator changes their
+/// token preference.
 ///
-/// This test verifies the eviction logic directly by:
-/// 1. Submitting a transaction with a custom fee token
-/// 2. Injecting a ValidatorTokenSet event via a transaction
-/// 3. Verifying the transaction is evicted due to lack of liquidity
+/// Prior to the fix, any `setValidatorToken` call would trigger eviction of pending
+/// transactions that lacked liquidity against the new token. An attacker could exploit
+/// this by calling `setValidatorToken` with an obscure token to evict victims' transactions.
+///
+/// After the fix, eviction only happens if the new token is already in use by actual
+/// block producers (tracked via the AMM liquidity cache).
 #[tokio::test(flavor = "multi_thread")]
 async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
@@ -257,53 +259,13 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     let user_signer = signers[1].clone();
     let user_addr = user_signer.address();
 
-    // Create a fake "new validator token" address (just needs to be different from PATH_USD)
-    let new_validator_token = address!("1234567890123456789012345678901234567890");
+    // Create a fake "new validator token" address that is NOT in the active validator set.
+    // This simulates an attacker calling setValidatorToken with an obscure token.
+    let attacker_token = address!("1234567890123456789012345678901234567890");
 
-    // Submit a transaction with a custom fee token that has no liquidity with new_validator_token
-    // Using a random fee token address that won't have any AMM pool
-    let custom_fee_token = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-
-    let tx_aa = TempoTransaction {
-        chain_id: 1337,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 1_000_000,
-        calls: vec![Call {
-            to: TxKind::Call(Address::ZERO),
-            value: U256::ZERO,
-            input: alloy_primitives::Bytes::new(),
-        }],
-        fee_token: Some(custom_fee_token),
-        ..Default::default()
-    };
-
-    let signature = user_signer.sign_hash_sync(&tx_aa.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx_aa.into_signed(signature.into()).into();
-    let recovered = envelope.try_into_recovered()?;
-    let _tx_hash = *recovered.tx_hash();
-
-    // Submit tx to the pool - this will likely fail validation because there's no liquidity
-    // for the custom_fee_token with any validator token. But let's test the eviction path
-    // by directly calling the eviction function.
     let pool = &setup.node.inner.pool;
 
-    // For this test, we'll directly test the eviction logic since setting up the full
-    // liquidity scenario requires many transactions that need block advancement.
-
-    // Instead, let's verify the eviction function works correctly by checking that
-    // the function runs without error when there are no transactions.
-    let updates = tempo_transaction_pool::TempoPoolUpdates {
-        validator_token_changes: vec![(user_addr, new_validator_token)],
-        ..Default::default()
-    };
-    pool.evict_invalidated_transactions(&updates);
-
-    // The eviction ran successfully (no panic)
-    // Now let's test with a transaction that uses DEFAULT_FEE_TOKEN (PATH_USD)
-    // which should NOT be evicted because user_token == new_validator_token check won't match
-    // but there may be liquidity
-
+    // Submit a transaction that uses DEFAULT_FEE_TOKEN (PATH_USD)
     let tx_default = TempoTransaction {
         chain_id: 1337,
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
@@ -334,24 +296,30 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     assert_eq!(pooled_txs.len(), 1);
     assert_eq!(*pooled_txs[0].hash(), tx_hash);
 
-    // Now simulate a validator changing to a token that has no pool with PATH_USD
-    // This should evict the transaction because pool(PATH_USD, new_validator_token) doesn't exist
+    // Simulate an attacker calling setValidatorToken with a token that:
+    // 1. Has no AMM pool with PATH_USD
+    // 2. Is NOT in the active validator set (never produced blocks)
+    //
+    // This should NOT evict the transaction because the attacker's token is not
+    // used by any active block producers.
     let updates = tempo_transaction_pool::TempoPoolUpdates {
-        validator_token_changes: vec![(user_addr, new_validator_token)],
+        validator_token_changes: vec![(user_addr, attacker_token)],
         ..Default::default()
     };
     pool.evict_invalidated_transactions(&updates);
 
-    // Give time for the eviction to complete
+    // Give time for any eviction to complete
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-    // Verify the transaction has been evicted
+    // Transaction should NOT be evicted because the attacker's token is not in
+    // the active validator set.
     let pooled_txs_after = pool.get_transactions_by_sender(user_addr);
-    assert!(
-        pooled_txs_after.is_empty(),
-        "Transaction should be evicted after validator token change to token with no liquidity. Found {} txs.",
-        pooled_txs_after.len()
+    assert_eq!(
+        pooled_txs_after.len(),
+        1,
+        "Transaction should NOT be evicted when validator token change is from a non-active validator"
     );
+    assert_eq!(*pooled_txs_after[0].hash(), tx_hash);
 
     Ok(())
 }
