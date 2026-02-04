@@ -733,8 +733,7 @@ The test suite must cover:
     after `initialize()`
 38. **initialize owner only**: Non-owner cannot call `initialize`
 39. **isInitialized returns correct value**: Returns false before initialize, true after
-40. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`,
-    `setValidatorAddress` revert if `isInitialized() == false` (only migration functions allowed)
+40. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`
 41. **initialize reverts if not all migrated**: `initialize()` reverts if
     `validatorsArray.length < V1.getValidators().length`
 
