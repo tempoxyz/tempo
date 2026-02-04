@@ -5,12 +5,18 @@ import { INonce } from "../../src/interfaces/INonce.sol";
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { InvariantBase } from "./InvariantBase.sol";
 import { TxBuilder } from "./TxBuilder.sol";
+import {
+    TempoCall,
+    TempoTransaction,
+    TempoTransactionLib
+} from "tempo-std/tx/TempoTransactionLib.sol";
 
 /// @title HandlerBase - Common patterns for invariant test handlers
 /// @notice Extracts duplicated handler logic into reusable functions
 /// @dev Inherit from this contract to reduce boilerplate in handler implementations
 abstract contract HandlerBase is InvariantBase {
 
+    using TempoTransactionLib for TempoTransaction;
     using TxBuilder for *;
 
     // ============ Common Error Selectors ============
@@ -28,6 +34,17 @@ abstract contract HandlerBase is InvariantBase {
     }
 
     // ============ Context Structs ============
+
+    /// @dev Context for fee test operations
+    struct FeeTestContext {
+        uint256 senderIdx;
+        address sender;
+        address recipient;
+        uint256 amount;
+        uint64 nonceKey;
+        uint64 currentNonce;
+        TempoCall[] calls;
+    }
 
     /// @notice Context for transaction setup to reduce stack depth
     struct TxContext {
@@ -53,7 +70,34 @@ abstract contract HandlerBase is InvariantBase {
 
     // ============ Setup Helpers ============
 
-    /// @notice Setup a transfer context with all necessary parameters
+    /// @notice Setup base transfer context (sender, recipient, amount) with guaranteed balance
+    /// @param actorSeed Seed to select sender actor
+    /// @param recipientSeed Seed to select recipient actor
+    /// @param amountSeed Seed for amount randomization
+    /// @param minAmount Minimum transfer amount
+    /// @param maxAmount Maximum transfer amount
+    /// @return ctx The populated transaction context with base fields set
+    function _setupBaseTransferContext(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amountSeed,
+        uint256 minAmount,
+        uint256 maxAmount
+    ) internal returns (TxContext memory ctx) {
+        ctx.senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        ctx.sender = actors[ctx.senderIdx];
+        ctx.recipient = actors[recipientIdx];
+        ctx.amount = bound(amountSeed, minAmount, maxAmount);
+
+        _ensureFeeTokenBalance(ctx.sender, ctx.amount);
+    }
+
+    /// @notice Setup a transfer context with signature type
     /// @param actorSeed Seed to select sender actor
     /// @param recipientSeed Seed to select recipient actor
     /// @param amountSeed Seed for amount randomization
@@ -61,7 +105,6 @@ abstract contract HandlerBase is InvariantBase {
     /// @param minAmount Minimum transfer amount
     /// @param maxAmount Maximum transfer amount
     /// @return ctx The populated transaction context
-    /// @return skip True if the transaction should be skipped (insufficient balance)
     function _setupTransferContext(
         uint256 actorSeed,
         uint256 recipientSeed,
@@ -69,19 +112,11 @@ abstract contract HandlerBase is InvariantBase {
         uint256 sigTypeSeed,
         uint256 minAmount,
         uint256 maxAmount
-    ) internal view returns (TxContext memory ctx, bool skip) {
-        ctx.senderIdx = actorSeed % actors.length;
-        uint256 recipientIdx = recipientSeed % actors.length;
-        if (ctx.senderIdx == recipientIdx) {
-            recipientIdx = (recipientIdx + 1) % actors.length;
-        }
-
+    ) internal returns (TxContext memory ctx) {
+        ctx = _setupBaseTransferContext(actorSeed, recipientSeed, amountSeed, minAmount, maxAmount);
         ctx.sigType = _getRandomSignatureType(sigTypeSeed);
         ctx.sender = _getSenderForSigType(ctx.senderIdx, ctx.sigType);
-        ctx.recipient = actors[recipientIdx];
-        ctx.amount = bound(amountSeed, minAmount, maxAmount);
-
-        skip = !_checkBalance(ctx.sender, ctx.amount);
+        _ensureFeeTokenBalance(ctx.sender, ctx.amount);
     }
 
     /// @notice Setup a 2D nonce transfer context
@@ -93,7 +128,6 @@ abstract contract HandlerBase is InvariantBase {
     /// @param minAmount Minimum transfer amount
     /// @param maxAmount Maximum transfer amount
     /// @return ctx The populated transaction context
-    /// @return skip True if the transaction should be skipped
     function _setup2dNonceTransferContext(
         uint256 actorSeed,
         uint256 recipientSeed,
@@ -102,8 +136,8 @@ abstract contract HandlerBase is InvariantBase {
         uint256 sigTypeSeed,
         uint256 minAmount,
         uint256 maxAmount
-    ) internal view returns (TxContext memory ctx, bool skip) {
-        (ctx, skip) = _setupTransferContext(
+    ) internal returns (TxContext memory ctx) {
+        ctx = _setupTransferContext(
             actorSeed, recipientSeed, amountSeed, sigTypeSeed, minAmount, maxAmount
         );
         ctx.nonceKey = uint64(bound(nonceKeySeed, 1, 100));
@@ -143,7 +177,7 @@ abstract contract HandlerBase is InvariantBase {
         uint64 actualNonce = nonce.getNonce(account, nonceKey);
         if (actualNonce > previousNonce) {
             ghost_2dNonce[account][nonceKey] = actualNonce;
-            ghost_2dNonceUsed[account][nonceKey] = true;
+            _mark2dNonceKeyUsed(account, nonceKey);
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_total2dNonceTxs++;
@@ -293,7 +327,6 @@ abstract contract HandlerBase is InvariantBase {
 
     /// @notice Setup context for multicall with two amounts
     /// @return ctx Transaction context
-    /// @return skip True if should skip
     /// @return totalAmount Combined amount needed
     function _setupMulticallContext(
         uint256 actorSeed,
@@ -301,21 +334,13 @@ abstract contract HandlerBase is InvariantBase {
         uint256 amount1,
         uint256 amount2,
         uint256 nonceKeySeed
-    ) internal view returns (TxContext memory ctx, bool skip, uint256 totalAmount) {
-        ctx.senderIdx = actorSeed % actors.length;
-        uint256 recipientIdx = recipientSeed % actors.length;
-        if (ctx.senderIdx == recipientIdx) {
-            recipientIdx = (recipientIdx + 1) % actors.length;
-        }
-
-        ctx.sender = actors[ctx.senderIdx];
-        ctx.recipient = actors[recipientIdx];
-        ctx.amount = bound(amount1, 1e6, 10e6);
+    ) internal returns (TxContext memory ctx, uint256 totalAmount) {
+        ctx = _setupBaseTransferContext(actorSeed, recipientSeed, amount1, 1e6, 10e6);
         totalAmount = ctx.amount + bound(amount2, 1e6, 10e6);
         ctx.nonceKey = uint64(bound(nonceKeySeed, 1, 100));
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
 
-        skip = feeToken.balanceOf(ctx.sender) < totalAmount;
+        _ensureFeeTokenBalance(ctx.sender, totalAmount);
     }
 
     /// @notice Simplified record helper for 2D nonce success (overload without previousNonce)
@@ -325,7 +350,7 @@ abstract contract HandlerBase is InvariantBase {
         uint64 actualNonce = nonce.getNonce(account, nonceKey);
         if (actualNonce > previousNonce) {
             ghost_2dNonce[account][nonceKey] = actualNonce;
-            ghost_2dNonceUsed[account][nonceKey] = true;
+            _mark2dNonceKeyUsed(account, nonceKey);
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_total2dNonceTxs++;
@@ -350,9 +375,34 @@ abstract contract HandlerBase is InvariantBase {
         uint64 actualNonce = nonce.getNonce(account, nonceKey);
         if (actualNonce > ghost_2dNonce[account][nonceKey]) {
             ghost_2dNonce[account][nonceKey] = actualNonce;
-            ghost_2dNonceUsed[account][nonceKey] = true;
+            _mark2dNonceKeyUsed(account, nonceKey);
             ghost_total2dNonceTxs++;
         }
+    }
+
+    /// @notice Unified handler for protocol nonce transaction reverts
+    /// @dev Syncs nonce and increments revert counter
+    function _handleRevertProtocol(address account) internal {
+        _syncNonceAfterFailure(account);
+        ghost_totalTxReverted++;
+    }
+
+    /// @notice Unified handler for 2D nonce transaction reverts
+    /// @dev Syncs 2D nonce and increments revert counter
+    function _handleRevert2d(address account, uint64 nonceKey) internal {
+        _sync2dNonceAfterFailure(account, nonceKey);
+        ghost_totalTxReverted++;
+    }
+
+    // ============ Consolidated Catch Block Helpers ============
+
+    /// @notice No-op function for expected rejections that don't need counter updates
+    function _noop() internal { }
+
+    /// @notice Handle expected rejection with optional counter update
+    /// @param updateFn Counter update function (use _noop for no update)
+    function _handleExpectedReject(function() internal updateFn) internal {
+        updateFn();
     }
 
     // ============ CREATE Context Helpers ============
@@ -414,7 +464,7 @@ abstract contract HandlerBase is InvariantBase {
         uint64 actualNonce = nonce.getNonce(sender, nonceKey);
         if (actualNonce > previousNonce) {
             ghost_2dNonce[sender][nonceKey] = actualNonce;
-            ghost_2dNonceUsed[sender][nonceKey] = true;
+            _mark2dNonceKeyUsed(sender, nonceKey);
             ghost_totalTxExecuted++;
             ghost_totalCreatesExecuted++;
             ghost_total2dNonceTxs++;
@@ -435,6 +485,88 @@ abstract contract HandlerBase is InvariantBase {
                 ghost_createCount[sender]++;
             }
         }
+    }
+
+    // ============ Transaction Building Helpers ============
+
+    /// @notice Build and sign a Tempo transaction with default settings
+    /// @param calls The calls to include in the transaction
+    /// @param nonceKey The 2D nonce key (0 for protocol nonce)
+    /// @param txNonce The nonce value
+    /// @param actorIdx The actor index for signing
+    /// @return signedTx The signed transaction bytes
+    function _buildAndSignTempoTx(
+        TempoCall[] memory calls,
+        uint64 nonceKey,
+        uint64 txNonce,
+        uint256 actorIdx
+    ) internal view returns (bytes memory signedTx) {
+        // Calculate gas limit based on calls
+        uint64 gasLimit = TxBuilder.DEFAULT_GAS_LIMIT;
+        if (calls.length == 1) {
+            gasLimit = TxBuilder.callGas(calls[0].data, txNonce) + TxBuilder.GAS_LIMIT_BUFFER;
+        } else {
+            // For multicalls, estimate based on all calls
+            for (uint256 i = 0; i < calls.length; i++) {
+                gasLimit += TxBuilder.callGas(calls[i].data, txNonce);
+            }
+            gasLimit += TxBuilder.GAS_LIMIT_BUFFER;
+        }
+
+        TempoTransaction memory tx_ = TempoTransactionLib.create()
+            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
+
+        signedTx = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.Secp256k1,
+                privateKey: actorKeys[actorIdx],
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: address(0)
+            })
+        );
+    }
+
+    // ============ Fee Test Helpers ============
+
+    /// @notice Setup context for fee-related tests
+    /// @param actorSeed Seed for sender selection
+    /// @param recipientSeed Seed for recipient selection
+    /// @param amountSeed Amount seed
+    /// @param nonceKeySeed Nonce key seed
+    /// @return ctx The populated fee test context
+    function _setupFeeTestContext(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amountSeed,
+        uint256 nonceKeySeed
+    ) internal returns (FeeTestContext memory ctx) {
+        ctx.senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        ctx.sender = actors[ctx.senderIdx];
+        ctx.recipient = actors[recipientIdx];
+        ctx.amount = bound(amountSeed, 1e6, 10e6);
+
+        uint256 balance = feeToken.balanceOf(ctx.sender);
+        vm.assume(balance >= ctx.amount);
+
+        ctx.nonceKey = uint64(bound(nonceKeySeed, 1, 100));
+        ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
+
+        ctx.calls = new TempoCall[](1);
+        ctx.calls[0] = TempoCall({
+            to: address(feeToken),
+            value: 0,
+            data: abi.encodeCall(ITIP20.transfer, (ctx.recipient, ctx.amount))
+        });
     }
 
 }

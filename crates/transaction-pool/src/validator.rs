@@ -220,6 +220,39 @@ where
             }));
         }
 
+        // Cache key expiry for pool maintenance eviction (only if finite expiry)
+        if authorized_key.expiry < u64::MAX {
+            transaction.set_key_expiry(Some(authorized_key.expiry));
+        }
+
+        // Check spending limit for fee token if enforce_limits is enabled.
+        // This prevents transactions that would exceed the spending limit from entering the pool.
+        if authorized_key.enforce_limits {
+            let fee_token = transaction
+                .inner()
+                .fee_token()
+                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+            let fee_cost = transaction.fee_token_cost();
+
+            // Compute the storage slot for the spending limit
+            let limit_key = AccountKeychain::spending_limit_key(transaction.sender(), key_id);
+            let spending_limit_slot =
+                AccountKeychain::new().spending_limits[limit_key][fee_token].slot();
+
+            // Read the spending limit from state
+            let remaining_limit = state_provider
+                .storage(ACCOUNT_KEYCHAIN_ADDRESS, spending_limit_slot.into())?
+                .unwrap_or(U256::ZERO);
+
+            if fee_cost > remaining_limit {
+                return Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded {
+                    fee_token,
+                    cost: fee_cost,
+                    remaining: remaining_limit,
+                }));
+            }
+        }
+
         Ok(Ok(()))
     }
 
@@ -323,7 +356,9 @@ where
         &self,
         transaction: &TempoPooledTransaction,
         spec: TempoHardfork,
+        state_provider: &impl StateProvider,
     ) -> Result<(), TempoPoolTransactionError> {
+        let sender = transaction.sender();
         let Some(aa_tx) = transaction.inner().as_aa() else {
             return Ok(());
         };
@@ -365,6 +400,20 @@ where
             } else if tx.nonce == 0 {
                 // TIP-1000: Storage pricing updates for launch
                 // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
+                init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+            }
+            // In CREATE tx with 2d nonce, check if account.nonce is 0, if so, add 250,000 gas.
+            // This covers caller creation of account.
+            if !tx.nonce_key.is_zero()
+                && tx.is_create()
+                // in case of provider error, we assume the account nonce is 0 and charge additional gas.
+                && state_provider
+                    .account_nonce(&sender)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    == 0
+            {
                 init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
             }
         } else if !tx.nonce_key.is_zero() {
@@ -418,6 +467,10 @@ where
 
         let tx = aa_tx.tx();
 
+        if tx.calls.is_empty() {
+            return Err(TempoPoolTransactionError::NoCalls);
+        }
+
         // Check number of calls
         if tx.calls.len() > MAX_AA_CALLS {
             return Err(TempoPoolTransactionError::TooManyCalls {
@@ -428,6 +481,17 @@ where
 
         // Check each call's input size
         for (idx, call) in tx.calls.iter().enumerate() {
+            if call.to.is_create() {
+                // CREATE call must be the first call in the transaction.
+                if idx != 0 {
+                    return Err(TempoPoolTransactionError::CreateCallNotFirst);
+                }
+                // CREATE calls are not allowed in transactions with an authorization list.
+                if !tx.tempo_authorization_list.is_empty() {
+                    return Err(TempoPoolTransactionError::CreateCallWithAuthorizationList);
+                }
+            }
+
             if call.input.len() > MAX_CALL_INPUT_SIZE {
                 return Err(TempoPoolTransactionError::CallInputTooLarge {
                     call_index: idx,
@@ -479,6 +543,29 @@ where
         Ok(())
     }
 
+    /// Validates that a transaction's max_fee_per_gas is at least the minimum base fee
+    /// for the current hardfork.
+    ///
+    /// - T0: 10 gwei minimum
+    /// - T1+: 20 gwei minimum
+    fn ensure_min_base_fee(
+        &self,
+        transaction: &TempoPooledTransaction,
+        spec: TempoHardfork,
+    ) -> Result<(), TempoPoolTransactionError> {
+        let min_base_fee = spec.base_fee();
+        let max_fee_per_gas = transaction.max_fee_per_gas();
+
+        if max_fee_per_gas < min_base_fee as u128 {
+            return Err(TempoPoolTransactionError::FeeCapBelowMinBaseFee {
+                max_fee_per_gas,
+                min_base_fee,
+            });
+        }
+
+        Ok(())
+    }
+
     fn validate_one(
         &self,
         origin: TransactionOrigin,
@@ -496,6 +583,14 @@ where
             return TransactionValidationOutcome::Error(
                 *transaction.hash(),
                 InvalidTransactionError::TxTypeNotSupported.into(),
+            );
+        }
+
+        // Validate that max_fee_per_gas meets the minimum base fee for the current hardfork.
+        if let Err(err) = self.ensure_min_base_fee(&transaction, spec) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
             );
         }
 
@@ -541,15 +636,22 @@ where
             );
         }
 
-        // Validate AA transaction intrinsic gas.
-        // This ensures the gas limit covers all AA-specific costs (per-call overhead,
-        // signature verification, etc.) to prevent mempool DoS attacks where transactions
-        // pass pool validation but fail at execution time.
-        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
+        if transaction.inner().is_aa() {
+            // Validate AA transaction intrinsic gas.
+            // This ensures the gas limit covers all AA-specific costs (per-call overhead,
+            // signature verification, etc.) to prevent mempool DoS attacks where transactions
+            // pass pool validation but fail at execution time.
+            if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec, &state_provider) {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(err),
+                );
+            }
+        } else {
+            // validate intrinsic gas with additional TIP-1000 and T1 checks
+            if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
+                return TransactionValidationOutcome::Invalid(transaction, err);
+            }
         }
 
         // Validate AA transaction field limits (calls, access list, token limits).
@@ -668,11 +770,6 @@ where
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
-        }
-
-        // validate intrinsic gas with additional TIP-1000 and T1 checks
-        if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
-            return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
         }
 
         match self
@@ -806,9 +903,15 @@ pub fn ensure_intrinsic_gas_tempo_tx(
     }
 
     // TIP-1000: Storage pricing updates for launch
-    // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
+    // Tempo transactions with `nonce == 0` require additional gas, but the amount depends on nonce type:
+    // - Expiring nonce (nonce_key == MAX): EXPIRING_NONCE_GAS (13k) for ring buffer operations
+    // - Regular/2D nonce with nonce == 0: new_account_cost (250k) for potential account creation
     if spec.is_t1() && tx.nonce() == 0 {
-        gas.initial_gas += gas_params.get(GasId::new_account_cost());
+        if tx.nonce_key() == Some(TEMPO_EXPIRING_NONCE_KEY) {
+            gas.initial_gas += EXPIRING_NONCE_GAS;
+        } else {
+            gas.initial_gas += gas_params.get(GasId::new_account_cost());
+        }
     }
 
     let gas_limit = tx.gas_limit();
@@ -898,7 +1001,7 @@ mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
     use alloy_consensus::{Block, Header, Transaction};
-    use alloy_primitives::{Address, B256, U256, address, uint};
+    use alloy_primitives::{Address, B256, TxKind, U256, address, uint};
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_transaction_pool::{
@@ -911,7 +1014,7 @@ mod tests {
         tip20::{TIP20Token, slots as tip20_slots},
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
-    use tempo_primitives::TempoTxEnvelope;
+    use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
     use tempo_revm::TempoStateAccess;
 
     /// Helper to create a mock sealed block with the given timestamp.
@@ -1187,7 +1290,9 @@ mod tests {
             policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
             admin: Address::ZERO,
         };
-        let policy_data_slot = TIP403Registry::new().policy_data[policy_id].base_slot();
+        let policy_data_slot = TIP403Registry::new().policy_records[policy_id]
+            .base
+            .base_slot();
         let policy_set_slot = TIP403Registry::new().policy_set[policy_id][fee_payer].slot();
 
         provider.add_account(
@@ -1257,7 +1362,7 @@ mod tests {
             let tx = TempoTransaction {
                 chain_id: 1,
                 max_priority_fee_per_gas: 1_000_000_000,
-                max_fee_per_gas: 2_000_000_000,
+                max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's minimum
                 gas_limit,
                 calls,
                 nonce_key: U256::ZERO,
@@ -1307,6 +1412,215 @@ mod tests {
                 err.downcast_other_ref::<TempoPoolTransactionError>(),
                 Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
             ));
+        }
+    }
+
+    /// Test that CREATE transactions with 2D nonce (nonce_key != 0) require additional gas
+    /// when the sender's account nonce is 0 (account creation cost).
+    ///
+    /// The new logic adds 250k gas requirement when:
+    /// - Transaction has 2D nonce (nonce_key != 0)
+    /// - Transaction is CREATE
+    /// - Account nonce is 0
+    #[tokio::test]
+    async fn test_aa_create_tx_with_2d_nonce_intrinsic_gas() {
+        use alloy_primitives::Signature;
+        use tempo_primitives::transaction::{
+            TempoTransaction,
+            tempo_transaction::Call as TxCall,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Helper to create AA transaction
+        let create_aa_tx = |gas_limit: u64, nonce_key: U256, is_create: bool| {
+            let calls: Vec<TxCall> = if is_create {
+                vec![TxCall {
+                    to: TxKind::Create,
+                    value: U256::ZERO,
+                    input: alloy_primitives::Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xF3]),
+                }]
+            } else {
+                (0..10)
+                    .map(|i| TxCall {
+                        to: TxKind::Call(Address::from([i as u8; 20])),
+                        value: U256::ZERO,
+                        input: alloy_primitives::Bytes::from(vec![0x00; 100]),
+                    })
+                    .collect()
+            };
+
+            let tx = TempoTransaction {
+                chain_id: 1,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit,
+                calls,
+                nonce_key,
+                nonce: 0,
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                ..Default::default()
+            };
+
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        // Test 1: Verify 1D nonce (nonce_key=0) with low gas fails intrinsic gas check
+        let tx_1d_low_gas = create_aa_tx(30_000, U256::ZERO, false);
+        let validator1 = setup_validator(&tx_1d_low_gas, current_time);
+        let outcome1 = validator1
+            .validate_transaction(TransactionOrigin::External, tx_1d_low_gas)
+            .await;
+
+        match outcome1 {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+                    ),
+                    "1D nonce with low gas should fail InsufficientGasForAAIntrinsicCost, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome, got: {outcome1:?}"),
+        }
+
+        // Test 2: Verify 2D nonce (nonce_key != 0) with same low gas also fails intrinsic gas check
+        // This confirms that 2D nonce adds additional gas requirements (for nonce == 0 case)
+        let tx_2d_low_gas = create_aa_tx(30_000, TEMPO_EXPIRING_NONCE_KEY, false);
+        let validator2 = setup_validator(&tx_2d_low_gas, current_time);
+        let outcome2 = validator2
+            .validate_transaction(TransactionOrigin::External, tx_2d_low_gas)
+            .await;
+
+        match outcome2 {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+                    ),
+                    "2D nonce with low gas should fail InsufficientGasForAAIntrinsicCost, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome, got: {outcome2:?}"),
+        }
+
+        // Test 3: 1D nonce with sufficient gas should NOT fail intrinsic gas check
+        let tx_1d_high_gas = create_aa_tx(1_000_000, U256::ZERO, false);
+        let validator3 = setup_validator(&tx_1d_high_gas, current_time);
+        let outcome3 = validator3
+            .validate_transaction(TransactionOrigin::External, tx_1d_high_gas)
+            .await;
+
+        // May fail for other reasons (fee token, etc.) but should NOT fail intrinsic gas
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome3 {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+                ),
+                "1D nonce with high gas should NOT fail InsufficientGasForAAIntrinsicCost, got: {err:?}"
+            );
+        }
+
+        // Test 4: 2D nonce with sufficient gas should NOT fail intrinsic gas check
+        let tx_2d_high_gas = create_aa_tx(1_000_000, TEMPO_EXPIRING_NONCE_KEY, false);
+        let validator4 = setup_validator(&tx_2d_high_gas, current_time);
+        let outcome4 = validator4
+            .validate_transaction(TransactionOrigin::External, tx_2d_high_gas)
+            .await;
+
+        // May fail for other reasons (fee token, etc.) but should NOT fail intrinsic gas
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome4 {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+                ),
+                "2D nonce with high gas should NOT fail InsufficientGasForAAIntrinsicCost, got: {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_expiring_nonce_intrinsic_gas_uses_lower_cost() {
+        use alloy_primitives::{Signature, TxKind, address};
+        use tempo_primitives::transaction::{
+            TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Helper to create expiring nonce AA tx with given gas limit
+        let create_expiring_nonce_tx = |gas_limit: u64| {
+            let calls: Vec<Call> = vec![Call {
+                to: TxKind::Call(Address::from([1u8; 20])),
+                value: U256::ZERO,
+                input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]), // increment()
+            }];
+
+            let tx = TempoTransaction {
+                chain_id: 1,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit,
+                calls,
+                nonce_key: TEMPO_EXPIRING_NONCE_KEY, // Expiring nonce
+                nonce: 0,
+                valid_before: Some(current_time + 25), // Valid for 25 seconds
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                ..Default::default()
+            };
+
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        // Expiring nonce tx should only need ~35k gas (base + EXPIRING_NONCE_GAS of 13k)
+        // NOT 250k+ which would be required for new account creation
+        // Test: 50k gas should pass for expiring nonce (would fail if 250k was required)
+        let tx = create_expiring_nonce_tx(50_000);
+        let validator = setup_validator(&tx, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx)
+            .await;
+
+        // Should NOT fail with InsufficientGasForAAIntrinsicCost or IntrinsicGasTooLow
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            let is_intrinsic_gas_error = matches!(
+                err.downcast_other_ref::<TempoPoolTransactionError>(),
+                Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+            ) || matches!(
+                err.downcast_other_ref::<InvalidPoolTransactionError>(),
+                Some(InvalidPoolTransactionError::IntrinsicGasTooLow)
+            );
+            assert!(
+                !is_intrinsic_gas_error,
+                "Expiring nonce tx with 50k gas should NOT fail intrinsic gas check, got: {err:?}"
+            );
         }
     }
 
@@ -1418,6 +1732,141 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_fee_cap_below_min_base_fee_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // T0 base fee is 10 gwei (10_000_000_000 wei)
+        // Create a transaction with max_fee_per_gas below this
+        let transaction = TxBuilder::aa(Address::random())
+            .max_fee(1_000_000_000) // 1 gwei, below T0's 10 gwei
+            .max_priority_fee(1_000_000_000)
+            .build();
+
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::FeeCapBelowMinBaseFee { .. })
+                    ),
+                    "Expected FeeCapBelowMinBaseFee error, got: {err:?}"
+                );
+            }
+            _ => panic!(
+                "Expected Invalid outcome with FeeCapBelowMinBaseFee error, got: {outcome:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fee_cap_at_min_base_fee_passes() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // T0 base fee is 10 gwei (10_000_000_000 wei)
+        // Create a transaction with max_fee_per_gas exactly at minimum
+        let transaction = TxBuilder::aa(Address::random())
+            .max_fee(10_000_000_000) // exactly 10 gwei
+            .max_priority_fee(1_000_000_000)
+            .build();
+
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        // Should not fail with FeeCapBelowMinBaseFee
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::FeeCapBelowMinBaseFee { .. })
+                ),
+                "Should not fail with FeeCapBelowMinBaseFee when fee cap equals min base fee"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fee_cap_above_min_base_fee_passes() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // T0 base fee is 10 gwei (10_000_000_000 wei)
+        // Create a transaction with max_fee_per_gas above minimum
+        let transaction = TxBuilder::aa(Address::random())
+            .max_fee(20_000_000_000) // 20 gwei, above T0's 10 gwei
+            .max_priority_fee(1_000_000_000)
+            .build();
+
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        // Should not fail with FeeCapBelowMinBaseFee
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::FeeCapBelowMinBaseFee { .. })
+                ),
+                "Should not fail with FeeCapBelowMinBaseFee when fee cap is above min base fee"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_eip1559_fee_cap_below_min_base_fee_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // T0 base fee is 10 gwei, create EIP-1559 tx with lower fee
+        let transaction = TxBuilder::eip1559(Address::random())
+            .max_fee(1_000_000_000) // 1 gwei, below T0's 10 gwei
+            .max_priority_fee(1_000_000_000)
+            .build_eip1559();
+
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::FeeCapBelowMinBaseFee { .. })
+                    ),
+                    "Expected FeeCapBelowMinBaseFee error for EIP-1559 tx, got: {err:?}"
+                );
+            }
+            _ => panic!(
+                "Expected Invalid outcome with FeeCapBelowMinBaseFee error, got: {outcome:?}"
+            ),
+        }
+    }
+
     mod keychain_validation {
         use super::*;
         use alloy_primitives::{Signature, TxKind, address};
@@ -1446,7 +1895,7 @@ mod tests {
             let tx_aa = TempoTransaction {
                 chain_id: 42431, // MODERATO chain_id
                 max_priority_fee_per_gas: 1_000_000_000,
-                max_fee_per_gas: 2_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
                 gas_limit: 1_000_000,
                 calls: vec![Call {
                     to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
@@ -1932,7 +2381,7 @@ mod tests {
             let tx_aa = TempoTransaction {
                 chain_id: 42431,
                 max_priority_fee_per_gas: 1_000_000_000,
-                max_fee_per_gas: 2_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
                 gas_limit: 1_000_000,
                 calls: vec![Call {
                     to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
@@ -2356,6 +2805,254 @@ mod tests {
             );
             Ok(())
         }
+
+        /// Setup validator with keychain storage and spending limit for a specific user and key_id.
+        fn setup_validator_with_spending_limit(
+            transaction: &TempoPooledTransaction,
+            user_address: Address,
+            key_id: Address,
+            enforce_limits: bool,
+            spending_limit: Option<(Address, U256)>, // (token, limit)
+        ) -> TempoTransactionValidator<
+            MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec>,
+        > {
+            let provider =
+                MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
+
+            // Add sender account
+            provider.add_account(
+                transaction.sender(),
+                ExtendedAccount::new(transaction.nonce(), U256::ZERO),
+            );
+            provider.add_block(B256::random(), Default::default());
+
+            // Setup AccountKeychain storage with AuthorizedKey
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: u64::MAX,
+                enforce_limits,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
+            let key_storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
+            let mut storage = vec![(key_storage_slot.into(), slot_value)];
+
+            // Add spending limit if provided
+            if let Some((token, limit)) = spending_limit {
+                let limit_key = AccountKeychain::spending_limit_key(user_address, key_id);
+                let limit_slot: U256 =
+                    AccountKeychain::new().spending_limits[limit_key][token].slot();
+                storage.push((limit_slot.into(), limit));
+            }
+
+            provider.add_account(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                ExtendedAccount::new(0, U256::ZERO).extend_storage(storage),
+            );
+
+            let inner = EthTransactionValidatorBuilder::new(provider.clone())
+                .disable_balance_check()
+                .build(InMemoryBlobStore::default());
+            let amm_cache =
+                AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+            TempoTransactionValidator::new(inner, 3600, DEFAULT_MAX_TEMPO_AUTHORIZATIONS, amm_cache)
+        }
+
+        #[test]
+        fn test_spending_limit_not_enforced_passes() -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            // enforce_limits = false, no spending limit set
+            let validator = setup_validator_with_spending_limit(
+                &transaction,
+                user_address,
+                access_key_address,
+                false, // enforce_limits = false
+                None,  // no spending limit
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            assert!(
+                result.is_ok(),
+                "Key with enforce_limits=false should pass, got: {result:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn test_spending_limit_sufficient_passes() -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            // Get the fee token from the transaction
+            let fee_token = transaction
+                .inner()
+                .fee_token()
+                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+            let fee_cost = transaction.fee_token_cost();
+
+            // Set spending limit higher than fee cost
+            let validator = setup_validator_with_spending_limit(
+                &transaction,
+                user_address,
+                access_key_address,
+                true,                                          // enforce_limits = true
+                Some((fee_token, fee_cost + U256::from(100))), // limit > cost
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            assert!(
+                result.is_ok(),
+                "Sufficient spending limit should pass, got: {result:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn test_spending_limit_exact_passes() -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            let fee_token = transaction
+                .inner()
+                .fee_token()
+                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+            let fee_cost = transaction.fee_token_cost();
+
+            // Set spending limit exactly equal to fee cost
+            let validator = setup_validator_with_spending_limit(
+                &transaction,
+                user_address,
+                access_key_address,
+                true,                        // enforce_limits = true
+                Some((fee_token, fee_cost)), // limit == cost
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            assert!(
+                result.is_ok(),
+                "Exact spending limit should pass, got: {result:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn test_spending_limit_exceeded_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            let fee_token = transaction
+                .inner()
+                .fee_token()
+                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+            let fee_cost = transaction.fee_token_cost();
+
+            // Set spending limit lower than fee cost
+            let insufficient_limit = fee_cost - U256::from(1);
+            let validator = setup_validator_with_spending_limit(
+                &transaction,
+                user_address,
+                access_key_address,
+                true,                                  // enforce_limits = true
+                Some((fee_token, insufficient_limit)), // limit < cost
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::SpendingLimitExceeded { .. })
+                ),
+                "Insufficient spending limit should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_spending_limit_zero_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            let fee_token = transaction
+                .inner()
+                .fee_token()
+                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+
+            // Set spending limit to zero (no spending limit set means zero)
+            let validator = setup_validator_with_spending_limit(
+                &transaction,
+                user_address,
+                access_key_address,
+                true,                          // enforce_limits = true
+                Some((fee_token, U256::ZERO)), // limit = 0
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::SpendingLimitExceeded { .. })
+                ),
+                "Zero spending limit should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_spending_limit_wrong_token_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            let fee_token = transaction
+                .inner()
+                .fee_token()
+                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+
+            // Set spending limit for a different token
+            let different_token = Address::random();
+            assert_ne!(fee_token, different_token); // Ensure they're different
+
+            let validator = setup_validator_with_spending_limit(
+                &transaction,
+                user_address,
+                access_key_address,
+                true,                               // enforce_limits = true
+                Some((different_token, U256::MAX)), // High limit but for wrong token
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::SpendingLimitExceeded { .. })
+                ),
+                "Wrong token spending limit should be rejected (fee token has 0 limit)"
+            );
+        }
     }
 
     // ============================================
@@ -2395,7 +3092,7 @@ mod tests {
         let tx_aa = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
-            max_fee_per_gas: 2_000_000_000,
+            max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's minimum
             gas_limit: 1_000_000,
             calls: vec![Call {
                 to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
@@ -2476,6 +3173,240 @@ mod tests {
         }
     }
 
+    /// AA transactions must have at least one call.
+    #[tokio::test]
+    async fn test_aa_no_calls_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create an AA transaction with no calls
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(vec![]) // Empty calls
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::NoCalls)
+                    ),
+                    "Expected NoCalls error, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome with NoCalls error, got: {outcome:?}"),
+        }
+    }
+
+    /// CREATE calls (contract deployments) must be the first call in an AA transaction.
+    #[tokio::test]
+    async fn test_aa_create_call_not_first_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create an AA transaction with a CREATE call as the second call
+        let calls = vec![
+            Call {
+                to: TxKind::Call(Address::random()), // First call is a regular call
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+            Call {
+                to: TxKind::Create, // Second call is a CREATE - should be rejected
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+        ];
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(calls)
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::CreateCallNotFirst)
+                    ),
+                    "Expected CreateCallNotFirst error, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome with CreateCallNotFirst error, got: {outcome:?}"),
+        }
+    }
+
+    /// CREATE call as the first call should be accepted.
+    #[tokio::test]
+    async fn test_aa_create_call_first_accepted() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create an AA transaction with a CREATE call as the first call
+        let calls = vec![
+            Call {
+                to: TxKind::Create, // First call is a CREATE - should be accepted
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+            Call {
+                to: TxKind::Call(Address::random()), // Second call is a regular call
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+        ];
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(calls)
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        // Should NOT fail with CreateCallNotFirst (may fail for other reasons)
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::CreateCallNotFirst)
+                ),
+                "CREATE call as first call should be accepted, got: {err:?}"
+            );
+        }
+    }
+
+    /// Multiple CREATE calls in the same transaction should be rejected.
+    #[tokio::test]
+    async fn test_aa_multiple_creates_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // calls = [CREATE, CALL, CREATE] -> should reject with CreateCallNotFirst
+        let calls = vec![
+            Call {
+                to: TxKind::Create, // First call is a CREATE - ok
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+            Call {
+                to: TxKind::Call(Address::random()), // Second call is a regular call
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+            Call {
+                to: TxKind::Create, // Third call is a CREATE - should be rejected
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+        ];
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(calls)
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::CreateCallNotFirst)
+                    ),
+                    "Expected CreateCallNotFirst error, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome with CreateCallNotFirst error, got: {outcome:?}"),
+        }
+    }
+
+    /// CREATE calls must not have any entries in the authorization list.
+    #[tokio::test]
+    async fn test_aa_create_call_with_authorization_list_rejected() {
+        use alloy_eips::eip7702::Authorization;
+        use alloy_primitives::Signature;
+        use tempo_primitives::transaction::{
+            TempoSignedAuthorization,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create an AA transaction with a CREATE call and a non-empty authorization list
+        let calls = vec![Call {
+            to: TxKind::Create, // CREATE call
+            value: U256::ZERO,
+            input: Default::default(),
+        }];
+
+        // Create a single authorization entry
+        let auth = Authorization {
+            chain_id: U256::from(1),
+            nonce: 0,
+            address: address!("0000000000000000000000000000000000000001"),
+        };
+        let authorization = TempoSignedAuthorization::new_unchecked(
+            auth,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        );
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(calls)
+            .authorization_list(vec![authorization])
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::CreateCallWithAuthorizationList)
+                    ),
+                    "Expected CreateCallWithAuthorizationList error, got: {err:?}"
+                );
+            }
+            _ => panic!(
+                "Expected Invalid outcome with CreateCallWithAuthorizationList error, got: {outcome:?}"
+            ),
+        }
+    }
+
     /// Paused tokens should be rejected as invalid fee tokens.
     #[test]
     fn test_paused_token_is_invalid_fee_token() {
@@ -2505,6 +3436,126 @@ mod tests {
             result.unwrap(),
             "Paused tokens should be detected as paused"
         );
+    }
+
+    /// Non-AA transaction with insufficient gas should be rejected with Invalid outcome
+    /// and IntrinsicGasTooLow error.
+    #[tokio::test]
+    async fn test_non_aa_intrinsic_gas_insufficient_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create EIP-1559 transaction with very low gas limit (below intrinsic gas of ~21k)
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(1_000) // Way below intrinsic gas
+            .build_eip1559();
+
+        let validator = setup_validator(&tx, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),
+                    "Expected IntrinsicGasTooLow error, got: {err:?}"
+                );
+            }
+            TransactionValidationOutcome::Error(_, _) => {
+                panic!("Expected Invalid outcome, got Error - this was the bug we fixed!")
+            }
+            _ => panic!("Expected Invalid outcome with IntrinsicGasTooLow, got: {outcome:?}"),
+        }
+    }
+
+    /// Non-AA transaction with sufficient gas should pass intrinsic gas validation.
+    #[tokio::test]
+    async fn test_non_aa_intrinsic_gas_sufficient_passes() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create EIP-1559 transaction with plenty of gas
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(100_000) // Well above intrinsic gas
+            .build_eip1559();
+
+        let validator = setup_validator(&tx, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx)
+            .await;
+
+        // Should NOT fail with InsufficientGasForIntrinsicCost
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(
+                matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),
+                "Non-AA tx with 100k gas should NOT fail intrinsic gas check, got: {err:?}"
+            );
+        }
+    }
+
+    /// Non-AA transaction should NOT trigger AA-specific intrinsic gas error.
+    /// This verifies the fix that gates AA intrinsic gas check to only AA transactions.
+    #[tokio::test]
+    async fn test_non_aa_tx_does_not_trigger_aa_intrinsic_gas_error() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create EIP-1559 transaction with low gas
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(1_000)
+            .build_eip1559();
+
+        let validator = setup_validator(&tx, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx)
+            .await;
+
+        // Should NOT get AA-specific error
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+                ),
+                "Non-AA transaction should NOT trigger AA-specific intrinsic gas error"
+            );
+        }
+    }
+
+    /// Verify intrinsic gas error is returned for insufficient gas.
+    #[tokio::test]
+    async fn test_intrinsic_gas_error_contains_gas_details() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let gas_limit = 5_000u64;
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(gas_limit)
+            .build_eip1559();
+
+        let validator = setup_validator(&tx, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),
+                    "Expected IntrinsicGasTooLow error, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome, got: {outcome:?}"),
+        }
     }
 
     /// Paused validator tokens should be rejected even though they would bypass the liquidity check.
@@ -2539,7 +3590,7 @@ mod tests {
 
         // Verify the bypass would apply: the token IS in unique_tokens
         assert!(
-            amm_cache.contains_unique_token(&paused_validator_token),
+            amm_cache.is_active_validator_token(&paused_validator_token),
             "Token should be in unique_tokens for this test"
         );
 

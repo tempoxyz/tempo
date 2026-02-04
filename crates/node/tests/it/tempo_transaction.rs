@@ -2756,16 +2756,16 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     let keychain_gas_u64 = u64::from_str_radix(keychain_gas.trim_start_matches("0x"), 16)?;
     println!("  Keychain gas: {keychain_gas_u64}");
 
-    // Keychain with same-tx auth adds ~289,693 gas which includes:
+    // Keychain with same-tx auth adds ~285,926 gas which includes:
     // - 3,000 for keychain validation
     // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
     // - storage costs for key authorization precompile
     let keychain_diff = keychain_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (289_000..=291_000).contains(&keychain_diff.unsigned_abs()),
-        "Keychain + KeyAuth should add ~289,693 gas: actual diff {keychain_diff}"
+        (285_000..=287_000).contains(&keychain_diff.unsigned_abs()),
+        "Keychain + KeyAuth should add ~285,926 gas: actual diff {keychain_diff}"
     );
-    println!("  ✓ Keychain + KeyAuth adds {keychain_diff} gas (expected ~289,693)");
+    println!("  ✓ Keychain + KeyAuth adds {keychain_diff} gas (expected ~285,926)");
 
     // Test 3: Keychain signature with P256 inner
     println!("\nTest 3: Keychain signature (P256 inner)");
@@ -2789,17 +2789,17 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         u64::from_str_radix(keychain_p256_gas.trim_start_matches("0x"), 16)?;
     println!("  Keychain P256 gas: {keychain_p256_gas_u64}");
 
-    // Keychain P256 with same-tx auth adds ~294,733 gas which includes:
+    // Keychain P256 with same-tx auth adds ~290,966 gas which includes:
     // - 3,000 for keychain validation
     // - 5,000 for P256 signature verification
     // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
     // - storage costs for key authorization precompile
     let keychain_p256_diff = keychain_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (294_000..=296_000).contains(&keychain_p256_diff.unsigned_abs()),
-        "Keychain P256 + KeyAuth should add ~294,733 gas: actual diff {keychain_p256_diff}"
+        (290_000..=292_000).contains(&keychain_p256_diff.unsigned_abs()),
+        "Keychain P256 + KeyAuth should add ~290,966 gas: actual diff {keychain_p256_diff}"
     );
-    println!("  ✓ Keychain P256 + KeyAuth adds {keychain_p256_diff} gas (expected ~294,733)");
+    println!("  ✓ Keychain P256 + KeyAuth adds {keychain_p256_diff} gas (expected ~290,966)");
 
     // Test 4: KeyAuthorization with secp256k1 (no limits)
     println!("\nTest 4: KeyAuthorization (secp256k1, no limits)");
@@ -2818,15 +2818,15 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     let key_auth_gas_u64 = u64::from_str_radix(key_auth_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth gas: {key_auth_gas_u64}");
 
-    // KeyAuth secp256k1 adds ~286,669 gas which includes:
+    // KeyAuth secp256k1 adds ~282,903 gas which includes:
     // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
     // - storage costs for key authorization precompile
     let key_auth_diff = key_auth_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (286_000..=288_000).contains(&key_auth_diff.unsigned_abs()),
-        "KeyAuth secp256k1 should add ~286,669 gas: actual diff {key_auth_diff}"
+        (282_000..=284_000).contains(&key_auth_diff.unsigned_abs()),
+        "KeyAuth secp256k1 should add ~282,903 gas: actual diff {key_auth_diff}"
     );
-    println!("  ✓ KeyAuth secp256k1 adds {key_auth_diff} gas (expected ~286,669)");
+    println!("  ✓ KeyAuth secp256k1 adds {key_auth_diff} gas (expected ~282,903)");
 
     // Test 5: KeyAuthorization with P256 key type (no limits)
     // Note: The key authorization signature is secp256k1 (signed by root key).
@@ -2849,15 +2849,15 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         u64::from_str_radix(key_auth_p256_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth P256 key type gas: {key_auth_p256_gas_u64}");
 
-    // KeyAuth with P256 key type has same gas as secp256k1 (~286,669) because
+    // KeyAuth with P256 key type has same gas as secp256k1 (~282,903) because
     // the authorization signature itself is always secp256k1 from the root key
     let key_auth_p256_diff = key_auth_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (286_000..=288_000).contains(&key_auth_p256_diff.unsigned_abs()),
-        "KeyAuth P256 key type should add ~286,669 gas (same as secp256k1): actual diff {key_auth_p256_diff}"
+        (282_000..=284_000).contains(&key_auth_p256_diff.unsigned_abs()),
+        "KeyAuth P256 key type should add ~282,903 gas (same as secp256k1): actual diff {key_auth_p256_diff}"
     );
     println!(
-        "  ✓ KeyAuth P256 key type adds {key_auth_p256_diff} gas (same as secp256k1, ~286,669)"
+        "  ✓ KeyAuth P256 key type adds {key_auth_p256_diff} gas (same as secp256k1, ~282,903)"
     );
 
     // Test 6: KeyAuthorization with spending limits
@@ -2878,16 +2878,16 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         u64::from_str_radix(key_auth_limits_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth with 3 limits gas: {key_auth_limits_gas_u64}");
 
-    // KeyAuth secp256k1 with 3 limits adds ~355,612 gas which includes:
+    // KeyAuth secp256k1 with 3 limits adds ~349,426 gas which includes:
     // - ~30,000 for KeyAuthorization base (27,000 base + 3,000 ecrecover)
     // - 3 * 22,000 = 66,000 for spending limits
     // - storage costs for key authorization precompile
     let key_auth_limits_diff = key_auth_limits_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (355_000..=357_000).contains(&key_auth_limits_diff.unsigned_abs()),
-        "KeyAuth with 3 limits should add ~355,612 gas: actual diff {key_auth_limits_diff}"
+        (349_000..=351_000).contains(&key_auth_limits_diff.unsigned_abs()),
+        "KeyAuth with 3 limits should add ~349,426 gas: actual diff {key_auth_limits_diff}"
     );
-    println!("  ✓ KeyAuth with 3 limits adds {key_auth_limits_diff} gas (expected ~355,612)");
+    println!("  ✓ KeyAuth with 3 limits adds {key_auth_limits_diff} gas (expected ~349,426)");
 
     println!("\n✓ All gas estimation tests passed!");
     Ok(())
@@ -4536,24 +4536,31 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     envelope.encode_2718(&mut encoded);
     let tx_hash = *envelope.tx_hash();
 
-    setup.node.rpc.inject_tx(encoded.into()).await?;
-    setup.node.advance_block().await?;
-
-    // The transaction should be rejected during block building (not included)
+    // The transaction should be rejected at RPC, during block building, or reverted on-chain
     // because fee payment exceeds the spending limit (empty limits = no spending allowed)
-    let receipt = provider.get_transaction_receipt(tx_hash).await?;
+    match setup.node.rpc.inject_tx(encoded.into()).await {
+        Err(e) => {
+            // Rejected at RPC level - this is valid
+            println!("No-spending key transaction was rejected by RPC: {e}");
+        }
+        Ok(_) => {
+            // If accepted into pool, check what happened at block building
+            setup.node.advance_block().await?;
+            let receipt = provider.get_transaction_receipt(tx_hash).await?;
 
-    if let Some(receipt) = receipt {
-        // If included, it must have failed
-        assert!(
-            !receipt.status(),
-            "No-spending key must not be able to transfer any tokens"
-        );
-        println!("✓ No-spending key transaction was included but reverted");
-    } else {
-        println!(
-            "✓ No-spending key transaction was rejected by block builder (spending limit exceeded)"
-        );
+            if let Some(receipt) = receipt {
+                // If included, it must have failed
+                assert!(
+                    !receipt.status(),
+                    "No-spending key must not be able to transfer any tokens"
+                );
+                println!("No-spending key transaction was included but reverted");
+            } else {
+                println!(
+                    "No-spending key transaction was rejected by block builder (spending limit exceeded)"
+                );
+            }
+        }
     }
 
     // Verify recipient2 received NO tokens
@@ -6378,6 +6385,422 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
     println!("✓ Protocol nonce now 1 after protocol tx");
 
     println!("\n✓ Expiring nonces are independent from protocol nonces");
+
+    Ok(())
+}
+/// Verifies that transactions signed with a keychain key are evicted when spending limits change.
+///
+/// This tests the TOCTOU vulnerability (CHAIN-444) where:
+/// 1. An attacker funds and authorizes an address with balance > spending limit
+/// 2. Submits transactions that pass validation
+/// 3. Reduces spending limit so execution would fail
+/// 4. Transactions should be evicted from the mempool
+#[tokio::test]
+async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
+    use tempo_precompiles::account_keychain::updateSpendingLimitCall;
+
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing AA Keychain Spending Limit TOCTOU DoS ===\n");
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    // Generate an access key for the attack
+    let (access_key_signing, access_pub_x, access_pub_y, access_key_addr) =
+        generate_p256_access_key();
+
+    println!("Access key address: {access_key_addr}");
+
+    let mut nonce = provider.get_transaction_count(root_addr).await?;
+
+    // Get current block timestamp
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    println!("Current block timestamp: {current_timestamp}");
+
+    // ========================================
+    // STEP 1: Authorize the access key with a spending limit
+    // ========================================
+    println!("\n=== STEP 1: Authorize the access key with spending limit ===");
+
+    // Set a generous spending limit initially (100 tokens)
+    let initial_spending_limit = U256::from(100u64) * U256::from(10).pow(U256::from(18));
+
+    let key_auth = create_key_authorization(
+        &root_signer,
+        access_key_addr,
+        create_mock_p256_sig(access_pub_x, access_pub_y),
+        chain_id,
+        None, // Never expires
+        Some(vec![tempo_primitives::transaction::TokenLimit {
+            token: DEFAULT_FEE_TOKEN,
+            limit: initial_spending_limit,
+        }]),
+    )?;
+
+    let mut auth_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    auth_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+    auth_tx.key_authorization = Some(key_auth);
+
+    let root_sig = sign_aa_tx_secp256k1(&auth_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, auth_tx, root_sig).await?;
+    nonce += 1;
+
+    println!("Access key authorized with spending limit: {initial_spending_limit}");
+
+    // ========================================
+    // STEP 2: Submit a transaction with valid_after in the future using the access key
+    // ========================================
+    println!("\n=== STEP 2: Submit transaction with future valid_after using access key ===");
+
+    // Advance a couple blocks to get a fresh timestamp
+    for _ in 0..2 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let new_timestamp = block.header.timestamp();
+
+    // Set valid_after to be 10 seconds in the future (enough time to reduce spending limit)
+    let valid_after_time = new_timestamp + 10;
+    println!("Setting valid_after to {valid_after_time} (current: {new_timestamp})");
+
+    // Create a transaction that uses the access key with valid_after
+    let recipient = Address::random();
+    let transfer_amount = U256::from(1u64) * U256::from(10).pow(U256::from(18)); // 1 token
+
+    let mut delayed_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_transfer_call(recipient, transfer_amount)],
+        300_000,
+    );
+    delayed_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+    delayed_tx.valid_after = Some(valid_after_time);
+
+    // Sign with the access key (wrapped in Keychain signature)
+    let access_key_sig = sign_aa_tx_with_p256_access_key(
+        &delayed_tx,
+        &access_key_signing,
+        &access_pub_x,
+        &access_pub_y,
+        root_addr,
+    )?;
+
+    // Submit the transaction - it should pass validation because the spending limit is still high
+    let delayed_tx_envelope: TempoTxEnvelope = delayed_tx.into_signed(access_key_sig).into();
+    let delayed_tx_hash = *delayed_tx_envelope.tx_hash();
+    setup
+        .node
+        .rpc
+        .inject_tx(delayed_tx_envelope.encoded_2718().into())
+        .await?;
+
+    println!("Delayed transaction submitted (hash: {delayed_tx_hash})");
+
+    // Verify transaction is in the pool
+    assert!(
+        setup.node.inner.pool.contains(&delayed_tx_hash),
+        "Delayed transaction should be in the pool"
+    );
+    println!("Transaction is in the mempool");
+
+    // ========================================
+    // STEP 3: Reduce the spending limit to 0 before valid_after is reached
+    // ========================================
+    println!("\n=== STEP 3: Reduce spending limit to 0 ===");
+
+    let update_limit_call = updateSpendingLimitCall {
+        keyId: access_key_addr,
+        token: DEFAULT_FEE_TOKEN,
+        newLimit: U256::ZERO, // Set to 0, making all pending transfers fail
+    };
+
+    // Use a 2D nonce (different nonce_key) so this tx can be mined independently
+    let mut update_tx = create_basic_aa_tx(
+        chain_id,
+        0, // nonce 0 for this new nonce_key
+        vec![Call {
+            to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
+            value: U256::ZERO,
+            input: update_limit_call.abi_encode().into(),
+        }],
+        2_000_000,
+    );
+    update_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+    update_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
+
+    let update_sig = sign_aa_tx_secp256k1(&update_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, update_tx, update_sig).await?;
+
+    println!("Spending limit reduced to 0");
+
+    // The maintenance task monitors for SpendingLimitUpdated events and evicts transactions
+    // signed with keys whose spending limits have changed.
+    // Advance another block to trigger the commit notification
+    setup.node.advance_block().await?;
+
+    // Wait for maintenance task to process the block with the spending limit update
+    tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
+
+    // ========================================
+    // STEP 4: Verify transaction is evicted from the pool
+    // ========================================
+    println!("\n=== STEP 4: Verify transaction is evicted from pool ===");
+
+    // Check pool state after spending limit update
+    let tx_still_in_pool = setup.node.inner.pool.contains(&delayed_tx_hash);
+
+    // Check if transaction was mined (should not be, since it had valid_after in future)
+    let receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [delayed_tx_hash])
+        .await?;
+
+    // Check the transfer recipient balance
+    let recipient_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(recipient)
+        .call()
+        .await?;
+
+    println!("\n=== RESULTS ===");
+    println!("Transaction still in pool: {tx_still_in_pool}");
+    println!("Transaction mined: {}", receipt.is_some());
+    println!("Recipient balance: {recipient_balance}");
+    println!("Expected transfer amount: {transfer_amount}");
+
+    if tx_still_in_pool {
+        panic!(
+            "DoS via AA keychain spending limit TOCTOU: \
+             Transaction from key with reduced spending limit should be evicted from the mempool"
+        );
+    } else if receipt.is_some() {
+        // Transaction was mined - check if it succeeded or reverted
+        let receipt_obj = receipt.as_ref().unwrap().as_object().unwrap();
+        let status = receipt_obj
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+
+        if status == "0x1" {
+            // Verify the transfer actually happened
+            if recipient_balance == transfer_amount {
+                println!("Recipient received {transfer_amount} tokens");
+            }
+
+            panic!(
+                "Transaction exceeding spending limit was executed successfully. \
+                 The spending limit enforcement is not being enforced at execution time."
+            );
+        } else {
+            // Transaction was mined but reverted - this is expected behavior
+            // Verify the transfer did NOT happen
+            assert_eq!(
+                recipient_balance,
+                U256::ZERO,
+                "Recipient should have no balance since transaction reverted"
+            );
+        }
+    }
+
+    println!("\n=== Test passed: Transaction was correctly evicted ===");
+    Ok(())
+}
+
+/// Test eth_fillTransaction RPC method for Tempo transactions
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_fill_transaction() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing eth_fillTransaction ===\n");
+
+    let (mut setup, provider, _alice_signer, alice_addr) = setup_test_with_funded_account().await?;
+
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    let valid_before = current_timestamp + 20;
+    let valid_after = current_timestamp - 10;
+
+    let recipient = Address::random();
+
+    let request = serde_json::json!({
+        "from": alice_addr,
+        "type": "0x76",
+        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
+        "validBefore": format!("0x{valid_before:x}"),
+        "validAfter": format!("0x{valid_after:x}"),
+        "nonceKey": format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
+        "keyType": "secp256k1"
+    });
+
+    println!("Request: {}", serde_json::to_string_pretty(&request)?);
+
+    let result: serde_json::Value = provider
+        .raw_request("eth_fillTransaction".into(), [request])
+        .await?;
+
+    println!("Response: {}", serde_json::to_string_pretty(&result)?);
+
+    let tx = result
+        .get("tx")
+        .expect("response should contain 'tx' field");
+
+    assert!(tx.get("nonce").is_some(), "tx should have nonce filled");
+    assert!(tx.get("gas").is_some(), "tx should have gas filled");
+    assert!(
+        tx.get("maxFeePerGas").is_some(),
+        "tx should have maxFeePerGas filled"
+    );
+    assert_eq!(
+        tx.get("validBefore").and_then(|v| v.as_str()),
+        Some(format!("0x{valid_before:x}").as_str()),
+        "validBefore should be preserved"
+    );
+    assert_eq!(
+        tx.get("validAfter").and_then(|v| v.as_str()),
+        Some(format!("0x{valid_after:x}").as_str()),
+        "validAfter should be preserved"
+    );
+
+    println!("✓ eth_fillTransaction returned valid filled transaction");
+
+    Ok(())
+}
+
+/// Regression test for fill_transaction with 2D nonce when protocol nonce > 2D nonce.
+///
+/// Verifies that eth_fillTransaction correctly uses the 2D nonce from the nonce manager
+/// storage, not the protocol nonce from the account basic info.
+///
+/// Setup: An account sends 5 transactions to get protocol nonce = 5, then calls
+/// eth_fillTransaction with a new nonce key (2D nonce = 0). The filled transaction
+/// should have nonce = 0 (2D nonce), not nonce = 5 (protocol nonce).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_fill_transaction_2d_nonce_with_high_protocol_nonce() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing eth_fillTransaction with 2D nonce (protocol nonce > 2D nonce) ===\n");
+
+    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
+    let chain_id = provider.get_chain_id().await?;
+
+    // First, send several transactions to bump the protocol nonce
+    // This simulates the scenario where an account has been active (high protocol nonce)
+    // but is now using a new 2D nonce key (low 2D nonce)
+    println!("Sending transactions to bump protocol nonce...");
+    let recipient = Address::random();
+
+    for i in 0..5 {
+        let tx = TempoTransaction {
+            chain_id,
+            nonce: i,
+            gas_limit: 300_000,
+            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128 + 1_000_000,
+            max_priority_fee_per_gas: 1_000_000,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            calls: vec![Call {
+                to: recipient.into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+
+        let sig_hash = tx.signature_hash();
+        let signature = alice_signer.sign_hash_sync(&sig_hash)?;
+        let signed = AASigned::new_unhashed(
+            tx,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        );
+        let envelope: TempoTxEnvelope = signed.into();
+        let encoded = envelope.encoded_2718();
+
+        let tx_hash = setup.node.rpc.inject_tx(encoded.into()).await?;
+        setup.node.advance_block().await?;
+        tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
+        println!(
+            "  Transaction {} confirmed (hash: {:?}), nonce now: {}",
+            i,
+            tx_hash,
+            i + 1
+        );
+    }
+
+    // Verify protocol nonce is now 5
+    let protocol_nonce = provider.get_transaction_count(alice_addr).await?;
+    println!("Protocol nonce after transactions: {protocol_nonce}");
+    assert_eq!(protocol_nonce, 5, "Protocol nonce should be 5");
+
+    // Now call fill_transaction with a 2D nonce key
+    // The 2D nonce for this key is 0 (never used), but protocol nonce is 5
+    let nonce_key = U256::from(12345); // Arbitrary nonce key that hasn't been used
+
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    let valid_before = current_timestamp + 60;
+    let valid_after = current_timestamp - 10;
+
+    let request = serde_json::json!({
+        "from": alice_addr,
+        "type": "0x76",
+        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
+        "validBefore": format!("0x{valid_before:x}"),
+        "validAfter": format!("0x{valid_after:x}"),
+        "nonceKey": format!("{nonce_key:#x}"),
+        "keyType": "secp256k1"
+    });
+
+    let response: serde_json::Value = provider
+        .raw_request("eth_fillTransaction".into(), [request])
+        .await?;
+
+    let tx = response
+        .get("tx")
+        .expect("response should contain 'tx' field");
+
+    let filled_nonce = tx
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(999));
+
+    assert_eq!(
+        filled_nonce,
+        Some(0),
+        "Nonce should be 0 (2D nonce), not 5 (protocol nonce)"
+    );
+    assert!(tx.get("gas").is_some(), "tx should have gas filled");
 
     Ok(())
 }

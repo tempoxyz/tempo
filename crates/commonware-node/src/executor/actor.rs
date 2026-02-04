@@ -394,7 +394,7 @@ where
     /// Handles finalization events.
     async fn finalize(&mut self, cause: Span, finalized: Update<Block>) -> eyre::Result<()> {
         match finalized {
-            Update::Tip(height, digest) => {
+            Update::Tip(_, height, digest) => {
                 self.canonicalize(
                     Span::current(),
                     HeadOrFinalized::Finalized,

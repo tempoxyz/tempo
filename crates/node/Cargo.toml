@@ -28,6 +28,7 @@ reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
+reth-node-metrics.workspace = true
 reth-tracing.workspace = true
 reth-provider.workspace = true
 reth-transaction-pool.workspace = true
@@ -48,9 +49,13 @@ alloy-primitives.workspace = true
 
 async-trait.workspace = true
 clap.workspace = true
+commonware-runtime = { workspace = true, features = ["external"] }
 eyre.workspace = true
 futures.workspace = true
+jiff = { workspace = true, features = ["std"] }
+reqwest.workspace = true
 tokio.workspace = true
+url.workspace = true
 serde.workspace = true
 jsonrpsee.workspace = true
 

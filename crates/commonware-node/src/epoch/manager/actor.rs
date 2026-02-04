@@ -216,7 +216,7 @@ where
 
         loop {
             select!(
-                message = vote_backup.next() => {
+                message = vote_backup.recv() => {
                     let Some((their_epoch, (from, _))) = message else {
                         error_span!("mux channel closed").in_scope(||
                             error!("vote p2p mux channel closed; exiting actor")
@@ -252,7 +252,7 @@ where
                         Content::Exit(exit) => self.exit(cause, exit),
                         Content::Update(update) => {
                             match *update {
-                                Update::Tip(height, digest) => {
+                                Update::Tip(_, height, digest) => {
                                     let _ = self.handle_finalized_tip(height, digest).await;
                                 }
                                 Update::Block(_block, ack) => {
@@ -342,7 +342,7 @@ where
 
                 replay_buffer: REPLAY_BUFFER,
                 write_buffer: WRITE_BUFFER,
-                buffer_pool: self.config.buffer_pool.clone(),
+                page_cache: self.config.page_cache.clone(),
 
                 leader_timeout: self.config.time_to_propose,
                 notarization_timeout: self.config.time_to_collect_notarizations,

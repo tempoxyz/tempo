@@ -285,22 +285,14 @@ impl TempoTransaction {
         self.nonce_key == TEMPO_EXPIRING_NONCE_KEY
     }
 
-    /// Validates the transaction according to the spec rules
+    /// Validates the transaction according to invariant rules.
+    ///
+    /// This performs structural validation that is always required, regardless of hardfork.
+    /// Hardfork-dependent validation (e.g., expiring nonce constraints) is performed by
+    /// the transaction pool validator and execution handler where hardfork context is available.
     pub fn validate(&self) -> Result<(), &'static str> {
         // Validate calls list structure using the shared function
         validate_calls(&self.calls, !self.tempo_authorization_list.is_empty())?;
-
-        // Validate expiring nonce transaction constraints
-        if self.is_expiring_nonce_tx() {
-            // Expiring nonce txs must have nonce == 0
-            if self.nonce != 0 {
-                return Err("expiring nonce transactions must have nonce == 0");
-            }
-            // Expiring nonce txs must have valid_before set
-            if self.valid_before.is_none() {
-                return Err("expiring nonce transactions must have valid_before set");
-            }
-        }
 
         // validBefore must be greater than validAfter if both are set
         if let Some(valid_after) = self.valid_after
@@ -1972,5 +1964,51 @@ mod tests {
         };
 
         assert_eq!(tx.value(), U256::MAX);
+    }
+
+    #[test]
+    fn test_validate_does_not_check_expiring_nonce_constraints() {
+        let dummy_call = Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        // Transaction with expiring nonce key but nonce != 0 should pass validate()
+        // (expiring nonce constraints are hardfork-dependent and checked elsewhere)
+        let tx_with_nonzero_nonce = TempoTransaction {
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 42,
+            valid_before: None,
+            calls: vec![dummy_call.clone()],
+            ..Default::default()
+        };
+        assert!(
+            tx_with_nonzero_nonce.validate().is_ok(),
+            "validate() should not enforce expiring nonce constraints (hardfork-dependent)"
+        );
+
+        // Transaction with expiring nonce key but no valid_before should pass validate()
+        let tx_without_valid_before = TempoTransaction {
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 0,
+            valid_before: None,
+            calls: vec![dummy_call.clone()],
+            ..Default::default()
+        };
+        assert!(
+            tx_without_valid_before.validate().is_ok(),
+            "validate() should not enforce expiring nonce constraints (hardfork-dependent)"
+        );
+
+        // Sanity check: a fully valid expiring nonce tx should also pass
+        let valid_expiring_tx = TempoTransaction {
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 0,
+            valid_before: Some(1000),
+            calls: vec![dummy_call],
+            ..Default::default()
+        };
+        assert!(valid_expiring_tx.validate().is_ok());
     }
 }

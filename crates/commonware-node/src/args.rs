@@ -9,7 +9,7 @@ const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
 
 /// Command line arguments for configuring the consensus layer of a tempo node.
-#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct Args {
     /// The file containing the ed25519 signing key for p2p communication.
     #[arg(
@@ -140,6 +140,11 @@ pub struct Args {
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
     loaded_signing_key: OnceLock<Option<SigningKey>>,
+
+    /// Where to store consensus data. If not set, this will be derived from
+    /// `--datadir`.
+    #[arg(long = "consensus.datadir", value_name = "PATH")]
+    pub storage_dir: Option<PathBuf>,
 }
 
 impl Args {

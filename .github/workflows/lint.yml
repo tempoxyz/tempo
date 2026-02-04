@@ -3,29 +3,7 @@ name: Lint
 on:
   push:
     branches: [main]
-    paths:
-      - "crates/**"
-      - "bin/**"
-      - "xtask/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "rustfmt.toml"
-      - "deny.toml"
-      - "typos.toml"
-      - ".github/workflows/lint.yml"
   pull_request:
-    paths:
-      - "crates/**"
-      - "bin/**"
-      - "xtask/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "rustfmt.toml"
-      - "deny.toml"
-      - "typos.toml"
-      - ".github/workflows/lint.yml"
   merge_group:
 
 concurrency:
