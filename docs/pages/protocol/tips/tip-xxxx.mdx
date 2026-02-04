@@ -631,9 +631,10 @@ Existing networks are defined as those with hardfork_timestamp > timestamp_at_ge
 
 New networks are defined as those that have the V2 validator config contract at genesis. In these cases, the V1 validator config contract is not required if validators are set up in V2 state.
 
-1. Initialize V2 at genesis with the initial validator set (set `initialized = true`)
-2. Set `allegroTime = 0` to activate V2 immediately
-3. V1 Validator Config contract/precompile is not necessary in this flow
+1. Call `initialize()` to set `initialized = true`
+2. Call `addValidator()` for each initial validator
+3. Set `allegroTime = 0` to activate V2 immediately
+4. V1 Validator Config contract/precompile is not necessary in this flow
 
 ---
 
