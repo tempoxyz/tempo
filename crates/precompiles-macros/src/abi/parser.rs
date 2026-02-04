@@ -629,6 +629,9 @@ pub(super) struct MethodDef {
     /// If set, the dispatcher will check that the current hardfork >= this value,
     /// otherwise it returns `unknown_selector`.
     pub hardfork: Option<Path>,
+    /// Doc comments and other attributes to preserve on the generated trait method.
+    /// Excludes `#[msg_sender]` and `#[hardfork]` which are consumed by the macro.
+    pub attrs: Vec<Attribute>,
 }
 
 impl MethodDef {
@@ -668,6 +671,15 @@ impl MethodDef {
         let needs_sender = has_sender_attr(attrs);
         let hardfork = extract_hardfork_attr(attrs)?;
 
+        // Preserve doc comments and other attributes, filtering out macro-consumed ones
+        let preserved_attrs = attrs
+            .iter()
+            .filter(|attr| {
+                !attr.path().is_ident("msg_sender") && !attr.path().is_ident("hardfork")
+            })
+            .cloned()
+            .collect();
+
         Ok(Self {
             name: sig.ident.to_owned(),
             sol_name,
@@ -676,6 +688,7 @@ impl MethodDef {
             is_mutable,
             needs_sender,
             hardfork,
+            attrs: preserved_attrs,
         })
     }
 }
