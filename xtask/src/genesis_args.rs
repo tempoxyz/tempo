@@ -54,7 +54,7 @@ use tempo_precompiles::{
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
-    tip20_factory::{ITIP20Factory, TIP20Factory},
+    tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };

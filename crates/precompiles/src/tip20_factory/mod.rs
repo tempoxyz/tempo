@@ -2,6 +2,7 @@
 pub mod abi;
 mod dispatch;
 
+use ITIP20Factory::traits::*;
 pub use abi::ITIP20Factory;
 
 use tempo_precompiles_macros::contract;
@@ -9,6 +10,7 @@ use tempo_precompiles_macros::contract;
 use crate::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
+    storage::ContractStorage,
     tip20::{TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
 };
 use alloy::{
@@ -72,7 +74,7 @@ impl TIP20Factory {
         }
 
         // Validate that the address is not already deployed
-        if self.is_tip20_impl(address)? {
+        if self.is_tip20(address)? {
             return Err(TempoPrecompileError::TIP20Factory(
                 TIP20FactoryError::token_already_exists(address),
             ));
@@ -82,7 +84,7 @@ impl TIP20Factory {
         if !quote_token.is_zero() {
             // pathUSD must set address(0) as the quote token
             // or the tip20 must be a valid deployed token
-            if address == PATH_USD_ADDRESS || !self.is_tip20_impl(quote_token)? {
+            if address == PATH_USD_ADDRESS || !self.is_tip20(quote_token)? {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
             // If token is USD, its quote token must also be USD
@@ -107,28 +109,19 @@ impl TIP20Factory {
         let mut token = TIP20Token::from_address(address)?;
         token.initialize(admin, name, symbol, currency, quote_token, admin)?;
 
-        self.emit_event(TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
-            token: address,
-            name: name.into(),
-            symbol: symbol.into(),
-            currency: currency.into(),
-            quote_token,
-            admin,
-            salt: B256::ZERO.into(),
-        }))?;
+        self.emit_event(TIP20FactoryEvent::TokenCreated(
+            ITIP20Factory::TokenCreated {
+                token: address,
+                name: name.into(),
+                symbol: symbol.into(),
+                currency: currency.into(),
+                quote_token,
+                admin,
+                salt: B256::ZERO,
+            },
+        ))?;
 
         Ok(address)
-    }
-
-    /// Returns true if the address is a valid TIP20 token.
-    /// Internal helper used by both trait impl and reserved address creation.
-    fn is_tip20_impl(&self, token: Address) -> Result<bool> {
-        if !is_tip20_prefix(token) {
-            return Ok(false);
-        }
-        // Check if the token has code deployed (non-empty code hash)
-        self.storage
-            .with_account_info(token, |info| Ok(!info.is_empty_code_hash()))
     }
 }
 
@@ -148,14 +141,14 @@ impl ITIP20Factory::Interface for TIP20Factory {
         // Compute the deterministic address from sender and salt
         let (token_address, lower_bytes) = compute_tip20_address(msg_sender, salt);
 
-        if self.is_tip20_impl(token_address)? {
+        if self.is_tip20(token_address)? {
             return Err(TempoPrecompileError::TIP20Factory(
                 TIP20FactoryError::token_already_exists(token_address),
             ));
         }
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
-        if !self.is_tip20_impl(quote_token)? {
+        if !self.is_tip20(quote_token)? {
             return Err(TIP20Error::invalid_quote_token().into());
         }
 
@@ -182,21 +175,27 @@ impl ITIP20Factory::Interface for TIP20Factory {
             admin,
         )?;
 
-        self.emit_event(TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
-            token: token_address,
-            name,
-            symbol,
-            currency,
-            quote_token,
-            admin,
-            salt: salt.into(),
-        }))?;
+        self.emit_event(TIP20FactoryEvent::TokenCreated(
+            ITIP20Factory::TokenCreated {
+                token: token_address,
+                name,
+                symbol,
+                currency,
+                quote_token,
+                admin,
+                salt,
+            },
+        ))?;
 
         Ok(token_address)
     }
 
     fn is_tip20(&self, token: Address) -> Result<bool> {
-        self.is_tip20_impl(token)
+        if !is_tip20_prefix(token) {
+            return Ok(false);
+        }
+        // Check if the token has code deployed (non-empty code hash)
+        TIP20Token::from_address_unchecked(token).is_initialized()
     }
 
     fn get_token_address(&self, sender: Address, salt: B256) -> Result<Address> {
@@ -215,8 +214,8 @@ impl ITIP20Factory::Interface for TIP20Factory {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::ITIP20Factory;
+    use super::*;
     use crate::{
         PATH_USD_ADDRESS,
         error::TempoPrecompileError,

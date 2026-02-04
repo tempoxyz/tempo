@@ -27,14 +27,31 @@ pub mod ITIP20Factory {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Event {
         /// Emitted when a new TIP20 token is created.
-        TokenCreated { #[indexed] token: Address, name: String, symbol: String, currency: String, quote_token: Address, admin: Address, salt: B256 },
+        TokenCreated {
+            #[indexed]
+            token: Address,
+            name: String,
+            symbol: String,
+            currency: String,
+            quote_token: Address,
+            admin: Address,
+            salt: B256,
+        },
     }
 
     /// TIP20 Factory interface for creating TIP20 tokens.
     pub trait Interface {
         /// Creates a new TIP20 token with the given parameters.
         /// Returns the address of the newly created token.
-        fn create_token(&mut self, name: String, symbol: String, currency: String, quote_token: Address, admin: Address, salt: B256) -> Result<Address>;
+        fn create_token(
+            &mut self,
+            name: String,
+            symbol: String,
+            currency: String,
+            quote_token: Address,
+            admin: Address,
+            salt: B256,
+        ) -> Result<Address>;
 
         /// Returns true if the address is a valid TIP20 token.
         fn is_tip20(&self, token: Address) -> Result<bool>;
