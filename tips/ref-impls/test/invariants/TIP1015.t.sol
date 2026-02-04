@@ -64,7 +64,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             uint64 pid = registry.createPolicy(admin, ptype);
             _simplePolicies.push(pid);
             _policyTypes[pid] = ptype;
-            
+
             // Pre-authorize DEX for all simple policies to avoid per-call authorization overhead.
             // This is safe because:
             // 1. TIP-1015 invariants test sender/recipient policy delegation, not DEX privileges
@@ -77,7 +77,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         _initLogFile(LOG_FILE, "TIP-1015 Compound Policy Invariant Test Log");
     }
-    
+
     /// @dev Authorize DEX address in a policy (called once per policy in setUp)
     function _authorizeDex(uint64 policyId, ITIP403Registry.PolicyType ptype) internal {
         if (ptype == ITIP403Registry.PolicyType.WHITELIST) {
@@ -100,13 +100,13 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         vm.startPrank(actor);
         uint64 pid = registry.createPolicy(actor, ptype);
-        
+
         // Pre-authorize DEX for this new policy (same optimization as setUp)
         if (isWhitelist) {
             registry.modifyPolicyWhitelist(pid, address(exchange), true);
         }
         // Blacklist defaults to authorized, no action needed
-        
+
         vm.stopPrank();
 
         _simplePolicies.push(pid);
