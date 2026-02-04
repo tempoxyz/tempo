@@ -244,7 +244,7 @@ interface IValidatorConfigV2 {
     function migrateValidator(uint64 valIdx) external;
 
     /// @notice Initialize V2 and enable reads (owner only)
-    /// @dev Can only be called after all validators have been migrated via migrateValidator.
+    /// @dev Should only be called after all validators have been migrated via migrateValidator.
     ///      Sets initialized=true. After this call, CL reads from V2 instead of V1.
     ///      Also copies owner and nextDkgCeremony from V1 if not already set.
     function initialize() external;
