@@ -19,10 +19,16 @@ use crate::{
 /// the current slot cannot fit the next field (no spanning across slots).
 pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     // Extract struct name, generics
-    let strukt = &input.ident;
+    let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
+    // Check for repr(u8) enum
+    if let Data::Enum(_) = &input.data {
+        return derive_repr_u8_enum(ident, &impl_generics, &ty_generics, where_clause, &input);
+    }
+
     // Parse struct fields
+    let strukt = ident;
     let fields = match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
             Fields::Named(fields_named) => &fields_named.named,
@@ -36,7 +42,7 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         _ => {
             return Err(syn::Error::new_spanned(
                 &input.ident,
-                "`Storable` can only be derived for structs",
+                "`Storable` can only be derived for structs or #[repr(u8)] enums",
             ));
         }
     };
@@ -491,4 +497,66 @@ fn gen_delete_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
             }
         }
     }
+}
+
+/// Implements `Storable` for `#[repr(u8)]` enums.
+///
+/// The enum must have `#[repr(u8)]` and implement `TryFrom<u8>`.
+/// This generates a 1-byte storable implementation.
+fn derive_repr_u8_enum(
+    ident: &Ident,
+    impl_generics: &syn::ImplGenerics<'_>,
+    ty_generics: &syn::TypeGenerics<'_>,
+    where_clause: Option<&syn::WhereClause>,
+    input: &DeriveInput,
+) -> syn::Result<TokenStream> {
+    // Verify the enum has #[repr(u8)]
+    let has_repr_u8 = input.attrs.iter().any(|attr| {
+        if attr.path().is_ident("repr")
+            && let Ok(list) = attr.meta.require_list()
+        {
+            return list.tokens.to_string() == "u8";
+        }
+        false
+    });
+
+    if !has_repr_u8 {
+        return Err(syn::Error::new_spanned(
+            input,
+            "`Storable` can only be derived for enums with `#[repr(u8)]`",
+        ));
+    }
+
+    Ok(quote! {
+        impl #impl_generics crate::storage::StorableType for #ident #ty_generics #where_clause {
+            const LAYOUT: crate::storage::Layout = crate::storage::Layout::Bytes(1);
+
+            type Handler = crate::storage::Slot<Self>;
+
+            fn handle(
+                slot: ::alloy::primitives::U256,
+                ctx: crate::storage::LayoutCtx,
+                address: ::alloy::primitives::Address,
+            ) -> Self::Handler {
+                crate::storage::Slot::new_with_ctx(slot, ctx, address)
+            }
+        }
+
+        impl #impl_generics crate::storage::sealed::OnlyPrimitives for #ident #ty_generics #where_clause {}
+        impl #impl_generics crate::storage::Packable for #ident #ty_generics #where_clause {}
+
+        impl #impl_generics crate::storage::FromWord for #ident #ty_generics #where_clause {
+            #[inline]
+            fn to_word(&self) -> ::alloy::primitives::U256 {
+                ::alloy::primitives::U256::from(*self as u8)
+            }
+
+            #[inline]
+            fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
+                let byte: u8 = word.try_into().map_err(|_| crate::error::TempoPrecompileError::under_overflow())?;
+                // Use unwrap_or(__Invalid) to match alloy's detokenize behavior for out-of-range values
+                Ok(Self::try_from(byte).unwrap_or(Self::__Invalid))
+            }
+        }
+    })
 }

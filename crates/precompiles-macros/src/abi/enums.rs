@@ -20,10 +20,21 @@ use super::{
 };
 
 /// Generate code for a unit enum definition (uint8-encoded).
+///
+/// Follows alloy's `sol!` behavior:
+/// - If variant count < 256, adds `__Invalid = 255` sentinel variant
+/// - `detokenize` returns `__Invalid` for out-of-range values (lossy)
+/// - `valid_token` returns `false` for out-of-range values
+/// - `TryFrom<u8>` returns `Err` for out-of-range values
 pub(super) fn generate_unit_enum(def: &UnitEnumDef) -> TokenStream {
     let enum_name = &def.name;
     let vis = &def.vis;
     let attrs = &def.attrs;
+    let variant_count = def.variants.len();
+
+    // Only add __Invalid sentinel if we have room (< 256 variants)
+    let has_invalid_sentinel = variant_count < 256;
+    let max_valid = variant_count.saturating_sub(1) as u8;
 
     let (variants_with_discriminants, from_u8_arms): (Vec<_>, Vec<_>) = def
         .variants
@@ -34,6 +45,17 @@ pub(super) fn generate_unit_enum(def: &UnitEnumDef) -> TokenStream {
             (quote! { #v = #idx }, quote! { #idx => Ok(Self::#v) })
         })
         .unzip();
+
+    // Add __Invalid sentinel variant if there's room
+    let invalid_variant = if has_invalid_sentinel {
+        quote! {
+            /// Invalid variant returned when decoding an out-of-range `u8` value.
+            #[doc(hidden)]
+            __Invalid = u8::MAX,
+        }
+    } else {
+        quote! {}
+    };
 
     // Emit cfg-gated Storable derive if the enum originally had it
     let storable_attr = if def.has_storable {
@@ -49,15 +71,18 @@ pub(super) fn generate_unit_enum(def: &UnitEnumDef) -> TokenStream {
         #[allow(non_camel_case_types)]
         #storable_attr
         #vis enum #enum_name {
-            #(#variants_with_discriminants),*
+            #(#variants_with_discriminants,)*
+            #invalid_variant
         }
     };
 
     let trait_impls = expand_unit_enum_traits(
         enum_name,
-        def.variants.len() as u8,
+        variant_count as u8,
+        max_valid,
         &from_u8_arms,
         def.variants.first(),
+        has_invalid_sentinel,
     );
 
     quote! {
@@ -67,12 +92,22 @@ pub(super) fn generate_unit_enum(def: &UnitEnumDef) -> TokenStream {
 }
 
 /// Generate all trait implementations for a unit enum (uint8-encoded).
+///
+/// Follows alloy's `sol!` behavior:
+/// - `From<Enum> for u8`: direct cast
+/// - `TryFrom<u8>`: returns `Err(alloy_sol_types::Error::InvalidEnumValue)` for out-of-range
+/// - `SolType::valid_token`: returns `false` for out-of-range values
+/// - `SolType::detokenize`: returns `__Invalid` sentinel for out-of-range (if available)
 fn expand_unit_enum_traits(
     enum_name: &Ident,
     variant_count: u8,
+    max_valid: u8,
     from_u8_arms: &[TokenStream],
     first_variant: Option<&Ident>,
+    has_invalid_sentinel: bool,
 ) -> TokenStream {
+    let enum_name_str = enum_name.to_string();
+
     let from_impl = quote! {
         #[automatically_derived]
         impl ::core::convert::From<#enum_name> for u8 {
@@ -83,26 +118,46 @@ fn expand_unit_enum_traits(
         }
     };
 
+    // TryFrom returns alloy's Error type for compatibility
     let try_from_impl = quote! {
         #[automatically_derived]
         impl ::core::convert::TryFrom<u8> for #enum_name {
-            type Error = ();
+            type Error = ::alloy_sol_types::Error;
 
             #[inline]
-            fn try_from(value: u8) -> ::core::result::Result<Self, ()> {
+            fn try_from(value: u8) -> ::alloy_sol_types::Result<Self> {
                 match value {
                     #(#from_u8_arms,)*
-                    _ => Err(()),
+                    v => Err(::alloy_sol_types::Error::InvalidEnumValue {
+                        name: #enum_name_str,
+                        value: v,
+                        max: #max_valid,
+                    }),
                 }
             }
         }
     };
 
+    // detokenize behavior depends on whether we have the __Invalid sentinel
+    let detokenize_body = if has_invalid_sentinel {
+        // With sentinel: return __Invalid for out-of-range values (lossy but safe)
+        quote! {
+            let value: u8 = <::alloy_sol_types::sol_data::Uint<8> as ::alloy_sol_types::SolType>::detokenize(token);
+            Self::try_from(value).unwrap_or(Self::__Invalid)
+        }
+    } else {
+        // Without sentinel (256 variants): panic on invalid (should be unreachable)
+        quote! {
+            let value: u8 = <::alloy_sol_types::sol_data::Uint<8> as ::alloy_sol_types::SolType>::detokenize(token);
+            Self::try_from(value).expect("unreachable: enum has 256 variants")
+        }
+    };
+
     let sol_type_impl = quote! {
         #[automatically_derived]
-        impl alloy_sol_types::SolType for #enum_name {
+        impl ::alloy_sol_types::SolType for #enum_name {
             type RustType = Self;
-            type Token<'a> = <alloy_sol_types::sol_data::Uint<8> as alloy_sol_types::SolType>::Token<'a>;
+            type Token<'a> = <::alloy_sol_types::sol_data::Uint<8> as ::alloy_sol_types::SolType>::Token<'a>;
 
             const SOL_NAME: &'static str = "uint8";
             const ENCODED_SIZE: Option<usize> = Some(32);
@@ -110,48 +165,76 @@ fn expand_unit_enum_traits(
 
             #[inline]
             fn valid_token(token: &Self::Token<'_>) -> bool {
-                let value: u8 = alloy::primitives::U256::from_be_bytes(token.0.0).to::<u8>();
-                value < #variant_count
+                Self::type_check(token).is_ok()
+            }
+
+            #[inline]
+            fn type_check(token: &Self::Token<'_>) -> ::alloy_sol_types::Result<()> {
+                <::alloy_sol_types::sol_data::Uint<8> as ::alloy_sol_types::SolType>::type_check(token)?;
+                let value = <::alloy_sol_types::sol_data::Uint<8> as ::alloy_sol_types::SolType>::detokenize(*token);
+                <Self as ::core::convert::TryFrom<u8>>::try_from(value).map(::core::mem::drop)
             }
 
             #[inline]
             fn detokenize(token: Self::Token<'_>) -> Self::RustType {
-                let value: u8 = alloy::primitives::U256::from_be_bytes(token.0.0).to::<u8>();
-                debug_assert!(
-                    value < #variant_count,
-                    "invalid {} discriminant: {}",
-                    stringify!(#enum_name),
-                    value
-                );
-                Self::try_from(value).unwrap_or_default()
+                #detokenize_body
             }
         }
     };
 
     let sol_type_value_impl = quote! {
         #[automatically_derived]
-        impl alloy_sol_types::private::SolTypeValue<#enum_name> for #enum_name {
+        impl ::alloy_sol_types::private::SolTypeValue<#enum_name> for #enum_name {
             #[inline]
-            fn stv_to_tokens(&self) -> <#enum_name as alloy_sol_types::SolType>::Token<'_> {
-                <alloy_sol_types::sol_data::Uint<8> as alloy_sol_types::SolType>::tokenize(&(*self as u8))
+            fn stv_to_tokens(&self) -> <#enum_name as ::alloy_sol_types::SolType>::Token<'_> {
+                ::alloy_sol_types::Word::with_last_byte(*self as u8).into()
             }
 
             #[inline]
-            fn stv_abi_encode_packed_to(&self, out: &mut alloy_sol_types::private::Vec<u8>) {
+            fn stv_abi_encode_packed_to(&self, out: &mut ::alloy_sol_types::private::Vec<u8>) {
                 out.push(*self as u8);
             }
 
             #[inline]
-            fn stv_eip712_data_word(&self) -> alloy_sol_types::Word {
-                <alloy_sol_types::sol_data::Uint<8> as alloy_sol_types::SolType>::tokenize(&(*self as u8)).0
+            fn stv_eip712_data_word(&self) -> ::alloy_sol_types::Word {
+                ::alloy_sol_types::Word::with_last_byte(*self as u8)
             }
         }
     };
 
     let sol_value_impl = quote! {
         #[automatically_derived]
-        impl alloy_sol_types::SolValue for #enum_name {
+        impl ::alloy_sol_types::SolValue for #enum_name {
             type SolType = Self;
+        }
+    };
+
+    // SolEnum trait for enum-specific functionality
+    let sol_enum_impl = quote! {
+        #[automatically_derived]
+        impl ::alloy_sol_types::SolEnum for #enum_name {
+            const COUNT: usize = #variant_count as usize;
+        }
+    };
+
+    // EventTopic for use in event indexed parameters
+    let event_topic_impl = quote! {
+        #[automatically_derived]
+        impl ::alloy_sol_types::EventTopic for #enum_name {
+            #[inline]
+            fn topic_preimage_length(rust: &Self::RustType) -> usize {
+                <::alloy_sol_types::sol_data::Uint<8> as ::alloy_sol_types::EventTopic>::topic_preimage_length(&(*rust as u8))
+            }
+
+            #[inline]
+            fn encode_topic_preimage(rust: &Self::RustType, out: &mut ::alloy_sol_types::private::Vec<u8>) {
+                <::alloy_sol_types::sol_data::Uint<8> as ::alloy_sol_types::EventTopic>::encode_topic_preimage(&(*rust as u8), out);
+            }
+
+            #[inline]
+            fn encode_topic(rust: &Self::RustType) -> ::alloy_sol_types::abi::token::WordToken {
+                <::alloy_sol_types::sol_data::Uint<8> as ::alloy_sol_types::EventTopic>::encode_topic(&(*rust as u8))
+            }
         }
     };
 
@@ -173,6 +256,8 @@ fn expand_unit_enum_traits(
         #sol_type_impl
         #sol_type_value_impl
         #sol_value_impl
+        #sol_enum_impl
+        #event_topic_impl
         #default_impl
     }
 }

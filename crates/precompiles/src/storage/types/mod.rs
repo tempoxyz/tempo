@@ -217,7 +217,7 @@ pub trait Storable: StorableType + Sized {
 
 /// Private module to seal the `Packable` trait.
 #[allow(unnameable_types)]
-pub(in crate::storage::types) mod sealed {
+pub(crate) mod sealed {
     /// Marker trait to prevent external implementations of `Packable`.
     pub trait OnlyPrimitives {}
 }
