@@ -191,8 +191,25 @@ pub fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> Precompile
 }
 
 #[inline]
+pub fn metadata_with_sender<T: SolCall>(
+    sender: Address,
+    f: impl FnOnce(Address) -> Result<T::Return>,
+) -> PrecompileResult {
+    f(sender).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
+}
+
+#[inline]
 pub fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
+}
+
+#[inline]
+pub fn view_with_sender<T: SolCall>(
+    call: T,
+    sender: Address,
+    f: impl FnOnce(Address, T) -> Result<T::Return>,
+) -> PrecompileResult {
+    f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
@@ -223,6 +240,34 @@ pub fn mutate_void<T: SolCall>(
         ));
     }
     f(sender, call).into_precompile_result(0, |()| Bytes::new())
+}
+
+#[inline]
+pub fn mutate_no_sender<T: SolCall>(
+    call: T,
+    f: impl FnOnce(T) -> Result<T::Return>,
+) -> PrecompileResult {
+    if StorageCtx.is_static() {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
+    f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
+}
+
+#[inline]
+pub fn mutate_void_no_sender<T: SolCall>(
+    call: T,
+    f: impl FnOnce(T) -> Result<()>,
+) -> PrecompileResult {
+    if StorageCtx.is_static() {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
+    f(call).into_precompile_result(0, |()| Bytes::new())
 }
 
 #[inline]

@@ -261,7 +261,9 @@ pub(super) fn generate_unified_calls(
     }
 }
 
-/// Generate the transformed trait with msg_sender injection.
+/// Generate the transformed trait with optional msg_sender injection.
+///
+/// `msg_sender: Address` is only injected when the method has `#[msg_sender]` attribute.
 fn generate_transformed_trait(def: &InterfaceDef) -> TokenStream {
     let trait_name = &def.name;
     let vis = &def.vis;
@@ -281,13 +283,19 @@ fn generate_transformed_trait(def: &InterfaceDef) -> TokenStream {
                 quote! { -> Result<()> }
             };
 
-            if m.is_mutable {
+            let self_param = if m.is_mutable {
+                quote! { &mut self }
+            } else {
+                quote! { &self }
+            };
+
+            if m.needs_sender {
                 quote! {
-                    fn #name(&mut self, msg_sender: Address, #(#params),*) #return_type;
+                    fn #name(#self_param, msg_sender: Address, #(#params),*) #return_type;
                 }
             } else {
                 quote! {
-                    fn #name(&self, #(#params),*) #return_type;
+                    fn #name(#self_param, #(#params),*) #return_type;
                 }
             }
         })

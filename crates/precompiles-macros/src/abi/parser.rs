@@ -622,6 +622,9 @@ pub(super) struct MethodDef {
     pub return_type: Option<Type>,
     /// Whether this is a mutable method (&mut self)
     pub is_mutable: bool,
+    /// Whether `msg_sender: Address` should be injected (via `#[msg_sender]` attribute).
+    /// Works on both `&self` and `&mut self` methods.
+    pub needs_sender: bool,
     /// Optional hardfork requirement (e.g., `TempoHardfork::T2`).
     /// If set, the dispatcher will check that the current hardfork >= this value,
     /// otherwise it returns `unknown_selector`.
@@ -662,6 +665,7 @@ impl MethodDef {
         }
 
         let return_type = extract_result_inner_type(&sig.output)?;
+        let needs_sender = has_sender_attr(attrs);
         let hardfork = extract_hardfork_attr(attrs)?;
 
         Ok(Self {
@@ -670,6 +674,7 @@ impl MethodDef {
             params,
             return_type,
             is_mutable,
+            needs_sender,
             hardfork,
         })
     }
@@ -781,6 +786,11 @@ pub(super) enum SolEnumKind {
 
 fn has_indexed_attr(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("indexed"))
+}
+
+/// Check if `#[msg_sender]` attribute is present.
+fn has_sender_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| attr.path().is_ident("msg_sender"))
 }
 
 /// Extract `#[hardfork = TempoHardfork::T2]` attribute from a list of attributes.
@@ -935,6 +945,57 @@ mod tests {
         assert_eq!(module.interfaces.len(), 2);
         assert_eq!(module.interfaces[0].name.to_string(), "Token");
         assert_eq!(module.interfaces[1].name.to_string(), "Roles");
+
+        // #[msg_sender] attribute on various method types
+        let module = parse_module(quote! {
+            pub mod test {
+                pub trait Interface {
+                    // View without sender
+                    fn total_supply(&self) -> Result<U256>;
+
+                    // View with sender
+                    #[msg_sender]
+                    fn my_balance(&self) -> Result<U256>;
+
+                    // Mutable without sender (permissionless)
+                    fn liquidate(&mut self, account: Address) -> Result<()>;
+
+                    // Mutable with sender
+                    #[msg_sender]
+                    fn transfer(&mut self, to: Address, amount: U256) -> Result<bool>;
+
+                    // Combined with hardfork
+                    #[msg_sender]
+                    #[hardfork = TempoHardfork::T2]
+                    fn new_feature(&mut self, data: Bytes) -> Result<()>;
+                }
+            }
+        })?;
+        assert_eq!(module.interfaces.len(), 1);
+        let methods = &module.interfaces[0].methods;
+        assert_eq!(methods.len(), 5);
+
+        // total_supply: view, no sender
+        assert!(!methods[0].is_mutable);
+        assert!(!methods[0].needs_sender);
+
+        // my_balance: view, with sender
+        assert!(!methods[1].is_mutable);
+        assert!(methods[1].needs_sender);
+
+        // liquidate: mutable, no sender
+        assert!(methods[2].is_mutable);
+        assert!(!methods[2].needs_sender);
+
+        // transfer: mutable, with sender
+        assert!(methods[3].is_mutable);
+        assert!(methods[3].needs_sender);
+
+        // new_feature: mutable, with sender, with hardfork
+        assert!(methods[4].is_mutable);
+        assert!(methods[4].needs_sender);
+        assert!(methods[4].hardfork.is_some());
+
         Ok(())
     }
 
