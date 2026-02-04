@@ -799,7 +799,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Main invariant function called after each fuzz sequence
-    /// @dev Verifies TEMPO-DEX6 (balance solvency), TEMPO-DEX7/11 (tick consistency), TEMPO-DEX8/9 (best tick)
+    /// @dev Verifies TEMPO-DEX10 (balance solvency), TEMPO-DEX11/15 (tick consistency), TEMPO-DEX12/13 (best tick)
     ///      Optimized: unified loops over actors and tokens to reduce iteration overhead
     function invariantStablecoinDEX() public view {
         // Compute expected escrowed amounts from all orders (including flip-created orders)
@@ -826,10 +826,10 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             }
         }
 
-        // TEMPO-DEX6: Check pathUSD balance solvency
+        // TEMPO-DEX10: Check pathUSD balance solvency
         assertTrue(
             dexPathUsdBalance >= totalUserPathUsd,
-            "TEMPO-DEX6: DEX pathUsd balance < sum of user internal balances"
+            "TEMPO-DEX10: DEX pathUsd balance < sum of user internal balances"
         );
         assertApproxEqAbs(
             dexPathUsdBalance,
@@ -842,10 +842,10 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         for (uint256 t = 0; t < _tokens.length; t++) {
             address tokenAddr = address(_tokens[t]);
 
-            // TEMPO-DEX6: Token balance solvency
+            // TEMPO-DEX10: Token balance solvency
             assertTrue(
                 dexTokenBalances[t] >= totalUserTokenBalances[t],
-                "TEMPO-DEX6: DEX token balance < sum of user internal balances"
+                "TEMPO-DEX10: DEX token balance < sum of user internal balances"
             );
             assertApproxEqAbs(
                 dexTokenBalances[t],
@@ -854,10 +854,10 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 "TEMPO-DEX10: DEX token balance != user balances + escrowed"
             );
 
-            // TEMPO-DEX8 & TEMPO-DEX9: Best bid/ask tick consistency
+            // TEMPO-DEX12 & TEMPO-DEX13: Best bid/ask tick consistency
             _assertBestTickConsistency(tokenAddr);
 
-            // TEMPO-DEX7 & TEMPO-DEX11: Tick level and bitmap consistency
+            // TEMPO-DEX11 & TEMPO-DEX15: Tick level and bitmap consistency
             _assertTickLevelConsistency(tokenAddr);
         }
 
@@ -973,13 +973,13 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
             _maxDust += ordersFilled + hops;
 
-            // TEMPO-DEX18: Each swap can increase dust by at most 1 per order filled + 1 per hop
+            // TEMPO-DEX8: Each swap can increase dust by at most 1 per order filled + 1 per hop
             // (rounding occurs at each hop, not just at hop boundaries)
             uint256 dustAfterSwap = _computeDust();
             assertLe(
                 dustAfterSwap,
                 _dustBeforeSwap + ordersFilled + hops,
-                "TEMPO-DEX18: swap increased dust by more than expected (1 per order + 1 per hop)"
+                "TEMPO-DEX8: swap increased dust by more than expected (1 per order + 1 per hop)"
             );
             // TEMPO-DEX4: amountOut >= minAmountOut
             assertTrue(
@@ -1049,13 +1049,13 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
             _maxDust += ordersFilled + hops;
 
-            // TEMPO-DEX18: Each swap can increase dust by at most 1 per order filled + 1 per hop
+            // TEMPO-DEX8: Each swap can increase dust by at most 1 per order filled + 1 per hop
             // (rounding occurs at each hop, not just at hop boundaries)
             uint256 dustAfterSwap = _computeDust();
             assertLe(
                 dustAfterSwap,
                 _dustBeforeSwap + ordersFilled + hops,
-                "TEMPO-DEX18: swap increased dust by more than expected (1 per order + 1 per hop)"
+                "TEMPO-DEX8: swap increased dust by more than expected (1 per order + 1 per hop)"
             );
 
             // TEMPO-DEX5: amountIn <= maxAmountIn
