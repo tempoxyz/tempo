@@ -9,6 +9,7 @@ pub mod storage_primitives {
 }
 pub use storage_primitives as storage;
 pub use tempo_precompiles::error;
+pub use tempo_precompiles::resolver;
 
 // Import the storage test modules
 mod storage_tests;

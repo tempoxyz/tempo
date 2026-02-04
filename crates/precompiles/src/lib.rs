@@ -5,6 +5,9 @@
 pub mod error;
 pub use error::{IntoPrecompileResult, Result};
 
+#[cfg(feature = "test-utils")]
+pub mod resolver;
+
 pub mod storage;
 
 pub mod account_keychain;

@@ -1,0 +1,80 @@
+# Precompile Differential Testing
+#
+# This workflow detects behavioral changes in precompiles by comparing
+# fingerprints from the main branch against the PR branch. Any difference
+# in execution results (gas, output, state) will cause the workflow to fail.
+
+name: Precompile Differential Testing
+
+on:
+  pull_request:
+    paths:
+      - 'crates/precompile-tests/**'
+      - 'crates/precompiles/**'
+      - 'crates/precompiles-macros/**'
+      - 'crates/evm/**'
+      - 'crates/revm/**'
+      - 'crates/primitives/**'
+      - 'crates/contracts/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTC_WRAPPER: "sccache"
+
+jobs:
+  diff:
+    name: Precompile Diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-precompile-diff-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-precompile-diff-
+            ${{ runner.os }}-cargo-
+
+      - name: Build precompile-tests (current)
+        run: |
+          cargo build -p precompile-tests --release
+          mv target/release/precompile-tests target/release/precompile-tests-current
+
+      - name: Checkout main branch
+        run: git checkout main
+
+      - name: Build precompile-tests (baseline)
+        run: |
+          cargo build -p precompile-tests --release
+          mv target/release/precompile-tests target/release/precompile-tests-baseline
+
+      - name: Checkout PR branch
+        run: git checkout ${{ github.head_ref }}
+
+      - name: Run differential test
+        run: |
+          ./target/release/precompile-tests-current diff \
+            --baseline-binary ./target/release/precompile-tests-baseline \
+            --dir crates/precompile-tests/vectors

@@ -293,9 +293,14 @@ impl<T: Packable> Storable for T {
 /// Keys are hashed using keccak256 along with the mapping's base slot
 /// to determine the final storage location. This trait provides the
 /// byte representation used in that hash.
-pub trait StorageKey {
+pub trait StorageKey: Sized {
     /// Returns a byte slice for this type.
     fn as_storage_bytes(&self) -> impl AsRef<[u8]>;
+
+    /// Parse a key from a string (hex or decimal).
+    ///
+    /// Used by the `slot_for` resolver to parse string keys into typed values.
+    fn parse_key(s: &str) -> core::result::Result<Self, &'static str>;
 
     /// Compute storage slot for a mapping with this key.
     ///
