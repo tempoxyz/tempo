@@ -237,12 +237,12 @@ interface IValidatorConfigV2 {
 
     /// @notice Migrate a single validator from V1 to V2 (owner only)
     /// @dev Can be called multiple times to migrate validators one at a time.
-    ///      Reverts if already initialized or if valConfigV1Idx != validatorsArray.length.
+    ///      Reverts if already initialized or if idx != validatorsArray.length.
     ///      On first call, copies owner from V1 if V2 owner is address(0).
     ///      Active V1 validators get addedAtHeight=0 and deletedAtHeight=0.
     ///      Inactive V1 validators get addedAtHeight=deletedAtHeight=block.timestamp at migration time.
-    /// @param valConfigV1Idx Index of the validator in V1 validators array (must equal current validatorsArray.length)
-    function migrateValidator(uint64 valConfigV1Idx) external;
+    /// @param idx Index of the validator in V1 validators array (must equal current validatorsArray.length)
+    function migrateValidator(uint64 idx) external;
 
     /// @notice Initialize V2 and enable reads (owner only)
     /// @dev Should only be called after all validators have been migrated via migrateValidator.
@@ -557,17 +557,17 @@ precompile does NOT proxy reads to V1.
 
 ### Migration Functions (Owner Only)
 
-**`migrateValidator(valConfigV1Idx)`**:
+**`migrateValidator(idx)`**:
 - Reverts if `isInitialized() == true`
-- Reverts if `valConfigV1Idx != validatorsArray.length` (ensures sequential migration)
+- Reverts if `idx != validatorsArray.length` (ensures sequential migration)
 - On first call (when `validatorsArray.length == 0`), copies `owner` from V1 if V2 owner is `address(0)`
-- Reads the validator from V1 at index `valConfigV1Idx`
+- Reads the validator from V1 at index `idx`
 - Creates a V2 validator entry with:
   - `publicKey`: copied from V1
   - `validatorAddress`: copied from V1
   - `inboundAddress`: copied from V1
   - `outboundAddress`: copied from V1
-  - `index`: set to `valConfigV1Idx`
+  - `index`: set to `idx`
   - `addedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
   - `deletedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
 - Adds to `validatorsArray`
@@ -639,7 +639,7 @@ Existing networks are defined as those with hardfork_timestamp > timestamp_at_ge
 1. **Release new node software** with Allegro hardfork support
 2. **Schedule the fork** by updating chainspec with target `allegroTime`
 3. **At fork activation**: CL reads from V1 (since `isInitialized() == false`)
-4. **Admin migrates validators** by calling `migrateValidator(valConfigV1Idx)` for each validator
+4. **Admin migrates validators** by calling `migrateValidator(idx)` for each validator
    - One transaction per validator
    - Example: `migrateValidator(0)`, `migrateValidator(1)`, `migrateValidator(2)`, etc.
    - Validator addresses are copied from V1
