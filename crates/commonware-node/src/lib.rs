@@ -30,8 +30,7 @@ pub use crate::config::{
     VOTES_CHANNEL_IDENT, VOTES_LIMIT,
 };
 
-pub use args::Args;
-pub use args::PositiveDuration;
+pub use args::{Args, PositiveDuration};
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
