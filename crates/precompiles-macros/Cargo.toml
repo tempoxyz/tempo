@@ -31,8 +31,4 @@ alloy-sol-macro = { workspace = true }
 [features]
 default = []
 # Enable RPC bindings (abiInstance with .new(), methods, event filters)
-# This mirrors the feature in tempo-precompiles
 rpc = []
-# Enable precompile-specific code generation (traits, dispatch, etc.)
-# This mirrors the feature in tempo-precompiles and is needed for macro tests
-precompile = ["rpc"]

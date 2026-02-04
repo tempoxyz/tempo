@@ -30,7 +30,10 @@ pub(super) fn generate_dispatch_trait(
         return quote! {};
     }
 
-    let iconstants_name = format_ident!("{}Constants", crate::utils::to_pascal_case(&mod_name.to_string()));
+    let iconstants_name = format_ident!(
+        "{}Constants",
+        crate::utils::to_pascal_case(&mod_name.to_string())
+    );
 
     // Build the supertrait bounds (require all interface traits + {ModName}Constants)
     let mut trait_bounds: Vec<TokenStream> = interfaces

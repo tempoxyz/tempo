@@ -76,6 +76,7 @@ fn test_unit_enum() {
     assert_eq!(decoded, Status::Active);
 }
 
+#[cfg(feature = "precompile")]
 type Result<T> = core::result::Result<T, ()>;
 
 #[abi]
