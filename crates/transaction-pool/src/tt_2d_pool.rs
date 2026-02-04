@@ -1,5 +1,9 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
-use crate::{metrics::AA2dPoolMetrics, transaction::TempoPooledTransaction};
+use crate::{
+    expiry::{ExpiryInfo, ExpiryTracker},
+    metrics::AA2dPoolMetrics,
+    transaction::TempoPooledTransaction,
+};
 use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, HashMap, HashSet, U256Map},
@@ -14,6 +18,7 @@ use reth_transaction_pool::{
     pool::{AddedPendingTransaction, AddedTransaction, QueuedReason, pending::PendingTransaction},
 };
 use revm::database::BundleAccount;
+
 use std::{
     cell::RefCell,
     collections::{
@@ -81,17 +86,22 @@ pub struct AA2dPool {
     /// Bounded by pool size (max unique senders = pending_limit + queued_limit).
     /// Entries are removed when count reaches 0 via `decrement_sender_count`.
     txs_by_sender: AddressMap<usize>,
+    /// Shared expiry tracker.
+    ///
+    /// Tracks `valid_before` and keychain key expiry for eviction.
+    /// Pool add/remove directly updates this tracker (no queue needed).
+    expiry_tracker: Arc<ExpiryTracker>,
 }
 
 impl Default for AA2dPool {
     fn default() -> Self {
-        Self::new(AA2dPoolConfig::default())
+        Self::new(AA2dPoolConfig::default(), Arc::new(ExpiryTracker::new()))
     }
 }
 
 impl AA2dPool {
-    /// Creates a new instance with the givenconfig and nonce keys
-    pub fn new(config: AA2dPoolConfig) -> Self {
+    /// Creates a new instance with the given config and shared expiry tracker.
+    pub fn new(config: AA2dPoolConfig, expiry_tracker: Arc<ExpiryTracker>) -> Self {
         Self {
             submission_id: 0,
             independent_transactions: Default::default(),
@@ -104,6 +114,26 @@ impl AA2dPool {
             metrics: AA2dPoolMetrics::default(),
             by_eviction_order: Default::default(),
             txs_by_sender: Default::default(),
+            expiry_tracker,
+        }
+    }
+
+    /// Returns a reference to the shared expiry tracker.
+    pub fn expiry_tracker(&self) -> &Arc<ExpiryTracker> {
+        &self.expiry_tracker
+    }
+
+    /// Extracts expiry info from a transaction for tracking.
+    fn expiry_info_from_tx(tx: &TempoPooledTransaction) -> ExpiryInfo {
+        let valid_before = tx.inner().as_aa().and_then(|aa| aa.tx().valid_before);
+        let key_expiry = tx.key_expiry().and_then(|expiry| {
+            tx.keychain_subject()
+                .map(|subject| (subject.account, subject.key_id, expiry))
+        });
+        ExpiryInfo {
+            tx_hash: *tx.hash(),
+            valid_before,
+            key_expiry,
         }
     }
 
@@ -225,11 +255,18 @@ impl AA2dPool {
             // Remove from eviction set
             let replaced_key = EvictionKey::new(Arc::clone(replaced), tx_id);
             self.by_eviction_order.remove(&replaced_key);
+            // Untrack expiry for replaced transaction
+            self.expiry_tracker
+                .untrack(*replaced.inner.transaction.hash());
         }
 
         // insert transaction by hash
         self.by_hash
             .insert(*tx.inner.transaction.hash(), tx.inner.transaction.clone());
+
+        // Track expiry for the new transaction
+        self.expiry_tracker
+            .track(Self::expiry_info_from_tx(&tx.inner.transaction.transaction));
 
         // contains transactions directly impacted by the new transaction (filled nonce gap)
         let mut promoted = Vec::new();
@@ -344,6 +381,10 @@ impl AA2dPool {
 
         // Increment sender count
         *self.txs_by_sender.entry(sender).or_insert(0) += 1;
+
+        // Track expiry for the new transaction
+        self.expiry_tracker
+            .track(Self::expiry_info_from_tx(&transaction.transaction));
 
         trace!(target: "txpool", hash = %tx_hash, "Added expiring nonce transaction");
 
@@ -603,6 +644,9 @@ impl AA2dPool {
         // Decrement sender count
         self.decrement_sender_count(removed_tx.sender());
 
+        // Untrack expiry for removed transaction
+        self.expiry_tracker.untrack(*removed_tx.hash());
+
         Some(removed_tx)
     }
 
@@ -708,6 +752,8 @@ impl AA2dPool {
             self.expiring_nonce_txs.remove(tx_hash);
             // Decrement sender count for expiring nonce txs
             self.decrement_sender_count(tx.sender());
+            // Untrack expiry for removed transaction
+            self.expiry_tracker.untrack(*tx_hash);
             return Some((tx, None));
         }
 
@@ -782,6 +828,8 @@ impl AA2dPool {
                 if self.expiring_nonce_txs.remove(&hash).is_some() {
                     self.by_hash.remove(&hash);
                     self.decrement_sender_count(tx.sender());
+                    // Untrack expiry for removed transaction
+                    self.expiry_tracker.untrack(hash);
                     removed.push(tx);
                 }
             } else if let Some(tx) = tx
@@ -3888,7 +3936,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
 
         for i in 0..5usize {
             let sender = Address::from_word(B256::from(U256::from(i)));
@@ -3922,7 +3970,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
         let sender = Address::random();
 
         // All transactions have the same priority, so the tiebreaker is submission order.
@@ -3990,7 +4038,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
 
         // Add 5 transactions each with a LARGE nonce gap so they are all queued
         for i in 0..5usize {
@@ -4032,7 +4080,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
 
         // Add 5 queued transactions (far-future nonces)
         for i in 0..5usize {
@@ -4069,7 +4117,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
 
         // Add 5 pending transactions (nonce=0, different senders)
         for i in 0..5usize {
@@ -4103,7 +4151,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
 
         // First add 3 pending transactions
         let mut pending_hashes = Vec::new();
@@ -4163,7 +4211,7 @@ mod tests {
             },
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
 
         // Vanity address with leading zeroes (would sort first lexicographically)
         let vanity_sender = Address::from_word(B256::from_slice(&[0u8; 32])); // 0x0000...0000
@@ -4266,7 +4314,7 @@ mod tests {
             },
             max_txs_per_sender: 3,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
         let sender = Address::random();
 
         // Add transactions up to the limit
@@ -4326,7 +4374,7 @@ mod tests {
             },
             max_txs_per_sender: 2,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
         let sender = Address::random();
 
         // Add 2 transactions to reach the limit
@@ -4378,7 +4426,7 @@ mod tests {
             },
             max_txs_per_sender: 2,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
         let sender = Address::random();
 
         // Add 2 transactions to reach the limit
@@ -4437,7 +4485,7 @@ mod tests {
             },
             max_txs_per_sender: 2,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
         let sender = Address::random();
 
         // Add one regular 2D nonce tx
@@ -5078,7 +5126,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
         let sender = Address::random();
 
         // Add 3 expiring nonce transactions - should evict to maintain limit of 2
