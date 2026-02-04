@@ -1,6 +1,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::Handler,
+    storage::{Handler, StorageCtx},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
@@ -89,7 +89,12 @@ impl TipFeeManager {
         self.pools[pool_id].read()
     }
 
-    /// Ensures that pool has enough liquidity for a fee swap
+    /// Ensures that pool has enough liquidity for a fee swap and reserves the required amount.
+    /// The reservation prevents TOCTOU attacks where users drain liquidity between
+    /// collect_fee_pre_tx and collect_fee_post_tx.
+    ///
+    /// T2+: Reserves liquidity to prevent TOCTOU attacks.
+    /// Pre-T2: Only checks current reserves without reservation.
     pub fn check_sufficient_liquidity(
         &mut self,
         user_token: Address,
@@ -99,9 +104,63 @@ impl TipFeeManager {
         let pool_id = PoolKey::new(user_token, validator_token).get_id();
         let amount_out_needed = compute_amount_out(max_amount)?;
         let pool = self.pools[pool_id].read()?;
-        if amount_out_needed > U256::from(pool.reserve_validator_token) {
+
+        // T2+: Check against available (unreserved) liquidity and reserve it
+        // Pre-T2: Only check current reserves without reservation
+        let is_t2 = StorageCtx.spec().is_t2();
+        let current_reserved = if is_t2 {
+            self.reserved_liquidity[pool_id].read()?
+        } else {
+            0
+        };
+
+        let available = pool
+            .reserve_validator_token
+            .checked_sub(current_reserved)
+            .ok_or(TIPFeeAMMError::insufficient_liquidity())?;
+
+        if amount_out_needed > U256::from(available) {
             return Err(TIPFeeAMMError::insufficient_liquidity().into());
         }
+
+        // T2+: Reserve the liquidity for this pending fee swap
+        if is_t2 {
+            let amount_out_u128: u128 = amount_out_needed
+                .try_into()
+                .map_err(|_| TempoPrecompileError::under_overflow())?;
+            let new_reserved = current_reserved
+                .checked_add(amount_out_u128)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.reserved_liquidity[pool_id].write(new_reserved)?;
+        }
+
+        Ok(())
+    }
+
+    /// Releases a liquidity reservation. Called after the fee swap completes or is cancelled.
+    ///
+    /// T2+: Releases the reserved liquidity.
+    /// Pre-T2: No-op since reservations are not used.
+    pub fn release_liquidity_reservation(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+        max_amount: U256,
+    ) -> Result<()> {
+        // Pre-T2: No reservations to release
+        if !StorageCtx.spec().is_t2() {
+            return Ok(());
+        }
+
+        let pool_id = PoolKey::new(user_token, validator_token).get_id();
+        let amount_out = compute_amount_out(max_amount)?;
+        let amount_out_u128: u128 = amount_out
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+
+        let current_reserved = self.reserved_liquidity[pool_id].read()?;
+        let new_reserved = current_reserved.saturating_sub(amount_out_u128);
+        self.reserved_liquidity[pool_id].write(new_reserved)?;
 
         Ok(())
     }
@@ -325,6 +384,22 @@ impl TipFeeManager {
         // Calculate amounts to return
         let (amount_user_token, amount_validator_token) =
             self.calculate_burn_amounts(&pool, pool_id, liquidity)?;
+
+        // T2+: Check that burn doesn't exceed available (unreserved) validator token liquidity
+        // This prevents TOCTOU attacks where users drain liquidity during pending fee swaps
+        if StorageCtx.spec().is_t2() {
+            let reserved = self.reserved_liquidity[pool_id].read()?;
+            let validator_amount_u128: u128 = amount_validator_token
+                .try_into()
+                .map_err(|_| TIPFeeAMMError::invalid_amount())?;
+            let available_after_burn = pool
+                .reserve_validator_token
+                .checked_sub(validator_amount_u128)
+                .ok_or(TIPFeeAMMError::insufficient_reserves())?;
+            if available_after_burn < reserved {
+                return Err(TIPFeeAMMError::insufficient_liquidity().into());
+            }
+        }
 
         // Burn LP tokens
         self.set_liquidity_balances(

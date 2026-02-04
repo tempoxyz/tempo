@@ -25,6 +25,9 @@ pub struct TipFeeManager {
     pools: Mapping<B256, Pool>,
     total_supply: Mapping<B256, U256>,
     liquidity_balances: Mapping<B256, Mapping<Address, U256>>,
+    /// Reserved liquidity per pool - tracks pending fee swaps to prevent TOCTOU attacks.
+    /// This is subtracted from available reserves when checking liquidity for burn/rebalance.
+    reserved_liquidity: Mapping<B256, u128>,
 }
 
 impl TipFeeManager {
@@ -150,6 +153,13 @@ impl TipFeeManager {
         let validator_token = self.get_validator_token(beneficiary)?;
 
         if fee_token != validator_token {
+            // Release the liquidity reservation made in collect_fee_pre_tx
+            // max_amount = actual_spending + refund_amount
+            let max_amount = actual_spending
+                .checked_add(refund_amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.release_liquidity_reservation(fee_token, validator_token, max_amount)?;
+
             // Record the pool if there was a non-zero swap
             if !actual_spending.is_zero() {
                 // Execute fee swap immediately and accumulate fees
@@ -236,6 +246,7 @@ impl TipFeeManager {
 
 #[cfg(test)]
 mod tests {
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     use super::*;
@@ -760,6 +771,335 @@ mod tests {
             let fee_manager = TipFeeManager::new();
             let remaining = fee_manager.collected_fees[validator][token.address()].read()?;
             assert_eq!(remaining, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    /// Test that burn() respects reserved liquidity from pending fee swaps (T2+).
+    /// This prevents the TOCTOU vulnerability where users drain liquidity between
+    /// collect_fee_pre_tx and collect_fee_post_tx.
+    #[test]
+    fn test_burn_respects_reserved_liquidity_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+        let lp_provider = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // Setup: Create tokens and pool
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_mint(lp_provider, U256::from(100000))
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(lp_provider, U256::from(100000))
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100000))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            // Setup pool with limited liquidity
+            let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
+            fee_manager.pools[pool_id].write(crate::tip_fee_manager::amm::Pool {
+                reserve_user_token: 10000,
+                reserve_validator_token: 10000,
+            })?;
+
+            // Give LP provider liquidity balance so they can burn
+            fee_manager.total_supply[pool_id].write(U256::from(10000))?;
+            fee_manager.liquidity_balances[pool_id][lp_provider].write(U256::from(10000))?;
+
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            // User initiates a fee payment that needs 997 validator tokens output (1000 * 0.997)
+            let max_amount = U256::from(1000);
+            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+
+            // Now, LP provider tries to burn and drain all validator token liquidity
+            // This should FAIL because 997 tokens are reserved for the pending fee swap
+            let burn_result = fee_manager.burn(
+                lp_provider,
+                user_token.address(),
+                validator_token.address(),
+                U256::from(10000), // Try to burn all LP tokens
+                lp_provider,
+            );
+
+            // The burn should fail because it would leave insufficient unreserved liquidity
+            assert!(
+                burn_result.is_err(),
+                "Burn should fail when it would violate reserved liquidity"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Test that reserved liquidity is tracked properly (T2+).
+    #[test]
+    fn test_reserved_liquidity_tracked_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100000))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            // Setup pool with limited liquidity
+            let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
+            fee_manager.pools[pool_id].write(crate::tip_fee_manager::amm::Pool {
+                reserve_user_token: 10000,
+                reserve_validator_token: 10000,
+            })?;
+
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            // User initiates a fee payment that needs ~997 validator tokens
+            let max_amount = U256::from(1000);
+            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+
+            // Swapper tries to rebalance_swap and drain all user tokens (receiving validator tokens as input)
+            // rebalance_swap takes validator tokens IN and gives user tokens OUT
+            // It reduces reserve_user_token, not reserve_validator_token, so this isn't the attack vector
+            // The attack would be via burn() which reduces reserve_validator_token
+
+            // Let's verify reserved liquidity is properly tracked
+            let reserved = fee_manager.reserved_liquidity[pool_id].read()?;
+            assert_eq!(
+                reserved, 997,
+                "Should reserve 997 validator tokens (1000 * 0.997)"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Test that collect_fee_post_tx releases the reservation (T2+).
+    #[test]
+    fn test_post_tx_releases_reservation_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10000))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
+            fee_manager.pools[pool_id].write(crate::tip_fee_manager::amm::Pool {
+                reserve_user_token: 10000,
+                reserve_validator_token: 10000,
+            })?;
+
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            let max_amount = U256::from(1000);
+            let actual_spending = U256::from(800);
+            let refund_amount = U256::from(200);
+
+            // Pre-tx creates reservation
+            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+
+            let reserved_before = fee_manager.reserved_liquidity[pool_id].read()?;
+            assert!(reserved_before > 0, "Should have reserved liquidity");
+
+            // Post-tx should release reservation
+            fee_manager.collect_fee_post_tx(
+                user,
+                actual_spending,
+                refund_amount,
+                user_token.address(),
+                validator,
+            )?;
+
+            let reserved_after = fee_manager.reserved_liquidity[pool_id].read()?;
+            assert_eq!(
+                reserved_after, 0,
+                "Reservation should be released after post_tx"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Test that pre-T2, burn() does NOT check reserved liquidity (old behavior).
+    /// This verifies the TOCTOU vulnerability exists pre-T2 for backward compatibility.
+    #[test]
+    fn test_burn_ignores_reserved_liquidity_pre_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+        let lp_provider = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_mint(lp_provider, U256::from(100000))
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(lp_provider, U256::from(100000))
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100000))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
+            fee_manager.pools[pool_id].write(crate::tip_fee_manager::amm::Pool {
+                reserve_user_token: 10000,
+                reserve_validator_token: 10000,
+            })?;
+
+            fee_manager.total_supply[pool_id].write(U256::from(10000))?;
+            fee_manager.liquidity_balances[pool_id][lp_provider].write(U256::from(10000))?;
+
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            // User initiates a fee payment
+            let max_amount = U256::from(1000);
+            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+
+            // Pre-T2: reserved_liquidity should NOT be updated
+            let reserved = fee_manager.reserved_liquidity[pool_id].read()?;
+            assert_eq!(reserved, 0, "Pre-T2 should not reserve liquidity");
+
+            // Pre-T2: LP provider CAN burn and drain liquidity (TOCTOU vulnerability exists)
+            let burn_result = fee_manager.burn(
+                lp_provider,
+                user_token.address(),
+                validator_token.address(),
+                U256::from(10000),
+                lp_provider,
+            );
+
+            assert!(
+                burn_result.is_ok(),
+                "Pre-T2: burn should succeed even with pending fee swap (TOCTOU vulnerable)"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Test that pre-T2, no liquidity reservation is made during collect_fee_pre_tx.
+    #[test]
+    fn test_no_reservation_pre_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10000))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
+            fee_manager.pools[pool_id].write(crate::tip_fee_manager::amm::Pool {
+                reserve_user_token: 10000,
+                reserve_validator_token: 10000,
+            })?;
+
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            let max_amount = U256::from(1000);
+
+            // Pre-tx should NOT create reservation in pre-T2
+            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+
+            let reserved = fee_manager.reserved_liquidity[pool_id].read()?;
+            assert_eq!(reserved, 0, "Pre-T2: should NOT reserve liquidity");
+
+            // Post-tx should work fine (no reservation to release)
+            let actual_spending = U256::from(800);
+            let refund_amount = U256::from(200);
+            fee_manager.collect_fee_post_tx(
+                user,
+                actual_spending,
+                refund_amount,
+                user_token.address(),
+                validator,
+            )?;
+
+            let reserved_after = fee_manager.reserved_liquidity[pool_id].read()?;
+            assert_eq!(reserved_after, 0, "Pre-T2: reservation should remain zero");
 
             Ok(())
         })
