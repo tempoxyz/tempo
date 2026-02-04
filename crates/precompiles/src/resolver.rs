@@ -9,8 +9,8 @@ use thiserror::Error;
 #[cfg(any(test, feature = "test-utils"))]
 use crate::{
     account_keychain::AccountKeychain, nonce::NonceManager, stablecoin_dex::StablecoinDEX,
-    tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip403_registry::TIP403Registry,
-    validator_config::ValidatorConfig,
+    tip20_factory::TIP20Factory, tip_fee_manager::TipFeeManager, tip20::TIP20Token,
+    tip403_registry::TIP403Registry, validator_config::ValidatorConfig,
 };
 
 /// Errors that can occur during field resolution.
@@ -48,6 +48,7 @@ pub enum ResolverError {
 pub fn slot_for(contract: &str, field: &str, keys: &[&str]) -> Result<U256, ResolverError> {
     match contract {
         "TIP20Token" => TIP20Token::slot_for(field, keys),
+        "TIP20Factory" => TIP20Factory::slot_for(field, keys),
         "NonceManager" => NonceManager::slot_for(field, keys),
         "AccountKeychain" => AccountKeychain::slot_for(field, keys),
         "StablecoinDEX" => StablecoinDEX::slot_for(field, keys),

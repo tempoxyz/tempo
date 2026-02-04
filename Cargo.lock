@@ -6883,30 +6883,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "precompile-tests"
-version = "1.0.2"
-dependencies = [
- "alloy-consensus",
- "alloy-evm",
- "alloy-primitives",
- "clap",
- "eyre",
- "reth-chainspec",
- "reth-revm",
- "revm",
- "serde",
- "serde_json",
- "tempfile",
- "tempo-chainspec",
- "tempo-contracts",
- "tempo-evm",
- "tempo-precompiles",
- "tempo-primitives",
- "tempo-revm",
- "thiserror 2.0.17",
-]
-
-[[package]]
 name = "pretty_assertions"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11963,6 +11939,30 @@ dependencies = [
  "tempo-revm",
  "thiserror 2.0.17",
  "tracing",
+]
+
+[[package]]
+name = "tempo-execution-tests"
+version = "1.0.2"
+dependencies = [
+ "alloy-consensus",
+ "alloy-evm",
+ "alloy-primitives",
+ "clap",
+ "eyre",
+ "reth-chainspec",
+ "reth-revm",
+ "revm",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tempo-chainspec",
+ "tempo-contracts",
+ "tempo-evm",
+ "tempo-precompiles",
+ "tempo-primitives",
+ "tempo-revm",
+ "thiserror 2.0.17",
 ]
 
 [[package]]

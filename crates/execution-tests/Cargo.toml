@@ -1,5 +1,5 @@
 [package]
-name = "precompile-tests"
+name = "tempo-execution-tests"
 description = "Precompile differential testing framework"
 
 version.workspace = true
@@ -12,7 +12,7 @@ publish.workspace = true
 workspace = true
 
 [[bin]]
-name = "precompile-tests"
+name = "tempo-execution-tests"
 path = "src/main.rs"
 
 [dependencies]

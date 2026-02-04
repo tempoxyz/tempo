@@ -23,7 +23,7 @@ members = [
   "crates/node",
   "crates/payload/builder",
   "crates/payload/types",
-  "crates/precompile-tests",
+  "crates/execution-tests",
   "crates/precompiles",
   "crates/precompiles-macros",
   "crates/primitives",

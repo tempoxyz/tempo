@@ -1,4 +1,4 @@
-# precompile-tests
+# execution-tests
 
 Differential testing framework for the Tempo execution layer.
 
@@ -8,13 +8,13 @@ Executes test vectors against the EVM, validates transaction outcomes, and gener
 
 ```bash
 # Run all vectors
-cargo run -p precompile-tests -- run -d crates/precompile-tests/vectors
+cargo run -p tempo-execution-tests -- run -d crates/tempo-execution-tests/vectors
 
 # Run a single vector
-cargo run -p precompile-tests -- run -f crates/precompile-tests/vectors/tip20_factory/create_token.json
+cargo run -p tempo-execution-tests -- run -f crates/tempo-execution-tests/vectors/tip20_factory/create_token.json
 
 # List available vectors
-cargo run -p precompile-tests -- list -d crates/precompile-tests/vectors
+cargo run -p tempo-execution-tests -- list -d crates/tempo-execution-tests/vectors
 ```
 
 ## Commands
@@ -24,9 +24,9 @@ cargo run -p precompile-tests -- list -d crates/precompile-tests/vectors
 Execute test vectors and validate outcomes.
 
 ```bash
-precompile-tests run -d <DIR>           # Run all vectors in directory
-precompile-tests run -f <FILE>          # Run a single vector
-precompile-tests run -d <DIR> -o out.json  # Save fingerprints to file
+tempo-execution-tests run -d <DIR>           # Run all vectors in directory
+tempo-execution-tests run -f <FILE>          # Run a single vector
+tempo-execution-tests run -d <DIR> -o out.json  # Save fingerprints to file
 ```
 
 **Verbosity levels:**
@@ -43,11 +43,11 @@ Compare current implementation against a baseline binary to detect regressions.
 
 ```bash
 # Build baseline from main branch
-git stash && cargo build -p precompile-tests --release && git stash pop
-cp target/release/precompile-tests /tmp/baseline
+git stash && cargo build -p tempo-execution-tests --release && git stash pop
+cp target/release/tempo-execution-tests /tmp/baseline
 
 # Run diff
-precompile-tests diff --baseline-binary /tmp/baseline -d vectors
+tempo-execution-tests diff --baseline-binary /tmp/baseline -d vectors
 ```
 
 Only vectors with `check_regression: true` are compared against the baseline.
@@ -57,7 +57,7 @@ Only vectors with `check_regression: true` are compared against the baseline.
 Compare two fingerprint files.
 
 ```bash
-precompile-tests compare baseline.json current.json --strict
+tempo-execution-tests compare baseline.json current.json --strict
 ```
 
 ### `list` (alias: `l`)
@@ -65,7 +65,7 @@ precompile-tests compare baseline.json current.json --strict
 List available test vectors.
 
 ```bash
-precompile-tests list -d vectors
+tempo-execution-tests list -d vectors
 ```
 
 ## Test Vectors
@@ -182,14 +182,14 @@ Fingerprints enable differential testing: if the hash changes between versions, 
 ## CI Integration
 
 ```yaml
-- name: Run precompile tests
-  run: cargo run -p precompile-tests -- run -d crates/precompile-tests/vectors
+- name: Run execution tests
+  run: cargo run -p tempo-execution-tests -- run -d crates/tempo-execution-tests/vectors
 
 - name: Regression check
   run: |
-    cargo build -p precompile-tests --release
-    cp target/release/precompile-tests /tmp/current
+    cargo build -p tempo-execution-tests --release
+    cp target/release/tempo-execution-tests /tmp/current
     git checkout main
-    cargo build -p precompile-tests --release
-    /tmp/current diff --baseline-binary target/release/precompile-tests -d crates/precompile-tests/vectors
+    cargo build -p tempo-execution-tests --release
+    /tmp/current diff --baseline-binary target/release/tempo-execution-tests -d crates/tempo-execution-tests/vectors
 ```

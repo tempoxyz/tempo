@@ -5,14 +5,14 @@ use std::process::Command;
 
 use clap::{Parser, Subcommand};
 use eyre::{Result, bail};
-use precompile_tests::{
+use tempo_execution_tests::{
     PostExecutionState, VectorDatabase, VectorExecutor, fingerprint::Fingerprint,
     validate_tx_outcomes, vector::TestVector,
 };
 
-/// Differential testing framework for Tempo precompiles.
+/// Differential testing framework for the Tempo execution layer.
 ///
-/// This tool executes test vectors against precompiles, generates fingerprints
+/// This tool executes test vectors against the EVM, generates fingerprints
 /// of the results, and compares fingerprints across different implementations
 /// or versions to detect behavioral changes.
 ///
@@ -20,25 +20,25 @@ use precompile_tests::{
 ///
 /// Run all vectors in a directory:
 /// ```sh
-/// precompile-tests run --dir ./vectors
+/// tempo-execution-tests run --dir ./vectors
 /// ```
 ///
 /// Run a single vector and save fingerprints:
 /// ```sh
-/// precompile-tests run --vector ./vectors/tip20_transfer.json --output fingerprints.json
+/// tempo-execution-tests run --vector ./vectors/tip20_transfer.json --output fingerprints.json
 /// ```
 ///
 /// Compare two fingerprint files:
 /// ```sh
-/// precompile-tests compare baseline.json current.json --strict
+/// tempo-execution-tests compare baseline.json current.json --strict
 /// ```
 ///
 /// List available test vectors:
 /// ```sh
-/// precompile-tests list --dir ./vectors
+/// tempo-execution-tests list --dir ./vectors
 /// ```
 #[derive(Parser)]
-#[command(name = "precompile-tests")]
+#[command(name = "tempo-execution-tests")]
 #[command(version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -124,7 +124,7 @@ enum Commands {
     /// and the baseline binary, then compares fingerprints to detect regressions.
     #[command(visible_alias = "d")]
     Diff {
-        /// Path to the baseline precompile-tests binary (built from main).
+        /// Path to the baseline tempo-execution-tests binary (built from main).
         #[arg(long, value_name = "PATH")]
         baseline_binary: PathBuf,
 
