@@ -11,6 +11,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title FeeAMM Invariant Test
 /// @notice Invariant tests for the FeeAMM/FeeManager implementation
+/// @dev Tests invariants TEMPO-AMM1 through TEMPO-AMM34 and TEMPO-FEE1 through TEMPO-FEE6 as documented in README.md
 contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Log file path for recording amm actions
