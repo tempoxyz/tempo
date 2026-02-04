@@ -1,7 +1,7 @@
 //! Utility functions for the contract macro implementation.
 
 use alloy::primitives::{U256, keccak256};
-use syn::{Attribute, Lit, Type};
+use syn::{Attribute, Lit, Type, TypePath};
 
 /// Return type for [`extract_attributes`]: (slot, base_slot)
 type ExtractedAttributes = (Option<U256>, Option<U256>);
@@ -62,7 +62,18 @@ pub(crate) fn to_snake_case(s: &str) -> String {
 }
 
 /// Converts a string from snake_case to camelCase.
+/// Preserves SCREAMING_SNAKE_CASE and all-uppercase words (e.g., WHITELIST stays WHITELIST).
 pub(crate) fn to_camel_case(s: &str) -> String {
+    // Preserve SCREAMING_SNAKE_CASE constants (all uppercase with underscores)
+    // These are Solidity constants that must keep their exact names for correct selectors
+    if s.contains('_')
+        && s.chars()
+            .filter(|c| c.is_alphabetic())
+            .all(|c| c.is_uppercase())
+    {
+        return s.to_string();
+    }
+
     let mut result = String::new();
     let mut first_word = true;
 
@@ -71,9 +82,22 @@ pub(crate) fn to_camel_case(s: &str) -> String {
             continue;
         }
 
-        if first_word {
+        // Check if word is all uppercase (preserve as-is, e.g., WHITELIST, ID, URL)
+        let is_upper = word.chars().filter(|c| c.is_alphabetic()).count() > 1
+            && word
+                .chars()
+                .filter(|c| c.is_alphabetic())
+                .all(|c| c.is_uppercase());
+
+        // Handle "tip" prefix - always uppercase to "TIP"
+        if word.to_lowercase().starts_with("tip") {
+            result.push_str("TIP");
+            result.push_str(&word[3..]);
+        } else if is_upper {
+            // Preserve consecutive uppercase letters (e.g., WHITELIST, URL, ID)
             result.push_str(word);
-            first_word = false;
+        } else if first_word {
+            result.push_str(word);
         } else {
             let mut chars = word.chars();
             if let Some(first) = chars.next() {
@@ -81,8 +105,45 @@ pub(crate) fn to_camel_case(s: &str) -> String {
                 result.push_str(chars.as_str());
             }
         }
+        first_word = false;
     }
     result
+}
+
+/// Converts snake_case to PascalCase. Preserves SCREAMING_SNAKE_CASE.
+pub(crate) fn to_pascal_case(s: &str) -> String {
+    if s.contains('_')
+        && s.chars()
+            .filter(|c| c.is_alphabetic())
+            .all(|c| c.is_uppercase())
+    {
+        return s.to_string();
+    }
+
+    let mut result = String::new();
+
+    for word in s.split('_') {
+        if word.is_empty() {
+            continue;
+        }
+
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            result.push_str(&first.to_uppercase().collect::<String>());
+            result.push_str(chars.as_str());
+        }
+    }
+    result
+}
+
+/// Check if a TypePath represents a Vec<T>
+pub(crate) fn is_vec(type_path: &TypePath) -> bool {
+    type_path
+        .path
+        .segments
+        .last()
+        .map(|s| s.ident == "Vec")
+        .unwrap_or(false)
 }
 
 /// Extracts `#[slot(N)]`, `#[base_slot(N)]` attributes from a field's attributes.
@@ -274,13 +335,58 @@ mod tests {
 
     #[test]
     fn test_to_camel_case() {
+        // snake_case → camelCase
         assert_eq!(to_camel_case("balance_of"), "balanceOf");
         assert_eq!(to_camel_case("transfer_from"), "transferFrom");
         assert_eq!(to_camel_case("update_quote_token"), "updateQuoteToken");
         assert_eq!(to_camel_case("name"), "name");
         assert_eq!(to_camel_case("token"), "token");
         assert_eq!(to_camel_case("alreadycamelCase"), "alreadycamelCase");
-        assert_eq!(to_camel_case("DOMAIN_SEPARATOR"), "DOMAINSEPARATOR");
+
+        // SCREAMING_SNAKE_CASE preserved (Solidity constants)
+        assert_eq!(to_camel_case("DOMAIN_SEPARATOR"), "DOMAIN_SEPARATOR");
+        assert_eq!(to_camel_case("PAUSE_ROLE"), "PAUSE_ROLE");
+        assert_eq!(to_camel_case("ISSUER_ROLE"), "ISSUER_ROLE");
+        assert_eq!(to_camel_case("BURN_BLOCKED_ROLE"), "BURN_BLOCKED_ROLE");
+
+        // All-uppercase words preserved (consecutive uppercase letters)
+        assert_eq!(to_camel_case("WHITELIST"), "WHITELIST");
+        assert_eq!(to_camel_case("BLACKLIST"), "BLACKLIST");
+        assert_eq!(to_camel_case("get_WHITELIST"), "getWHITELIST");
+        assert_eq!(to_camel_case("set_URL"), "setURL");
+        assert_eq!(to_camel_case("get_API_key"), "getAPIKey");
+
+        // Mixed case still converts
+        assert_eq!(to_camel_case("get_Balance"), "getBalance");
+
+        // TIP prefix handling - always uppercase
+        assert_eq!(to_camel_case("tip20_factory"), "TIP20Factory");
+        assert_eq!(to_camel_case("is_tip20"), "isTIP20");
+        assert_eq!(to_camel_case("get_tip20_balance"), "getTIP20Balance");
+    }
+
+    #[test]
+    fn test_to_pascal_case() {
+        use super::to_pascal_case;
+
+        // snake_case → PascalCase
+        assert_eq!(to_pascal_case("tip20"), "Tip20");
+        assert_eq!(to_pascal_case("roles_auth"), "RolesAuth");
+        assert_eq!(to_pascal_case("rewards"), "Rewards");
+        assert_eq!(to_pascal_case("balance_of"), "BalanceOf");
+        assert_eq!(to_pascal_case("transfer_from"), "TransferFrom");
+
+        // Single word
+        assert_eq!(to_pascal_case("name"), "Name");
+        assert_eq!(to_pascal_case("token"), "Token");
+
+        // Already PascalCase (stays same)
+        assert_eq!(to_pascal_case("Already"), "Already");
+
+        // SCREAMING_SNAKE_CASE preserved (Solidity constants)
+        assert_eq!(to_pascal_case("DOMAIN_SEPARATOR"), "DOMAIN_SEPARATOR");
+        assert_eq!(to_pascal_case("PAUSE_ROLE"), "PAUSE_ROLE");
+        assert_eq!(to_pascal_case("ISSUER_ROLE"), "ISSUER_ROLE");
     }
 
     #[test]
