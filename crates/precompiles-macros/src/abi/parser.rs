@@ -580,7 +580,7 @@ impl InterfaceDef {
                     None
                 }
             })
-            .map(|method| MethodDef::parse(&method.sig))
+            .map(|method| MethodDef::parse(&method.sig, &method.attrs))
             .collect::<syn::Result<_>>()?;
 
         if methods.is_empty() {
@@ -622,10 +622,14 @@ pub(super) struct MethodDef {
     pub return_type: Option<Type>,
     /// Whether this is a mutable method (&mut self)
     pub is_mutable: bool,
+    /// Optional hardfork requirement (e.g., `TempoHardfork::T2`).
+    /// If set, the dispatcher will check that the current hardfork >= this value,
+    /// otherwise it returns `unknown_selector`.
+    pub hardfork: Option<Path>,
 }
 
 impl MethodDef {
-    fn parse(sig: &Signature) -> syn::Result<Self> {
+    fn parse(sig: &Signature, attrs: &[Attribute]) -> syn::Result<Self> {
         let sol_name = to_camel_case(&sig.ident.to_string());
 
         let mut is_mutable = false;
@@ -658,6 +662,7 @@ impl MethodDef {
         }
 
         let return_type = extract_result_inner_type(&sig.output)?;
+        let hardfork = extract_hardfork_attr(attrs)?;
 
         Ok(Self {
             name: sig.ident.to_owned(),
@@ -665,6 +670,7 @@ impl MethodDef {
             params,
             return_type,
             is_mutable,
+            hardfork,
         })
     }
 }
@@ -775,6 +781,34 @@ pub(super) enum SolEnumKind {
 
 fn has_indexed_attr(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("indexed"))
+}
+
+/// Extract `#[hardfork = TempoHardfork::T2]` attribute from a list of attributes.
+///
+/// Returns the hardfork path if found, or `None` if not present.
+fn extract_hardfork_attr(attrs: &[Attribute]) -> syn::Result<Option<Path>> {
+    for attr in attrs {
+        if attr.path().is_ident("hardfork") {
+            // Parse: #[hardfork = TempoHardfork::T2]
+            let Meta::NameValue(nv) = &attr.meta else {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "expected #[hardfork = TempoHardfork::Variant]",
+                ));
+            };
+
+            // Extract the path from the expression
+            let Expr::Path(expr_path) = &nv.value else {
+                return Err(syn::Error::new_spanned(
+                    &nv.value,
+                    "expected a path like `TempoHardfork::T2`",
+                ));
+            };
+
+            return Ok(Some(expr_path.path.clone()));
+        }
+    }
+    Ok(None)
 }
 
 fn extract_param_name(pat: &Pat) -> syn::Result<Ident> {

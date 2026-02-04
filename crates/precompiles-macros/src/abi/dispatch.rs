@@ -206,6 +206,30 @@ fn generate_method_arms_nested(
 
 /// Generate the dispatch call for a single method.
 fn generate_dispatch_call(method: &MethodDef) -> TokenStream {
+    let inner_dispatch = generate_inner_dispatch(method);
+
+    // Wrap with hardfork check if specified
+    if let Some(hardfork) = &method.hardfork {
+        let call_name = format_ident!("{}Call", method.sol_name);
+        quote! {
+            {
+                use ::alloy::sol_types::SolCall as _;
+                if self.storage.spec() < #hardfork {
+                    return crate::dispatch::unknown_selector(
+                        #call_name::SELECTOR,
+                        self.storage.gas_used(),
+                    );
+                }
+                #inner_dispatch
+            }
+        }
+    } else {
+        inner_dispatch
+    }
+}
+
+/// Generate the inner dispatch logic for a method (without hardfork gating).
+fn generate_inner_dispatch(method: &MethodDef) -> TokenStream {
     let rust_name = &method.name;
     let param_names: Vec<_> = method.params.iter().map(|(name, _)| name).collect();
     let call_name = format_ident!("{}Call", method.sol_name);

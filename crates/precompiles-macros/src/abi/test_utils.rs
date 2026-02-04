@@ -69,6 +69,7 @@ pub(super) fn make_method(name: &str, params: Vec<(Ident, Type)>) -> MethodDef {
         params,
         return_type: None,
         is_mutable: false,
+        hardfork: None,
     }
 }
 
