@@ -170,11 +170,11 @@ async fn instantiate_network(
         handshake_timeout: config.handshake_timeout.into_duration(),
         max_concurrent_handshakes: config.handshake_max_concurrent,
         block_duration: config.time_to_unblock_byzantine_peer.into_duration(),
-        dial_frequency: config.dial_interval.into_duration(),
-        query_frequency: config.query_interval.into_duration(),
-        ping_frequency: config.ping_interval.into_duration(),
+        dial_frequency: config.wait_before_peers_dial.into_duration(),
+        query_frequency: config.wait_before_peers_discovery.into_duration(),
+        ping_frequency: config.wait_before_peers_ping.into_duration(),
         allowed_connection_rate_per_peer: commonware_runtime::Quota::with_period(
-            config.connection_min_period.into_duration(),
+            config.connection_per_peer_min_period.into_duration(),
         )
         .ok_or_eyre("connection min period must be non-zero")?,
         allowed_handshake_rate_per_ip: commonware_runtime::Quota::with_period(

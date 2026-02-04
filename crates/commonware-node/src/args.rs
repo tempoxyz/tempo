@@ -139,37 +139,37 @@ pub struct Args {
     #[arg(long = "consensus.synchrony-bound", default_value = "5s")]
     pub synchrony_bound: PositiveDuration,
 
-    /// How often to attempt dialing peers. Lower values mean faster peer discovery.
+    /// How long to wait before attempting to dial any peers without a connection..
     #[arg(
-        long = "consensus.dial-interval",
+        long = "consensus.wait-before-peers-dial",
         default_value = "1s",
         default_value_if("use_local_defaults", "true", "500ms")
     )]
-    pub dial_interval: PositiveDuration,
+    pub wait_before_peers_dial: PositiveDuration,
 
-    /// How often to query for new dialable peers. Also limits re-dial rate per peer.
+    /// How long to wait before sending a ping message to peers for liveness detection.
     #[arg(
-        long = "consensus.query-interval",
-        default_value = "60s",
-        default_value_if("use_local_defaults", "true", "30s")
-    )]
-    pub query_interval: PositiveDuration,
-
-    /// How often to send ping messages to peers for liveness detection.
-    #[arg(
-        long = "consensus.ping-interval",
+        long = "consensus.wait-before-peers-ping",
         default_value = "50s",
         default_value_if("use_local_defaults", "true", "5s")
     )]
-    pub ping_interval: PositiveDuration,
+    pub wait_before_peers_ping: PositiveDuration,
+
+    /// How often to query for new dialable peers. Also limits re-dial rate per peer.
+    #[arg(
+        long = "consensus.wait-before-peers-discovery",
+        default_value = "60s",
+        default_value_if("use_local_defaults", "true", "30s")
+    )]
+    pub wait_before_peers_discovery: PositiveDuration,
 
     /// Minimum time between connection attempts to the same peer.
     #[arg(
-        long = "consensus.connection-min-period",
+        long = "consensus.connection-per-peer-min-period",
         default_value = "60s",
         default_value_if("use_local_defaults", "true", "1s")
     )]
-    pub connection_min_period: PositiveDuration,
+    pub connection_per_peer_min_period: PositiveDuration,
 
     /// Minimum time between handshake attempts from a single IP address.
     #[arg(
