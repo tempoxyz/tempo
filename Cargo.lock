@@ -12320,6 +12320,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-spam"
+version = "1.0.2"
+dependencies = [
+ "alloy",
+ "alloy-consensus",
+ "clap",
+ "eyre",
+ "futures",
+ "governor",
+ "indicatif",
+ "itertools 0.14.0",
+ "mimalloc",
+ "rand 0.8.5",
+ "rand 0.9.2",
+ "rayon",
+ "reth-tracing",
+ "rlimit",
+ "serde",
+ "serde_json",
+ "tempo-alloy",
+ "tempo-contracts",
+ "tempo-precompiles",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "tempo-telemetry-util"
 version = "1.1.0"
 dependencies = [
