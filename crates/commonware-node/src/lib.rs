@@ -31,6 +31,7 @@ pub use crate::config::{
 };
 
 pub use args::Args;
+pub use args::PositiveDuration;
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
@@ -98,40 +99,16 @@ pub async fn run_consensus_stack(
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
 
-        time_to_propose: config.wait_for_proposal.try_into().wrap_err(
-            "failed converting argument wait-for-proposal to regular duration; \
-            was it negative or chosen too large?",
-        )?,
-        time_to_collect_notarizations: config.wait_for_notarizations.try_into().wrap_err(
-            "failed converting argument wait-for-notarizations to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        time_to_retry_nullify_broadcast: config.wait_to_rebroadcast_nullify.try_into().wrap_err(
-            "failed converting argument wait-to-rebroadcast-nullify to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        time_for_peer_response: config.wait_for_peer_response.try_into().wrap_err(
-            "failed converting argument wait-for-peer-response to regular \
-            duration; was it negative or chosen too large",
-        )?,
+        time_to_propose: config.wait_for_proposal.into_duration(),
+        time_to_collect_notarizations: config.wait_for_notarizations.into_duration(),
+        time_to_retry_nullify_broadcast: config.wait_to_rebroadcast_nullify.into_duration(),
+        time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         views_until_leader_skip: config.inactive_views_until_leader_skip,
-        new_payload_wait_time: config.time_to_build_proposal.try_into().wrap_err(
-            "failed converting argument time-to-build-proposal to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        time_to_build_subblock: config.time_to_build_subblock.try_into().wrap_err(
-            "failed converting argument time-to-build-subblock to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        subblock_broadcast_interval: config.subblock_broadcast_interval.try_into().wrap_err(
-            "failed converting argument subblock-broadcast-interval to regular \
-            duration; was it negative or chosen too large",
-        )?,
-        fcu_heartbeat_interval: config.fcu_heartbeat_interval.try_into().wrap_err(
-            "failed converting argument fcu-heartbeat-interval to regular \
-            duration; was it negative or chosen too large",
-        )?,
+        new_payload_wait_time: config.time_to_build_proposal.into_duration(),
+        time_to_build_subblock: config.time_to_build_subblock.into_duration(),
+        subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
+        fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
 
         feed_state,
     }
@@ -188,54 +165,24 @@ async fn instantiate_network(
         allow_private_ips: config.allow_private_ips,
         allow_dns: config.allow_dns,
         tracked_peer_sets: config.peer_set_epoch_depth,
-        synchrony_bound: config
-            .synchrony_bound
-            .try_into()
-            .wrap_err("invalid synchrony bound duration")?,
-        max_handshake_age: config
-            .handshake_max_age
-            .try_into()
-            .wrap_err("invalid handshake max age duration")?,
-        handshake_timeout: config
-            .handshake_timeout
-            .try_into()
-            .wrap_err("invalid handshake timeout duration")?,
+        synchrony_bound: config.synchrony_bound.into_duration(),
+        max_handshake_age: config.handshake_max_age.into_duration(),
+        handshake_timeout: config.handshake_timeout.into_duration(),
         max_concurrent_handshakes: config.handshake_max_concurrent,
-        block_duration: config
-            .block_duration
-            .try_into()
-            .wrap_err("invalid block duration")?,
-        dial_frequency: config
-            .dial_interval
-            .try_into()
-            .wrap_err("invalid dial interval duration")?,
-        query_frequency: config
-            .query_interval
-            .try_into()
-            .wrap_err("invalid query interval duration")?,
-        ping_frequency: config
-            .ping_interval
-            .try_into()
-            .wrap_err("invalid ping interval duration")?,
+        block_duration: config.time_to_unblock_byzantine_peer.into_duration(),
+        dial_frequency: config.dial_interval.into_duration(),
+        query_frequency: config.query_interval.into_duration(),
+        ping_frequency: config.ping_interval.into_duration(),
         allowed_connection_rate_per_peer: commonware_runtime::Quota::with_period(
-            config
-                .connection_min_period
-                .try_into()
-                .wrap_err("invalid connection min period duration")?,
+            config.connection_min_period.into_duration(),
         )
         .ok_or_eyre("connection min period must be non-zero")?,
         allowed_handshake_rate_per_ip: commonware_runtime::Quota::with_period(
-            config
-                .handshake_per_ip_min_period
-                .try_into()
-                .wrap_err("invalid handshake per ip min period duration")?,
+            config.handshake_per_ip_min_period.into_duration(),
         )
         .ok_or_eyre("handshake per ip min period must be non-zero")?,
         allowed_handshake_rate_per_subnet: commonware_runtime::Quota::with_period(
-            config
-                .handshake_per_subnet_min_period
-                .try_into()
-                .wrap_err("invalid handshake per subnet min period duration")?,
+            config.handshake_per_subnet_min_period.into_duration(),
         )
         .ok_or_eyre("handshake per subnet min period must be non-zero")?,
     };

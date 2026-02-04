@@ -1,5 +1,7 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
-use std::{net::SocketAddr, path::PathBuf, sync::OnceLock};
+use std::{
+    net::SocketAddr, num::NonZeroU32, path::PathBuf, str::FromStr, sync::OnceLock, time::Duration,
+};
 
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
@@ -64,22 +66,22 @@ pub struct Args {
 
     /// The amount of time to wait for a peer to respond to a consensus request.
     #[arg(long = "consensus.wait-for-peer-response", default_value = "2s")]
-    pub wait_for_peer_response: jiff::SignedDuration,
+    pub wait_for_peer_response: PositiveDuration,
 
     /// The amount of time to wait for a quorum of notarizations in a view
     /// before attempting to skip the view.
     #[arg(long = "consensus.wait-for-notarizations", default_value = "2s")]
-    pub wait_for_notarizations: jiff::SignedDuration,
+    pub wait_for_notarizations: PositiveDuration,
 
     /// Amount of time to wait to receive a proposal from the leader of the
     /// current view.
     #[arg(long = "consensus.wait-for-proposal", default_value = "2s")]
-    pub wait_for_proposal: jiff::SignedDuration,
+    pub wait_for_proposal: PositiveDuration,
 
     /// The amount of time to wait before retrying a nullify broadcast if stuck
     /// in a view.
     #[arg(long = "consensus.wait-to-rebroadcast-nullify", default_value = "10s")]
-    pub wait_to_rebroadcast_nullify: jiff::SignedDuration,
+    pub wait_to_rebroadcast_nullify: PositiveDuration,
 
     /// The number of views (like voting rounds) to track. Also called an
     /// activity timeout.
@@ -100,14 +102,14 @@ pub struct Args {
     /// for the leader to enter the view, build and broadcast the proposal, and
     /// have the other peers receive the proposal.
     #[arg(long = "consensus.time-to-build-proposal", default_value = "500ms")]
-    pub time_to_build_proposal: jiff::SignedDuration,
+    pub time_to_build_proposal: PositiveDuration,
 
     /// The amount of time this node will use to construct a subblock before
     /// sending it to the next proposer. This value should be well below
     /// `consensus.time-to-build-proposal` to ensure the subblock is received
     /// before the build is complete.
     #[arg(long = "consensus.time-to-build-subblock", default_value = "100ms")]
-    pub time_to_build_subblock: jiff::SignedDuration,
+    pub time_to_build_subblock: PositiveDuration,
 
     /// Use defaults optimized for local network environments.
     /// Only enable in non-production network nodes.
@@ -122,7 +124,6 @@ pub struct Args {
     pub bypass_ip_check: bool,
 
     /// Whether to allow connections with private IP addresses.
-    /// [default: false, local: true]
     #[arg(
         long = "consensus.allow-private-ips",
         default_value_t = false,
@@ -131,104 +132,90 @@ pub struct Args {
     pub allow_private_ips: bool,
 
     /// Whether to allow DNS-based ingress addresses.
-    /// [default: true]
     #[arg(long = "consensus.allow-dns", default_value_t = true)]
     pub allow_dns: bool,
 
     /// Time into the future that a timestamp can be and still be considered valid.
-    /// [default: 5s]
     #[arg(long = "consensus.synchrony-bound", default_value = "5s")]
-    pub synchrony_bound: jiff::SignedDuration,
+    pub synchrony_bound: PositiveDuration,
 
     /// How often to attempt dialing peers. Lower values mean faster peer discovery.
-    /// [default: 1s, local: 500ms]
     #[arg(
         long = "consensus.dial-interval",
         default_value = "1s",
         default_value_if("use_local_defaults", "true", "500ms")
     )]
-    pub dial_interval: jiff::SignedDuration,
+    pub dial_interval: PositiveDuration,
 
     /// How often to query for new dialable peers. Also limits re-dial rate per peer.
-    /// [default: 60s, local: 30s]
     #[arg(
         long = "consensus.query-interval",
         default_value = "60s",
         default_value_if("use_local_defaults", "true", "30s")
     )]
-    pub query_interval: jiff::SignedDuration,
+    pub query_interval: PositiveDuration,
 
     /// How often to send ping messages to peers for liveness detection.
-    /// [default: 50s, local: 5s]
     #[arg(
         long = "consensus.ping-interval",
         default_value = "50s",
         default_value_if("use_local_defaults", "true", "5s")
     )]
-    pub ping_interval: jiff::SignedDuration,
+    pub ping_interval: PositiveDuration,
 
     /// Minimum time between connection attempts to the same peer.
-    /// [default: 60s, local: 1s]
     #[arg(
         long = "consensus.connection-min-period",
         default_value = "60s",
         default_value_if("use_local_defaults", "true", "1s")
     )]
-    pub connection_min_period: jiff::SignedDuration,
+    pub connection_min_period: PositiveDuration,
 
     /// Minimum time between handshake attempts from a single IP address.
-    /// [default: 5s, local: 62ms]
     #[arg(
         long = "consensus.handshake-per-ip-min-period",
         default_value = "5s",
         default_value_if("use_local_defaults", "true", "62ms")
     )]
-    pub handshake_per_ip_min_period: jiff::SignedDuration,
+    pub handshake_per_ip_min_period: PositiveDuration,
 
     /// Minimum time between handshake attempts from a single subnet.
-    /// [default: 15ms, local: 7ms]
     #[arg(
         long = "consensus.handshake-per-subnet-min-period",
         default_value = "15ms",
         default_value_if("use_local_defaults", "true", "7ms")
     )]
-    pub handshake_per_subnet_min_period: jiff::SignedDuration,
+    pub handshake_per_subnet_min_period: PositiveDuration,
 
     /// Duration after which a handshake message is considered stale.
-    /// [default: 10s]
     #[arg(long = "consensus.handshake-max-age", default_value = "10s")]
-    pub handshake_max_age: jiff::SignedDuration,
+    pub handshake_max_age: PositiveDuration,
 
     /// Timeout for the handshake process.
-    /// [default: 5s]
     #[arg(long = "consensus.handshake-timeout", default_value = "5s")]
-    pub handshake_timeout: jiff::SignedDuration,
+    pub handshake_timeout: PositiveDuration,
 
     /// Maximum number of concurrent handshake attempts allowed.
-    /// [default: 512, local: 1024]
     #[arg(
         long = "consensus.handshake-max-concurrent",
         default_value = "512",
         default_value_if("use_local_defaults", "true", "1024")
     )]
-    pub handshake_max_concurrent: std::num::NonZeroU32,
+    pub handshake_max_concurrent: NonZeroU32,
 
     /// Number of epoch peer sets to maintain connections for.
-    /// [default: 4]
     #[arg(long = "consensus.peer-set-epoch-depth", default_value_t = 4)]
     pub peer_set_epoch_depth: usize,
 
     /// Duration after which a blocked peer is allowed to reconnect.
-    /// [default: 4h, local: 1h]
     #[arg(
-        long = "consensus.block-duration",
+        long = "consensus.time-to-unblock-byzantine-peer",
         default_value = "4h",
         default_value_if("use_local_defaults", "true", "1h")
     )]
-    pub block_duration: jiff::SignedDuration,
+    pub time_to_unblock_byzantine_peer: PositiveDuration,
 
     /// Rate limit when backfilling blocks (requests per second).
-    /// [default: 8]
     #[arg(long = "consensus.backfill-frequency", default_value = "8")]
     pub backfill_frequency: std::num::NonZeroU32,
 
@@ -238,14 +225,14 @@ pub struct Args {
     /// proposer is aware of the subblock even if they were slightly behind the chain
     /// once we sent it in the first time.
     #[arg(long = "consensus.subblock-broadcast-interval", default_value = "50ms")]
-    pub subblock_broadcast_interval: jiff::SignedDuration,
+    pub subblock_broadcast_interval: PositiveDuration,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer. This is sent periodically even when there are no new
     /// blocks to ensure the execution layer stays in sync with the consensus
     /// layer's view of the chain head.
     #[arg(long = "consensus.fcu-heartbeat-interval", default_value = "5m")]
-    pub fcu_heartbeat_interval: jiff::SignedDuration,
+    pub fcu_heartbeat_interval: PositiveDuration,
 
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
@@ -255,6 +242,28 @@ pub struct Args {
     /// `--datadir`.
     #[arg(long = "consensus.datadir", value_name = "PATH")]
     pub storage_dir: Option<PathBuf>,
+}
+
+/// A jiff::SignedDuration that checks that the duration is positive and not zero.
+#[derive(Debug, Clone, Copy)]
+pub struct PositiveDuration(jiff::SignedDuration);
+impl PositiveDuration {
+    pub fn into_duration(self) -> Duration {
+        self.0
+            .try_into()
+            .expect("must be positive. enforced when cli parsing.")
+    }
+}
+
+impl FromStr for PositiveDuration {
+    type Err = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let duration = s.parse::<jiff::SignedDuration>()?;
+        let _: Duration = duration.try_into().wrap_err("duration must be positive")?;
+
+        Ok(Self(duration))
+    }
 }
 
 impl Args {
