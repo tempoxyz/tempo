@@ -34,7 +34,10 @@ contract TIP403Registry is ITIP403Registry {
         address admin,
         PolicyType policyType,
         address[] calldata accounts
-    ) public returns (uint64 newPolicyId) {
+    )
+        public
+        returns (uint64 newPolicyId)
+    {
         newPolicyId = policyIdCounter++;
 
         _policyData[newPolicyId] = PolicyData({ policyType: policyType, admin: admin });

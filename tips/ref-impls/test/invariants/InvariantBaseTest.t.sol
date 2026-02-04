@@ -173,7 +173,10 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param noOfActors_ Number of actors to create
     /// @param spender Contract to approve for token spending
     /// @return actorsAddress Array of created actor addresses
-    function _buildActorsWithApprovals(uint256 noOfActors_, address spender)
+    function _buildActorsWithApprovals(
+        uint256 noOfActors_,
+        address spender
+    )
         internal
         returns (address[] memory)
     {
@@ -402,7 +405,10 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param count Number of addresses to generate
     /// @param startOffset Starting offset for address generation (e.g., 0x1001, 0x2000)
     /// @return addresses Array of generated addresses
-    function _buildAddressPool(uint256 count, uint256 startOffset)
+    function _buildAddressPool(
+        uint256 count,
+        uint256 startOffset
+    )
         internal
         pure
         returns (address[] memory)
