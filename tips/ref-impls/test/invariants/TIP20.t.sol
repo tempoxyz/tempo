@@ -711,6 +711,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
             if (newRecipient == actor) newRecipient = _selectActor(recipientSeed + 1);
         }
 
+        // Reward recipient cannot be the token address itself
+        vm.assume(newRecipient != address(token));
+
         // Prerequisite: ensure parties are authorized and unpaused
         if (!_ensureAuthorized(address(token), actor)) return;
         if (newRecipient != address(0)) {
@@ -790,6 +793,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
     function distributeReward(uint256 actorSeed, uint256 tokenSeed, uint256 amount) external {
         TIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
+
+        // Actor cannot be the token address (reward recipient cannot be token address)
+        vm.assume(actor != address(token));
 
         // Prerequisite: ensure actor has funds
         uint256 actorBalance = token.balanceOf(actor);
