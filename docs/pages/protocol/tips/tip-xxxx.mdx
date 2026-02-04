@@ -237,15 +237,17 @@ interface IValidatorConfigV2 {
 
     /// @notice Migrate a single validator from V1 to V2 (owner only)
     /// @dev Can be called multiple times to migrate validators one at a time.
+    ///      Reverts if the validator at valIdx has already been migrated (valIdx != validatorsArray.length).
+    ///      On first call, copies owner from V1 if V2 owner is address(0).
     ///      Active V1 validators get addedAtHeight=0 and deletedAtHeight=0.
     ///      Inactive V1 validators get addedAtHeight=deletedAtHeight=block.timestamp at migration time.
-    /// @param valIdx Index of the validator in V1 validators array
+    /// @param valIdx Index of the validator in V1 validators array (must equal current validatorsArray.length)
     function migrateValidator(uint64 valIdx) external;
 
     /// @notice Initialize V2 and enable reads (owner only)
     /// @dev Should only be called after all validators have been migrated via migrateValidator.
     ///      Sets initialized=true. After this call, CL reads from V2 instead of V1.
-    ///      Also copies nextDkgCeremony from V1 if not already set.
+    ///      Copies nextDkgCeremony from V1.
     function initialize() external;
 
     /// @notice Check if V2 has been initialized from V1
@@ -543,22 +545,22 @@ precompile does NOT proxy reads to V1.
 ### Migration Functions (Owner Only)
 
 **`migrateValidator(valIdx)`**:
+- Reverts if `valIdx != validatorsArray.length` (ensures sequential migration)
+- On first call (when `validatorsArray.length == 0`), copies `owner` from V1 if V2 owner is `address(0)`
 - Reads the validator from V1 at index `valIdx`
 - Creates a V2 validator entry with:
   - `publicKey`: copied from V1
   - `validatorAddress`: copied from V1
   - `inboundAddress`: copied from V1
   - `outboundAddress`: copied from V1
-  - `index`: assigned sequentially
+  - `index`: set to `valIdx`
   - `addedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
   - `deletedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
 - Adds to `validatorsArray`
 - Populates lookup maps (`validators[addr]`, `pubkeyToIndex[pubkey]`)
-- Can be called multiple times to migrate validators one at a time
 - Does NOT set `initialized` flag
 
 **`initialize()`**:
-- Copies `owner` from V1 to V2 (if not already set)
 - Copies `nextDkgCeremony` from V1 to V2
 - Sets `initialized = true` (bit 255 of slot 0)
 - After this call, CL reads from V2 instead of V1
@@ -586,7 +588,6 @@ interface IValidatorConfigV1 {
 - **CL reads V1 until flag flipped**: No read proxying in V2 precompile
 - **Per-validator migration**: Each validator is migrated with a separate tx
 - **Owner controlled**: Only admin can migrate and initialize
-- **No tx gas limit risk**: Each migration tx handles only one validator
 - **No signatures required**: V1 validators are imported without Ed25519 signatures
   (they were already validated in V1)
 - **All validators imported**: Both active and inactive V1 validators are
@@ -699,7 +700,7 @@ The test suite must cover:
 32. **addedAtHeight set correctly**: Active validators have `addedAtHeight == 0`,
     inactive validators have `addedAtHeight == block.timestamp` at migration time
 33. **initialize sets flag**: After `initialize()`, `isInitialized()` returns true
-34. **initialize copies owner**: V2 `owner()` matches V1 after `initialize()`
+34. **migrateValidator copies owner**: V2 `owner()` matches V1 after first `migrateValidator` call
 35. **initialize copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
     after `initialize()`
 36. **initialize owner only**: Non-owner cannot call `initialize`
@@ -710,12 +711,6 @@ The test suite must cover:
 ---
 
 # Security Issues
-
-## Gas Limits on Migration
-
-Each validator imported during migration requires 11 SSTOREs (validator struct
-fields, array push, pubkey mapping). With the per-validator `migrateValidator` approach,
-this is no longer a blocking issue since each transaction only handles one validator.
 
 ## Migration Timing
 
