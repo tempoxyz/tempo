@@ -128,8 +128,8 @@ interface IValidatorConfigV2 {
     /// @param ingress Address where other validators can connect (format: `<hostname|ip>:<port>`)
     /// @param egress IP Address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>:<port>`, no hostnames)
     /// @param index Position in validators array (assigned at creation, immutable)
-    /// @param addedAtHeight Block height when validator was added (set by builder, immutable)
-    /// @param deletedAtHeight Block height when validator was deleted (0 = active, set by builder)
+    /// @param addedAtHeight Block height when validator was added
+    /// @param deletedAtHeight Block height when validator was deleted (0 = active)
     struct Validator {
         bytes32 publicKey;
         address validatorAddress;
@@ -234,6 +234,34 @@ interface IValidatorConfigV2 {
     /// @param epoch The epoch in which to run the fresh DKG ceremony.
     ///        Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
     function setNextFullDkgCeremony(uint64 epoch) external;
+
+    /// @notice Migrate a single validator from V1 to V2 (owner only)
+    /// @dev Can be called multiple times to migrate validators one at a time.
+    ///      Reverts if already initialized or if idx != validatorsArray.length.
+    ///      On first call, copies owner from V1 if V2 owner is address(0).
+    ///      Active V1 validators get addedAtHeight=0 and deletedAtHeight=0.
+    ///      Inactive V1 validators get addedAtHeight=deletedAtHeight=block.timestamp at migration time.
+    /// @param idx Index of the validator in V1 validators array (must equal current validatorsArray.length)
+    function migrateValidator(uint64 idx) external;
+
+    /// @notice Initialize V2 and enable reads (owner only)
+    /// @dev Should only be called after all validators have been migrated via migrateValidator.
+    ///      Sets initialized=true. After this call, CL reads from V2 instead of V1.
+    ///      Copies nextDkgCeremony from V1.
+    ///      Reverts if V2 validators count < V1 validators count (ensures all validators migrated).
+    function initialize() external;
+
+    /// @notice Set the validator address for a validator (owner only)
+    /// @dev Allows owner to change the address of an existing validator.
+    ///      The new address must not already exist in the validator set.
+    ///      The old address is replaced in all lookup maps.
+    /// @param validatorIndex The index of the validator in the validatorsArray
+    /// @param newAddress The new address to assign to the validator
+    function setValidatorAddress(uint64 validatorIndex, address newAddress) external;
+
+    /// @notice Check if V2 has been initialized from V1
+    /// @return True if initialized, false otherwise
+    function isInitialized() external view returns (bool);
 }
 ```
 
@@ -377,6 +405,8 @@ players(E+2) = validators.filter(v =>
 )
 ```
 
+**Note**: Validators with `addedAtHeight == deletedAtHeight` will never match this filter since `deletedAtHeight > boundary(E)` cannot be true when `addedAtHeight <= boundary(E)` and they are equal.
+
 This enables nodes to reconstruct DKG player sets without accessing historical account state—critical for node recovery and late-joining validators.
 
 ### Uniqueness Constraints
@@ -393,12 +423,17 @@ This ensures historical queries always return consistent results.
 
 | Slot | Field | Description |
 |------|-------|-------------|
-| 0 | `owner` | Owner address |
+| 0 (bits 0-159) | `owner` | Owner address (160 bits, right-aligned) |
+| 0 (bit 255) | `initialized` | Whether V2 has been initialized from V1 (1 bit) |
 | 1 | `validatorsArray.length` | Count of validators ever added |
 | keccak256(1) + i | `validatorsArray[i]` | Validator address at index i |
 | keccak256(addr, 2) | `validators[addr]` | Validator struct for address |
 | keccak256(pubkey, 3) | `pubkeyToIndex[pubkey]` | Index for public key lookup |
 | 4 | `nextDkgCeremony` | Next full DKG ceremony epoch |
+
+The `owner` address is right-aligned (bits 0-159) following Solidity's standard
+packing. The `initialized` flag uses bit 255 (the highest bit), leaving bits
+160-254 unused.
 
 ## Differences from V1
 
@@ -412,7 +447,7 @@ This ensures historical queries always return consistent results.
 | Key ownership | Not verified | Ed25519 signature required |
 | Historical queries | Requires historical state | Filter `getValidators()` by `addedAtHeight`/`deletedAtHeight` |
 | Uniqueness | Address only | Address AND public key |
-| Precompile address | `0xCCCC...0001` | `0xCCCC...0002` |
+| Precompile address | `0xCCCC...0000` | `0xCCCC...0002` |
 
 ---
 
@@ -441,9 +476,10 @@ The following invariants must always hold:
 7. **Monotonic index**: Validator `index` equals its position in
    `validatorsArray` and equals `validatorCount - 1` at creation time.
 
-8. **Historical consistency**: For any height H, `getValidatorSetAtHeight(H)`
-   returns exactly the validators where
-   `addedAtHeight <= H && (deletedAtHeight == 0 || deletedAtHeight > H)`.
+8. **Historical consistency**: For any height H, the active validator set
+   consists of validators where `addedAtHeight <= H && (deletedAtHeight == 0 ||
+   deletedAtHeight > H)`. Validators with `addedAtHeight == deletedAtHeight` are
+   never considered active.
 
 9. **Signature binding**: The signature message includes `chainId`,
    `contractAddress`, `validatorAddress`, `ingress`, and
@@ -451,14 +487,21 @@ The following invariants must always hold:
    changes.
 
 10. **Owner authorization**: Only the owner can call `addValidator`,
-    `deleteValidator`, `changeOwner`, and `setNextFullDkgCeremony`.
+    `deleteValidator`, `changeOwner`, `setNextFullDkgCeremony`, and `setValidatorAddress`.
 
-11. **Validator self-rotation**: Only an existing active validator can call
+11. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
+    transition from 0 to 1, never back to 0.
+
+12. **Validator self-rotation**: Only an existing active validator can call
     `rotateValidator` on themselves (caller must be the validator being rotated).
 
-12. **Atomic rotation**: `rotateValidator` atomically deletes the old validator
+13. **Atomic rotation**: `rotateValidator` atomically deletes the old validator
     (setting its `deletedAtHeight`) and adds a new validator entry. Both
     operations occur in the same transaction with the same block height.
+
+14. **Address update**: `setValidatorAddress` updates the address of an existing
+    validator without changing any other fields. This is useful for updating
+    addresses post-migration or correcting address assignments.
 
 ---
 
@@ -468,86 +511,153 @@ This section describes the migration strategy from ValidatorConfig V1 to V2.
 
 ## Overview
 
-The migration uses a three-pronged approach:
+The migration uses a two-pronged approach:
 
-1. **New hardfork ("Allegro")**: Timestamp-based activation that switches
-   consensus from reading V1 to V2
-2. **Genesis initialization for new networks**: New deployments initialize V2 at
-   genesis
-3. **Bootstrap V2 from V1 for existing networks**: At the fork, copy V1 state
-   into V2
+1. **New hardfork ("Allegro")**: Timestamp-based activation
+2. **Manual migration**: Admin migrates validators one at a time, then calls
+   `initialize()` to flip the flag. CL reads from V1 until the flag is set.
 
 ## Hardfork-Based Switching
 
-The DKG manager determines which contract to read based on the block timestamp
-at the boundary height:
+The CL determines which contract to read based on:
+1. Whether Allegro hardfork is active (timestamp-based)
+2. Whether V2 is initialized (reads `isInitialized()` from V2)
 
 ```
 if chainspec.is_allegro_active_at_timestamp(block.timestamp) {
-    read_from_contract_v2_at_height(height)
+    if v2.isInitialized() {
+        read_from_contract_v2_at_height(height)
+    } else {
+        read_from_contract_at_height(height)  // V1 until migration complete
+    }
 } else {
     read_from_contract_at_height(height)  // V1
 }
 ```
 
-This ensures all nodes switch deterministically at the same point.
+This ensures:
+- All nodes switch deterministically at hardfork time
+- CL continues reading V1 until admin completes migration and flips the flag
 
-## Bootstrap Migration
+## Manual Migration
 
-V2 requires Ed25519 signatures on `addValidator`, but V1 validators don't have
-pre-signed messages. To solve this, V2 includes a one-time privileged bootstrap
-mechanism:
+V2 uses manual migration where the admin explicitly migrates validators one at a
+time and then calls `initialize()` to flip the `initialized` flag. The
+`initialized` bit (bit 255 of slot 0) tracks whether migration is complete.
+
+### CL Read Behavior
+
+The CL checks `v2.isInitialized()` to determine which contract to read:
+
+- **Before `initialized == true`**: CL reads directly from V1
+- **After `initialized == true`**: CL reads from V2
+
+This is handled entirely in the CL logic, not in the V2 precompile. The V2
+precompile does NOT proxy reads to V1.
+
+### Migration Functions (Owner Only)
+
+**`migrateValidator(idx)`**:
+- Reverts if `isInitialized() == true`
+- Reverts if `idx != validatorsArray.length` (ensures sequential migration)
+- On first call (when `validatorsArray.length == 0`), copies `owner` from V1 if V2 owner is `address(0)`
+- Reads the validator from V1 at index `idx`
+- Creates a V2 validator entry with:
+  - `publicKey`: copied from V1
+  - `validatorAddress`: copied from V1
+  - `inboundAddress`: copied from V1
+  - `outboundAddress`: copied from V1
+  - `index`: set to `idx`
+  - `addedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
+  - `deletedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
+- Adds to `validatorsArray`
+- Populates lookup maps (`validators[validatorAddress]`, `pubkeyToIndex[pubkey]`)
+
+**`initialize()`**:
+- Reverts if `validatorsArray.length < V1.getValidators().length` (ensures all validators migrated)
+- Copies `nextDkgCeremony` from V1 to V2
+- Sets `initialized = true` (bit 255 of slot 0)
+- After this call, CL reads from V2 instead of V1
+
+**`setValidatorAddress(validatorIndex, newAddress)`**:
+- Reverts if caller is not owner
+- Reverts if `validatorIndex >= validatorsArray.length`
+- Reverts if `newAddress` already exists in the validator set
+- Updates the validator at `validatorIndex` with the new address
+- Updates lookup maps: removes old address entry, adds new address entry
 
 ```solidity
-/// @notice Bootstrap V2 from V1 state (owner only, one-time)
-/// @dev Can only be called once. After bootstrap, normal signature requirements apply.
-/// @param migrationHeight The block height at which migration occurs
-function bootstrapFromV1(uint64 migrationHeight) external;
+// V1 interface used during migration
+interface IValidatorConfigV1 {
+    struct Validator {
+        bytes32 publicKey;
+        bool active;
+        uint64 index;
+        address validatorAddress;
+        string inboundAddress;
+        string outboundAddress;
+    }
+
+    function getValidators() external view returns (Validator[] memory);
+    function getNextFullDkgCeremony() external view returns (uint64);
+    function owner() external view returns (address);
+}
 ```
 
-**Properties:**
-- Callable only if `bootstrapped == false`
-- After execution, sets `bootstrapped = true` permanently
-- Internally reads V1 state and copies active validators
-- Sets `addedAtHeight = migrationHeight` for imported validators
-- Inactive V1 validators are not imported
+### Properties
+
+- **Per-validator migration**: Each validator is migrated with a separate tx
+- **Owner controlled**: Only admin can migrate and initialize
+- **Validator address copied**: The V2 validator address is copied from V1
+- **Address changeable post-migration**: Owner can update validator addresses via `setValidatorAddress`
+- **No signatures required**: V1 validators are imported without Ed25519 signatures
+  (they were already validated in V1)
+- **All validators imported**: Both active and inactive V1 validators are
+  imported; inactive ones have `addedAtHeight == deletedAtHeight == block.timestamp`,
+  active ones have `addedAtHeight == 0` (indicating they were active before V2 existed)
+- **Initialize validates migration**: `initialize()` reverts if not all V1 validators have been migrated
 
 ## Timeline
 
 ```
-Before Fork                    Fork Block                      After Fork
-     │                              │                              │
-     │  DKG reads V1                │  Bootstrap executes          │  DKG reads V2
-     │  V2 may be empty             │  V2 populated from V1        │  V1 ignored
-     │                              │                              │
-─────┴──────────────────────────────┴──────────────────────────────┴─────────────────►
-                                    │
-                              allegroTime
+Before Fork           Post-Fork (V2 not init)    Admin Migration           After initialize()
+     │                      │                          │                          │
+     │  CL reads V1         │  CL reads V1             │  migrateValidator()      │  CL reads V2
+     │                      │  (isInitialized=false)   │  (one tx per validator)  │  isInitialized=true
+     │                      │                          │                          │
+─────┴──────────────────────┴──────────────────────────┴──────────────────────────┴───────────────►
+                            │                          │                          │
+                      allegroTime           migrateValidator() x N         initialize()
 ```
 
 ## Migration Steps
 
 ### For Existing Networks (testnet, mainnet)
 
-1. **Release new node software** with Allegro hardfork support and V2 bootstrap
-   method, but set `allegroTime` far in future
+Existing networks are defined as those with hardfork_timestamp > timestamp_at_genesis
+
+1. **Release new node software** with Allegro hardfork support
 2. **Schedule the fork** by updating chainspec with target `allegroTime`
-3. **At fork activation**: Execute `bootstrapFromV1(migrationHeight)` as a
-   system transaction
-4. **Post-fork**: DKG reads V2; future validator changes use V2's `addValidator`
-   with signatures
+3. **At fork activation**: CL reads from V1 (since `isInitialized() == false`)
+4. **Admin migrates validators** by calling `migrateValidator(idx)` for each validator
+   - One transaction per validator
+   - Example: `migrateValidator(0)`, `migrateValidator(1)`, `migrateValidator(2)`, etc.
+   - Validator addresses are copied from V1
+5. **Admin calls `initialize()`**
+   - Sets `initialized = true`
+   - CL now reads from V2
+6. **Post-migration**: All reads/writes use V2 state directly
+
+**Important**: Complete migration before an epoch boundary to avoid disrupting DKG.
 
 ### For New Networks
 
-1. Initialize V2 at genesis with the initial validator set
-2. Optionally populate V1 for backward tooling compatibility
+New networks are defined as those that have the V2 validator config contract at genesis. In these cases, the V1 validator config contract is not required if validators are set up in V2 state.
+
+1. Call `initialize()` to set `initialized = true`
+2. Call `addValidator()` for each initial validator
 3. Set `allegroTime = 0` to activate V2 immediately
-
-## Safety Checks
-
-Nodes should fail fast if:
-- Allegro is active but V2 validator set is empty (bootstrap didn't execute)
-- V2 `bootstrapped` is false after the fork activation block
+4. V1 Validator Config contract/precompile is not necessary in this flow
 
 ---
 
@@ -568,6 +678,7 @@ The test suite must cover:
 6. **getValidators**: Returns all validators including deleted with correct
    `addedAtHeight` and `deletedAtHeight`
 7. **getActiveValidators**: Returns only validators with `deletedAtHeight == 0`
+   (note: validators with `addedAtHeight == deletedAtHeight` are excluded)
 8. **validatorByPublicKey**: Returns validator by public key lookup
 9. **validatorCount**: Returns total count including deleted
 
@@ -600,3 +711,49 @@ The test suite must cover:
     `deletedAtHeight` set
 27. **Filter logic**: Caller can correctly filter by
     `addedAtHeight <= H && (deletedAtHeight == 0 || deletedAtHeight > H)`
+
+### Manual Migration
+
+28. **migrateValidator imports validator**: Calling `migrateValidator(i)`
+    correctly imports validator at index i from V1 with the same address
+29. **migrateValidator copies address from V1**: The V2 validator uses the address from V1
+30. **migrateValidator reverts on duplicate**: Calling `migrateValidator(i)` reverts
+    if `i != validatorsArray.length`
+31. **migrateValidator reverts if initialized**: Calling `migrateValidator` reverts
+    if `isInitialized() == true`
+32. **migrateValidator owner only**: Non-owner cannot call `migrateValidator`
+33. **All validators imported on migration**: Both V1 active and inactive validators
+    are imported; inactive ones have `addedAtHeight == deletedAtHeight == block.timestamp`,
+    active ones have `addedAtHeight == 0`
+34. **addedAtHeight set correctly**: Active validators have `addedAtHeight == 0`,
+    inactive validators have `addedAtHeight == block.timestamp` at migration time
+35. **initialize sets flag**: After `initialize()`, `isInitialized()` returns true
+36. **migrateValidator copies owner**: V2 `owner()` matches V1 after first `migrateValidator` call
+37. **initialize copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
+    after `initialize()`
+38. **initialize owner only**: Non-owner cannot call `initialize`
+39. **isInitialized returns correct value**: Returns false before initialize, true after
+40. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`
+41. **initialize reverts if not all migrated**: `initialize()` reverts if
+    `validatorsArray.length < V1.getValidators().length`
+
+### setValidatorAddress
+
+42. **setValidatorAddress updates address**: Successfully updates validator address
+43. **setValidatorAddress owner only**: Non-owner cannot call `setValidatorAddress`
+44. **setValidatorAddress reverts on invalid index**: Reverts if `validatorIndex >= validatorsArray.length`
+45. **setValidatorAddress reverts on duplicate address**: Reverts if `newAddress` already exists
+46. **setValidatorAddress updates lookup maps**: Old address is removed, new address is added to lookup
+
+---
+
+# Security Issues
+
+## Migration Timing
+
+The migration must be completed (including `initialize()`) before an epoch
+boundary to avoid disrupting DKG. The admin should:
+
+1. Schedule migration during a period with no imminent epoch transitions
+2. Monitor the current epoch and time remaining
+3. Complete all `migrateValidator` calls and `initialize()` with sufficient time buffer
