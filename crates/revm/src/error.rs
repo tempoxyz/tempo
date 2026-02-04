@@ -1,8 +1,11 @@
 //! Tempo-specific transaction validation errors.
 
 use alloy_evm::error::InvalidTxError;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, FixedBytes, U256};
 use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
+
+/// 4-byte function selector type
+pub type Selector = FixedBytes<4>;
 
 /// Tempo-specific invalid transaction errors.
 ///
@@ -212,6 +215,28 @@ pub enum TempoInvalidTransaction {
     /// This wraps validation errors from the shared validate_calls function.
     #[error("{0}")]
     CallsValidation(&'static str),
+
+    /// Call not allowed for this access key (TIP-1011).
+    ///
+    /// The access key has call scope restrictions and the (destination, selector)
+    /// pair does not match any allowed scope.
+    #[error("call to {destination} with selector {selector} not allowed for this access key")]
+    CallNotAllowed {
+        /// The destination address that was rejected.
+        destination: Address,
+        /// The function selector that was rejected.
+        selector: Selector,
+    },
+}
+
+/// Extract the function selector from calldata (first 4 bytes).
+/// Returns Selector::ZERO if calldata is shorter than 4 bytes.
+pub fn extract_selector(data: &[u8]) -> Selector {
+    if data.len() >= 4 {
+        Selector::from_slice(&data[..4])
+    } else {
+        Selector::ZERO
+    }
 }
 
 impl InvalidTxError for TempoInvalidTransaction {

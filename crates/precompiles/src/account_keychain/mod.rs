@@ -7,10 +7,15 @@ use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent};
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,
     IAccountKeychain::{
-        KeyInfo, SignatureType, TokenLimit, authorizeKeyCall, getKeyCall, getRemainingLimitCall,
-        getTransactionKeyCall, revokeKeyCall, updateSpendingLimitCall,
+        CallScope, KeyInfo, SignatureType, TokenLimit, authorizeKeyCall, getAllowedCallsCall,
+        getKeyCall, getRemainingLimitCall, getTransactionKeyCall, revokeKeyCall,
+        updateSpendingLimitCall,
     },
 };
+use alloy::primitives::FixedBytes;
+
+/// 4-byte function selector type
+pub type Selector = FixedBytes<4>;
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
@@ -97,9 +102,25 @@ impl AuthorizedKey {
 pub struct AccountKeychain {
     // keys[account][keyId] -> AuthorizedKey
     keys: Mapping<Address, Mapping<Address, AuthorizedKey>>,
-    // spendingLimits[(account, keyId)][token] -> amount
+    // spendingLimits[(account, keyId)][token] -> amount (remainingInPeriod for periodic limits)
     // Using a hash of account and keyId as the key to avoid triple nesting
     spending_limits: Mapping<B256, Mapping<Address, U256>>,
+
+    // TIP-1011: Periodic spending limit storage
+    // spending_limit_max[(account, keyId)][token] -> per-period cap (0 = one-time limit)
+    spending_limit_max: Mapping<B256, Mapping<Address, U256>>,
+    // spending_limit_period[(account, keyId)][token] -> period duration in seconds (0 = one-time)
+    spending_limit_period: Mapping<B256, Mapping<Address, u64>>,
+    // spending_limit_period_end[(account, keyId)][token] -> current period end timestamp
+    spending_limit_period_end: Mapping<B256, Mapping<Address, u64>>,
+
+    // TIP-1011: Call scoping storage
+    // allowed_calls_len[(account, keyId)] -> number of allowed call scopes (0 = unrestricted)
+    allowed_calls_len: Mapping<B256, u64>,
+    // allowed_calls_target[(account, keyId)][index] -> allowed target address
+    allowed_calls_target: Mapping<B256, Mapping<u64, Address>>,
+    // allowed_calls_selector[(account, keyId)][index] -> allowed function selector
+    allowed_calls_selector: Mapping<B256, Mapping<u64, Selector>>,
 
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
@@ -321,6 +342,11 @@ impl AccountKeychain {
         self.spending_limits[limit_key][call.token].read()
     }
 
+    /// TIP-1011: Get allowed call scopes for a key (Solidity interface wrapper)
+    pub fn get_allowed_calls_sol(&self, call: getAllowedCallsCall) -> Result<Vec<CallScope>> {
+        self.get_allowed_calls(call.account, call.keyId)
+    }
+
     /// Get the transaction key used in the current transaction
     pub fn get_transaction_key(
         &self,
@@ -413,7 +439,7 @@ impl AccountKeychain {
         Ok(())
     }
 
-    /// Internal: Verify and update spending for a token transfer
+    /// Internal: Verify and update spending for a token transfer (TIP-1011 with periodic limit support)
     pub fn verify_and_update_spending(
         &mut self,
         account: Address,
@@ -434,16 +460,196 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        // Check and update spending limit
         let limit_key = Self::spending_limit_key(account, key_id);
-        let remaining = self.spending_limits[limit_key][token].read()?;
+
+        // TIP-1011: Check for periodic limit and handle reset
+        let period = self.spending_limit_period[limit_key][token].read()?;
+
+        let mut remaining = if period > 0 {
+            // Periodic limit - check if period has expired and reset if needed
+            let period_end = self.spending_limit_period_end[limit_key][token].read()?;
+            let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+
+            if current_timestamp >= period_end {
+                // Period expired - reset the remaining amount and update period_end
+                let limit_max = self.spending_limit_max[limit_key][token].read()?;
+                let new_period_end = current_timestamp.saturating_add(period);
+
+                self.spending_limit_period_end[limit_key][token].write(new_period_end)?;
+                self.spending_limits[limit_key][token].write(limit_max)?;
+
+                limit_max
+            } else {
+                // Within current period - use current remaining
+                self.spending_limits[limit_key][token].read()?
+            }
+        } else {
+            // One-time limit - use current remaining
+            self.spending_limits[limit_key][token].read()?
+        };
 
         if amount > remaining {
             return Err(AccountKeychainError::spending_limit_exceeded().into());
         }
 
         // Update remaining limit
-        self.spending_limits[limit_key][token].write(remaining - amount)
+        remaining -= amount;
+        self.spending_limits[limit_key][token].write(remaining)
+    }
+
+    /// TIP-1011: Set periodic spending limit data for a token
+    ///
+    /// Called by the handler when authorizing a key with periodic limits.
+    /// This stores the periodic limit configuration (max, period, period_end).
+    ///
+    /// # Arguments
+    /// * `account` - The account owning the key
+    /// * `key_id` - The key identifier
+    /// * `token` - The token address
+    /// * `limit_max` - Per-period spending cap
+    /// * `period` - Period duration in seconds (0 = one-time limit)
+    /// * `period_end` - Initial period end timestamp (usually 0, set on first use)
+    pub fn set_periodic_limit(
+        &mut self,
+        account: Address,
+        key_id: Address,
+        token: Address,
+        limit_max: U256,
+        period: u64,
+        period_end: u64,
+    ) -> Result<()> {
+        let limit_key = Self::spending_limit_key(account, key_id);
+
+        self.spending_limit_max[limit_key][token].write(limit_max)?;
+        self.spending_limit_period[limit_key][token].write(period)?;
+        self.spending_limit_period_end[limit_key][token].write(period_end)
+    }
+
+    /// TIP-1011: Set allowed destinations for a key
+    ///
+    /// Called by the handler when authorizing a key with destination restrictions.
+    ///
+    /// # Arguments
+    /// * `account` - The account owning the key
+    /// * `key_id` - The key identifier
+    /// * `calls` - Array of allowed call scopes (target, selector) pairs
+    pub fn set_allowed_calls(
+        &mut self,
+        account: Address,
+        key_id: Address,
+        calls: &[(Address, Selector)],
+    ) -> Result<()> {
+        let limit_key = Self::spending_limit_key(account, key_id);
+
+        // Store the count
+        self.allowed_calls_len[limit_key].write(calls.len() as u64)?;
+
+        // Store each call scope (target + selector)
+        for (i, (target, selector)) in calls.iter().enumerate() {
+            self.allowed_calls_target[limit_key][i as u64].write(*target)?;
+            self.allowed_calls_selector[limit_key][i as u64].write(*selector)?;
+        }
+
+        Ok(())
+    }
+
+    /// TIP-1011: Get allowed call scopes for a key
+    ///
+    /// Returns the list of allowed call scopes for a key.
+    /// Empty array means unrestricted (can call any function on any address).
+    pub fn get_allowed_calls(
+        &self,
+        account: Address,
+        key_id: Address,
+    ) -> Result<Vec<CallScope>> {
+        let limit_key = Self::spending_limit_key(account, key_id);
+        let len = self.allowed_calls_len[limit_key].read()?;
+
+        let mut calls = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            let target = self.allowed_calls_target[limit_key][i].read()?;
+            let selector = self.allowed_calls_selector[limit_key][i].read()?;
+            calls.push(CallScope {
+                target,
+                selector: selector.0.into(),
+            });
+        }
+
+        Ok(calls)
+    }
+
+    /// TIP-1011: Check if a call is allowed for the current transaction key
+    ///
+    /// Called by the handler before transaction execution.
+    /// Returns Ok(()) if call is allowed, Err(CallNotAllowed) otherwise.
+    ///
+    /// # Arguments
+    /// * `account` - The account owning the key
+    /// * `destination` - The target contract address
+    /// * `calldata` - The call data (selector is extracted from first 4 bytes)
+    pub fn validate_call(
+        &self,
+        account: Address,
+        destination: Address,
+        calldata: &[u8],
+    ) -> Result<()> {
+        let transaction_key = self.transaction_key.t_read()?;
+
+        // Main key (Address::ZERO) has no call restrictions
+        if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+
+        let limit_key = Self::spending_limit_key(account, transaction_key);
+        let len = self.allowed_calls_len[limit_key].read()?;
+
+        // Empty allowed list = unrestricted
+        if len == 0 {
+            return Ok(());
+        }
+
+        // Extract selector from calldata (first 4 bytes), or ZERO if calldata is too short
+        let selector = if calldata.len() >= 4 {
+            Selector::from_slice(&calldata[..4])
+        } else {
+            Selector::ZERO
+        };
+
+        // Check if (destination, selector) matches any allowed scope
+        for i in 0..len {
+            let allowed_target = self.allowed_calls_target[limit_key][i].read()?;
+            let allowed_selector = self.allowed_calls_selector[limit_key][i].read()?;
+
+            // Check target match (Address::ZERO = wildcard)
+            let target_matches = allowed_target == Address::ZERO || allowed_target == destination;
+
+            // Check selector match (Selector::ZERO = wildcard)
+            let selector_matches = allowed_selector == Selector::ZERO || allowed_selector == selector;
+
+            if target_matches && selector_matches {
+                return Ok(());
+            }
+        }
+
+        Err(AccountKeychainError::call_not_allowed(destination, selector.0.into()).into())
+    }
+
+    /// TIP-1011: Get remaining limit with period info
+    ///
+    /// Returns the remaining spending limit and period end for a token.
+    /// For one-time limits, period_end is 0.
+    pub fn get_remaining_limit_with_period(
+        &self,
+        account: Address,
+        key_id: Address,
+        token: Address,
+    ) -> Result<(U256, u64)> {
+        let limit_key = Self::spending_limit_key(account, key_id);
+
+        let remaining = self.spending_limits[limit_key][token].read()?;
+        let period_end = self.spending_limit_period_end[limit_key][token].read()?;
+
+        Ok((remaining, period_end))
     }
 
     /// Authorize a token transfer with access key spending limits
@@ -1154,6 +1360,408 @@ mod tests {
                 none_result.is_ok(),
                 "Validation should succeed when signature type check is skipped (pre-T1)"
             );
+
+            Ok(())
+        })
+    }
+
+    // =============================================================================
+    // TIP-1011: Periodic Limits and Destination Scoping Tests
+    // =============================================================================
+
+    #[test]
+    fn test_periodic_limit_reset_on_period_expiry() -> eyre::Result<()> {
+        use tempo_chainspec::hardfork::TempoHardfork;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Get the current timestamp from storage
+            let current_timestamp = keychain.storage.timestamp().saturating_to::<u64>();
+
+            // Setup: Authorize key and set up periodic limit
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100), // Initial remaining
+                }],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Set periodic limit: 100 tokens per 3600 seconds (1 hour)
+            // period_end in the past (before current timestamp) to trigger reset
+            let past_period_end = current_timestamp.saturating_sub(100);
+            keychain.set_periodic_limit(
+                account,
+                key_id,
+                token,
+                U256::from(100), // max per period
+                3600,            // period duration
+                past_period_end, // period end in the past
+            )?;
+
+            // Now use the access key
+            keychain.set_transaction_key(key_id)?;
+
+            // First spending attempt - period expired, should reset
+            keychain.verify_and_update_spending(account, key_id, token, U256::from(30))?;
+
+            // Check remaining - should be 100 - 30 = 70 after reset
+            let (remaining, period_end) =
+                keychain.get_remaining_limit_with_period(account, key_id, token)?;
+            assert_eq!(remaining, U256::from(70));
+            // Period end should be updated to current_timestamp + 3600
+            assert_eq!(period_end, current_timestamp + 3600);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_periodic_limit_partial_usage_no_rollover() -> eyre::Result<()> {
+        use tempo_chainspec::hardfork::TempoHardfork;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Get current timestamp
+            let current_timestamp = keychain.storage.timestamp().saturating_to::<u64>();
+
+            // Setup
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                }],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Set periodic limit with period end in future
+            let future_period_end = current_timestamp + 1000;
+            keychain.set_periodic_limit(
+                account,
+                key_id,
+                token,
+                U256::from(100),   // max
+                3600,              // period
+                future_period_end, // period_end in future
+            )?;
+
+            keychain.set_transaction_key(key_id)?;
+
+            // Spend 50 tokens (within period)
+            keychain.verify_and_update_spending(account, key_id, token, U256::from(50))?;
+
+            // Check remaining - should be 100 - 50 = 50
+            let (remaining, _) = keychain.get_remaining_limit_with_period(account, key_id, token)?;
+            assert_eq!(remaining, U256::from(50));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_call_scoping_address_and_selector() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let allowed_target = Address::random();
+        let allowed_selector = Selector::from([0xaa, 0xbb, 0xcc, 0xdd]);
+        let disallowed_target = Address::random();
+        let disallowed_selector = Selector::from([0x11, 0x22, 0x33, 0x44]);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup: Authorize key
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Set allowed call scopes: (allowed_target, allowed_selector)
+            keychain.set_allowed_calls(account, key_id, &[(allowed_target, allowed_selector)])?;
+
+            // Switch to using the access key
+            keychain.set_transaction_key(key_id)?;
+
+            // Build calldata with the allowed selector
+            let mut calldata = allowed_selector.to_vec();
+            calldata.extend_from_slice(&[0x01, 0x02, 0x03]); // extra data
+
+            // Test 1: Allowed (target, selector) should pass
+            let result1 = keychain.validate_call(account, allowed_target, &calldata);
+            assert!(result1.is_ok(), "Should allow matching call scope");
+
+            // Test 2: Wrong target should fail
+            let result2 = keychain.validate_call(account, disallowed_target, &calldata);
+            assert!(result2.is_err(), "Should deny wrong target");
+
+            // Test 3: Wrong selector should fail
+            let wrong_calldata = disallowed_selector.to_vec();
+            let result3 = keychain.validate_call(account, allowed_target, &wrong_calldata);
+            assert!(result3.is_err(), "Should deny wrong selector");
+
+            match result3.unwrap_err() {
+                TempoPrecompileError::AccountKeychainError(AccountKeychainError::CallNotAllowed(
+                    _,
+                )) => {}
+                e => panic!("Expected CallNotAllowed error, got: {e:?}"),
+            }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_call_scoping_address_only_wildcard() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let allowed_target = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Set allowed call scope: (allowed_target, any selector) - Selector::ZERO is wildcard
+            keychain.set_allowed_calls(account, key_id, &[(allowed_target, Selector::ZERO)])?;
+
+            keychain.set_transaction_key(key_id)?;
+
+            // Any selector on allowed target should pass
+            let selector1 = [0xaau8, 0xbb, 0xcc, 0xdd];
+            let selector2 = [0x11u8, 0x22, 0x33, 0x44];
+
+            assert!(keychain.validate_call(account, allowed_target, &selector1).is_ok());
+            assert!(keychain.validate_call(account, allowed_target, &selector2).is_ok());
+            assert!(keychain.validate_call(account, allowed_target, &[]).is_ok()); // ETH transfer
+
+            // Different target should fail
+            let other_target = Address::random();
+            assert!(keychain.validate_call(account, other_target, &selector1).is_err());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_empty_allowed_calls_is_unrestricted() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let any_dest = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Don't set any call scopes (empty = unrestricted)
+
+            keychain.set_transaction_key(key_id)?;
+
+            // Should allow any call
+            let calldata = [0xaa, 0xbb, 0xcc, 0xdd];
+            let result = keychain.validate_call(account, any_dest, &calldata);
+            assert!(result.is_ok(), "Empty allowed calls should allow any call");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_allowed_calls() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let target1 = Address::random();
+        let target2 = Address::random();
+        let selector1 = Selector::from([0xaa, 0xbb, 0xcc, 0xdd]);
+        let selector2 = Selector::from([0x11, 0x22, 0x33, 0x44]);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Set call scopes
+            keychain.set_allowed_calls(
+                account,
+                key_id,
+                &[(target1, selector1), (target2, selector2)],
+            )?;
+
+            // Get call scopes
+            let calls = keychain.get_allowed_calls(account, key_id)?;
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0].target, target1);
+            assert_eq!(calls[0].selector.0, selector1.0);
+            assert_eq!(calls[1].target, target2);
+            assert_eq!(calls[1].selector.0, selector2.0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_one_time_limit_backwards_compatible() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            // Setup with one-time limit (no periodic data set)
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                }],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Don't set periodic limit - period=0 means one-time limit
+
+            keychain.set_transaction_key(key_id)?;
+
+            // Spend some tokens
+            keychain.verify_and_update_spending(account, key_id, token, U256::from(30))?;
+
+            // Check remaining - should be 70, no reset
+            let (remaining, period_end) =
+                keychain.get_remaining_limit_with_period(account, key_id, token)?;
+            assert_eq!(remaining, U256::from(70));
+            assert_eq!(period_end, 0, "One-time limit should have period_end=0");
+
+            // Spend remaining
+            keychain.verify_and_update_spending(account, key_id, token, U256::from(70))?;
+
+            let (remaining, _) = keychain.get_remaining_limit_with_period(account, key_id, token)?;
+            assert_eq!(remaining, U256::ZERO);
+
+            // Should fail now - one-time limit depleted
+            let result = keychain.verify_and_update_spending(account, key_id, token, U256::from(1));
+            assert!(result.is_err(), "Should fail when one-time limit depleted");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_main_key_bypasses_call_restrictions() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let any_dest = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Set restricted call scopes for the access key
+            let allowed = Address::random();
+            let selector = Selector::from([0xaa, 0xbb, 0xcc, 0xdd]);
+            keychain.set_allowed_calls(account, key_id, &[(allowed, selector)])?;
+
+            // Main key (Address::ZERO) should bypass call restrictions
+            // (transaction_key is still Address::ZERO from setup)
+            let calldata = [0x11, 0x22, 0x33, 0x44]; // Different selector
+            let result = keychain.validate_call(account, any_dest, &calldata);
+            assert!(result.is_ok(), "Main key should bypass call restrictions");
 
             Ok(())
         })
