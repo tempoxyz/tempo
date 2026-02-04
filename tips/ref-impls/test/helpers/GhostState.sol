@@ -10,6 +10,8 @@ abstract contract GhostState {
     mapping(address => uint256) public ghost_protocolNonce;
     mapping(address => mapping(uint256 => uint256)) public ghost_2dNonce;
     mapping(address => mapping(uint256 => bool)) public ghost_2dNonceUsed;
+    /// @dev Array of 2D nonce keys used per account (for efficient iteration)
+    mapping(address => uint256[]) public ghost_account2dNonceKeys;
 
     // ============ Transaction Tracking ============
 
@@ -25,10 +27,6 @@ abstract contract GhostState {
 
     mapping(bytes32 => address) public ghost_createAddresses;
     mapping(address => uint256) public ghost_createCount;
-
-    // ============ Fee Tracking ============
-
-    mapping(address => uint256) public ghost_feeTokenBalance;
 
     // ============ CREATE Rejection Tracking ============
 
@@ -146,7 +144,15 @@ abstract contract GhostState {
 
     function _update2dNonce(address account, uint256 nonceKey) internal {
         ghost_2dNonce[account][nonceKey]++;
-        ghost_2dNonceUsed[account][nonceKey] = true;
+        _mark2dNonceKeyUsed(account, nonceKey);
+    }
+
+    /// @dev Mark a 2D nonce key as used and track in array for efficient iteration
+    function _mark2dNonceKeyUsed(address account, uint256 nonceKey) internal {
+        if (!ghost_2dNonceUsed[account][nonceKey]) {
+            ghost_2dNonceUsed[account][nonceKey] = true;
+            ghost_account2dNonceKeys[account].push(nonceKey);
+        }
     }
 
     function _recordTxSuccess() internal {
@@ -285,6 +291,18 @@ abstract contract GhostState {
     function _recordGasTrackingKeyAuth() internal {
         ghost_gasTrackingKeyAuth++;
         ghost_totalGasTracked++;
+    }
+
+    // ============ Expected Rejection Recording Functions ============
+
+    /// @notice Record key wrong signer rejection (K1, K7, K8)
+    function _recordKeyWrongSigner() internal {
+        ghost_keyAuthRejectedWrongSigner++;
+    }
+
+    /// @notice Record key zero limit rejection (K12)
+    function _recordKeyZeroLimit() internal {
+        ghost_keyZeroLimitRejected++;
     }
 
 }

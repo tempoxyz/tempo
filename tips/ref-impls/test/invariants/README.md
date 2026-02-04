@@ -96,6 +96,7 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 - **TEMPO-AMM21**: Spread between fee swap (M) and rebalance (N) prevents arbitrage - M < N with 15 bps spread.
 - **TEMPO-AMM22**: Rebalance swap rounding always favors the pool - the +1 in the formula ensures pool never loses to rounding, even when `(amountOut * N) % SCALE == 0` (exact division case).
 
+
 - **TEMPO-AMM23**: Burn rounding dust accumulates in pool - integer division rounds down, so users receive <= theoretical amount.
 - **TEMPO-AMM24**: All participants can exit with solvency guaranteed. After distributing all fees and burning all LP positions:
 
@@ -134,6 +135,68 @@ The FeeManager extends FeeAMM and handles fee token preferences and distribution
 
 - **TEMPO-FEE5**: Collected fees should not exceed AMM token balance for any token.
 - **TEMPO-FEE6**: Fee swap rate M is correctly applied - fee output should always be <= fee input.
+
+## TIP-1000: State Creation Cost (Gas Pricing)
+
+TIP-1000 defines Tempo's gas pricing for state creation operations, charging 250,000 gas for each new state element to account for long-term storage costs.
+
+### State Creation Invariants (GasPricing.t.sol)
+
+Tested via `vmExec.executeTransaction()` - executes real transactions and verifies gas requirements:
+
+- **TEMPO-GAS1**: SSTORE to new slot costs exactly 250,000 gas.
+  - Handler executes SSTORE with insufficient gas (100k) and sufficient gas (350k)
+  - Invariant: insufficient gas must fail, sufficient must succeed
+
+- **TEMPO-GAS5**: Contract creation cost = (code_size × 1,000) + 500,000 + 250,000 (account creation).
+  - Handler deploys contracts with insufficient and sufficient gas
+  - Invariant: deployment must fail below threshold, succeed above
+
+- **TEMPO-GAS8**: Multiple new state elements charge 250k each independently.
+  - Handler writes N slots (2-5) with gas for only 1 slot vs gas for N slots
+  - Invariant: all N slots must not be written with gas for only 1
+
+### Protocol-Level Invariants (Rust)
+
+The following are enforced at the protocol level and tested in Rust:
+
+- **TEMPO-GAS2**: Account creation intrinsic gas (250k) → `crates/revm/src/handler.rs`
+- **TEMPO-GAS3**: SSTORE reset cost (5k) → `crates/revm/`
+- **TEMPO-GAS4**: Storage clear refund (15k) → `crates/revm/`
+- **TEMPO-GAS6**: Transaction gas cap (30M) → `crates/transaction-pool/src/validator.rs`
+- **TEMPO-GAS7**: First tx minimum gas (271k) → `crates/transaction-pool/src/validator.rs`
+- **TEMPO-GAS9-14**: Various protocol-level gas rules → `crates/revm/`
+
+## TIP-1010: Mainnet Gas Parameters (Block Limits)
+
+TIP-1010 defines Tempo's mainnet block gas parameters, including a 500M total block gas limit with a 30M general lane and 470M payment lane allocation.
+
+### Block Gas Invariants (BlockGasLimits.t.sol)
+
+Tested via `vmExec.executeTransaction()` and constant assertions:
+
+- **TEMPO-BLOCK1**: Block total gas limit = 500,000,000. (constant assertion)
+- **TEMPO-BLOCK2**: General lane gas limit = 30,000,000. (constant assertion)
+- **TEMPO-BLOCK3**: Transaction gas cap = 30,000,000.
+  - Handler submits tx at cap (30M) and over cap (30M+)
+  - Invariant: over-cap transactions must be rejected
+
+- **TEMPO-BLOCK4**: Base fee = 20 gwei (T1), 10 gwei (T0). (constant assertion)
+- **TEMPO-BLOCK5**: Payment lane minimum = 470M. (constant assertion)
+- **TEMPO-BLOCK6**: Max contract deployment (24KB) fits within tx gas cap.
+  - Handler deploys contracts at 50-100% of max size
+  - Invariant: max size deployment must succeed within tx cap
+
+- **TEMPO-BLOCK10**: shared_gas_limit = 50M. (constant assertion)
+
+### Protocol-Level Invariants (Rust)
+
+The following are enforced in the block builder and tested in Rust:
+
+- **TEMPO-BLOCK7**: Block validity rejects over-limit blocks → `crates/payload/builder/src/lib.rs`
+- **TEMPO-BLOCK8-9**: Hardfork activation rules → `crates/chainspec/`
+- **TEMPO-BLOCK11**: Constant base fee within epoch → `crates/chainspec/`
+- **TEMPO-BLOCK12**: General lane enforcement (30M cap) → `crates/payload/builder/src/lib.rs`
 
 ## Nonce
 
@@ -281,6 +344,66 @@ The ValidatorConfig precompile manages the set of validators that participate in
 - **TEMPO-VAL14**: Owner consistency - contract owner always matches ghost state.
 - **TEMPO-VAL15**: Validator data consistency - all validator data (active status, public key, index) matches ghost state.
 - **TEMPO-VAL16**: Index consistency - each validator's index matches the ghost-tracked index assigned at creation.
+
+## AccountKeychain
+
+The AccountKeychain precompile manages authorized Access Keys for accounts, enabling Root Keys to provision scoped secondary keys with expiry timestamps and per-TIP20 token spending limits.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-KEY13**: Key data consistency - all key data (expiry, enforceLimits, signatureType) matches ghost state for tracked keys.
+- **TEMPO-KEY14**: Spending limit consistency - all spending limits match ghost state for active keys with limits enforced.
+- **TEMPO-KEY15**: Revocation permanence - revoked keys remain revoked (isRevoked stays true).
+- **TEMPO-KEY16**: Signature type consistency - key signature type matches ghost state for all active keys.
+
+### Per-Handler Assertions
+
+These verify correct behavior when the specific function is called:
+
+#### Key Authorization
+
+- **TEMPO-KEY1**: Key authorization - `authorizeKey` correctly stores key info (keyId, expiry, signatureType, enforceLimits).
+- **TEMPO-KEY2**: Spending limit initialization - initial spending limits are correctly stored when `enforceLimits` is true.
+
+#### Key Revocation
+
+- **TEMPO-KEY3**: Key revocation - `revokeKey` marks key as revoked and clears expiry.
+- **TEMPO-KEY4**: Revocation finality - revoked keys cannot be reauthorized (reverts with `KeyAlreadyRevoked`).
+
+#### Spending Limits
+
+- **TEMPO-KEY5**: Limit update - `updateSpendingLimit` correctly updates the spending limit for a token.
+- **TEMPO-KEY6**: Limit enforcement activation - calling `updateSpendingLimit` on a key with `enforceLimits=false` enables limit enforcement.
+
+#### Input Validation
+
+- **TEMPO-KEY7**: Zero key rejection - authorizing a key with `keyId=address(0)` reverts with `ZeroPublicKey`.
+- **TEMPO-KEY8**: Duplicate key rejection - authorizing a key that already exists reverts with `KeyAlreadyExists`.
+- **TEMPO-KEY9**: Non-existent key revocation - revoking a key that doesn't exist reverts with `KeyNotFound`.
+
+#### Isolation
+
+- **TEMPO-KEY10**: Account isolation - keys are scoped per account; the same keyId can be authorized for different accounts with different settings.
+- **TEMPO-KEY11**: Transaction key context - `getTransactionKey` returns `address(0)` when called outside of a transaction signed by an access key.
+- **TEMPO-KEY12**: Non-existent key defaults - `getKey` for a non-existent key returns default values (keyId=0, expiry=0, enforceLimits=false).
+
+#### Expiry Boundaries
+
+- **TEMPO-KEY17**: Expiry at current timestamp is expired - Rust uses `timestamp >= expiry` so `expiry == block.timestamp` counts as expired.
+- **TEMPO-KEY18**: Operations on expired keys fail with `KeyExpired` - `updateSpendingLimit` on a key where `timestamp >= expiry` reverts.
+
+#### Signature Type Validation
+
+- **TEMPO-KEY19**: Invalid signature type rejection - enum values >= 3 are invalid and revert with `InvalidSignatureType`.
+
+#### Transaction Context
+
+> **Note**: KEY20/21 cannot be tested in Foundry invariant tests because `transaction_key` uses transient storage (TSTORE/TLOAD) which `vm.store` cannot modify. These invariants require integration tests in `crates/node/tests/it/` that submit real signed transactions.
+
+- **TEMPO-KEY20**: Main-key-only administration - `authorizeKey`, `revokeKey`, and `updateSpendingLimit` require `transaction_key == 0` (Root Key context). When called with a non-zero transaction key (i.e., from an Access Key), these operations revert with `UnauthorizedCaller`. This ensures only the Root Key can manage Access Keys.
+- **TEMPO-KEY21**: Spending limit tx_origin enforcement - spending limits are only consumed when `msg_sender == tx_origin`. Contract-initiated transfers (where msg_sender is a contract, not the signing EOA) do not consume the EOA's spending limit. This prevents contracts from unexpectedly draining a user's spending limits.
 
 ## TIP20
 
