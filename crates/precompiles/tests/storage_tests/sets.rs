@@ -31,7 +31,10 @@ where
 
     // Check contains for all expected values
     for value in expected {
-        assert!(set.contains(value)?, "expected value {value:?} not found in set");
+        assert!(
+            set.contains(value)?,
+            "expected value {value:?} not found in set"
+        );
     }
 
     // Check at() returns all expected values
@@ -39,14 +42,20 @@ where
         .map(|i| set.at(i).unwrap().unwrap())
         .collect();
     for value in expected {
-        assert!(at_values.contains(value), "at() did not return expected value {value:?}");
+        assert!(
+            at_values.contains(value),
+            "at() did not return expected value {value:?}"
+        );
     }
 
     // Check values() returns all expected values
     let all_values = set.read()?;
     assert_eq!(all_values.len(), expected.len());
     for value in expected {
-        assert!(all_values.contains(value), "values() did not contain {value:?}");
+        assert!(
+            all_values.contains(value),
+            "values() did not contain {value:?}"
+        );
     }
 
     Ok(())
