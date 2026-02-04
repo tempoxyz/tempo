@@ -561,9 +561,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
         // TEMPO-FAC1: Verify salt-to-token mapping consistency immediately
         address factoryAddr = factory.getTokenAddress(actor, salt);
-        assertEq(
-            tokenAddr, factoryAddr, "TEMPO-FAC1: Created address inconsistent with factory"
-        );
+        assertEq(tokenAddr, factoryAddr, "TEMPO-FAC1: Created address inconsistent with factory");
 
         // TEMPO-FAC11: Verify token address has correct prefix
         uint160 addrValue = uint160(tokenAddr);
