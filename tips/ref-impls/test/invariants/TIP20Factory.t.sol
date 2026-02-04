@@ -58,7 +58,12 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for creating tokens
     /// @dev Tests TEMPO-FAC1 (deterministic addresses), TEMPO-FAC2 (address uniqueness)
-    function createToken(uint256 actorSeed, bytes32 salt, uint256 nameIdx, uint256 symbolIdx)
+    function createToken(
+        uint256 actorSeed,
+        bytes32 salt,
+        uint256 nameIdx,
+        uint256 symbolIdx
+    )
         external
     {
         address actor = _selectActor(actorSeed);
@@ -219,7 +224,11 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for creating tokens with mismatched currency
     /// @dev Tests TEMPO-FAC7 (currency/quote token consistency)
-    function createTokenMismatchedCurrency(uint256 actorSeed, bytes32 salt, uint256 currencyIdx)
+    function createTokenMismatchedCurrency(
+        uint256 actorSeed,
+        bytes32 salt,
+        uint256 currencyIdx
+    )
         external
     {
         address actor = _selectActor(actorSeed);

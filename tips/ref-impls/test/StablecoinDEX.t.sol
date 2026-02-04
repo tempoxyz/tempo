@@ -227,7 +227,10 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     /// @notice Fuzz test that escrow always rounds UP for bid orders
-    function testFuzz_PlaceBidOrder_EscrowAlwaysRoundsUp(uint128 amount, int16 tickMultiplier)
+    function testFuzz_PlaceBidOrder_EscrowAlwaysRoundsUp(
+        uint128 amount,
+        int16 tickMultiplier
+    )
         public
     {
         // Constrain amount to be >= MIN_ORDER_AMOUNT and reasonable for our balance
@@ -688,7 +691,9 @@ contract StablecoinDEXTest is BaseTest {
         int16 tick,
         int16 flipTick,
         bool isBid
-    ) public {
+    )
+        public
+    {
         tick = int16(bound(int256(tick), type(int16).min, type(int16).max));
         flipTick = int16(bound(int256(flipTick), type(int16).min, type(int16).max));
 
@@ -794,7 +799,10 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     // Test withdraw validation
-    function testFuzz_Withdraw_RevertIf_InsufficientBalance(uint128 balance, uint128 withdrawAmount)
+    function testFuzz_Withdraw_RevertIf_InsufficientBalance(
+        uint128 balance,
+        uint128 withdrawAmount
+    )
         public
     {
         vm.assume(balance < type(uint128).max); // Avoid overflow in balance + 1
@@ -1097,7 +1105,9 @@ contract StablecoinDEXTest is BaseTest {
         bool useToken1,
         bool useToken2,
         bool swapDirection
-    ) public {
+    )
+        public
+    {
         // Setup both token pairs
         exchange.createPair(address(token2));
 
@@ -1763,7 +1773,11 @@ contract StablecoinDEXTest is BaseTest {
                         HELPER FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function _placeBidOrder(address user, uint128 amount, int16 tick)
+    function _placeBidOrder(
+        address user,
+        uint128 amount,
+        int16 tick
+    )
         internal
         returns (uint128 orderId)
     {
@@ -1778,7 +1792,11 @@ contract StablecoinDEXTest is BaseTest {
         orderId = exchange.place(address(token1), amount, true, tick);
     }
 
-    function _placeAskOrder(address user, uint128 amount, int16 tick)
+    function _placeAskOrder(
+        address user,
+        uint128 amount,
+        int16 tick
+    )
         internal
         returns (uint128 orderId)
     {
@@ -1914,7 +1932,9 @@ contract StablecoinDEXTest is BaseTest {
         uint128 totalBaseOut,
         uint8 numSplits,
         int16 tick
-    ) public {
+    )
+        public
+    {
         // Bound inputs
         totalBaseOut = uint128(bound(totalBaseOut, exchange.MIN_ORDER_AMOUNT() * 2, 1e18));
         numSplits = uint8(bound(numSplits, 2, 10));

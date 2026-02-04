@@ -179,7 +179,10 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param noOfActors_ Number of actors to create
     /// @param spender Contract to approve for token spending
     /// @return actorsAddress Array of created actor addresses
-    function _buildActorsWithApprovals(uint256 noOfActors_, address spender)
+    function _buildActorsWithApprovals(
+        uint256 noOfActors_,
+        address spender
+    )
         internal
         returns (address[] memory)
     {
@@ -425,7 +428,9 @@ abstract contract InvariantBaseTest is BaseTest {
         address spender,
         string memory logFile,
         string memory title
-    ) internal {
+    )
+        internal
+    {
         _setupInvariantBase();
         _actors = spender == address(0)
             ? _buildActors(actorCount)
@@ -600,7 +605,10 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param count Number of addresses to generate
     /// @param startOffset Starting offset for address generation (e.g., 0x1001, 0x2000)
     /// @return addresses Array of generated addresses
-    function _buildAddressPool(uint256 count, uint256 startOffset)
+    function _buildAddressPool(
+        uint256 count,
+        uint256 startOffset
+    )
         internal
         pure
         returns (address[] memory)
@@ -678,7 +686,12 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param minPct Minimum percentage (0-100)
     /// @param maxPct Maximum percentage (0-100)
     /// @return The bounded value as a percentage of total
-    function _boundPct(uint256 x, uint256 total, uint256 minPct, uint256 maxPct)
+    function _boundPct(
+        uint256 x,
+        uint256 total,
+        uint256 minPct,
+        uint256 maxPct
+    )
         internal
         pure
         returns (uint256)
@@ -785,7 +798,11 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param reason The revert reason bytes
     /// @param expected The expected error selector
     /// @param message Assertion message on failure
-    function _assertExactSelector(bytes memory reason, bytes4 expected, string memory message)
+    function _assertExactSelector(
+        bytes memory reason,
+        bytes4 expected,
+        string memory message
+    )
         internal
         pure
     {
