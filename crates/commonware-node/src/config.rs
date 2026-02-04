@@ -25,6 +25,8 @@ pub const SUBBLOCKS_CHANNEL_IDENT: commonware_p2p::Channel = 6;
 
 pub(crate) const NUMBER_CONCURRENT_FETCHES: usize = 4;
 
+pub(crate) const PEERSETS_TO_TRACK: usize = 3;
+
 pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); // 100MB
 
 pub const BROADCASTER_LIMIT: Quota =

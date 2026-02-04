@@ -203,10 +203,6 @@ pub struct Args {
     )]
     pub handshake_max_concurrent: NonZeroU32,
 
-    /// Number of epoch peer sets to maintain connections for.
-    #[arg(long = "consensus.peer-set-epoch-depth", default_value_t = 4)]
-    pub peer_set_epoch_depth: usize,
-
     /// Duration after which a blocked peer is allowed to reconnect.
     #[arg(
         long = "consensus.time-to-unblock-byzantine-peer",

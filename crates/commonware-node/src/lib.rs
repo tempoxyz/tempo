@@ -164,7 +164,7 @@ async fn instantiate_network(
         bypass_ip_check: config.bypass_ip_check,
         allow_private_ips: config.allow_private_ips,
         allow_dns: config.allow_dns,
-        tracked_peer_sets: config.peer_set_epoch_depth,
+        tracked_peer_sets: crate::config::PEERSETS_TO_TRACK,
         synchrony_bound: config.synchrony_bound.into_duration(),
         max_handshake_age: config.handshake_max_age.into_duration(),
         handshake_timeout: config.handshake_timeout.into_duration(),
