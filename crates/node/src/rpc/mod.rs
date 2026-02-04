@@ -388,6 +388,18 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
                 .unwrap_or_default()
                 .saturating_to(),
             );
+
+            // Fill gas using self to ensure Tempo's create_txn_env handles 2D nonce correctly
+            if request.gas.is_none() {
+                let gas = EstimateCall::estimate_gas_at(
+                    self,
+                    request.clone(),
+                    alloy_eips::BlockId::pending(),
+                    None,
+                )
+                .await?;
+                request.gas = Some(gas.to());
+            }
         }
 
         Ok(self.inner.fill_transaction(request).await?)

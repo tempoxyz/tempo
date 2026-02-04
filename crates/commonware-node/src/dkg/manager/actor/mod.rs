@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, net::SocketAddr, num::NonZeroU32, task::Poll, time::Duration};
 
 use alloy_consensus::BlockHeader as _;
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, BufMut};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Heightable as _,
@@ -24,7 +24,7 @@ use commonware_p2p::{
     utils::mux::{self, MuxHandle},
 };
 use commonware_parallel::Sequential;
-use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, spawn_cell};
+use commonware_runtime::{Clock, ContextCell, Handle, IoBuf, Metrics as _, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, N3f1, NZU32, ordered};
 
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
@@ -217,7 +217,7 @@ where
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<()>
     where
-        TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
         TSender: Sender<PublicKey = PublicKey>,
         TReceiver: Receiver<PublicKey = PublicKey>,
     {
@@ -330,7 +330,7 @@ where
                     match msg.command {
                         Command::Update(update) => {
                             match *update {
-                                Update::Tip(height, _) => {
+                                Update::Tip(_, height, _) => {
                                     if !skip_to_boundary {
                                         skip_to_boundary |= self.should_skip_round(
                                             &round,
@@ -618,7 +618,7 @@ where
         block: Block,
     ) -> eyre::Result<Option<State>>
     where
-        TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
         TSender: Sender<PublicKey = PublicKey>,
     {
         let epoch_info = self
@@ -880,7 +880,7 @@ where
         player_state: &mut Option<state::Player>,
         round_channel: &mut TSender,
     ) where
-        TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
         TSender: Sender<PublicKey = PublicKey>,
     {
         let me = self.config.me.public_key();
@@ -950,10 +950,10 @@ where
         dealer_state: Option<&mut state::Dealer>,
         player_state: Option<&mut state::Player>,
         from: PublicKey,
-        mut message: Bytes,
+        mut message: IoBuf,
     ) -> eyre::Result<()>
     where
-        TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
     {
         let msg = Message::read_cfg(&mut message, &NZU32!(round.players().len() as u32))
             .wrap_err("failed reading p2p message")?;
@@ -1038,7 +1038,7 @@ where
         request: GetDkgOutcome,
     ) -> Option<(Digest, GetDkgOutcome)>
     where
-        TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
     {
         let epoch_info = self
             .config

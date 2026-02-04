@@ -10,6 +10,8 @@ abstract contract GhostState {
     mapping(address => uint256) public ghost_protocolNonce;
     mapping(address => mapping(uint256 => uint256)) public ghost_2dNonce;
     mapping(address => mapping(uint256 => bool)) public ghost_2dNonceUsed;
+    /// @dev Array of 2D nonce keys used per account (for efficient iteration)
+    mapping(address => uint256[]) public ghost_account2dNonceKeys;
 
     // ============ Transaction Tracking ============
 
@@ -25,10 +27,6 @@ abstract contract GhostState {
 
     mapping(bytes32 => address) public ghost_createAddresses;
     mapping(address => uint256) public ghost_createCount;
-
-    // ============ Fee Tracking ============
-
-    mapping(address => uint256) public ghost_feeTokenBalance;
 
     // ============ CREATE Rejection Tracking ============
 
@@ -146,7 +144,15 @@ abstract contract GhostState {
 
     function _update2dNonce(address account, uint256 nonceKey) internal {
         ghost_2dNonce[account][nonceKey]++;
-        ghost_2dNonceUsed[account][nonceKey] = true;
+        _mark2dNonceKeyUsed(account, nonceKey);
+    }
+
+    /// @dev Mark a 2D nonce key as used and track in array for efficient iteration
+    function _mark2dNonceKeyUsed(address account, uint256 nonceKey) internal {
+        if (!ghost_2dNonceUsed[account][nonceKey]) {
+            ghost_2dNonceUsed[account][nonceKey] = true;
+            ghost_account2dNonceKeys[account].push(nonceKey);
+        }
     }
 
     function _recordTxSuccess() internal {
@@ -287,25 +293,6 @@ abstract contract GhostState {
         ghost_totalGasTracked++;
     }
 
-    // ============ Time Window Ghost State (T1-T4) ============
-
-    uint256 public ghost_timeBoundTxsExecuted;
-    uint256 public ghost_timeBoundTxsRejected;
-    uint256 public ghost_validAfterRejections;
-    uint256 public ghost_validBeforeRejections;
-    uint256 public ghost_openWindowTxsExecuted;
-
-    // ============ Transaction Type Ghost State (TX4-TX12) ============
-
-    uint256 public ghost_totalEip1559Txs;
-    uint256 public ghost_totalEip1559BaseFeeRejected;
-    uint256 public ghost_totalEip7702Txs;
-    uint256 public ghost_totalEip7702AuthsApplied;
-    uint256 public ghost_totalEip7702CreateRejected;
-    uint256 public ghost_totalFeeSponsoredTxs;
-    uint256 public ghost_totalMulticallTxsTracked;
-    uint256 public ghost_totalTimeWindowTxsTracked;
-
     // ============ Expected Rejection Recording Functions ============
 
     /// @notice Record key wrong signer rejection (K1, K7, K8)
@@ -316,24 +303,6 @@ abstract contract GhostState {
     /// @notice Record key zero limit rejection (K12)
     function _recordKeyZeroLimit() internal {
         ghost_keyZeroLimitRejected++;
-    }
-
-    /// @notice Record time-bound validAfter rejection (T1)
-    function _recordTimeBoundValidAfterRejection() internal {
-        ghost_timeBoundTxsRejected++;
-        ghost_validAfterRejections++;
-    }
-
-    /// @notice Record time-bound validBefore rejection (T2)
-    function _recordTimeBoundValidBeforeRejection() internal {
-        ghost_timeBoundTxsRejected++;
-        ghost_validBeforeRejections++;
-    }
-
-    /// @notice Record EIP-7702 CREATE rejection (TX7)
-    function _recordEip7702CreateRejection() internal {
-        ghost_totalTxReverted++;
-        ghost_totalEip7702CreateRejected++;
     }
 
 }
