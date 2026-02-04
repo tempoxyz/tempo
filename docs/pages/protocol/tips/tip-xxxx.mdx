@@ -237,12 +237,13 @@ interface IValidatorConfigV2 {
 
     /// @notice Migrate a single validator from V1 to V2 (owner only)
     /// @dev Can be called multiple times to migrate validators one at a time.
-    ///      Reverts if the validator at valIdx has already been migrated (valIdx != validatorsArray.length).
+    ///      Reverts if already initialized or if valConfigV1Idx != validatorsArray.length.
     ///      On first call, copies owner from V1 if V2 owner is address(0).
     ///      Active V1 validators get addedAtHeight=0 and deletedAtHeight=0.
     ///      Inactive V1 validators get addedAtHeight=deletedAtHeight=block.timestamp at migration time.
-    /// @param valIdx Index of the validator in V1 validators array (must equal current validatorsArray.length)
-    function migrateValidator(uint64 valIdx) external;
+    /// @param valConfigV1Idx Index of the validator in V1 validators array (must equal current validatorsArray.length)
+    /// @param valAddress The validator address to use in V2 (replaces the V1 validator address)
+    function migrateValidator(uint64 valConfigV1Idx, address valAddress) external;
 
     /// @notice Initialize V2 and enable reads (owner only)
     /// @dev Should only be called after all validators have been migrated via migrateValidator.
@@ -544,20 +545,21 @@ precompile does NOT proxy reads to V1.
 
 ### Migration Functions (Owner Only)
 
-**`migrateValidator(valIdx)`**:
-- Reverts if `valIdx != validatorsArray.length` (ensures sequential migration)
+**`migrateValidator(valConfigV1Idx, valAddress)`**:
+- Reverts if `isInitialized() == true`
+- Reverts if `valConfigV1Idx != validatorsArray.length` (ensures sequential migration)
 - On first call (when `validatorsArray.length == 0`), copies `owner` from V1 if V2 owner is `address(0)`
-- Reads the validator from V1 at index `valIdx`
+- Reads the validator from V1 at index `valConfigV1Idx`
 - Creates a V2 validator entry with:
   - `publicKey`: copied from V1
-  - `validatorAddress`: copied from V1
+  - `validatorAddress`: set to `valAddress` (provided parameter, not copied from V1)
   - `inboundAddress`: copied from V1
   - `outboundAddress`: copied from V1
-  - `index`: set to `valIdx`
+  - `index`: set to `valConfigV1Idx`
   - `addedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
   - `deletedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
 - Adds to `validatorsArray`
-- Populates lookup maps (`validators[addr]`, `pubkeyToIndex[pubkey]`)
+- Populates lookup maps (`validators[valAddress]`, `pubkeyToIndex[pubkey]`)
 
 **`initialize()`**:
 - Copies `nextDkgCeremony` from V1 to V2
@@ -587,6 +589,7 @@ interface IValidatorConfigV1 {
 - **CL reads V1 until flag flipped**: No read proxying in V2 precompile
 - **Per-validator migration**: Each validator is migrated with a separate tx
 - **Owner controlled**: Only admin can migrate and initialize
+- **Validator address provided**: The V2 validator address is provided as a parameter, not copied from V1
 - **No signatures required**: V1 validators are imported without Ed25519 signatures
   (they were already validated in V1)
 - **All validators imported**: Both active and inactive V1 validators are
@@ -603,7 +606,7 @@ Before Fork           Post-Fork (V2 not init)    Admin Migration           After
      │                      │                          │                          │
 ─────┴──────────────────────┴──────────────────────────┴──────────────────────────┴───────────────►
                             │                          │                          │
-                      allegroTime              migrateValidator() x N        initialize()
+                      allegroTime           migrateValidator() x N         initialize()
 ```
 
 ## Migration Steps
@@ -615,9 +618,9 @@ Existing networks are defined as those with hardfork_timestamp > timestamp_at_ge
 1. **Release new node software** with Allegro hardfork support
 2. **Schedule the fork** by updating chainspec with target `allegroTime`
 3. **At fork activation**: CL reads from V1 (since `isInitialized() == false`)
-4. **Admin migrates validators** by calling `migrateValidator(valIdx)` for each validator
+4. **Admin migrates validators** by calling `migrateValidator(valConfigV1Idx, valAddress)` for each validator
    - One transaction per validator
-   - Example: `migrateValidator(0)`, `migrateValidator(1)`, `migrateValidator(2)`, etc.
+   - Example: `migrateValidator(0, addr0)`, `migrateValidator(1, addr1)`, `migrateValidator(2, addr2)`, etc.
 5. **Admin calls `initialize()`**
    - Sets `initialized = true`
    - CL now reads from V2
@@ -688,23 +691,27 @@ The test suite must cover:
 
 ### Manual Migration
 
-28. **migrateValidator imports validator**: Calling `migrateValidator(i)`
-    correctly imports validator at index i from V1
-29. **migrateValidator reverts on duplicate**: Calling `migrateValidator(i)` reverts
+28. **migrateValidator imports validator**: Calling `migrateValidator(i, addr)`
+    correctly imports validator at index i from V1 with the provided address
+29. **migrateValidator uses provided address**: The V2 validator uses `valAddress` parameter,
+    not the address from V1
+30. **migrateValidator reverts on duplicate**: Calling `migrateValidator(i, addr)` reverts
     if `i != validatorsArray.length`
-30. **migrateValidator owner only**: Non-owner cannot call `migrateValidator`
-31. **All validators imported on migration**: Both V1 active and inactive validators
+31. **migrateValidator reverts if initialized**: Calling `migrateValidator` reverts
+    if `isInitialized() == true`
+32. **migrateValidator owner only**: Non-owner cannot call `migrateValidator`
+33. **All validators imported on migration**: Both V1 active and inactive validators
     are imported; inactive ones have `addedAtHeight == deletedAtHeight == block.timestamp`,
     active ones have `addedAtHeight == 0`
-32. **addedAtHeight set correctly**: Active validators have `addedAtHeight == 0`,
+34. **addedAtHeight set correctly**: Active validators have `addedAtHeight == 0`,
     inactive validators have `addedAtHeight == block.timestamp` at migration time
-33. **initialize sets flag**: After `initialize()`, `isInitialized()` returns true
-34. **migrateValidator copies owner**: V2 `owner()` matches V1 after first `migrateValidator` call
-35. **initialize copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
+35. **initialize sets flag**: After `initialize()`, `isInitialized()` returns true
+36. **migrateValidator copies owner**: V2 `owner()` matches V1 after first `migrateValidator` call
+37. **initialize copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
     after `initialize()`
-36. **initialize owner only**: Non-owner cannot call `initialize`
-37. **isInitialized returns correct value**: Returns false before initialize, true after
-38. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`
+38. **initialize owner only**: Non-owner cannot call `initialize`
+39. **isInitialized returns correct value**: Returns false before initialize, true after
+40. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`
     revert if `isInitialized() == false` (only migration functions allowed)
 
 ---
