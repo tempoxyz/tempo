@@ -244,7 +244,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param seed Random seed for selection
     /// @param token Token to check authorization for
     /// @return The selected authorized actor
-    function _selectAuthorizedActor(uint256 seed, address token) internal view returns (address) {
+    function _selectAuthorizedActor(uint256 seed, address token) internal returns (address) {
         uint64 policyId = token == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[token];
 
         address[] memory authorized = new address[](_actors.length);
@@ -255,7 +255,12 @@ abstract contract InvariantBaseTest is BaseTest {
             }
         }
 
-        vm.assume(count > 0);
+        // Prerequisite: whitelist an actor if none are authorized
+        if (count == 0) {
+            address actor = _actors[seed % _actors.length];
+            _setBlacklist(token, actor, false);
+            return actor;
+        }
         return authorized[bound(seed, 0, count - 1)];
     }
 
@@ -282,7 +287,7 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param actor The actor address to fund
     /// @param token The token to mint
     /// @param amount The minimum balance required
-    function _ensureFunds(address actor, TIP20 token, uint256 amount) internal {
+    function _ensureFunds(address actor, TIP20 token, uint256 amount) internal virtual {
         if (token.balanceOf(actor) < amount) {
             vm.startPrank(admin);
             token.mint(actor, amount + 100_000_000);
@@ -338,9 +343,38 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param token Token address
     /// @param actor Actor address
     /// @param blacklist True to blacklist, false to whitelist
-    function _setBlacklist(address token, address actor, bool blacklist) internal {
-        vm.prank(_getPolicyAdmin(token));
-        registry.modifyPolicyBlacklist(_getPolicyId(token), actor, blacklist);
+    /// @return success True if the operation succeeded
+    function _setBlacklist(address token, address actor, bool blacklist) internal returns (bool) {
+        address policyAdmin = _getPolicyAdmin(token);
+        uint64 policyId = _getPolicyId(token);
+        vm.prank(policyAdmin);
+        try registry.modifyPolicyBlacklist(policyId, actor, blacklist) {
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /// @dev Ensures a token is unpaused, returns false if unpause fails
+    /// @param token Token to unpause
+    /// @return success True if token is now unpaused
+    function _ensureUnpaused(TIP20 token) internal returns (bool) {
+        if (!token.paused()) return true;
+        vm.prank(admin);
+        try token.unpause() {
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /// @dev Ensures an actor is authorized for a token, returns false if authorization fails
+    /// @param token Token to check
+    /// @param actor Actor to authorize
+    /// @return success True if actor is now authorized
+    function _ensureAuthorized(address token, address actor) internal returns (bool) {
+        if (_isAuthorized(token, actor)) return true;
+        return _setBlacklist(token, actor, false);
     }
 
     /*//////////////////////////////////////////////////////////////

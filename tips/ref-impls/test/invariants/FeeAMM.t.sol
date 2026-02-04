@@ -126,11 +126,12 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param poolId The pool ID to check liquidity for
     /// @return actor The selected actor with liquidity > 0
     /// @return liquidity The actor's liquidity balance
-    function _selectLiquidityHolder(uint256 seed, bytes32 poolId)
-        internal
-        view
-        returns (address actor, uint256 liquidity)
-    {
+    function _selectLiquidityHolder(
+        uint256 seed,
+        bytes32 poolId,
+        address userToken,
+        address validatorToken
+    ) internal returns (address actor, uint256 liquidity) {
         address[] memory holders = new address[](_actors.length);
         uint256[] memory balances = new uint256[](_actors.length);
         uint256 count = 0;
@@ -144,7 +145,20 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             }
         }
 
-        vm.assume(count > 0);
+        // Prerequisite: mint liquidity if no holders exist
+        if (count == 0) {
+            actor = _selectAuthorizedActor(seed, validatorToken);
+            uint256 mintAmount = MIN_LIQUIDITY * 10;
+            _ensureFunds(actor, TIP20(validatorToken), mintAmount);
+            vm.startPrank(actor);
+            try amm.mint(userToken, validatorToken, mintAmount, actor) returns (uint256 liq) {
+                vm.stopPrank();
+                return (actor, liq);
+            } catch {
+                vm.stopPrank();
+                return (address(0), 0);
+            }
+        }
         uint256 idx = bound(seed, 0, count - 1);
         return (holders[idx], balances[idx]);
     }
@@ -155,7 +169,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @return validatorToken Second token of the initialized pool
     function _selectInitializedPoolPair(uint256 seed)
         internal
-        view
         returns (address userToken, address validatorToken)
     {
         uint256 totalTokens = _tokens.length + 1;
@@ -181,7 +194,21 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             }
         }
 
-        vm.assume(count > 0);
+        // Prerequisite: initialize a pool if none exist
+        if (count == 0) {
+            (userToken, validatorToken) = _selectTokenPair(seed);
+            address actor = _selectAuthorizedActor(seed, validatorToken);
+            uint256 mintAmount = MIN_LIQUIDITY * 10;
+            _ensureFunds(actor, TIP20(validatorToken), mintAmount);
+            vm.startPrank(actor);
+            try amm.mint(userToken, validatorToken, mintAmount, actor) {
+                vm.stopPrank();
+                return (userToken, validatorToken);
+            } catch {
+                vm.stopPrank();
+                return (address(0), address(0));
+            }
+        }
         uint256 idx = bound(seed, 0, count - 1);
         userToken = validUserTokens[idx];
         validatorToken = validValidatorTokens[idx];
@@ -190,11 +217,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @dev Selects a blacklisted actor for the given token's policy
     /// @param seed Random seed for selection
     /// @param token Token to check blacklist status for
-    /// @return actor The selected blacklisted actor, or address(0) if none
+    /// @return actor The selected blacklisted actor
     /// @return balance The actor's balance of the token
     function _selectBlacklistedActor(uint256 seed, address token)
         internal
-        view
         returns (address actor, uint256 balance)
     {
         uint64 policyId = token == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[token];
@@ -215,7 +241,13 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             }
         }
 
-        vm.assume(count > 0);
+        // Prerequisite: blacklist an actor and fund them if none exist
+        if (count == 0) {
+            actor = _actors[seed % BLACKLISTABLE_ACTOR_COUNT];
+            _setBlacklist(token, actor, true);
+            _ensureFunds(actor, TIP20(token), MIN_LIQUIDITY * 2);
+            return (actor, TIP20(token).balanceOf(actor));
+        }
         uint256 idx = bound(seed, 0, count - 1);
         return (blacklisted[idx], balances[idx]);
     }
@@ -378,7 +410,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         (ctx.userToken, ctx.validatorToken) = _selectTokenPair(pairSeed);
         ctx.poolId = amm.getPoolId(ctx.userToken, ctx.validatorToken);
 
-        (ctx.actor, ctx.actorLiquidity) = _selectLiquidityHolder(actorSeed, ctx.poolId);
+        (ctx.actor, ctx.actorLiquidity) =
+            _selectLiquidityHolder(actorSeed, ctx.poolId, ctx.userToken, ctx.validatorToken);
+        if (ctx.actor == address(0) || ctx.actorLiquidity == 0) return;
 
         // Calculate amount to burn
         liquidityPct = bound(liquidityPct, 1, 100);
@@ -486,9 +520,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     function rebalanceSwap(uint256 actorSeed, uint256 pairSeed, uint256 amountOutRaw) external {
         RebalanceContext memory ctx;
         (ctx.userToken, ctx.validatorToken) = _selectInitializedPoolPair(pairSeed);
+        if (ctx.userToken == address(0)) return; // No initialized pools, skip
         ctx.actor = _selectAuthorizedActor(actorSeed, ctx.validatorToken);
 
         IFeeAMM.Pool memory poolBefore = amm.getPool(ctx.userToken, ctx.validatorToken);
+        if (poolBefore.reserveUserToken == 0) return;
 
         // Bound amountOut to available reserves
         ctx.amountOut = bound(amountOutRaw, 1, poolBefore.reserveUserToken);
@@ -577,7 +613,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param tokenSeed Seed for selecting token
     function setValidatorToken(uint256 actorSeed, uint256 tokenSeed) external {
         // Only set tokens for actors who have participated in fee activities
-        vm.assume(_activeActorList.length > 0);
+        if (_activeActorList.length == 0) return; // No active actors yet, skip
         address actor = _selectActiveActor(actorSeed);
         address token = _selectToken(tokenSeed);
 
@@ -614,7 +650,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param tokenSeed Seed for selecting token
     function setUserToken(uint256 actorSeed, uint256 tokenSeed) external {
         // Only set tokens for actors who have participated in fee activities
-        vm.assume(_activeActorList.length > 0);
+        if (_activeActorList.length == 0) return; // No active actors yet, skip
         address actor = _selectActiveActor(actorSeed);
         address token = _selectToken(tokenSeed);
 
@@ -681,12 +717,15 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param pairSeed Seed for selecting token pair
     function smallRebalanceSwap(uint256 actorSeed, uint256 pairSeed) external {
         (address userToken, address validatorToken) = _selectInitializedPoolPair(pairSeed);
+        if (userToken == address(0)) return; // No initialized pools, skip
         address actor = _selectAuthorizedActor(actorSeed, validatorToken);
 
         IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
+        if (pool.reserveUserToken == 0) return;
 
         // Use very small amounts where rounding matters most
-        uint256 amountOut = bound(pool.reserveUserToken, 1, 100);
+        uint256 amountOut =
+            bound(pairSeed, 1, pool.reserveUserToken < 100 ? pool.reserveUserToken : 100);
 
         uint256 expectedIn = (amountOut * N) / SCALE + 1;
         _ensureFunds(actor, TIP20(validatorToken), expectedIn * 2);
@@ -723,7 +762,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 totalSupplyBefore = amm.totalSupply(poolId);
 
         // Only test on uninitialized pools
-        vm.assume(totalSupplyBefore == 0);
+        if (totalSupplyBefore != 0) return; // Pool already initialized, skip
 
         // Boundary amount: 2 * MIN_LIQUIDITY = 2000
         // half_amount = 1000 = MIN_LIQUIDITY, which should FAIL per Rust (half_amount <= MIN_LIQUIDITY)
@@ -797,6 +836,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @dev Converted to invariant handler since it requires initialized pools
     function handler_exactDivisionRebalance(uint256 actorSeed, uint256 pairSeed) external {
         (address userToken, address validatorToken) = _selectInitializedPoolPair(pairSeed);
+        if (userToken == address(0)) return; // No initialized pools, skip
         address actor = _selectAuthorizedActor(actorSeed, validatorToken);
 
         IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
@@ -805,10 +845,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         // N = 9985, SCALE = 10000, GCD(9985, 10000) = 5
         // So (amountOut * 9985) % 10000 == 0 when amountOut is a multiple of 2000
         uint256 amountOut = 2000;
-        vm.assume(amountOut <= pool.reserveUserToken);
+        if (amountOut > pool.reserveUserToken) return; // Not enough reserves, skip
 
         // Verify this is indeed exact division
-        vm.assume((amountOut * N) % SCALE == 0);
+        if ((amountOut * N) % SCALE != 0) return; // Not exact division, skip
 
         uint256 expectedIn = (amountOut * N) / SCALE + 1; // Should still be +1 even with exact division
         _ensureFunds(actor, TIP20(validatorToken), expectedIn * 2);
@@ -927,6 +967,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     function distributeFees(uint256 seed) external {
         // Select from tracked pending fees to avoid discarded runs
         (address validator, address token) = _selectPendingFee(seed);
+        if (validator == address(0)) return; // No pending fees, skip
 
         uint256 collectedBefore = amm.collectedFees(validator, token);
         uint256 validatorBalanceBefore = TIP20(token).balanceOf(validator);
@@ -1001,7 +1042,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         // Skip if user is blacklisted for userToken (can't mint funds to them or transfer from them)
         uint64 userTokenPolicyId =
             userToken == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[userToken];
-        vm.assume(registry.isAuthorized(userTokenPolicyId, user));
+        if (!registry.isAuthorized(userTokenPolicyId, user)) return; // User blacklisted, skip
 
         // Bias toward cross-token swaps: 90% chance to force different tokens
         // This exercises the actual swap logic more frequently
@@ -1028,11 +1069,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             uint256 expectedOut = (feeAmount * M) / SCALE;
 
             // Skip if insufficient liquidity
-            vm.assume(pool.reserveValidatorToken >= expectedOut);
-            vm.assume(expectedOut > 0);
+            if (pool.reserveValidatorToken < expectedOut) return;
+            if (expectedOut == 0) return;
 
             // Skip if adding feeAmount would overflow uint128
-            vm.assume(uint256(pool.reserveUserToken) + feeAmount <= type(uint128).max);
+            if (uint256(pool.reserveUserToken) + feeAmount > type(uint128).max) return;
 
             // Transfer userToken to AMM first
             _ensureFunds(user, TIP20(userToken), feeAmount);
@@ -2139,7 +2180,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         returns (address validator, address token)
     {
         uint256 count = _pendingFeesList.length;
-        vm.assume(count > 0);
+        // Return zero values if no pending fees - caller handles early return
+        if (count == 0) return (address(0), address(0));
         uint256 index = bound(seed, 0, count - 1);
         PendingFee memory entry = _pendingFeesList[index];
         return (entry.validator, entry.token);

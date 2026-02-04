@@ -246,7 +246,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         address token = _selectToken(tokenRnd);
 
         uint128 balance = exchange.balanceOf(actor, token);
-        vm.assume(balance > 0);
+        if (balance == 0) return;
 
         amount = uint128(bound(amount, 1, balance));
 
@@ -519,8 +519,13 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         address tokenIn = _selectToken(tokenInRnd);
         address tokenOut = _selectToken(tokenOutRnd);
 
-        // Skip if same token (can't swap token for itself)
-        vm.assume(tokenIn != tokenOut);
+        // Prerequisite: ensure different tokens
+        if (tokenIn == tokenOut) {
+            unchecked {
+                tokenOut = _selectToken(tokenOutRnd + 1);
+            }
+            if (tokenIn == tokenOut) return; // Truly only one token available
+        }
 
         // Ensure swapper has enough of tokenIn
         _ensureFunds(swapper, TIP20(tokenIn), amount);
@@ -565,8 +570,32 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         address blacklistedActor = _selectActor(blacklistActorRnd);
         address canceller = _selectActorExcluding(cancellerActorRnd, blacklistedActor);
 
-        // Skip if the actor has no orders
-        vm.assume(_placedOrders[blacklistedActor].length > 0);
+        if (_placedOrders[blacklistedActor].length == 0) {
+            int16 tick = _ticks[blacklistActorRnd % _ticks.length];
+            address token = address(_tokens[blacklistActorRnd % _tokens.length]);
+            uint128 amount = 100_000_000;
+
+            uint256 escrowAmount;
+            if (forBids) {
+                uint32 price = exchange.tickToPrice(tick);
+                escrowAmount = (uint256(amount) * uint256(price) + exchange.PRICE_SCALE() - 1)
+                    / exchange.PRICE_SCALE();
+                _ensureFunds(blacklistedActor, TIP20(address(pathUSD)), escrowAmount);
+            } else {
+                escrowAmount = amount;
+                _ensureFunds(blacklistedActor, TIP20(token), escrowAmount);
+            }
+
+            vm.startPrank(blacklistedActor);
+            try exchange.place(token, amount, forBids, tick) returns (uint128 orderId) {
+                _placedOrders[blacklistedActor].push(orderId);
+                _nextOrderId = exchange.nextOrderId();
+            } catch {
+                vm.stopPrank();
+                return;
+            }
+            vm.stopPrank();
+        }
 
         // Blacklist the actor in the appropriate token(s)
         if (forBids) {
