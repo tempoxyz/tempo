@@ -219,7 +219,7 @@ impl Parse for SolidityConfig {
 /// - `#[abi(fmt)]` - Allow rustfmt on generated code (omit `#[rustfmt::skip]`)
 /// - `#[abi(no_reexport)]` - Disable auto re-export behavior
 ///
-/// The `Dispatch` trait and `precompile_call` helper are always generated,
+/// The `Dispatch` trait and `precompile_call` helper are automatically generated,
 /// gated by `#[cfg(feature = "precompile")]`.
 ///
 /// # Auto Re-exports

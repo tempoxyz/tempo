@@ -51,6 +51,8 @@ unreachable-pub = "warn"
 unused-must-use = "warn"
 redundant-lifetimes = "warn"
 unnameable-types = "warn"
+# Generated macro code references features that only exist in consuming crates
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("precompile"))'] }
 
 [workspace.lints.rustdoc]
 all = "warn"

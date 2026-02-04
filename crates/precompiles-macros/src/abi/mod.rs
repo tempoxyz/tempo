@@ -306,7 +306,7 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
 
     // Generate the Dispatch trait for routing calls to methods
     // This requires revm types and dispatch helpers from tempo_precompiles
-    // Always generated but gated by #[cfg(feature = "precompile")] inside generate_dispatch_trait
+    // Gated by #[cfg(all(feature = "precompile", feature = "dispatch"))] in the generated code
     let dispatch_trait =
         dispatch::generate_dispatch_trait(mod_name, &module.interfaces, &module.constants);
 
