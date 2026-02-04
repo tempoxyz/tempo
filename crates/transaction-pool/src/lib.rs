@@ -16,11 +16,13 @@ pub use tempo_pool::TempoTransactionPool;
 
 pub mod amm;
 pub mod best;
+pub mod expiry;
 pub mod maintain;
 pub mod metrics;
 pub mod paused;
 pub mod tt_2d_pool;
 
+pub use expiry::{ExpiredTransactions, ExpiryInfo, ExpiryTracker};
 pub use maintain::TempoPoolUpdates;
 
 pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};

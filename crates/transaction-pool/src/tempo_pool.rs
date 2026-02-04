@@ -3,8 +3,9 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache, best::MergeBestTransactions, expiry::ExpiryTracker,
+    transaction::TempoPooledTransaction, tt_2d_pool::AA2dPool,
+    validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
@@ -81,6 +82,13 @@ where
     /// Returns the configured client
     pub fn client(&self) -> &Client {
         self.protocol_pool.validator().validator().client()
+    }
+
+    /// Returns the shared expiry tracker.
+    ///
+    /// The maintain task uses this to find expired transactions.
+    pub fn expiry_tracker(&self) -> Arc<ExpiryTracker> {
+        Arc::clone(self.aa_2d_pool.read().expiry_tracker())
     }
 
     /// Updates the 2d nonce pool with the given state changes.
