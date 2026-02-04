@@ -81,7 +81,10 @@ pub(super) fn generate_dispatch_trait(
             where
                 Self: Sized,
             {
-                use crate::dispatch::{metadata, mutate, mutate_void, view};
+                use crate::dispatch::{
+                    metadata, metadata_with_sender, mutate, mutate_no_sender, mutate_void,
+                    mutate_void_no_sender, view, view_with_sender,
+                };
                 #match_body
             }
         }
@@ -238,38 +241,50 @@ fn generate_inner_dispatch(method: &MethodDef) -> TokenStream {
     let call_name = format_ident!("{}Call", method.sol_name);
 
     let is_void = method.return_type.is_none();
+    let needs_sender = method.needs_sender;
 
     if method.is_mutable {
-        // Mutable method: use mutate or mutate_void
-        let method_call = if param_names.is_empty() {
-            quote! { self.#rust_name(s) }
-        } else {
-            quote! { self.#rust_name(s, #(c.#param_names),*) }
-        };
+        // Mutable method: use mutate/mutate_void (with or without sender)
+        if needs_sender {
+            let method_call = if param_names.is_empty() {
+                quote! { self.#rust_name(s) }
+            } else {
+                quote! { self.#rust_name(s, #(c.#param_names),*) }
+            };
 
-        if is_void {
-            quote! {
-                mutate_void(call, msg_sender, |s, c| #method_call)
+            if is_void {
+                quote! { mutate_void(call, msg_sender, |s, c| #method_call) }
+            } else {
+                quote! { mutate(call, msg_sender, |s, c| #method_call) }
             }
         } else {
-            quote! {
-                mutate(call, msg_sender, |s, c| #method_call)
+            let method_call = if param_names.is_empty() {
+                quote! { self.#rust_name() }
+            } else {
+                quote! { self.#rust_name(#(c.#param_names),*) }
+            };
+
+            if is_void {
+                quote! { mutate_void_no_sender(call, |c| #method_call) }
+            } else {
+                quote! { mutate_no_sender(call, |c| #method_call) }
             }
         }
-    } else {
-        // View method: use view or metadata
-        // Methods with no parameters use metadata, others use view
+    } else if needs_sender {
+        // View method with sender
         if param_names.is_empty() {
-            // No parameters - use metadata helper
-            quote! {
-                metadata::<#call_name>(|| self.#rust_name())
-            }
+            quote! { metadata_with_sender::<#call_name>(msg_sender, |s| self.#rust_name(s)) }
         } else {
-            // Has parameters - use view helper
+            let method_call = quote! { self.#rust_name(s, #(c.#param_names),*) };
+            quote! { view_with_sender(call, msg_sender, |s, c| #method_call) }
+        }
+    } else {
+        // View method without sender
+        if param_names.is_empty() {
+            quote! { metadata::<#call_name>(|| self.#rust_name()) }
+        } else {
             let method_call = quote! { self.#rust_name(#(c.#param_names),*) };
-            quote! {
-                view(call, |c| #method_call)
-            }
+            quote! { view(call, |c| #method_call) }
         }
     }
 }
