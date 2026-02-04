@@ -341,7 +341,9 @@ where
             use revm::context::journaled_state::account::JournaledAccountTr;
             use tempo_precompiles::SIGNATURE_VERIFICATION_ADDRESS;
 
-            // Set bytecode for SignatureVerification precompile if not already set
+            // Set bytecode for SignatureVerification precompile unconditionally.
+            // We don't check is_empty() because an attacker could send funds to this
+            // address before T2 activation to prevent the precompile from being enabled.
             let mut account = self
                 .inner
                 .evm
@@ -349,11 +351,9 @@ where
                 .journaled_state
                 .load_account_with_code_mut(SIGNATURE_VERIFICATION_ADDRESS)
                 .map_err(BlockExecutionError::msg)?;
-            if account.data.account().info.is_empty() {
-                account.data.set_code_and_hash_slow(Bytecode::new_legacy(
-                    alloy_primitives::Bytes::from_static(&[0xef]),
-                ));
-            }
+            account.data.set_code_and_hash_slow(Bytecode::new_legacy(
+                alloy_primitives::Bytes::from_static(&[0xef]),
+            ));
         }
 
         Ok(())
