@@ -304,13 +304,11 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
     // Generate unified Calls enum that composes all interface Calls and constants
     let unified_calls = interface::generate_unified_calls(&module.interfaces, has_constants);
 
-    // Generate the Dispatch trait for routing calls to methods (only when dispatch flag is set)
+    // Generate the Dispatch trait for routing calls to methods
     // This requires revm types and dispatch helpers from tempo_precompiles
-    let dispatch_trait = if config.dispatch {
-        dispatch::generate_dispatch_trait(mod_name, &module.interfaces, &module.constants)
-    } else {
-        quote! {}
-    };
+    // Always generated but gated by #[cfg(feature = "precompile")] inside generate_dispatch_trait
+    let dispatch_trait =
+        dispatch::generate_dispatch_trait(mod_name, &module.interfaces, &module.constants);
 
     // Generate instance impl aggregating ALL interface traits
     // Wrapped in cfg(feature = "rpc") as it depends on alloy_contract
@@ -380,7 +378,14 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
         }
     };
 
+    let rustfmt_skip = if config.fmt {
+        quote! {}
+    } else {
+        quote! { #[rustfmt::skip] }
+    };
+
     Ok(quote! {
+        #rustfmt_skip
         #[allow(non_camel_case_types, non_snake_case, clippy::pub_underscore_fields, clippy::style, clippy::empty_structs_with_brackets, clippy::too_many_arguments)]
         #vis mod #mod_name {
             #(#imports)*

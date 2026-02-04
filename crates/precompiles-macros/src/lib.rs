@@ -172,8 +172,8 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 pub(crate) struct SolidityConfig {
     /// Disable auto re-export of module contents.
     pub no_reexport: bool,
-    /// Generate Dispatch trait and precompile_call helper (requires revm).
-    pub dispatch: bool,
+    /// Allow rustfmt on generated code (by default, `#[rustfmt::skip]` is added).
+    pub fmt: bool,
 }
 
 impl Parse for SolidityConfig {
@@ -186,15 +186,13 @@ impl Parse for SolidityConfig {
                 "no_reexport" => {
                     config.no_reexport = true;
                 }
-                "dispatch" => {
-                    config.dispatch = true;
+                "fmt" => {
+                    config.fmt = true;
                 }
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
-                        format!(
-                            "unknown attribute `{other}`, expected `no_reexport` or `dispatch`"
-                        ),
+                        format!("unknown attribute `{other}`, expected `no_reexport` or `fmt`"),
                     ));
                 }
             }
@@ -217,9 +215,12 @@ impl Parse for SolidityConfig {
 ///
 /// # Attributes
 ///
-/// - `#[abi]` - Default behavior with auto re-exports
-/// - `#[abi(dispatch)]` - Generate `Dispatch` trait and `precompile_call` helper (requires `revm`)
+/// - `#[abi]` - Default behavior with auto re-exports and `#[rustfmt::skip]`
+/// - `#[abi(fmt)]` - Allow rustfmt on generated code (omit `#[rustfmt::skip]`)
 /// - `#[abi(no_reexport)]` - Disable auto re-export behavior
+///
+/// The `Dispatch` trait and `precompile_call` helper are always generated,
+/// gated by `#[cfg(feature = "precompile")]`.
 ///
 /// # Auto Re-exports
 ///
