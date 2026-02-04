@@ -690,8 +690,8 @@ The test suite must cover:
 
 28. **migrateValidator imports validator**: Calling `migrateValidator(i)`
     correctly imports validator at index i from V1
-29. **migrateValidator is idempotent**: Calling `migrateValidator(i)` multiple times
-    for the same index reverts or is a no-op
+29. **migrateValidator reverts on duplicate**: Calling `migrateValidator(i)` reverts
+    if `i != validatorsArray.length`
 30. **migrateValidator owner only**: Non-owner cannot call `migrateValidator`
 31. **All validators imported on migration**: Both V1 active and inactive validators
     are imported; inactive ones have `addedAtHeight == deletedAtHeight == block.timestamp`,
