@@ -12157,10 +12157,12 @@ name = "tempo-precompiles"
 version = "1.1.0"
 dependencies = [
  "alloy",
+ "alloy-contract",
  "alloy-evm",
  "alloy-primitives 1.5.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "alloy-signer",
  "alloy-signer-local",
+ "alloy-sol-types",
  "criterion",
  "derive_more",
  "eyre",
