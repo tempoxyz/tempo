@@ -2,8 +2,7 @@
 pub mod abi;
 mod dispatch;
 
-use ITIP20Factory::traits::*;
-pub use abi::ITIP20Factory;
+pub use abi::{ITIP20Factory, ITIP20Factory::Interface};
 
 use tempo_precompiles_macros::contract;
 

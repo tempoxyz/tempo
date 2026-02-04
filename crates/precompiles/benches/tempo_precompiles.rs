@@ -5,7 +5,11 @@ use tempo_precompiles::{
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
     test_util::TIP20Setup,
     tip20::{ISSUER_ROLE, ITIP20, PAUSE_ROLE, UNPAUSE_ROLE},
-    tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
+    tip403_registry::{
+        AuthRole,
+        ITIP403Registry::{self, traits::*},
+        TIP403Registry,
+    },
 };
 
 fn tip20_metadata(c: &mut Criterion) {
@@ -507,21 +511,13 @@ fn tip403_registry_view(c: &mut Criterion) {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             let policy_id = registry
-                .create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    },
-                )
+                .create_policy(admin, admin, ITIP403Registry::PolicyType::WHITELIST)
                 .unwrap();
 
             b.iter(|| {
                 let registry = black_box(&mut registry);
-                let call = black_box(ITIP403Registry::policyDataCall {
-                    policyId: policy_id,
-                });
-                let result = registry.policy_data(call).unwrap();
+                let policy_id = black_box(policy_id);
+                let result = registry.policy_data(policy_id).unwrap();
                 black_box(result);
             });
         });
@@ -534,13 +530,7 @@ fn tip403_registry_view(c: &mut Criterion) {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             let policy_id = registry
-                .create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    },
-                )
+                .create_policy(admin, admin, ITIP403Registry::PolicyType::WHITELIST)
                 .unwrap();
 
             b.iter(|| {
@@ -566,11 +556,9 @@ fn tip403_registry_mutate(c: &mut Criterion) {
             b.iter(|| {
                 let registry = black_box(&mut registry);
                 let admin = black_box(admin);
-                let call = black_box(ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                });
-                let result = registry.create_policy(admin, call).unwrap();
+                let result = registry
+                    .create_policy(admin, admin, ITIP403Registry::PolicyType::WHITELIST)
+                    .unwrap();
                 black_box(result);
             });
         });
@@ -588,12 +576,14 @@ fn tip403_registry_mutate(c: &mut Criterion) {
             b.iter(|| {
                 let registry = black_box(&mut registry);
                 let admin = black_box(admin);
-                let call = black_box(ITIP403Registry::createPolicyWithAccountsCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    accounts: accounts.clone(),
-                });
-                let result = registry.create_policy_with_accounts(admin, call).unwrap();
+                let result = registry
+                    .create_policy_with_accounts(
+                        admin,
+                        admin,
+                        ITIP403Registry::PolicyType::WHITELIST,
+                        accounts.clone(),
+                    )
+                    .unwrap();
                 black_box(result);
             });
         });
@@ -605,23 +595,13 @@ fn tip403_registry_mutate(c: &mut Criterion) {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             let policy_id = registry
-                .create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    },
-                )
+                .create_policy(admin, admin, ITIP403Registry::PolicyType::WHITELIST)
                 .unwrap();
 
             b.iter(|| {
                 let registry = black_box(&mut registry);
                 let admin = black_box(admin);
-                let call = black_box(ITIP403Registry::setPolicyAdminCall {
-                    policyId: policy_id,
-                    admin,
-                });
-                registry.set_policy_admin(admin, call).unwrap();
+                registry.set_policy_admin(admin, policy_id, admin).unwrap();
             });
         });
     });
@@ -633,24 +613,15 @@ fn tip403_registry_mutate(c: &mut Criterion) {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             let policy_id = registry
-                .create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    },
-                )
+                .create_policy(admin, admin, ITIP403Registry::PolicyType::WHITELIST)
                 .unwrap();
 
             b.iter(|| {
                 let registry = black_box(&mut registry);
                 let admin = black_box(admin);
-                let call = black_box(ITIP403Registry::modifyPolicyWhitelistCall {
-                    policyId: policy_id,
-                    account: user,
-                    allowed: true,
-                });
-                registry.modify_policy_whitelist(admin, call).unwrap();
+                registry
+                    .modify_policy_whitelist(admin, policy_id, user, true)
+                    .unwrap();
             });
         });
     });
@@ -662,24 +633,15 @@ fn tip403_registry_mutate(c: &mut Criterion) {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             let policy_id = registry
-                .create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                    },
-                )
+                .create_policy(admin, admin, ITIP403Registry::PolicyType::BLACKLIST)
                 .unwrap();
 
             b.iter(|| {
                 let registry = black_box(&mut registry);
                 let admin = black_box(admin);
-                let call = black_box(ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: user,
-                    restricted: true,
-                });
-                registry.modify_policy_blacklist(admin, call).unwrap();
+                registry
+                    .modify_policy_blacklist(admin, policy_id, user, true)
+                    .unwrap();
             });
         });
     });

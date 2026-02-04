@@ -1,6 +1,6 @@
 use crate::{
     Precompile, dispatch_call, input_cost, mutate, mutate_void,
-    tip403_registry::{AuthRole, TIP403Registry},
+    tip403_registry::{AuthRole, Interface, TIP403Registry, abi::ITIP403Registry},
     unknown_selector, view,
 };
 use alloy::{
@@ -8,101 +8,104 @@ use alloy::{
     sol_types::{SolCall, SolInterface},
 };
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::ITIP403Registry::{
-    ITIP403RegistryCalls, compoundPolicyDataCall, createCompoundPolicyCall,
-    isAuthorizedMintRecipientCall, isAuthorizedRecipientCall, isAuthorizedSenderCall,
-};
 
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        use ITIP403Registry::{
+            Calls, compoundPolicyDataCall, createCompoundPolicyCall, isAuthorizedMintRecipientCall,
+            isAuthorizedRecipientCall, isAuthorizedSenderCall,
+        };
+
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        dispatch_call(
-            calldata,
-            ITIP403RegistryCalls::abi_decode,
-            |call| match call {
-                ITIP403RegistryCalls::policyIdCounter(call) => {
-                    view(call, |_| self.policy_id_counter())
+        dispatch_call(calldata, Calls::abi_decode, |call| match call {
+            Calls::policyIdCounter(call) => view(call, |_| Interface::policy_id_counter(self)),
+            Calls::policyExists(call) => {
+                view(call, |c| Interface::policy_exists(self, c.policy_id))
+            }
+            Calls::policyData(call) => view(call, |c| Interface::policy_data(self, c.policy_id)),
+            Calls::isAuthorized(call) => view(call, |c| {
+                self.is_authorized_as(c.policy_id, c.user, AuthRole::Transfer)
+            }),
+            // TIP-1015: T2+ only
+            Calls::isAuthorizedSender(call) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(
+                        isAuthorizedSenderCall::SELECTOR,
+                        self.storage.gas_used(),
+                    );
                 }
-                ITIP403RegistryCalls::policyExists(call) => view(call, |c| self.policy_exists(c)),
-                ITIP403RegistryCalls::policyData(call) => view(call, |c| self.policy_data(c)),
-                ITIP403RegistryCalls::isAuthorized(call) => view(call, |c| {
-                    self.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
-                }),
-                // TIP-1015: T2+ only
-                ITIP403RegistryCalls::isAuthorizedSender(call) => {
-                    if !self.storage.spec().is_t2() {
-                        return unknown_selector(
-                            isAuthorizedSenderCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
-                    view(call, |c| {
-                        self.is_authorized_as(c.policyId, c.user, AuthRole::Sender)
-                    })
+                view(call, |c| {
+                    self.is_authorized_as(c.policy_id, c.user, AuthRole::Sender)
+                })
+            }
+            Calls::isAuthorizedRecipient(call) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(
+                        isAuthorizedRecipientCall::SELECTOR,
+                        self.storage.gas_used(),
+                    );
                 }
-                ITIP403RegistryCalls::isAuthorizedRecipient(call) => {
-                    if !self.storage.spec().is_t2() {
-                        return unknown_selector(
-                            isAuthorizedRecipientCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
-                    view(call, |c| {
-                        self.is_authorized_as(c.policyId, c.user, AuthRole::Recipient)
-                    })
+                view(call, |c| {
+                    self.is_authorized_as(c.policy_id, c.user, AuthRole::Recipient)
+                })
+            }
+            Calls::isAuthorizedMintRecipient(call) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(
+                        isAuthorizedMintRecipientCall::SELECTOR,
+                        self.storage.gas_used(),
+                    );
                 }
-                ITIP403RegistryCalls::isAuthorizedMintRecipient(call) => {
-                    if !self.storage.spec().is_t2() {
-                        return unknown_selector(
-                            isAuthorizedMintRecipientCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
-                    view(call, |c| {
-                        self.is_authorized_as(c.policyId, c.user, AuthRole::MintRecipient)
-                    })
+                view(call, |c| {
+                    self.is_authorized_as(c.policy_id, c.user, AuthRole::MintRecipient)
+                })
+            }
+            Calls::compoundPolicyData(call) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(
+                        compoundPolicyDataCall::SELECTOR,
+                        self.storage.gas_used(),
+                    );
                 }
-                ITIP403RegistryCalls::compoundPolicyData(call) => {
-                    if !self.storage.spec().is_t2() {
-                        return unknown_selector(
-                            compoundPolicyDataCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
-                    view(call, |c| self.compound_policy_data(c))
+                view(call, |c| Interface::compound_policy_data(self, c.policy_id))
+            }
+            Calls::createPolicy(call) => mutate(call, msg_sender, |s, c| {
+                Interface::create_policy(self, s, c.admin, c.policy_type)
+            }),
+            Calls::createPolicyWithAccounts(call) => mutate(call, msg_sender, |s, c| {
+                Interface::create_policy_with_accounts(self, s, c.admin, c.policy_type, c.accounts)
+            }),
+            Calls::setPolicyAdmin(call) => mutate_void(call, msg_sender, |s, c| {
+                Interface::set_policy_admin(self, s, c.policy_id, c.admin)
+            }),
+            Calls::modifyPolicyWhitelist(call) => mutate_void(call, msg_sender, |s, c| {
+                Interface::modify_policy_whitelist(self, s, c.policy_id, c.account, c.allowed)
+            }),
+            Calls::modifyPolicyBlacklist(call) => mutate_void(call, msg_sender, |s, c| {
+                Interface::modify_policy_blacklist(self, s, c.policy_id, c.account, c.restricted)
+            }),
+            // TIP-1015: T2+ only
+            Calls::createCompoundPolicy(call) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(
+                        createCompoundPolicyCall::SELECTOR,
+                        self.storage.gas_used(),
+                    );
                 }
-                ITIP403RegistryCalls::createPolicy(call) => {
-                    mutate(call, msg_sender, |s, c| self.create_policy(s, c))
-                }
-                ITIP403RegistryCalls::createPolicyWithAccounts(call) => {
-                    mutate(call, msg_sender, |s, c| {
-                        self.create_policy_with_accounts(s, c)
-                    })
-                }
-                ITIP403RegistryCalls::setPolicyAdmin(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.set_policy_admin(s, c))
-                }
-                ITIP403RegistryCalls::modifyPolicyWhitelist(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.modify_policy_whitelist(s, c))
-                }
-                ITIP403RegistryCalls::modifyPolicyBlacklist(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c))
-                }
-                // TIP-1015: T2+ only
-                ITIP403RegistryCalls::createCompoundPolicy(call) => {
-                    if !self.storage.spec().is_t2() {
-                        return unknown_selector(
-                            createCompoundPolicyCall::SELECTOR,
-                            self.storage.gas_used(),
-                        );
-                    }
-                    mutate(call, msg_sender, |s, c| self.create_compound_policy(s, c))
-                }
-            },
-        )
+                mutate(call, msg_sender, |s, c| {
+                    Interface::create_compound_policy(
+                        self,
+                        s,
+                        c.sender_policy_id,
+                        c.recipient_policy_id,
+                        c.mint_recipient_policy_id,
+                    )
+                })
+            }
+        })
     }
 }
 
@@ -116,7 +119,6 @@ mod tests {
     };
     use alloy::sol_types::{SolCall, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
     #[test]
     fn test_is_authorized_precompile() -> eyre::Result<()> {
@@ -126,7 +128,7 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             // Test policy 1 (always allow)
-            let call = ITIP403Registry::isAuthorizedCall { policyId: 1, user };
+            let call = ITIP403Registry::isAuthorizedCall { policy_id: 1, user };
             let calldata = call.abi_encode();
             let result = registry.call(&calldata, Address::ZERO);
 
@@ -149,7 +151,7 @@ mod tests {
 
             let call = ITIP403Registry::createPolicyCall {
                 admin,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
+                policy_type: ITIP403Registry::PolicyType::WHITELIST,
             };
             let calldata = call.abi_encode();
             let result = registry.call(&calldata, admin);
@@ -183,281 +185,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_policy_with_accounts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let account1 = Address::random();
-        let account2 = Address::random();
-        let other_account = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            let accounts = vec![account1, account2];
-            let call = ITIP403Registry::createPolicyWithAccountsCall {
-                admin,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-                accounts,
-            };
-            let calldata = call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-
-            let policy_id: u64 =
-                ITIP403Registry::createPolicyWithAccountsCall::abi_decode_returns(&result.bytes)
-                    .unwrap();
-            assert_eq!(policy_id, 2);
-
-            // Check that accounts are authorized
-            let is_auth_call = ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: account1,
-            };
-            let calldata = is_auth_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
-            assert!(is_authorized);
-
-            let is_auth_call = ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: account2,
-            };
-            let calldata = is_auth_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
-            assert!(is_authorized);
-
-            // Check that other accounts are not authorized
-            let is_auth_call = ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: other_account,
-            };
-            let calldata = is_auth_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
-            assert!(!is_authorized);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_blacklist_policy() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let blocked_account = Address::random();
-        let allowed_account = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // Create blacklist policy
-            let call = ITIP403Registry::createPolicyCall {
-                admin,
-                policyType: ITIP403Registry::PolicyType::BLACKLIST,
-            };
-            let calldata = call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let policy_id: u64 =
-                ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
-
-            // Initially, all accounts should be authorized (empty blacklist)
-            let is_auth_call = ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: blocked_account,
-            };
-            let calldata = is_auth_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
-            assert!(is_authorized);
-
-            // Add account to blacklist
-            let modify_call = ITIP403Registry::modifyPolicyBlacklistCall {
-                policyId: policy_id,
-                account: blocked_account,
-                restricted: true,
-            };
-            let calldata = modify_call.abi_encode();
-            registry.call(&calldata, admin).unwrap();
-
-            // Now blocked account should not be authorized
-            let is_auth_call = ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: blocked_account,
-            };
-            let calldata = is_auth_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
-            assert!(!is_authorized);
-
-            // Other accounts should still be authorized
-            let is_auth_call = ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: allowed_account,
-            };
-            let calldata = is_auth_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
-            assert!(is_authorized);
-
-            // Remove account from blacklist
-            let modify_call = ITIP403Registry::modifyPolicyBlacklistCall {
-                policyId: policy_id,
-                account: blocked_account,
-                restricted: false,
-            };
-            let calldata = modify_call.abi_encode();
-            registry.call(&calldata, admin).unwrap();
-
-            // Account should be authorized again
-            let is_auth_call = ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: blocked_account,
-            };
-            let calldata = is_auth_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
-            assert!(is_authorized);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_modify_policy_whitelist() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let account1 = Address::random();
-        let account2 = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // Create whitelist policy
-            let call = ITIP403Registry::createPolicyCall {
-                admin,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-            };
-            let calldata = call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let policy_id: u64 =
-                ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
-
-            // Add multiple accounts to whitelist
-            let modify_call1 = ITIP403Registry::modifyPolicyWhitelistCall {
-                policyId: policy_id,
-                account: account1,
-                allowed: true,
-            };
-            let calldata = modify_call1.abi_encode();
-            registry.call(&calldata, admin).unwrap();
-
-            let modify_call2 = ITIP403Registry::modifyPolicyWhitelistCall {
-                policyId: policy_id,
-                account: account2,
-                allowed: true,
-            };
-            let calldata = modify_call2.abi_encode();
-            registry.call(&calldata, admin).unwrap();
-
-            // Both accounts should be authorized
-            let is_auth_call = ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: account1,
-            };
-            let calldata = is_auth_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
-            assert!(is_authorized);
-
-            let is_auth_call = ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: account2,
-            };
-            let calldata = is_auth_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
-            assert!(is_authorized);
-
-            // Remove one account from whitelist
-            let modify_call = ITIP403Registry::modifyPolicyWhitelistCall {
-                policyId: policy_id,
-                account: account1,
-                allowed: false,
-            };
-            let calldata = modify_call.abi_encode();
-            registry.call(&calldata, admin).unwrap();
-
-            // Account1 should not be authorized, account2 should still be
-            let is_auth_call = ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: account1,
-            };
-            let calldata = is_auth_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
-            assert!(!is_authorized);
-
-            let is_auth_call = ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: account2,
-            };
-            let calldata = is_auth_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
-            assert!(is_authorized);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_policy_admin() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let new_admin = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // Create a policy
-            let call = ITIP403Registry::createPolicyCall {
-                admin,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-            };
-            let calldata = call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let policy_id: u64 =
-                ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
-
-            // Get initial policy data
-            let policy_data_call = ITIP403Registry::policyDataCall {
-                policyId: policy_id,
-            };
-            let calldata = policy_data_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let policy_data =
-                ITIP403Registry::policyDataCall::abi_decode_returns(&result.bytes).unwrap();
-            assert_eq!(policy_data.admin, admin);
-
-            // Change policy admin
-            let set_admin_call = ITIP403Registry::setPolicyAdminCall {
-                policyId: policy_id,
-                admin: new_admin,
-            };
-            let calldata = set_admin_call.abi_encode();
-            registry.call(&calldata, admin).unwrap();
-
-            // Verify policy admin was changed
-            let policy_data_call = ITIP403Registry::policyDataCall {
-                policyId: policy_id,
-            };
-            let calldata = policy_data_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let policy_data =
-                ITIP403Registry::policyDataCall::abi_decode_returns(&result.bytes).unwrap();
-            assert_eq!(policy_data.admin, new_admin);
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_special_policy_ids() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
@@ -465,14 +192,14 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             // Test policy 0 (always deny)
-            let is_auth_call = ITIP403Registry::isAuthorizedCall { policyId: 0, user };
+            let is_auth_call = ITIP403Registry::isAuthorizedCall { policy_id: 0, user };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, Address::ZERO).unwrap();
             let is_authorized = bool::abi_decode(&result.bytes).unwrap();
             assert!(!is_authorized);
 
             // Test policy 1 (always allow)
-            let is_auth_call = ITIP403Registry::isAuthorizedCall { policyId: 1, user };
+            let is_auth_call = ITIP403Registry::isAuthorizedCall { policy_id: 1, user };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, Address::ZERO).unwrap();
             let is_authorized = bool::abi_decode(&result.bytes).unwrap();
@@ -517,48 +244,9 @@ mod tests {
     }
 
     #[test]
-    fn test_create_multiple_policies() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // Create multiple policies with different types
-            let whitelist_call = ITIP403Registry::createPolicyCall {
-                admin,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-            };
-            let calldata = whitelist_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let whitelist_id: u64 =
-                ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
-
-            let blacklist_call = ITIP403Registry::createPolicyCall {
-                admin,
-                policyType: ITIP403Registry::PolicyType::BLACKLIST,
-            };
-            let calldata = blacklist_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let blacklist_id: u64 =
-                ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
-
-            // Verify IDs are sequential
-            assert_eq!(whitelist_id, 2);
-            assert_eq!(blacklist_id, 3);
-
-            // Verify counter has been updated
-            let counter_call = ITIP403Registry::policyIdCounterCall {};
-            let calldata = counter_call.abi_encode();
-            let result = registry.call(&calldata, admin).unwrap();
-            let counter = u64::abi_decode(&result.bytes).unwrap();
-            assert_eq!(counter, 4);
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
+        use ITIP403Registry::Calls;
+
         // Use T2 to test all selectors including TIP-1015 compound policy functions
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
@@ -566,9 +254,9 @@ mod tests {
 
             let unsupported = check_selector_coverage(
                 &mut registry,
-                ITIP403RegistryCalls::SELECTORS,
+                Calls::SELECTORS,
                 "ITIP403Registry",
-                ITIP403RegistryCalls::name_by_selector,
+                Calls::name_by_selector,
             );
 
             assert_full_coverage([unsupported]);

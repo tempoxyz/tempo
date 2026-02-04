@@ -194,7 +194,9 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, setup_storage},
         tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{
+            ITIP403Registry::{traits::*, PolicyType}, TIP403Registry,
+        },
     };
     use alloy::{
         primitives::{Bytes, U256, address},
@@ -653,13 +655,7 @@ mod tests {
             registry.initialize()?;
 
             // Create a valid policy
-            let new_policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                },
-            )?;
+            let new_policy_id = registry.create_policy(admin, admin, PolicyType::WHITELIST)?;
 
             let change_policy_call = ITIP20::changeTransferPolicyIdCall {
                 newPolicyId: new_policy_id,
@@ -670,13 +666,7 @@ mod tests {
             assert_eq!(token.transfer_policy_id()?, new_policy_id);
 
             // Create another valid policy for the unauthorized test
-            let another_policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let another_policy_id = registry.create_policy(admin, admin, PolicyType::BLACKLIST)?;
 
             let change_policy_call = ITIP20::changeTransferPolicyIdCall {
                 newPolicyId: another_policy_id,
