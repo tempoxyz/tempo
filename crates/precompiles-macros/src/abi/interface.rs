@@ -274,6 +274,7 @@ fn generate_transformed_trait(def: &InterfaceDef) -> TokenStream {
         .iter()
         .map(|m| {
             let name = &m.name;
+            let attrs = &m.attrs;
             let params: Vec<TokenStream> =
                 m.params.iter().map(|(n, ty)| quote! { #n: #ty }).collect();
 
@@ -291,10 +292,12 @@ fn generate_transformed_trait(def: &InterfaceDef) -> TokenStream {
 
             if m.needs_sender {
                 quote! {
+                    #(#attrs)*
                     fn #name(#self_param, msg_sender: Address, #(#params),*) #return_type;
                 }
             } else {
                 quote! {
+                    #(#attrs)*
                     fn #name(#self_param, #(#params),*) #return_type;
                 }
             }

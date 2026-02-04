@@ -71,6 +71,7 @@ pub(super) fn make_method(name: &str, params: Vec<(Ident, Type)>) -> MethodDef {
         is_mutable: false,
         needs_sender: false,
         hardfork: None,
+        attrs: vec![],
     }
 }
 
