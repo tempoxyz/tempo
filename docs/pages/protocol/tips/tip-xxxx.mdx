@@ -589,6 +589,7 @@ interface IValidatorConfigV1 {
 - **CL reads V1 until flag flipped**: No read proxying in V2 precompile
 - **Per-validator migration**: Each validator is migrated with a separate tx
 - **Owner controlled**: Only admin can migrate and initialize
+- **Validator address provided**: The V2 validator address is provided as a parameter, not copied from V1
 - **No signatures required**: V1 validators are imported without Ed25519 signatures
   (they were already validated in V1)
 - **All validators imported**: Both active and inactive V1 validators are
@@ -692,23 +693,25 @@ The test suite must cover:
 
 28. **migrateValidator imports validator**: Calling `migrateValidator(i, addr)`
     correctly imports validator at index i from V1 with the provided address
-29. **migrateValidator reverts on duplicate**: Calling `migrateValidator(i, addr)` reverts
+29. **migrateValidator uses provided address**: The V2 validator uses `valAddress` parameter,
+    not the address from V1
+30. **migrateValidator reverts on duplicate**: Calling `migrateValidator(i, addr)` reverts
     if `i != validatorsArray.length`
-29a. **migrateValidator reverts if initialized**: Calling `migrateValidator` reverts
+31. **migrateValidator reverts if initialized**: Calling `migrateValidator` reverts
     if `isInitialized() == true`
-30. **migrateValidator owner only**: Non-owner cannot call `migrateValidator`
-31. **All validators imported on migration**: Both V1 active and inactive validators
+32. **migrateValidator owner only**: Non-owner cannot call `migrateValidator`
+33. **All validators imported on migration**: Both V1 active and inactive validators
     are imported; inactive ones have `addedAtHeight == deletedAtHeight == block.timestamp`,
     active ones have `addedAtHeight == 0`
-32. **addedAtHeight set correctly**: Active validators have `addedAtHeight == 0`,
+34. **addedAtHeight set correctly**: Active validators have `addedAtHeight == 0`,
     inactive validators have `addedAtHeight == block.timestamp` at migration time
-33. **initialize sets flag**: After `initialize()`, `isInitialized()` returns true
-34. **migrateValidator copies owner**: V2 `owner()` matches V1 after first `migrateValidator` call
-35. **initialize copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
+35. **initialize sets flag**: After `initialize()`, `isInitialized()` returns true
+36. **migrateValidator copies owner**: V2 `owner()` matches V1 after first `migrateValidator` call
+37. **initialize copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
     after `initialize()`
-36. **initialize owner only**: Non-owner cannot call `initialize`
-37. **isInitialized returns correct value**: Returns false before initialize, true after
-38. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`
+38. **initialize owner only**: Non-owner cannot call `initialize`
+39. **isInitialized returns correct value**: Returns false before initialize, true after
+40. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`
     revert if `isInitialized() == false` (only migration functions allowed)
 
 ---
