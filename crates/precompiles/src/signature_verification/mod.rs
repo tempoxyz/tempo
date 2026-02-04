@@ -13,54 +13,18 @@ use tempo_contracts::precompiles::{
     ISignatureVerification::verifyCall, SignatureVerificationError,
 };
 use tempo_precompiles_macros::contract;
-use tempo_primitives::transaction::tt_signature::{
-    KeychainSignature, PrimitiveSignature, TempoSignature,
+use tempo_primitives::transaction::{
+    precompile_signature_verification_gas,
+    tt_signature::{KeychainSignature, TempoSignature},
 };
 
 pub use tempo_contracts::precompiles::ISignatureVerification;
-
-/// Gas cost for ecrecover signature verification (baseline)
-const ECRECOVER_GAS: u64 = 3_000;
-
-/// Additional gas for P256 signature verification
-/// P256 precompile cost (6900 from EIP-7951) + 1100 for extra signature bytes
-const P256_VERIFY_GAS: u64 = 8_000;
-
-/// Additional gas for Keychain validation (cold SLOAD + processing)
-const KEYCHAIN_VALIDATION_GAS: u64 = 2_100 + 900;
-
-/// Gas per calldata token (16 gas per non-zero byte, 4 per zero byte, averaged to 16)
-const CALLDATA_TOKEN_GAS: u64 = 16;
 
 /// Signature Verification precompile
 #[contract(addr = SIGNATURE_VERIFICATION_ADDRESS)]
 pub struct SignatureVerification {}
 
 impl SignatureVerification {
-    /// Calculate gas cost for signature verification based on signature type.
-    ///
-    /// This mirrors the gas schedule from tempo_revm/handler.rs but includes
-    /// the ecrecover baseline since precompile calls don't have the 21k tx base.
-    pub fn calculate_verification_gas(signature: &TempoSignature) -> u64 {
-        match signature {
-            TempoSignature::Primitive(prim) => Self::primitive_signature_gas(prim),
-            TempoSignature::Keychain(keychain) => {
-                Self::primitive_signature_gas(&keychain.signature) + KEYCHAIN_VALIDATION_GAS
-            }
-        }
-    }
-
-    fn primitive_signature_gas(prim: &PrimitiveSignature) -> u64 {
-        match prim {
-            PrimitiveSignature::Secp256k1(_) => ECRECOVER_GAS,
-            PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
-            PrimitiveSignature::WebAuthn(webauthn) => {
-                let data_tokens = webauthn.webauthn_data.len() as u64;
-                P256_VERIFY_GAS + data_tokens * CALLDATA_TOKEN_GAS
-            }
-        }
-    }
-
     /// Verify a Tempo signature
     ///
     /// Returns true if the signature is valid and the recovered signer matches.
@@ -73,7 +37,7 @@ impl SignatureVerification {
         let signature = TempoSignature::from_bytes(&signature_bytes)
             .map_err(|_| SignatureVerificationError::invalid_signature())?;
 
-        let verification_gas = Self::calculate_verification_gas(&signature);
+        let verification_gas = precompile_signature_verification_gas(&signature);
         self.storage.deduct_gas(verification_gas)?;
 
         let recovered = signature
@@ -137,5 +101,408 @@ impl SignatureVerification {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        account_keychain::AuthorizedKey,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+    };
+    use alloy::primitives::{Address, Bytes, keccak256};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use tempo_primitives::transaction::PrimitiveSignature;
+
+    /// Helper to create a secp256k1 signature for a hash
+    fn sign_secp256k1(signer: &PrivateKeySigner, hash: &B256) -> TempoSignature {
+        let sig = signer.sign_hash_sync(hash).unwrap();
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(sig))
+    }
+
+    #[test]
+    fn test_verify_secp256k1_valid() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut precompile = SignatureVerification::new();
+
+            let signer = PrivateKeySigner::random();
+            let signer_addr = signer.address();
+            let message_hash = keccak256(b"test message");
+
+            let tempo_sig = sign_secp256k1(&signer, &message_hash);
+            let sig_bytes = Bytes::from(tempo_sig.to_bytes());
+
+            let call = verifyCall {
+                signer: signer_addr,
+                hash: message_hash,
+                signature: sig_bytes,
+            };
+
+            let result = precompile.verify(call)?;
+            assert!(result, "Valid secp256k1 signature should return true");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_secp256k1_wrong_signer() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut precompile = SignatureVerification::new();
+
+            let actual_signer = PrivateKeySigner::random();
+            let wrong_signer = Address::random();
+            let message_hash = keccak256(b"test message");
+
+            let tempo_sig = sign_secp256k1(&actual_signer, &message_hash);
+            let sig_bytes = Bytes::from(tempo_sig.to_bytes());
+
+            let call = verifyCall {
+                signer: wrong_signer,
+                hash: message_hash,
+                signature: sig_bytes,
+            };
+
+            let result = precompile.verify(call);
+            assert!(result.is_err(), "Wrong signer should fail");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_secp256k1_wrong_hash() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut precompile = SignatureVerification::new();
+
+            let signer = PrivateKeySigner::random();
+            let signer_addr = signer.address();
+            let signed_hash = keccak256(b"original message");
+            let wrong_hash = keccak256(b"different message");
+
+            let tempo_sig = sign_secp256k1(&signer, &signed_hash);
+            let sig_bytes = Bytes::from(tempo_sig.to_bytes());
+
+            let call = verifyCall {
+                signer: signer_addr,
+                hash: wrong_hash,
+                signature: sig_bytes,
+            };
+
+            let result = precompile.verify(call);
+            assert!(result.is_err(), "Wrong hash should fail (signer mismatch)");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_invalid_signature_bytes() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut precompile = SignatureVerification::new();
+
+            let signer_addr = Address::random();
+            let message_hash = keccak256(b"test message");
+
+            // Completely invalid signature bytes (wrong length)
+            let invalid_sig = Bytes::from(vec![0u8; 10]);
+
+            let call = verifyCall {
+                signer: signer_addr,
+                hash: message_hash,
+                signature: invalid_sig,
+            };
+
+            let result = precompile.verify(call);
+            assert!(result.is_err(), "Invalid signature bytes should fail");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_empty_signature() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut precompile = SignatureVerification::new();
+
+            let signer_addr = Address::random();
+            let message_hash = keccak256(b"test message");
+
+            let call = verifyCall {
+                signer: signer_addr,
+                hash: message_hash,
+                signature: Bytes::new(),
+            };
+
+            let result = precompile.verify(call);
+            assert!(result.is_err(), "Empty signature should fail");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_gas_calculation_secp256k1() {
+        let signer = PrivateKeySigner::random();
+        let hash = keccak256(b"test");
+        let sig = sign_secp256k1(&signer, &hash);
+
+        let gas = precompile_signature_verification_gas(&sig);
+        // ECRECOVER_GAS (3000) + tempo_signature_verification_gas for secp256k1 (0)
+        assert_eq!(gas, 3000, "secp256k1 should cost 3000 gas");
+    }
+
+    #[test]
+    fn test_keychain_unauthorized_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut precompile = SignatureVerification::new();
+
+            // Create a keychain signature with an access key that doesn't exist
+            let root_signer = PrivateKeySigner::random();
+            let root_addr = root_signer.address();
+            let access_key_signer = PrivateKeySigner::random();
+            let message_hash = keccak256(b"test keychain message");
+
+            // Sign with the access key
+            let access_sig = access_key_signer.sign_hash_sync(&message_hash)?;
+            let inner_sig = PrimitiveSignature::Secp256k1(access_sig);
+            let keychain_sig =
+                TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+                    root_addr,
+                    inner_sig,
+                ));
+            let sig_bytes = Bytes::from(keychain_sig.to_bytes());
+
+            let call = verifyCall {
+                signer: root_addr,
+                hash: message_hash,
+                signature: sig_bytes,
+            };
+
+            // Should fail because access key is not authorized (expiry=0)
+            let result = precompile.verify(call);
+            assert!(
+                result.is_err(),
+                "Keychain with unauthorized key should fail"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_keychain_revoked_key() -> eyre::Result<()> {
+        use crate::account_keychain::AccountKeychain;
+        use tempo_contracts::precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut precompile = SignatureVerification::new();
+
+            let root_signer = PrivateKeySigner::random();
+            let root_addr = root_signer.address();
+            let access_key_signer = PrivateKeySigner::random();
+            let access_key_addr = access_key_signer.address();
+            let message_hash = keccak256(b"test keychain message");
+
+            // Set up a revoked key in storage
+            let key_slot =
+                AccountKeychain::new().keys[root_addr][access_key_addr].base_slot();
+            let revoked_key = AuthorizedKey {
+                signature_type: 0, // secp256k1
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: true,
+            };
+            precompile
+                .storage
+                .sstore(ACCOUNT_KEYCHAIN_ADDRESS, key_slot, revoked_key.encode_to_slot())?;
+
+            // Create keychain signature
+            let access_sig = access_key_signer.sign_hash_sync(&message_hash)?;
+            let inner_sig = PrimitiveSignature::Secp256k1(access_sig);
+            let keychain_sig =
+                TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+                    root_addr,
+                    inner_sig,
+                ));
+            let sig_bytes = Bytes::from(keychain_sig.to_bytes());
+
+            let call = verifyCall {
+                signer: root_addr,
+                hash: message_hash,
+                signature: sig_bytes,
+            };
+
+            let result = precompile.verify(call);
+            assert!(result.is_err(), "Keychain with revoked key should fail");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_keychain_expired_key() -> eyre::Result<()> {
+        use crate::account_keychain::AccountKeychain;
+        use tempo_contracts::precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
+
+        // Create storage with a fixed timestamp
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut precompile = SignatureVerification::new();
+
+            let root_signer = PrivateKeySigner::random();
+            let root_addr = root_signer.address();
+            let access_key_signer = PrivateKeySigner::random();
+            let access_key_addr = access_key_signer.address();
+            let message_hash = keccak256(b"test keychain message");
+
+            // Set up an expired key (expiry in the past)
+            let key_slot =
+                AccountKeychain::new().keys[root_addr][access_key_addr].base_slot();
+            let expired_key = AuthorizedKey {
+                signature_type: 0, // secp256k1
+                expiry: 1,         // Very old timestamp
+                enforce_limits: false,
+                is_revoked: false,
+            };
+            precompile
+                .storage
+                .sstore(ACCOUNT_KEYCHAIN_ADDRESS, key_slot, expired_key.encode_to_slot())?;
+
+            // Create keychain signature
+            let access_sig = access_key_signer.sign_hash_sync(&message_hash)?;
+            let inner_sig = PrimitiveSignature::Secp256k1(access_sig);
+            let keychain_sig =
+                TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+                    root_addr,
+                    inner_sig,
+                ));
+            let sig_bytes = Bytes::from(keychain_sig.to_bytes());
+
+            let call = verifyCall {
+                signer: root_addr,
+                hash: message_hash,
+                signature: sig_bytes,
+            };
+
+            let result = precompile.verify(call);
+            assert!(result.is_err(), "Keychain with expired key should fail");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_keychain_valid() -> eyre::Result<()> {
+        use crate::account_keychain::AccountKeychain;
+        use tempo_contracts::precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut precompile = SignatureVerification::new();
+
+            let root_signer = PrivateKeySigner::random();
+            let root_addr = root_signer.address();
+            let access_key_signer = PrivateKeySigner::random();
+            let access_key_addr = access_key_signer.address();
+            let message_hash = keccak256(b"test keychain message");
+
+            // Set up a valid authorized key
+            let key_slot =
+                AccountKeychain::new().keys[root_addr][access_key_addr].base_slot();
+            let valid_key = AuthorizedKey {
+                signature_type: 0, // secp256k1
+                expiry: u64::MAX,  // Never expires
+                enforce_limits: false,
+                is_revoked: false,
+            };
+            precompile
+                .storage
+                .sstore(ACCOUNT_KEYCHAIN_ADDRESS, key_slot, valid_key.encode_to_slot())?;
+
+            // Create keychain signature
+            let access_sig = access_key_signer.sign_hash_sync(&message_hash)?;
+            let inner_sig = PrimitiveSignature::Secp256k1(access_sig);
+            let keychain_sig =
+                TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+                    root_addr,
+                    inner_sig,
+                ));
+            let sig_bytes = Bytes::from(keychain_sig.to_bytes());
+
+            let call = verifyCall {
+                signer: root_addr,
+                hash: message_hash,
+                signature: sig_bytes,
+            };
+
+            let result = precompile.verify(call)?;
+            assert!(result, "Valid keychain signature should return true");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_keychain_wrong_signature_type() -> eyre::Result<()> {
+        use crate::account_keychain::AccountKeychain;
+        use tempo_contracts::precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut precompile = SignatureVerification::new();
+
+            let root_signer = PrivateKeySigner::random();
+            let root_addr = root_signer.address();
+            let access_key_signer = PrivateKeySigner::random();
+            let access_key_addr = access_key_signer.address();
+            let message_hash = keccak256(b"test keychain message");
+
+            // Set up a key authorized for P256 (type 1)
+            let key_slot =
+                AccountKeychain::new().keys[root_addr][access_key_addr].base_slot();
+            let wrong_type_key = AuthorizedKey {
+                signature_type: 1, // P256, but we'll sign with secp256k1
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: false,
+            };
+            precompile
+                .storage
+                .sstore(ACCOUNT_KEYCHAIN_ADDRESS, key_slot, wrong_type_key.encode_to_slot())?;
+
+            // Create keychain signature with secp256k1 (type 0)
+            let access_sig = access_key_signer.sign_hash_sync(&message_hash)?;
+            let inner_sig = PrimitiveSignature::Secp256k1(access_sig);
+            let keychain_sig =
+                TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+                    root_addr,
+                    inner_sig,
+                ));
+            let sig_bytes = Bytes::from(keychain_sig.to_bytes());
+
+            let call = verifyCall {
+                signer: root_addr,
+                hash: message_hash,
+                signature: sig_bytes,
+            };
+
+            let result = precompile.verify(call);
+            assert!(
+                result.is_err(),
+                "Keychain with wrong signature type should fail"
+            );
+
+            Ok(())
+        })
     }
 }

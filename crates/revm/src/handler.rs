@@ -26,8 +26,7 @@ use revm::{
     interpreter::{
         Gas, InitialAndFloorGas,
         gas::{
-            COLD_SLOAD_COST, SSTORE_SET, STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
-            get_tokens_in_calldata_istanbul,
+            COLD_SLOAD_COST, SSTORE_SET, WARM_SSTORE_RESET, get_tokens_in_calldata_istanbul,
         },
         interpreter::EthInterpreter,
     },
@@ -56,15 +55,11 @@ use crate::{
     gas_params::TempoGasParams,
 };
 
-/// Additional gas for P256 signature verification
-/// P256 precompile cost (6900 from EIP-7951) + 1100 for 129 bytes extra signature size - ecrecover savings (3000)
-const P256_VERIFY_GAS: u64 = 5_000;
-
-/// Gas cost for ecrecover signature verification (used by KeyAuthorization)
-const ECRECOVER_GAS: u64 = 3_000;
-
-/// Additional gas for Keychain signatures (key validation overhead: COLD_SLOAD_COST + 900 processing)
-const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
+// Re-export gas constants and functions from tempo-primitives
+pub use tempo_primitives::transaction::{
+    ECRECOVER_GAS, KEYCHAIN_VALIDATION_GAS, P256_VERIFY_GAS, primitive_signature_verification_gas,
+    tempo_signature_verification_gas,
+};
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
@@ -98,39 +93,6 @@ pub const NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + SSTORE_SET;
 ///
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
-
-/// Calculates the gas cost for verifying a primitive signature.
-///
-/// Returns the additional gas required beyond the base transaction cost:
-/// - Secp256k1: 0 (already included in base 21k)
-/// - P256: 5000 gas
-/// - WebAuthn: 5000 gas + calldata cost for webauthn_data
-#[inline]
-fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
-    match signature {
-        PrimitiveSignature::Secp256k1(_) => 0,
-        PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
-        PrimitiveSignature::WebAuthn(webauthn_sig) => {
-            let tokens = get_tokens_in_calldata_istanbul(&webauthn_sig.webauthn_data);
-            P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
-        }
-    }
-}
-
-/// Calculates the gas cost for verifying an AA signature.
-///
-/// For Keychain signatures, adds key validation overhead to the inner signature cost
-/// Returns the additional gas required beyond the base transaction cost.
-#[inline]
-fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
-    match signature {
-        TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
-        TempoSignature::Keychain(keychain_sig) => {
-            // Keychain = inner signature + key validation overhead (SLOAD + processing)
-            primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
-        }
-    }
-}
 
 /// Calculates the intrinsic gas cost for a KeyAuthorization.
 ///
