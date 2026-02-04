@@ -18,6 +18,7 @@ use crate::{
     stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
     tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20_factory::ITIP20Factory,
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, TIP403Registry},
 };

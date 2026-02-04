@@ -13,7 +13,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
-    tip20_factory::TIP20Factory,
+    tip20_factory::{ITIP20Factory, TIP20Factory},
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
@@ -837,7 +837,7 @@ impl TIP20Token {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256};
-    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20Factory};
+    use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 
     use super::*;
     use crate::{
@@ -1637,16 +1637,15 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let _path_usd = TIP20Setup::path_usd(sender).apply()?;
 
+            use crate::tip20_factory::abi::ITIP20Factory;
             let created_tip20 = TIP20Factory::new().create_token(
                 sender,
-                ITIP20Factory::createTokenCall {
-                    name: "Test Token".to_string(),
-                    symbol: "TEST".to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: crate::PATH_USD_ADDRESS,
-                    admin: sender,
-                    salt: B256::random(),
-                },
+                "Test Token".to_string(),
+                "TEST".to_string(),
+                "USD".to_string(),
+                crate::PATH_USD_ADDRESS,
+                sender,
+                B256::random(),
             )?;
             let non_tip20 = Address::random();
 

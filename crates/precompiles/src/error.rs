@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::tip20::TIP20Error;
+use crate::tip20_factory::TIP20FactoryError;
 use alloy::{
     primitives::{Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
@@ -14,8 +15,7 @@ use revm::{
 };
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
-    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-    ValidatorConfigError,
+    TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
 };
 
 /// Top-level error type for all Tempo precompile operations

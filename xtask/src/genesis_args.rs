@@ -42,7 +42,7 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{ITIP20Factory, IValidatorConfig},
+    precompiles::IValidatorConfig,
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -54,7 +54,7 @@ use tempo_precompiles::{
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
-    tip20_factory::TIP20Factory,
+    tip20_factory::{ITIP20Factory, TIP20Factory},
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };
@@ -677,14 +677,12 @@ fn create_and_mint_token(
                 SaltOrAddress::Salt(salt) => factory
                     .create_token(
                         admin,
-                        ITIP20Factory::createTokenCall {
-                            name: name.into(),
-                            symbol: symbol.into(),
-                            currency: currency.into(),
-                            quoteToken: quote_token,
-                            salt,
-                            admin,
-                        },
+                        name.into(),
+                        symbol.into(),
+                        currency.into(),
+                        quote_token,
+                        admin,
+                        salt,
                     )
                     .expect("Could not create token"),
                 SaltOrAddress::Address(address) => factory

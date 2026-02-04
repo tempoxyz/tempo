@@ -6,7 +6,7 @@ use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
-    tip20_factory::{self, TIP20Factory},
+    tip20_factory::{ITIP20Factory, TIP20Factory},
 };
 use alloy::{
     primitives::{Address, B256, U256},
@@ -302,14 +302,12 @@ impl TIP20Setup {
                 let salt = self.salt.unwrap_or_else(B256::random);
                 let token_address = factory.create_token(
                     admin,
-                    tip20_factory::ITIP20Factory::createTokenCall {
-                        name: name.to_string(),
-                        symbol: symbol.to_string(),
-                        currency,
-                        quoteToken: quote,
-                        admin,
-                        salt,
-                    },
+                    name.to_string(),
+                    symbol.to_string(),
+                    currency,
+                    quote,
+                    admin,
+                    salt,
                 )?;
                 TIP20Token::from_address(token_address)?
             }

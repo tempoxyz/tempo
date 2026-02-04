@@ -1,7 +1,9 @@
 // Module for tip20_factory precompile
-pub mod dispatch;
+pub mod abi;
+mod dispatch;
 
-pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryError, TIP20FactoryEvent};
+pub use abi::ITIP20Factory;
+
 use tempo_precompiles_macros::contract;
 
 use crate::{
@@ -23,7 +25,7 @@ const TIP20_PREFIX_BYTES: [u8; 12] = [
     0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-#[contract(addr = TIP20_FACTORY_ADDRESS)]
+#[contract(addr = TIP20_FACTORY_ADDRESS, abi, dispatch)]
 pub struct TIP20Factory {}
 
 /// Computes the deterministic TIP20 address from sender and salt.
@@ -52,94 +54,6 @@ impl TIP20Factory {
         self.__initialize()
     }
 
-    /// Computes the deterministic address for a token given sender and salt.
-    /// Reverts if the computed address would be in the reserved range.
-    pub fn get_token_address(&self, call: ITIP20Factory::getTokenAddressCall) -> Result<Address> {
-        let (address, lower_bytes) = compute_tip20_address(call.sender, call.salt);
-
-        // Check if address would be in reserved range
-        if lower_bytes < RESERVED_SIZE {
-            return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::address_reserved(),
-            ));
-        }
-
-        Ok(address)
-    }
-
-    /// Returns true if the address is a valid TIP20 token.
-    ///
-    /// Checks both:
-    /// 1. The address has the correct TIP20 prefix
-    /// 2. The address has code deployed (non-empty code hash)
-    pub fn is_tip20(&self, token: Address) -> Result<bool> {
-        if !is_tip20_prefix(token) {
-            return Ok(false);
-        }
-        // Check if the token has code deployed (non-empty code hash)
-        self.storage
-            .with_account_info(token, |info| Ok(!info.is_empty_code_hash()))
-    }
-
-    pub fn create_token(
-        &mut self,
-        sender: Address,
-        call: ITIP20Factory::createTokenCall,
-    ) -> Result<Address> {
-        trace!(%sender, ?call, "Create token");
-
-        // Compute the deterministic address from sender and salt
-        let (token_address, lower_bytes) = compute_tip20_address(sender, call.salt);
-
-        if self.is_tip20(token_address)? {
-            return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::token_already_exists(token_address),
-            ));
-        }
-
-        // Ensure that the quote token is a valid TIP20 that is currently deployed.
-        if !self.is_tip20(call.quoteToken)? {
-            return Err(TIP20Error::invalid_quote_token().into());
-        }
-
-        // If token is USD, its quote token must also be USD
-        if call.currency == USD_CURRENCY
-            && TIP20Token::from_address(call.quoteToken)?.currency()? != USD_CURRENCY
-        {
-            return Err(TIP20Error::invalid_quote_token().into());
-        }
-
-        // Check if address is in reserved range
-        if lower_bytes < RESERVED_SIZE {
-            return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::address_reserved(),
-            ));
-        }
-
-        TIP20Token::from_address(token_address)?.initialize(
-            sender,
-            &call.name,
-            &call.symbol,
-            &call.currency,
-            call.quoteToken,
-            call.admin,
-        )?;
-
-        self.emit_event(TIP20FactoryEvent::TokenCreated(
-            ITIP20Factory::TokenCreated {
-                token: token_address,
-                name: call.name,
-                symbol: call.symbol,
-                currency: call.currency,
-                quoteToken: call.quoteToken,
-                admin: call.admin,
-                salt: call.salt,
-            },
-        ))?;
-
-        Ok(token_address)
-    }
-
     /// Creates a token at a reserved address
     /// Internal function used to deploy TIP20s at reserved addresses at genesis or hardforks
     pub fn create_token_reserved_address(
@@ -157,7 +71,7 @@ impl TIP20Factory {
         }
 
         // Validate that the address is not already deployed
-        if self.is_tip20(address)? {
+        if self.is_tip20_impl(address)? {
             return Err(TempoPrecompileError::TIP20Factory(
                 TIP20FactoryError::token_already_exists(address),
             ));
@@ -167,7 +81,7 @@ impl TIP20Factory {
         if !quote_token.is_zero() {
             // pathUSD must set address(0) as the quote token
             // or the tip20 must be a valid deployed token
-            if address == PATH_USD_ADDRESS || !self.is_tip20(quote_token)? {
+            if address == PATH_USD_ADDRESS || !self.is_tip20_impl(quote_token)? {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
             // If token is USD, its quote token must also be USD
@@ -192,17 +106,107 @@ impl TIP20Factory {
         let mut token = TIP20Token::from_address(address)?;
         token.initialize(admin, name, symbol, currency, quote_token, admin)?;
 
-        self.emit_event(TIP20FactoryEvent::TokenCreated(
-            ITIP20Factory::TokenCreated {
-                token: address,
-                name: name.into(),
-                symbol: symbol.into(),
-                currency: currency.into(),
-                quoteToken: quote_token,
-                admin,
-                salt: B256::ZERO,
-            },
-        ))?;
+        self.emit_event(TIP20FactoryEvent::TokenCreated(abi::TokenCreated {
+            token: address,
+            name: name.into(),
+            symbol: symbol.into(),
+            currency: currency.into(),
+            quote_token,
+            admin,
+            salt: B256::ZERO.into(),
+        }))?;
+
+        Ok(address)
+    }
+
+    /// Returns true if the address is a valid TIP20 token.
+    /// Internal helper used by both trait impl and reserved address creation.
+    fn is_tip20_impl(&self, token: Address) -> Result<bool> {
+        if !is_tip20_prefix(token) {
+            return Ok(false);
+        }
+        // Check if the token has code deployed (non-empty code hash)
+        self.storage
+            .with_account_info(token, |info| Ok(!info.is_empty_code_hash()))
+    }
+}
+
+impl abi::ITIP20Factory for TIP20Factory {
+    fn create_token(
+        &mut self,
+        msg_sender: Address,
+        name: String,
+        symbol: String,
+        currency: String,
+        quote_token: Address,
+        admin: Address,
+        salt: B256,
+    ) -> Result<Address> {
+        trace!(%msg_sender, %name, %symbol, %currency, %quote_token, %admin, "Create token");
+
+        // Compute the deterministic address from sender and salt
+        let (token_address, lower_bytes) = compute_tip20_address(msg_sender, salt);
+
+        if self.is_tip20_impl(token_address)? {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::token_already_exists(token_address),
+            ));
+        }
+
+        // Ensure that the quote token is a valid TIP20 that is currently deployed.
+        if !self.is_tip20_impl(quote_token)? {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
+        // If token is USD, its quote token must also be USD
+        if currency == USD_CURRENCY
+            && TIP20Token::from_address(quote_token)?.currency()? != USD_CURRENCY
+        {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
+        // Check if address is in reserved range
+        if lower_bytes < RESERVED_SIZE {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::address_reserved(),
+            ));
+        }
+
+        TIP20Token::from_address(token_address)?.initialize(
+            msg_sender,
+            &name,
+            &symbol,
+            &currency,
+            quote_token,
+            admin,
+        )?;
+
+        self.emit_event(TIP20FactoryEvent::TokenCreated(abi::TokenCreated {
+            token: token_address,
+            name,
+            symbol,
+            currency,
+            quote_token,
+            admin,
+            salt: salt.into(),
+        }))?;
+
+        Ok(token_address)
+    }
+
+    fn is_tip20(&self, token: Address) -> Result<bool> {
+        self.is_tip20_impl(token)
+    }
+
+    fn get_token_address(&self, sender: Address, salt: B256) -> Result<Address> {
+        let (address, lower_bytes) = compute_tip20_address(sender, salt);
+
+        // Check if address would be in reserved range
+        if lower_bytes < RESERVED_SIZE {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::address_reserved(),
+            ));
+        }
 
         Ok(address)
     }
@@ -211,6 +215,7 @@ impl TIP20Factory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::ITIP20Factory;
     use crate::{
         PATH_USD_ADDRESS,
         error::TempoPrecompileError,
@@ -300,14 +305,12 @@ mod tests {
             let salt = B256::random();
 
             // get_token_address should return same address as compute_tip20_address
-            let call = ITIP20Factory::getTokenAddressCall { sender, salt };
-            let address = factory.get_token_address(call)?;
+            let address = factory.get_token_address(sender, salt)?;
             let (expected, _) = compute_tip20_address(sender, salt);
             assert_eq!(address, expected);
 
             // Calling with same params should be deterministic
-            let call2 = ITIP20Factory::getTokenAddressCall { sender, salt };
-            assert_eq!(factory.get_token_address(call2)?, address);
+            assert_eq!(factory.get_token_address(sender, salt)?, address);
 
             Ok(())
         })
@@ -356,25 +359,25 @@ mod tests {
 
             let salt1 = B256::random();
             let salt2 = B256::random();
-            let call1 = ITIP20Factory::createTokenCall {
-                name: "Test Token 1".to_string(),
-                symbol: "TEST1".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: path_usd.address(),
-                admin: sender,
-                salt: salt1,
-            };
-            let call2 = ITIP20Factory::createTokenCall {
-                name: "Test Token 2".to_string(),
-                symbol: "TEST2".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: path_usd.address(),
-                admin: sender,
-                salt: salt2,
-            };
 
-            let token_addr_1 = factory.create_token(sender, call1.clone())?;
-            let token_addr_2 = factory.create_token(sender, call2.clone())?;
+            let token_addr_1 = factory.create_token(
+                sender,
+                "Test Token 1".to_string(),
+                "TEST1".to_string(),
+                "USD".to_string(),
+                path_usd.address(),
+                sender,
+                salt1,
+            )?;
+            let token_addr_2 = factory.create_token(
+                sender,
+                "Test Token 2".to_string(),
+                "TEST2".to_string(),
+                "USD".to_string(),
+                path_usd.address(),
+                sender,
+                salt2,
+            )?;
 
             // Verify addresses are different
             assert_ne!(token_addr_1, token_addr_2);
@@ -389,23 +392,23 @@ mod tests {
 
             // Verify event emission
             factory.assert_emitted_events(vec![
-                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+                TIP20FactoryEvent::TokenCreated(abi::TokenCreated {
                     token: token_addr_1,
-                    name: call1.name,
-                    symbol: call1.symbol,
-                    currency: call1.currency,
-                    quoteToken: call1.quoteToken,
-                    admin: call1.admin,
-                    salt: call1.salt,
+                    name: "Test Token 1".into(),
+                    symbol: "TEST1".into(),
+                    currency: "USD".into(),
+                    quote_token: path_usd.address(),
+                    admin: sender,
+                    salt: salt1.into(),
                 }),
-                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+                TIP20FactoryEvent::TokenCreated(abi::TokenCreated {
                     token: token_addr_2,
-                    name: call2.name,
-                    symbol: call2.symbol,
-                    currency: call2.currency,
-                    quoteToken: call2.quoteToken,
-                    admin: call2.admin,
-                    salt: call2.salt,
+                    name: "Test Token 2".into(),
+                    symbol: "TEST2".into(),
+                    currency: "USD".into(),
+                    quote_token: path_usd.address(),
+                    admin: sender,
+                    salt: salt2.into(),
                 }),
             ]);
 
@@ -421,16 +424,15 @@ mod tests {
             let mut factory = TIP20Setup::factory()?;
             TIP20Setup::path_usd(sender).apply()?;
 
-            let invalid_call = ITIP20Factory::createTokenCall {
-                name: "Test Token".to_string(),
-                symbol: "TEST".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: Address::random(),
-                admin: sender,
-                salt: B256::random(),
-            };
-
-            let result = factory.create_token(sender, invalid_call);
+            let result = factory.create_token(
+                sender,
+                "Test Token".to_string(),
+                "TEST".to_string(),
+                "USD".to_string(),
+                Address::random(),
+                sender,
+                B256::random(),
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
@@ -450,16 +452,15 @@ mod tests {
                 .currency("EUR")
                 .apply()?;
 
-            let invalid_call = ITIP20Factory::createTokenCall {
-                name: "USD Token".to_string(),
-                symbol: "USDT".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: eur_token.address(),
-                admin: sender,
-                salt: B256::random(),
-            };
-
-            let result = factory.create_token(sender, invalid_call);
+            let result = factory.create_token(
+                sender,
+                "USD Token".to_string(),
+                "USDT".to_string(),
+                "USD".to_string(),
+                eur_token.address(),
+                sender,
+                B256::random(),
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
@@ -479,16 +480,16 @@ mod tests {
             // Create an address with TIP20 prefix but no code
             let non_existent_tip20 =
                 Address::from(alloy::hex!("20C0000000000000000000000000000000009999"));
-            let invalid_call = ITIP20Factory::createTokenCall {
-                name: "Test Token".to_string(),
-                symbol: "TEST".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: non_existent_tip20,
-                admin: sender,
-                salt: B256::random(),
-            };
 
-            let result = factory.create_token(sender, invalid_call);
+            let result = factory.create_token(
+                sender,
+                "Test Token".to_string(),
+                "TEST".to_string(),
+                "USD".to_string(),
+                non_existent_tip20,
+                sender,
+                B256::random(),
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
@@ -506,21 +507,29 @@ mod tests {
             TIP20Setup::path_usd(sender).apply()?;
 
             let salt = B256::random();
-            let create_token_call = ITIP20Factory::createTokenCall {
-                name: "Test Token".to_string(),
-                symbol: "TEST".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: PATH_USD_ADDRESS,
-                admin: sender,
-                salt,
-            };
 
-            let token = factory.create_token(sender, create_token_call.clone())?;
-            let result = factory.create_token(sender, create_token_call);
+            let token = factory.create_token(
+                sender,
+                "Test Token".to_string(),
+                "TEST".to_string(),
+                "USD".to_string(),
+                PATH_USD_ADDRESS,
+                sender,
+                salt,
+            )?;
+            let result = factory.create_token(
+                sender,
+                "Test Token".to_string(),
+                "TEST".to_string(),
+                "USD".to_string(),
+                PATH_USD_ADDRESS,
+                sender,
+                salt,
+            );
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20Factory(TIP20FactoryError::TokenAlreadyExists(
-                    ITIP20Factory::TokenAlreadyExists { token }
+                    abi::TokenAlreadyExists { token }
                 ))
             );
 
