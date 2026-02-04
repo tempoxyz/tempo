@@ -34,17 +34,15 @@ use reth_tracing::{RethTracer, Tracer, tracing::info};
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
 use tempo_contracts::precompiles::{
     IFeeManager::IFeeManagerInstance,
-    ITIPFeeAMM::ITIPFeeAMMInstance,
     IRolesAuth,
     IStablecoinDEX::IStablecoinDEXInstance,
     ITIP20::ITIP20Instance,
     ITIP20Factory::{self, ITIP20FactoryInstance},
     ITIP403Registry::{self, ITIP403RegistryInstance},
+    ITIPFeeAMM::ITIPFeeAMMInstance,
 };
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
-    tip20::ISSUER_ROLE,
-    tip_fee_manager::DEFAULT_FEE_TOKEN,
+    TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::DEFAULT_FEE_TOKEN, tip20::ISSUER_ROLE,
 };
 
 use crate::actions::{ActionContext, ActionType, pick_random_action};
@@ -208,7 +206,10 @@ impl SpamArgs {
             info!("Funding accounts from faucet");
             fund_accounts(
                 &provider,
-                &signer_providers.iter().map(|(s, _)| s.address()).collect::<Vec<_>>(),
+                &signer_providers
+                    .iter()
+                    .map(|(s, _)| s.address())
+                    .collect::<Vec<_>>(),
                 self.max_concurrent_requests,
             )
             .await?;
@@ -216,16 +217,32 @@ impl SpamArgs {
 
         // Set fee tokens for all signers
         info!(fee_token = %self.fee_token, "Setting default fee tokens");
-        set_fee_tokens(&signer_providers, self.fee_token, self.max_concurrent_requests).await?;
+        set_fee_tokens(
+            &signer_providers,
+            self.fee_token,
+            self.max_concurrent_requests,
+        )
+        .await?;
 
         // Setup test infrastructure (tokens, DEX pairs, AMM pools)
-        info!(user_tokens = self.user_tokens, "Setting up test infrastructure");
-        let ctx = setup_test_infrastructure(&signer_providers, self.user_tokens, self.max_concurrent_requests).await?;
+        info!(
+            user_tokens = self.user_tokens,
+            "Setting up test infrastructure"
+        );
+        let ctx = setup_test_infrastructure(
+            &signer_providers,
+            self.user_tokens,
+            self.max_concurrent_requests,
+        )
+        .await?;
 
         // Build action weights
         let weights = vec![
             (ActionType::Tip20Transfer, self.weight_tip20_transfer),
-            (ActionType::Tip20TransferFrom, self.weight_tip20_transfer_from),
+            (
+                ActionType::Tip20TransferFrom,
+                self.weight_tip20_transfer_from,
+            ),
             (ActionType::Tip20Approve, self.weight_tip20_approve),
             (ActionType::Tip20Mint, self.weight_tip20_mint),
             (ActionType::Tip20Burn, self.weight_tip20_burn),
@@ -239,7 +256,10 @@ impl SpamArgs {
             (ActionType::AmmMint, self.weight_amm_mint),
             (ActionType::AmmBurn, self.weight_amm_burn),
             (ActionType::AmmRebalance, self.weight_amm_rebalance),
-            (ActionType::AmmDistributeFees, self.weight_amm_distribute_fees),
+            (
+                ActionType::AmmDistributeFees,
+                self.weight_amm_distribute_fees,
+            ),
             (ActionType::NonceIncrement, self.weight_nonce_increment),
             (ActionType::TokenCreate, self.weight_token_create),
             (ActionType::PolicyModify, self.weight_policy_modify),
@@ -378,10 +398,19 @@ async fn setup_test_infrastructure(
     let admin = admin_signer.address();
 
     let path_usd = tempo_contracts::precompiles::PATH_USD_ADDRESS;
-    let factory = ITIP20FactoryInstance::new(tempo_contracts::precompiles::TIP20_FACTORY_ADDRESS, admin_provider.clone());
-    let exchange = IStablecoinDEXInstance::new(tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS, admin_provider.clone());
+    let factory = ITIP20FactoryInstance::new(
+        tempo_contracts::precompiles::TIP20_FACTORY_ADDRESS,
+        admin_provider.clone(),
+    );
+    let exchange = IStablecoinDEXInstance::new(
+        tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS,
+        admin_provider.clone(),
+    );
     let amm = ITIPFeeAMMInstance::new(TIP_FEE_MANAGER_ADDRESS, admin_provider.clone());
-    let registry = ITIP403RegistryInstance::new(tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS, admin_provider.clone());
+    let registry = ITIP403RegistryInstance::new(
+        tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS,
+        admin_provider.clone(),
+    );
 
     // Create user tokens
     info!(num_user_tokens, "Creating user tokens");
@@ -412,7 +441,12 @@ async fn setup_test_infrastructure(
 
         // Grant issuer role to admin
         let roles = IRolesAuth::new(token_addr, admin_provider.clone());
-        roles.grantRole(*ISSUER_ROLE, admin).send().await?.get_receipt().await?;
+        roles
+            .grantRole(*ISSUER_ROLE, admin)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
 
         info!(token = %token_addr, index = i, "Created token");
     }
@@ -420,7 +454,12 @@ async fn setup_test_infrastructure(
     // Create DEX pairs for each user token
     info!("Creating DEX pairs");
     for token in &user_tokens {
-        exchange.createPair(*token).send().await?.get_receipt().await?;
+        exchange
+            .createPair(*token)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
     }
 
     // Mint tokens to all signers
@@ -429,15 +468,25 @@ async fn setup_test_infrastructure(
 
     for (signer, _) in signer_providers.iter() {
         let recipient = signer.address();
-        
+
         // Mint pathUSD
         let path_usd_token = ITIP20Instance::new(path_usd, admin_provider.clone());
-        path_usd_token.mint(recipient, mint_amount).send().await?.get_receipt().await?;
+        path_usd_token
+            .mint(recipient, mint_amount)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
 
         // Mint user tokens
         for token_addr in &user_tokens {
             let token = ITIP20Instance::new(*token_addr, admin_provider.clone());
-            token.mint(recipient, mint_amount).send().await?.get_receipt().await?;
+            token
+                .mint(recipient, mint_amount)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
         }
     }
 
@@ -453,14 +502,34 @@ async fn setup_test_infrastructure(
             async move {
                 // Approve pathUSD for DEX
                 let path_usd_token = ITIP20Instance::new(path_usd, provider.clone());
-                path_usd_token.approve(dex_addr, U256::MAX).send().await?.get_receipt().await?;
-                path_usd_token.approve(amm_addr, U256::MAX).send().await?.get_receipt().await?;
+                path_usd_token
+                    .approve(dex_addr, U256::MAX)
+                    .send()
+                    .await?
+                    .get_receipt()
+                    .await?;
+                path_usd_token
+                    .approve(amm_addr, U256::MAX)
+                    .send()
+                    .await?
+                    .get_receipt()
+                    .await?;
 
                 // Approve user tokens for DEX
                 for token_addr in &user_tokens {
                     let token = ITIP20Instance::new(*token_addr, provider.clone());
-                    token.approve(dex_addr, U256::MAX).send().await?.get_receipt().await?;
-                    token.approve(amm_addr, U256::MAX).send().await?.get_receipt().await?;
+                    token
+                        .approve(dex_addr, U256::MAX)
+                        .send()
+                        .await?
+                        .get_receipt()
+                        .await?;
+                    token
+                        .approve(amm_addr, U256::MAX)
+                        .send()
+                        .await?
+                        .get_receipt()
+                        .await?;
                 }
                 Ok::<_, eyre::Error>(())
             }
@@ -561,9 +630,9 @@ async fn run_spam_loop(
     };
 
     // Rate limiter for TPS control
-    let rate_limiter = governor::RateLimiter::direct(
-        governor::Quota::per_second(std::num::NonZeroU32::new(tps as u32).unwrap_or(std::num::NonZeroU32::MIN)),
-    );
+    let rate_limiter = governor::RateLimiter::direct(governor::Quota::per_second(
+        std::num::NonZeroU32::new(tps as u32).unwrap_or(std::num::NonZeroU32::MIN),
+    ));
 
     let start = std::time::Instant::now();
     let deadline = start + Duration::from_secs(duration);

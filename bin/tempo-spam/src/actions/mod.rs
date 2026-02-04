@@ -9,10 +9,7 @@ mod policy;
 mod tip20;
 mod token_factory;
 
-use std::sync::{
-    Arc,
-    atomic::AtomicU64,
-};
+use std::sync::{Arc, atomic::AtomicU64};
 
 use alloy::{
     primitives::{Address, U256},
@@ -73,7 +70,10 @@ pub enum ActionType {
 }
 
 /// Pick a random action based on cumulative weights
-pub fn pick_random_action(cumulative_weights: &[(ActionType, u32)], total_weight: u32) -> ActionType {
+pub fn pick_random_action(
+    cumulative_weights: &[(ActionType, u32)],
+    total_weight: u32,
+) -> ActionType {
     let r = random_range(0..total_weight);
     for (action, cumulative) in cumulative_weights {
         if r < *cumulative {
@@ -81,7 +81,10 @@ pub fn pick_random_action(cumulative_weights: &[(ActionType, u32)], total_weight
         }
     }
     // Fallback
-    cumulative_weights.last().map(|(a, _)| *a).unwrap_or(ActionType::Tip20Transfer)
+    cumulative_weights
+        .last()
+        .map(|(a, _)| *a)
+        .unwrap_or(ActionType::Tip20Transfer)
 }
 
 /// Execute a single action
@@ -94,73 +97,37 @@ pub async fn execute_action(
 ) -> eyre::Result<()> {
     match action {
         // TIP20 actions
-        ActionType::Tip20Transfer => {
-            tip20::transfer(ctx, caller, provider, all_signers).await
-        }
+        ActionType::Tip20Transfer => tip20::transfer(ctx, caller, provider, all_signers).await,
         ActionType::Tip20TransferFrom => {
             tip20::transfer_from(ctx, caller, provider, all_signers).await
         }
-        ActionType::Tip20Approve => {
-            tip20::approve(ctx, caller, provider, all_signers).await
-        }
-        ActionType::Tip20Mint => {
-            tip20::mint(ctx, caller, provider).await
-        }
-        ActionType::Tip20Burn => {
-            tip20::burn(ctx, caller, provider).await
-        }
-        ActionType::Tip20DistributeReward => {
-            tip20::distribute_reward(ctx, caller, provider).await
-        }
+        ActionType::Tip20Approve => tip20::approve(ctx, caller, provider, all_signers).await,
+        ActionType::Tip20Mint => tip20::mint(ctx, caller, provider).await,
+        ActionType::Tip20Burn => tip20::burn(ctx, caller, provider).await,
+        ActionType::Tip20DistributeReward => tip20::distribute_reward(ctx, caller, provider).await,
 
         // DEX actions
-        ActionType::DexPlace => {
-            dex::place_order(ctx, caller, provider).await
-        }
-        ActionType::DexPlaceFlip => {
-            dex::place_flip_order(ctx, caller, provider).await
-        }
-        ActionType::DexCancel => {
-            dex::cancel_order(ctx, caller, provider).await
-        }
-        ActionType::DexSwap => {
-            dex::swap(ctx, caller, provider).await
-        }
-        ActionType::DexWithdraw => {
-            dex::withdraw(ctx, caller, provider).await
-        }
-        ActionType::DexDeposit => {
-            dex::deposit(ctx, caller, provider).await
-        }
+        ActionType::DexPlace => dex::place_order(ctx, caller, provider).await,
+        ActionType::DexPlaceFlip => dex::place_flip_order(ctx, caller, provider).await,
+        ActionType::DexCancel => dex::cancel_order(ctx, caller, provider).await,
+        ActionType::DexSwap => dex::swap(ctx, caller, provider).await,
+        ActionType::DexWithdraw => dex::withdraw(ctx, caller, provider).await,
+        ActionType::DexDeposit => dex::deposit(ctx, caller, provider).await,
 
         // FeeAMM actions
-        ActionType::AmmMint => {
-            fee_amm::mint(ctx, caller, provider).await
-        }
-        ActionType::AmmBurn => {
-            fee_amm::burn(ctx, caller, provider).await
-        }
-        ActionType::AmmRebalance => {
-            fee_amm::rebalance_swap(ctx, caller, provider).await
-        }
-        ActionType::AmmDistributeFees => {
-            fee_amm::distribute_fees(ctx, caller, provider).await
-        }
+        ActionType::AmmMint => fee_amm::mint(ctx, caller, provider).await,
+        ActionType::AmmBurn => fee_amm::burn(ctx, caller, provider).await,
+        ActionType::AmmRebalance => fee_amm::rebalance_swap(ctx, caller, provider).await,
+        ActionType::AmmDistributeFees => fee_amm::distribute_fees(ctx, caller, provider).await,
 
         // Nonce actions
-        ActionType::NonceIncrement => {
-            nonce::increment_nonce(ctx, caller, provider).await
-        }
+        ActionType::NonceIncrement => nonce::increment_nonce(ctx, caller, provider).await,
 
         // Token factory actions
-        ActionType::TokenCreate => {
-            token_factory::create_token(ctx, caller, provider).await
-        }
+        ActionType::TokenCreate => token_factory::create_token(ctx, caller, provider).await,
 
         // Policy actions
-        ActionType::PolicyModify => {
-            policy::modify_policy(ctx, caller, provider, all_signers).await
-        }
+        ActionType::PolicyModify => policy::modify_policy(ctx, caller, provider, all_signers).await,
     }
 }
 
@@ -183,7 +150,11 @@ pub fn select_random_user_token(ctx: &ActionContext) -> Option<Address> {
 
 /// Helper to select a random recipient excluding the caller
 pub fn select_random_recipient(caller: Address, all_signers: &[Address]) -> Address {
-    let candidates: Vec<_> = all_signers.iter().filter(|a| **a != caller).copied().collect();
+    let candidates: Vec<_> = all_signers
+        .iter()
+        .filter(|a| **a != caller)
+        .copied()
+        .collect();
     if candidates.is_empty() {
         caller
     } else {

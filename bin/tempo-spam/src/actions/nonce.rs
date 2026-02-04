@@ -12,9 +12,7 @@ use alloy::{
 use rand::random_range;
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::{
-    INonce::INonceInstance,
-    ITIP20::ITIP20Instance,
-    NONCE_PRECOMPILE_ADDRESS,
+    INonce::INonceInstance, ITIP20::ITIP20Instance, NONCE_PRECOMPILE_ADDRESS,
 };
 
 use super::ActionContext;
@@ -33,22 +31,27 @@ pub async fn increment_nonce(
     provider: &DynProvider<TempoNetwork>,
 ) -> eyre::Result<()> {
     let nonce_contract = INonceInstance::new(NONCE_PRECOMPILE_ADDRESS, provider.clone());
-    
+
     // Pick a random nonce key (1 to MAX_NONCE_KEY, key 0 is reserved for protocol)
     let nonce_key = U256::from(random_range(1..=MAX_NONCE_KEY));
-    
+
     // Read current nonce - exercises the getNonce code path
     let _current_nonce = nonce_contract.getNonce(caller, nonce_key).call().await?;
-    
+
     // The actual nonce increment happens during tx execution via 2D nonces.
     // Perform a minimal token action to exercise transaction execution with 2D nonces.
     let token = ITIP20Instance::new(ctx.path_usd, provider.clone());
     let balance = token.balanceOf(caller).call().await?;
-    
+
     if balance > U256::ZERO {
         // Self-transfer of 1 unit to exercise tx execution
-        let _ = token.transfer(caller, U256::from(1)).send().await?.get_receipt().await;
+        let _ = token
+            .transfer(caller, U256::from(1))
+            .send()
+            .await?
+            .get_receipt()
+            .await;
     }
-    
+
     Ok(())
 }
