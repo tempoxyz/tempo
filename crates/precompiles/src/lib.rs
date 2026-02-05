@@ -525,39 +525,66 @@ mod tests {
 
         // TIP20Factory should be registered
         let factory_precompile = precompiles.get(&TIP20_FACTORY_ADDRESS);
-        assert!(factory_precompile.is_some(), "TIP20Factory should be registered");
+        assert!(
+            factory_precompile.is_some(),
+            "TIP20Factory should be registered"
+        );
 
         // TIP403Registry should be registered
         let registry_precompile = precompiles.get(&TIP403_REGISTRY_ADDRESS);
-        assert!(registry_precompile.is_some(), "TIP403Registry should be registered");
+        assert!(
+            registry_precompile.is_some(),
+            "TIP403Registry should be registered"
+        );
 
         // TipFeeManager should be registered
         let fee_manager_precompile = precompiles.get(&TIP_FEE_MANAGER_ADDRESS);
-        assert!(fee_manager_precompile.is_some(), "TipFeeManager should be registered");
+        assert!(
+            fee_manager_precompile.is_some(),
+            "TipFeeManager should be registered"
+        );
 
         // StablecoinDEX should be registered
         let dex_precompile = precompiles.get(&STABLECOIN_DEX_ADDRESS);
-        assert!(dex_precompile.is_some(), "StablecoinDEX should be registered");
+        assert!(
+            dex_precompile.is_some(),
+            "StablecoinDEX should be registered"
+        );
 
         // NonceManager should be registered
         let nonce_precompile = precompiles.get(&NONCE_PRECOMPILE_ADDRESS);
-        assert!(nonce_precompile.is_some(), "NonceManager should be registered");
+        assert!(
+            nonce_precompile.is_some(),
+            "NonceManager should be registered"
+        );
 
         // ValidatorConfig should be registered
         let validator_precompile = precompiles.get(&VALIDATOR_CONFIG_ADDRESS);
-        assert!(validator_precompile.is_some(), "ValidatorConfig should be registered");
+        assert!(
+            validator_precompile.is_some(),
+            "ValidatorConfig should be registered"
+        );
 
         // AccountKeychain should be registered
         let keychain_precompile = precompiles.get(&ACCOUNT_KEYCHAIN_ADDRESS);
-        assert!(keychain_precompile.is_some(), "AccountKeychain should be registered");
+        assert!(
+            keychain_precompile.is_some(),
+            "AccountKeychain should be registered"
+        );
 
         // TIP20 tokens with prefix should be registered
         let tip20_precompile = precompiles.get(&PATH_USD_ADDRESS);
-        assert!(tip20_precompile.is_some(), "TIP20 tokens should be registered");
+        assert!(
+            tip20_precompile.is_some(),
+            "TIP20 tokens should be registered"
+        );
 
         // Random address without TIP20 prefix should NOT be registered
         let random_address = Address::random();
         let random_precompile = precompiles.get(&random_address);
-        assert!(random_precompile.is_none(), "Random address should not be a precompile");
+        assert!(
+            random_precompile.is_none(),
+            "Random address should not be a precompile"
+        );
     }
 }

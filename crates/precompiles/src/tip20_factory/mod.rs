@@ -776,10 +776,8 @@ mod tests {
             // Use a salt that produces non-reserved address
             let salt = B256::repeat_byte(0xFF);
 
-            let address = factory.get_token_address(ITIP20Factory::getTokenAddressCall {
-                sender,
-                salt,
-            })?;
+            let address =
+                factory.get_token_address(ITIP20Factory::getTokenAddressCall { sender, salt })?;
 
             // Address should NOT be default
             assert_ne!(address, Address::ZERO);
@@ -788,10 +786,8 @@ mod tests {
             assert!(is_tip20_prefix(address));
 
             // Should be deterministic
-            let address2 = factory.get_token_address(ITIP20Factory::getTokenAddressCall {
-                sender,
-                salt,
-            })?;
+            let address2 =
+                factory.get_token_address(ITIP20Factory::getTokenAddressCall { sender, salt })?;
             assert_eq!(address, address2);
 
             Ok(())
@@ -808,16 +804,25 @@ mod tests {
 
             // Non-TIP20 address should return false
             let non_tip20 = Address::random();
-            assert!(!factory.is_tip20(non_tip20)?, "Non-TIP20 address should return false");
+            assert!(
+                !factory.is_tip20(non_tip20)?,
+                "Non-TIP20 address should return false"
+            );
 
             // PATH_USD before deployment should return false (no code)
-            assert!(!factory.is_tip20(PATH_USD_ADDRESS)?, "Undeployed TIP20 should return false");
+            assert!(
+                !factory.is_tip20(PATH_USD_ADDRESS)?,
+                "Undeployed TIP20 should return false"
+            );
 
             // Deploy pathUSD
             TIP20Setup::path_usd(admin).apply()?;
 
             // Now PATH_USD should return true
-            assert!(factory.is_tip20(PATH_USD_ADDRESS)?, "Deployed TIP20 should return true");
+            assert!(
+                factory.is_tip20(PATH_USD_ADDRESS)?,
+                "Deployed TIP20 should return true"
+            );
 
             Ok(())
         })
@@ -838,7 +843,8 @@ mod tests {
             for i in 0u64..100000 {
                 let salt = B256::from(U256::from(i));
                 let (_, lower_bytes) = compute_tip20_address(sender, salt);
-                if lower_bytes < 1024 { // RESERVED_SIZE
+                if lower_bytes < 1024 {
+                    // RESERVED_SIZE
                     reserved_salt = Some(salt);
                     break;
                 }
@@ -846,10 +852,8 @@ mod tests {
 
             // If we found a reserved salt, verify get_token_address rejects it
             if let Some(salt) = reserved_salt {
-                let result = factory.get_token_address(ITIP20Factory::getTokenAddressCall {
-                    sender,
-                    salt,
-                });
+                let result =
+                    factory.get_token_address(ITIP20Factory::getTokenAddressCall { sender, salt });
                 assert!(result.is_err());
                 assert_eq!(
                     result.unwrap_err(),

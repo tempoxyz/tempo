@@ -441,20 +441,20 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
-            
+
             // Before initialization, contract should not be initialized
             assert!(!mgr.is_initialized()?);
-            
+
             // Initialize
             mgr.initialize()?;
-            
+
             // After initialization, contract should be initialized
             assert!(mgr.is_initialized()?);
-            
+
             // Re-initializing a new handle should still see initialized state
             let mgr2 = NonceManager::new();
             assert!(mgr2.is_initialized()?);
-            
+
             Ok(())
         })
     }

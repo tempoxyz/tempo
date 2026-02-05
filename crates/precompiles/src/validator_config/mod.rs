@@ -952,7 +952,7 @@ mod tests {
             // validators_array should return the actual addresses, not default
             assert_eq!(validator_config.validators_array(0)?, validator1);
             assert_eq!(validator_config.validators_array(1)?, validator2);
-            
+
             // Verify they're not default
             assert_ne!(validator_config.validators_array(0)?, Address::ZERO);
             assert_ne!(validator_config.validators_array(1)?, Address::ZERO);
@@ -992,21 +992,17 @@ mod tests {
     fn test_ensure_address_is_ip_port_rejects_invalid() {
         // Test invalid formats are rejected (not silently returning Ok)
         let invalid_cases = [
-            "not-an-ip:8000",      // hostname, not IP
-            "192.168.1.1",         // missing port
-            "8000",                // just port
-            "",                    // empty
-            "192.168.1.1:abc",     // non-numeric port
-            "192.168.1.1:99999",   // port out of range
+            "not-an-ip:8000",    // hostname, not IP
+            "192.168.1.1",       // missing port
+            "8000",              // just port
+            "",                  // empty
+            "192.168.1.1:abc",   // non-numeric port
+            "192.168.1.1:99999", // port out of range
         ];
 
         for invalid in invalid_cases {
             let result = ensure_address_is_ip_port(invalid);
-            assert!(
-                result.is_err(),
-                "Expected error for '{}', got Ok",
-                invalid
-            );
+            assert!(result.is_err(), "Expected error for '{}', got Ok", invalid);
         }
 
         // Valid IP:port should succeed

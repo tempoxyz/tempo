@@ -1947,17 +1947,21 @@ mod tests {
             policy_type: 0, // WHITELIST
             admin,
         };
-        
+
         let encoded = policy_data.encode_to_slot();
-        
+
         // Decode it back and verify
         let decoded = PolicyData::decode_from_slot(encoded);
         assert_eq!(decoded.policy_type, policy_data.policy_type);
         assert_eq!(decoded.admin, policy_data.admin);
-        
+
         // Verify encoded is NOT default (all zeros)
-        assert_ne!(encoded, U256::ZERO, "encode_to_slot should return non-default value for valid policy data");
-        
+        assert_ne!(
+            encoded,
+            U256::ZERO,
+            "encode_to_slot should return non-default value for valid policy data"
+        );
+
         Ok(())
     }
 
@@ -1966,20 +1970,20 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-            
+
             // Before init, should not be initialized
             assert!(!registry.is_initialized()?);
-            
+
             // Initialize
             registry.initialize()?;
-            
+
             // After init, should be initialized
             assert!(registry.is_initialized()?);
-            
+
             // New handle should still see initialized state
             let registry2 = TIP403Registry::new();
             assert!(registry2.is_initialized()?);
-            
+
             Ok(())
         })
     }
@@ -1990,7 +1994,7 @@ mod tests {
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-            
+
             // Create a policy to get policy_id = 2 (counter starts at 2)
             let policy_id = registry.create_policy(
                 admin,
@@ -1999,26 +2003,26 @@ mod tests {
                     policyType: ITIP403Registry::PolicyType::WHITELIST,
                 },
             )?;
-            
+
             // The counter should now be 3
             let counter = registry.policy_id_counter()?;
             assert_eq!(counter, 3);
-            
+
             // Policy at counter - 1 should exist
             assert!(registry.policy_exists(ITIP403Registry::policyExistsCall {
                 policyId: policy_id,
             })?);
-            
+
             // Policy at exactly counter should NOT exist (tests < vs <=)
-            assert!(!registry.policy_exists(ITIP403Registry::policyExistsCall {
-                policyId: counter,
-            })?);
-            
+            assert!(
+                !registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: counter })?
+            );
+
             // Policy at counter + 1 should NOT exist
             assert!(!registry.policy_exists(ITIP403Registry::policyExistsCall {
                 policyId: counter + 1,
             })?);
-            
+
             Ok(())
         })
     }
