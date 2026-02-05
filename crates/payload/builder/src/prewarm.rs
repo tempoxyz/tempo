@@ -230,6 +230,146 @@ mod tests {
         time::Duration,
     };
 
+    /// Demonstrates the BUGGY pattern that causes deadlocks.
+    /// This is what the issue was describing - blocking recv() inside a write lock.
+    ///
+    /// WARNING: This code is intentionally broken to reproduce the deadlock.
+    mod buggy_pattern {
+        use std::{
+            collections::HashMap,
+            sync::{mpsc, RwLock},
+        };
+
+        pub(super) struct BuggyCache {
+            inner: RwLock<HashMap<u64, String>>,
+        }
+
+        impl BuggyCache {
+            pub(super) fn new() -> Self {
+                Self {
+                    inner: RwLock::new(HashMap::new()),
+                }
+            }
+
+            /// THE BUG: This blocks on recv() while holding the write lock!
+            /// Any other thread trying to read/write the cache will be blocked
+            /// until recv() completes. If the sender also needs the cache lock,
+            /// this causes a deadlock.
+            pub(super) fn get_or_compute_buggy(
+                &self,
+                key: u64,
+                rx: mpsc::Receiver<String>,
+            ) -> String {
+                let mut cache = self.inner.write().unwrap();
+
+                if let Some(value) = cache.get(&key) {
+                    return value.clone();
+                }
+
+                // BUG: blocking recv() while holding write lock!
+                // This is line 261 equivalent from the issue
+                let result = rx.recv().unwrap();
+
+                cache.insert(key, result.clone());
+                result
+            }
+
+            pub(super) fn read(&self) -> String {
+                let cache = self.inner.read().unwrap();
+                cache.get(&1).cloned().unwrap_or_default()
+            }
+        }
+    }
+
+    #[test]
+    fn test_buggy_pattern_causes_stall() {
+        use buggy_pattern::BuggyCache;
+        use std::sync::{mpsc, Arc};
+
+        let cache = Arc::new(BuggyCache::new());
+        let (tx, rx) = mpsc::channel();
+
+        let cache_clone = Arc::clone(&cache);
+
+        // Thread 1: Will hold the write lock waiting for rx.recv()
+        let handle1 = thread::spawn(move || {
+            cache_clone.get_or_compute_buggy(1, rx)
+        });
+
+        // Give thread 1 time to acquire the lock
+        thread::sleep(Duration::from_millis(50));
+
+        // Thread 2: Tries to read - will be blocked by thread 1's write lock
+        let cache_clone2 = Arc::clone(&cache);
+        let handle2 = thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let _ = cache_clone2.read();
+            start.elapsed()
+        });
+
+        // Let thread 2 try to acquire the lock (it will be blocked)
+        thread::sleep(Duration::from_millis(100));
+
+        // Now send the value - this unblocks thread 1
+        tx.send("result".to_string()).unwrap();
+
+        handle1.join().unwrap();
+        let blocked_duration = handle2.join().unwrap();
+
+        // Thread 2 was blocked for at least 100ms because thread 1
+        // held the write lock while waiting on recv()
+        assert!(
+            blocked_duration >= Duration::from_millis(90),
+            "Expected thread 2 to be blocked for ~100ms while thread 1 \
+             held write lock during recv(), but it was only blocked for {:?}. \
+             This demonstrates the blocking pattern at prewarm.rs:261",
+            blocked_duration
+        );
+    }
+
+    #[test]
+    fn test_fixed_pattern_no_stall() {
+        // Using our correctly implemented cache, other threads are not blocked
+        // during the wait phase because we release the lock before waiting.
+
+        let cache = Arc::new(PayloadExecutionCache::new());
+
+        let cache_clone = Arc::clone(&cache);
+        let handle1 = thread::spawn(move || {
+            execute_with_cache(&cache_clone, 1, || {
+                // Simulate slow computation
+                thread::sleep(Duration::from_millis(200));
+                mock_result(100)
+            })
+        });
+
+        // Give thread 1 time to start
+        thread::sleep(Duration::from_millis(10));
+
+        // Thread 2: Can still access the cache because thread 1
+        // releases the lock during the wait/compute phase
+        let cache_clone2 = Arc::clone(&cache);
+        let handle2 = thread::spawn(move || {
+            let start = std::time::Instant::now();
+            // This should NOT be blocked - the cache lock is not held
+            // during thread 1's slow computation
+            let _ = cache_clone2.get_or_start(2);
+            start.elapsed()
+        });
+
+        let access_time = handle2.join().unwrap();
+        handle1.join().unwrap();
+
+        // Thread 2 should be able to access the cache almost immediately
+        // (not blocked by thread 1's 200ms computation)
+        assert!(
+            access_time < Duration::from_millis(50),
+            "Expected thread 2 to access cache quickly (< 50ms), but took {:?}. \
+             The fixed pattern should not block other threads during computation.",
+            access_time
+        );
+    }
+
     fn mock_result(gas: u64) -> PayloadExecutionResult {
         PayloadExecutionResult {
             state_root: B256::ZERO,
