@@ -52,6 +52,15 @@ tempo-execution-tests diff --baseline-binary /tmp/baseline -d vectors
 
 Only vectors with `check_regression: true` are compared against the baseline.
 
+### When to Use `check_regression`
+
+Set `check_regression: true` for vectors covering:
+- Critical protocol invariants (token creation, transfers, fees)
+- Gas-sensitive operations where unexpected changes indicate bugs
+- Cross-hardfork compatibility (ensures old behavior remains stable)
+
+Vectors without `check_regression` only validate they pass on the current branch—useful for WIP features or tests still being refined.
+
 ### `compare` (alias: `c`)
 
 Compare two fingerprint files.
@@ -74,7 +83,7 @@ Vectors are JSON files that define:
 - **prestate**: Initial accounts, storage, and precompile state
 - **block**: Block context (number, timestamp, basefee, gas_limit)
 - **transactions**: Transactions to execute with expected outcomes
-- **checks**: Post-execution assertions
+- **checks**: Post-execution state to capture for fingerprinting
 
 ### Inheritance
 
@@ -137,6 +146,26 @@ vectors/
 }
 ```
 
+### Post-Execution Checks
+
+The `checks` section specifies what state to **capture for fingerprinting** (not assert specific values). Regression detection works by comparing fingerprints between branches—if any captured value changes, the fingerprint changes.
+
+```json
+"checks": {
+  "precompiles": [
+    {
+      "name": "TIP20Token",
+      "address": "0x20C0...",
+      "fields": ["name", "symbol", "total_supply"]
+    }
+  ],
+  "storage": { "0x1234...": ["0x0", "0x1"] },
+  "nonces": ["0x1111..."]
+}
+```
+
+> **Note:** Field values are captured and hashed into the fingerprint. To detect regressions, run with `check_regression: true`—CI will compare these values against `main`.
+
 ### Transaction Types
 
 - `legacy` (type 0)
@@ -174,6 +203,28 @@ When behavior differs across hardforks:
   "outcomes": [
     { "hardforks": ["Genesis", "T0"], "outcome": { "success": true } },
     { "hardforks": ["T1"], "outcome": { "success": false, "error": "NewError()" } }
+  ]
+}
+```
+
+#### Example: Feature Added in T1
+
+When a function is added in a later hardfork, older hardforks should revert with `UnknownSelector`:
+
+```json
+{
+  "description": "New T1 function reverts on Genesis/T0",
+  "transactions": [
+    {
+      "tx_type": "tempo",
+      "from": "0x1111111111111111111111111111111111111111",
+      "gas_limit": 100000,
+      "calls": [{ "to": "0x20FC...", "input": "0xNewFunction..." }],
+      "outcomes": [
+        { "hardforks": ["Genesis", "T0"], "outcome": { "success": false, "error": "UnknownSelector()" } },
+        { "hardforks": ["T1"], "outcome": { "success": true } }
+      ]
+    }
   ]
 }
 ```
