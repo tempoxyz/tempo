@@ -1455,6 +1455,13 @@ mod tests {
                     .collect()
             };
 
+            // Expiring nonces require valid_before to be set
+            let valid_before = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                Some(current_time + 25)
+            } else {
+                None
+            };
+
             let tx = TempoTransaction {
                 chain_id: 1,
                 max_priority_fee_per_gas: 1_000_000_000,
@@ -1464,6 +1471,7 @@ mod tests {
                 nonce_key,
                 nonce: 0,
                 fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                valid_before,
                 ..Default::default()
             };
 
@@ -1518,7 +1526,7 @@ mod tests {
         }
 
         // Test 3: 1D nonce with sufficient gas should NOT fail intrinsic gas check
-        let tx_1d_high_gas = create_aa_tx(1_000_000, U256::ZERO, false);
+        let tx_1d_high_gas = create_aa_tx(2_000_000, U256::ZERO, false);
         let validator3 = setup_validator(&tx_1d_high_gas, current_time);
         let outcome3 = validator3
             .validate_transaction(TransactionOrigin::External, tx_1d_high_gas)
@@ -1536,7 +1544,7 @@ mod tests {
         }
 
         // Test 4: 2D nonce with sufficient gas should NOT fail intrinsic gas check
-        let tx_2d_high_gas = create_aa_tx(1_000_000, TEMPO_EXPIRING_NONCE_KEY, false);
+        let tx_2d_high_gas = create_aa_tx(2_000_000, TEMPO_EXPIRING_NONCE_KEY, false);
         let validator4 = setup_validator(&tx_2d_high_gas, current_time);
         let outcome4 = validator4
             .validate_transaction(TransactionOrigin::External, tx_2d_high_gas)
@@ -1775,11 +1783,12 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // T0 base fee is 10 gwei (10_000_000_000 wei)
+        // T1 base fee is 20 gwei (20_000_000_000 wei)
         // Create a transaction with max_fee_per_gas exactly at minimum
         let transaction = TxBuilder::aa(Address::random())
-            .max_fee(10_000_000_000) // exactly 10 gwei
+            .max_fee(20_000_000_000) // exactly 20 gwei
             .max_priority_fee(1_000_000_000)
+            .gas_limit(2_000_000)
             .build();
 
         let validator = setup_validator(&transaction, current_time);
@@ -1795,7 +1804,7 @@ mod tests {
                     err.downcast_other_ref::<TempoPoolTransactionError>(),
                     Some(TempoPoolTransactionError::FeeCapBelowMinBaseFee { .. })
                 ),
-                "Should not fail with FeeCapBelowMinBaseFee when fee cap equals min base fee"
+                "Should not fail with FeeCapBelowMinBaseFee when fee cap equals min base fee, got: {err:?}"
             );
         }
     }
@@ -1807,11 +1816,12 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // T0 base fee is 10 gwei (10_000_000_000 wei)
+        // T1 base fee is 20 gwei (20_000_000_000 wei)
         // Create a transaction with max_fee_per_gas above minimum
         let transaction = TxBuilder::aa(Address::random())
-            .max_fee(20_000_000_000) // 20 gwei, above T0's 10 gwei
+            .max_fee(30_000_000_000) // 30 gwei, above T1's 20 gwei
             .max_priority_fee(1_000_000_000)
+            .gas_limit(2_000_000)
             .build();
 
         let validator = setup_validator(&transaction, current_time);
@@ -3325,6 +3335,7 @@ mod tests {
 
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(address!("0000000000000000000000000000000000000002"))
+            .gas_limit(2_000_000)
             .calls(calls)
             .build();
         let validator = setup_validator(&transaction, current_time);
@@ -3382,6 +3393,7 @@ mod tests {
 
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(address!("0000000000000000000000000000000000000002"))
+            .gas_limit(2_000_000)
             .calls(calls)
             .authorization_list(vec![authorization])
             .build();
