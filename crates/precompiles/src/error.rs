@@ -4,9 +4,8 @@ use std::{
 };
 
 use crate::{
-    nonce::INonce::Error as NonceError,
-    tip20::TIP20Error,
-    tip20_factory::TIP20FactoryError,
+    nonce::INonce::Error as NonceError, tip_fee_manager::Error as FeeManagerError,
+    tip20::TIP20Error, tip20_factory::TIP20FactoryError,
     tip403_registry::ITIP403Registry::Error as TIP403RegistryError,
 };
 use alloy::{
@@ -18,8 +17,8 @@ use revm::{
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
-    AccountKeychainError, FeeManagerError, RolesAuthError, StablecoinDEXError, TIPFeeAMMError,
-    UnknownFunctionSelector, ValidatorConfigError,
+    AccountKeychainError, RolesAuthError, StablecoinDEXError, UnknownFunctionSelector,
+    ValidatorConfigError,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -47,13 +46,9 @@ pub enum TempoPrecompileError {
     #[error("TIP403 registry error: {0:?}")]
     TIP403RegistryError(TIP403RegistryError),
 
-    /// Error from TIP  fee manager
+    /// Error from TIP fee manager
     #[error("TIP fee manager error: {0:?}")]
     FeeManagerError(FeeManagerError),
-
-    /// Error from TIP fee AMM
-    #[error("TIP fee AMM error: {0:?}")]
-    TIPFeeAMMError(TIPFeeAMMError),
 
     /// Error from Tempo Transaction nonce manager
     #[error("Tempo Transaction nonce error: {0:?}")]
@@ -110,7 +105,6 @@ impl TempoPrecompileError {
             Self::RolesAuthError(e) => e.abi_encode().into(),
             Self::TIP403RegistryError(e) => e.abi_encode().into(),
             Self::FeeManagerError(e) => e.abi_encode().into(),
-            Self::TIPFeeAMMError(e) => e.abi_encode().into(),
             Self::NonceError(e) => e.abi_encode().into(),
             Self::Panic(kind) => {
                 let panic = Panic {
@@ -179,7 +173,6 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::FeeManagerError);
-    add_errors_to_registry(&mut registry, TempoPrecompileError::TIPFeeAMMError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::NonceError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);

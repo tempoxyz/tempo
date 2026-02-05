@@ -198,10 +198,9 @@ impl ITIP20Factory::Interface for TIP20Factory {
 
 #[cfg(test)]
 mod tests {
-    use super::{ITIP20Factory, *};
+    use super::*;
     use crate::{
         PATH_USD_ADDRESS,
-        error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
@@ -382,7 +381,7 @@ mod tests {
                     "USD".into(),
                     path_usd.address(),
                     sender,
-                    salt1.into(),
+                    salt1,
                 ),
                 TIP20FactoryEvent::token_created(
                     token_addr_2,
@@ -391,7 +390,7 @@ mod tests {
                     "USD".into(),
                     path_usd.address(),
                     sender,
-                    salt2.into(),
+                    salt2,
                 ),
             ]);
 

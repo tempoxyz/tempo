@@ -52,7 +52,7 @@ use tempo_precompiles::{
     nonce::NonceManager,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
-    tip_fee_manager::{IFeeManager, TipFeeManager},
+    tip_fee_manager::{TipFeeManager, traits::*},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
     tip403_registry::TIP403Registry,
@@ -758,12 +758,7 @@ fn initialize_fee_manager(
             for address in initial_accounts.iter().progress() {
                 println!("Setting user token for {user_fee_token_address}");
                 fee_manager
-                    .set_user_token(
-                        *address,
-                        IFeeManager::setUserTokenCall {
-                            token: user_fee_token_address,
-                        },
-                    )
+                    .set_user_token(*address, user_fee_token_address)
                     .expect("Could not set fee token");
             }
 
@@ -771,14 +766,7 @@ fn initialize_fee_manager(
             for validator in validators {
                 println!("Setting user token for {validator} {validator_fee_token_address}");
                 fee_manager
-                    .set_validator_token(
-                        validator,
-                        IFeeManager::setValidatorTokenCall {
-                            token: validator_fee_token_address,
-                        },
-                        // use random address to avoid `CannotChangeWithinBlock` error
-                        Address::random(),
-                    )
+                    .set_validator_token(validator, validator_fee_token_address)
                     .expect("Could not set validator fee token");
             }
         },

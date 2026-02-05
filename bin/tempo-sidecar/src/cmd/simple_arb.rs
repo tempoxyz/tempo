@@ -14,7 +14,7 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use poem::{EndpointExt as _, Route, Server, get, listener::TcpListener};
 use std::{collections::HashSet, time::Duration};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, tip_fee_manager::ITIPFeeAMM,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, tip_fee_manager::IFeeManager,
     tip20_factory::ITIP20Factory,
 };
 use tempo_telemetry_util::error_field;
@@ -119,7 +119,7 @@ impl SimpleArbArgs {
             .wallet(wallet)
             .connect_http(self.rpc_url.parse().context("failed to parse RPC URL")?);
 
-        let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+        let fee_amm = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
         info!("Fetching all pairs...");
         let pairs = fetch_all_pairs(provider.clone()).await?;
@@ -135,12 +135,12 @@ impl SimpleArbArgs {
                     format!("failed to fetch pool for tokens {}, {}", pair.0, pair.1)
                 })?;
 
-            if pool.reserveUserToken > 0
+            if pool.reserve_user_token > 0
                 && let Err(e) = fee_amm
                     .rebalanceSwap(
                         pair.0,
                         pair.1,
-                        U256::from(pool.reserveUserToken),
+                        U256::from(pool.reserve_user_token),
                         signer_address,
                     )
                     .send()
@@ -149,7 +149,7 @@ impl SimpleArbArgs {
                 error!(
                     token_a = %pair.0,
                     token_b = %pair.1,
-                    amount = %pool.reserveUserToken,
+                    amount = %pool.reserve_user_token,
                     err = error_field(&e),
                     "Failed to send initial rebalance transaction"
                 );
@@ -170,14 +170,14 @@ impl SimpleArbArgs {
                         format!("failed to fetch pool for tokens {:?}, {:?}", pair.0, pair.1)
                     })?;
 
-                if pool.reserveUserToken > 0 {
+                if pool.reserve_user_token > 0 {
                     let mut pending_txs = vec![];
 
                     match fee_amm
                         .rebalanceSwap(
                             pair.0,
                             pair.1,
-                            U256::from(pool.reserveUserToken),
+                            U256::from(pool.reserve_user_token),
                             signer_address,
                         )
                         .send()
@@ -191,7 +191,7 @@ impl SimpleArbArgs {
                             error!(
                                 token_a = %pair.0,
                                 token_b = %pair.1,
-                                amount = %pool.reserveUserToken,
+                                amount = %pool.reserve_user_token,
                                 err = error_field(&e),
                                 "Failed to send rebalance transaction"
                             );
