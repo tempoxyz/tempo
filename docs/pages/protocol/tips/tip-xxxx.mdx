@@ -246,7 +246,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Migrate a single validator from V1 to V2 (owner only)
     /// @dev Can be called multiple times to migrate validators one at a time.
-    ///      On first call, copies owner from V1 if V2 owner is address(0).
+    ///      On first call, sets owner of V2 to owner of V1.
     ///      Active V1 validators get addedAtHeight=0 and deactivatedAtHeight=0.
     ///      Inactive V1 validators get addedAtHeight=deactivatedAtHeight=block.timestamp at migration time.
     ///      Reverts if already initialized if already migrated
