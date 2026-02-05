@@ -1398,10 +1398,7 @@ mod tests {
             let reserve_amount = U256::from(pool.reserve_validator_token) - uint!(100_U256);
             amm.check_sufficient_liquidity(user_token, validator_token, reserve_amount)?;
 
-            // Attempt to burn all LP tokens - should fail because it would
-            // leave insufficient liquidity for the pending fee swap
             let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
-
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::TIPFeeAMMError(
@@ -1437,11 +1434,9 @@ mod tests {
             let deposit_amount = uint!(100000_U256);
             let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
 
-            // Reserve a small amount
             let small_reserve = uint!(1000_U256);
             amm.check_sufficient_liquidity(user_token, validator_token, small_reserve)?;
 
-            // Burn only a small portion of LP tokens - should succeed
             let small_burn = liquidity / uint!(10_U256);
             let result = amm.burn(admin, user_token, validator_token, small_burn, recipient);
 
@@ -1475,16 +1470,12 @@ mod tests {
             let deposit_amount = uint!(100000_U256);
             let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
 
-            // Call check_sufficient_liquidity (won't reserve in pre-T2)
             let pool_id = amm.pool_id(user_token, validator_token);
             let pool = amm.pools[pool_id].read()?;
             let reserve_amount = U256::from(pool.reserve_validator_token) - uint!(100_U256);
             amm.check_sufficient_liquidity(user_token, validator_token, reserve_amount)?;
 
-            // Pre-T2: burn should succeed even if it would violate reservation
-            // (because reservation isn't enforced pre-T2)
             let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
-
             assert!(result.is_ok());
 
             Ok(())
