@@ -179,7 +179,7 @@ impl TempoChainSpec {
         Self {
             inner: base_spec.map_header(|inner| TempoHeader {
                 general_gas_limit: 0,
-                timestamp_millis_part: inner.timestamp * 1000,
+                timestamp_millis_part: inner.timestamp % 1000,
                 shared_gas_limit: 0,
                 inner,
             }),
@@ -202,7 +202,7 @@ impl From<ChainSpec> for TempoChainSpec {
         Self {
             inner: spec.map_header(|inner| TempoHeader {
                 general_gas_limit: 0,
-                timestamp_millis_part: inner.timestamp * 1000,
+                timestamp_millis_part: inner.timestamp % 1000,
                 inner,
                 shared_gas_limit: 0,
             }),
