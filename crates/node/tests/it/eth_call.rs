@@ -10,6 +10,7 @@ use alloy::{
     sol_types::{SolCall, SolError, SolEvent},
 };
 use alloy_eips::BlockId;
+use alloy_primitives::TxKind;
 use alloy_rpc_types_eth::TransactionInput;
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
@@ -18,7 +19,9 @@ use tempo_contracts::precompiles::{
     ITIP20::{self, transferCall},
     ITIPFeeAMM, UnknownFunctionSelector,
 };
+use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::TIP20Token};
+use tempo_primitives::transaction::tempo_transaction::Call;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_call() -> eyre::Result<()> {
@@ -406,6 +409,95 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     assert_eq!(
         error.selector, unknown_selector,
         "Error should contain the correct unknown selector"
+    );
+
+    Ok(())
+}
+
+/// Test that eth_estimateGas includes 250k new account gas for CREATE transactions
+/// with 2D nonce (nonce_key != 0) when the caller account has nonce == 0.
+///
+/// This regression test verifies the fix from commit d3cd7ff63 is correctly
+/// propagated through the RPC layer to eth_estimateGas.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_estimate_gas_create_with_2d_nonce() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Use a fresh random address that has never transacted (nonce == 0)
+    let fresh_caller = Address::random();
+
+    // Simple contract creation bytecode (minimal valid contract: PUSH1 0 PUSH1 0 RETURN)
+    let create_bytecode = Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xf3]);
+
+    // Test 1: CREATE with nonce_key = 0 (protocol nonce, baseline)
+    let tx_baseline = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(fresh_caller),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: create_bytecode.clone(),
+        }],
+        nonce_key: Some(U256::ZERO), // protocol nonce
+        ..Default::default()
+    };
+
+    let baseline_gas: String = provider
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_baseline)?],
+        )
+        .await?;
+    let baseline_gas_u64 = u64::from_str_radix(baseline_gas.trim_start_matches("0x"), 16)?;
+
+    // Test 2: CREATE with nonce_key = 1 (2D nonce)
+    // This should add ~250k gas for the new account cost
+    let tx_2d_nonce = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(fresh_caller),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: create_bytecode.clone(),
+        }],
+        nonce_key: Some(U256::from(1)), // 2D nonce
+        ..Default::default()
+    };
+
+    let nonce_2d_gas: String = provider
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_2d_nonce)?],
+        )
+        .await?;
+    let nonce_2d_gas_u64 = u64::from_str_radix(nonce_2d_gas.trim_start_matches("0x"), 16)?;
+
+    // The 2D nonce CREATE should include 250k new_account_cost
+    // but with nonce_key=0, it also gets 250k since account nonce=0
+    // The difference should be the EXISTING_NONCE_KEY_GAS (5k) vs new_account_cost (250k)
+    // Actually nonce_key=0 means using protocol nonce, nonce_key!=0 means 2D nonce
+    // For nonce_key!=0 + CREATE + account_nonce=0, we add 250k
+    // For nonce_key=0, we don't go through that code path
+
+    let gas_diff = nonce_2d_gas_u64.saturating_sub(baseline_gas_u64);
+
+    // The 2D nonce case should add the new_account_cost (250,000 gas)
+    // plus the EXISTING_NONCE_KEY_GAS (5,000) for 2D nonce tracking
+    // Total expected difference: ~255,000 gas (with some tolerance for estimation variance)
+    assert!(
+        (240_000..=260_000).contains(&gas_diff),
+        "2D nonce CREATE should add ~250k gas for new account cost, got diff: {gas_diff} \
+         (baseline: {baseline_gas_u64}, 2D nonce: {nonce_2d_gas_u64})"
     );
 
     Ok(())
