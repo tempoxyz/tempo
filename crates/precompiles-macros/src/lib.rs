@@ -19,7 +19,7 @@ mod utils;
 
 use alloy::primitives::U256;
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::{
     Data, DeriveInput, Expr, Fields, Ident, Token, Type, Visibility,
     parse::{Parse, ParseStream, Parser},
@@ -34,9 +34,10 @@ use crate::utils::extract_attributes;
 struct ContractConfig {
     /// Optional address expression for generating `Self::new()` and `Default`.
     address: Option<Expr>,
-    /// ABI module name. If `Some`, links to that module for ABI types.
-    /// Use `abi` for default module name, or `abi = IFeeManager` for custom name.
-    abi: Option<Ident>,
+    /// ABI module path(s). If `Some`, links to that module(s) for ABI types.
+    /// Use `abi` for default module name, `abi = IFeeManager` for custom name,
+    /// `abi = abi::IFeeManager` for path-style, or `abi = [abi::IFeeManager, abi::IFeeAMM]` for multiple modules.
+    abi: Option<Vec<syn::Path>>,
     /// Whether to generate `Dispatch` and `Precompile` impls (requires `abi`).
     dispatch: bool,
 }
@@ -55,9 +56,28 @@ impl Parse for ContractConfig {
                 "abi" => {
                     if input.peek(Token![=]) {
                         input.parse::<Token![=]>()?;
-                        config.abi = Some(input.parse()?);
+                        // Check for array syntax: abi = [Mod1, Mod2]
+                        if input.peek(syn::token::Bracket) {
+                            let content;
+                            syn::bracketed!(content in input);
+                            let modules: Punctuated<Ident, Token![,]> =
+                                content.parse_terminated(Ident::parse, Token![,])?;
+                            if modules.is_empty() {
+                                return Err(syn::Error::new(
+                                    ident.span(),
+                                    "abi module list cannot be empty",
+                                ));
+                            }
+                            // Convert each Ident to a Path
+                            config.abi = Some(modules.into_iter().map(syn::Path::from).collect());
+                        } else {
+                            // Single module: abi = ModName
+                            let mod_name: Ident = input.parse()?;
+                            config.abi = Some(vec![syn::Path::from(mod_name)]);
+                        }
                     } else {
-                        config.abi = Some(format_ident!("abi"));
+                        // No value: abi (defaults to "abi")
+                        config.abi = Some(vec![syn::parse_quote!(abi)]);
                     }
                 }
                 "dispatch" => {
@@ -94,6 +114,7 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 /// - `#[contract(addr = EXPR)]` - Contract with fixed address (generates `new()` and `Default`)
 /// - `#[contract(abi)]` - Link to a sibling `#[abi] pub mod abi { ... }` module (generates type aliases and `IConstants` impl)
 /// - `#[contract(abi = IFeeManager)]` - Link to a custom-named ABI module instead of `abi`
+/// - `#[contract(abi = [IFeeManager, IFeeAMM], dispatch)]` - Compose multiple ABI modules (import them first) into a unified `{Name}Calls` enum
 /// - `#[contract(abi, dispatch)]` - Same as above plus `Dispatch` and `Precompile` impls (adds initialization check for dynamic precompiles)
 ///
 /// # Storage Layout Example
@@ -367,9 +388,9 @@ fn gen_contract_output(
 
     let storage_output = gen_contract_storage(&ident, &vis, &fields, config.address.as_ref())?;
 
-    let abi_aliases = if let Some(abi_mod) = &config.abi {
+    let abi_aliases = if let Some(abi_mods) = &config.abi {
         let is_dynamic = config.address.is_none();
-        composition::generate_abi_aliases(&ident, abi_mod, config.dispatch, is_dynamic)?
+        composition::generate_abi_aliases(&ident, abi_mods, config.dispatch, is_dynamic)?
     } else {
         proc_macro2::TokenStream::new()
     };

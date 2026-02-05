@@ -674,9 +674,7 @@ impl MethodDef {
         // Preserve doc comments and other attributes, filtering out macro-consumed ones
         let preserved_attrs = attrs
             .iter()
-            .filter(|attr| {
-                !attr.path().is_ident("msg_sender") && !attr.path().is_ident("hardfork")
-            })
+            .filter(|attr| !attr.path().is_ident("msg_sender") && !attr.path().is_ident("hardfork"))
             .cloned()
             .collect();
 
