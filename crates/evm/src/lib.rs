@@ -333,7 +333,7 @@ mod tests {
         // Verify TIP-1000 gas limit cap is set
         assert_eq!(
             evm_env.cfg_env.tx_gas_limit_cap,
-            Some(TIP1000_TX_GAS_LIMIT_CAP),
+            Some(tempo_chainspec::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
             "TIP-1000 requires 30M gas limit cap for T1 hardfork"
         );
     }
