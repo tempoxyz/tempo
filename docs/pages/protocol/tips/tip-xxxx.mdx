@@ -196,28 +196,43 @@ interface IValidatorConfigV2 {
     /// @param validatorAddress The validator address to delete
     function deactiveValidator(address validatorAddress) external;
 
-    /// @notice Rotate a validator to a new identity (caller must be existing validator)
-    /// @dev Atomically deletes the caller's validator entry and adds a new one. This is equivalent
+    /// @notice Rotate a validator to a new identity (owner or validator only)
+    /// @dev Atomically deletes the specified validator entry and adds a new one. This is equivalent
     ///      to calling deleteValidator followed by addValidator, but executed atomically.
-    ///      The caller (msg.sender) must be an existing active validator.
+    ///      Can be called by the contract owner or by the validator's own address.
     ///      The same validation rules as addValidator apply:
     ///      - The new public key must not already exist
     ///      - Ingress and egress must be parseable as <ip>:<port> pairs.
     ///      - The signature must prove ownership of the new public key
     ///      The signature must be an Ed25519 signature over:
     ///      keccak256(abi.encodePacked(
-    ///          <NAMESPACE>, contractAddress, ingress, egress
+    ///          <NAMESPACE>, contractAddress, validatorAddress, ingress, egress
     ///      )),
     ///      where `<NAMESPACE>` is "TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR" || "_" || <chainId>.
+    /// @param validatorAddress The address of the validator to rotate
     /// @param publicKey The new validator's Ed25519 communication public key
     /// @param ingress The new validator's inbound address `<ip>:<port>` for incoming connections
     /// @param egress The new validator's outbound IP address `<ip>:<port>` for firewall whitelisting
     /// @param signature Ed25519 signature (64 bytes) proving ownership of the new public key
     function rotateValidator(
+        address validatorAddress,
         bytes32 publicKey,
         string calldata ingress,
         string calldata egress,
         bytes calldata signature
+    ) external;
+
+    /// @notice Update a validator's IP addresses (owner or validator only)
+    /// @dev Can be called by the contract owner or by the validator's own address.
+    ///      This allows validators to update their network addresses without requiring
+    ///      a full rotation.
+    /// @param validatorAddress The address of the validator to update
+    /// @param ingress The new inbound address `<ip>:<port>` for incoming connections
+    /// @param egress The new outbound IP address `<ip>:<port>` for firewall whitelisting
+    function setIpAddresses(
+        address validatorAddress,
+        string calldata ingress,
+        string calldata egress
     ) external;
 
     /// @notice Change owner (owner only)
@@ -248,7 +263,7 @@ interface IValidatorConfigV2 {
     ///      Reverts if validator activity does not match between contracts:
     ///      + if `V1.active == true` then `V2.deletedAtHeight = 0`
     ///      + if `V1.active == false` then `V2.deletedAtHeight > 0`
-    function initializeIfMigrationComplete() external;
+    function initializeIfMigrated() external;
 
     /// @notice Set the validator address for a validator (owner only)
     /// @dev Allows owner to change the address of an existing validator.
@@ -455,9 +470,9 @@ The following invariants must always hold:
 1. **Append-only array**: The `validatorsArray` length only increases; it never
    decreases.
 
-2. **Immutable validators**: Once a validator is added, its `publicKey`,
-   `validatorAddress`, `ingress`, `egress`, `index`, and
-   `addedAtHeight` fields never change.
+2. **Immutable identity**: Once a validator is added, its `publicKey`,
+   `validatorAddress`, `index`, and `addedAtHeight` fields never change.
+   The `ingress` and `egress` fields can be updated via `setIpAddresses`.
 
 3. **Delete-once**: A validator's `deactivatedAtHeight` can only transition from 0
    to a non-zero value, never back to 0 or to a different non-zero value.
@@ -493,8 +508,9 @@ The following invariants must always hold:
     `rotateValidator` on themselves (caller must be the validator being rotated).
 
 13. **Atomic rotation**: `rotateValidator` atomically deletes the old validator
-    (setting its `deactivatedAtHeight`) and adds a new validator entry. Both
-    operations occur in the same transaction with the same block height.
+    (setting its `deactivatedAtHeight`), adds a new validator entry, and sets
+    uppdates the `addresses[validatarAddress]` mapping to point to the new
+    entry. Both operations occur in the same transaction with the same block height.
 
 14. **Address update**: `setValidatorAddress` updates the address of an existing
     validator without changing any other fields. This is useful for updating
@@ -512,7 +528,7 @@ The migration uses a two-pronged approach:
 
 1. **New hardfork**: Timestamp-based activation
 2. **Manual migration**: Admin migrates validators one at a time, then calls
-   `initialize()` to flip the flag. CL reads from V1 until the flag is set.
+   `initializeIfMigrated()` to flip the flag. CL reads from V1 until the flag is set.
 
 ## Hardfork-Based Switching
 
@@ -539,7 +555,7 @@ This ensures:
 ## Manual Migration
 
 V2 uses manual migration where the admin explicitly migrates validators one at a
-time and then calls `initialize()` to flip the `initialized` flag. The
+time and then calls `initializeIfMigrated()` to flip the `initialized` flag. The
 `initialized` bit (bit 255 of slot 0) tracks whether migration is complete.
 
 ### Motivation
@@ -582,7 +598,7 @@ precompile does NOT proxy reads to V1.
 - Adds to `validatorsArray`
 - Populates lookup maps (`validators[validatorAddress]`, `pubkeyToIndex[pubkey]`)
 
-**`initialize()`**:
+**`initializeIfMigrated()`**:
 - Reverts if `validatorsArray.length < V1.getValidators().length` (ensures all validators migrated)
 - Copies `nextDkgCeremony` from V1 to V2
 - Sets `initialized = true` (bit 255 of slot 0)
@@ -624,19 +640,19 @@ interface IValidatorConfigV1 {
 - **All validators imported**: Both active and inactive V1 validators are
   imported; inactive ones have `addedAtHeight == deactivatedAtHeight == block.timestamp`,
   active ones have `addedAtHeight == 0` (indicating they were active before V2 existed)
-- **Initialize validates migration**: `initialize()` reverts if not all V1 validators have been migrated
+- **Initialize validates migration**: `initializeIfMigrated()` reverts if not all V1 validators have been migrated
 
 ## Timeline
 
 ```
-Before Fork           Post-Fork (V2 not init)    Admin Migration           After initialize()
+Before Fork           Post-Fork (V2 not init)    Admin Migration           After initializeIfMigrated()
      │                      │                          │                          │
      │  CL reads V1         │  CL reads V1             │  migrateValidator()      │  CL reads V2
      │                      │  (isInitialized=false)   │  (one tx per validator)  │  isInitialized=true
      │                      │                          │                          │
 ─────┴──────────────────────┴──────────────────────────┴──────────────────────────┴───────────────►
                             │                          │                          │
-                      hardforkTime           migrateValidator() x N         initialize()
+                      hardforkTime           migrateValidator() x N         initializeIfMigrated()
 ```
 
 ## Migration Steps
@@ -652,7 +668,7 @@ Existing networks are defined as those with hardfork_timestamp > timestamp_at_ge
    - One transaction per validator
    - Example: `migrateValidator(0)`, `migrateValidator(1)`, `migrateValidator(2)`, etc.
    - Validator addresses are copied from V1
-5. **Admin calls `initialize()`**
+5. **Admin calls `initializeIfMigrated()`**
    - Sets `initialized = true`
    - CL now reads from V2
 6. **Post-migration**: All reads/writes use V2 state directly
@@ -663,7 +679,7 @@ Existing networks are defined as those with hardfork_timestamp > timestamp_at_ge
 
 New networks are defined as those that have the V2 validator config contract at genesis. In these cases, the V1 validator config contract is not required if validators are set up in V2 state.
 
-1. Call `initialize()` to set `initialized = true`
+1. Call `initializeIfMigrated()` to set `initialized = true`
 2. Call `addValidator()` for each initial validator
 3. Set `<hardforkTime> = 0` to activate V2 immediately
 4. V1 Validator Config contract/precompile is not necessary in this flow
@@ -700,58 +716,75 @@ The test suite must cover:
 14. **ValidatorAlreadyDeleted**: Cannot delete twice
 15. **InvalidPublicKey**: Rejects zero public key
 16. **InvalidSignature**: Rejects wrong signature, wrong length, wrong signer
-17. **RotateValidator caller not validator**: Non-validator cannot call rotateValidator
-18. **RotateValidator caller already deleted**: Cannot rotate already-deleted validator
-19. **RotateValidator new pubkey exists**: Cannot rotate to existing public key
-20. **RotateValidator invalid signature**: Rejects invalid signature for rotation
+
+### rotateValidator
+
+17. **rotateValidator by owner**: Owner can rotate any active validator
+18. **rotateValidator by validator**: Validator can rotate themselves
+19. **rotateValidator unauthorized**: Non-owner and non-validator cannot rotate
+20. **rotateValidator already deleted**: Cannot rotate already-deleted validator
+21. **rotateValidator new pubkey exists**: Cannot rotate to existing public key
+22. **rotateValidator invalid signature**: Rejects invalid signature for rotation
+23. **rotateValidator validator not found**: Reverts if validatorAddress does not exist
+24. **rotateValidator atomicity**: Old validator is deleted and new one added in same block
+25. **rotateValidator preserves index**: New validator gets next available index, old index remains deleted
 
 ### Address Validation
 
-22. **Valid IPv4:port**: Accepts `192.168.1.1:8080`
-23. **Valid IPv6:port**: Accepts `[2001:db8::1]:8080`
-24. **Invalid format**: Rejects malformed addresses
+26. **Valid IPv4:port**: Accepts `192.168.1.1:8080`
+27. **Valid IPv6:port**: Accepts `[2001:db8::1]:8080`
+28. **Invalid format**: Rejects malformed addresses
 
 ### Historical Filtering (Caller-side)
 
-25. **addedAtHeight correctness**: Validators have correct `addedAtHeight` set
+29. **addedAtHeight correctness**: Validators have correct `addedAtHeight` set
     at creation
-26. **deactivatedAtHeight correctness**: Deleted validators have correct
+30. **deactivatedAtHeight correctness**: Deleted validators have correct
     `deactivatedAtHeight` set
-27. **Filter logic**: Caller can correctly filter by
+31. **Filter logic**: Caller can correctly filter by
     `addedAtHeight <= H && (deactivatedAtHeight == 0 || deactivatedAtHeight > H)`
 
 ### Manual Migration
 
-28. **migrateValidator imports validator**: Calling `migrateValidator(i)`
+32. **migrateValidator imports validator**: Calling `migrateValidator(i)`
     correctly imports validator at index i from V1 with the same address
-29. **migrateValidator copies address from V1**: The V2 validator uses the address from V1
-30. **migrateValidator reverts on duplicate**: Calling `migrateValidator(i)` reverts
+33. **migrateValidator copies address from V1**: The V2 validator uses the address from V1
+34. **migrateValidator reverts on duplicate**: Calling `migrateValidator(i)` reverts
     if `i != validatorsArray.length`
-31. **migrateValidator reverts if initialized**: Calling `migrateValidator` reverts
+35. **migrateValidator reverts if initialized**: Calling `migrateValidator` reverts
     if `isInitialized() == true`
-32. **migrateValidator owner only**: Non-owner cannot call `migrateValidator`
-33. **All validators imported on migration**: Both V1 active and inactive validators
+36. **migrateValidator owner only**: Non-owner cannot call `migrateValidator`
+37. **All validators imported on migration**: Both V1 active and inactive validators
     are imported; inactive ones have `addedAtHeight == deactivatedAtHeight == block.timestamp`,
     active ones have `addedAtHeight == 0`
-34. **addedAtHeight set correctly**: Active validators have `addedAtHeight == 0`,
+38. **addedAtHeight set correctly**: Active validators have `addedAtHeight == 0`,
     inactive validators have `addedAtHeight == block.timestamp` at migration time
-35. **initialize sets flag**: After `initialize()`, `isInitialized()` returns true
-36. **migrateValidator copies owner**: V2 `owner()` matches V1 after first `migrateValidator` call
-37. **initialize copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
-    after `initialize()`
-38. **initialize owner only**: Non-owner cannot call `initialize`
-39. **isInitialized returns correct value**: Returns false before initialize, true after
-40. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`
-41. **initialize reverts if not all migrated**: `initialize()` reverts if
+39. **initialize sets flag**: After `initializeIfMigrated()`, `isInitialized()` returns true
+40. **migrateValidator copies owner**: V2 `owner()` matches V1 after first `migrateValidator` call
+41. **initialize copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
+    after `initializeIfMigrated()`
+42. **initialize owner only**: Non-owner cannot call `initialize`
+43. **isInitialized returns correct value**: Returns false before initialize, true after
+44. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`
+45. **initialize reverts if not all migrated**: `initializeIfMigrated()` reverts if
     `validatorsArray.length < V1.getValidators().length`
 
 ### setValidatorAddress
 
-42. **setValidatorAddress updates address**: Successfully updates validator address
-43. **setValidatorAddress owner only**: Non-owner cannot call `setValidatorAddress`
-44. **setValidatorAddress reverts on invalid index**: Reverts if `validatorIndex >= validatorsArray.length`
-45. **setValidatorAddress reverts on duplicate address**: Reverts if `newAddress` already exists
-46. **setValidatorAddress updates lookup maps**: Old address is removed, new address is added to lookup
+46. **setValidatorAddress updates address**: Successfully updates validator address
+47. **setValidatorAddress owner only**: Non-owner cannot call `setValidatorAddress`
+48. **setValidatorAddress reverts on invalid index**: Reverts if `validatorIndex >= validatorsArray.length`
+49. **setValidatorAddress reverts on duplicate address**: Reverts if `newAddress` already exists
+50. **setValidatorAddress updates lookup maps**: Old address is removed, new address is added to lookup
+
+### setIpAddresses
+
+51. **setIpAddresses by owner**: Owner can update any validator's IP addresses
+52. **setIpAddresses by validator**: Validator can update their own IP addresses
+53. **setIpAddresses unauthorized**: Non-owner and non-validator cannot update IP addresses
+54. **setIpAddresses reverts on invalid validator**: Reverts if validator does not exist
+55. **setIpAddresses reverts on deleted validator**: Reverts if validator is already deleted
+56. **setIpAddresses validates format**: Rejects invalid `<ip>:<port>` format
 
 ---
 
@@ -759,9 +792,9 @@ The test suite must cover:
 
 ## Migration Timing
 
-The migration must be completed (including `initialize()`) before an epoch
+The migration must be completed (including `initializeIfMigrated()`) before an epoch
 boundary to avoid disrupting DKG. The admin should:
 
 1. Schedule migration during a period with no imminent epoch transitions
 2. Monitor the current epoch and time remaining
-3. Complete all `migrateValidator` calls and `initialize()` with sufficient time buffer
+3. Complete all `migrateValidator` calls and `initializeIfMigrated()` with sufficient time buffer
