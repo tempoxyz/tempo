@@ -452,7 +452,15 @@ fn tip20_mutate(c: &mut Criterion) {
             let mut token = TIP20Setup::create("TestToken", "TEST", admin)
                 .apply()
                 .unwrap();
-            let policy_id = 2;
+            let policy_id = TIP403Registry::new()
+                .create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: ITIP403Registry::PolicyType::WHITELIST,
+                    },
+                )
+                .unwrap();
 
             b.iter(|| {
                 let token = black_box(&mut token);
