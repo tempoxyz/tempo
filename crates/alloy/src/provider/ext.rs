@@ -3,7 +3,10 @@ use alloy_provider::{
     fillers::{ChainIdFiller, GasFiller, JoinFill, RecommendedFillers, TxFiller},
 };
 
-use crate::{TempoFillers, TempoNetwork, fillers::{ExpiringNonceFiller, Random2DNonceFiller}};
+use crate::{
+    TempoFillers, TempoNetwork,
+    fillers::{ExpiringNonceFiller, Random2DNonceFiller},
+};
 
 /// Extension trait for [`ProviderBuilder`] with Tempo-specific functionality.
 pub trait TempoProviderBuilderExt {
@@ -54,14 +57,12 @@ impl TempoProviderBuilderExt
         JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>,
         TempoNetwork,
     > {
-        let fillers: TempoFillers<ExpiringNonceFiller> =
-            <ExpiringNonceFiller as TxFiller<TempoNetwork>>::join_with(
-                ExpiringNonceFiller::default(),
-                <GasFiller as TxFiller<TempoNetwork>>::join_with(
-                    GasFiller,
-                    ChainIdFiller::default(),
-                ),
-            );
+        let fillers: TempoFillers<ExpiringNonceFiller> = <ExpiringNonceFiller as TxFiller<
+            TempoNetwork,
+        >>::join_with(
+            ExpiringNonceFiller::default(),
+            <GasFiller as TxFiller<TempoNetwork>>::join_with(GasFiller, ChainIdFiller::default()),
+        );
         ProviderBuilder::default().filler(fillers)
     }
 }
@@ -71,7 +72,8 @@ mod tests {
     use alloy_provider::{Identity, ProviderBuilder, fillers::JoinFill};
 
     use crate::{
-        TempoFillers, TempoNetwork, fillers::{ExpiringNonceFiller, Random2DNonceFiller},
+        TempoFillers, TempoNetwork,
+        fillers::{ExpiringNonceFiller, Random2DNonceFiller},
         provider::ext::TempoProviderBuilderExt,
     };
 
