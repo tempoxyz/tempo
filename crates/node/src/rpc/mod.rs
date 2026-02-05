@@ -317,8 +317,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
                 0 // expiring nonce must be 0
             } else {
                 // 2D nonce: fetch from storage
-                let slot = NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key]
-                    .slot();
+                let slot =
+                    NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
                 db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
                     .map_err(Into::into)?
                     .saturating_to()
