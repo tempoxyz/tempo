@@ -6,7 +6,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title TIP403Registry Invariant Tests
 /// @notice Fuzz-based invariant tests for the TIP403Registry implementation
-/// @dev Tests invariants TEMPO-REG1 through TEMPO-REG18 as documented in README.md
+/// @dev Tests invariants TEMPO-REG1 through TEMPO-REG19 as documented in README.md
 contract TIP403RegistryInvariantTest is InvariantBaseTest {
 
     /// @dev Log file path for recording actions
@@ -50,7 +50,10 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         address actor,
         ITIP403Registry.PolicyType policyType,
         bool isFallback
-    ) internal returns (uint64 policyId) {
+    )
+        internal
+        returns (uint64 policyId)
+    {
         vm.startPrank(actor);
         policyId = registry.createPolicy(actor, policyType);
         vm.stopPrank();
@@ -82,7 +85,10 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     /// @param policyType The type of policy to find
     /// @return policyId The found policy ID (0 if not found)
     /// @return found Whether a matching policy was found
-    function _findPolicy(uint256 seed, ITIP403Registry.PolicyType policyType)
+    function _findPolicy(
+        uint256 seed,
+        ITIP403Registry.PolicyType policyType
+    )
         internal
         view
         returns (uint64 policyId, bool found)
@@ -107,7 +113,11 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     /// @param policyTypeOrAny Either a PolicyType cast to uint8, or ANY_POLICY for any type
     /// @return policyId The policy ID (existing or newly created)
     /// @return admin The admin of the policy (actor if created, existing admin if found)
-    function _ensurePolicy(address actor, uint256 seed, uint8 policyTypeOrAny)
+    function _ensurePolicy(
+        address actor,
+        uint256 seed,
+        uint8 policyTypeOrAny
+    )
         internal
         returns (uint64 policyId, address admin)
     {
@@ -210,7 +220,11 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for creating policies with initial accounts
     /// @dev Tests TEMPO-REG5 (bulk creation)
-    function createPolicyWithAccounts(uint256 actorSeed, bool isWhitelist, uint8 numAccountsSeed)
+    function createPolicyWithAccounts(
+        uint256 actorSeed,
+        bool isWhitelist,
+        uint8 numAccountsSeed
+    )
         external
     {
         address actor = _selectActor(actorSeed);
@@ -500,7 +514,11 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for attempting to modify special policies (0 and 1)
     /// @dev Tests TEMPO-REG17 (special policies cannot be modified) and TEMPO-REG18 (admin cannot change)
-    function tryModifySpecialPolicies(uint256 actorSeed, uint256 accountSeed, uint8 policyChoice)
+    function tryModifySpecialPolicies(
+        uint256 actorSeed,
+        uint256 accountSeed,
+        uint8 policyChoice
+    )
         external
     {
         address actor = _selectActor(actorSeed);

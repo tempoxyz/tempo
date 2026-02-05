@@ -31,6 +31,6 @@ sort_imports = true
 contract_new_lines = true
 bracket_spacing = true
 number_underscore = "thousands"
-multline_func_header = "all"
+multiline_func_header = "all"
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

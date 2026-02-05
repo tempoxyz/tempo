@@ -921,6 +921,9 @@ impl AA2dPool {
     ///
     /// Evicts queued transactions first (up to queued_limit), then pending if needed.
     /// Counts are computed lazily by scanning the eviction set.
+    ///
+    /// Note: Only `max_txs` is enforced here; `max_size` is intentionally not checked for 2D pools
+    /// since the protocol pool already enforces size-based limits as a primary defense.
     fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
@@ -1489,7 +1492,7 @@ impl BestAA2dTransactions {
             }
             // Advance transaction that just got unlocked, if any.
             // Skip for expiring nonce transactions as they are always independent.
-            if !id.seq_id.is_expiring_nonce()
+            if !best.transaction.transaction.is_expiring_nonce()
                 && let Some(unlocked) = self.by_id.get(&id.unlocks())
             {
                 self.independent.insert(unlocked.clone());
@@ -1540,14 +1543,6 @@ impl AASequenceId {
     /// Creates a new instance with the address and nonce key.
     pub const fn new(address: Address, nonce_key: U256) -> Self {
         Self { address, nonce_key }
-    }
-
-    /// Returns `true` if this sequence ID represents an expiring nonce transaction.
-    ///
-    /// Expiring nonce transactions use `nonce_key == U256::MAX` and are always independent,
-    /// meaning they don't have sequential nonce dependencies.
-    pub(crate) fn is_expiring_nonce(&self) -> bool {
-        self.nonce_key == U256::MAX
     }
 
     const fn start_bound(self) -> std::ops::Bound<AA2dTransactionId> {
