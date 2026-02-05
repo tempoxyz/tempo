@@ -2,6 +2,11 @@
 //!
 //! This module provides utilities to create an in-memory CacheDB
 //! populated with the prestate defined in a test vector.
+//!
+//! The seeding system uses a generic approach driven by `FieldMetadata` from
+//! the precompile resolver. Most fields are automatically inferred from their
+//! byte size (32 = U256, 20 = Address, etc.), with special cases handled via
+//! an explicit `SeedKind` override table.
 
 use crate::vector::{PrecompileState, Prestate};
 use alloy_primitives::{Address, B256, Bytes, U256};
@@ -12,16 +17,58 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_precompiles::{
-    account_keychain::AuthorizedKey, resolver::slot_for, tip403_registry::PolicyData,
+    account_keychain::AuthorizedKey,
+    resolver::metadata_for,
+    storage::{FromWord, packing::insert_into_word},
+    tip403_registry::PolicyData,
 };
 
 /// Marker bytecode for precompile accounts (invalid opcode, won't execute).
 /// TIP20 tokens check `is_initialized()` which requires non-empty code hash.
 const PRECOMPILE_MARKER_BYTECODE: u8 = 0xEF;
 
-/// Bit offset for transfer_policy_id in TIP20Token packed storage slot 7.
-/// The u64 policy ID is stored at bytes 20-27 (bit position 160).
-const POLICY_ID_BIT_OFFSET: usize = 160;
+/// Maximum length for Solidity short strings.
+const MAX_SHORT_STRING_LEN: usize = 31;
+
+// ============================================================================
+// SeedKind: Override table for special encoding cases
+// ============================================================================
+
+/// Specifies how a field should be encoded when seeding.
+/// Most fields use `DefaultPrimitive`, which infers the type from `meta.bytes`.
+#[derive(Debug, Clone, Copy)]
+enum SeedKind {
+    /// Infer encoding from meta.bytes (32=U256, 20=Address, 8=u64, etc.)
+    DefaultPrimitive,
+    /// Encode as Solidity short string (≤31 bytes, length*2 in LSB)
+    ShortString,
+    /// Store array length only (for Vec fields)
+    ArrayLenOnly,
+    /// Encode AuthorizedKey struct
+    AuthorizedKeyStruct,
+    /// Encode PolicyData struct
+    PolicyDataStruct,
+}
+
+/// Returns the `SeedKind` for a given (contract, field) pair.
+/// Fields not in this table use `DefaultPrimitive`, which infers type from metadata.
+fn seed_kind(contract: &str, field: &str) -> SeedKind {
+    match (contract, field) {
+        // Short string fields (Solidity string encoding)
+        ("TIP20Token", "name" | "symbol" | "currency") => SeedKind::ShortString,
+
+        // Array length-only fields (store length at base slot)
+        ("StablecoinDEX", "book_keys") => SeedKind::ArrayLenOnly,
+        ("ValidatorConfig", "validators_array") => SeedKind::ArrayLenOnly,
+
+        // Complex struct fields with custom encoders
+        ("AccountKeychain", "keys") => SeedKind::AuthorizedKeyStruct,
+        ("TIP403Registry", "policy_data") => SeedKind::PolicyDataStruct,
+
+        // All other fields use default primitive inference
+        _ => SeedKind::DefaultPrimitive,
+    }
+}
 
 /// A database seeded from a test vector's prestate.
 pub struct VectorDatabase {
@@ -98,10 +145,10 @@ impl VectorDatabase {
         Ok(())
     }
 
-    /// Seeds a single precompile's state.
+    /// Seeds a single precompile's state using the generic field seeder.
     fn seed_precompile(&mut self, precompile: &PrecompileState) -> eyre::Result<()> {
         let address = precompile.address;
-        let name = &precompile.name;
+        let contract = &precompile.name;
 
         // Ensure the precompile account exists with bytecode.
         let marker_code = Bytecode::new_raw(Bytes::from_static(&[PRECOMPILE_MARKER_BYTECODE]));
@@ -118,570 +165,146 @@ impl VectorDatabase {
             .ok_or_else(|| eyre::eyre!("fields must be an object"))?;
 
         for (field_name, value) in fields {
-            match name.as_str() {
-                "TIP20Token" => self.seed_tip20_field(address, field_name, value)?,
-                "NonceManager" => self.seed_nonce_field(address, field_name, value)?,
-                "AccountKeychain" => {
-                    self.seed_account_keychain_field(address, field_name, value)?
-                }
-                "StablecoinDEX" => self.seed_stablecoin_dex_field(address, field_name, value)?,
-                "TIP403Registry" => self.seed_tip403_registry_field(address, field_name, value)?,
-                "TipFeeManager" => self.seed_tip_fee_manager_field(address, field_name, value)?,
-                "ValidatorConfig" => {
-                    self.seed_validator_config_field(address, field_name, value)?
-                }
-                _ => return Err(eyre::eyre!("unsupported precompile: {}", name)),
+            self.seed_field(address, contract, field_name, value)?;
+        }
+
+        Ok(())
+    }
+
+    /// Generic entry point for seeding a single field.
+    /// Handles scalars, mappings (nested or flat), and arrays based on JSON shape.
+    fn seed_field(
+        &mut self,
+        address: Address,
+        contract: &str,
+        field: &str,
+        value: &serde_json::Value,
+    ) -> eyre::Result<()> {
+        let kind = seed_kind(contract, field);
+
+        // Handle array length fields specially
+        if matches!(kind, SeedKind::ArrayLenOnly) {
+            let arr = value
+                .as_array()
+                .ok_or_else(|| eyre::eyre!("{} must be an array", field))?;
+            let meta = metadata_for(contract, field, &[])?;
+            self.db
+                .insert_account_storage(address, meta.slot, U256::from(arr.len()))?;
+            return Ok(());
+        }
+
+        // Check if this is a mapping by trying to get metadata without keys
+        let base_meta = metadata_for(contract, field, &[]);
+
+        match base_meta {
+            Ok(meta) if meta.is_mapping => {
+                // This is a mapping field - traverse the JSON object
+                self.seed_mapping(address, contract, field, value, vec![], meta.nesting_depth)?;
+            }
+            Ok(_) => {
+                // Non-mapping field - seed as scalar
+                self.seed_scalar(address, contract, field, &[], value)?;
+            }
+            Err(tempo_precompiles::resolver::ResolverError::MissingKey(_)) => {
+                // Needs keys - it's a mapping
+                let meta = metadata_for(contract, field, &["0x0000000000000000000000000000000000000000"])?;
+                self.seed_mapping(address, contract, field, value, vec![], meta.nesting_depth)?;
+            }
+            Err(e) => return Err(eyre::eyre!("field resolution failed: {}", e)),
+        }
+
+        Ok(())
+    }
+
+    /// Recursively traverses a mapping's JSON object and seeds each leaf value.
+    fn seed_mapping(
+        &mut self,
+        address: Address,
+        contract: &str,
+        field: &str,
+        value: &serde_json::Value,
+        keys: Vec<String>,
+        remaining_depth: u8,
+    ) -> eyre::Result<()> {
+        let map = value
+            .as_object()
+            .ok_or_else(|| eyre::eyre!("{} must be an object", field))?;
+
+        for (key, inner_value) in map {
+            let mut new_keys = keys.clone();
+            new_keys.push(key.clone());
+
+            if remaining_depth > 1 && inner_value.is_object() {
+                // More nesting levels to go
+                self.seed_mapping(
+                    address,
+                    contract,
+                    field,
+                    inner_value,
+                    new_keys,
+                    remaining_depth - 1,
+                )?;
+            } else {
+                // Leaf value - seed as scalar
+                let key_refs: Vec<&str> = new_keys.iter().map(|s| s.as_str()).collect();
+                self.seed_scalar(address, contract, field, &key_refs, inner_value)?;
             }
         }
 
         Ok(())
     }
 
-    /// Seeds a single TIP20Token field.
-    fn seed_tip20_field(
+    /// Seeds a scalar value at a specific storage slot.
+    /// Uses `insert_into_word` for packed fields, writing directly for full-slot values.
+    fn seed_scalar(
         &mut self,
         address: Address,
-        field_name: &str,
+        contract: &str,
+        field: &str,
+        keys: &[&str],
         value: &serde_json::Value,
     ) -> eyre::Result<()> {
-        match field_name {
-            // Simple string fields (name, symbol, currency)
-            "name" | "symbol" | "currency" => {
+        let meta = metadata_for(contract, field, keys)?;
+        let kind = seed_kind(contract, field);
+        let is_packed = meta.offset > 0 || meta.bytes < 32;
+
+        // For packed fields, read current slot value
+        let current = if is_packed {
+            self.db.storage_ref(address, meta.slot).unwrap_or(U256::ZERO)
+        } else {
+            U256::ZERO
+        };
+
+        // Encode and optionally pack based on SeedKind
+        let final_value = match kind {
+            SeedKind::ShortString => {
                 let s = value
                     .as_str()
-                    .ok_or_else(|| eyre::eyre!("{} must be a string", field_name))?;
-                let encoded = encode_short_string(s)?;
-                let slot = slot_for("TIP20Token", field_name, &[])?;
-                self.db.insert_account_storage(address, slot, encoded)?;
+                    .ok_or_else(|| eyre::eyre!("{} must be a string", field))?;
+                encode_short_string(s)?
             }
+            SeedKind::AuthorizedKeyStruct => {
+                let info = value
+                    .as_object()
+                    .ok_or_else(|| eyre::eyre!("{} value must be an object", field))?;
+                encode_authorized_key(info)?
+            }
+            SeedKind::PolicyDataStruct => {
+                let info = value
+                    .as_object()
+                    .ok_or_else(|| eyre::eyre!("{} value must be an object", field))?;
+                encode_policy_data(info)?
+            }
+            SeedKind::ArrayLenOnly => {
+                unreachable!("ArrayLenOnly handled in seed_field")
+            }
+            SeedKind::DefaultPrimitive => {
+                // Use insert_into_word with typed values for proper packing
+                encode_and_pack_by_size(field, meta.bytes, value, current, meta.offset, is_packed)?
+            }
+        };
 
-            // Simple U256 fields
-            "total_supply" | "supply_cap" | "global_reward_per_token" => {
-                let v = parse_u256_value(value)?;
-                let slot = slot_for("TIP20Token", field_name, &[])?;
-                self.db.insert_account_storage(address, slot, v)?;
-            }
-
-            // Packed field: transfer_policy_id (u64 at byte offset 20 in slot 7)
-            "transfer_policy_id" => {
-                let policy_id = parse_u64_value(value)?;
-                let slot = slot_for("TIP20Token", field_name, &[])?;
-
-                // Read current slot value to preserve other packed fields
-                let current = self.db.storage_ref(address, slot).unwrap_or(U256::ZERO);
-
-                // Clear the u64 at offset 20 (bytes 20-27 from the right in big-endian)
-                // and set the new value.
-                let mask: U256 = U256::from(u64::MAX) << POLICY_ID_BIT_OFFSET;
-                let cleared = current & !mask;
-                let new_value = cleared | (U256::from(policy_id) << POLICY_ID_BIT_OFFSET);
-
-                self.db.insert_account_storage(address, slot, new_value)?;
-            }
-
-            // u128 fields
-            "opted_in_supply" => {
-                let v = parse_u128_value(value)?;
-                let slot = slot_for("TIP20Token", field_name, &[])?;
-                self.db
-                    .insert_account_storage(address, slot, U256::from(v))?;
-            }
-
-            // Address fields
-            "quote_token" | "next_quote_token" => {
-                let addr_str = value
-                    .as_str()
-                    .ok_or_else(|| eyre::eyre!("{} must be an address string", field_name))?;
-                let addr: Address = addr_str.parse()?;
-                let slot = slot_for("TIP20Token", field_name, &[])?;
-                self.db.insert_account_storage(
-                    address,
-                    slot,
-                    U256::from_be_slice(addr.as_slice()),
-                )?;
-            }
-
-            // Boolean fields
-            "paused" => {
-                let b = value
-                    .as_bool()
-                    .ok_or_else(|| eyre::eyre!("{} must be a boolean", field_name))?;
-                let slot = slot_for("TIP20Token", field_name, &[])?;
-                self.db
-                    .insert_account_storage(address, slot, U256::from(b as u8))?;
-            }
-
-            // Mapping fields: balances
-            "balances" => {
-                let balances = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("balances must be an object"))?;
-                for (holder, amount) in balances {
-                    let slot = slot_for("TIP20Token", "balances", &[holder])?;
-                    let v = parse_u256_value(amount)?;
-                    self.db.insert_account_storage(address, slot, v)?;
-                }
-            }
-
-            // Mapping fields: allowances (nested mapping)
-            "allowances" => {
-                let allowances = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("allowances must be an object"))?;
-                for (owner, spenders) in allowances {
-                    let spender_map = spenders
-                        .as_object()
-                        .ok_or_else(|| eyre::eyre!("allowances[owner] must be an object"))?;
-                    for (spender, amount) in spender_map {
-                        let slot = slot_for("TIP20Token", "allowances", &[owner, spender])?;
-                        let v = parse_u256_value(amount)?;
-                        self.db.insert_account_storage(address, slot, v)?;
-                    }
-                }
-            }
-
-            // Unknown field
-            _ => {
-                return Err(eyre::eyre!("unknown TIP20Token field: {}", field_name));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Seeds a single NonceManager field.
-    fn seed_nonce_field(
-        &mut self,
-        address: Address,
-        field_name: &str,
-        value: &serde_json::Value,
-    ) -> eyre::Result<()> {
-        match field_name {
-            // Nested mapping: nonces[account][nonce_key] = u64
-            "nonces" => {
-                let accounts = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("nonces must be an object"))?;
-                for (account, nonce_keys) in accounts {
-                    let nonce_key_map = nonce_keys
-                        .as_object()
-                        .ok_or_else(|| eyre::eyre!("nonces[account] must be an object"))?;
-                    for (nonce_key, nonce_value) in nonce_key_map {
-                        let slot = slot_for("NonceManager", "nonces", &[account, nonce_key])?;
-                        let v = parse_u64_value(nonce_value)?;
-                        self.db
-                            .insert_account_storage(address, slot, U256::from(v))?;
-                    }
-                }
-            }
-            // Mapping: expiring_nonce_seen[tx_hash] = u64
-            "expiring_nonce_seen" => {
-                let entries = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("expiring_nonce_seen must be an object"))?;
-                for (tx_hash, expiry) in entries {
-                    let slot = slot_for("NonceManager", "expiring_nonce_seen", &[tx_hash])?;
-                    let v = parse_u64_value(expiry)?;
-                    self.db
-                        .insert_account_storage(address, slot, U256::from(v))?;
-                }
-            }
-            // Mapping: expiring_nonce_ring[index] = B256
-            "expiring_nonce_ring" => {
-                let entries = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("expiring_nonce_ring must be an object"))?;
-                for (index, tx_hash) in entries {
-                    let slot = slot_for("NonceManager", "expiring_nonce_ring", &[index])?;
-                    let hash: B256 = tx_hash
-                        .as_str()
-                        .ok_or_else(|| eyre::eyre!("tx_hash must be a string"))?
-                        .parse()?;
-                    self.db
-                        .insert_account_storage(address, slot, U256::from_be_bytes(hash.0))?;
-                }
-            }
-            // Simple u32 field
-            "expiring_nonce_ring_ptr" => {
-                let v = parse_u64_value(value)?;
-                if v > u32::MAX as u64 {
-                    return Err(eyre::eyre!(
-                        "expiring_nonce_ring_ptr value {} exceeds u32::MAX",
-                        v
-                    ));
-                }
-                let slot = slot_for("NonceManager", field_name, &[])?;
-                self.db
-                    .insert_account_storage(address, slot, U256::from(v as u32))?;
-            }
-            _ => {
-                return Err(eyre::eyre!("unknown NonceManager field: {}", field_name));
-            }
-        }
-        Ok(())
-    }
-
-    /// Seeds a single AccountKeychain field.
-    fn seed_account_keychain_field(
-        &mut self,
-        address: Address,
-        field_name: &str,
-        value: &serde_json::Value,
-    ) -> eyre::Result<()> {
-        match field_name {
-            // Nested mapping: keys[account][key_id] = AuthorizedKey
-            "keys" => {
-                let accounts = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("keys must be an object"))?;
-                for (account, key_ids) in accounts {
-                    let key_id_map = key_ids
-                        .as_object()
-                        .ok_or_else(|| eyre::eyre!("keys[account] must be an object"))?;
-                    for (key_id, key_info) in key_id_map {
-                        let slot = slot_for("AccountKeychain", "keys", &[account, key_id])?;
-                        let info = key_info
-                            .as_object()
-                            .ok_or_else(|| eyre::eyre!("key info must be an object"))?;
-                        let encoded = encode_authorized_key(info)?;
-                        self.db.insert_account_storage(address, slot, encoded)?;
-                    }
-                }
-            }
-            // Nested mapping: spending_limits[limit_key][token] = U256
-            "spending_limits" => {
-                let limit_keys = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("spending_limits must be an object"))?;
-                for (limit_key, tokens) in limit_keys {
-                    let token_map = tokens
-                        .as_object()
-                        .ok_or_else(|| eyre::eyre!("spending_limits[key] must be an object"))?;
-                    for (token, amount) in token_map {
-                        let slot = slot_for(
-                            "AccountKeychain",
-                            "spending_limits",
-                            &[limit_key.as_str(), token.as_str()],
-                        )?;
-                        let v = parse_u256_value(amount)?;
-                        self.db.insert_account_storage(address, slot, v)?;
-                    }
-                }
-            }
-            // Address fields (transient)
-            "transaction_key" | "tx_origin" => {
-                let addr_str = value
-                    .as_str()
-                    .ok_or_else(|| eyre::eyre!("{} must be an address string", field_name))?;
-                let addr: Address = addr_str.parse()?;
-                let slot = slot_for("AccountKeychain", field_name, &[])?;
-                self.db.insert_account_storage(
-                    address,
-                    slot,
-                    U256::from_be_slice(addr.as_slice()),
-                )?;
-            }
-            _ => {
-                return Err(eyre::eyre!("unknown AccountKeychain field: {}", field_name));
-            }
-        }
-        Ok(())
-    }
-
-    /// Seeds a single StablecoinDEX field.
-    fn seed_stablecoin_dex_field(
-        &mut self,
-        address: Address,
-        field_name: &str,
-        value: &serde_json::Value,
-    ) -> eyre::Result<()> {
-        match field_name {
-            // Mapping: books[book_key] = Orderbook (complex struct, seed as raw U256)
-            "books" => {
-                let entries = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("books must be an object"))?;
-                for (book_key, data) in entries {
-                    let slot = slot_for("StablecoinDEX", "books", &[book_key])?;
-                    let v = parse_u256_value(data)?;
-                    self.db.insert_account_storage(address, slot, v)?;
-                }
-            }
-            // Mapping: orders[order_id] = Order (complex struct, seed as raw U256)
-            "orders" => {
-                let entries = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("orders must be an object"))?;
-                for (order_id, data) in entries {
-                    let slot = slot_for("StablecoinDEX", "orders", &[order_id])?;
-                    let v = parse_u256_value(data)?;
-                    self.db.insert_account_storage(address, slot, v)?;
-                }
-            }
-            // Nested mapping: balances[user][token] = u128
-            "balances" => {
-                let users = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("balances must be an object"))?;
-                for (user, tokens) in users {
-                    let token_map = tokens
-                        .as_object()
-                        .ok_or_else(|| eyre::eyre!("balances[user] must be an object"))?;
-                    for (token, amount) in token_map {
-                        let slot = slot_for("StablecoinDEX", "balances", &[user, token])?;
-                        let v = parse_u128_value(amount)?;
-                        self.db
-                            .insert_account_storage(address, slot, U256::from(v))?;
-                    }
-                }
-            }
-            // Simple u128 field
-            "next_order_id" => {
-                let v = parse_u128_value(value)?;
-                let slot = slot_for("StablecoinDEX", field_name, &[])?;
-                self.db
-                    .insert_account_storage(address, slot, U256::from(v))?;
-            }
-            // Vec<B256> - store length at base slot
-            "book_keys" => {
-                let arr = value
-                    .as_array()
-                    .ok_or_else(|| eyre::eyre!("book_keys must be an array"))?;
-                let slot = slot_for("StablecoinDEX", field_name, &[])?;
-                self.db
-                    .insert_account_storage(address, slot, U256::from(arr.len()))?;
-            }
-            _ => {
-                return Err(eyre::eyre!("unknown StablecoinDEX field: {}", field_name));
-            }
-        }
-        Ok(())
-    }
-
-    /// Seeds a single TIP403Registry field.
-    fn seed_tip403_registry_field(
-        &mut self,
-        address: Address,
-        field_name: &str,
-        value: &serde_json::Value,
-    ) -> eyre::Result<()> {
-        match field_name {
-            // Simple u64 field
-            "policy_id_counter" => {
-                let v = parse_u64_value(value)?;
-                let slot = slot_for("TIP403Registry", field_name, &[])?;
-                self.db
-                    .insert_account_storage(address, slot, U256::from(v))?;
-            }
-            // Mapping: policy_data[policy_id] = PolicyData
-            "policy_data" => {
-                let entries = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("policy_data must be an object"))?;
-                for (policy_id, data) in entries {
-                    let slot = slot_for("TIP403Registry", "policy_data", &[policy_id])?;
-                    let info = data
-                        .as_object()
-                        .ok_or_else(|| eyre::eyre!("policy_data[id] must be an object"))?;
-                    let encoded = encode_policy_data(info)?;
-                    self.db.insert_account_storage(address, slot, encoded)?;
-                }
-            }
-            // Nested mapping: policy_set[policy_id][account] = bool
-            "policy_set" => {
-                let policies = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("policy_set must be an object"))?;
-                for (policy_id, accounts) in policies {
-                    let account_map = accounts
-                        .as_object()
-                        .ok_or_else(|| eyre::eyre!("policy_set[id] must be an object"))?;
-                    for (account, authorized) in account_map {
-                        let slot = slot_for(
-                            "TIP403Registry",
-                            "policy_set",
-                            &[policy_id.as_str(), account.as_str()],
-                        )?;
-                        let b = authorized
-                            .as_bool()
-                            .ok_or_else(|| eyre::eyre!("policy_set value must be boolean"))?;
-                        self.db
-                            .insert_account_storage(address, slot, U256::from(b as u8))?;
-                    }
-                }
-            }
-            _ => {
-                return Err(eyre::eyre!("unknown TIP403Registry field: {}", field_name));
-            }
-        }
-        Ok(())
-    }
-
-    /// Seeds a single TipFeeManager field.
-    fn seed_tip_fee_manager_field(
-        &mut self,
-        address: Address,
-        field_name: &str,
-        value: &serde_json::Value,
-    ) -> eyre::Result<()> {
-        match field_name {
-            // Mapping: validator_tokens[validator] = Address
-            "validator_tokens" => {
-                let entries = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("validator_tokens must be an object"))?;
-                for (validator, token) in entries {
-                    let slot = slot_for("TipFeeManager", "validator_tokens", &[validator])?;
-                    let addr: Address = token
-                        .as_str()
-                        .ok_or_else(|| eyre::eyre!("token must be a string"))?
-                        .parse()?;
-                    self.db.insert_account_storage(
-                        address,
-                        slot,
-                        U256::from_be_slice(addr.as_slice()),
-                    )?;
-                }
-            }
-            // Mapping: user_tokens[user] = Address
-            "user_tokens" => {
-                let entries = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("user_tokens must be an object"))?;
-                for (user, token) in entries {
-                    let slot = slot_for("TipFeeManager", "user_tokens", &[user])?;
-                    let addr: Address = token
-                        .as_str()
-                        .ok_or_else(|| eyre::eyre!("token must be a string"))?
-                        .parse()?;
-                    self.db.insert_account_storage(
-                        address,
-                        slot,
-                        U256::from_be_slice(addr.as_slice()),
-                    )?;
-                }
-            }
-            // Nested mapping: collected_fees[validator][token] = U256
-            "collected_fees" => {
-                let validators = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("collected_fees must be an object"))?;
-                for (validator, tokens) in validators {
-                    let token_map = tokens
-                        .as_object()
-                        .ok_or_else(|| eyre::eyre!("collected_fees[v] must be an object"))?;
-                    for (token, amount) in token_map {
-                        let slot = slot_for(
-                            "TipFeeManager",
-                            "collected_fees",
-                            &[validator.as_str(), token.as_str()],
-                        )?;
-                        let v = parse_u256_value(amount)?;
-                        self.db.insert_account_storage(address, slot, v)?;
-                    }
-                }
-            }
-            // Mapping: pools[pool_id] = Pool (complex struct, seed as raw U256)
-            "pools" => {
-                let entries = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("pools must be an object"))?;
-                for (pool_id, data) in entries {
-                    let slot = slot_for("TipFeeManager", "pools", &[pool_id])?;
-                    let v = parse_u256_value(data)?;
-                    self.db.insert_account_storage(address, slot, v)?;
-                }
-            }
-            // Mapping: total_supply[pool_id] = U256
-            "total_supply" => {
-                let entries = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("total_supply must be an object"))?;
-                for (pool_id, amount) in entries {
-                    let slot = slot_for("TipFeeManager", "total_supply", &[pool_id])?;
-                    let v = parse_u256_value(amount)?;
-                    self.db.insert_account_storage(address, slot, v)?;
-                }
-            }
-            // Nested mapping: liquidity_balances[pool_id][provider] = U256
-            "liquidity_balances" => {
-                let pools = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("liquidity_balances must be an object"))?;
-                for (pool_id, providers) in pools {
-                    let provider_map = providers
-                        .as_object()
-                        .ok_or_else(|| eyre::eyre!("liquidity_balances[id] must be an object"))?;
-                    for (provider, amount) in provider_map {
-                        let slot = slot_for(
-                            "TipFeeManager",
-                            "liquidity_balances",
-                            &[pool_id.as_str(), provider.as_str()],
-                        )?;
-                        let v = parse_u256_value(amount)?;
-                        self.db.insert_account_storage(address, slot, v)?;
-                    }
-                }
-            }
-            _ => {
-                return Err(eyre::eyre!("unknown TipFeeManager field: {}", field_name));
-            }
-        }
-        Ok(())
-    }
-
-    /// Seeds a single ValidatorConfig field.
-    fn seed_validator_config_field(
-        &mut self,
-        address: Address,
-        field_name: &str,
-        value: &serde_json::Value,
-    ) -> eyre::Result<()> {
-        match field_name {
-            // Simple address field
-            "owner" => {
-                let addr_str = value
-                    .as_str()
-                    .ok_or_else(|| eyre::eyre!("owner must be an address string"))?;
-                let addr: Address = addr_str.parse()?;
-                let slot = slot_for("ValidatorConfig", field_name, &[])?;
-                self.db.insert_account_storage(
-                    address,
-                    slot,
-                    U256::from_be_slice(addr.as_slice()),
-                )?;
-            }
-            // Vec<Address> - store length at base slot
-            "validators_array" => {
-                let arr = value
-                    .as_array()
-                    .ok_or_else(|| eyre::eyre!("validators_array must be an array"))?;
-                let slot = slot_for("ValidatorConfig", field_name, &[])?;
-                self.db
-                    .insert_account_storage(address, slot, U256::from(arr.len()))?;
-            }
-            // Mapping: validators[validator] = Validator (complex struct, seed as raw U256)
-            "validators" => {
-                let entries = value
-                    .as_object()
-                    .ok_or_else(|| eyre::eyre!("validators must be an object"))?;
-                for (validator, data) in entries {
-                    let slot = slot_for("ValidatorConfig", "validators", &[validator])?;
-                    let v = parse_u256_value(data)?;
-                    self.db.insert_account_storage(address, slot, v)?;
-                }
-            }
-            // Simple u64 field
-            "next_dkg_ceremony" => {
-                let v = parse_u64_value(value)?;
-                let slot = slot_for("ValidatorConfig", field_name, &[])?;
-                self.db
-                    .insert_account_storage(address, slot, U256::from(v))?;
-            }
-            _ => {
-                return Err(eyre::eyre!("unknown ValidatorConfig field: {}", field_name));
-            }
-        }
+        self.db.insert_account_storage(address, meta.slot, final_value)?;
         Ok(())
     }
 
@@ -714,7 +337,7 @@ fn hash_bytes(data: &Bytes) -> B256 {
 /// Format: left-aligned bytes with (length * 2) in the LSB.
 fn encode_short_string(s: &str) -> eyre::Result<U256> {
     let bytes = s.as_bytes();
-    if bytes.len() > 31 {
+    if bytes.len() > MAX_SHORT_STRING_LEN {
         return Err(eyre::eyre!(
             "string too long for short string encoding: {} bytes",
             bytes.len()
@@ -723,10 +346,86 @@ fn encode_short_string(s: &str) -> eyre::Result<U256> {
 
     let mut buf = [0u8; 32];
     buf[..bytes.len()].copy_from_slice(bytes);
-    // Set the length * 2 in the last byte
     buf[31] = (bytes.len() * 2) as u8;
 
     Ok(U256::from_be_bytes(buf))
+}
+
+/// Encodes a JSON value based on byte size and packs it using `insert_into_word`.
+/// Uses typed parsing and the precompile packing infrastructure for correctness.
+/// Maps: 32 -> U256, 20 -> Address, 16 -> u128, 8 -> u64, 4 -> u32, 1 -> bool/u8
+fn encode_and_pack_by_size(
+    field: &str,
+    bytes: usize,
+    value: &serde_json::Value,
+    current: U256,
+    offset: usize,
+    is_packed: bool,
+) -> eyre::Result<U256> {
+    // Macro to handle packing vs direct encoding for typed values
+    macro_rules! pack_or_encode {
+        ($v:expr) => {
+            if is_packed {
+                insert_into_word(current, $v, offset, bytes)
+                    .map_err(|e| eyre::eyre!("packing failed: {}", e))
+            } else {
+                Ok($v.to_word())
+            }
+        };
+    }
+
+    match bytes {
+        32 => {
+            // U256 or B256 - full slot, no packing needed
+            if let Some(s) = value.as_str() {
+                if s.starts_with("0x") && s.len() == 66 {
+                    let hash: B256 = s.parse()?;
+                    return Ok(U256::from_be_bytes(hash.0));
+                }
+                parse_u256_str(s)
+            } else {
+                Err(eyre::eyre!("{} must be a string for U256/B256", field))
+            }
+        }
+        20 => {
+            let addr_str = value
+                .as_str()
+                .ok_or_else(|| eyre::eyre!("{} must be an address string", field))?;
+            let addr: Address = addr_str.parse()?;
+            pack_or_encode!(&addr)
+        }
+        16 => {
+            let v = parse_u128_value(value)?;
+            pack_or_encode!(&v)
+        }
+        8 => {
+            let v = parse_u64_value(value)?;
+            pack_or_encode!(&v)
+        }
+        4 => {
+            let v = parse_u64_value(value)?;
+            if v > u32::MAX as u64 {
+                return Err(eyre::eyre!("{} value {} exceeds u32::MAX", field, v));
+            }
+            pack_or_encode!(&(v as u32))
+        }
+        1 => {
+            if let Some(b) = value.as_bool() {
+                pack_or_encode!(&b)
+            } else if let Some(n) = value.as_u64() {
+                if n > u8::MAX as u64 {
+                    return Err(eyre::eyre!("{} value {} exceeds u8::MAX", field, n));
+                }
+                pack_or_encode!(&(n as u8))
+            } else {
+                Err(eyre::eyre!("{} must be a boolean or small integer", field))
+            }
+        }
+        _ => {
+            // Unknown size - try to parse as U256 (fallback for raw packed data)
+            parse_u256_value(value)
+        }
+    }
 }
 
 /// Parses a JSON value as U256 (accepts decimal or hex string).
@@ -913,7 +612,7 @@ mod tests {
         let db = VectorDatabase::from_prestate(&prestate).unwrap();
 
         // Check that fee token has USD currency set
-        let currency_slot = slot_for("TIP20Token", "currency", &[]).unwrap();
+        let currency_slot = metadata_for("TIP20Token", "currency", &[]).unwrap().slot;
         let currency = db.storage(DEFAULT_FEE_TOKEN, currency_slot).unwrap();
         let expected_usd =
             uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
@@ -921,7 +620,7 @@ mod tests {
 
         // Check that sender has balance in fee token
         let sender_str = format!("{sender:?}");
-        let balance_slot = slot_for("TIP20Token", "balances", &[&sender_str]).unwrap();
+        let balance_slot = metadata_for("TIP20Token", "balances", &[&sender_str]).unwrap().slot;
         let balance = db.storage(DEFAULT_FEE_TOKEN, balance_slot).unwrap();
         assert_eq!(balance, U256::from(1_000_000_000_000u64));
     }
@@ -976,7 +675,7 @@ mod tests {
 
         let db = VectorDatabase::from_prestate(&prestate).unwrap();
 
-        let slot = slot_for("TIP20Token", "transfer_policy_id", &[]).unwrap();
+        let slot = metadata_for("TIP20Token", "transfer_policy_id", &[]).unwrap().slot;
         let value = db.storage(DEFAULT_FEE_TOKEN, slot).unwrap();
 
         // Policy ID = 1 shifted left by 160 bits

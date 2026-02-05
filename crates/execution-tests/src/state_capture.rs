@@ -8,7 +8,7 @@ use alloy_primitives::{Address, U256};
 use revm::DatabaseRef;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tempo_precompiles::resolver::slot_for;
+use tempo_precompiles::resolver::metadata_for;
 
 /// Captured precompile field values
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,9 +89,9 @@ impl PostExecutionState {
             for spec in &check.fields {
                 match spec {
                     FieldSpec::Simple(field_name) => {
-                        let slot = slot_for(&check.name, field_name, &[]).map_err(|e| {
-                            eyre::eyre!("slot_for failed for {}.{}: {:?}", check.name, field_name, e)
-                        })?;
+                        let slot = metadata_for(&check.name, field_name, &[]).map_err(|e| {
+                            eyre::eyre!("metadata_for failed for {}.{}: {:?}", check.name, field_name, e)
+                        })?.slot;
                         let value = db.storage_ref(check.address, slot).map_err(|e| {
                             eyre::eyre!(
                                 "storage read failed for {:?} slot {:?}: {:?}",
@@ -109,15 +109,15 @@ impl PostExecutionState {
                                 FieldKey::Single(k) => vec![k.as_str()],
                                 FieldKey::Tuple(ks) => ks.iter().map(|s| s.as_str()).collect(),
                             };
-                            let slot = slot_for(&check.name, field, &key_strs).map_err(|e| {
+                            let slot = metadata_for(&check.name, field, &key_strs).map_err(|e| {
                                 eyre::eyre!(
-                                    "slot_for failed for {}.{} with keys {:?}: {:?}",
+                                    "metadata_for failed for {}.{} with keys {:?}: {:?}",
                                     check.name,
                                     field,
                                     key_strs,
                                     e
                                 )
-                            })?;
+                            })?.slot;
                             let value = db.storage_ref(check.address, slot).map_err(|e| {
                                 eyre::eyre!(
                                     "storage read failed for {:?} slot {:?}: {:?}",
@@ -285,12 +285,12 @@ mod tests {
     #[test]
     fn test_capture_precompile_simple_field() {
         use crate::vector::PrecompileCheck;
-        use tempo_precompiles::resolver::slot_for;
+        use tempo_precompiles::resolver::metadata_for;
 
         let token_addr = address!("20C0000000000000000000000000000000000001");
 
         // Get the slot for total_supply
-        let slot = slot_for("TIP20Token", "total_supply", &[]).unwrap();
+        let slot = metadata_for("TIP20Token", "total_supply", &[]).unwrap().slot;
 
         // Seed the storage with a value
         let mut prestate = Prestate::default();
@@ -322,13 +322,13 @@ mod tests {
     #[test]
     fn test_capture_precompile_mapping_field() {
         use crate::vector::PrecompileCheck;
-        use tempo_precompiles::resolver::slot_for;
+        use tempo_precompiles::resolver::metadata_for;
 
         let token_addr = address!("20C0000000000000000000000000000000000001");
         let holder = "0x1111111111111111111111111111111111111111";
 
         // Get the slot for balances[holder]
-        let slot = slot_for("TIP20Token", "balances", &[holder]).unwrap();
+        let slot = metadata_for("TIP20Token", "balances", &[holder]).unwrap().slot;
 
         // Seed the storage with a balance
         let mut prestate = Prestate::default();
@@ -364,14 +364,14 @@ mod tests {
     #[test]
     fn test_capture_precompile_nested_mapping() {
         use crate::vector::PrecompileCheck;
-        use tempo_precompiles::resolver::slot_for;
+        use tempo_precompiles::resolver::metadata_for;
 
         let token_addr = address!("20C0000000000000000000000000000000000001");
         let owner = "0x1111111111111111111111111111111111111111";
         let spender = "0x2222222222222222222222222222222222222222";
 
         // Get the slot for allowances[owner][spender]
-        let slot = slot_for("TIP20Token", "allowances", &[owner, spender]).unwrap();
+        let slot = metadata_for("TIP20Token", "allowances", &[owner, spender]).unwrap().slot;
 
         // Seed the storage with an allowance
         let mut prestate = Prestate::default();

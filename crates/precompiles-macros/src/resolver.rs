@@ -1,20 +1,20 @@
-//! Code generation for the `slot_for` resolver method.
+//! Code generation for the `metadata_for` resolver method.
 //!
-//! This module generates a `slot_for` method for each contract that allows
-//! runtime resolution of storage slots by field name.
+//! This module generates a `metadata_for` method for each contract that allows
+//! runtime resolution of storage field metadata by field name.
 
 use crate::{
     FieldKind,
     packing::{LayoutField, PackingConstants},
 };
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::Ident;
 
-/// Generate a `slot_for` method for resolving storage slots by field name.
+/// Generate a `metadata_for` method for resolving storage field metadata by field name.
 ///
 /// This method is feature-gated behind `test-utils` and allows runtime
-/// resolution of storage slots for testing and debugging purposes.
-pub(crate) fn gen_slot_for_fn(
+/// resolution of storage metadata for testing and debugging purposes.
+pub(crate) fn gen_metadata_for_fn(
     name: &Ident,
     allocated_fields: &[LayoutField<'_>],
 ) -> proc_macro2::TokenStream {
@@ -22,23 +22,36 @@ pub(crate) fn gen_slot_for_fn(
         let field_name = field.name.to_string();
         let consts = PackingConstants::new(field.name);
         let slot_const = consts.slot();
+        let offset_const = format_ident!("{}_OFFSET", slot_const);
+        let bytes_const = format_ident!("{}_BYTES", slot_const);
 
         match &field.kind {
             FieldKind::Direct(_) => {
                 quote! {
-                    #field_name => Ok(slots::#slot_const),
+                    #field_name => Ok(crate::resolver::FieldMetadata {
+                        slot: slots::#slot_const,
+                        offset: slots::#offset_const,
+                        bytes: slots::#bytes_const,
+                        is_mapping: false,
+                        nesting_depth: 0,
+                    }),
                 }
             }
-            FieldKind::Mapping { key, value } => {
-                gen_mapping_slot_arm(&field_name, &slot_const, key, value)
-            }
+            FieldKind::Mapping { key, value } => gen_mapping_metadata_arm(
+                &field_name,
+                &slot_const,
+                &offset_const,
+                &bytes_const,
+                key,
+                value,
+            ),
         }
     });
 
     quote! {
         impl #name {
             #[cfg(any(test, feature = "test-utils"))]
-            pub fn slot_for(field: &str, keys: &[&str]) -> ::core::result::Result<::alloy::primitives::U256, crate::resolver::ResolverError> {
+            pub fn metadata_for(field: &str, keys: &[&str]) -> ::core::result::Result<crate::resolver::FieldMetadata, crate::resolver::ResolverError> {
                 use crate::storage::StorageKey as _;
 
                 match field {
@@ -51,13 +64,16 @@ pub(crate) fn gen_slot_for_fn(
 }
 
 /// Generate the match arm for a mapping field, handling nested mappings recursively.
-fn gen_mapping_slot_arm(
+fn gen_mapping_metadata_arm(
     field_name: &str,
     slot_const: &Ident,
+    offset_const: &Ident,
+    bytes_const: &Ident,
     key_ty: &syn::Type,
     value_ty: &syn::Type,
 ) -> proc_macro2::TokenStream {
     let nesting_depth = count_mapping_nesting(value_ty);
+    let nesting_depth_u8 = nesting_depth as u8;
 
     if nesting_depth == 1 {
         quote! {
@@ -67,7 +83,13 @@ fn gen_mapping_slot_arm(
                 }
                 let k0 = <#key_ty as crate::storage::StorageKey>::parse_key(keys[0])
                     .map_err(|_| crate::resolver::ResolverError::InvalidKey(keys[0].to_string()))?;
-                Ok(k0.mapping_slot(slots::#slot_const))
+                Ok(crate::resolver::FieldMetadata {
+                    slot: k0.mapping_slot(slots::#slot_const),
+                    offset: slots::#offset_const,
+                    bytes: slots::#bytes_const,
+                    is_mapping: true,
+                    nesting_depth: #nesting_depth_u8,
+                })
             }
         }
     } else {
@@ -79,7 +101,7 @@ fn gen_mapping_slot_arm(
             .iter()
             .enumerate()
             .map(|(i, ty)| {
-                let key_var = quote::format_ident!("k{}", i);
+                let key_var = format_ident!("k{}", i);
                 quote! {
                     let #key_var = <#ty as crate::storage::StorageKey>::parse_key(keys[#i])
                         .map_err(|_| crate::resolver::ResolverError::InvalidKey(keys[#i].to_string()))?;
@@ -96,7 +118,13 @@ fn gen_mapping_slot_arm(
                 }
                 #(#key_parses)*
                 #slot_computation
-                Ok(slot)
+                Ok(crate::resolver::FieldMetadata {
+                    slot,
+                    offset: slots::#offset_const,
+                    bytes: slots::#bytes_const,
+                    is_mapping: true,
+                    nesting_depth: #nesting_depth_u8,
+                })
             }
         }
     }
