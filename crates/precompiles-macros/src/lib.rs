@@ -191,7 +191,7 @@ fn gen_contract_storage(
     let storage_trait = layout::gen_contract_storage_impl(ident);
     let constructor = layout::gen_constructor(ident, &allocated_fields, address);
     let slots_module = layout::gen_slots_module(&allocated_fields);
-    let slot_for_fn = resolver::gen_slot_for_fn(ident, &allocated_fields);
+    let metadata_for_fn = resolver::gen_metadata_for_fn(ident, &allocated_fields);
     let default_impl = if address.is_some() {
         layout::gen_default_impl(ident)
     } else {
@@ -203,7 +203,7 @@ fn gen_contract_storage(
         #transformed_struct
         #constructor
         #storage_trait
-        #slot_for_fn
+        #metadata_for_fn
         #default_impl
     };
 

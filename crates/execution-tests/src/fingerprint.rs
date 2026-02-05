@@ -30,6 +30,16 @@ pub struct LogEntry {
     pub data: Bytes,
 }
 
+impl From<Log> for LogEntry {
+    fn from(log: Log) -> Self {
+        Self {
+            address: log.address,
+            topics: log.topics,
+            data: log.data,
+        }
+    }
+}
+
 impl From<&Log> for LogEntry {
     fn from(log: &Log) -> Self {
         Self {
@@ -53,33 +63,8 @@ impl From<&TxExecutionResult> for TxResult {
     }
 }
 
-/// Fingerprint of a single log entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LogFingerprint {
-    pub address: Address,
-    pub topics: Vec<B256>,
-    pub data: Bytes,
-}
-
-impl From<Log> for LogFingerprint {
-    fn from(log: Log) -> Self {
-        Self {
-            address: log.address,
-            topics: log.topics,
-            data: log.data,
-        }
-    }
-}
-
-impl From<&Log> for LogFingerprint {
-    fn from(log: &Log) -> Self {
-        Self {
-            address: log.address,
-            topics: log.topics.clone(),
-            data: log.data.clone(),
-        }
-    }
-}
+/// Type alias for backward compatibility
+pub type LogFingerprint = LogEntry;
 
 /// Fingerprint of a single transaction execution result.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

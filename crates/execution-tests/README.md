@@ -1,6 +1,6 @@
 # execution-tests
 
-Differential testing framework for the Tempo execution layer.
+Regression testing framework for the Tempo's execution layer.
 
 Executes test vectors against the EVM, validates transaction outcomes, and generates fingerprints for regression detection. Supports all transaction types (legacy, EIP-1559, Tempo AA), arbitrary prestate setup, and post-execution assertions.
 
@@ -8,13 +8,13 @@ Executes test vectors against the EVM, validates transaction outcomes, and gener
 
 ```bash
 # Run all vectors
-cargo run -p tempo-execution-tests -- run -d crates/tempo-execution-tests/vectors
+cargo run -p tempo-execution-tests -- run -d crates/execution-tests/vectors
 
 # Run a single vector
-cargo run -p tempo-execution-tests -- run -f crates/tempo-execution-tests/vectors/tip20_factory/create_token.json
+cargo run -p tempo-execution-tests -- run -f crates/execution-tests/vectors/tip20_factory/create_token.json
 
 # List available vectors
-cargo run -p tempo-execution-tests -- list -d crates/tempo-execution-tests/vectors
+cargo run -p tempo-execution-tests -- list -d crates/execution-tests/vectors
 ```
 
 ## Commands
@@ -52,6 +52,15 @@ tempo-execution-tests diff --baseline-binary /tmp/baseline -d vectors
 
 Only vectors with `check_regression: true` are compared against the baseline.
 
+### When to Use `check_regression`
+
+Set `check_regression: true` for vectors covering:
+- Critical protocol invariants (token creation, transfers, fees)
+- Gas-sensitive operations where unexpected changes indicate bugs
+- Cross-hardfork compatibility (ensures old behavior remains stable)
+
+Vectors without `check_regression` only validate they pass on the current branch—useful for WIP features or tests still being refined.
+
 ### `compare` (alias: `c`)
 
 Compare two fingerprint files.
@@ -71,10 +80,32 @@ tempo-execution-tests list -d vectors
 ## Test Vectors
 
 Vectors are JSON files that define:
-- **prestate**: Initial accounts, storage, and precompile state
+- **prestate**: Initial accounts, storage, and PATH_USD configuration
 - **block**: Block context (number, timestamp, basefee, gas_limit)
 - **transactions**: Transactions to execute with expected outcomes
-- **checks**: Post-execution assertions
+- **checks**: Post-execution state to capture for fingerprinting
+
+### Genesis Initialization
+
+Genesis state (TIP403Registry, TIP20Factory, PATH_USD, TipFeeManager, StablecoinDEX, NonceManager, AccountKeychain, ValidatorConfig) is **always initialized automatically** before any prestate is applied.
+
+Use `genesis_path_usd` to configure the PATH_USD admin and mint balances:
+
+```json
+{
+  "prestate": {
+    "genesis_path_usd": {
+      "admin": "0x1111111111111111111111111111111111111111",
+      "balances": [
+        { "account": "0x1111111111111111111111111111111111111111", "balance": "1000000000000" }
+      ]
+    }
+  }
+}
+```
+
+- `admin`: Optional. Defaults to `GENESIS_ADMIN` (`0x1111...1111`). On merge, child wins.
+- `balances`: Optional. Minted after genesis. On merge, balances are **additive** (both parent and child balances are minted).
 
 ### Inheritance
 
@@ -137,6 +168,26 @@ vectors/
 }
 ```
 
+### Post-Execution Checks
+
+The `checks` section specifies what state to **capture for fingerprinting** (not assert specific values). Regression detection works by comparing fingerprints between branches—if any captured value changes, the fingerprint changes.
+
+```json
+"checks": {
+  "precompiles": [
+    {
+      "name": "TIP20Token",
+      "address": "0x20C0...",
+      "fields": ["name", "symbol", "total_supply"]
+    }
+  ],
+  "storage": { "0x1234...": ["0x0", "0x1"] },
+  "nonces": ["0x1111..."]
+}
+```
+
+> **Note:** Field values are captured and hashed into the fingerprint. To detect regressions, run with `check_regression: true`—CI will compare these values against `main`.
+
 ### Transaction Types
 
 - `legacy` (type 0)
@@ -178,6 +229,28 @@ When behavior differs across hardforks:
 }
 ```
 
+#### Example: Feature Added in T1
+
+When a function is added in a later hardfork, older hardforks should revert with `UnknownSelector`:
+
+```json
+{
+  "description": "New T1 function reverts on Genesis/T0",
+  "transactions": [
+    {
+      "tx_type": "tempo",
+      "from": "0x1111111111111111111111111111111111111111",
+      "gas_limit": 100000,
+      "calls": [{ "to": "0x20FC...", "input": "0xNewFunction..." }],
+      "outcomes": [
+        { "hardforks": ["Genesis", "T0"], "outcome": { "success": false, "error": "UnknownSelector()" } },
+        { "hardforks": ["T1"], "outcome": { "success": true } }
+      ]
+    }
+  ]
+}
+```
+
 ## Fingerprints
 
 Each test produces a fingerprint — a hash of execution results including:
@@ -193,7 +266,7 @@ Fingerprints enable differential testing: if the hash changes between versions, 
 
 ```yaml
 - name: Run execution tests
-  run: cargo run -p tempo-execution-tests -- run -d crates/tempo-execution-tests/vectors
+  run: cargo run -p tempo-execution-tests -- run -d crates/execution-tests/vectors
 
 - name: Regression check
   run: |
@@ -201,5 +274,5 @@ Fingerprints enable differential testing: if the hash changes between versions, 
     cp target/release/tempo-execution-tests /tmp/current
     git checkout main
     cargo build -p tempo-execution-tests --release
-    /tmp/current diff --baseline-binary target/release/tempo-execution-tests -d crates/tempo-execution-tests/vectors
+    /tmp/current diff --baseline-binary target/release/tempo-execution-tests -d crates/execution-tests/vectors
 ```

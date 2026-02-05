@@ -1,26 +1,14 @@
 {
-  "description": "TIP20Factory with PATH_USD pre-deployed and sender funded",
+  "description": "TIP20Factory with genesis state initialized and sender funded",
   "prestate": {
+    "genesis_path_usd": {
+      "balances": [
+        { "account": "0x1111111111111111111111111111111111111111", "balance": "1000000000000" }
+      ]
+    },
     "accounts": {
       "0x1111111111111111111111111111111111111111": { "nonce": 0 }
-    },
-    "precompiles": [
-      {
-        "name": "TIP20Token",
-        "address": "0x20C0000000000000000000000000000000000000",
-        "fields": {
-          "name": "Path USD",
-          "symbol": "PATH_USD",
-          "currency": "USD",
-          "quote_token": "0x0000000000000000000000000000000000000000",
-          "transfer_policy_id": 1,
-          "total_supply": "1000000000000",
-          "balances": {
-            "0x1111111111111111111111111111111111111111": "1000000000000"
-          }
-        }
-      }
-    ]
+    }
   },
   "block": {
     "number": 1,

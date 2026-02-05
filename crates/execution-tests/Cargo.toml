@@ -1,6 +1,6 @@
 [package]
 name = "tempo-execution-tests"
-description = "Precompile differential testing framework"
+description = "Tempo EL regression testing"
 
 version.workspace = true
 edition.workspace = true

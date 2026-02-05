@@ -7,21 +7,25 @@ use crate::{
     vector::{BlockContext, TestVector, Transaction},
 };
 use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxLegacy};
-use alloy_evm::{EvmEnv, FromRecoveredTx, eth::EthBlockExecutionCtx};
+use alloy_evm::{EvmEnv, FromRecoveredTx};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
 use reth_chainspec::EthChainSpec;
 use reth_revm::{State, context::BlockEnv};
-use revm::{
-    Context, DatabaseCommit, ExecuteEvm, MainContext, context_interface::result::ExecutionResult,
-};
-use std::{collections::HashMap, sync::Arc};
+use revm::{Context, DatabaseCommit, ExecuteEvm, MainContext, context_interface::result::ExecutionResult};
+use std::sync::Arc;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::MODERATO};
-use tempo_evm::{TempoBlockEnv, TempoBlockExecutionCtx};
+use tempo_evm::TempoBlockEnv;
 use tempo_primitives::{
     TempoTxEnvelope, TempoTxType,
     transaction::{PrimitiveSignature, TempoSignature, TempoTransaction, tt_signed::AASigned},
 };
 use tempo_revm::{TempoEvm, TempoTxEnv};
+
+/// Error(string) function selector: keccak256("Error(string)")[:4]
+const ERROR_STRING_SELECTOR: [u8; 4] = [0x08, 0xc3, 0x79, 0xa0];
+
+/// Panic(uint256) function selector: keccak256("Panic(uint256)")[:4]
+const PANIC_SELECTOR: [u8; 4] = [0x4e, 0x48, 0x7b, 0x71];
 
 /// Result of executing a single transaction
 #[derive(Debug, Clone)]
@@ -60,7 +64,7 @@ impl From<alloy_primitives::Log> for Log {
 
 /// Result of executing all transactions in a vector
 #[derive(Debug)]
-pub struct ExecutionResult_ {
+pub struct VectorExecutionResult {
     /// Per-transaction results
     pub tx_results: Vec<TxExecutionResult>,
     /// Total gas used by all transactions
@@ -77,16 +81,16 @@ fn decode_revert_reason(output: &Bytes) -> Option<String> {
     let selector = &output[..4];
 
     // Error(string) selector
-    if selector == [0x08, 0xc3, 0x79, 0xa0] && output.len() >= 68 {
-        // ABI decode: skip selector (4) + offset (32) + length (32), read string
-        let len = u64::from_be_bytes(output[36..44].try_into().ok()?) as usize;
+    if selector == ERROR_STRING_SELECTOR && output.len() >= 68 {
+        // ABI decode: skip selector (4) + offset (32), then read length from last 8 bytes of U256
+        let len = u64::from_be_bytes(output[60..68].try_into().ok()?) as usize;
         if output.len() >= 68 + len {
             return String::from_utf8(output[68..68 + len].to_vec()).ok();
         }
     }
 
     // Panic(uint256) selector
-    if selector == [0x4e, 0x48, 0x7b, 0x71] && output.len() >= 36 {
+    if selector == PANIC_SELECTOR && output.len() >= 36 {
         let code = U256::from_be_slice(&output[4..36]);
         return Some(format!("Panic({code})"));
     }
@@ -204,30 +208,12 @@ impl VectorExecutor {
         &self,
         vector: &TestVector,
         db: &mut VectorDatabase,
-    ) -> eyre::Result<ExecutionResult_> {
+    ) -> eyre::Result<VectorExecutionResult> {
         // 1. Build State wrapper around the CacheDB
         let mut state = State::builder()
             .with_database(&mut db.db)
             .with_bundle_update()
             .build();
-
-        // 2. Build TempoBlockExecutionCtx
-        let eth_ctx = EthBlockExecutionCtx {
-            parent_hash: B256::ZERO,
-            parent_beacon_block_root: Some(B256::ZERO),
-            ommers: &[],
-            withdrawals: None,
-            extra_data: Bytes::new(),
-            tx_count_hint: Some(vector.transactions.len()),
-        };
-
-        let _ctx = TempoBlockExecutionCtx {
-            inner: eth_ctx,
-            general_gas_limit: vector.block.gas_limit,
-            shared_gas_limit: 0, // No subblocks for precompile tests
-            validator_set: None, // Skip subblock validation
-            subblock_fee_recipients: HashMap::new(),
-        };
 
         let mut tx_results = Vec::new();
         let mut cumulative_gas_used = 0u64;
@@ -247,7 +233,7 @@ impl VectorExecutor {
             tx_results.push(result_with_cumulative);
         }
 
-        Ok(ExecutionResult_ {
+        Ok(VectorExecutionResult {
             tx_results,
             total_gas_used: cumulative_gas_used,
         })
@@ -484,7 +470,7 @@ impl VectorExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vector::{Call as VectorCall, TxOutcome};
+    use crate::vector::{TxOutcome, VectorCall};
 
     fn make_base_tx() -> Transaction {
         Transaction {
@@ -854,5 +840,20 @@ mod tests {
         // Should be treated as signature, not raw selector
         let selector = outcome.error_selector();
         assert!(selector.is_some()); // Treated as signature
+    }
+
+    #[test]
+    fn test_tx_outcome_error_selector_empty_revert() {
+        use crate::vector::TxOutcome;
+
+        // "0x" means empty revert data, should return None
+        let outcome = TxOutcome {
+            success: false,
+            error: Some("0x".to_string()),
+            revert_contains: None,
+        };
+
+        let selector = outcome.error_selector();
+        assert!(selector.is_none());
     }
 }

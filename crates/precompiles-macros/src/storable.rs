@@ -161,6 +161,14 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
                 Ok(())
             }
         }
+
+        // `Seedable` implementation for test-utils: struct types use the fallback
+        #[cfg(any(test, feature = "test-utils"))]
+        impl #impl_generics crate::resolver::Seedable for #strukt #ty_generics #where_clause {
+            fn seed_fn() -> crate::resolver::SeedFn {
+                crate::resolver::struct_seed_unsupported
+            }
+        }
     };
 
     // Generate array implementations if requested
