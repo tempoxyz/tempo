@@ -13,7 +13,7 @@ use crate::{
 };
 use alloy::primitives::{Address, U256};
 
-#[contract(addr = TIP403_REGISTRY_ADDRESS, abi = ITIP403Registry)]
+#[contract(addr = TIP403_REGISTRY_ADDRESS, abi = ITIP403Registry, dispatch)]
 pub struct TIP403Registry {
     policy_id_counter: u64,
     policy_records: Mapping<u64, PolicyRecord>,

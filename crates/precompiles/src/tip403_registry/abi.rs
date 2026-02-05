@@ -6,6 +6,7 @@ pub mod ITIP403Registry {
     #[cfg(feature = "precompile")]
     use crate::error::Result;
     use alloy::primitives::Address;
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
     pub enum PolicyType {
@@ -38,9 +39,13 @@ pub mod ITIP403Registry {
         fn policy_exists(&self, policy_id: u64) -> Result<bool>;
         fn policy_data(&self, policy_id: u64) -> Result<(PolicyType, Address)>;
         fn is_authorized(&self, policy_id: u64, user: Address) -> Result<bool>;
+        #[hardfork = TempoHardfork::T2]
         fn is_authorized_sender(&self, policy_id: u64, user: Address) -> Result<bool>;
+        #[hardfork = TempoHardfork::T2]
         fn is_authorized_recipient(&self, policy_id: u64, user: Address) -> Result<bool>;
+        #[hardfork = TempoHardfork::T2]
         fn is_authorized_mint_recipient(&self, policy_id: u64, user: Address) -> Result<bool>;
+        #[hardfork = TempoHardfork::T2]
         fn compound_policy_data(&self, policy_id: u64) -> Result<(u64, u64, u64)>;
 
         // State-Changing Functions
@@ -55,6 +60,7 @@ pub mod ITIP403Registry {
         #[msg_sender]
         fn modify_policy_blacklist(&mut self, policy_id: u64, account: Address, restricted: bool) -> Result<()>;
         #[msg_sender]
+        #[hardfork = TempoHardfork::T2]
         fn create_compound_policy(&mut self, sender_policy_id: u64, recipient_policy_id: u64, mint_recipient_policy_id: u64) -> Result<u64>;
     }
 }
