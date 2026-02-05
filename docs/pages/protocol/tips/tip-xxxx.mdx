@@ -19,7 +19,7 @@ historical state access during node recovery.
 TIP-XXXX introduces ValidatorConfig V2, a new precompile for managing consensus
 validators with append-only semantics. Unlike the original ValidatorConfig, V2
 replaces the mutable `active` boolean with `addedAtHeight` (set when adding an
-entry) and `deletedAtHeight` fields (set when deleting), enabling nodes to
+entry) and `deactivatedAtHeight` fields (set when deactivating), enabling nodes to
 reconstruct the validator set for any historical epoch using only current state.
 The new design also requires Ed25519 signature verification when adding
 validators to prove key ownership.
@@ -42,19 +42,19 @@ arbitrarily, which creates challenges for node recovery:
 
 V2 solves these problems with an append-only design where:
 - Validators are immutable after creation (no `updateValidator`)
-- `addedAtHeight` and `deletedAtHeight` fields enable historical reconstruction
+- `addedAtHeight` and `deactivatedAtHeight` fields enable historical reconstruction
   from current state
 - Ed25519 signature verification proves key ownership at registration time
 - Both address and public key remain reserved forever (even after deletion)
 
 ### Key Design Principle
 
-By recording `addedAtHeight` and `deletedAtHeight`, nodes can determine DKG players for any epoch using only current state. When preparing for a DKG ceremony in epoch `E+2`, a node reads the contract at `boundary(E)` and filters:
+By recording `addedAtHeight` and `deactivatedAtHeight`, nodes can determine DKG players for any epoch using only current state. When preparing for a DKG ceremony in epoch `E+2`, a node reads the contract at `boundary(E)` and filters:
 
 ```
 players(E+2) = validators.filter(v =>
     v.addedAtHeight <= boundary(E) &&
-    (v.deletedAtHeight == 0 || v.deletedAtHeight > boundary(E))
+    (v.deactivatedAtHeight == 0 || v.deactivatedAtHeight > boundary(E))
 )
 ```
 
@@ -83,7 +83,7 @@ pragma solidity ^0.8.13;
 ///      during node recovery. Validators are immutable after creation and can only be deleted once.
 ///
 ///      Key differences from V1:
-///      - `active` bool replaced by `addedAtHeight` and `deletedAtHeight`
+///      - `active` bool replaced by `addedAtHeight` and `deactivatedAtHeight`
 ///      - No `updateValidator` - validators are immutable after creation
 ///      - Requires Ed25519 signature on `addValidator` to prove key ownership
 ///      - Both address and public key must be unique across all validators (including deleted)
@@ -123,7 +123,7 @@ interface IValidatorConfigV2 {
     /// @param egress IP address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>:<port>`)
     /// @param index Position in validators array (assigned at creation, immutable)
     /// @param addedAtHeight Block height when validator was added
-    /// @param deletedAtHeight Block height when validator was deleted (0 = active)
+    /// @param deactivatedAtHeight Block height when validator was deleted (0 = active)
     struct Validator {
         bytes32 publicKey;
         address validatorAddress;
@@ -131,14 +131,14 @@ interface IValidatorConfigV2 {
         string egress;
         uint64 index;
         uint64 addedAtHeight;
-        uint64 deletedAtHeight;
+        uint64 deactivatedAtHeight;
     }
 
     /// @notice Get all validators (including deleted ones) in array order
     /// @return validators Array of all validators with their information
     function getValidators() external view returns (Validator[] memory validators);
 
-    /// @notice Get only active validators (where deletedAtHeight == 0)
+    /// @notice Get only active validators (where deactivatedAtHeight == 0)
     /// @return validators Array of active validators
     function getActiveValidators() external view returns (Validator[] memory validators);
 
@@ -172,8 +172,10 @@ interface IValidatorConfigV2 {
 
     /// @notice Add a new validator (owner only)
     /// @dev The signature must be an Ed25519 signature over:
-    ///      keccak256(abi.encodePacked(chainId, contractAddress, validatorAddress, ingress, egress))
+    ///      keccak256(abi.encodePacked(<NAMESPACE>, contractAddress, validatorAddress, ingress, egress)),
+    ///      where `<NAMESPACE>` is "TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR" || "_" || <chainId>.
     ///      This proves the caller controls the private key corresponding to publicKey.
+    ///      Reverts if isInitialized() returns false.
     /// @param validatorAddress The address of the new validator
     /// @param publicKey The validator's Ed25519 communication public key
     /// @param ingress The validator's inbound address `<ip>:<port>` for incoming connections
@@ -187,12 +189,12 @@ interface IValidatorConfigV2 {
         bytes calldata signature
     ) external;
 
-    /// @notice Delete a validator (owner only)
-    /// @dev Marks the validator as deleted by setting deletedAtHeight to the current block height.
+    /// @notice Deactives a validator (owner or existing validator)
+    /// @dev Marks the validator as deactivate by setting deactivatedAtHeight to the current block height.
     ///      The validator's entry remains in storage for historical queries.
     ///      The address and public key remain reserved and cannot be reused.
     /// @param validatorAddress The validator address to delete
-    function deleteValidator(address validatorAddress) external;
+    function deactiveValidator(address validatorAddress) external;
 
     /// @notice Rotate a validator to a new identity (caller must be existing validator)
     /// @dev Atomically deletes the caller's validator entry and adds a new one. This is equivalent
@@ -200,13 +202,13 @@ interface IValidatorConfigV2 {
     ///      The caller (msg.sender) must be an existing active validator.
     ///      The same validation rules as addValidator apply:
     ///      - The new public key must not already exist
-    ///      - The new validator address must not already exist
+    ///      - Ingress and egress must be parseable as <ip>:<port> pairs.
     ///      - The signature must prove ownership of the new public key
     ///      The signature must be an Ed25519 signature over:
     ///      keccak256(abi.encodePacked(
-    ///          "TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
-    ///          chainId, contractAddress, validatorAddress, ingress, egress
-    ///      ))
+    ///          <NAMESPACE>, contractAddress, ingress, egress
+    ///      )),
+    ///      where `<NAMESPACE>` is "TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR" || "_" || <chainId>.
     /// @param publicKey The new validator's Ed25519 communication public key
     /// @param ingress The new validator's inbound address `<ip>:<port>` for incoming connections
     /// @param egress The new validator's outbound IP address `<ip>:<port>` for firewall whitelisting
@@ -231,8 +233,8 @@ interface IValidatorConfigV2 {
     /// @dev Can be called multiple times to migrate validators one at a time.
     ///      Reverts if already initialized or if idx != validatorsArray.length.
     ///      On first call, copies owner from V1 if V2 owner is address(0).
-    ///      Active V1 validators get addedAtHeight=0 and deletedAtHeight=0.
-    ///      Inactive V1 validators get addedAtHeight=deletedAtHeight=block.timestamp at migration time.
+    ///      Active V1 validators get addedAtHeight=0 and deactivatedAtHeight=0.
+    ///      Inactive V1 validators get addedAtHeight=deactivatedAtHeight=block.timestamp at migration time.
     /// @param idx Index of the validator in V1 validators array (must equal current validatorsArray.length)
     function migrateValidator(uint64 idx) external;
 
@@ -241,7 +243,7 @@ interface IValidatorConfigV2 {
     ///      Sets initialized=true. After this call, CL reads from V2 instead of V1.
     ///      Copies nextDkgCeremony from V1.
     ///      Reverts if V2 validators count < V1 validators count (ensures all validators migrated).
-    function initialize() external;
+    function initializeIfMigrationComplete() external;
 
     /// @notice Set the validator address for a validator (owner only)
     /// @dev Allows owner to change the address of an existing validator.
@@ -264,10 +266,10 @@ interface IValidatorConfigV2 {
 Unlike V1, validators in V2 follow a strict lifecycle:
 
 1. **Addition**: `addValidator` creates an immutable validator entry with
-   `addedAtHeight` set to the current block height and `deletedAtHeight = 0`
+   `addedAtHeight` set to the current block height and `deactivatedAtHeight = 0`
 2. **Active period**: Validator participates in consensus while
-   `deletedAtHeight == 0`
-3. **Deletion**: `deleteValidator` sets `deletedAtHeight` to the current block
+   `deactivatedAtHeight == 0`
+3. **Deletion**: `deleteValidator` sets `deactivatedAtHeight` to the current block
    height
 4. **Preserved**: The validator entry remains in storage forever for historical
    queries
@@ -343,13 +345,13 @@ Epoch E                    Epoch E+1                  Epoch E+2
 3. Epoch 12 (heights 1101–1200): The validator participates as a DKG player and receives a share (on success)
 4. Epoch 13 (heights 1201–1300): The validator becomes a signer using the share from the epoch 12 DKG
 
-**Deletion follows the same pattern**: A deleted validator is excluded from epoch `E+2` if `deletedAtHeight <= boundary(E)`.
+**Deletion follows the same pattern**: A deleted validator is excluded from epoch `E+2` if `deactivatedAtHeight <= boundary(E)`.
 
 The complete filter for DKG players at epoch `E+2`:
 ```
 players = validators.filter(v =>
     v.addedAtHeight <= boundary(E) &&
-    (v.deletedAtHeight == 0 || v.deletedAtHeight > boundary(E))
+    (v.deactivatedAtHeight == 0 || v.deactivatedAtHeight > boundary(E))
 )
 ```
 
@@ -391,11 +393,11 @@ Nodes can determine the DKG players for any past or future epoch using only curr
 ```
 players(E+2) = validators.filter(v =>
     v.addedAtHeight <= boundary(E) &&
-    (v.deletedAtHeight == 0 || v.deletedAtHeight > boundary(E))
+    (v.deactivatedAtHeight == 0 || v.deactivatedAtHeight > boundary(E))
 )
 ```
 
-**Note**: Validators with `addedAtHeight == deletedAtHeight` will never match this filter since `deletedAtHeight > boundary(E)` cannot be true when `addedAtHeight <= boundary(E)` and they are equal.
+**Note**: Validators with `addedAtHeight == deactivatedAtHeight` will never match this filter since `deactivatedAtHeight > boundary(E)` cannot be true when `addedAtHeight <= boundary(E)` and they are equal.
 
 This enables nodes to reconstruct DKG player sets without accessing historical account state—critical for node recovery and late-joining validators.
 
@@ -429,13 +431,13 @@ packing. The `initialized` flag uses bit 255 (the highest bit), leaving bits
 
 | Aspect | V1 | V2 |
 |--------|----|----|
-| Status field | `active: bool` | `deletedAtHeight: uint64` (0 = active) |
+| Status field | `active: bool` | `deactivatedAtHeight: uint64` (0 = active) |
 | Creation tracking | None | `addedAtHeight: uint64` |
 | Mutability | Mutable via `updateValidator()` | Immutable after creation |
-| Deletion | Sets `active = false` | Sets `deletedAtHeight = block.number` |
+| Deletion | Sets `active = false` | Sets `deactivatedAtHeight = block.number` |
 | Re-registration | Allowed after deletion | Never allowed (address/pubkey reserved forever) |
 | Key ownership | Not verified | Ed25519 signature required |
-| Historical queries | Requires historical state | Filter `getValidators()` by `addedAtHeight`/`deletedAtHeight` |
+| Historical queries | Requires historical state | Filter `getValidators()` by `addedAtHeight`/`deactivatedAtHeight` |
 | Uniqueness | Address only | Address AND public key |
 | Precompile address | `0xCCCC...0000` | `0xCCCC...0001` |
 
@@ -452,7 +454,7 @@ The following invariants must always hold:
    `validatorAddress`, `ingress`, `egress`, `index`, and
    `addedAtHeight` fields never change.
 
-3. **Delete-once**: A validator's `deletedAtHeight` can only transition from 0
+3. **Delete-once**: A validator's `deactivatedAtHeight` can only transition from 0
    to a non-zero value, never back to 0 or to a different non-zero value.
 
 4. **Unique addresses**: No two validators (including deleted ones) can have the
@@ -467,8 +469,8 @@ The following invariants must always hold:
    `validatorsArray` and equals `validatorCount - 1` at creation time.
 
 8. **Historical consistency**: For any height H, the active validator set
-   consists of validators where `addedAtHeight <= H && (deletedAtHeight == 0 ||
-   deletedAtHeight > H)`. Validators with `addedAtHeight == deletedAtHeight` are
+   consists of validators where `addedAtHeight <= H && (deactivatedAtHeight == 0 ||
+   deactivatedAtHeight > H)`. Validators with `addedAtHeight == deactivatedAtHeight` are
    never considered active.
 
 9. **Signature binding**: The signature message includes `chainId`,
@@ -486,7 +488,7 @@ The following invariants must always hold:
     `rotateValidator` on themselves (caller must be the validator being rotated).
 
 13. **Atomic rotation**: `rotateValidator` atomically deletes the old validator
-    (setting its `deletedAtHeight`) and adds a new validator entry. Both
+    (setting its `deactivatedAtHeight`) and adds a new validator entry. Both
     operations occur in the same transaction with the same block height.
 
 14. **Address update**: `setValidatorAddress` updates the address of an existing
@@ -503,18 +505,18 @@ This section describes the migration strategy from ValidatorConfig V1 to V2.
 
 The migration uses a two-pronged approach:
 
-1. **New hardfork ("Allegro")**: Timestamp-based activation
+1. **New hardfork**: Timestamp-based activation
 2. **Manual migration**: Admin migrates validators one at a time, then calls
    `initialize()` to flip the flag. CL reads from V1 until the flag is set.
 
 ## Hardfork-Based Switching
 
 The CL determines which contract to read based on:
-1. Whether Allegro hardfork is active (timestamp-based)
+1. Whether <Hardfork> hardfork is active (timestamp-based)
 2. Whether V2 is initialized (reads `isInitialized()` from V2)
 
 ```
-if chainspec.is_allegro_active_at_timestamp(block.timestamp) {
+if chainspec.is_<hardfork>_active_at_timestamp(block.timestamp) {
     if v2.isInitialized() {
         read_from_contract_v2_at_height(height)
     } else {
@@ -571,7 +573,7 @@ precompile does NOT proxy reads to V1.
   - `outboundAddress`: copied from V1
   - `index`: set to `idx`
   - `addedAtHeight`: `block.timestamp`
-  - `deletedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
+  - `deactivatedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
 - Adds to `validatorsArray`
 - Populates lookup maps (`validators[validatorAddress]`, `pubkeyToIndex[pubkey]`)
 
@@ -615,7 +617,7 @@ interface IValidatorConfigV1 {
 - **No signatures required**: V1 validators are imported without Ed25519 signatures
   (they were already validated in V1)
 - **All validators imported**: Both active and inactive V1 validators are
-  imported; inactive ones have `addedAtHeight == deletedAtHeight == block.timestamp`,
+  imported; inactive ones have `addedAtHeight == deactivatedAtHeight == block.timestamp`,
   active ones have `addedAtHeight == 0` (indicating they were active before V2 existed)
 - **Initialize validates migration**: `initialize()` reverts if not all V1 validators have been migrated
 
@@ -629,7 +631,7 @@ Before Fork           Post-Fork (V2 not init)    Admin Migration           After
      │                      │                          │                          │
 ─────┴──────────────────────┴──────────────────────────┴──────────────────────────┴───────────────►
                             │                          │                          │
-                      allegroTime           migrateValidator() x N         initialize()
+                      hardforkTime           migrateValidator() x N         initialize()
 ```
 
 ## Migration Steps
@@ -638,8 +640,8 @@ Before Fork           Post-Fork (V2 not init)    Admin Migration           After
 
 Existing networks are defined as those with hardfork_timestamp > timestamp_at_genesis
 
-1. **Release new node software** with Allegro hardfork support
-2. **Schedule the fork** by updating chainspec with target `allegroTime`
+1. **Release new node software** with <Hardfork> hardfork support
+2. **Schedule the fork** by updating chainspec with target `hardforkTime`
 3. **At fork activation**: CL reads from V1 (since `isInitialized() == false`)
 4. **Admin migrates validators** by calling `migrateValidator(idx)` for each validator
    - One transaction per validator
@@ -658,7 +660,7 @@ New networks are defined as those that have the V2 validator config contract at 
 
 1. Call `initialize()` to set `initialized = true`
 2. Call `addValidator()` for each initial validator
-3. Set `allegroTime = 0` to activate V2 immediately
+3. Set `<hardforkTime> = 0` to activate V2 immediately
 4. V1 Validator Config contract/precompile is not necessary in this flow
 
 ---
@@ -678,9 +680,9 @@ The test suite must cover:
 ### Query Functions
 
 6. **getValidators**: Returns all validators including deleted with correct
-   `addedAtHeight` and `deletedAtHeight`
-7. **getActiveValidators**: Returns only validators with `deletedAtHeight == 0`
-   (note: validators with `addedAtHeight == deletedAtHeight` are excluded)
+   `addedAtHeight` and `deactivatedAtHeight`
+7. **getActiveValidators**: Returns only validators with `deactivatedAtHeight == 0`
+   (note: validators with `addedAtHeight == deactivatedAtHeight` are excluded)
 8. **validatorByPublicKey**: Returns validator by public key lookup
 9. **validatorCount**: Returns total count including deleted
 
@@ -708,10 +710,10 @@ The test suite must cover:
 
 25. **addedAtHeight correctness**: Validators have correct `addedAtHeight` set
     at creation
-26. **deletedAtHeight correctness**: Deleted validators have correct
-    `deletedAtHeight` set
+26. **deactivatedAtHeight correctness**: Deleted validators have correct
+    `deactivatedAtHeight` set
 27. **Filter logic**: Caller can correctly filter by
-    `addedAtHeight <= H && (deletedAtHeight == 0 || deletedAtHeight > H)`
+    `addedAtHeight <= H && (deactivatedAtHeight == 0 || deactivatedAtHeight > H)`
 
 ### Manual Migration
 
@@ -724,7 +726,7 @@ The test suite must cover:
     if `isInitialized() == true`
 32. **migrateValidator owner only**: Non-owner cannot call `migrateValidator`
 33. **All validators imported on migration**: Both V1 active and inactive validators
-    are imported; inactive ones have `addedAtHeight == deletedAtHeight == block.timestamp`,
+    are imported; inactive ones have `addedAtHeight == deactivatedAtHeight == block.timestamp`,
     active ones have `addedAtHeight == 0`
 34. **addedAtHeight set correctly**: Active validators have `addedAtHeight == 0`,
     inactive validators have `addedAtHeight == block.timestamp` at migration time
