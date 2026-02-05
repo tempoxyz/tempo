@@ -694,10 +694,10 @@ mod tests {
             assert!(result.is_err());
 
             // Verify the error is PolicyNotFound
-            assert!(matches!(
+            assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotFound(_))
-            ));
+                TIP403RegistryError::policy_not_found().into()
+            );
 
             Ok(())
         })
@@ -1080,12 +1080,10 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             let result = registry.create_policy(admin, admin, PolicyType::COMPOUND);
-            assert!(matches!(
+            assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::IncompatiblePolicyType(_)
-                )
-            ));
+                TIP403RegistryError::incompatible_policy_type().into()
+            );
 
             Ok(())
         })
@@ -1105,12 +1103,10 @@ mod tests {
                 PolicyType::COMPOUND,
                 vec![account],
             );
-            assert!(matches!(
+            assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::IncompatiblePolicyType(_)
-                )
-            ));
+                TIP403RegistryError::incompatible_policy_type().into()
+            );
 
             Ok(())
         })
@@ -1177,12 +1173,10 @@ mod tests {
                 PolicyType::COMPOUND,
                 vec![account],
             );
-            assert!(matches!(
+            assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::IncompatiblePolicyType(_)
-                )
-            ));
+                TIP403RegistryError::incompatible_policy_type().into()
+            );
 
             // With empty accounts: succeeds (loop never enters revert path)
             let policy_id =
@@ -1399,12 +1393,10 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             let result = registry.create_policy(admin, admin, PolicyType::COMPOUND);
-            assert!(matches!(
+            assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::IncompatiblePolicyType(_)
-                )
-            ));
+                TIP403RegistryError::incompatible_policy_type().into()
+            );
 
             Ok(())
         })
@@ -1461,20 +1453,18 @@ mod tests {
 
             // Non-existent policy should return PolicyNotFound
             let result = registry.compound_policy_data(999);
-            assert!(matches!(
+            assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotFound(_))
-            ));
+                TIP403RegistryError::policy_not_found().into()
+            );
 
             // Simple policy should return IncompatiblePolicyType
             let simple_policy_id = registry.create_policy(admin, admin, PolicyType::WHITELIST)?;
             let result = registry.compound_policy_data(simple_policy_id);
-            assert!(matches!(
+            assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::IncompatiblePolicyType(_)
-                )
-            ));
+                TIP403RegistryError::incompatible_policy_type().into()
+            );
 
             Ok(())
         })
