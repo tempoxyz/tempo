@@ -301,7 +301,7 @@ fn subblocks_are_included_with_failing_txs() {
             for node in nodes.iter() {
                 for _ in 0..5 {
                     // Randomly submit some of the transactions from a new signer that doesn't have any funds
-                    if rand::random::<bool>() {
+                    if rand_08::random::<bool>() {
                         let tx =
                             submit_subblock_tx_from(node, &PrivateKeySigner::random(), 1_000_000)
                                 .await;
@@ -403,7 +403,7 @@ async fn submit_subblock_tx_from<TClock: commonware_runtime::Clock>(
     wallet: &PrivateKeySigner,
     gas_limit: u64,
 ) -> TxHash {
-    let mut nonce_bytes = rand::random::<[u8; 32]>();
+    let mut nonce_bytes = rand_08::random::<[u8; 32]>();
     nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
     nonce_bytes[1..16].copy_from_slice(&node.public_key().as_ref()[..15]);
 

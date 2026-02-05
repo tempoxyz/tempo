@@ -33,7 +33,12 @@ itertools.workspace = true
 
 eyre.workspace = true
 reth-db.workspace = true
-reth-ethereum = { workspace = true, features = ["node", "rpc", "test-utils", "pool"] }
+reth-ethereum = { workspace = true, features = [
+  "node",
+  "rpc",
+  "test-utils",
+  "pool",
+] }
 reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
@@ -56,13 +61,14 @@ secp256k1.workspace = true
 [dev-dependencies]
 commonware-consensus.workspace = true
 commonware-macros.workspace = true
+commonware-parallel.workspace = true
 jsonrpsee = { workspace = true, features = ["ws-client", "http-client"] }
 tempo-eyre.workspace = true
 tracing-subscriber.workspace = true
 
 alloy-network.workspace = true
 
-rand.workspace = true
+rand_08.workspace = true
 
 [lints]
 workspace = true

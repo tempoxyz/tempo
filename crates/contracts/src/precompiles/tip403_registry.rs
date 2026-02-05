@@ -9,7 +9,8 @@ crate::sol! {
         // Enums
         enum PolicyType {
             WHITELIST,
-            BLACKLIST
+            BLACKLIST,
+            COMPOUND
         }
 
         // View Functions
@@ -17,6 +18,10 @@ crate::sol! {
         function policyExists(uint64 policyId) external view returns (bool);
         function policyData(uint64 policyId) external view returns (PolicyType policyType, address admin);
         function isAuthorized(uint64 policyId, address user) external view returns (bool);
+        function isAuthorizedSender(uint64 policyId, address user) external view returns (bool);
+        function isAuthorizedRecipient(uint64 policyId, address user) external view returns (bool);
+        function isAuthorizedMintRecipient(uint64 policyId, address user) external view returns (bool);
+        function compoundPolicyData(uint64 policyId) external view returns (uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
 
         // State-Changing Functions
         function createPolicy(address admin, PolicyType policyType) external returns (uint64);
@@ -24,17 +29,21 @@ crate::sol! {
         function setPolicyAdmin(uint64 policyId, address admin) external;
         function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
+        function createCompoundPolicy(uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId) external returns (uint64);
 
         // Events
         event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, address indexed admin);
         event PolicyCreated(uint64 indexed policyId, address indexed updater, PolicyType policyType);
         event WhitelistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool allowed);
         event BlacklistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
+        event CompoundPolicyCreated(uint64 indexed policyId, address indexed creator, uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
 
         // Errors
         error Unauthorized();
-        error IncompatiblePolicyType();
         error PolicyNotFound();
+        error PolicyNotSimple();
+        error InvalidPolicyType();
+        error IncompatiblePolicyType();
     }
 }
 
@@ -45,6 +54,11 @@ impl TIP403RegistryError {
     }
 
     /// Creates an error for incompatible policy types
+    pub const fn invalid_policy_type() -> Self {
+        Self::InvalidPolicyType(ITIP403Registry::InvalidPolicyType {})
+    }
+
+    /// Creates an error for incompatible policy types
     pub const fn incompatible_policy_type() -> Self {
         Self::IncompatiblePolicyType(ITIP403Registry::IncompatiblePolicyType {})
     }
@@ -52,5 +66,9 @@ impl TIP403RegistryError {
     /// Creates an error for non-existent policy
     pub const fn policy_not_found() -> Self {
         Self::PolicyNotFound(ITIP403Registry::PolicyNotFound {})
+    }
+
+    pub const fn policy_not_simple() -> Self {
+        Self::PolicyNotSimple(ITIP403Registry::PolicyNotSimple {})
     }
 }

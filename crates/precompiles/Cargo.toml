@@ -30,7 +30,7 @@ alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 eyre.workspace = true
-rand.workspace = true
+rand_08.workspace = true
 proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

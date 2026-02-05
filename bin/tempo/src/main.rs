@@ -42,17 +42,21 @@ use tempo_node::{
     TempoFullNode, TempoNodeArgs,
     node::TempoNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
+    telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
 };
 use tokio::sync::oneshot;
 use tracing::{info, info_span};
 
 // TODO: migrate this to tempo_node eventually.
-#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 struct TempoArgs {
     /// Follow this specific RPC node for block hashes.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
     pub follow: Option<String>,
+
+    #[command(flatten)]
+    pub telemetry: defaults::TelemetryArgs,
 
     #[command(flatten)]
     pub consensus: tempo_commonware_node::Args,
@@ -110,12 +114,31 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let cli = Cli::<
+    let mut cli = Cli::<
         TempoChainSpecParser,
         TempoArgs,
         DefaultRpcModuleValidator,
         tempo_cmd::TempoSubcommand,
     >::parse();
+
+    // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
+    let mut telemetry_config = None;
+    if let Commands::Node(node_cmd) = &cli.command
+        && let Some(config) = node_cmd
+            .ext
+            .telemetry
+            .try_to_config()
+            .wrap_err("failed to parse telemetry config")?
+    {
+        // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
+        cli.traces.logs_otlp = Some(config.logs_otlp_url.clone());
+        cli.traces.logs_otlp_filter = config
+            .logs_otlp_filter
+            .parse()
+            .wrap_err("invalid default logs filter")?;
+        telemetry_config.replace(config);
+    }
+
     let is_node = matches!(cli.command, Commands::Node(_));
 
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
@@ -179,6 +202,22 @@ fn main() -> eyre::Result<()> {
                     args.consensus.metrics_address,
                 )
                 .fuse();
+
+                // Start the unified metrics exporter if configured
+                if let Some(config) = telemetry_config {
+                    let prometheus_config = PrometheusMetricsConfig {
+                        endpoint: config.metrics_prometheus_url,
+                        interval: config.metrics_prometheus_interval,
+                        auth_header: config.metrics_auth_header,
+                    };
+
+                    install_prometheus_metrics(
+                        ctx.with_label("telemetry_metrics"),
+                        prometheus_config,
+                    )
+                    .wrap_err("failed to start Prometheus metrics exporter")?;
+                }
+
                 let consensus_stack =
                     run_consensus_stack(&ctx, args.consensus, node, cl_feed_state_clone);
                 tokio::pin!(consensus_stack);

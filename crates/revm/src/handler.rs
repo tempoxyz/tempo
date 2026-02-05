@@ -1,6 +1,10 @@
 //! Tempo EVM Handler implementation.
 
-use std::{cmp::Ordering, fmt::Debug};
+use std::{
+    cmp::Ordering,
+    fmt::Debug,
+    sync::{Arc, OnceLock},
+};
 
 use alloy_primitives::{Address, TxKind, U256};
 use reth_evm::{EvmError, EvmInternals};
@@ -45,7 +49,7 @@ use tempo_primitives::transaction::{
 };
 
 use crate::{
-    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
+    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
@@ -531,26 +535,16 @@ where
     ) -> Result<FrameResult, Self::Error> {
         let spec = evm.ctx_ref().cfg().spec();
         let adjusted_gas = adjusted_initial_gas(*spec, evm.initial_gas, init_and_floor_gas);
-
         let tx = evm.tx();
-        // For T0+, check gas limit covers intrinsic gas (including 2D nonce for AA txs)
-        // For pre-T0 (Genesis), skip this check to maintain backward compatibility -
-        // the original behavior didn't validate gas limit for 2D nonce cost upfront
-        if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
-            let kind = *tx
-                .first_call()
-                .expect("we already checked that there is at least one call in aa tx")
-                .0;
-            return Ok(oog_frame_result(kind, tx.gas_limit()));
+
+        if let Some(oog) = check_gas_limit(*spec, tx, &adjusted_gas) {
+            return Ok(oog);
         }
 
-        // Check if this is an AA transaction by checking for tempo_tx_env
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
-            // AA transaction - use batch execution with calls field
             let calls = tempo_tx_env.aa_calls.clone();
             self.execute_multi_call(evm, &adjusted_gas, calls)
         } else {
-            // Standard transaction - use single-call execution
             self.execute_single_call(evm, &adjusted_gas)
         }
     }
@@ -627,7 +621,6 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
-        let initial_gas = evm.initial_gas;
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
@@ -678,6 +671,21 @@ where
 
         // modify account nonce and touch the account.
         caller_account.touch();
+
+        // add additional gas for CREATE tx with 2d nonce and account nonce is 0.
+        // This case would create a new account for caller.
+        if !nonce_key.is_zero() && tx.kind().is_create() && caller_account.nonce() == 0 {
+            evm.initial_gas += cfg.gas_params().get(GasId::new_account_cost());
+
+            // do the gas limit check again.
+            if tx.gas_limit() < evm.initial_gas {
+                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                    gas_limit: tx.gas_limit(),
+                    intrinsic_gas: evm.initial_gas,
+                }
+                .into());
+            }
+        }
 
         if is_expiring_nonce {
             // Expiring nonce transaction - use tx hash for replay protection
@@ -833,17 +841,36 @@ where
             };
 
             let internals = EvmInternals::new(journal, block, cfg, tx);
+
             // TIP-1000: Only apply gas metering for T1 hardfork.
             // For pre-T1 chains, use unlimited gas to maintain backward compatibility.
-            let mut provider = if spec.is_t1() {
-                EvmPrecompileStorageProvider::new_with_gas_limit(
-                    internals,
-                    cfg,
-                    tx.gas_limit() - initial_gas,
-                )
+            let gas_limit = if spec.is_t1() {
+                tx.gas_limit() - evm.initial_gas
             } else {
-                EvmPrecompileStorageProvider::new_max_gas(internals, cfg)
+                u64::MAX
             };
+
+            // Create gas_params with only sstore increase for key authorization
+            let gas_params = if spec.is_t1() {
+                static TABLE: OnceLock<GasParams> = OnceLock::new();
+                // only enabled SSTORE and warm storage read gas params for T1 fork in keychain.
+                TABLE
+                    .get_or_init(|| {
+                        let mut table = [0u64; 256];
+                        table[GasId::sstore_set_without_load_cost().as_usize()] =
+                            cfg.gas_params.get(GasId::sstore_set_without_load_cost());
+                        table[GasId::warm_storage_read_cost().as_usize()] =
+                            cfg.gas_params.get(GasId::warm_storage_read_cost());
+                        GasParams::new(Arc::new(table))
+                    })
+                    .clone()
+            } else {
+                cfg.gas_params.clone()
+            };
+
+            let mut provider = EvmPrecompileStorageProvider::new(
+                internals, gas_limit, cfg.spec, false, gas_params,
+            );
 
             // The core logic of setting up thread-local storage is here.
             let out_of_gas = StorageCtx::enter(&mut provider, || {
@@ -1572,23 +1599,15 @@ where
         let adjusted_gas = adjusted_initial_gas(*spec, evm.initial_gas, init_and_floor_gas);
 
         let tx = evm.tx();
-        // For T0+, check gas limit covers intrinsic gas (including 2D nonce for AA txs)
-        // For pre-T0 (Genesis), skip this check to maintain backward compatibility
-        if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
-            let kind = *tx
-                .first_call()
-                .expect("we already checked that there is at least one call in aa tx")
-                .0;
-            return Ok(oog_frame_result(kind, tx.gas_limit()));
+
+        if let Some(oog) = check_gas_limit(*spec, tx, &adjusted_gas) {
+            return Ok(oog);
         }
 
-        // Check if this is an AA transaction by checking for tempo_tx_env
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
-            // AA transaction - use batch execution with calls field
             let calls = tempo_tx_env.aa_calls.clone();
             self.inspect_execute_multi_call(evm, &adjusted_gas, calls)
         } else {
-            // Standard transaction - use single-call execution
             self.inspect_execute_single_call(evm, &adjusted_gas)
         }
     }
@@ -1604,6 +1623,26 @@ fn oog_frame_result(kind: TxKind, gas_limit: u64) -> FrameResult {
     } else {
         FrameResult::new_create_oog(gas_limit)
     }
+}
+
+/// Checks if gas limit is sufficient and returns OOG frame result if not.
+///
+/// For T0+, validates gas limit covers intrinsic gas. For pre-T0, skips check
+/// to maintain backward compatibility.
+#[inline]
+fn check_gas_limit(
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    tx: &TempoTxEnv,
+    adjusted_gas: &InitialAndFloorGas,
+) -> Option<FrameResult> {
+    if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_gas {
+        let kind = *tx
+            .first_call()
+            .expect("we already checked that there is at least one call in aa tx")
+            .0;
+        return Some(oog_frame_result(kind, tx.gas_limit()));
+    }
+    None
 }
 
 /// Validates time window for AA transactions

@@ -1,5 +1,8 @@
 use alloy::{
-    primitives::Address,
+    primitives::{
+        Address,
+        map::{AddressMap, AddressSet, HashMap, HashSet},
+    },
     providers::{Provider, ProviderBuilder},
     rpc::types::{Filter, Log},
     sol_types::SolEvent,
@@ -12,10 +15,7 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use poem::{Response, handler};
 use rand_distr::num_traits::Zero;
 use reqwest::Url;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::sync::Arc;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     tip_fee_manager::ITIPFeeAMM::{self, ITIPFeeAMMInstance, Mint, Pool},
@@ -32,14 +32,14 @@ pub struct TIP20Token {
 struct MonitorConfig {
     rpc_url: Url,
     poll_interval: u64,
-    target_tokens: HashSet<Address>,
+    target_tokens: AddressSet,
 }
 
 /// Initialized monitor with fetched token metadata.
 pub struct Monitor {
     rpc_url: Url,
     poll_interval: u64,
-    tokens: HashMap<Address, TIP20Token>,
+    tokens: AddressMap<TIP20Token>,
     pools: HashMap<(Address, Address), Pool>,
     known_pairs: HashSet<(Address, Address)>,
     last_processed_block: u64,
@@ -65,7 +65,7 @@ impl FilterExt for Filter {
 }
 
 impl MonitorConfig {
-    pub fn new(rpc_url: Url, poll_interval: u64, target_tokens: HashSet<Address>) -> Self {
+    pub fn new(rpc_url: Url, poll_interval: u64, target_tokens: AddressSet) -> Self {
         Self {
             rpc_url,
             poll_interval,
@@ -99,7 +99,7 @@ impl MonitorConfig {
             rpc_url: self.rpc_url,
             poll_interval: self.poll_interval,
             tokens,
-            pools: HashMap::new(),
+            pools: Default::default(),
             known_pairs,
             last_processed_block,
         })
@@ -109,7 +109,7 @@ impl MonitorConfig {
     async fn fetch_token_metadata<P: Provider + Clone>(
         &self,
         provider: &Arc<P>,
-    ) -> Result<HashMap<Address, TIP20Token>> {
+    ) -> Result<AddressMap<TIP20Token>> {
         let get_token_metadata: Vec<_> = self
             .target_tokens
             .iter()
@@ -175,11 +175,7 @@ impl MonitorConfig {
 
 impl Monitor {
     /// Creates a new `Monitor` by fetching token metadata and discovering historical pools.
-    pub async fn new(
-        rpc_url: Url,
-        poll_interval: u64,
-        target_tokens: HashSet<Address>,
-    ) -> Result<Self> {
+    pub async fn new(rpc_url: Url, poll_interval: u64, target_tokens: AddressSet) -> Result<Self> {
         MonitorConfig::new(rpc_url, poll_interval, target_tokens)
             .init()
             .await

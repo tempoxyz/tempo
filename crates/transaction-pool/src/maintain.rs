@@ -8,7 +8,10 @@ use crate::{
     tt_2d_pool::AASequenceId,
 };
 use alloy_consensus::transaction::TxHashRef;
-use alloy_primitives::{Address, TxHash};
+use alloy_primitives::{
+    Address, TxHash,
+    map::{AddressMap, B256Set, HashMap, HashSet},
+};
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
 use reth_chainspec::ChainSpecProvider;
@@ -16,11 +19,7 @@ use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
@@ -48,6 +47,13 @@ pub struct TempoPoolUpdates {
     pub spending_limit_changes: SpendingLimitUpdates,
     /// Validator token preference changes: (validator, new_token).
     pub validator_token_changes: Vec<(Address, Address)>,
+    /// User token preference changes.
+    /// When a user changes their fee token preference via `setUserToken()`, pending
+    /// transactions from that user that don't have an explicit fee_token set may now
+    /// resolve to a different token at execution time, causing fee payment failures.
+    /// Uses a set since a user can emit multiple events in the same block; we only need to
+    /// process each user once. No cleanup needed as this is ephemeral per-block data.
+    pub user_token_changes: HashSet<Address>,
     /// TIP403 blacklist additions: (policy_id, account).
     pub blacklist_additions: Vec<(u64, Address)>,
     /// TIP403 whitelist removals: (policy_id, account).
@@ -68,6 +74,7 @@ impl TempoPoolUpdates {
             && self.revoked_keys.is_empty()
             && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
+            && self.user_token_changes.is_empty()
             && self.blacklist_additions.is_empty()
             && self.whitelist_removals.is_empty()
             && self.pause_events.is_empty()
@@ -100,12 +107,14 @@ impl TempoPoolUpdates {
                     );
                 }
             }
-            // Validator token changes
+            // Validator and user token changes
             else if log.address == TIP_FEE_MANAGER_ADDRESS {
                 if let Ok(event) = IFeeManager::ValidatorTokenSet::decode_log(log) {
                     updates
                         .validator_token_changes
                         .push((event.validator, event.token));
+                } else if let Ok(event) = IFeeManager::UserTokenSet::decode_log(log) {
+                    updates.user_token_changes.insert(event.user);
                 }
             }
             // TIP403 blacklist additions and whitelist removals
@@ -140,6 +149,7 @@ impl TempoPoolUpdates {
         !self.revoked_keys.is_empty()
             || !self.spending_limit_changes.is_empty()
             || !self.validator_token_changes.is_empty()
+            || !self.user_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
     }
@@ -315,7 +325,7 @@ impl KeyExpiryTracker {
         let key = KeyId { account, key_id };
 
         match self.key_to_txs.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
+            alloy_primitives::map::Entry::Occupied(mut entry) => {
                 let (existing_expiry, txs) = entry.get_mut();
                 debug_assert_eq!(
                     *existing_expiry, expiry,
@@ -323,7 +333,7 @@ impl KeyExpiryTracker {
                 );
                 txs.insert(tx_hash);
             }
-            std::collections::hash_map::Entry::Vacant(entry) => {
+            alloy_primitives::map::Entry::Vacant(entry) => {
                 entry.insert((expiry, [tx_hash].into_iter().collect()));
                 self.expiry_map.entry(expiry).or_default().insert(key);
             }
@@ -546,7 +556,7 @@ where
 
                     // Group transactions by fee token for efficient batch processing.
                     // This single pass over all transactions handles all pause events.
-                    let mut by_token: HashMap<Address, Vec<TxHash>> = HashMap::new();
+                    let mut by_token: AddressMap<Vec<TxHash>> = AddressMap::default();
                     for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
                         if let Some(fee_token) = tx.transaction.inner().fee_token() {
                             by_token.entry(fee_token).or_default().push(*tx.hash());
@@ -676,6 +686,7 @@ where
                         revoked_keys = updates.revoked_keys.len(),
                         spending_limit_changes = updates.spending_limit_changes.len(),
                         validator_token_changes = updates.validator_token_changes.len(),
+                        user_token_changes = updates.user_token_changes.len(),
                         blacklist_additions = updates.blacklist_additions.len(),
                         whitelist_removals = updates.whitelist_removals.len(),
                         "Processing transaction invalidation events"
@@ -764,10 +775,10 @@ where
     let (old_blocks, _) = old_chain.inner();
 
     // Collect transaction hashes from the new chain to identify what's still mined
-    let new_mined_hashes: HashSet<TxHash> = new_blocks.transaction_hashes().collect();
+    let new_mined_hashes: B256Set = new_blocks.transaction_hashes().collect();
 
     let mut orphaned_txs = Vec::new();
-    let mut affected_seq_ids = HashSet::new();
+    let mut affected_seq_ids = HashSet::default();
 
     // Find AA 2D transactions from the old chain that are NOT in the new chain
     for tx in old_blocks.transactions_ecrecovered() {

@@ -13,7 +13,7 @@ use commonware_runtime::{
 };
 use commonware_utils::NZU64;
 use futures::future::join_all;
-use rand::Rng;
+use rand_08::Rng;
 use tracing::debug;
 
 use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};

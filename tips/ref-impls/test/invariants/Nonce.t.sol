@@ -98,7 +98,10 @@ contract NonceInvariantTest is InvariantBaseTest {
     /// @param seed Random seed
     /// @param excluded Key to exclude from selection
     /// @return Selected nonce key (guaranteed != excluded)
-    function _selectNonceKeyExcluding(uint256 seed, uint256 excluded)
+    function _selectNonceKeyExcluding(
+        uint256 seed,
+        uint256 excluded
+    )
         internal
         pure
         returns (uint256)
@@ -132,7 +135,10 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @dev Increment nonce via direct storage manipulation (simulates protocol behavior)
     /// @dev Uses INonce custom errors to align with protocol error semantics
-    function _incrementNonceViaStorage(address account, uint256 nonceKey)
+    function _incrementNonceViaStorage(
+        address account,
+        uint256 nonceKey
+    )
         internal
         returns (uint64 newNonce)
     {
@@ -150,7 +156,10 @@ contract NonceInvariantTest is InvariantBaseTest {
     }
 
     /// @dev External wrapper for testing reverts
-    function externalIncrementNonceViaStorage(address account, uint256 nonceKey)
+    function externalIncrementNonceViaStorage(
+        address account,
+        uint256 nonceKey
+    )
         external
         returns (uint64)
     {
@@ -248,7 +257,11 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for verifying account independence
     /// @dev Tests TEMPO-NON5 (different accounts have independent nonces)
-    function verifyAccountIndependence(uint256 actor1Seed, uint256 actor2Seed, uint256 keySeed)
+    function verifyAccountIndependence(
+        uint256 actor1Seed,
+        uint256 actor2Seed,
+        uint256 keySeed
+    )
         external
     {
         address actor1 = _selectActor(actor1Seed);

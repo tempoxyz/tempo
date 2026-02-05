@@ -32,7 +32,7 @@ alloy = { workspace = true, features = [
   "getrandom",
 ] }
 alloy-primitives.workspace = true
-clap = { version = "4.5.45", features = ["derive"] }
+clap = { workspace = true, features = ["derive"] }
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
@@ -42,7 +42,7 @@ const-hex.workspace = true
 eyre.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
 itertools.workspace = true
-rand.workspace = true
+rand_08.workspace = true
 rayon.workspace = true
 reth-evm.workspace = true
 reth-network-peers = { workspace = true, features = ["secp256k1"] }

@@ -2,15 +2,9 @@
 pragma solidity ^0.8.13;
 
 import { TIP20 } from "../../src/TIP20.sol";
-import { IAccountKeychain } from "../../src/interfaces/IAccountKeychain.sol";
-import { IFeeAMM } from "../../src/interfaces/IFeeAMM.sol";
-import { INonce } from "../../src/interfaces/INonce.sol";
-import { IStablecoinDEX } from "../../src/interfaces/IStablecoinDEX.sol";
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
-import { ITIP20Factory } from "../../src/interfaces/ITIP20Factory.sol";
 import { ITIP20RolesAuth } from "../../src/interfaces/ITIP20RolesAuth.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
-import { IValidatorConfig } from "../../src/interfaces/IValidatorConfig.sol";
 import { BaseTest } from "../BaseTest.t.sol";
 
 /// @title Invariant Base Test
@@ -179,7 +173,10 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param noOfActors_ Number of actors to create
     /// @param spender Contract to approve for token spending
     /// @return actorsAddress Array of created actor addresses
-    function _buildActorsWithApprovals(uint256 noOfActors_, address spender)
+    function _buildActorsWithApprovals(
+        uint256 noOfActors_,
+        address spender
+    )
         internal
         returns (address[] memory)
     {
@@ -334,15 +331,6 @@ abstract contract InvariantBaseTest is BaseTest {
         return registry.isAuthorized(_getPolicyId(token), actor);
     }
 
-    /// @dev Toggles blacklist status for an actor on a token
-    /// @param token Token address
-    /// @param actor Actor address
-    /// @param blacklist True to blacklist, false to whitelist
-    function _setBlacklist(address token, address actor, bool blacklist) internal {
-        vm.prank(_getPolicyAdmin(token));
-        registry.modifyPolicyBlacklist(_getPolicyId(token), actor, blacklist);
-    }
-
     /*//////////////////////////////////////////////////////////////
                               LOGGING
     //////////////////////////////////////////////////////////////*/
@@ -351,32 +339,6 @@ abstract contract InvariantBaseTest is BaseTest {
     function _log(string memory message) internal {
         if (!_loggingEnabled) return;
         vm.writeLine(_logFile, message);
-    }
-
-    /// @dev Logs a handler entry to the log file (no-op if logging disabled)
-    function _logHandlerEntry(string memory handler) internal {
-        if (!_loggingEnabled) return;
-        vm.writeLine(_logFile, string.concat("CALL: ", handler));
-    }
-
-    /// @dev Logs a skip reason to the log file (no-op if logging disabled)
-    function _logSkip(string memory reason) internal {
-        if (!_loggingEnabled) return;
-        vm.writeLine(_logFile, string.concat("SKIP: ", reason));
-    }
-
-    /// @dev Logs a successful handler completion (no-op if logging disabled)
-    function _logHandlerSuccess(string memory handler) internal {
-        if (!_loggingEnabled) return;
-        vm.writeLine(_logFile, string.concat("SUCCESS: ", handler));
-    }
-
-    /// @dev Logs a handler revert (no-op if logging disabled)
-    function _logHandlerRevert(string memory handler, bytes4 selector) internal {
-        if (!_loggingEnabled) return;
-        vm.writeLine(
-            _logFile, string.concat("REVERT: ", handler, " selector=", vm.toString(selector))
-        );
     }
 
     /// @dev Gets actor index from address for logging
@@ -412,39 +374,6 @@ abstract contract InvariantBaseTest is BaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        CONSOLIDATED HELPERS
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Consolidated setup helper for invariant tests
-    /// @param actorCount Number of actors to create
-    /// @param spender Address to approve for spending (0 for no approvals)
-    /// @param logFile Log file path
-    /// @param title Log file title
-    function _setupInvariantTest(
-        uint256 actorCount,
-        address spender,
-        string memory logFile,
-        string memory title
-    ) internal {
-        _setupInvariantBase();
-        _actors = spender == address(0)
-            ? _buildActors(actorCount)
-            : _buildActorsWithApprovals(actorCount, spender);
-        _initLogFile(logFile, title);
-    }
-
-    /// @dev Helper to assert error selector is in allowed list
-    /// @param reason The revert reason bytes
-    /// @param allowed Array of allowed error selectors
-    function _assertSelectorIn(bytes memory reason, bytes4[] memory allowed) internal pure {
-        bytes4 selector = bytes4(reason);
-        for (uint256 i = 0; i < allowed.length; i++) {
-            if (selector == allowed[i]) return;
-        }
-        revert("Unknown error encountered");
-    }
-
-    /*//////////////////////////////////////////////////////////////
                           ERROR HANDLING
     //////////////////////////////////////////////////////////////*/
 
@@ -468,130 +397,6 @@ abstract contract InvariantBaseTest is BaseTest {
             || selector == ITIP20RolesAuth.Unauthorized.selector;
     }
 
-    /// @dev Checks if an error is a known TIP20Factory error
-    /// @param selector Error selector
-    /// @return True if known TIP20Factory error
-    function _isKnownFactoryError(bytes4 selector) internal pure returns (bool) {
-        return selector == ITIP20Factory.AddressReserved.selector
-            || selector == ITIP20Factory.InvalidQuoteToken.selector
-            || selector == ITIP20Factory.TokenAlreadyExists.selector || _isKnownTIP20Error(selector);
-    }
-
-    /// @dev Checks if an error is a known Nonce precompile error
-    /// @param selector Error selector
-    /// @return True if known Nonce error
-    function _isKnownNonceError(bytes4 selector) internal pure returns (bool) {
-        return selector == INonce.ProtocolNonceNotSupported.selector
-            || selector == INonce.InvalidNonceKey.selector
-            || selector == INonce.NonceOverflow.selector;
-    }
-
-    /// @dev Checks if an error is a known AccountKeychain error
-    /// @param selector Error selector
-    /// @return True if known AccountKeychain error
-    function _isKnownKeychainError(bytes4 selector) internal pure returns (bool) {
-        return selector == IAccountKeychain.KeyAlreadyExists.selector
-            || selector == IAccountKeychain.KeyNotFound.selector
-            || selector == IAccountKeychain.KeyInactive.selector
-            || selector == IAccountKeychain.KeyExpired.selector
-            || selector == IAccountKeychain.KeyAlreadyRevoked.selector
-            || selector == IAccountKeychain.SpendingLimitExceeded.selector
-            || selector == IAccountKeychain.InvalidSignatureType.selector
-            || selector == IAccountKeychain.ZeroPublicKey.selector
-            || selector == IAccountKeychain.UnauthorizedCaller.selector;
-    }
-
-    /// @dev Checks if an error is a known ValidatorConfig error
-    /// @param selector Error selector
-    /// @return True if known ValidatorConfig error
-    function _isKnownValidatorError(bytes4 selector) internal pure returns (bool) {
-        return selector == IValidatorConfig.Unauthorized.selector
-            || selector == IValidatorConfig.ValidatorAlreadyExists.selector
-            || selector == IValidatorConfig.ValidatorNotFound.selector
-            || selector == IValidatorConfig.InvalidPublicKey.selector
-            || selector == IValidatorConfig.NotHostPort.selector
-            || selector == IValidatorConfig.NotIpPort.selector;
-    }
-
-    /// @dev Checks if an error is a known TIP403Registry error
-    /// @param selector Error selector
-    /// @return True if known TIP403Registry error
-    function _isKnownRegistryError(bytes4 selector) internal pure returns (bool) {
-        return selector == ITIP403Registry.Unauthorized.selector
-            || selector == ITIP403Registry.IncompatiblePolicyType.selector
-            || selector == ITIP403Registry.PolicyNotFound.selector;
-    }
-
-    /// @dev Checks if an error is a known FeeAMM/FeeManager error
-    /// @param selector Error selector
-    /// @return True if known FeeAMM error
-    function _isKnownFeeAMMError(bytes4 selector) internal pure returns (bool) {
-        return selector == IFeeAMM.IdenticalAddresses.selector
-            || selector == IFeeAMM.InvalidAmount.selector
-            || selector == IFeeAMM.InsufficientLiquidity.selector
-            || selector == IFeeAMM.InsufficientReserves.selector
-            || selector == IFeeAMM.DivisionByZero.selector
-            || selector == IFeeAMM.InvalidSwapCalculation.selector
-            || selector == IFeeAMM.InvalidCurrency.selector
-            || selector == IFeeAMM.InvalidToken.selector || _isKnownTIP20Error(selector);
-    }
-
-    /// @dev Checks if an error is a known StablecoinDEX error
-    /// @param selector Error selector
-    /// @return True if known StablecoinDEX error
-    function _isKnownDEXError(bytes4 selector) internal pure returns (bool) {
-        return selector == IStablecoinDEX.InsufficientLiquidity.selector
-            || selector == IStablecoinDEX.InsufficientOutput.selector
-            || selector == IStablecoinDEX.MaxInputExceeded.selector
-            || selector == IStablecoinDEX.InsufficientBalance.selector
-            || selector == IStablecoinDEX.PairDoesNotExist.selector
-            || selector == IStablecoinDEX.IdenticalTokens.selector
-            || selector == IStablecoinDEX.InvalidToken.selector
-            || selector == IStablecoinDEX.OrderDoesNotExist.selector
-            || selector == IStablecoinDEX.BelowMinimumOrderSize.selector
-            || selector == IStablecoinDEX.InvalidTick.selector || _isKnownTIP20Error(selector);
-    }
-
-    /// @dev Asserts a revert is a known TIP20 error
-    function _assertKnownTIP20Revert(bytes memory reason) internal pure {
-        assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown TIP20 error");
-    }
-
-    /// @dev Asserts a revert is a known TIP20Factory error
-    function _assertKnownFactoryRevert(bytes memory reason) internal pure {
-        assertTrue(_isKnownFactoryError(bytes4(reason)), "Unknown Factory error");
-    }
-
-    /// @dev Asserts a revert is a known Nonce error
-    function _assertKnownNonceRevert(bytes memory reason) internal pure {
-        assertTrue(_isKnownNonceError(bytes4(reason)), "Unknown Nonce error");
-    }
-
-    /// @dev Asserts a revert is a known AccountKeychain error
-    function _assertKnownKeychainRevert(bytes memory reason) internal pure {
-        assertTrue(_isKnownKeychainError(bytes4(reason)), "Unknown Keychain error");
-    }
-
-    /// @dev Asserts a revert is a known ValidatorConfig error
-    function _assertKnownValidatorRevert(bytes memory reason) internal pure {
-        assertTrue(_isKnownValidatorError(bytes4(reason)), "Unknown Validator error");
-    }
-
-    /// @dev Asserts a revert is a known TIP403Registry error
-    function _assertKnownRegistryRevert(bytes memory reason) internal pure {
-        assertTrue(_isKnownRegistryError(bytes4(reason)), "Unknown Registry error");
-    }
-
-    /// @dev Asserts a revert is a known FeeAMM error
-    function _assertKnownFeeAMMRevert(bytes memory reason) internal pure {
-        assertTrue(_isKnownFeeAMMError(bytes4(reason)), "Unknown FeeAMM error");
-    }
-
-    /// @dev Asserts a revert is a known StablecoinDEX error
-    function _assertKnownDEXRevert(bytes memory reason) internal pure {
-        assertTrue(_isKnownDEXError(bytes4(reason)), "Unknown DEX error");
-    }
-
     /*//////////////////////////////////////////////////////////////
                           ADDRESS POOL HELPERS
     //////////////////////////////////////////////////////////////*/
@@ -600,7 +405,10 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @param count Number of addresses to generate
     /// @param startOffset Starting offset for address generation (e.g., 0x1001, 0x2000)
     /// @return addresses Array of generated addresses
-    function _buildAddressPool(uint256 count, uint256 startOffset)
+    function _buildAddressPool(
+        uint256 count,
+        uint256 startOffset
+    )
         internal
         pure
         returns (address[] memory)
@@ -647,149 +455,6 @@ abstract contract InvariantBaseTest is BaseTest {
         }
 
         return string(buffer);
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        BOUNDED FUZZING HELPERS
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Bounds a value to [min, max] with overflow protection
-    /// @param x The value to bound
-    /// @param min Minimum allowed value
-    /// @param max Maximum allowed value
-    /// @return The bounded value
-    function _boundSafe(uint256 x, uint256 min, uint256 max) internal pure returns (uint256) {
-        require(min <= max, "min > max");
-        if (max == min) return min;
-        return min + (x % (max - min + 1));
-    }
-
-    /// @dev Bounds a value to [1, max] - useful for non-zero amounts
-    /// @param x The value to bound
-    /// @param max Maximum allowed value
-    /// @return The bounded non-zero value
-    function _boundNonZero(uint256 x, uint256 max) internal pure returns (uint256) {
-        return _boundSafe(x, 1, max);
-    }
-
-    /// @dev Bounds a value to a percentage of another value
-    /// @param x Random seed
-    /// @param total The total to take a percentage of
-    /// @param minPct Minimum percentage (0-100)
-    /// @param maxPct Maximum percentage (0-100)
-    /// @return The bounded value as a percentage of total
-    function _boundPct(uint256 x, uint256 total, uint256 minPct, uint256 maxPct)
-        internal
-        pure
-        returns (uint256)
-    {
-        uint256 pct = _boundSafe(x, minPct, maxPct);
-        return (total * pct) / 100;
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                       SYSTEM ADDRESS TRACKING
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Returns array of system addresses that may hold token balances
-    /// @return Array of system contract addresses
-    function _getSystemAddresses() internal view returns (address[] memory) {
-        address[] memory sysAddrs = new address[](4);
-        sysAddrs[0] = address(amm);
-        sysAddrs[1] = address(exchange);
-        sysAddrs[2] = address(pathUSD);
-        sysAddrs[3] = address(factory);
-        return sysAddrs;
-    }
-
-    /// @dev Computes sum of balances for a token across all tracked balance holders
-    /// @param token The token to sum balances for
-    /// @return total The sum of all balances
-    function _sumAllBalances(TIP20 token) internal view returns (uint256 total) {
-        for (uint256 i = 0; i < _balanceHolders.length; i++) {
-            total += token.balanceOf(_balanceHolders[i]);
-        }
-        // Also include the token contract itself (for locked/burned tokens)
-        total += token.balanceOf(address(token));
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                       VALID INPUT GENERATORS
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Generates a valid IP:port address string for validator config
-    /// @param seed Random seed for variation
-    /// @return Valid IP:port string
-    function _generateValidIpPort(uint256 seed) internal pure returns (string memory) {
-        uint8 lastOctet = uint8((seed % 254) + 1);
-        uint16 port = uint16((seed % 9000) + 1000);
-        return string(
-            abi.encodePacked("192.168.1.", _uint8ToString(lastOctet), ":", _uint16ToString(port))
-        );
-    }
-
-    /// @dev Converts uint16 to string
-    /// @param value The uint16 value to convert
-    /// @return The string representation
-    function _uint16ToString(uint16 value) internal pure returns (string memory) {
-        if (value == 0) return "0";
-
-        uint16 temp = value;
-        uint8 digits;
-        while (temp != 0) {
-            digits++;
-            temp /= 10;
-        }
-
-        bytes memory buffer = new bytes(digits);
-        while (value != 0) {
-            digits--;
-            buffer[digits] = bytes1(uint8(48 + value % 10));
-            value /= 10;
-        }
-
-        return string(buffer);
-    }
-
-    /// @dev Generates a non-zero bytes32 for use as public key
-    /// @param seed Random seed
-    /// @return Non-zero bytes32
-    function _generateNonZeroBytes32(uint256 seed) internal pure returns (bytes32) {
-        bytes32 result = keccak256(abi.encode(seed));
-        if (result == bytes32(0)) {
-            return bytes32(uint256(1));
-        }
-        return result;
-    }
-
-    /// @dev Generates a valid expiry timestamp in the future
-    /// @param seed Random seed for variation
-    /// @return Future timestamp
-    function _generateFutureExpiry(uint256 seed) internal view returns (uint64) {
-        return uint64(block.timestamp + 1 days + (seed % 365 days));
-    }
-
-    /// @dev Generates a past or current timestamp (for expired key testing)
-    /// @param seed Random seed for variation
-    /// @return Past or current timestamp
-    function _generatePastExpiry(uint256 seed) internal view returns (uint64) {
-        uint256 offset = seed % (block.timestamp > 1 days ? 1 days : block.timestamp);
-        return uint64(block.timestamp - offset);
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                          EXACT SELECTOR ASSERTIONS
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Asserts that a revert has a specific expected selector
-    /// @param reason The revert reason bytes
-    /// @param expected The expected error selector
-    /// @param message Assertion message on failure
-    function _assertExactSelector(bytes memory reason, bytes4 expected, string memory message)
-        internal
-        pure
-    {
-        assertEq(bytes4(reason), expected, message);
     }
 
 }

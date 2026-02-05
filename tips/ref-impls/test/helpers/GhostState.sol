@@ -167,7 +167,11 @@ abstract contract GhostState {
         ghost_totalCallsExecuted++;
     }
 
-    function _recordCreateSuccess(address caller, uint256 protocolNonce, address deployed)
+    function _recordCreateSuccess(
+        address caller,
+        uint256 protocolNonce,
+        address deployed
+    )
         internal
     {
         bytes32 key = keccak256(abi.encodePacked(caller, protocolNonce));
@@ -183,7 +187,9 @@ abstract contract GhostState {
         bool enforceLimits,
         address[] memory tokens,
         uint256[] memory limits
-    ) internal {
+    )
+        internal
+    {
         ghost_keyAuthorized[owner][keyId] = true;
         ghost_keyExpiry[owner][keyId] = expiry;
         ghost_keyEnforceLimits[owner][keyId] = enforceLimits;
@@ -197,7 +203,12 @@ abstract contract GhostState {
         ghost_keyExpiry[owner][keyId] = 0;
     }
 
-    function _recordKeySpending(address owner, address keyId, address token, uint256 amount)
+    function _recordKeySpending(
+        address owner,
+        address keyId,
+        address token,
+        uint256 amount
+    )
         internal
     {
         ghost_keySpentAmount[owner][keyId][token] += amount;

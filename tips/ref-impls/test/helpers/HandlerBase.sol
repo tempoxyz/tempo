@@ -83,7 +83,10 @@ abstract contract HandlerBase is InvariantBase {
         uint256 amountSeed,
         uint256 minAmount,
         uint256 maxAmount
-    ) internal returns (TxContext memory ctx) {
+    )
+        internal
+        returns (TxContext memory ctx)
+    {
         ctx.senderIdx = actorSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
         if (ctx.senderIdx == recipientIdx) {
@@ -112,7 +115,10 @@ abstract contract HandlerBase is InvariantBase {
         uint256 sigTypeSeed,
         uint256 minAmount,
         uint256 maxAmount
-    ) internal returns (TxContext memory ctx) {
+    )
+        internal
+        returns (TxContext memory ctx)
+    {
         ctx = _setupBaseTransferContext(actorSeed, recipientSeed, amountSeed, minAmount, maxAmount);
         ctx.sigType = _getRandomSignatureType(sigTypeSeed);
         ctx.sender = _getSenderForSigType(ctx.senderIdx, ctx.sigType);
@@ -136,7 +142,10 @@ abstract contract HandlerBase is InvariantBase {
         uint256 sigTypeSeed,
         uint256 minAmount,
         uint256 maxAmount
-    ) internal returns (TxContext memory ctx) {
+    )
+        internal
+        returns (TxContext memory ctx)
+    {
         ctx = _setupTransferContext(
             actorSeed, recipientSeed, amountSeed, sigTypeSeed, minAmount, maxAmount
         );
@@ -157,7 +166,11 @@ abstract contract HandlerBase is InvariantBase {
     }
 
     /// @notice Assert 2D nonce matches ghost state (for debugging)
-    function _assert2dNonceEq(address account, uint64 nonceKey, string memory context)
+    function _assert2dNonceEq(
+        address account,
+        uint64 nonceKey,
+        string memory context
+    )
         internal
         view
     {
@@ -171,7 +184,11 @@ abstract contract HandlerBase is InvariantBase {
     /// @param account The account that executed the transaction
     /// @param nonceKey The nonce key used
     /// @param previousNonce The nonce value before execution
-    function _record2dNonceTxSuccess(address account, uint64 nonceKey, uint64 previousNonce)
+    function _record2dNonceTxSuccess(
+        address account,
+        uint64 nonceKey,
+        uint64 previousNonce
+    )
         internal
     {
         uint64 actualNonce = nonce.getNonce(account, nonceKey);
@@ -222,7 +239,10 @@ abstract contract HandlerBase is InvariantBase {
     }
 
     /// @notice Setup context for using a secp256k1 access key
-    function _setupSecp256k1KeyContext(uint256 actorSeed, uint256 keySeed)
+    function _setupSecp256k1KeyContext(
+        uint256 actorSeed,
+        uint256 keySeed
+    )
         internal
         view
         returns (AccessKeyContext memory ctx)
@@ -234,7 +254,10 @@ abstract contract HandlerBase is InvariantBase {
     }
 
     /// @notice Setup context for using a P256 access key
-    function _setupP256KeyContext(uint256 actorSeed, uint256 keySeed)
+    function _setupP256KeyContext(
+        uint256 actorSeed,
+        uint256 keySeed
+    )
         internal
         view
         returns (AccessKeyContext memory ctx)
@@ -247,7 +270,10 @@ abstract contract HandlerBase is InvariantBase {
     }
 
     /// @notice Setup context for random key type (secp256k1 or P256) based on seed
-    function _setupRandomKeyContext(uint256 actorSeed, uint256 keySeed)
+    function _setupRandomKeyContext(
+        uint256 actorSeed,
+        uint256 keySeed
+    )
         internal
         view
         returns (AccessKeyContext memory ctx)
@@ -313,7 +339,11 @@ abstract contract HandlerBase is InvariantBase {
     /// @param min The minimum value
     /// @param max The maximum value
     /// @return The bounded value
-    function bound(uint256 x, uint256 min, uint256 max)
+    function bound(
+        uint256 x,
+        uint256 min,
+        uint256 max
+    )
         internal
         pure
         virtual
@@ -334,7 +364,10 @@ abstract contract HandlerBase is InvariantBase {
         uint256 amount1,
         uint256 amount2,
         uint256 nonceKeySeed
-    ) internal returns (TxContext memory ctx, uint256 totalAmount) {
+    )
+        internal
+        returns (TxContext memory ctx, uint256 totalAmount)
+    {
         ctx = _setupBaseTransferContext(actorSeed, recipientSeed, amount1, 1e6, 10e6);
         totalAmount = ctx.amount + bound(amount2, 1e6, 10e6);
         ctx.nonceKey = uint64(bound(nonceKeySeed, 1, 100));
@@ -417,7 +450,10 @@ abstract contract HandlerBase is InvariantBase {
     }
 
     /// @notice Setup context for CREATE with 2D nonce
-    function _setupCreateContext(uint256 actorSeed, uint256 nonceKeySeed)
+    function _setupCreateContext(
+        uint256 actorSeed,
+        uint256 nonceKeySeed
+    )
         internal
         view
         returns (CreateContext memory ctx)
@@ -437,7 +473,9 @@ abstract contract HandlerBase is InvariantBase {
         address sender,
         uint64 usedNonce,
         address expectedAddress
-    ) internal {
+    )
+        internal
+    {
         ghost_protocolNonce[sender]++;
         ghost_totalTxExecuted++;
         ghost_totalCreatesExecuted++;
@@ -459,7 +497,9 @@ abstract contract HandlerBase is InvariantBase {
         uint64 nonceKey,
         uint64 protocolNonce,
         address expectedAddress
-    ) internal {
+    )
+        internal
+    {
         uint64 previousNonce = uint64(ghost_2dNonce[sender][nonceKey]);
         uint64 actualNonce = nonce.getNonce(sender, nonceKey);
         if (actualNonce > previousNonce) {
@@ -500,7 +540,11 @@ abstract contract HandlerBase is InvariantBase {
         uint64 nonceKey,
         uint64 txNonce,
         uint256 actorIdx
-    ) internal view returns (bytes memory signedTx) {
+    )
+        internal
+        view
+        returns (bytes memory signedTx)
+    {
         // Calculate gas limit based on calls
         uint64 gasLimit = TxBuilder.DEFAULT_GAS_LIMIT;
         if (calls.length == 1) {
@@ -544,7 +588,10 @@ abstract contract HandlerBase is InvariantBase {
         uint256 recipientSeed,
         uint256 amountSeed,
         uint256 nonceKeySeed
-    ) internal returns (FeeTestContext memory ctx) {
+    )
+        internal
+        returns (FeeTestContext memory ctx)
+    {
         ctx.senderIdx = actorSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
         if (ctx.senderIdx == recipientIdx) {

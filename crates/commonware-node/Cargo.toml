@@ -48,7 +48,7 @@ indexmap.workspace = true
 jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
 prometheus-client.workspace = true
-rand.workspace = true
+rand_08.workspace = true
 
 reth-consensus-common.workspace = true
 rand_core.workspace = true

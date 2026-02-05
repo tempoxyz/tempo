@@ -8,7 +8,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_evm::FromRecoveredTx;
-use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes};
+use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes, map::AddressMap};
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
@@ -16,7 +16,6 @@ use reth_transaction_pool::{
     error::PoolTransactionError,
 };
 use std::{
-    collections::HashMap,
     convert::Infallible,
     fmt::Debug,
     sync::{Arc, OnceLock},
@@ -34,6 +33,8 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached payment classification for efficient block building
     is_payment: bool,
+    /// Cached expiring nonce classification
+    is_expiring_nonce: bool,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
@@ -49,6 +50,10 @@ impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
         let is_payment = transaction.is_payment();
+        let is_expiring_nonce = transaction
+            .as_aa()
+            .map(|tx| tx.tx().is_expiring_nonce_tx())
+            .unwrap_or(false);
         Self {
             inner: EthPooledTransaction {
                 cost: calc_gas_balance_spending(
@@ -61,6 +66,7 @@ impl TempoPooledTransaction {
                 transaction,
             },
             is_payment,
+            is_expiring_nonce,
             nonce_key_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
@@ -116,11 +122,7 @@ impl TempoPooledTransaction {
 
     /// Returns true if this is an expiring nonce transaction.
     pub(crate) fn is_expiring_nonce(&self) -> bool {
-        self.inner
-            .transaction
-            .as_aa()
-            .map(|tx| tx.tx().is_expiring_nonce_tx())
-            .unwrap_or(false)
+        self.is_expiring_nonce
     }
 
     /// Extracts the keychain subject (account, key_id, fee_token) from this transaction.
@@ -956,7 +958,7 @@ mod tests {
 #[derive(Debug, Clone, Default)]
 pub struct RevokedKeys {
     /// Map from account to list of revoked key_ids.
-    by_account: HashMap<Address, Vec<Address>>,
+    by_account: AddressMap<Vec<Address>>,
 }
 
 impl RevokedKeys {
@@ -995,7 +997,7 @@ impl RevokedKeys {
 #[derive(Debug, Clone, Default)]
 pub struct SpendingLimitUpdates {
     /// Map from account to list of (key_id, token) pairs that had limit changes.
-    by_account: HashMap<Address, Vec<(Address, Address)>>,
+    by_account: AddressMap<Vec<(Address, Address)>>,
 }
 
 impl SpendingLimitUpdates {

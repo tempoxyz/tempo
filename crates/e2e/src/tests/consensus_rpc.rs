@@ -9,13 +9,10 @@ use super::dkg::common::{assert_no_dkg_failures, wait_for_epoch, wait_for_outcom
 use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 use alloy::transports::http::reqwest::Url;
 use alloy_primitives::hex;
-use commonware_codec::{Encode, ReadExt as _};
+use commonware_codec::ReadExt as _;
 use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
 use commonware_cryptography::{
-    bls12381::primitives::{
-        ops::verify_message,
-        variant::{MinSig, Variant},
-    },
+    bls12381::primitives::variant::{MinSig, Variant},
     ed25519::PublicKey,
 };
 use commonware_macros::test_traced;
@@ -261,16 +258,14 @@ fn get_identity_transition_proof_after_full_dkg() {
         )
         .expect("valid finalization");
 
-        // Verify the certificate was signed by the old network identity
-        let namespace = b"TEMPO_FINALIZE";
-        let message = finalization.proposal.encode();
-        verify_message::<MinSig>(
-            &old_pubkey,
-            namespace,
-            &message,
-            &finalization.certificate.vote_signature,
-        )
-        .expect("BLS signature verification failed");
+        assert!(
+            finalization.verify(
+                &mut context,
+                &Scheme::certificate_verifier(tempo_commonware_node::NAMESPACE, old_pubkey),
+                &commonware_parallel::Sequential
+            ),
+            "BLS signature verification failed"
+        );
 
         // Test 2: Query from epoch 0 (before full DKG) - should have identity but no transitions
         let old_identity = transition.old_identity.clone();

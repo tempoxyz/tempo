@@ -84,7 +84,10 @@ interface ITIP403Registry {
     /// @param admin The address to be assigned as the admin of the new policy
     /// @param policyType The type of policy to create (whitelist or blacklist)
     /// @return newPolicyId The ID of the newly created policy
-    function createPolicy(address admin, PolicyType policyType)
+    function createPolicy(
+        address admin,
+        PolicyType policyType
+    )
         external
         returns (uint64 newPolicyId);
 
@@ -97,7 +100,9 @@ interface ITIP403Registry {
         address admin,
         PolicyType policyType,
         address[] calldata accounts
-    ) external returns (uint64 newPolicyId);
+    )
+        external
+        returns (uint64 newPolicyId);
 
     /// @notice Updates the admin address for an existing policy
     /// @param policyId The ID of the policy to update

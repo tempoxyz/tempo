@@ -105,13 +105,13 @@ mod tests {
     use commonware_cryptography::{Signer as _, bls12381::dkg, ed25519::PrivateKey};
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
-    use rand::SeedableRng as _;
+    use rand_08::SeedableRng as _;
 
     use super::OnchainDkgOutcome;
 
     #[test]
     fn onchain_dkg_outcome_roundtrip() {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let mut rng = rand_08::rngs::StdRng::seed_from_u64(42);
 
         let mut player_keys = repeat_with(|| PrivateKey::random(&mut rng))
             .take(10)

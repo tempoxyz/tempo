@@ -215,7 +215,12 @@ interface ITIP20 {
     /// @param amount The amount of tokens to transfer.
     /// @param memo The memo to attach to the transfer.
     /// @return success True if the transfer was successful.
-    function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo)
+    function transferFromWithMemo(
+        address from,
+        address to,
+        uint256 amount,
+        bytes32 memo
+    )
         external
         returns (bool);
 

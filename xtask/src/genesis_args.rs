@@ -18,7 +18,7 @@ use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
-use rand::SeedableRng as _;
+use rand_08::SeedableRng as _;
 use rayon::prelude::*;
 use reth_evm::{
     Evm as _, EvmEnv, EvmFactory,
@@ -150,6 +150,10 @@ pub(crate) struct GenesisArgs {
     /// T1 hardfork activation time.
     #[arg(long, default_value = "0")]
     t1_time: u64,
+
+    /// T2 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t2_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -285,12 +289,12 @@ impl GenesisArgs {
 
         let deployment_gas_token = {
             if self.deployment_gas_token {
-                let mut rng = rand::rngs::StdRng::seed_from_u64(
-                    self.seed.unwrap_or_else(rand::random::<u64>),
+                let mut rng = rand_08::rngs::StdRng::seed_from_u64(
+                    self.seed.unwrap_or_else(rand_08::random::<u64>),
                 );
 
                 let mut salt_bytes = [0u8; 32];
-                rand::Rng::fill(&mut rng, &mut salt_bytes);
+                rand_08::Rng::fill(&mut rng, &mut salt_bytes);
 
                 let address = create_and_mint_token(
                     "DONOTUSE",
@@ -488,6 +492,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t1Time".to_string(), self.t1_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t2Time".to_string(), self.t2_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -930,7 +937,7 @@ fn generate_consensus_config(
         _ => {}
     }
 
-    let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
+    let mut rng = rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
 
     let mut signer_keys = repeat_with(|| PrivateKey::random(&mut rng))
         .take(validators.len())

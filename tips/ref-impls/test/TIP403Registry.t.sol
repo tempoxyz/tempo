@@ -162,7 +162,10 @@ contract TIP403RegistryTest is BaseTest {
         }
     }
 
-    function testFuzz_SetPolicyAdmin_FixedPolicyCannotChange(address caller, address newAdmin)
+    function testFuzz_SetPolicyAdmin_FixedPolicyCannotChange(
+        address caller,
+        address newAdmin
+    )
         public
     {
         // Create a fixed policy (admin is address(0))
@@ -236,7 +239,7 @@ contract TIP403RegistryTest is BaseTest {
         }
     }
 
-    function test_ModifyPolicyWhitelist_PolicyDoesNotExist() public {
+    function test_ModifyPolicyWhitelist_PolicyNotFound() public {
         // For non-existent policies, isAuthorized returns false (default blacklist behavior)
         // So modifyPolicyWhitelist will fail with Unauthorized
         try registry.modifyPolicyWhitelist(999, alice, true) {
@@ -304,7 +307,7 @@ contract TIP403RegistryTest is BaseTest {
         }
     }
 
-    function test_ModifyPolicyBlacklist_PolicyDoesNotExist() public {
+    function test_ModifyPolicyBlacklist_PolicyNotFound() public {
         // For non-existent policies, admin is address(0)
         // So modifyPolicyBlacklist will fail with Unauthorized
         vm.prank(alice);
@@ -475,7 +478,7 @@ contract TIP403RegistryTest is BaseTest {
         assertTrue(registry.policyExists(policyId));
     }
 
-    function testFuzz_PolicyExists_ReturnsFalseIf_PolicyDoesNotExist(uint64 policyId) public {
+    function testFuzz_PolicyExists_ReturnsFalseIf_PolicyNotFound(uint64 policyId) public {
         vm.assume(policyId >= registry.policyIdCounter());
         assertFalse(registry.policyExists(policyId));
     }

@@ -228,7 +228,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         _;
     }
 
-    function transfer(address to, uint256 amount)
+    function transfer(
+        address to,
+        uint256 amount
+    )
         public
         virtual
         notPaused
@@ -245,7 +248,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         return true;
     }
 
-    function transferFrom(address from, address to, uint256 amount)
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    )
         public
         virtual
         notPaused
@@ -325,7 +332,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                         TIP20 EXTENSION FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function transferWithMemo(address to, uint256 amount, bytes32 memo)
+    function transferWithMemo(
+        address to,
+        uint256 amount,
+        bytes32 memo
+    )
         public
         virtual
         notPaused
@@ -336,7 +347,12 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         emit TransferWithMemo(msg.sender, to, amount, memo);
     }
 
-    function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo)
+    function transferFromWithMemo(
+        address from,
+        address to,
+        uint256 amount,
+        bytes32 memo
+    )
         public
         virtual
         notPaused
@@ -361,7 +377,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     /// @dev In the Tempo node implementation, this function is not exposed via the TIP20 interface
     /// and is not externally callable. It is only invoked internally by specific precompiles
     /// (like the fee manager precompile), avoiding the need to approve precompiles to spend tokens.
-    function systemTransferFrom(address from, address to, uint256 amount)
+    function systemTransferFrom(
+        address from,
+        address to,
+        uint256 amount
+    )
         external
         virtual
         notPaused

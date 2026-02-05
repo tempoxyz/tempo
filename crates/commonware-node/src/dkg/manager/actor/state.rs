@@ -21,7 +21,7 @@ use commonware_cryptography::{
 };
 use commonware_p2p::Address;
 use commonware_parallel::Strategy;
-use commonware_runtime::{Metrics, buffer::PoolRef};
+use commonware_runtime::{Clock, Metrics, buffer::paged::CacheRef};
 use commonware_storage::journal::{contiguous, segmented};
 use commonware_utils::{N3f1, NZU16, NZU32, NZU64, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail, eyre};
@@ -48,7 +48,7 @@ pub(super) fn builder() -> Builder {
 
 pub(super) struct Storage<TContext>
 where
-    TContext: commonware_runtime::Storage + Metrics,
+    TContext: commonware_runtime::Storage + Clock + Metrics,
 {
     states: contiguous::variable::Journal<TContext, State>,
     events: segmented::variable::Journal<TContext, Event>,
@@ -59,7 +59,7 @@ where
 
 impl<TContext> Storage<TContext>
 where
-    TContext: commonware_runtime::Storage + Metrics,
+    TContext: commonware_runtime::Storage + Clock + Metrics,
 {
     /// Returns all player acknowledgments received during the given epoch.
     fn acks_for_epoch(
@@ -512,7 +512,7 @@ impl Builder {
     #[instrument(skip_all, err)]
     pub(super) async fn init<TContext>(self, context: TContext) -> eyre::Result<Storage<TContext>>
     where
-        TContext: commonware_runtime::Storage + Metrics,
+        TContext: commonware_runtime::Storage + Clock + Metrics,
     {
         let Self {
             initial_state,
@@ -521,7 +521,7 @@ impl Builder {
         let partition_prefix =
             partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
 
-        let buffer_pool = PoolRef::new(PAGE_SIZE, POOL_CAPACITY);
+        let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
 
         let mut states = contiguous::variable::Journal::init(
             context.with_label("states"),
@@ -532,7 +532,7 @@ impl Builder {
                 // and is effectively the maximum permitted number of players
                 // (and hence validators) that are ever permitted.
                 codec_config: MAXIMUM_VALIDATORS,
-                buffer_pool: buffer_pool.clone(),
+                page_cache: page_cache.clone(),
                 write_buffer: WRITE_BUFFER,
                 items_per_section: NZU64!(1),
             },
@@ -546,7 +546,7 @@ impl Builder {
                 partition: format!("{partition_prefix}_events"),
                 compression: None,
                 codec_config: MAXIMUM_VALIDATORS,
-                buffer_pool,
+                page_cache,
                 write_buffer: WRITE_BUFFER,
             },
         )
@@ -911,7 +911,7 @@ impl Dealer {
         ack: PlayerAck<PublicKey>,
     ) -> eyre::Result<()>
     where
-        TContext: commonware_runtime::Storage + Metrics,
+        TContext: commonware_runtime::Storage + Clock + Metrics,
     {
         if !self.unsent.contains_key(&player) {
             bail!("already received an ack from `{player}`");
@@ -1053,7 +1053,7 @@ impl Player {
         priv_msg: DealerPrivMsg,
     ) -> eyre::Result<PlayerAck<PublicKey>>
     where
-        TContext: commonware_runtime::Storage + Metrics,
+        TContext: commonware_runtime::Storage + Clock + Metrics,
     {
         // If we've already generated an ack, return the cached version
         if let Some(ack) = self.acks.get(&dealer) {

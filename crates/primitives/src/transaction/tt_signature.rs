@@ -257,7 +257,7 @@ impl PrimitiveSignature {
                 // Prepare message hash for verification
                 let message_hash = if p256_sig.pre_hash {
                     // Some P256 implementations (like Web Crypto) require pre-hashing
-                    B256::from_slice(&Sha256::digest(sig_hash.as_slice()))
+                    B256::from_slice(Sha256::digest(sig_hash).as_ref())
                 } else {
                     *sig_hash
                 };
@@ -834,8 +834,8 @@ mod tests {
         let signing_key = P256SigningKey::random(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
         let encoded_point = verifying_key.to_encoded_point(false);
-        let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_slice());
-        let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_slice());
+        let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_ref());
+        let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
         (signing_key, pub_key_x, pub_key_y)
     }
 
@@ -1108,7 +1108,7 @@ mod tests {
         final_hasher.update(client_data_hash);
         let expected_hash = final_hasher.finalize();
 
-        assert_eq!(message_hash.as_slice(), expected_hash.as_slice());
+        assert_eq!(message_hash.as_slice(), &expected_hash[..]);
     }
 
     #[test]
@@ -1421,7 +1421,7 @@ mod tests {
 
         // For pre_hash=true, signature is over sha256(sig_hash)
         let sig_hash = B256::from([0xBB; 32]);
-        let prehashed = B256::from_slice(&Sha256::digest(sig_hash.as_slice()));
+        let prehashed = B256::from_slice(Sha256::digest(sig_hash).as_ref());
         let (r, s) = sign_p256_normalized(&signing_key, &prehashed);
 
         let p256_sig =
