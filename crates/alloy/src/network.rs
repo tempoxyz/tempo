@@ -17,10 +17,13 @@ use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
 
+use crate::fillers::TempoGasFiller;
+
 /// Set of recommended fillers.
 ///
 /// `N` is a nonce filler.
-pub type TempoFillers<N> = JoinFill<N, JoinFill<GasFiller, ChainIdFiller>>;
+/// Includes `TempoGasFiller` to set default gas prices (20 gwei max fee, 1 gwei priority fee).
+pub type TempoFillers<N> = JoinFill<N, JoinFill<TempoGasFiller, JoinFill<GasFiller, ChainIdFiller>>>;
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.
 #[derive(Default, Debug, Clone, Copy)]
