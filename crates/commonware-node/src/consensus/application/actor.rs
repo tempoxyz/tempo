@@ -33,7 +33,7 @@ use futures::{
     channel::mpsc,
     future::{ready, try_join},
 };
-use rand::{CryptoRng, Rng};
+use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_builder::{Block as _, ConsensusEngineHandle};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;

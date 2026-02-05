@@ -9,7 +9,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title TIP20Factory Invariant Tests
 /// @notice Fuzz-based invariant tests for the TIP20Factory implementation
-/// @dev Tests invariants TEMPO-FAC1 through TEMPO-FAC10 as documented in README.md
+/// @dev Tests invariants TEMPO-FAC1 through TEMPO-FAC12 as documented in README.md
 contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
     /// @dev Log file path for recording actions
@@ -58,7 +58,12 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for creating tokens
     /// @dev Tests TEMPO-FAC1 (deterministic addresses), TEMPO-FAC2 (address uniqueness)
-    function createToken(uint256 actorSeed, bytes32 salt, uint256 nameIdx, uint256 symbolIdx)
+    function createToken(
+        uint256 actorSeed,
+        bytes32 salt,
+        uint256 nameIdx,
+        uint256 symbolIdx
+    )
         external
     {
         address actor = _selectActor(actorSeed);
@@ -219,7 +224,11 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for creating tokens with mismatched currency
     /// @dev Tests TEMPO-FAC7 (currency/quote token consistency)
-    function createTokenMismatchedCurrency(uint256 actorSeed, bytes32 salt, uint256 currencyIdx)
+    function createTokenMismatchedCurrency(
+        uint256 actorSeed,
+        bytes32 salt,
+        uint256 currencyIdx
+    )
         external
     {
         address actor = _selectActor(actorSeed);

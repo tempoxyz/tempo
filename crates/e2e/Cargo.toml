@@ -33,7 +33,12 @@ itertools.workspace = true
 
 eyre.workspace = true
 reth-db.workspace = true
-reth-ethereum = { workspace = true, features = ["node", "rpc", "test-utils", "pool"] }
+reth-ethereum = { workspace = true, features = [
+  "node",
+  "rpc",
+  "test-utils",
+  "pool",
+] }
 reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
@@ -63,7 +68,7 @@ tracing-subscriber.workspace = true
 
 alloy-network.workspace = true
 
-rand.workspace = true
+rand_08.workspace = true
 
 [lints]
 workspace = true

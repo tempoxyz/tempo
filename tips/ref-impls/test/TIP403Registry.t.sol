@@ -162,7 +162,10 @@ contract TIP403RegistryTest is BaseTest {
         }
     }
 
-    function testFuzz_SetPolicyAdmin_FixedPolicyCannotChange(address caller, address newAdmin)
+    function testFuzz_SetPolicyAdmin_FixedPolicyCannotChange(
+        address caller,
+        address newAdmin
+    )
         public
     {
         // Create a fixed policy (admin is address(0))
