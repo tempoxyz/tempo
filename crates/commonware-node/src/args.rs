@@ -9,7 +9,7 @@ const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
 
 /// Command line arguments for configuring the consensus layer of a tempo node.
-#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct Args {
     /// The file containing the ed25519 signing key for p2p communication.
     #[arg(

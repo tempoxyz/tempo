@@ -26,14 +26,14 @@ use commonware_runtime::{
     ContextCell, FutureExt as _, Handle, Metrics, Pacer, Spawner, Storage, spawn_cell,
 };
 
-use commonware_utils::SystemTimeExt;
+use commonware_utils::{SystemTimeExt, channel::oneshot};
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _, TryFutureExt as _,
-    channel::{mpsc, oneshot},
+    channel::mpsc,
     future::{ready, try_join},
 };
-use rand::{CryptoRng, Rng};
+use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_builder::{Block as _, ConsensusEngineHandle};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -263,7 +263,7 @@ impl Inner<Init> {
                     );
                 });
                 select!(
-                    () = genesis.response.cancellation() => {
+                    () = genesis.response.closed() => {
                         return Err(eyre!("genesis request was cancelled"));
                     },
 
@@ -302,7 +302,7 @@ impl Inner<Init> {
         } = request;
 
         let proposal = select!(
-            () = response.cancellation() => {
+            () = response.closed() => {
                 Err(eyre!(
                     "proposal return channel was closed by consensus \
                     engine before block could be proposed; aborting"
@@ -400,7 +400,7 @@ impl Inner<Init> {
             round,
         } = verify;
         let result = select!(
-            () = response.cancellation() => {
+            () = response.closed() => {
                 Err(eyre!(
                     "verification return channel was closed by consensus \
                     engine before block could be validated; aborting"

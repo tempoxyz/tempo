@@ -109,7 +109,11 @@ interface IStablecoinDEX {
 
     function createPair(address base) external returns (bytes32 key);
 
-    function getTickLevel(address base, int16 tick, bool isBid)
+    function getTickLevel(
+        address base,
+        int16 tick,
+        bool isBid
+    )
         external
         view
         returns (uint128 head, uint128 tail, uint128 totalLiquidity);
@@ -118,22 +122,41 @@ interface IStablecoinDEX {
 
     function pairKey(address tokenA, address tokenB) external pure returns (bytes32 key);
 
-    function place(address token, uint128 amount, bool isBid, int16 tick)
+    function place(
+        address token,
+        uint128 amount,
+        bool isBid,
+        int16 tick
+    )
         external
         returns (uint128 orderId);
 
-    function placeFlip(address token, uint128 amount, bool isBid, int16 tick, int16 flipTick)
+    function placeFlip(
+        address token,
+        uint128 amount,
+        bool isBid,
+        int16 tick,
+        int16 flipTick
+    )
         external
         returns (uint128 orderId);
 
     function priceToTick(uint32 price) external pure returns (int16 tick);
 
-    function quoteSwapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn)
+    function quoteSwapExactAmountIn(
+        address tokenIn,
+        address tokenOut,
+        uint128 amountIn
+    )
         external
         view
         returns (uint128 amountOut);
 
-    function quoteSwapExactAmountOut(address tokenIn, address tokenOut, uint128 amountOut)
+    function quoteSwapExactAmountOut(
+        address tokenIn,
+        address tokenOut,
+        uint128 amountOut
+    )
         external
         view
         returns (uint128 amountIn);
@@ -143,14 +166,18 @@ interface IStablecoinDEX {
         address tokenOut,
         uint128 amountIn,
         uint128 minAmountOut
-    ) external returns (uint128 amountOut);
+    )
+        external
+        returns (uint128 amountOut);
 
     function swapExactAmountOut(
         address tokenIn,
         address tokenOut,
         uint128 amountOut,
         uint128 maxAmountIn
-    ) external returns (uint128 amountIn);
+    )
+        external
+        returns (uint128 amountIn);
 
     function tickToPrice(int16 tick) external pure returns (uint32 price);
 

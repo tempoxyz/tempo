@@ -52,7 +52,9 @@ contract FeeManager is IFeeManager, FeeAMM {
         uint256 maxAmount,
         uint256 actualUsed,
         address userToken
-    ) external {
+    )
+        external
+    {
         require(msg.sender == address(0), "ONLY_PROTOCOL");
 
         address feeRecipient = block.coinbase;

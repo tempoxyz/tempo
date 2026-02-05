@@ -333,7 +333,9 @@ contract TIP20Test is BaseTest {
         uint256 allowanceAmount,
         uint256 transferAmount,
         bytes32 memo
-    ) public {
+    )
+        public
+    {
         // Avoid invalid addresses
         vm.assume(spender != address(0) && to != address(0));
         vm.assume((uint160(to) >> 64) != 0x20C000000000000000000000);
@@ -665,7 +667,7 @@ contract TIP20Test is BaseTest {
         }
     }
 
-    function testFuzz_ChangeTransferPolicyId_RevertsIf_PolicyDoesNotExist(uint64 policyId) public {
+    function testFuzz_ChangeTransferPolicyId_RevertsIf_PolicyNotFound(uint64 policyId) public {
         vm.assume(policyId >= registry.policyIdCounter());
         vm.prank(admin);
         try token.changeTransferPolicyId(policyId) {
@@ -1553,7 +1555,9 @@ contract TIP20Test is BaseTest {
         uint256 aliceBalance,
         uint256 bobBalance,
         uint256 rewardAmount
-    ) public {
+    )
+        public
+    {
         // Bound inputs
         aliceBalance = bound(aliceBalance, 1e18, 1000e18);
         bobBalance = bound(bobBalance, 1e18, 1000e18);
@@ -1691,7 +1695,9 @@ contract TIP20Test is BaseTest {
         address to,
         uint256 allowanceAmount,
         uint256 transferAmount
-    ) public {
+    )
+        public
+    {
         vm.assume(spender != address(0) && to != address(0));
         vm.assume((uint160(to) >> 64) != 0x20C000000000000000000000);
         vm.assume(spender != 0x1559c00000000000000000000000000000000000);
@@ -1736,7 +1742,9 @@ contract TIP20Test is BaseTest {
         uint256 amount1,
         uint256 amount2,
         uint256 amount3
-    ) public {
+    )
+        public
+    {
         vm.assume(spender != address(0));
         amount1 = bound(amount1, 0, type(uint128).max);
         amount2 = bound(amount2, 0, type(uint128).max);
@@ -1792,7 +1800,12 @@ contract TIP20Test is BaseTest {
         vm.stopPrank();
     }
 
-    function testFuzz_mintBurnSequence(uint256 mint1, uint256 mint2, uint256 burn1, uint256 mint3)
+    function testFuzz_mintBurnSequence(
+        uint256 mint1,
+        uint256 mint2,
+        uint256 burn1,
+        uint256 mint3
+    )
         public
     {
         mint1 = bound(mint1, 1e18, type(uint128).max / 5);
@@ -1864,7 +1877,9 @@ contract TIP20Test is BaseTest {
         uint256 aliceBalance,
         uint256 bobBalance,
         uint256 rewardAmount
-    ) public {
+    )
+        public
+    {
         aliceBalance = bound(aliceBalance, 1e18, 1000e18);
         bobBalance = bound(bobBalance, 1e18, 1000e18);
         rewardAmount = bound(rewardAmount, 1e18, 500e18);
@@ -1927,7 +1942,9 @@ contract TIP20Test is BaseTest {
         uint256 bobAmount,
         bool aliceOpts,
         bool bobOpts
-    ) public {
+    )
+        public
+    {
         aliceAmount = bound(aliceAmount, 1e18, type(uint128).max / 4);
         bobAmount = bound(bobAmount, 1e18, type(uint128).max / 4);
 
