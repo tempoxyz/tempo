@@ -3,8 +3,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use crate::tip20::TIP20Error;
-use crate::tip20_factory::TIP20FactoryError;
+use crate::{tip20::TIP20Error, tip20_factory::TIP20FactoryError};
 use alloy::{
     primitives::{Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
