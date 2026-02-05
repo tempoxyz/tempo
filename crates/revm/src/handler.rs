@@ -38,7 +38,7 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
-    nonce::{INonce::getNonceCall, NonceManager},
+    nonce::{Interface as NonceInterface, NonceManager},
     storage::{PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider},
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, is_tip20_prefix},
@@ -705,10 +705,7 @@ where
                 if !cfg.is_nonce_check_disabled() {
                     let tx_nonce = tx.nonce();
                     let state = nonce_manager
-                        .get_nonce(getNonceCall {
-                            account: tx.caller(),
-                            nonceKey: nonce_key,
-                        })
+                        .get_nonce(tx.caller(), nonce_key)
                         .map_err(|err| match err {
                             TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                             err => {

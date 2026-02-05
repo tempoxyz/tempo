@@ -1,7 +1,8 @@
-pub mod dispatch;
+pub mod abi;
+mod dispatch;
 
-pub use tempo_contracts::precompiles::INonce;
-use tempo_contracts::precompiles::{NonceError, NonceEvent};
+use abi::INonce::{Error as NonceError, Event as NonceEvent};
+pub use abi::{INonce, INonce::Interface};
 use tempo_precompiles_macros::contract;
 
 use crate::{
@@ -24,7 +25,7 @@ pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 /// ```solidity
 /// contract Nonce {
 ///     mapping(address => mapping(uint256 => uint64)) public nonces;      // slot 0
-///     
+///
 ///     // Expiring nonce storage (for hash-based replay protection)
 ///     mapping(bytes32 => uint64) public expiringNonceSeen;               // slot 1: txHash => expiry
 ///     mapping(uint32 => bytes32) public expiringNonceRing;               // slot 2: circular buffer of tx hashes
@@ -39,7 +40,7 @@ pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 ///
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
-#[contract(addr = NONCE_PRECOMPILE_ADDRESS)]
+#[contract(addr = NONCE_PRECOMPILE_ADDRESS, abi = INonce, dispatch)]
 pub struct NonceManager {
     nonces: Mapping<Address, Mapping<U256, u64>>,
     expiring_nonce_seen: Mapping<B256, u64>,
@@ -47,22 +48,23 @@ pub struct NonceManager {
     expiring_nonce_ring_ptr: u32,
 }
 
-impl NonceManager {
-    /// Initializes the nonce manager contract.
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
-    }
-
-    /// Get the nonce for a specific account and nonce key
-    pub fn get_nonce(&self, call: INonce::getNonceCall) -> Result<u64> {
+impl Interface for NonceManager {
+    fn get_nonce(&self, account: Address, nonce_key: U256) -> Result<u64> {
         // Protocol nonce (key 0) is stored in account state, not in this precompile
         // Users should query account nonce directly, not through this precompile
-        if call.nonceKey == 0 {
+        if nonce_key == 0 {
             return Err(NonceError::protocol_nonce_not_supported().into());
         }
 
         // For user nonce keys, read from precompile storage
-        self.nonces[call.account][call.nonceKey].read()
+        self.nonces[account][nonce_key].read()
+    }
+}
+
+impl NonceManager {
+    /// Initializes the nonce manager contract.
+    pub fn initialize(&mut self) -> Result<()> {
+        self.__initialize()
     }
 
     /// Internal: Increment nonce for a specific account and nonce key
@@ -79,11 +81,7 @@ impl NonceManager {
 
         self.nonces[account][nonce_key].write(new_nonce)?;
 
-        self.emit_event(NonceEvent::NonceIncremented(INonce::NonceIncremented {
-            account,
-            nonceKey: nonce_key,
-            newNonce: new_nonce,
-        }))?;
+        self.emit_event(NonceEvent::nonce_incremented(account, nonce_key, new_nonce))?;
 
         Ok(new_nonce)
     }
@@ -169,10 +167,7 @@ impl NonceManager {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
-    };
+    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
 
     use super::*;
     use alloy::primitives::address;
@@ -184,10 +179,7 @@ mod tests {
             let mgr = NonceManager::new();
 
             let account = address!("0x1111111111111111111111111111111111111111");
-            let nonce = mgr.get_nonce(INonce::getNonceCall {
-                account,
-                nonceKey: U256::from(5),
-            })?;
+            let nonce = mgr.get_nonce(account, U256::from(5))?;
 
             assert_eq!(nonce, 0);
             Ok(())
@@ -201,14 +193,11 @@ mod tests {
             let mgr = NonceManager::new();
 
             let account = address!("0x1111111111111111111111111111111111111111");
-            let result = mgr.get_nonce(INonce::getNonceCall {
-                account,
-                nonceKey: U256::ZERO,
-            });
+            let result = mgr.get_nonce(account, U256::ZERO);
 
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::NonceError(NonceError::protocol_nonce_not_supported())
+                NonceError::protocol_nonce_not_supported().into()
             );
             Ok(())
         })
@@ -230,16 +219,8 @@ mod tests {
             let new_nonce = mgr.increment_nonce(account, nonce_key)?;
             assert_eq!(new_nonce, 2);
             mgr.assert_emitted_events(vec![
-                INonce::NonceIncremented {
-                    account,
-                    nonceKey: nonce_key,
-                    newNonce: 1,
-                },
-                INonce::NonceIncremented {
-                    account,
-                    nonceKey: nonce_key,
-                    newNonce: 2,
-                },
+                NonceEvent::nonce_incremented(account, nonce_key, 1),
+                NonceEvent::nonce_incremented(account, nonce_key, 2),
             ]);
 
             Ok(())
@@ -263,14 +244,8 @@ mod tests {
                 mgr.increment_nonce(account2, nonce_key)?;
             }
 
-            let nonce1 = mgr.get_nonce(INonce::getNonceCall {
-                account: account1,
-                nonceKey: nonce_key,
-            })?;
-            let nonce2 = mgr.get_nonce(INonce::getNonceCall {
-                account: account2,
-                nonceKey: nonce_key,
-            })?;
+            let nonce1 = mgr.get_nonce(account1, nonce_key)?;
+            let nonce2 = mgr.get_nonce(account2, nonce_key)?;
 
             assert_eq!(nonce1, 10);
             assert_eq!(nonce2, 20);
@@ -298,7 +273,7 @@ mod tests {
             let result = mgr.check_and_mark_expiring_nonce(tx_hash, valid_before);
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
+                NonceError::expiring_nonce_replay().into()
             );
 
             Ok(())
@@ -319,21 +294,21 @@ mod tests {
             let result = mgr.check_and_mark_expiring_nonce(tx_hash, now - 1);
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
+                NonceError::invalid_expiring_nonce_expiry().into()
             );
 
             // valid_before exactly at now should fail
             let result = mgr.check_and_mark_expiring_nonce(tx_hash, now);
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
+                NonceError::invalid_expiring_nonce_expiry().into()
             );
 
             // valid_before too far in future should fail (uses EXPIRING_NONCE_MAX_EXPIRY_SECS = 30)
             let result = mgr.check_and_mark_expiring_nonce(tx_hash, now + 31);
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
+                NonceError::invalid_expiring_nonce_expiry().into()
             );
 
             // valid_before at exactly max_skew should succeed
