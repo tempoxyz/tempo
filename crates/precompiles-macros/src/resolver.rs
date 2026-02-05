@@ -3,7 +3,10 @@
 //! This module generates a `slot_for` method for each contract that allows
 //! runtime resolution of storage slots by field name.
 
-use crate::{FieldKind, packing::{LayoutField, PackingConstants}};
+use crate::{
+    FieldKind,
+    packing::{LayoutField, PackingConstants},
+};
 use quote::quote;
 use syn::Ident;
 

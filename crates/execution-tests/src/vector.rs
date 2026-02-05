@@ -1,7 +1,9 @@
 use alloy_primitives::{Address, B256, Bytes, U256, hex};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::Path,
+};
 use tempo_chainspec::hardfork::ALL_TEMPO_HARDFORKS;
 use tempo_primitives::TempoTxType;
 
@@ -220,9 +222,10 @@ impl TxOutcome {
             if err.starts_with("0x") && err.len() == 10 {
                 let hex_str = &err[2..];
                 if let Ok(bytes) = hex::decode(hex_str)
-                    && bytes.len() == 4 {
-                        return Some([bytes[0], bytes[1], bytes[2], bytes[3]]);
-                    }
+                    && bytes.len() == 4
+                {
+                    return Some([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                }
                 return None;
             }
             // Treat as signature, compute selector
@@ -429,21 +432,24 @@ impl TestVector {
             if tx.outcome.is_some() && !tx.outcomes.is_empty() {
                 return Err(eyre::eyre!(
                     "vector '{}' tx {}: cannot have both 'outcome' and 'outcomes'",
-                    vector.name, i
+                    vector.name,
+                    i
                 ));
             }
             if tx.outcome.is_none() && tx.outcomes.is_empty() {
                 return Err(eyre::eyre!(
                     "vector '{}' tx {}: must have 'outcome' or 'outcomes'",
-                    vector.name, i
+                    vector.name,
+                    i
                 ));
             }
 
             // Validate single outcome
             if let Some(ref outcome) = tx.outcome
-                && let Err(e) = outcome.validate() {
-                    return Err(eyre::eyre!("vector '{}' tx {}: {}", vector.name, i, e));
-                }
+                && let Err(e) = outcome.validate()
+            {
+                return Err(eyre::eyre!("vector '{}' tx {}: {}", vector.name, i, e));
+            }
 
             // Validate hardfork-specific outcomes
             if !tx.outcomes.is_empty() {
@@ -453,7 +459,10 @@ impl TestVector {
                     if let Err(e) = ho.outcome.validate() {
                         return Err(eyre::eyre!(
                             "vector '{}' tx {} (hardforks {:?}): {}",
-                            vector.name, i, ho.hardforks, e
+                            vector.name,
+                            i,
+                            ho.hardforks,
+                            e
                         ));
                     }
                     for hf in &ho.hardforks {
@@ -471,7 +480,9 @@ impl TestVector {
                 if !missing.is_empty() {
                     return Err(eyre::eyre!(
                         "vector '{}' tx {}: 'outcomes' must cover all hardforks, missing: {:?}",
-                        vector.name, i, missing
+                        vector.name,
+                        i,
+                        missing
                     ));
                 }
             }
@@ -522,11 +533,7 @@ impl TestVector {
         Ok(vectors)
     }
 
-    fn load_recursive(
-        dir: &Path,
-        base_dir: &Path,
-        vectors: &mut Vec<Self>,
-    ) -> eyre::Result<()> {
+    fn load_recursive(dir: &Path, base_dir: &Path, vectors: &mut Vec<Self>) -> eyre::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -892,7 +899,7 @@ mod tests {
             extends: None,
             name: "parent".to_string(),
             description: "Parent description".to_string(),
-            
+
             prestate: Prestate {
                 accounts: parent_accounts,
                 ..Default::default()
@@ -915,7 +922,7 @@ mod tests {
             extends: Some("parent.json".to_string()),
             name: "child".to_string(),
             description: "".to_string(), // Empty, should inherit
-            
+
             prestate: Prestate {
                 accounts: child_accounts,
                 ..Default::default()
@@ -950,7 +957,7 @@ mod tests {
             extends: None,
             name: "parent".to_string(),
             description: "".to_string(),
-            
+
             prestate: Prestate {
                 precompiles: vec![PrecompileState {
                     name: "Token1".to_string(),
@@ -979,7 +986,7 @@ mod tests {
             extends: Some("parent.json".to_string()),
             name: "child".to_string(),
             description: "".to_string(),
-            
+
             prestate: Prestate {
                 precompiles: vec![PrecompileState {
                     name: "Token2".to_string(),
@@ -1025,7 +1032,7 @@ mod tests {
             extends: None,
             name: "parent".to_string(),
             description: "".to_string(),
-            
+
             prestate: Prestate::default(),
             block: BlockContext {
                 number: 1,
@@ -1048,7 +1055,7 @@ mod tests {
             extends: Some("parent.json".to_string()),
             name: "child".to_string(),
             description: "".to_string(),
-            
+
             prestate: Prestate::default(),
             block: BlockContext {
                 number: 1,
@@ -1157,7 +1164,7 @@ mod tests {
             extends: None,
             name: "parent".to_string(),
             description: "".to_string(),
-            
+
             prestate: Prestate::default(),
             block: BlockContext {
                 number: 1,
@@ -1177,7 +1184,7 @@ mod tests {
             extends: Some("parent.json".to_string()),
             name: "child".to_string(),
             description: "".to_string(),
-            
+
             prestate: Prestate::default(),
             block: BlockContext {
                 number: 1,

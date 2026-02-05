@@ -3,8 +3,10 @@
 //! Combines transaction execution results with post-execution state
 //! to produce a deterministic fingerprint for comparison across implementations.
 
-use crate::executor::{Log, TxExecutionResult};
-use crate::state_capture::PostExecutionState;
+use crate::{
+    executor::{Log, TxExecutionResult},
+    state_capture::PostExecutionState,
+};
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

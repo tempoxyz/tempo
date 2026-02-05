@@ -9,7 +9,7 @@ name: Precompile Differential Testing
 on:
   pull_request:
     paths:
-      - 'crates/precompile-tests/**'
+      - 'crates/execution-tests/**'
       - 'crates/precompiles/**'
       - 'crates/precompiles-macros/**'
       - 'crates/evm/**'
@@ -57,24 +57,33 @@ jobs:
             ${{ runner.os }}-cargo-precompile-diff-
             ${{ runner.os }}-cargo-
 
-      - name: Build precompile-tests (current)
+      - name: Build tempo-execution-tests (current)
         run: |
-          cargo build -p precompile-tests --release
-          mv target/release/precompile-tests target/release/precompile-tests-current
+          cargo build -p tempo-execution-tests --release
+          mv target/release/tempo-execution-tests target/release/tempo-execution-tests-current
 
       - name: Checkout main branch
         run: git checkout main
 
-      - name: Build precompile-tests (baseline)
+      - name: Build tempo-execution-tests (baseline)
+        id: build_baseline
+        continue-on-error: true
         run: |
-          cargo build -p precompile-tests --release
-          mv target/release/precompile-tests target/release/precompile-tests-baseline
+          cargo build -p tempo-execution-tests --release
+          mv target/release/tempo-execution-tests target/release/tempo-execution-tests-baseline
 
       - name: Checkout PR branch
         run: git checkout ${{ github.head_ref }}
 
       - name: Run differential test
+        if: steps.build_baseline.outcome == 'success'
         run: |
-          ./target/release/precompile-tests-current diff \
-            --baseline-binary ./target/release/precompile-tests-baseline \
-            --dir crates/precompile-tests/vectors
+          ./target/release/tempo-execution-tests-current diff \
+            --baseline-binary ./target/release/tempo-execution-tests-baseline \
+            --dir crates/execution-tests/vectors
+
+      - name: Skip diff (baseline not available)
+        if: steps.build_baseline.outcome != 'success'
+        run: |
+          echo "⚠️ Baseline build failed or package not available on main - skipping differential test"
+          echo "This is expected for new crates or when the package was renamed"

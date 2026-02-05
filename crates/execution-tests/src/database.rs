@@ -227,8 +227,7 @@ impl VectorDatabase {
                         .as_object()
                         .ok_or_else(|| eyre::eyre!("allowances[owner] must be an object"))?;
                     for (spender, amount) in spender_map {
-                        let slot =
-                            slot_for("TIP20Token", "allowances", &[owner, spender])?;
+                        let slot = slot_for("TIP20Token", "allowances", &[owner, spender])?;
                         let v = parse_u256_value(amount)?;
                         self.db.insert_account_storage(address, slot, v)?;
                     }
@@ -262,8 +261,7 @@ impl VectorDatabase {
                         .as_object()
                         .ok_or_else(|| eyre::eyre!("nonces[account] must be an object"))?;
                     for (nonce_key, nonce_value) in nonce_key_map {
-                        let slot =
-                            slot_for("NonceManager", "nonces", &[account, nonce_key])?;
+                        let slot = slot_for("NonceManager", "nonces", &[account, nonce_key])?;
                         let v = parse_u64_value(nonce_value)?;
                         self.db
                             .insert_account_storage(address, slot, U256::from(v))?;
@@ -276,8 +274,7 @@ impl VectorDatabase {
                     .as_object()
                     .ok_or_else(|| eyre::eyre!("expiring_nonce_seen must be an object"))?;
                 for (tx_hash, expiry) in entries {
-                    let slot =
-                        slot_for("NonceManager", "expiring_nonce_seen", &[tx_hash])?;
+                    let slot = slot_for("NonceManager", "expiring_nonce_seen", &[tx_hash])?;
                     let v = parse_u64_value(expiry)?;
                     self.db
                         .insert_account_storage(address, slot, U256::from(v))?;
@@ -330,8 +327,7 @@ impl VectorDatabase {
                         .as_object()
                         .ok_or_else(|| eyre::eyre!("keys[account] must be an object"))?;
                     for (key_id, key_info) in key_id_map {
-                        let slot =
-                            slot_for("AccountKeychain", "keys", &[account, key_id])?;
+                        let slot = slot_for("AccountKeychain", "keys", &[account, key_id])?;
                         let info = key_info
                             .as_object()
                             .ok_or_else(|| eyre::eyre!("key info must be an object"))?;
@@ -523,8 +519,7 @@ impl VectorDatabase {
                     .as_object()
                     .ok_or_else(|| eyre::eyre!("validator_tokens must be an object"))?;
                 for (validator, token) in entries {
-                    let slot =
-                        slot_for("TipFeeManager", "validator_tokens", &[validator])?;
+                    let slot = slot_for("TipFeeManager", "validator_tokens", &[validator])?;
                     let addr: Address = token
                         .as_str()
                         .ok_or_else(|| eyre::eyre!("token must be a string"))?
@@ -925,8 +920,7 @@ mod tests {
 
         // Check that sender has balance in fee token
         let sender_str = format!("{:?}", sender);
-        let balance_slot =
-            slot_for("TIP20Token", "balances", &[&sender_str]).unwrap();
+        let balance_slot = slot_for("TIP20Token", "balances", &[&sender_str]).unwrap();
         let balance = db.storage(DEFAULT_FEE_TOKEN, balance_slot).unwrap();
         assert_eq!(balance, U256::from(1_000_000_000_000u64));
     }

@@ -49,11 +49,8 @@ hardfork!(
 );
 
 /// All Tempo hardforks in order.
-pub const ALL_TEMPO_HARDFORKS: &[TempoHardfork] = &[
-    TempoHardfork::Genesis,
-    TempoHardfork::T0,
-    TempoHardfork::T1,
-];
+pub const ALL_TEMPO_HARDFORKS: &[TempoHardfork] =
+    &[TempoHardfork::Genesis, TempoHardfork::T0, TempoHardfork::T1];
 
 impl TempoHardfork {
     /// Returns true if this hardfork is T0 or later.

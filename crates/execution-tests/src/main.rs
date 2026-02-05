@@ -1,7 +1,9 @@
-use std::collections::BTreeMap;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    collections::BTreeMap,
+    io::Write,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use clap::{Parser, Subcommand};
 use eyre::{Result, bail};
@@ -290,12 +292,17 @@ struct VectorResult {
     validation_errors: Vec<String>,
 }
 
-fn execute_vector(executor: &VectorExecutor, vector: &TestVector, hardfork: &str) -> Result<VectorResult> {
+fn execute_vector(
+    executor: &VectorExecutor,
+    vector: &TestVector,
+    hardfork: &str,
+) -> Result<VectorResult> {
     let mut db = VectorDatabase::from_prestate(&vector.prestate)?;
     let result = executor.execute(vector, &mut db)?;
 
     // Validate transaction outcomes
-    let validation_errors = validate_tx_outcomes(&result.tx_results, &vector.transactions, hardfork);
+    let validation_errors =
+        validate_tx_outcomes(&result.tx_results, &vector.transactions, hardfork);
 
     let test_name = format!("{}::{}", hardfork, vector.name);
     let post_state = PostExecutionState::capture(&db.db, &vector.checks)?;
@@ -306,7 +313,10 @@ fn execute_vector(executor: &VectorExecutor, vector: &TestVector, hardfork: &str
         result.tx_results,
         post_state,
     );
-    Ok(VectorResult { fingerprint, validation_errors })
+    Ok(VectorResult {
+        fingerprint,
+        validation_errors,
+    })
 }
 
 fn compare_command(baseline: PathBuf, current: PathBuf, strict: bool) -> Result<()> {
@@ -413,7 +423,7 @@ fn diff_command(baseline_binary: PathBuf, dir: PathBuf) -> Result<()> {
     // Count total test runs (vectors × hardforks)
     let total_runs: usize = vectors.iter().map(|v| v.target_hardforks().len()).sum();
     eprintln!("Running {total_runs} test runs on current binary...");
-    
+
     for vector in &vectors {
         let vector_path = find_vector_path(&dir, &vector.name)?;
         vector_paths.insert(vector.name.clone(), vector_path);
@@ -436,10 +446,11 @@ fn diff_command(baseline_binary: PathBuf, dir: PathBuf) -> Result<()> {
         .filter(|v| v.check_regression.unwrap_or(false))
         .collect();
 
-    let baseline_runs: usize = baseline_vectors.iter().map(|v| v.target_hardforks().len()).sum();
-    eprintln!(
-        "Comparing {baseline_runs} test runs with check_regression=true against baseline..."
-    );
+    let baseline_runs: usize = baseline_vectors
+        .iter()
+        .map(|v| v.target_hardforks().len())
+        .sum();
+    eprintln!("Comparing {baseline_runs} test runs with check_regression=true against baseline...");
 
     let mut matched = 0;
     let mut new_passed = 0;
@@ -450,7 +461,7 @@ fn diff_command(baseline_binary: PathBuf, dir: PathBuf) -> Result<()> {
 
         for hardfork in vector.target_hardforks() {
             let test_name = format!("{}::{}", hardfork, vector.name);
-            
+
             let current_fp = match current_fingerprints.get(&test_name) {
                 Some(fp) => fp,
                 None => {
@@ -492,9 +503,7 @@ fn diff_command(baseline_binary: PathBuf, dir: PathBuf) -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "  Warning: failed to run baseline for {test_name}: {e}"
-                    );
+                    eprintln!("  Warning: failed to run baseline for {test_name}: {e}");
                 }
             }
         }
@@ -539,10 +548,11 @@ fn find_vector_path(dir: &PathBuf, vector_name: &str) -> Result<PathBuf> {
                 }
             } else if path.extension().is_some_and(|ext| ext == "json")
                 && let Ok(content) = std::fs::read_to_string(&path)
-                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&content)
-                        && v.get("name").and_then(|n| n.as_str()) == Some(vector_name) {
-                            return Ok(Some(path));
-                        }
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&content)
+                && v.get("name").and_then(|n| n.as_str()) == Some(vector_name)
+            {
+                return Ok(Some(path));
+            }
         }
         Ok(None)
     }

@@ -165,8 +165,10 @@ impl PostExecutionState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::VectorDatabase;
-    use crate::vector::{AccountState, Checks, Prestate};
+    use crate::{
+        database::VectorDatabase,
+        vector::{AccountState, Checks, Prestate},
+    };
     use alloy_primitives::address;
 
     #[test]

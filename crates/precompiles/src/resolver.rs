@@ -9,7 +9,7 @@ use thiserror::Error;
 #[cfg(any(test, feature = "test-utils"))]
 use crate::{
     account_keychain::AccountKeychain, nonce::NonceManager, stablecoin_dex::StablecoinDEX,
-    tip20_factory::TIP20Factory, tip_fee_manager::TipFeeManager, tip20::TIP20Token,
+    tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry, validator_config::ValidatorConfig,
 };
 
@@ -194,8 +194,12 @@ mod tests {
 
     #[test]
     fn test_resolve_tip_fee_manager_collected_fees() {
-        let slot =
-            slot_for("TipFeeManager", "collected_fees", &[TEST_HOLDER, TEST_SPENDER]).unwrap();
+        let slot = slot_for(
+            "TipFeeManager",
+            "collected_fees",
+            &[TEST_HOLDER, TEST_SPENDER],
+        )
+        .unwrap();
         assert!(!slot.is_zero());
     }
 

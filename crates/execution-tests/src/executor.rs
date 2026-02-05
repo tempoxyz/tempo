@@ -2,30 +2,26 @@
 //!
 //! Wraps TempoBlockExecutor to execute transactions from test vectors.
 
-use crate::database::VectorDatabase;
-use crate::vector::{BlockContext, TestVector, Transaction};
+use crate::{
+    database::VectorDatabase,
+    vector::{BlockContext, TestVector, Transaction},
+};
 use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxLegacy};
-use alloy_evm::eth::EthBlockExecutionCtx;
-use alloy_evm::{EvmEnv, FromRecoveredTx};
+use alloy_evm::{EvmEnv, FromRecoveredTx, eth::EthBlockExecutionCtx};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
 use reth_chainspec::EthChainSpec;
-use reth_revm::State;
-use reth_revm::context::BlockEnv;
-use revm::{DatabaseCommit, ExecuteEvm};
-use revm::context_interface::result::ExecutionResult;
-use revm::{Context, MainContext};
-use std::collections::HashMap;
-use std::sync::Arc;
-use tempo_chainspec::TempoChainSpec;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_chainspec::spec::MODERATO;
+use reth_revm::{State, context::BlockEnv};
+use revm::{
+    Context, DatabaseCommit, ExecuteEvm, MainContext, context_interface::result::ExecutionResult,
+};
+use std::{collections::HashMap, sync::Arc};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::MODERATO};
 use tempo_evm::{TempoBlockEnv, TempoBlockExecutionCtx};
-use tempo_primitives::TempoTxEnvelope;
-use tempo_primitives::TempoTxType;
-use tempo_primitives::transaction::tt_signed::AASigned;
-use tempo_primitives::transaction::{PrimitiveSignature, TempoSignature, TempoTransaction};
-use tempo_revm::TempoEvm;
-use tempo_revm::TempoTxEnv;
+use tempo_primitives::{
+    TempoTxEnvelope, TempoTxType,
+    transaction::{PrimitiveSignature, TempoSignature, TempoTransaction, tt_signed::AASigned},
+};
+use tempo_revm::{TempoEvm, TempoTxEnv};
 
 /// Result of executing a single transaction
 #[derive(Debug, Clone)]
@@ -824,7 +820,10 @@ mod tests {
 
         let expected = keccak256("TokenAlreadyExists(address)");
         let selector = outcome.error_selector().unwrap();
-        assert_eq!(selector, [expected[0], expected[1], expected[2], expected[3]]);
+        assert_eq!(
+            selector,
+            [expected[0], expected[1], expected[2], expected[3]]
+        );
     }
 
     #[test]
@@ -856,5 +855,4 @@ mod tests {
         let selector = outcome.error_selector();
         assert!(selector.is_some()); // Treated as signature
     }
-
 }
