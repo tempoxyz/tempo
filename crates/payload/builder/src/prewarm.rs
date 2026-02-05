@@ -319,9 +319,8 @@ mod tests {
         assert!(
             blocked_duration >= Duration::from_millis(90),
             "Expected thread 2 to be blocked for ~100ms while thread 1 \
-             held write lock during recv(), but it was only blocked for {:?}. \
+             held write lock during recv(), but it was only blocked for {blocked_duration:?}. \
              This demonstrates the blocking pattern at prewarm.rs:261",
-            blocked_duration
         );
     }
 
@@ -362,9 +361,8 @@ mod tests {
         // (not blocked by thread 1's 200ms computation)
         assert!(
             access_time < Duration::from_millis(50),
-            "Expected thread 2 to access cache quickly (< 50ms), but took {:?}. \
+            "Expected thread 2 to access cache quickly (< 50ms), but took {access_time:?}. \
              The fixed pattern should not block other threads during computation.",
-            access_time
         );
     }
 
