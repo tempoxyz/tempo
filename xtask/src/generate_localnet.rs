@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use alloy_primitives::Address;
 use eyre::{OptionExt as _, WrapErr as _, ensure};
-use rand::SeedableRng as _;
+use rand_08::SeedableRng as _;
 use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
 use serde::Serialize;
@@ -81,7 +81,8 @@ impl GenerateLocalnet {
             );
         }
 
-        let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
+        let mut rng =
+            rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
         let mut trusted_peers = vec![];
 
         let mut all_configs = vec![];

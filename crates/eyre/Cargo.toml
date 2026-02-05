@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 eyre.workspace = true
-indenter = "0.3.0"
+indenter = "0.3.4"
 
 [lints]
 workspace = true

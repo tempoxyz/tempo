@@ -43,6 +43,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_authorization,
                     valid_before,
                     valid_after,
+                    fee_payer_signature,
                 } = self;
                 let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     inner.clone(),
@@ -61,6 +62,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_authorization,
                             valid_before,
                             valid_after,
+                            fee_payer_signature,
                         }));
                     }
                 };
@@ -79,6 +81,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_authorization,
                             valid_before,
                             valid_after,
+                            fee_payer_signature,
                         })
                     },
                 )?)
@@ -94,6 +97,18 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
         self,
         evm_env: &EvmEnv<Spec, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {
+        let caller_addr = self.inner.from.unwrap_or_default();
+
+        let fee_payer = if self.fee_payer_signature.is_some() {
+            self.clone()
+                .build_aa()
+                .ok()
+                .and_then(|tx| tx.recover_fee_payer(caller_addr).ok())
+                .map(Some)
+        } else {
+            None
+        };
+
         let Self {
             inner,
             fee_token,
@@ -106,11 +121,13 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             key_authorization,
             valid_before,
             valid_after,
+            fee_payer_signature: _,
         } = self;
+
         Ok(TempoTxEnv {
             fee_token,
             is_system_tx: false,
-            fee_payer: None,
+            fee_payer,
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
                 || nonce_key.is_some()
@@ -120,7 +137,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
                 // For Keychain signatures, use the caller's address as the root key address
-                let caller_addr = inner.from.unwrap_or_default();
                 let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
                 let mock_signature =
                     create_mock_tempo_signature(&key_type, key_data.as_ref(), key_id, caller_addr);
@@ -225,6 +241,7 @@ fn create_mock_primitive_signature(
             const AUTH_DATA_SIZE: usize = 37;
             const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len(); // 87 bytes
             const DEFAULT_WEBAUTHN_SIZE: usize = 800; // Default when no key_data provided
+            const MAX_WEBAUTHN_SIZE: usize = 8192; // Maximum realistic WebAuthn signature size
 
             // Parse size from key_data, or use default
             let size = if let Some(data) = key_data.as_ref() {
@@ -238,8 +255,8 @@ fn create_mock_primitive_signature(
                 DEFAULT_WEBAUTHN_SIZE // Default size when no key_data provided
             };
 
-            // Ensure size is at least minimum
-            let size = size.max(MIN_WEBAUTHN_SIZE);
+            // Clamp size to safe bounds to prevent DoS via unbounded allocation
+            let size = size.clamp(MIN_WEBAUTHN_SIZE, MAX_WEBAUTHN_SIZE);
 
             // Construct authenticatorData (37 bytes)
             let mut webauthn_data = vec![0u8; AUTH_DATA_SIZE];
@@ -285,5 +302,62 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
             timestamp_millis: header.timestamp_millis(),
             inner: FromConsensusHeader::from_consensus_header(header, block_size),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempo_primitives::transaction::tt_signature::PrimitiveSignature;
+
+    #[test]
+    fn test_webauthn_size_clamped_to_max() {
+        // Attempt to create a signature with u32::MAX size (would be ~4GB without fix)
+        let malicious_key_data = Bytes::from(0xFFFFFFFFu32.to_be_bytes().to_vec());
+        let sig =
+            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(malicious_key_data));
+
+        // Extract webauthn_data and verify it's clamped to MAX_WEBAUTHN_SIZE (8192)
+        let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
+            panic!("Expected WebAuthn signature");
+        };
+
+        // The webauthn_data should be at most MAX_WEBAUTHN_SIZE bytes
+        assert!(
+            webauthn_sig.webauthn_data.len() <= 8192,
+            "WebAuthn data size {} exceeds maximum 8192",
+            webauthn_sig.webauthn_data.len()
+        );
+    }
+
+    #[test]
+    fn test_webauthn_size_respects_minimum() {
+        // Attempt to create a signature with size 0
+        let key_data = Bytes::from(vec![0u8]);
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data));
+
+        let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
+            panic!("Expected WebAuthn signature");
+        };
+
+        // Should be at least MIN_WEBAUTHN_SIZE (87 bytes)
+        assert!(
+            webauthn_sig.webauthn_data.len() >= 87,
+            "WebAuthn data size {} is below minimum 87",
+            webauthn_sig.webauthn_data.len()
+        );
+    }
+
+    #[test]
+    fn test_webauthn_default_size() {
+        // No key_data should use default size (800)
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, None);
+
+        let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
+            panic!("Expected WebAuthn signature");
+        };
+
+        // Default is 800 bytes
+        assert_eq!(webauthn_sig.webauthn_data.len(), 800);
     }
 }
