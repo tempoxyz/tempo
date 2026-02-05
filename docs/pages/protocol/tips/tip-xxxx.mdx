@@ -172,8 +172,8 @@ interface IValidatorConfigV2 {
 
     /// @notice Add a new validator (owner only)
     /// @dev The signature must be an Ed25519 signature over:
-    ///      keccak256(abi.encodePacked(<NAMESPACE>, contractAddress, validatorAddress, ingress, egress)),
-    ///      where `<NAMESPACE>` is "TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR" || "_" || <chainId>.
+    ///      keccak256(abi.encodePacked(<NAMESPACE>, chainId, contractAddress, validatorAddress, ingress, egress)),
+    ///      where `<NAMESPACE>` is "TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"
     ///      This proves the caller controls the private key corresponding to publicKey.
     ///      Reverts if isInitialized() returns false.
     /// @param validatorAddress The address of the new validator
@@ -206,9 +206,9 @@ interface IValidatorConfigV2 {
     ///      - The signature must prove ownership of the new public key
     ///      The signature must be an Ed25519 signature over:
     ///      keccak256(abi.encodePacked(
-    ///          <NAMESPACE>, contractAddress, validatorAddress, ingress, egress
+    ///          <NAMESPACE>, chainId, contractAddress, validatorAddress, ingress, egress
     ///      )),
-    ///      where `<NAMESPACE>` is "TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR" || "_" || <chainId>.
+    ///      where `<NAMESPACE>` is "TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR".
     /// @param validatorAddress The address of the validator to rotate
     /// @param publicKey The new validator's Ed25519 communication public key
     /// @param ingress The new validator's inbound address `<ip>:<port>` for incoming connections
@@ -314,7 +314,7 @@ ownership of the public key:
 message = keccak256(abi.encodePacked(
     b"TEMPO",                             // bytes: global namespace prefix 
     b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR" // bytes: contract specific namespace
-    chainId,                              // uint64: Prevents cross-chain replay
+    chainId,                         // uint64: Prevents cross-chain replay
     contractAddress,                      // address: Prevents cross-contract replay
     validatorAddress,                     // address: Binds to specific validator address
     ingress,                       // string: Binds network configuration
