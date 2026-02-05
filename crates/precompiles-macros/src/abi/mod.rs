@@ -139,6 +139,28 @@ fn generate_submodules(
         }
     };
 
+    // Build trait re-exports for the `traits` module with renamed `Interface` -> `{ModName}Interface`
+    let traits_mod_reexports: Vec<TokenStream> = interfaces
+        .iter()
+        .map(|i| {
+            let name = &i.name;
+            if name == "Interface" {
+                let renamed = format_ident!("{}Interface", mod_name);
+                quote! { pub use super::#name as #renamed; }
+            } else {
+                quote! { pub use super::#name; }
+            }
+        })
+        .collect();
+    let traits_mod_trait_reexports = if traits_mod_reexports.is_empty() {
+        quote! {}
+    } else {
+        quote! {
+            #[cfg(feature = "precompile")]
+            #(#traits_mod_reexports)*
+        }
+    };
+
     let trait_calls_reexports = if trait_calls_names.is_empty() {
         quote! {}
     } else {
@@ -197,8 +219,8 @@ fn generate_submodules(
             // {ModName}Constants trait (always present)
             pub use super::#iconstants_name;
 
-            // Interface traits
-            #trait_reexports
+            // Interface traits (renamed: Interface -> {ModName}Interface)
+            #traits_mod_trait_reexports
 
             // Constants
             #constant_reexports
