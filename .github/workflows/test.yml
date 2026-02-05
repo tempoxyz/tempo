@@ -16,6 +16,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
+  RUST_LOG: warn
   RUSTC_WRAPPER: "sccache"
 
 jobs:
