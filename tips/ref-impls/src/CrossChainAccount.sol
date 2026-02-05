@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.28 <0.9.0;
 
-import { P256 } from "solady/utils/P256.sol";
-import { WebAuthn } from "solady/utils/WebAuthn.sol";
 import { ECDSA } from "solady/utils/ECDSA.sol";
 import { EIP712 } from "solady/utils/EIP712.sol";
+import { P256 } from "solady/utils/P256.sol";
+import { WebAuthn } from "solady/utils/WebAuthn.sol";
 
 /// @title CrossChainAccount
 /// @notice A passkey-authenticated smart wallet with cross-chain deterministic addresses.
@@ -40,8 +40,8 @@ contract CrossChainAccount is EIP712 {
     /// @notice Supported key types for signature verification
     /// @dev Inspired by ithacaxyz/account's KeyType enum
     enum KeyType {
-        Secp256k1,   // Standard Ethereum EOA signatures
-        P256,        // Raw P-256 ECDSA signatures
+        Secp256k1, // Standard Ethereum EOA signatures
+        P256, // Raw P-256 ECDSA signatures
         WebAuthnP256 // WebAuthn/passkey signatures with P-256
     }
 
@@ -50,8 +50,8 @@ contract CrossChainAccount is EIP712 {
     /// @notice Key information for authorized signers
     struct Key {
         KeyType keyType;
-        uint40 expiry;      // 0 = never expires
-        bytes publicKey;    // Encoded public key (format depends on keyType)
+        uint40 expiry; // 0 = never expires
+        bytes publicKey; // Encoded public key (format depends on keyType)
     }
 
     // ============ Storage ============
@@ -137,7 +137,11 @@ contract CrossChainAccount is EIP712 {
     function isValidSignature(
         bytes32 digest,
         bytes calldata signature
-    ) external view returns (bytes4) {
+    )
+        external
+        view
+        returns (bytes4)
+    {
         (bool isValid,) = _validateSignature(digest, signature);
         return isValid ? ERC1271_MAGIC_VALUE : bytes4(0xffffffff);
     }
@@ -159,9 +163,8 @@ contract CrossChainAccount is EIP712 {
         returns (bytes memory)
     {
         // Build digest for this execution
-        bytes32 structHash = keccak256(
-            abi.encode(EXECUTE_TYPEHASH, target, value, keccak256(data), nonce)
-        );
+        bytes32 structHash =
+            keccak256(abi.encode(EXECUTE_TYPEHASH, target, value, keccak256(data), nonce));
         bytes32 digest = _hashTypedData(structHash);
 
         // Validate signature
@@ -217,7 +220,9 @@ contract CrossChainAccount is EIP712 {
         KeyType keyType,
         uint40 expiry,
         bytes calldata publicKey
-    ) external {
+    )
+        external
+    {
         if (msg.sender != address(this)) {
             revert NotAuthorized();
         }
@@ -228,11 +233,7 @@ contract CrossChainAccount is EIP712 {
             revert KeyAlreadyExists();
         }
 
-        keys[keyHash] = Key({
-            keyType: keyType,
-            expiry: expiry,
-            publicKey: publicKey
-        });
+        keys[keyHash] = Key({ keyType: keyType, expiry: expiry, publicKey: publicKey });
 
         emit KeyAdded(keyHash, keyType);
     }
@@ -287,7 +288,11 @@ contract CrossChainAccount is EIP712 {
     function _validateSignature(
         bytes32 digest,
         bytes calldata signature
-    ) internal view returns (bool isValid, bytes32 keyHash) {
+    )
+        internal
+        view
+        returns (bool isValid, bytes32 keyHash)
+    {
         if (signature.length < 32) return (false, bytes32(0));
 
         // Extract key hash from signature prefix
@@ -318,7 +323,11 @@ contract CrossChainAccount is EIP712 {
         bytes32 digest,
         bytes calldata signature,
         bytes storage publicKey
-    ) internal view returns (bool) {
+    )
+        internal
+        view
+        returns (bool)
+    {
         address recovered = ECDSA.recoverCalldata(digest, signature);
         address expected = abi.decode(publicKey, (address));
         return recovered == expected && recovered != address(0);
@@ -329,7 +338,11 @@ contract CrossChainAccount is EIP712 {
         bytes32 digest,
         bytes calldata signature,
         bytes storage publicKey
-    ) internal view returns (bool) {
+    )
+        internal
+        view
+        returns (bool)
+    {
         if (signature.length < 64) return false;
 
         (bytes32 x, bytes32 y) = abi.decode(publicKey, (bytes32, bytes32));
@@ -344,7 +357,11 @@ contract CrossChainAccount is EIP712 {
         bytes32 digest,
         bytes calldata signature,
         bytes storage publicKey
-    ) internal view returns (bool) {
+    )
+        internal
+        view
+        returns (bool)
+    {
         (bytes32 x, bytes32 y) = abi.decode(publicKey, (bytes32, bytes32));
 
         // Decode WebAuthn auth data from signature
@@ -354,10 +371,11 @@ contract CrossChainAccount is EIP712 {
         // Challenge is the digest we're verifying
         return WebAuthn.verify(
             abi.encode(digest), // challenge
-            false,              // requireUserVerification
+            false, // requireUserVerification
             auth,
             x,
             y
         );
     }
+
 }

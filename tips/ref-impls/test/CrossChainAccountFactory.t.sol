@@ -52,7 +52,9 @@ contract CrossChainAccountFactoryTest is Test {
 
         assertEq(account.ownerX(), passkeyX, "Owner X should be set");
         assertEq(account.ownerY(), passkeyY, "Owner Y should be set");
-        assertTrue(account.isAuthorizedKey(account.ownerKeyHash()), "Owner key should be authorized");
+        assertTrue(
+            account.isAuthorizedKey(account.ownerKeyHash()), "Owner key should be authorized"
+        );
         assertTrue(account.initialized(), "Account should be initialized");
     }
 
@@ -137,6 +139,7 @@ contract CrossChainAccountFactoryTest is Test {
         // This is verifiable by checking the contract has no external calls to
         // precompile addresses (0x01-0xFF range for special contracts)
     }
+
 }
 
 contract CrossChainAccountTest is Test {
@@ -187,23 +190,13 @@ contract CrossChainAccountTest is Test {
         bytes memory newPublicKey = abi.encode(eoaAddress);
 
         vm.expectRevert(CrossChainAccount.NotAuthorized.selector);
-        account.addKey(
-            newKeyHash,
-            CrossChainAccount.KeyType.Secp256k1,
-            0,
-            newPublicKey
-        );
+        account.addKey(newKeyHash, CrossChainAccount.KeyType.Secp256k1, 0, newPublicKey);
     }
 
     function test_addKey_revertsOnInvalidKey() public {
         vm.prank(address(account));
         vm.expectRevert(CrossChainAccount.InvalidKey.selector);
-        account.addKey(
-            bytes32(0),
-            CrossChainAccount.KeyType.Secp256k1,
-            0,
-            abi.encode(eoaAddress)
-        );
+        account.addKey(bytes32(0), CrossChainAccount.KeyType.Secp256k1, 0, abi.encode(eoaAddress));
     }
 
     function test_addKey_revertsIfKeyExists() public {
@@ -315,9 +308,11 @@ contract CrossChainAccountTest is Test {
         bytes32 expectedHash = keccak256(abi.encodePacked(passkeyX, passkeyY));
         assertEq(account.ownerKeyHash(), expectedHash, "Owner key hash should match");
     }
+
 }
 
 contract CrossChainAccountSecp256k1Test is Test {
+
     CrossChainAccountFactory factory;
     CrossChainAccount account;
 
@@ -337,12 +332,7 @@ contract CrossChainAccountSecp256k1Test is Test {
 
         // Add secp256k1 key to account
         vm.prank(address(account));
-        account.addKey(
-            keyHash,
-            CrossChainAccount.KeyType.Secp256k1,
-            0,
-            abi.encode(signerAddress)
-        );
+        account.addKey(keyHash, CrossChainAccount.KeyType.Secp256k1, 0, abi.encode(signerAddress));
     }
 
     function test_execute_withSecp256k1Signature() public {
@@ -397,7 +387,9 @@ contract CrossChainAccountSecp256k1Test is Test {
     function _computeDomainSeparator(address accountAddr) internal view returns (bytes32) {
         return keccak256(
             abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
                 keccak256("CrossChainAccount"),
                 keccak256("1"),
                 block.chainid,
@@ -405,4 +397,5 @@ contract CrossChainAccountSecp256k1Test is Test {
             )
         );
     }
+
 }
