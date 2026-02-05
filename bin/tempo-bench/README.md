@@ -122,8 +122,17 @@ Options:
 
           Calls admin_clearTxpool.
 
-      --disable-2d-nonces
-          Disable 2D nonces
+      --use-2d-nonces
+          Use 2D nonces instead of expiring nonces.
+
+          By default, tempo-bench uses expiring nonces (TIP-1009) which use a circular buffer
+          for replay protection, avoiding state bloat. Use this flag to switch to 2D nonces.
+
+      --use-standard-nonces
+          Use standard sequential nonces instead of expiring nonces.
+
+      --expiring-batch-secs <SECS>
+          Batch size for signing transactions when using expiring nonces.
 
   -h, --help
           Print help (see a summary with '-h')
