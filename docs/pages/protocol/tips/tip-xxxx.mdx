@@ -207,13 +207,11 @@ interface IValidatorConfigV2 {
     ///          "TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
     ///          chainId, contractAddress, validatorAddress, ingress, egress
     ///      ))
-    /// @param validatorAddress The address of the new validator
     /// @param publicKey The new validator's Ed25519 communication public key
     /// @param ingress The new validator's inbound address `<ip>:<port>` for incoming connections
     /// @param egress The new validator's outbound IP address `<ip>:<port>` for firewall whitelisting
     /// @param signature Ed25519 signature (64 bytes) proving ownership of the new public key
     function rotateValidator(
-        address validatorAddress,
         bytes32 publicKey,
         string calldata ingress,
         string calldata egress,
@@ -439,7 +437,6 @@ packing. The `initialized` flag uses bit 255 (the highest bit), leaving bits
 | Key ownership | Not verified | Ed25519 signature required |
 | Historical queries | Requires historical state | Filter `getValidators()` by `addedAtHeight`/`deletedAtHeight` |
 | Uniqueness | Address only | Address AND public key |
-| Ingress format | `<hostname\|ip>:<port>` | `<ip>:<port>` only |
 | Precompile address | `0xCCCC...0000` | `0xCCCC...0001` |
 
 ---
@@ -554,8 +551,8 @@ which validators have already been migrated.
 
 The CL checks `v2.isInitialized()` to determine which contract to read:
 
-- **Before `initialized == true`**: CL reads directly from V1
-- **After `initialized == true`**: CL reads from V2
+- On `initialized == false`**: CL reads from V1
+- On `initialized == true`**: CL reads from V2
 
 This is handled entirely in the CL logic, not in the V2 precompile. The V2
 precompile does NOT proxy reads to V1.
@@ -573,7 +570,7 @@ precompile does NOT proxy reads to V1.
   - `inboundAddress`: copied from V1
   - `outboundAddress`: copied from V1
   - `index`: set to `idx`
-  - `addedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
+  - `addedAtHeight`: `block.timestamp`
   - `deletedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.timestamp`
 - Adds to `validatorsArray`
 - Populates lookup maps (`validators[validatorAddress]`, `pubkeyToIndex[pubkey]`)
@@ -698,9 +695,8 @@ The test suite must cover:
 16. **InvalidSignature**: Rejects wrong signature, wrong length, wrong signer
 17. **RotateValidator caller not validator**: Non-validator cannot call rotateValidator
 18. **RotateValidator caller already deleted**: Cannot rotate already-deleted validator
-19. **RotateValidator new address exists**: Cannot rotate to existing address
-20. **RotateValidator new pubkey exists**: Cannot rotate to existing public key
-21. **RotateValidator invalid signature**: Rejects invalid signature for rotation
+19. **RotateValidator new pubkey exists**: Cannot rotate to existing public key
+20. **RotateValidator invalid signature**: Rejects invalid signature for rotation
 
 ### Address Validation
 
