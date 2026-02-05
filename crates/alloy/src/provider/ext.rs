@@ -1,6 +1,6 @@
 use alloy_provider::{
     Identity, ProviderBuilder,
-    fillers::{ChainIdFiller, GasFiller, JoinFill, RecommendedFillers, TxFiller},
+    fillers::{JoinFill, RecommendedFillers},
 };
 
 use crate::{
@@ -57,13 +57,7 @@ impl TempoProviderBuilderExt
         JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>,
         TempoNetwork,
     > {
-        let fillers: TempoFillers<ExpiringNonceFiller> = <ExpiringNonceFiller as TxFiller<
-            TempoNetwork,
-        >>::join_with(
-            ExpiringNonceFiller::default(),
-            <GasFiller as TxFiller<TempoNetwork>>::join_with(GasFiller, ChainIdFiller::default()),
-        );
-        ProviderBuilder::default().filler(fillers)
+        ProviderBuilder::default().filler(TempoFillers::default())
     }
 }
 
