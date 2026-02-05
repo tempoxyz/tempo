@@ -29,7 +29,7 @@ pub struct Args {
 
     /// The socket address that will be bound to export consensus specific
     /// metrics.
-    #[arg(long = "consensus.metrics-address", default_value = "127.0.0.1:8001")]
+    #[arg(long = "consensus.metrics-address", default_value = "127.0.0.1:8002")]
     pub metrics_address: SocketAddr,
 
     #[arg(long = "consensus.max-message-size-bytes", default_value_t = DEFAULT_MAX_MESSAGE_SIZE_BYTES)]
