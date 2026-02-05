@@ -235,9 +235,9 @@ interface IValidatorConfigV2 {
         string calldata egress
     ) external;
 
-    /// @notice Change owner (owner only)
+    /// @notice Transfer owner of the contract (owner only)
     /// @param newOwner The new owner address
-    function changeOwner(address newOwner) external;
+    function transferOwner(address newOwner) external;
 
     /// @notice Set the epoch at which a fresh DKG ceremony will be triggered (owner only)
     /// @param epoch The epoch in which to run the fresh DKG ceremony.
@@ -246,7 +246,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Migrate a single validator from V1 to V2 (owner only)
     /// @dev Can be called multiple times to migrate validators one at a time.
-    ///      On first call, sets owner of V2 to owner of V1.
+    ///      On first call, copies owner from V1 if V2 owner is address(0).
     ///      Active V1 validators get addedAtHeight=0 and deactivatedAtHeight=0.
     ///      Inactive V1 validators get addedAtHeight=deactivatedAtHeight=block.timestamp at migration time.
     ///      Reverts if already initialized if already migrated
@@ -499,7 +499,7 @@ The following invariants must always hold:
    changes.
 
 10. **Owner authorization**: Only the owner can call `addValidator`,
-    `deleteValidator`, `changeOwner`, `setNextFullDkgCeremony`, and `setValidatorAddress`.
+    `deleteValidator`, `transferOwner`, `setNextFullDkgCeremony`, and `setValidatorAddress`.
 
 11. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
     transition from 0 to 1, never back to 0.
