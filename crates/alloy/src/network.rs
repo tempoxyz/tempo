@@ -23,7 +23,8 @@ use crate::fillers::TempoGasFiller;
 ///
 /// `N` is a nonce filler.
 /// Includes `TempoGasFiller` to set default gas prices (20 gwei max fee, 1 gwei priority fee).
-pub type TempoFillers<N> = JoinFill<N, JoinFill<TempoGasFiller, JoinFill<GasFiller, ChainIdFiller>>>;
+pub type TempoFillers<N> =
+    JoinFill<N, JoinFill<TempoGasFiller, JoinFill<GasFiller, ChainIdFiller>>>;
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.
 #[derive(Default, Debug, Clone, Copy)]
