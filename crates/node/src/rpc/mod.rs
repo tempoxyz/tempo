@@ -311,21 +311,19 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
         if let Some(nonce_key) = request.nonce_key
             && !nonce_key.is_zero()
+            && request.nonce.is_none()
         {
-            if request.nonce.is_none() {
-                let nonce = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-                    0 // expiring nonce must be 0
-                } else {
-                    // 2D nonce: fetch from storage
-                    let slot = NonceManager::new().nonces[request.from.unwrap_or_default()]
-                        [nonce_key]
-                        .slot();
-                    db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
-                        .map_err(Into::into)?
-                        .saturating_to()
-                };
-                request.nonce = Some(nonce);
-            }
+            let nonce = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                0 // expiring nonce must be 0
+            } else {
+                // 2D nonce: fetch from storage
+                let slot = NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key]
+                    .slot();
+                db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
+                    .map_err(Into::into)?
+                    .saturating_to()
+            };
+            request.nonce = Some(nonce);
         }
 
         Ok(self.inner.create_txn_env(evm_env, request, db)?)
