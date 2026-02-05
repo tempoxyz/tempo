@@ -1498,7 +1498,9 @@ mod tests {
 
         // Test 2: Verify 2D nonce (nonce_key != 0) with same low gas also fails intrinsic gas check
         // This confirms that 2D nonce adds additional gas requirements (for nonce == 0 case)
-        let tx_2d_low_gas = create_aa_tx(30_000, TEMPO_EXPIRING_NONCE_KEY, false);
+        // Use a regular 2D nonce key (not TEMPO_EXPIRING_NONCE_KEY) to avoid T1 expiring nonce
+        // conditional checks (ExpiringNonceMissingValidBefore) that run before intrinsic gas.
+        let tx_2d_low_gas = create_aa_tx(30_000, U256::from(1), false);
         let validator2 = setup_validator(&tx_2d_low_gas, current_time);
         let outcome2 = validator2
             .validate_transaction(TransactionOrigin::External, tx_2d_low_gas)
@@ -1536,7 +1538,8 @@ mod tests {
         }
 
         // Test 4: 2D nonce with sufficient gas should NOT fail intrinsic gas check
-        let tx_2d_high_gas = create_aa_tx(1_000_000, TEMPO_EXPIRING_NONCE_KEY, false);
+        // Use a regular 2D nonce key (not TEMPO_EXPIRING_NONCE_KEY) to match Test 2.
+        let tx_2d_high_gas = create_aa_tx(1_000_000, U256::from(1), false);
         let validator4 = setup_validator(&tx_2d_high_gas, current_time);
         let outcome4 = validator4
             .validate_transaction(TransactionOrigin::External, tx_2d_high_gas)
@@ -1770,15 +1773,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_fee_cap_at_min_base_fee_passes() {
+        use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
-        // T0 base fee is 10 gwei (10_000_000_000 wei)
-        // Create a transaction with max_fee_per_gas exactly at minimum
+        // Use the higher of T0/T1 base fee so this test passes regardless of hardfork activation
+        let min_base_fee = std::cmp::max(TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE) as u128;
         let transaction = TxBuilder::aa(Address::random())
-            .max_fee(10_000_000_000) // exactly 10 gwei
+            .max_fee(min_base_fee)
             .max_priority_fee(1_000_000_000)
             .build();
 
@@ -3228,8 +3233,10 @@ mod tests {
             },
         ];
 
+        // Use 5M gas to ensure we pass T1 intrinsic gas checks and reach the create-call validation
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(address!("0000000000000000000000000000000000000002"))
+            .gas_limit(5_000_000)
             .calls(calls)
             .build();
         let validator = setup_validator(&transaction, current_time);
@@ -3274,8 +3281,10 @@ mod tests {
             },
         ];
 
+        // Use 5M gas to ensure we pass T1 intrinsic gas checks
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(address!("0000000000000000000000000000000000000002"))
+            .gas_limit(5_000_000)
             .calls(calls)
             .build();
         let validator = setup_validator(&transaction, current_time);
@@ -3323,8 +3332,10 @@ mod tests {
             },
         ];
 
+        // Use 5M gas to ensure we pass T1 intrinsic gas checks and reach the create-call validation
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(address!("0000000000000000000000000000000000000002"))
+            .gas_limit(5_000_000)
             .calls(calls)
             .build();
         let validator = setup_validator(&transaction, current_time);
@@ -3380,8 +3391,10 @@ mod tests {
             TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
         );
 
+        // Use 5M gas to ensure we pass T1 intrinsic gas checks and reach the create-call validation
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(address!("0000000000000000000000000000000000000002"))
+            .gas_limit(5_000_000)
             .calls(calls)
             .authorization_list(vec![authorization])
             .build();
