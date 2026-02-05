@@ -11826,6 +11826,7 @@ dependencies = [
  "tempo-node",
  "tempo-precompiles",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber 0.3.22",
 ]
@@ -11904,6 +11905,7 @@ dependencies = [
  "commonware-math",
  "commonware-parallel",
  "commonware-runtime",
+ "commonware-storage",
  "commonware-utils",
  "const-hex",
  "eyre",
@@ -11952,6 +11954,7 @@ dependencies = [
  "test-case",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-util",
  "url",
  "vergen",
  "vergen-git2",

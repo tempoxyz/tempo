@@ -39,7 +39,7 @@ const NAMESPACE: &[u8] = b"TEMPO";
 
 /// Digest wrapper for use with commonware consensus types.
 /// This is a local copy of the type from tempo-commonware-node to avoid cyclic dependencies.
-mod digest {
+pub(super) mod digest {
     use alloy_primitives::B256;
     use bytes::{Buf, BufMut};
     use commonware_codec::{FixedSize, Read, ReadExt as _, Write};
@@ -48,7 +48,7 @@ mod digest {
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
     #[repr(transparent)]
-    pub(super) struct Digest(pub B256);
+    pub(in crate::follow) struct Digest(pub B256);
 
     impl Array for Digest {}
 
@@ -114,13 +114,13 @@ use digest::Digest;
 /// 1. Fetches the finalization certificate for each block via `consensus_getFinalization`
 /// 2. Verifies the certificate signature against the network identity for that epoch
 /// 3. Verifies the certificate digest matches the block hash
-/// 4. Stores valid certificates for later RPC serving (via `FollowFeedState`)
+/// 4. Stores valid certificates for later RPC serving (via `FollowFeedState` and storage)
 /// 5. Passes verified blocks through to reth for execution
 #[derive(Clone)]
 pub struct CertifiedBlockProvider {
     /// The underlying RPC block provider.
     inner: RpcBlockProvider<AnyNetwork, Block>,
-    /// Shared state for serving consensus RPCs.
+    /// Shared state for serving consensus RPCs and storage.
     feed_state: FollowFeedState,
     /// RPC client for fetching finalization certificates from upstream node.
     rpc_client: Arc<jsonrpsee::http_client::HttpClient>,
@@ -147,13 +147,11 @@ impl CertifiedBlockProvider {
     ///
     /// # Arguments
     /// * `rpc_url` - WebSocket or HTTP URL to fetch blocks from
-    ///
-    /// # Returns
-    /// A tuple of (provider, feed_state) where feed_state can be used to serve consensus RPCs.
+    /// * `feed_state` - Feed state for serving consensus RPCs and persisting finalizations
     ///
     /// # Errors
-    /// Returns an error if the RPC connection fails or if the network identity cannot be fetched.
-    pub async fn new(rpc_url: &str) -> eyre::Result<(Self, FollowFeedState)> {
+    /// Returns an error if the RPC connection fails.
+    pub async fn new(rpc_url: &str, feed_state: FollowFeedState) -> eyre::Result<Self> {
         let inner = RpcBlockProvider::<AnyNetwork, _>::new(rpc_url, |block_response| {
             let json =
                 serde_json::to_value(block_response).expect("Block serialization cannot fail");
@@ -164,7 +162,6 @@ impl CertifiedBlockProvider {
                 .map_transactions(|tx: RpcTransaction<TempoTxEnvelope>| tx.into_inner())
         })
         .await?;
-        let feed_state = FollowFeedState::new();
 
         // Create HTTP client for consensus RPC calls
         // Convert ws:// to http:// if needed for RPC calls
@@ -182,9 +179,8 @@ impl CertifiedBlockProvider {
         // sync starts (trusted), then extracted from epoch boundary blocks
         // during forward sync (trustless).
         //
-        // TODO: If we have existing blockchain state, we could find the last
-        // epoch boundary block and extract the identity from its extra_data,
-        // avoiding the trust assumption on upstream.
+        // TODO: Instead of a trusted bootstrap, we could read state, and find the last
+        // epoch boundary block and extract the identity to start from.
         let identity_cache = Arc::new(RwLock::new(IdentityCache {
             identities: std::collections::HashMap::new(),
             sync_started: false,
@@ -192,15 +188,17 @@ impl CertifiedBlockProvider {
 
         info!(rpc_url = %rpc_url, "created certified block provider");
 
-        Ok((
-            Self {
-                inner,
-                feed_state: feed_state.clone(),
-                rpc_client,
-                identity_cache,
-            },
+        Ok(Self {
+            inner,
             feed_state,
-        ))
+            rpc_client,
+            identity_cache,
+        })
+    }
+
+    /// Get a reference to the feed state for RPC serving.
+    pub fn feed_state(&self) -> &FollowFeedState {
+        &self.feed_state
     }
 
     /// Try to extract and cache the DKG identity from a block's extra_data.
@@ -312,13 +310,16 @@ impl CertifiedBlockProvider {
 
     /// Fetch, validate, and store the finalization certificate for a block.
     ///
-    /// Returns `Ok(cert)` if the certificate was successfully fetched and validated,
-    /// or an error if the certificate is missing, invalid, or verification failed.
+    /// Returns `Ok((cert, finalization))` if the certificate was successfully fetched
+    /// and validated, or an error if the certificate is missing, invalid, or verification failed.
     async fn fetch_and_validate_certificate(
         &self,
         block_number: u64,
         block_hash: B256,
-    ) -> eyre::Result<CertifiedBlock> {
+    ) -> eyre::Result<(
+        CertifiedBlock,
+        Finalization<Scheme<PublicKey, MinSig>, Digest>,
+    )> {
         // Fetch the certificate
         let cert = self
             .rpc_client
@@ -380,7 +381,19 @@ impl CertifiedBlockProvider {
             "finalization certificate validated successfully"
         );
 
-        Ok(cert)
+        Ok((cert, finalization))
+    }
+
+    /// Store a finalization to persistent storage if storage is configured.
+    fn store_finalization(
+        &self,
+        height: u64,
+        digest: Digest,
+        finalization: Finalization<Scheme<PublicKey, MinSig>, Digest>,
+    ) {
+        if let Some(storage) = self.feed_state.storage() {
+            storage.put(height, digest, finalization);
+        }
     }
 }
 
@@ -412,11 +425,14 @@ impl BlockProvider for CertifiedBlockProvider {
                 .fetch_and_validate_certificate(block_number, block_hash)
                 .await
             {
-                Ok(cert) => {
+                Ok((cert, finalization)) => {
                     // First successful verification marks sync as started
                     self.mark_sync_started();
 
-                    // Certificate is valid - store it and forward the block
+                    // Store the finalization to persistent storage
+                    self.store_finalization(block_number, Digest(block_hash), finalization);
+
+                    // Update in-memory state and broadcast event
                     self.feed_state.set_finalized(cert);
 
                     if tx.send(block).await.is_err() {
@@ -433,6 +449,7 @@ impl BlockProvider for CertifiedBlockProvider {
                         "rejecting block: certificate validation failed"
                     );
                     // Continue processing - don't forward this block
+                    // Should we halt? How do make sure we get this block again.
                     continue;
                 }
             }
@@ -448,14 +465,17 @@ impl BlockProvider for CertifiedBlockProvider {
         self.try_extract_identity(&block);
 
         // Validate the certificate BEFORE returning the block
-        let cert = self
+        let (cert, finalization) = self
             .fetch_and_validate_certificate(block_number, block_hash)
             .await?;
 
         // First successful verification marks sync as started
         self.mark_sync_started();
 
-        // Certificate is valid - store it
+        // Store the finalization to persistent storage
+        self.store_finalization(block_number, Digest(block_hash), finalization);
+
+        // Update in-memory state
         self.feed_state.set_finalized(cert);
 
         Ok(block)

@@ -40,7 +40,7 @@ use tempo_faucet::{
 };
 use tempo_node::{
     TempoFullNode, TempoNodeArgs,
-    follow::CertifiedBlockProvider,
+    follow::{CertifiedBlockProvider, FollowFeedState},
     node::TempoNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
@@ -259,6 +259,9 @@ fn main() -> eyre::Result<()> {
         )
     };
 
+    // Clone for use in the async closure
+    let follow_shutdown_token = shutdown_token.clone();
+
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         let faucet_args = args.faucet_args.clone();
         let validator_key = args
@@ -304,17 +307,36 @@ fn main() -> eyre::Result<()> {
         });
 
         // Create certified block provider for follow mode
-        let certified_provider = if let Some(ref url) = follow_url {
-            let (provider, feed_state) = CertifiedBlockProvider::new(url)
+        let (certified_provider, follow_feed_state) = if let Some(ref url) = follow_url {
+            // Determine storage directory (same as consensus would use)
+            let storage_dir = args.consensus.storage_dir.clone().unwrap_or_else(|| {
+                builder
+                    .config()
+                    .datadir
+                    .clone()
+                    .resolve_datadir(builder.config().chain.chain())
+                    .data_dir()
+                    .join("consensus")
+            });
+
+            info!(
+                path = %storage_dir.display(),
+                "starting finalization storage for follow mode"
+            );
+
+            let feed_state = FollowFeedState::new(&storage_dir, follow_shutdown_token.clone())
+                .await
+                .wrap_err("failed to start finalization storage")?;
+            feed_state.init_from_storage().await;
+
+            let provider = CertifiedBlockProvider::new(url, feed_state.clone())
                 .await
                 .wrap_err("failed to create certified block provider")?;
-            Some((provider, feed_state))
-        } else {
-            None
-        };
 
-        // Extract feed state if we have a certified provider
-        let follow_feed_state = certified_provider.as_ref().map(|(_, fs)| fs.clone());
+            (Some(provider), Some(feed_state))
+        } else {
+            (None, None)
+        };
 
         let node_builder = builder
             .node(TempoNode::new(&args.node_args, validator_key))
@@ -354,7 +376,7 @@ fn main() -> eyre::Result<()> {
         let NodeHandle {
             node,
             node_exit_future,
-        } = if let Some((provider, _)) = certified_provider {
+        } = if let Some(provider) = certified_provider {
             node_builder
                 .launch_with_debug_capabilities()
                 .with_debug_block_provider(provider)

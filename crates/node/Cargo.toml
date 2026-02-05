@@ -59,6 +59,7 @@ commonware-cryptography.workspace = true
 commonware-math.workspace = true
 commonware-parallel.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
+commonware-storage.workspace = true
 commonware-utils.workspace = true
 const-hex.workspace = true
 eyre.workspace = true
@@ -68,6 +69,7 @@ futures.workspace = true
 jiff = { workspace = true, features = ["std"] }
 reqwest.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 url.workspace = true
 serde.workspace = true
 serde_json.workspace = true

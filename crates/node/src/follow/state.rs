@@ -1,10 +1,14 @@
 //! Follow mode feed state for serving consensus RPCs.
 
+use super::storage::{self, FinalizationStoreHandle};
 use crate::rpc::consensus::{
     CertifiedBlock, ConsensusFeed, ConsensusState, Event, IdentityProofError,
     IdentityTransitionResponse, Query,
 };
-use std::sync::{Arc, RwLock};
+use std::{
+    path::Path,
+    sync::{Arc, RwLock},
+};
 use tokio::sync::broadcast;
 
 const BROADCAST_CHANNEL_SIZE: usize = 1024;
@@ -22,18 +26,60 @@ struct FeedState {
 pub struct FollowFeedState {
     state: Arc<RwLock<FeedState>>,
     events_tx: broadcast::Sender<Event>,
+    /// Handle to the finalization storage service.
+    storage: Option<FinalizationStoreHandle>,
 }
 
 impl FollowFeedState {
-    /// Create a new follow feed state.
-    pub fn new() -> Self {
+    /// Create a new follow feed state with persistent storage.
+    ///
+    /// This starts a background storage service that persists finalization
+    /// certificates for snapshot compatibility with validators.
+    ///
+    /// # Arguments
+    /// * `storage_dir` - Directory for storage data (typically `<datadir>/follow`)
+    /// * `shutdown_token` - Cancellation token for graceful shutdown
+    pub async fn new(
+        storage_dir: impl AsRef<Path>,
+        shutdown_token: tokio_util::sync::CancellationToken,
+    ) -> eyre::Result<Self> {
+        let (events_tx, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
+
+        let config = storage::FinalizationStoreConfig {
+            storage_dir: storage_dir.as_ref().to_path_buf(),
+            worker_threads: Some(1),
+        };
+
+        let (storage, _storage_thread) =
+            storage::start_finalization_store_async(config, shutdown_token).await?;
+
+        Ok(Self {
+            state: Arc::new(RwLock::new(FeedState {
+                latest_finalized: None,
+            })),
+            events_tx,
+            storage: Some(storage),
+        })
+    }
+
+    /// Create a new follow feed state without persistent storage.
+    ///
+    /// This is useful for testing or when persistence is not needed.
+    /// Historical finalization queries (`Query::Height`) will return `None`.
+    pub fn without_storage() -> Self {
         let (events_tx, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
         Self {
             state: Arc::new(RwLock::new(FeedState {
                 latest_finalized: None,
             })),
             events_tx,
+            storage: None,
         }
+    }
+
+    /// Get the storage handle if set.
+    pub(super) fn storage(&self) -> Option<&FinalizationStoreHandle> {
+        self.storage.as_ref()
     }
 
     /// Update the latest finalized block.
@@ -51,11 +97,23 @@ impl FollowFeedState {
     pub fn events_tx(&self) -> &broadcast::Sender<Event> {
         &self.events_tx
     }
-}
 
-impl Default for FollowFeedState {
-    fn default() -> Self {
-        Self::new()
+    /// Initialize from storage on startup.
+    ///
+    /// This loads the latest finalization from storage to populate the in-memory
+    /// state, enabling immediate RPC serving after snapshot restore.
+    pub async fn init_from_storage(&self) {
+        if let Some(storage) = self.storage() {
+            if let Some((height, block)) = storage.latest().await {
+                reth_tracing::tracing::info!(
+                    height,
+                    "restored latest finalization from storage"
+                );
+                if let Ok(mut state) = self.state.write() {
+                    state.latest_finalized = Some(block);
+                }
+            }
+        }
     }
 }
 
@@ -79,10 +137,9 @@ impl ConsensusFeed for FollowFeedState {
                 .read()
                 .ok()
                 .and_then(|s| s.latest_finalized.clone()),
-            Query::Height(_height) => {
-                // TODO: Query from stored archive once implemented
-                // For now, only support latest
-                None
+            Query::Height(height) => {
+                // Query from storage
+                self.storage()?.get(height).await
             }
         }
     }
