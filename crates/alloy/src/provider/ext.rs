@@ -1,9 +1,9 @@
 use alloy_provider::{
     Identity, ProviderBuilder,
-    fillers::{JoinFill, RecommendedFillers},
+    fillers::{ChainIdFiller, GasFiller, JoinFill, RecommendedFillers, TxFiller},
 };
 
-use crate::{TempoFillers, TempoNetwork, fillers::Random2DNonceFiller};
+use crate::{TempoFillers, TempoNetwork, fillers::{ExpiringNonceFiller, Random2DNonceFiller}};
 
 /// Extension trait for [`ProviderBuilder`] with Tempo-specific functionality.
 pub trait TempoProviderBuilderExt {
@@ -15,6 +15,17 @@ pub trait TempoProviderBuilderExt {
     ) -> ProviderBuilder<
         Identity,
         JoinFill<Identity, TempoFillers<Random2DNonceFiller>>,
+        TempoNetwork,
+    >;
+
+    /// Returns a provider builder with the recommended Tempo fillers and the expiring nonce filler.
+    ///
+    /// See [`ExpiringNonceFiller`] for more information on expiring nonces (TIP-1009).
+    fn with_expiring_nonces(
+        self,
+    ) -> ProviderBuilder<
+        Identity,
+        JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>,
         TempoNetwork,
     >;
 }
@@ -35,6 +46,24 @@ impl TempoProviderBuilderExt
     > {
         ProviderBuilder::default().filler(TempoFillers::default())
     }
+
+    fn with_expiring_nonces(
+        self,
+    ) -> ProviderBuilder<
+        Identity,
+        JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>,
+        TempoNetwork,
+    > {
+        let fillers: TempoFillers<ExpiringNonceFiller> =
+            <ExpiringNonceFiller as TxFiller<TempoNetwork>>::join_with(
+                ExpiringNonceFiller::default(),
+                <GasFiller as TxFiller<TempoNetwork>>::join_with(
+                    GasFiller,
+                    ChainIdFiller::default(),
+                ),
+            );
+        ProviderBuilder::default().filler(fillers)
+    }
 }
 
 #[cfg(test)]
@@ -42,7 +71,7 @@ mod tests {
     use alloy_provider::{Identity, ProviderBuilder, fillers::JoinFill};
 
     use crate::{
-        TempoFillers, TempoNetwork, fillers::Random2DNonceFiller,
+        TempoFillers, TempoNetwork, fillers::{ExpiringNonceFiller, Random2DNonceFiller},
         provider::ext::TempoProviderBuilderExt,
     };
 
@@ -50,5 +79,11 @@ mod tests {
     fn test_with_random_nonces() {
         let _: ProviderBuilder<_, JoinFill<Identity, TempoFillers<Random2DNonceFiller>>, _> =
             ProviderBuilder::new_with_network::<TempoNetwork>().with_random_2d_nonces();
+    }
+
+    #[test]
+    fn test_with_expiring_nonces() {
+        let _: ProviderBuilder<_, JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>, _> =
+            ProviderBuilder::new_with_network::<TempoNetwork>().with_expiring_nonces();
     }
 }
