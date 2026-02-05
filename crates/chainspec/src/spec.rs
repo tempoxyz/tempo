@@ -27,7 +27,7 @@ pub const TEMPO_T0_BASE_FEE: u64 = 10_000_000_000;
 /// Basefee is denominated in attodollars.
 ///
 /// At this basefee, a standard TIP-20 transfer (~50,000 gas) costs:
-/// - Gas: 50,000 × 20 billion attodollars/gas = 1 trillion attodollars
+/// - Gas: 50,000 × 20 billion attodollars/gas = 1 quadrillion attodollars
 /// - Tokens: 1 trillion attodollars / 10^12 = 1 million microdollars
 /// - Economic: 1 million microdollars = 0.001 USD = 0.1 cents
 pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
