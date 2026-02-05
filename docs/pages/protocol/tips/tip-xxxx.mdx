@@ -231,10 +231,12 @@ interface IValidatorConfigV2 {
 
     /// @notice Migrate a single validator from V1 to V2 (owner only)
     /// @dev Can be called multiple times to migrate validators one at a time.
-    ///      Reverts if already initialized or if idx != validatorsArray.length.
     ///      On first call, copies owner from V1 if V2 owner is address(0).
     ///      Active V1 validators get addedAtHeight=0 and deactivatedAtHeight=0.
     ///      Inactive V1 validators get addedAtHeight=deactivatedAtHeight=block.timestamp at migration time.
+    ///      Reverts if already initialized if already migrated
+    ///      Reversts if idx != validatorsArray.length.
+    ///      Reverts if `V2.isInitialized()` (no migrations after V2 is initialized).
     /// @param idx Index of the validator in V1 validators array (must equal current validatorsArray.length)
     function migrateValidator(uint64 idx) external;
 
@@ -243,6 +245,9 @@ interface IValidatorConfigV2 {
     ///      Sets initialized=true. After this call, CL reads from V2 instead of V1.
     ///      Copies nextDkgCeremony from V1.
     ///      Reverts if V2 validators count < V1 validators count (ensures all validators migrated).
+    ///      Reverts if validator activity does not match between contracts:
+    ///      + if `V1.active == true` then `V2.deletedAtHeight = 0`
+    ///      + if `V1.active == false` then `V2.deletedAtHeight > 0`
     function initializeIfMigrationComplete() external;
 
     /// @notice Set the validator address for a validator (owner only)
