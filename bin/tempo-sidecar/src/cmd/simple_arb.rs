@@ -14,7 +14,7 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use poem::{EndpointExt as _, Route, Server, get, listener::TcpListener};
 use std::{collections::HashSet, time::Duration};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, tip_fee_manager::IFeeManager,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, tip_fee_manager::IFeeAMM,
     tip20_factory::ITIP20Factory,
 };
 use tempo_telemetry_util::error_field;
@@ -119,7 +119,7 @@ impl SimpleArbArgs {
             .wallet(wallet)
             .connect_http(self.rpc_url.parse().context("failed to parse RPC URL")?);
 
-        let fee_amm = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+        let fee_amm = IFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
         info!("Fetching all pairs...");
         let pairs = fetch_all_pairs(provider.clone()).await?;

@@ -52,7 +52,7 @@ use tempo_precompiles::{
     nonce::NonceManager,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
-    tip_fee_manager::{TipFeeManager, traits::*},
+    tip_fee_manager::{IFeeAMMInterface, IFeeManagerInterface, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
     tip403_registry::TIP403Registry,

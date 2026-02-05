@@ -18,7 +18,7 @@ use reqwest::Url;
 use std::sync::Arc;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    tip_fee_manager::IFeeManager::{self, IFeeManagerInstance, Mint, Pool},
+    tip_fee_manager::IFeeAMM::{self, IFeeAMMInstance, Mint, Pool},
     tip20::ITIP20,
 };
 use tracing::{debug, error, info, instrument};
@@ -146,7 +146,7 @@ impl MonitorConfig {
             .permutations(2)
             .map(|pair| {
                 let (token_a, token_b) = (*pair[0], *pair[1]);
-                let fee_amm = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+                let fee_amm = IFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
                 async move {
                     match fee_amm.getPool(token_a, token_b).call().await {
                         Ok(pool) => {
@@ -225,8 +225,7 @@ impl Monitor {
             .connect(self.rpc_url.as_str())
             .await?;
 
-        let fee_amm: IFeeManagerInstance<_, _> =
-            IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider);
+        let fee_amm: IFeeAMMInstance<_, _> = IFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
         for &(token_a, token_b) in &self.known_pairs {
             debug!(%token_a, %token_b, "fetching pool");

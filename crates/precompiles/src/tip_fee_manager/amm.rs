@@ -1,9 +1,12 @@
-pub use crate::tip_fee_manager::{MIN_LIQUIDITY, Pool};
+pub use crate::tip_fee_manager::abi::IFeeAMM::{MIN_LIQUIDITY, Pool};
 
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip_fee_manager::{TipFeeManager, prelude::*},
+    tip_fee_manager::{
+        FeeAMMError, FeeAMMEvent, TipFeeManager,
+        abi::IFeeAMM::{self, prelude::*},
+    },
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
 use alloy::{
@@ -11,9 +14,6 @@ use alloy::{
     sol_types::SolValue,
 };
 use tempo_precompiles_macros::Storable;
-
-use Error as FeeAMMError;
-use Event as FeeAMMEvent;
 
 /// Compute amount out for a fee swap
 #[inline]
@@ -58,7 +58,7 @@ impl PoolKey {
     }
 }
 
-impl IFeeAMM for TipFeeManager {
+impl IFeeAMM::Interface for TipFeeManager {
     fn get_pool_id(&self, user_token: Address, validator_token: Address) -> Result<B256> {
         Ok(self.pool_id(user_token, validator_token))
     }
@@ -480,6 +480,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip_fee_manager::abi::IFeeAMM::Interface as _,
     };
     use alloy::primitives::Address;
 

@@ -2,7 +2,15 @@ pub mod abi;
 pub mod amm;
 mod dispatch;
 
-pub use abi::{IFeeManager, IFeeManager::prelude::*};
+pub use abi::{
+    FeeAMMError, FeeAMMEvent, FeeManagerError, FeeManagerEvent, IFeeAMM, IFeeAMM::prelude::*,
+    IFeeManager,
+};
+
+pub use abi::{IFeeAMM::traits::IFeeAMMInterface, IFeeManager::traits::IFeeManagerInterface};
+
+#[cfg(feature = "precompile")]
+pub use abi::IFeeManager::Interface;
 
 use crate::{
     error::{Result, TempoPrecompileError},
@@ -15,9 +23,7 @@ use alloy::primitives::{Address, B256, U256};
 pub use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS};
 use tempo_precompiles_macros::contract;
 
-use Error as FeeManagerError;
-
-#[contract(addr = TIP_FEE_MANAGER_ADDRESS, abi = IFeeManager, dispatch)]
+#[contract(addr = TIP_FEE_MANAGER_ADDRESS, abi = [IFeeManager, IFeeAMM], dispatch)]
 pub struct TipFeeManager {
     validator_tokens: Mapping<Address, Address>,
     user_tokens: Mapping<Address, Address>,
@@ -56,7 +62,7 @@ impl IFeeManager::Interface for TipFeeManager {
         self.validator_tokens[msg_sender].write(token)?;
 
         // Emit ValidatorTokenSet event
-        self.emit_event(Event::validator_token_set(msg_sender, token))
+        self.emit_event(FeeManagerEvent::validator_token_set(msg_sender, token))
     }
 
     /// Get user's preferred token.
@@ -76,7 +82,7 @@ impl IFeeManager::Interface for TipFeeManager {
         self.user_tokens[msg_sender].write(token)?;
 
         // Emit UserTokenSet event
-        self.emit_event(Event::user_token_set(msg_sender, token))
+        self.emit_event(FeeManagerEvent::user_token_set(msg_sender, token))
     }
 
     fn collected_fees(&self, validator: Address, token: Address) -> Result<U256> {
@@ -102,7 +108,7 @@ impl IFeeManager::Interface for TipFeeManager {
         )?;
 
         // Emit FeesDistributed event
-        self.emit_event(Event::fees_distributed(validator, token, amount))
+        self.emit_event(FeeManagerEvent::fees_distributed(validator, token, amount))
     }
 }
 
