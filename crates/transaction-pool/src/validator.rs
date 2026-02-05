@@ -3326,7 +3326,6 @@ mod tests {
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(address!("0000000000000000000000000000000000000002"))
             .calls(calls)
-            .gas_limit(5_000_000) // High enough to pass intrinsic gas check
             .build();
         let validator = setup_validator(&transaction, current_time);
 
@@ -3385,7 +3384,6 @@ mod tests {
             .fee_token(address!("0000000000000000000000000000000000000002"))
             .calls(calls)
             .authorization_list(vec![authorization])
-            .gas_limit(5_000_000) // High enough to pass intrinsic gas check
             .build();
         let validator = setup_validator(&transaction, current_time);
 
