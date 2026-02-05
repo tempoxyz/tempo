@@ -200,8 +200,7 @@ impl ITIP20Factory::Interface for TIP20Factory {
 
 #[cfg(test)]
 mod tests {
-    use super::ITIP20Factory;
-    use super::*;
+    use super::{ITIP20Factory, *};
     use crate::{
         PATH_USD_ADDRESS,
         error::TempoPrecompileError,
