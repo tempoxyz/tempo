@@ -1438,6 +1438,7 @@ mod tests {
             .as_secs();
 
         // Helper to create AA transaction
+        // For expiring nonces (nonce_key == TEMPO_EXPIRING_NONCE_KEY), we need valid_before
         let create_aa_tx = |gas_limit: u64, nonce_key: U256, is_create: bool| {
             let calls: Vec<TxCall> = if is_create {
                 vec![TxCall {
@@ -1455,6 +1456,14 @@ mod tests {
                     .collect()
             };
 
+            // Set valid_before for expiring nonce transactions (T1 requirement)
+            // Max expiry is 30 seconds (TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS)
+            let valid_before = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                Some(current_time + 30)
+            } else {
+                None
+            };
+
             let tx = TempoTransaction {
                 chain_id: 1,
                 max_priority_fee_per_gas: 1_000_000_000,
@@ -1464,6 +1473,7 @@ mod tests {
                 nonce_key,
                 nonce: 0,
                 fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                valid_before,
                 ..Default::default()
             };
 
@@ -1775,10 +1785,10 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // T0 base fee is 10 gwei (10_000_000_000 wei)
+        // T1 base fee is 20 gwei (20_000_000_000 wei)
         // Create a transaction with max_fee_per_gas exactly at minimum
         let transaction = TxBuilder::aa(Address::random())
-            .max_fee(10_000_000_000) // exactly 10 gwei
+            .max_fee(20_000_000_000) // exactly 20 gwei (T1 minimum)
             .max_priority_fee(1_000_000_000)
             .build();
 
@@ -1807,10 +1817,10 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // T0 base fee is 10 gwei (10_000_000_000 wei)
+        // T1 base fee is 20 gwei (20_000_000_000 wei)
         // Create a transaction with max_fee_per_gas above minimum
         let transaction = TxBuilder::aa(Address::random())
-            .max_fee(20_000_000_000) // 20 gwei, above T0's 10 gwei
+            .max_fee(30_000_000_000) // 30 gwei, above T1's 20 gwei
             .max_priority_fee(1_000_000_000)
             .build();
 
