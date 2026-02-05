@@ -233,7 +233,6 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::sol_types::SolError;
     use tempo_contracts::precompiles::StablecoinDEXError;
 
     #[test]
@@ -332,7 +331,7 @@ mod tests {
         // Verify it's a TIP20 error
         match decoded.error {
             TempoPrecompileError::TIP20(_) => {}
-            other => panic!("Expected TIP20 error, got {:?}", other),
+            other => panic!("Expected TIP20 error, got {other:?}"),
         }
     }
 }

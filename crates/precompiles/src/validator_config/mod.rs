@@ -1002,7 +1002,7 @@ mod tests {
 
         for invalid in invalid_cases {
             let result = ensure_address_is_ip_port(invalid);
-            assert!(result.is_err(), "Expected error for '{}', got Ok", invalid);
+            assert!(result.is_err(), "Expected error for '{invalid}', got Ok");
         }
 
         // Valid IP:port should succeed

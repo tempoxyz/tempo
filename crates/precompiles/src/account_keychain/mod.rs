@@ -1308,8 +1308,7 @@ mod tests {
             let result = keychain.update_spending_limit(account, update_call);
             assert!(
                 result.is_ok(),
-                "Update should succeed when key not expired: {:?}",
-                result
+                "Update should succeed when key not expired: {result:?}"
             );
 
             // Verify the limit was updated
