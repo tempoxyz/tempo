@@ -224,13 +224,27 @@ contract StablecoinDEX is IStablecoinDEX {
             }
 
             if (isBid) {
-                if (flipTick <= tick) {
+                if (flipTick < tick) {
                     revert IStablecoinDEX.InvalidFlipTick();
                 }
             } else {
-                if (flipTick >= tick) {
+                if (flipTick > tick) {
                     revert IStablecoinDEX.InvalidFlipTick();
                 }
+            }
+        }
+
+        // Prevent crossed orders: reject orders that would cross the spread
+        // Note: Same-tick orders (tick == best opposite tick) are allowed
+        if (isBid) {
+            // For bids: reject if tick > best_ask_tick (when asks exist)
+            if (book.bestAskTick != type(int16).max && tick > book.bestAskTick) {
+                revert IStablecoinDEX.OrderWouldCross();
+            }
+        } else {
+            // For asks: reject if tick < best_bid_tick (when bids exist)
+            if (book.bestBidTick != type(int16).min && tick < book.bestBidTick) {
+                revert IStablecoinDEX.OrderWouldCross();
             }
         }
         {

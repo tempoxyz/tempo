@@ -59,6 +59,7 @@ interface IStablecoinDEX {
     error BelowMinimumOrderSize(uint128 amount);
     error InvalidBaseToken();
     error OrderNotStale();
+    error OrderWouldCross();
 
     event OrderCancelled(uint128 indexed orderId);
     event OrderFilled(

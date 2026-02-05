@@ -2,9 +2,9 @@
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OrderError {
     /// Flip tick constraint violated for a bid flip order.
-    /// For bids: flip_tick must be > tick
+    /// For bids: flip_tick must be >= tick
     #[error(
-        "invalid flip tick for bid order: flip_tick ({flip_tick}) must be greater than tick ({tick})"
+        "invalid flip tick for bid order: flip_tick ({flip_tick}) must be greater than or equal to tick ({tick})"
     )]
     InvalidBidFlipTick {
         /// The order's tick
@@ -14,9 +14,9 @@ pub enum OrderError {
     },
 
     /// Flip tick constraint violated for an ask flip order.
-    /// For asks: flip_tick must be < tick
+    /// For asks: flip_tick must be <= tick
     #[error(
-        "invalid flip tick for ask order: flip_tick ({flip_tick}) must be less than tick ({tick})"
+        "invalid flip tick for ask order: flip_tick ({flip_tick}) must be less than or equal to tick ({tick})"
     )]
     InvalidAskFlipTick {
         /// The order's tick
@@ -69,7 +69,7 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("bid"));
-        assert!(msg.contains("greater than"));
+        assert!(msg.contains("greater than or equal to"));
         assert!(msg.contains("5"));
         assert!(msg.contains("3"));
     }
@@ -82,7 +82,7 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("ask"));
-        assert!(msg.contains("less than"));
+        assert!(msg.contains("less than or equal to"));
         assert!(msg.contains("5"));
         assert!(msg.contains("7"));
     }

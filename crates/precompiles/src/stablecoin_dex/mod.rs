@@ -390,6 +390,23 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
         }
 
+        // Re-read book after validate_or_create_pair (may have been created)
+        let book = self.books[book_key].read()?;
+
+        // Prevent crossed orders: reject orders that would cross the spread (TIP-1002)
+        // Note: Same-tick orders (tick == best opposite tick) are allowed
+        if is_bid {
+            // For bids: reject if tick > best_ask_tick (when asks exist)
+            if book.best_ask_tick != i16::MAX && tick > book.best_ask_tick {
+                return Err(StablecoinDEXError::order_would_cross().into());
+            }
+        } else {
+            // For asks: reject if tick < best_bid_tick (when bids exist)
+            if book.best_bid_tick != i16::MIN && tick < book.best_bid_tick {
+                return Err(StablecoinDEXError::order_would_cross().into());
+            }
+        }
+
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
             // For bids, escrow quote tokens based on price
@@ -488,8 +505,8 @@ impl StablecoinDEX {
     /// Place a flip order that auto-flips when filled
     ///
     /// Flip orders automatically create a new order on the opposite side when completely filled.
-    /// For bids: flip_tick must be > tick
-    /// For asks: flip_tick must be < tick
+    /// For bids: flip_tick must be >= tick
+    /// For asks: flip_tick must be <= tick
     #[allow(clippy::too_many_arguments)]
     pub fn place_flip(
         &mut self,
@@ -529,14 +546,31 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::invalid_flip_tick().into());
         }
 
-        // Validate flip_tick relationship to tick based on order side
-        if (is_bid && flip_tick <= tick) || (!is_bid && flip_tick >= tick) {
+        // Validate flip_tick relationship to tick based on order side (same-tick allowed per TIP-1002)
+        if (is_bid && flip_tick < tick) || (!is_bid && flip_tick > tick) {
             return Err(StablecoinDEXError::invalid_flip_tick().into());
         }
 
         // Validate order amount meets minimum requirement
         if amount < MIN_ORDER_AMOUNT {
             return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
+        }
+
+        // Re-read book after validate_or_create_pair (may have been created)
+        let book = self.books[book_key].read()?;
+
+        // Prevent crossed orders: reject orders that would cross the spread (TIP-1002)
+        // Note: Same-tick orders (tick == best opposite tick) are allowed
+        if is_bid {
+            // For bids: reject if tick > best_ask_tick (when asks exist)
+            if book.best_ask_tick != i16::MAX && tick > book.best_ask_tick {
+                return Err(StablecoinDEXError::order_would_cross().into());
+            }
+        } else {
+            // For asks: reject if tick < best_bid_tick (when bids exist)
+            if book.best_bid_tick != i16::MIN && tick < book.best_bid_tick {
+                return Err(StablecoinDEXError::order_would_cross().into());
+            }
         }
 
         // Calculate escrow amount and token based on order side
@@ -3138,9 +3172,9 @@ mod tests {
             let admin = Address::random();
             let amount = MIN_ORDER_AMOUNT;
 
-            // Use different ticks for bids (100, 90) and asks (50, 60)
-            let (bid_tick_1, bid_tick_2) = (100_i16, 90_i16); // (best, second best)
-            let (ask_tick_1, ask_tick_2) = (50_i16, 60_i16); // (best, second best)
+            // Use non-crossing ticks: bids below asks (TIP-1002 prevents crossing)
+            let (bid_tick_1, bid_tick_2) = (-100_i16, -110_i16); // (best, second best)
+            let (ask_tick_1, ask_tick_2) = (100_i16, 110_i16); // (best, second best)
 
             // Calculate escrow for all orders
             let bid_price_1 = orderbook::tick_to_price(bid_tick_1);
@@ -3171,15 +3205,15 @@ mod tests {
             assert_eq!(orderbook.best_bid_tick, bid_tick_1);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
-            // Fill all bids at tick 100 (bob sells base)
+            // Fill all bids at tick -100 (bob sells base)
             exchange.set_balance(bob, base_token, amount)?;
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
-            // Verify best_bid_tick moved to tick 90, best_ask_tick unchanged
+            // Verify best_bid_tick moved to tick -110, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_2);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
-            // Fill remaining bid at tick 90
+            // Fill remaining bid at tick -110
             exchange.set_balance(bob, base_token, amount)?;
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
             // Verify best_bid_tick is now i16::MIN, best_ask_tick unchanged
@@ -3187,12 +3221,12 @@ mod tests {
             assert_eq!(orderbook.best_bid_tick, i16::MIN);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
-            // Fill all asks at tick 50 (bob buys base)
+            // Fill all asks at tick 100 (bob buys base)
             let ask_price_1 = orderbook::tick_to_price(ask_tick_1);
             let quote_needed = (amount * ask_price_1 as u128) / orderbook::PRICE_SCALE as u128;
             exchange.set_balance(bob, quote_token, quote_needed)?;
             exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_needed, 0)?;
-            // Verify best_ask_tick moved to tick 60, best_bid_tick unchanged
+            // Verify best_ask_tick moved to tick 110, best_bid_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_ask_tick, ask_tick_2);
             assert_eq!(orderbook.best_bid_tick, i16::MIN);
@@ -3212,10 +3246,11 @@ mod tests {
             let admin = Address::random();
             let amount = MIN_ORDER_AMOUNT;
 
-            let (bid_tick_1, bid_tick_2) = (100_i16, 90_i16); // (best, second best)
-            let (ask_tick_1, ask_tick_2) = (50_i16, 60_i16); // (best, second best)
+            // Use non-crossing ticks: bids below asks (TIP-1002 prevents crossing)
+            let (bid_tick_1, bid_tick_2) = (-100_i16, -110_i16); // (best, second best)
+            let (ask_tick_1, ask_tick_2) = (100_i16, 110_i16); // (best, second best)
 
-            // Calculate escrow for 3 bid orders (2 at tick 100, 1 at tick 90)
+            // Calculate escrow for 3 bid orders (2 at tick -100, 1 at tick -110)
             let price_1 = orderbook::tick_to_price(bid_tick_1);
             let price_2 = orderbook::tick_to_price(bid_tick_2);
             let escrow_1 = (amount * price_1 as u128) / orderbook::PRICE_SCALE as u128;
@@ -3227,12 +3262,12 @@ mod tests {
             exchange.create_pair(base_token)?;
             let book_key = compute_book_key(base_token, quote_token);
 
-            // Place 2 bid orders at tick 100, 1 at tick 90
+            // Place 2 bid orders at tick -100, 1 at tick -110
             let bid_order_1 = exchange.place(alice, base_token, amount, true, bid_tick_1)?;
             let bid_order_2 = exchange.place(alice, base_token, amount, true, bid_tick_1)?;
             let bid_order_3 = exchange.place(alice, base_token, amount, true, bid_tick_2)?;
 
-            // Place 2 ask orders at tick 50 and tick 60
+            // Place 2 ask orders at tick 100 and tick 110
             TIP20Setup::config(base_token)
                 .with_mint(alice, U256::from(amount * 2))
                 .with_approval(alice, exchange.address, U256::from(amount * 2))
@@ -3245,35 +3280,35 @@ mod tests {
             assert_eq!(orderbook.best_bid_tick, bid_tick_1);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
-            // Cancel one bid at tick 100
+            // Cancel one bid at tick -100
             exchange.cancel(alice, bid_order_1)?;
-            // Verify best_bid_tick remains 100, best_ask_tick unchanged
+            // Verify best_bid_tick remains -100, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_1);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
-            // Cancel remaining bid at tick 100
+            // Cancel remaining bid at tick -100
             exchange.cancel(alice, bid_order_2)?;
-            // Verify best_bid_tick moved to 90, best_ask_tick unchanged
+            // Verify best_bid_tick moved to -110, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_2);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
-            // Cancel ask at tick 50
+            // Cancel ask at tick 100
             exchange.cancel(alice, ask_order_1)?;
-            // Verify best_ask_tick moved to 60, best_bid_tick unchanged
+            // Verify best_ask_tick moved to 110, best_bid_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_2);
             assert_eq!(orderbook.best_ask_tick, ask_tick_2);
 
-            // Cancel bid at tick 90
+            // Cancel bid at tick -110
             exchange.cancel(alice, bid_order_3)?;
             // Verify best_bid_tick is now i16::MIN, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, i16::MIN);
             assert_eq!(orderbook.best_ask_tick, ask_tick_2);
 
-            // Cancel ask at tick 60
+            // Cancel ask at tick 110
             exchange.cancel(alice, ask_order_2)?;
             // Verify best_ask_tick is now i16::MAX, best_bid_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
@@ -4169,6 +4204,452 @@ mod tests {
             exchange
                 .swap_exact_amount_out(bob, base_token, quote_token, 100009999, u128::MAX)
                 .expect("Swap should succeed");
+
+            Ok(())
+        })
+    }
+
+    // ==================== TIP-1002 Tests ====================
+
+    /// Test that placing a bid that would cross an existing ask is rejected (TIP-1002)
+    #[test]
+    fn test_tip1002_bid_crossing_ask_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+
+            // Setup: place an ask at tick 100
+            let ask_tick = 100_i16;
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, 200_000_000)?;
+            exchange.create_pair(base_token)?;
+
+            // Alice places an ask at tick 100
+            TIP20Setup::config(base_token)
+                .with_mint(alice, U256::from(amount))
+                .with_approval(alice, exchange.address, U256::from(amount))
+                .apply()?;
+            exchange.place(alice, base_token, amount, false, ask_tick)?;
+
+            // Bob tries to place a bid at tick 200, which crosses the ask at 100
+            let crossing_bid_tick = 200_i16;
+            let bid_price = orderbook::tick_to_price(crossing_bid_tick);
+            let bid_escrow = (amount * bid_price as u128) / orderbook::PRICE_SCALE as u128;
+            TIP20Setup::config(quote_token)
+                .with_mint(bob, U256::from(bid_escrow))
+                .with_approval(bob, exchange.address, U256::from(bid_escrow))
+                .apply()?;
+
+            let result = exchange.place(bob, base_token, amount, true, crossing_bid_tick);
+
+            // Should fail with OrderWouldCross
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string().contains("OrderWouldCross"),
+                "Expected OrderWouldCross error, got: {}",
+                err
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Test that placing an ask that would cross an existing bid is rejected (TIP-1002)
+    #[test]
+    fn test_tip1002_ask_crossing_bid_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+
+            // Setup: place a bid at tick 100
+            let bid_tick = 100_i16;
+            let bid_price = orderbook::tick_to_price(bid_tick);
+            let bid_escrow = (amount * bid_price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, _quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, bid_escrow)?;
+            exchange.create_pair(base_token)?;
+
+            // Alice places a bid at tick 100
+            exchange.place(alice, base_token, amount, true, bid_tick)?;
+
+            // Bob tries to place an ask at tick 0, which crosses the bid at 100
+            let crossing_ask_tick = 0_i16;
+            TIP20Setup::config(base_token)
+                .with_mint(bob, U256::from(amount))
+                .with_approval(bob, exchange.address, U256::from(amount))
+                .apply()?;
+
+            let result = exchange.place(bob, base_token, amount, false, crossing_ask_tick);
+
+            // Should fail with OrderWouldCross
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string().contains("OrderWouldCross"),
+                "Expected OrderWouldCross error, got: {}",
+                err
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Test that same-tick orders are allowed (bid at same tick as best ask) (TIP-1002)
+    #[test]
+    fn test_tip1002_same_tick_orders_allowed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+
+            // Setup
+            let tick = 100_i16;
+            let price = orderbook::tick_to_price(tick);
+            let bid_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, bid_escrow)?;
+            exchange.create_pair(base_token)?;
+
+            // Alice places an ask at tick 100
+            TIP20Setup::config(base_token)
+                .with_mint(alice, U256::from(amount))
+                .with_approval(alice, exchange.address, U256::from(amount))
+                .apply()?;
+            exchange.place(alice, base_token, amount, false, tick)?;
+
+            // Bob places a bid at the SAME tick 100 - this should be allowed
+            TIP20Setup::config(quote_token)
+                .with_mint(bob, U256::from(bid_escrow))
+                .with_approval(bob, exchange.address, U256::from(bid_escrow))
+                .apply()?;
+
+            let result = exchange.place(bob, base_token, amount, true, tick);
+
+            // Should succeed - same-tick is allowed
+            assert!(result.is_ok(), "Same-tick order should be allowed");
+
+            // Verify the book now has best_bid == best_ask
+            let book_key = compute_book_key(base_token, quote_token);
+            let orderbook = exchange.books[book_key].read()?;
+            assert_eq!(orderbook.best_bid_tick, tick);
+            assert_eq!(orderbook.best_ask_tick, tick);
+
+            Ok(())
+        })
+    }
+
+    /// Test that same-tick flip orders can be placed (TIP-1002)
+    #[test]
+    fn test_tip1002_same_tick_flip_order_placement() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+
+            let tick = 0_i16; // Use tick 0 for same-tick flip
+            let price = orderbook::tick_to_price(tick);
+            let escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, escrow)?;
+            exchange.create_pair(base_token)?;
+            let book_key = compute_book_key(base_token, quote_token);
+
+            // Place a same-tick flip order: bid at tick 0 with flip_tick 0
+            let order_id = exchange.place_flip(alice, base_token, amount, true, tick, tick, false)?;
+
+            // Verify the order was placed correctly
+            let order = exchange.orders[order_id].read()?;
+            assert_eq!(order.tick(), tick);
+            assert_eq!(order.flip_tick(), tick);
+            assert!(order.is_bid());
+            assert!(order.is_flip());
+
+            // Verify best_bid_tick is updated
+            let orderbook = exchange.books[book_key].read()?;
+            assert_eq!(orderbook.best_bid_tick, tick);
+
+            Ok(())
+        })
+    }
+
+    /// Test that same-tick flip orders execute correctly (TIP-1002)
+    #[test]
+    fn test_tip1002_same_tick_flip_order_execution() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+
+            let tick = 0_i16;
+            let price = orderbook::tick_to_price(tick);
+            let escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, escrow)?;
+            exchange.create_pair(base_token)?;
+            let book_key = compute_book_key(base_token, quote_token);
+
+            // Alice places a same-tick flip bid at tick 0
+            let order_id =
+                exchange.place_flip(alice, base_token, amount, true, tick, tick, false)?;
+
+            // Bob fills the bid by selling base tokens
+            exchange.set_balance(bob, base_token, amount)?;
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            // The original bid should be deleted
+            let original_order = exchange.orders[order_id].read()?;
+            assert_eq!(original_order.maker(), Address::ZERO, "Original order should be deleted");
+
+            // A new ask should be created at the same tick
+            let orderbook = exchange.books[book_key].read()?;
+            assert_eq!(
+                orderbook.best_ask_tick, tick,
+                "Flipped ask should be at same tick"
+            );
+            assert_eq!(
+                orderbook.best_bid_tick,
+                i16::MIN,
+                "No more bids should exist"
+            );
+
+            // Get the new order and verify it's an ask with correct flip_tick
+            let ask_level = exchange.books[book_key]
+                .tick_level_handler(tick, false)
+                .read()?;
+            let new_order = exchange.orders[ask_level.head].read()?;
+            assert!(!new_order.is_bid(), "Flipped order should be an ask");
+            assert!(new_order.is_flip(), "Flipped order should still be a flip order");
+            assert_eq!(new_order.tick(), tick);
+            assert_eq!(new_order.flip_tick(), tick);
+            assert_eq!(new_order.maker(), alice);
+
+            Ok(())
+        })
+    }
+
+    /// Test that same-tick flip orders can flip back and forth (TIP-1002)
+    #[test]
+    fn test_tip1002_same_tick_flip_order_round_trip() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let charlie = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+
+            let tick = 0_i16;
+            let price = orderbook::tick_to_price(tick);
+            let escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            // Setup tokens with Alice having quote tokens for her bid
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, escrow)?;
+            exchange.create_pair(base_token)?;
+            let book_key = compute_book_key(base_token, quote_token);
+
+            // Alice places a same-tick flip bid (escrows quote tokens)
+            let original_order_id =
+                exchange.place_flip(alice, base_token, amount, true, tick, tick, false)?;
+
+            // Bob needs actual base tokens to fill the bid
+            // Mint base tokens to Bob and approve the DEX
+            TIP20Setup::config(base_token)
+                .with_mint(bob, U256::from(amount))
+                .with_approval(bob, exchange.address, U256::from(amount))
+                .apply()?;
+
+            // Bob fills the bid -> creates ask at same tick
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            // Verify the flipped ask was created
+            let orderbook = exchange.books[book_key].read()?;
+            assert_eq!(orderbook.best_ask_tick, tick, "Flipped ask should exist");
+            assert_eq!(orderbook.best_bid_tick, i16::MIN, "Original bid should be gone");
+
+            // Get the flipped ask order and verify it has liquidity
+            let flipped_order_id = original_order_id + 1;
+            let flipped_order = exchange.orders[flipped_order_id].read()?;
+            assert_eq!(flipped_order.maker(), alice, "Flipped order maker should be Alice");
+            assert!(!flipped_order.is_bid(), "Flipped order should be an ask");
+            assert_eq!(flipped_order.remaining(), amount, "Flipped order should have full amount");
+
+            // Verify the tick level has liquidity
+            let ask_level = exchange.books[book_key]
+                .tick_level_handler(tick, false)
+                .read()?;
+            assert_eq!(ask_level.total_liquidity, amount, "Ask level should have liquidity");
+
+            // Charlie needs actual quote tokens to fill the ask
+            // Mint quote tokens to Charlie and approve the DEX
+            TIP20Setup::config(quote_token)
+                .with_mint(charlie, U256::from(escrow * 2))
+                .with_approval(charlie, exchange.address, U256::from(escrow * 2))
+                .apply()?;
+
+            // Charlie fills the ask -> should create bid at same tick again
+            exchange.swap_exact_amount_out(charlie, quote_token, base_token, amount, escrow * 2)?;
+
+            // Verify bid exists again at the same tick
+            let orderbook = exchange.books[book_key].read()?;
+            assert_eq!(
+                orderbook.best_bid_tick, tick,
+                "Flip should create bid at same tick"
+            );
+            assert_eq!(
+                orderbook.best_ask_tick,
+                i16::MAX,
+                "No more asks should exist"
+            );
+
+            // Verify the new bid is still a flip order with correct ticks
+            let bid_level = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            let final_order = exchange.orders[bid_level.head].read()?;
+            assert!(final_order.is_bid());
+            assert!(final_order.is_flip());
+            assert_eq!(final_order.tick(), tick);
+            assert_eq!(final_order.flip_tick(), tick);
+            assert_eq!(final_order.maker(), alice);
+
+            Ok(())
+        })
+    }
+
+    /// Test that flip orders work correctly when there are other orders at the same tick (TIP-1002)
+    #[test]
+    fn test_tip1002_same_tick_flip_with_other_orders() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let charlie = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+
+            let tick = 0_i16;
+            let price = orderbook::tick_to_price(tick);
+            let escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, escrow * 2)?;
+            exchange.create_pair(base_token)?;
+            let book_key = compute_book_key(base_token, quote_token);
+
+            // Alice places a same-tick flip bid
+            exchange.place_flip(alice, base_token, amount, true, tick, tick, false)?;
+
+            // Bob places a regular bid at the same tick
+            TIP20Setup::config(quote_token)
+                .with_mint(bob, U256::from(escrow))
+                .with_approval(bob, exchange.address, U256::from(escrow))
+                .apply()?;
+            exchange.place(bob, base_token, amount, true, tick)?;
+
+            // Charlie fills Alice's bid (first in queue)
+            exchange.set_balance(charlie, base_token, amount)?;
+            exchange.swap_exact_amount_in(charlie, base_token, quote_token, amount, 0)?;
+
+            // Alice's bid should be gone, Bob's bid should remain
+            // Alice's flipped ask should be at the same tick
+            let orderbook = exchange.books[book_key].read()?;
+            assert_eq!(orderbook.best_bid_tick, tick, "Bob's bid should remain");
+            assert_eq!(
+                orderbook.best_ask_tick, tick,
+                "Alice's flipped ask should be at same tick"
+            );
+
+            // This creates a "touching" book where best_bid == best_ask
+            // Both should work correctly
+
+            Ok(())
+        })
+    }
+
+    /// Test that placeFlip also rejects crossing orders (TIP-1002)
+    #[test]
+    fn test_tip1002_place_flip_crossing_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+
+            // Setup: place an ask at tick 100
+            let ask_tick = 100_i16;
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, 200_000_000)?;
+            exchange.create_pair(base_token)?;
+
+            TIP20Setup::config(base_token)
+                .with_mint(alice, U256::from(amount))
+                .with_approval(alice, exchange.address, U256::from(amount))
+                .apply()?;
+            exchange.place(alice, base_token, amount, false, ask_tick)?;
+
+            // Bob tries to place a flip bid at tick 200, which crosses the ask at 100
+            let crossing_bid_tick = 200_i16;
+            let flip_tick = 300_i16;
+            let bid_price = orderbook::tick_to_price(crossing_bid_tick);
+            let bid_escrow = (amount * bid_price as u128) / orderbook::PRICE_SCALE as u128;
+            TIP20Setup::config(quote_token)
+                .with_mint(bob, U256::from(bid_escrow))
+                .with_approval(bob, exchange.address, U256::from(bid_escrow))
+                .apply()?;
+
+            let result =
+                exchange.place_flip(bob, base_token, amount, true, crossing_bid_tick, flip_tick, false);
+
+            // Should fail with OrderWouldCross
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string().contains("OrderWouldCross"),
+                "Expected OrderWouldCross error, got: {}",
+                err
+            );
 
             Ok(())
         })

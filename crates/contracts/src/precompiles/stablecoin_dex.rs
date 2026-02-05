@@ -105,6 +105,7 @@ crate::sol! {
         error BelowMinimumOrderSize(uint128 amount);
         error InvalidBaseToken();
         error OrderNotStale();
+        error OrderWouldCross();
     }
 }
 
@@ -187,5 +188,10 @@ impl StablecoinDEXError {
     /// Creates an error when order is not stale
     pub const fn order_not_stale() -> Self {
         Self::OrderNotStale(IStablecoinDEX::OrderNotStale {})
+    }
+
+    /// Creates an error when an order would cross the spread
+    pub const fn order_would_cross() -> Self {
+        Self::OrderWouldCross(IStablecoinDEX::OrderWouldCross {})
     }
 }

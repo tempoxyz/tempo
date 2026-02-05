@@ -54,8 +54,8 @@ pub struct Order {
     /// Whether this is a flip order
     pub is_flip: bool,
     /// Tick to flip to when fully filled (for flip orders, 0 for regular orders)
-    /// For bid flips: flip_tick must be > tick
-    /// For ask flips: flip_tick must be < tick
+    /// For bid flips: flip_tick must be >= tick
+    /// For ask flips: flip_tick must be <= tick
     pub flip_tick: i16,
 }
 
@@ -116,8 +116,8 @@ impl Order {
     ///
     /// # Errors
     /// Returns an error if flip_tick constraint is violated:
-    /// - For bids: flip_tick must be > tick
-    /// - For asks: flip_tick must be < tick
+    /// - For bids: flip_tick must be >= tick
+    /// - For asks: flip_tick must be <= tick
     pub fn new_flip(
         order_id: u128,
         maker: Address,
@@ -127,12 +127,12 @@ impl Order {
         is_bid: bool,
         flip_tick: i16,
     ) -> Result<Self, OrderError> {
-        // Validate flip tick constraint
+        // Validate flip tick constraint (same-tick flip orders are allowed per TIP-1002)
         if is_bid {
-            if flip_tick <= tick {
+            if flip_tick < tick {
                 return Err(OrderError::InvalidBidFlipTick { tick, flip_tick });
             }
-        } else if flip_tick >= tick {
+        } else if flip_tick > tick {
             return Err(OrderError::InvalidAskFlipTick { tick, flip_tick });
         }
 
@@ -373,6 +373,28 @@ mod tests {
         let result = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, false, 7);
 
         assert!(matches!(result, Err(OrderError::InvalidAskFlipTick { .. })));
+    }
+
+    #[test]
+    fn test_new_flip_order_bid_same_tick_allowed() {
+        // TIP-1002: Same-tick flip orders are now allowed
+        let order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 5).unwrap();
+
+        assert!(order.is_flip());
+        assert_eq!(order.tick(), 5);
+        assert_eq!(order.flip_tick(), 5);
+        assert!(order.is_bid());
+    }
+
+    #[test]
+    fn test_new_flip_order_ask_same_tick_allowed() {
+        // TIP-1002: Same-tick flip orders are now allowed
+        let order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, false, 5).unwrap();
+
+        assert!(order.is_flip());
+        assert_eq!(order.tick(), 5);
+        assert_eq!(order.flip_tick(), 5);
+        assert!(order.is_ask());
     }
 
     #[test]
