@@ -108,7 +108,7 @@ impl TipFeeManager {
             return Err(TIPFeeAMMError::insufficient_liquidity().into());
         }
 
-        // T2+: Reserve the liquidity to ensure the fee swap can be fufilled
+        // T2+: Reserve the liquidity to ensure the fee swap can be fulfilled
         // post execution
         if self.storage.spec().is_t2() {
             let amount_out: u128 = amount_out_needed
