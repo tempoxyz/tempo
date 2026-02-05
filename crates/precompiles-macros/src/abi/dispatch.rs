@@ -220,10 +220,10 @@ fn generate_dispatch_call(method: &MethodDef) -> TokenStream {
         quote! {
             {
                 use ::alloy::sol_types::SolCall as _;
-                if self.storage.spec() < #hardfork {
+                if crate::StorageCtx.spec() < #hardfork {
                     return crate::dispatch::unknown_selector(
                         #call_name::SELECTOR,
-                        self.storage.gas_used(),
+                        crate::StorageCtx.gas_used(),
                     );
                 }
                 #inner_dispatch
