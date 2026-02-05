@@ -2,6 +2,7 @@ use tempo_precompiles_macros::abi;
 
 #[rustfmt::skip]
 #[abi(no_reexport)]
+#[allow(non_snake_case)]
 pub mod ITIP403Registry {
     #[cfg(feature = "precompile")]
     use crate::error::Result;
