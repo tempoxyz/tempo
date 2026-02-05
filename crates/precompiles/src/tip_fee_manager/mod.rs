@@ -25,6 +25,9 @@ pub struct TipFeeManager {
     pools: Mapping<B256, Pool>,
     total_supply: Mapping<B256, U256>,
     liquidity_balances: Mapping<B256, Mapping<Address, U256>>,
+    /// T2+ specific slot to ensure reserved liquidity remains available for pending fee swaps.
+    /// This is subtracted from available reserves when checking liquidity for burn operations.
+    reserved_liquidity: Mapping<B256, u128>,
 }
 
 impl TipFeeManager {
