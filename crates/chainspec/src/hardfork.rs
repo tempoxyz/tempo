@@ -68,7 +68,7 @@ impl TempoHardfork {
 
     /// Returns the base fee for this hardfork in attodollars.
     ///
-    /// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
+    /// Attodollars are the atomic gas accounting units at 10^-18 USD precision. Individual attodollars are not representable onchain (since TIP-20 tokens only have 6 decimals), but the unit is used for gas accounting.
     /// - Pre-T1: 10 billion attodollars per gas
     /// - T1+: 20 billion attodollars per gas (targets ~0.1 cent per TIP-20 transfer)
     ///
