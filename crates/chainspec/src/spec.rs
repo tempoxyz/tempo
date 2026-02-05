@@ -379,12 +379,12 @@ mod tests {
         let mainnet_chainspec = super::TempoChainSpecParser::parse("mainnet")
             .expect("the mainnet chainspec must always be well formed");
 
-        // Should always return T0
-        assert_eq!(mainnet_chainspec.tempo_hardfork_at(0), TempoHardfork::T0);
-        assert_eq!(mainnet_chainspec.tempo_hardfork_at(1000), TempoHardfork::T0);
+        // Should always return T1 (T1 enabled at genesis)
+        assert_eq!(mainnet_chainspec.tempo_hardfork_at(0), TempoHardfork::T1);
+        assert_eq!(mainnet_chainspec.tempo_hardfork_at(1000), TempoHardfork::T1);
         assert_eq!(
             mainnet_chainspec.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::T0
+            TempoHardfork::T1
         );
 
         let moderato_genesis = super::TempoChainSpecParser::parse("moderato")

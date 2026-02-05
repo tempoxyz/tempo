@@ -41,7 +41,7 @@ hardfork!(
         /// Genesis hardfork
         Genesis,
         #[default]
-        /// T0 hardfork (default until T1 activates on mainnet)
+        /// T0 hardfork
         T0,
         /// T1 hardfork - adds expiring nonce transactions
         T1,
