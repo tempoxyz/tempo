@@ -17,6 +17,7 @@ use super::{
     parser::{FieldAccessors, InterfaceDef, MethodDef},
     registry::TypeRegistry,
 };
+use crate::composition::{CallSource, SolTypesPath, expand_composed_calls};
 
 /// Precomputed method metadata to avoid redundant signature computation.
 struct MethodCodegen<'a> {
@@ -122,143 +123,25 @@ pub(super) fn generate_unified_calls(
         }
     }
 
-    // Multiple sources: compose them
-    let mut variant_names: Vec<_> = interfaces.iter().map(|i| i.name.clone()).collect();
-    let mut calls_names: Vec<_> = interfaces
+    // Multiple sources: build CallSource list for the shared helper
+    let mut sources: Vec<CallSource> = interfaces
         .iter()
-        .map(|i| format_ident!("{}Calls", i.name))
+        .map(|i| {
+            let calls_name = format_ident!("{}Calls", i.name);
+            CallSource::new(i.name.clone(), quote! { #calls_name })
+        })
         .collect();
 
     // Add constants if present
     if has_constants {
-        variant_names.push(format_ident!("Constants"));
-        calls_names.push(format_ident!("ConstantsCalls"));
+        sources.push(CallSource::new(
+            format_ident!("Constants"),
+            quote! { ConstantsCalls },
+        ));
     }
 
-    let n = total_sources;
-
-    let decls: Vec<_> = variant_names
-        .iter()
-        .zip(&calls_names)
-        .map(|(v, c)| quote! { #v(#c) })
-        .collect();
-
-    let selectors: Vec<_> = calls_names
-        .iter()
-        .map(|c| quote! { #c::SELECTORS })
-        .collect();
-
-    let counts: Vec<_> = calls_names
-        .iter()
-        .map(|c| quote! { <#c as ::alloy_sol_types::SolInterface>::COUNT })
-        .collect();
-
-    let decode: Vec<_> = variant_names
-        .iter()
-        .zip(&calls_names)
-        .map(|(v, c)| {
-            quote! {
-                if <#c as ::alloy_sol_types::SolInterface>::valid_selector(sel) {
-                    return <#c as ::alloy_sol_types::SolInterface>::abi_decode(data).map(Self::#v);
-                }
-            }
-        })
-        .collect();
-
-    let sel_match: Vec<_> = variant_names
-        .iter()
-        .zip(&calls_names)
-        .map(|(v, c)| {
-            quote! { Self::#v(inner) => <#c as ::alloy_sol_types::SolInterface>::selector(inner) }
-        })
-        .collect();
-
-    let size_match: Vec<_> = variant_names
-        .iter()
-        .zip(&calls_names)
-        .map(|(v, c)| {
-            quote! { Self::#v(inner) => <#c as ::alloy_sol_types::SolInterface>::abi_encoded_size(inner) }
-        })
-        .collect();
-
-    let enc_match: Vec<_> = variant_names
-        .iter()
-        .zip(&calls_names)
-        .map(|(v, c)| {
-            quote! { Self::#v(inner) => <#c as ::alloy_sol_types::SolInterface>::abi_encode_raw(inner, out) }
-        })
-        .collect();
-
-    let from_impls: Vec<_> = variant_names
-        .iter()
-        .zip(&calls_names)
-        .map(|(v, c)| {
-            quote! {
-                impl From<#c> for Calls {
-                    #[inline]
-                    fn from(c: #c) -> Self { Self::#v(c) }
-                }
-            }
-        })
-        .collect();
-
-    quote! {
-        #[doc(hidden)]
-        mod __calls_compose_helpers {
-            pub const fn concat_4<const N: usize, const M: usize>(
-                a: [&'static [[u8; 4]]; N]
-            ) -> [[u8; 4]; M] {
-                let mut r = [[0u8; 4]; M];
-                let (mut i, mut n_idx) = (0, 0);
-                while n_idx < N {
-                    let s = a[n_idx];
-                    let mut j = 0;
-                    while j < s.len() { r[i] = s[j]; i += 1; j += 1; }
-                    n_idx += 1;
-                }
-                r
-            }
-        }
-
-        #[derive(Clone, Debug, PartialEq, Eq)]
-        #[allow(non_camel_case_types, clippy::large_enum_variant)]
-        pub enum Calls { #(#decls),* }
-
-        impl Calls {
-            pub const SELECTORS: &'static [[u8; 4]] = &{
-                const TOTAL: usize = #(#selectors.len())+*;
-                __calls_compose_helpers::concat_4::<#n, TOTAL>([#(#selectors),*])
-            };
-
-            #[inline]
-            pub fn valid_selector(s: [u8; 4]) -> bool { Self::SELECTORS.contains(&s) }
-
-            pub fn abi_decode(data: &[u8]) -> ::alloy_sol_types::Result<Self> {
-                let sel: [u8; 4] = data.get(..4).and_then(|s| s.try_into().ok())
-                    .ok_or_else(|| ::alloy_sol_types::Error::Other("calldata too short".into()))?;
-                #(#decode)*
-                Err(::alloy_sol_types::Error::unknown_selector(<Self as ::alloy_sol_types::SolInterface>::NAME, sel))
-            }
-        }
-
-        impl ::alloy_sol_types::SolInterface for Calls {
-            const NAME: &'static str = "Calls";
-            const MIN_DATA_LENGTH: usize = 0;
-            const COUNT: usize = #(#counts)+*;
-            #[inline] fn selector(&self) -> [u8; 4] { match self { #(#sel_match),* } }
-            #[inline] fn selector_at(i: usize) -> Option<[u8; 4]> { Self::SELECTORS.get(i).copied() }
-            #[inline] fn valid_selector(s: [u8; 4]) -> bool { Self::valid_selector(s) }
-            #[inline] fn abi_decode_raw(sel: [u8; 4], data: &[u8]) -> ::alloy_sol_types::Result<Self> {
-                let mut buf = Vec::with_capacity(4 + data.len()); buf.extend_from_slice(&sel); buf.extend_from_slice(data);
-                Self::abi_decode(&buf)
-            }
-            #[inline] fn abi_decode_raw_validate(sel: [u8; 4], data: &[u8]) -> ::alloy_sol_types::Result<Self> { Self::abi_decode_raw(sel, data) }
-            #[inline] fn abi_encoded_size(&self) -> usize { match self { #(#size_match),* } }
-            #[inline] fn abi_encode_raw(&self, out: &mut Vec<u8>) { match self { #(#enc_match),* } }
-        }
-
-        #(#from_impls)*
-    }
+    let calls_ident = format_ident!("Calls");
+    expand_composed_calls(&calls_ident, &sources, SolTypesPath::AlloySolTypes)
 }
 
 /// Generate the transformed trait with optional msg_sender injection.
