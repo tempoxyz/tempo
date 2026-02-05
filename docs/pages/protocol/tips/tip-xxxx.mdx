@@ -110,13 +110,7 @@ interface IValidatorConfigV2 {
     /// @notice Thrown when the Ed25519 signature verification fails
     error InvalidSignature();
 
-    /// @notice Thrown when inbound address is not in valid host:port format
-    /// @param field The field name that failed validation
-    /// @param input The invalid input that was provided
-    /// @param backtrace Additional error context
-    error NotHostPort(string field, string input, string backtrace);
-
-    /// @notice Thrown when outbound address is not in valid ip:port format
+    /// @notice Thrown when address is not in valid ip:port format
     /// @param field The field name that failed validation
     /// @param input The invalid input that was provided
     /// @param backtrace Additional error context
@@ -125,8 +119,8 @@ interface IValidatorConfigV2 {
     /// @notice Validator information (V2 - append-only, delete-once)
     /// @param publicKey Ed25519 communication public key (non-zero, unique across all validators)
     /// @param validatorAddress Ethereum-style address of the validator (unique across all validators)
-    /// @param ingress Address where other validators can connect (format: `<hostname|ip>:<port>`)
-    /// @param egress IP Address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>:<port>`, no hostnames)
+    /// @param ingress Address where other validators can connect (format: `<ip>:<port>`)
+    /// @param egress IP address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>:<port>`)
     /// @param index Position in validators array (assigned at creation, immutable)
     /// @param addedAtHeight Block height when validator was added
     /// @param deletedAtHeight Block height when validator was deleted (0 = active)
@@ -182,7 +176,7 @@ interface IValidatorConfigV2 {
     ///      This proves the caller controls the private key corresponding to publicKey.
     /// @param validatorAddress The address of the new validator
     /// @param publicKey The validator's Ed25519 communication public key
-    /// @param ingress The validator's inbound address `<hostname|ip>:<port>` for incoming connections
+    /// @param ingress The validator's inbound address `<ip>:<port>` for incoming connections
     /// @param egress The validator's outbound IP address `<ip>:<port>` for firewall whitelisting
     /// @param signature Ed25519 signature (64 bytes) proving ownership of the public key
     function addValidator(
@@ -215,7 +209,7 @@ interface IValidatorConfigV2 {
     ///      ))
     /// @param validatorAddress The address of the new validator
     /// @param publicKey The new validator's Ed25519 communication public key
-    /// @param ingress The new validator's inbound address `<hostname|ip>:<port>` for incoming connections
+    /// @param ingress The new validator's inbound address `<ip>:<port>` for incoming connections
     /// @param egress The new validator's outbound IP address `<ip>:<port>` for firewall whitelisting
     /// @param signature Ed25519 signature (64 bytes) proving ownership of the new public key
     function rotateValidator(
@@ -386,10 +380,8 @@ This distinction matters because:
 
 ### Address Validation
 
-- **ingress**: Must be in `<hostname|ip>:<port>` format. Hostnames and IP
-  addresses are both accepted.
-- **egress**: Must be in `<ip>:<port>` format. Only IP addresses are
-  accepted (no hostnames).
+- **ingress**: Must be in `<ip>:<port>` format.
+- **egress**: Must be in `<ip>:<port>` format.
 
 Both IPv4 and IPv6 addresses are supported. IPv6 addresses must be enclosed in
 brackets: `[2001:db8::1]:8080`.
@@ -447,6 +439,7 @@ packing. The `initialized` flag uses bit 255 (the highest bit), leaving bits
 | Key ownership | Not verified | Ed25519 signature required |
 | Historical queries | Requires historical state | Filter `getValidators()` by `addedAtHeight`/`deletedAtHeight` |
 | Uniqueness | Address only | Address AND public key |
+| Ingress format | `<hostname\|ip>:<port>` | `<ip>:<port>` only |
 | Precompile address | `0xCCCC...0000` | `0xCCCC...0001` |
 
 ---
@@ -544,6 +537,18 @@ This ensures:
 V2 uses manual migration where the admin explicitly migrates validators one at a
 time and then calls `initialize()` to flip the `initialized` flag. The
 `initialized` bit (bit 255 of slot 0) tracks whether migration is complete.
+
+### Motivation
+
+The gas limit per transaction is 30 million as of [TIP-1010](./tip-1010.mdx#main-transaction-gas-limit),
+with an `SSTORE` being 250 thousand gas as per [TIP-1000](./tip-1000.mdx#gas-schedule-summary).
+This means migration of a single validator incurs at least 1 million gas cost, only
+leaving enough room to migrate less than 30 validator entries at a time.
+
+This runs the risk of potentially not leaving enough space to migrate all validators
+in one go and would require logic to run several migrations. This would require
+manual intervention anyway, and require extra logic in the precompile to check
+which validators have already been migrated.
 
 ### CL Read Behavior
 
