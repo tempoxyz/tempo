@@ -21,6 +21,10 @@ mod tx;
 pub use block::TempoBlockEnv;
 pub use error::{TempoHaltReason, TempoInvalidTransaction};
 pub use evm::TempoEvm;
-pub use handler::{EXISTING_NONCE_KEY_GAS, NEW_NONCE_KEY_GAS, calculate_aa_batch_intrinsic_gas};
+pub use gas_params::{
+    EXISTING_NONCE_KEY_GAS, EXPIRING_NONCE_GAS, NEW_NONCE_KEY_GAS, count_access_list,
+    tip1000_intrinsic_gas,
+};
+pub use handler::calculate_aa_batch_intrinsic_gas;
 pub use revm::interpreter::instructions::utility::IntoAddress;
 pub use tx::{TempoBatchCallEnv, TempoTxEnv};

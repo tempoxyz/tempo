@@ -14,7 +14,7 @@ use revm::{
         Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
         result::{EVMError, ExecutionResult, InvalidTransaction},
-        transaction::{AccessListItem, AccessListItemTr},
+        transaction::AccessListItem,
     },
     context_interface::cfg::{GasId, GasParams},
     handler::{
@@ -25,10 +25,7 @@ use revm::{
     inspector::{Inspector, InspectorHandler},
     interpreter::{
         Gas, InitialAndFloorGas,
-        gas::{
-            COLD_SLOAD_COST, SSTORE_SET, STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
-            get_tokens_in_calldata_istanbul,
-        },
+        gas::{COLD_SLOAD_COST, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul},
         interpreter::EthInterpreter,
     },
 };
@@ -53,7 +50,7 @@ use crate::{
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
-    gas_params::TempoGasParams,
+    gas_params::{TempoGasParams, count_access_list},
 };
 
 /// Additional gas for P256 signature verification
@@ -72,32 +69,10 @@ const KEY_AUTH_BASE_GAS: u64 = 27_000;
 /// Gas per spending limit in KeyAuthorization
 const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 
-/// Gas cost for using an existing 2D nonce key (cold SLOAD + warm SSTORE reset)
-pub const EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + WARM_SSTORE_RESET;
-
-/// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero)
-pub const NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + SSTORE_SET;
-
-/// Gas cost for expiring nonce transactions (replay check + insert).
-///
-/// See TIP-1009 for full specification.
-///
-/// Operations charged:
-/// - 2 cold SLOADs: `seen[tx_hash]`, `ring[idx]` (unique slots per tx)
-/// - 1 warm SLOAD: `seen[old_hash]` (warm because we just read `ring[idx]` which points to it)
-/// - 3 SSTOREs at RESET price: `seen[old_hash]=0`, `ring[idx]=tx_hash`, `seen[tx_hash]=valid_before`
-///
-/// Excluded from gas calculation:
-/// - `ring_ptr` SLOAD/SSTORE: Accessed by almost every expiring nonce tx in a block, so
-///   amortized cost approaches ~200 gas. May be moved out of EVM storage in the future.
-///
-/// Why SSTORE_RESET (2,900) instead of SSTORE_SET (20,000) for `seen[tx_hash]`:
-/// - SSTORE_SET cost exists to penalize permanent state growth
-/// - Expiring nonce data is ephemeral: evicted within 30 seconds, fixed-size buffer (300k)
-/// - No permanent state growth, so the 20k penalty doesn't apply
-///
-/// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
-pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
+// Re-export nonce gas constants from gas_params for backward compatibility
+pub use crate::gas_params::{
+    EXISTING_NONCE_KEY_GAS, EXPIRING_NONCE_GAS, NEW_NONCE_KEY_GAS, tip1000_intrinsic_gas,
+};
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -1213,40 +1188,27 @@ where
             // AA transaction - use batch gas calculation (includes validation)
             validate_aa_initial_tx_gas(evm)?
         } else {
-            let mut acc = 0;
-            let mut storage = 0;
             // legacy is only tx type that does not have access list.
-            if tx.tx_type() != TransactionType::Legacy {
-                (acc, storage) = tx
-                    .access_list()
-                    .map(|al| {
-                        al.fold((0, 0), |(acc, storage), item| {
-                            (acc + 1, storage + item.storage_slots().count())
-                        })
-                    })
-                    .unwrap_or_default();
+            let (acc, storage) = if tx.tx_type() != TransactionType::Legacy {
+                tx.access_list().map(count_access_list).unwrap_or_default()
+            } else {
+                (0, 0)
             };
+
             let mut init_gas = gas_params.initial_tx_gas(
                 tx.input(),
                 tx.kind().is_create(),
-                acc as u64,
-                storage as u64,
+                acc,
+                storage,
                 tx.authorization_list_len() as u64,
             );
-            // TIP-1000: Storage pricing updates for launch
-            // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
-            // no need for v1 fork check as gas_params would be zero
-            for auth in tx.authorization_list() {
-                if auth.nonce == 0 {
-                    init_gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
-                }
-            }
 
-            // TIP-1000: Storage pricing updates for launch
-            // Transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
-            if spec.is_t1() && tx.nonce == 0 {
-                init_gas.initial_gas += gas_params.get(GasId::new_account_cost());
-            }
+            let nonce_zero_auths = tx
+                .authorization_list()
+                .filter(|auth| auth.nonce == 0)
+                .count() as u64;
+            init_gas.initial_gas +=
+                tip1000_intrinsic_gas(gas_params, *spec, nonce_zero_auths, tx.nonce, U256::ZERO);
 
             if evm.ctx.cfg.is_eip7623_disabled() {
                 init_gas.floor_gas = 0u64;
@@ -1344,8 +1306,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     // 2. Signature verification gas
     gas.initial_gas += tempo_signature_verification_gas(signature);
 
-    let cold_account_cost =
-        gas_params.warm_storage_read_cost() + gas_params.cold_account_additional_cost();
+    let cold_account_cost = gas_params.cold_account_access_cost();
 
     // 3. Per-call overhead: cold account access
     // if the `to` address has not appeared in the call batch before.
@@ -1356,15 +1317,14 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         authorization_list.len() as u64 * gas_params.tx_eip7702_per_empty_account_cost();
 
     // Add signature verification costs for each authorization
-    // No need for v1 fork check as gas_params would be zero
+    let mut nonce_zero_auths = 0u64;
     for auth in authorization_list {
         gas.initial_gas += tempo_signature_verification_gas(auth.signature());
-        // TIP-1000: Storage pricing updates for launch
-        // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
         if auth.nonce == 0 {
-            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+            nonce_zero_auths += 1;
         }
     }
+    gas.initial_gas += gas_params.tip1000_auth_list_creation_gas(nonce_zero_auths);
 
     // 5. Key authorization costs (if present)
     if let Some(key_auth) = key_authorization {
@@ -1393,23 +1353,14 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         if !call.value.is_zero() {
             return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx);
         }
-
-        // 4c. Value transfer cost using revm constant
-        // left here for future reference.
-        if !call.value.is_zero() && call.to.is_call() {
-            gas.initial_gas += gas_params.get(GasId::transfer_value_cost()); // 9000 gas
-        }
     }
 
     gas.initial_gas += total_tokens * gas_params.tx_token_cost();
 
     // 5. Access list costs using revm constants
     if let Some(access_list) = access_list {
-        let (accounts, storages) = access_list.fold((0, 0), |(acc_count, storage_count), item| {
-            (acc_count + 1, storage_count + item.storage_slots().count())
-        });
-        gas.initial_gas += accounts * gas_params.tx_access_list_address_cost(); // 2400 per account
-        gas.initial_gas += storages as u64 * gas_params.tx_access_list_storage_key_cost(); // 1900 per storage
+        let (accounts, storage_slots) = count_access_list(access_list);
+        gas.initial_gas += gas_params.access_list_gas(accounts, storage_slots);
     }
 
     // 6. Floor gas using revm helper

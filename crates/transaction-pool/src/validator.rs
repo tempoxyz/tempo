@@ -32,10 +32,9 @@ use tempo_primitives::{
     },
 };
 use tempo_revm::{
-    EXISTING_NONCE_KEY_GAS, NEW_NONCE_KEY_GAS, TempoBatchCallEnv, TempoStateAccess,
-    calculate_aa_batch_intrinsic_gas,
-    gas_params::{TempoGasParams, tempo_gas_params},
-    handler::EXPIRING_NONCE_GAS,
+    EXISTING_NONCE_KEY_GAS, EXPIRING_NONCE_GAS, NEW_NONCE_KEY_GAS, TempoBatchCallEnv,
+    TempoStateAccess, calculate_aa_batch_intrinsic_gas,
+    gas_params::{count_access_list_raw, tempo_gas_params, tip1000_intrinsic_gas},
 };
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
@@ -391,15 +390,10 @@ where
             calculate_aa_batch_intrinsic_gas(&aa_env, &gas_params, Some(tx.access_list.iter()))
                 .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
 
-        // Add nonce gas based on hardfork
-        // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
         if spec.is_t1() {
-            // Expiring nonce transactions
             if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                 init_and_floor_gas.initial_gas += EXPIRING_NONCE_GAS;
             } else if tx.nonce == 0 {
-                // TIP-1000: Storage pricing updates for launch
-                // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
                 init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
             }
             // In CREATE tx with 2d nonce, check if account.nonce is 0, if so, add 250,000 gas.
@@ -417,12 +411,9 @@ where
                 init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
             }
         } else if !tx.nonce_key.is_zero() {
-            // Pre-T1: Add 2D nonce gas if nonce_key is non-zero
             if tx.nonce == 0 {
-                // New key - cold SLOAD + SSTORE set (0 -> non-zero)
                 init_and_floor_gas.initial_gas += NEW_NONCE_KEY_GAS;
             } else {
-                // Existing key - cold SLOAD + warm SSTORE reset
                 init_and_floor_gas.initial_gas += EXISTING_NONCE_KEY_GAS;
             }
         }
@@ -883,36 +874,28 @@ pub fn ensure_intrinsic_gas_tempo_tx(
 ) -> Result<(), InvalidPoolTransactionError> {
     let gas_params = tempo_gas_params(spec);
 
+    let (acc_count, storage_count) = tx
+        .access_list()
+        .map(|l| count_access_list_raw(l.iter(), |item| item.storage_keys.len()))
+        .unwrap_or_default();
+
     let mut gas = gas_params.initial_tx_gas(
         tx.input(),
         tx.is_create(),
-        tx.access_list().map(|l| l.len()).unwrap_or_default() as u64,
-        tx.access_list()
-            .map(|l| l.iter().map(|i| i.storage_keys.len()).sum::<usize>())
-            .unwrap_or_default() as u64,
+        acc_count,
+        storage_count,
         tx.authorization_list().map(|l| l.len()).unwrap_or_default() as u64,
     );
 
-    // TIP-1000: Storage pricing updates for launch
-    // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
-    // no need for v1 fork check as gas_params would be zero
-    for auth in tx.authorization_list().unwrap_or_default() {
-        if auth.nonce == 0 {
-            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
-        }
-    }
-
-    // TIP-1000: Storage pricing updates for launch
-    // Tempo transactions with `nonce == 0` require additional gas, but the amount depends on nonce type:
-    // - Expiring nonce (nonce_key == MAX): EXPIRING_NONCE_GAS (13k) for ring buffer operations
-    // - Regular/2D nonce with nonce == 0: new_account_cost (250k) for potential account creation
-    if spec.is_t1() && tx.nonce() == 0 {
-        if tx.nonce_key() == Some(TEMPO_EXPIRING_NONCE_KEY) {
-            gas.initial_gas += EXPIRING_NONCE_GAS;
-        } else {
-            gas.initial_gas += gas_params.get(GasId::new_account_cost());
-        }
-    }
+    let nonce_zero_auths = tx
+        .authorization_list()
+        .unwrap_or_default()
+        .iter()
+        .filter(|auth| auth.nonce == 0)
+        .count() as u64;
+    let nonce_key = tx.nonce_key().unwrap_or(U256::ZERO);
+    gas.initial_gas +=
+        tip1000_intrinsic_gas(&gas_params, spec, nonce_zero_auths, tx.nonce(), nonce_key);
 
     let gas_limit = tx.gas_limit();
     if gas_limit < gas.initial_gas || gas_limit < gas.floor_gas {
