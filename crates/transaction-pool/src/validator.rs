@@ -1462,7 +1462,6 @@ mod tests {
                 nonce: 0,
                 valid_before,
                 fee_token: Some(address!("0000000000000000000000000000000000000002")),
-                valid_before,
                 ..Default::default()
             };
 
