@@ -707,6 +707,25 @@ async fn build_subblock(
 
     let (transactions, senders) = match evm_at_block(&node, parent_hash) {
         Ok(mut evm) => {
+            if num_validators == 0 {
+                warn!("empty validator set, building an empty subblock");
+                let subblock = SubBlock {
+                    version: SubBlockVersion::V1,
+                    fee_recipient,
+                    parent_hash,
+                    transactions: Vec::new(),
+                };
+                let signature = signer.sign(&[], subblock.signature_hash().as_slice());
+                let signed_subblock = SignedSubBlock {
+                    inner: subblock,
+                    signature: Bytes::copy_from_slice(signature.as_ref()),
+                };
+                return RecoveredSubBlock::new_unchecked(
+                    signed_subblock,
+                    Vec::new(),
+                    B256::from_slice(&signer.public_key()),
+                );
+            }
             let (mut selected, mut senders, mut to_remove) = (Vec::new(), Vec::new(), Vec::new());
             let gas_budget =
                 evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;

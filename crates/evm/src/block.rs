@@ -186,6 +186,9 @@ where
         let Some(validator_set) = &self.validator_set else {
             return Ok(());
         };
+        if validator_set.is_empty() {
+            return Err(BlockValidationError::msg("empty validator set"));
+        }
         let gas_per_subblock = self.shared_gas_limit / validator_set.len() as u64;
 
         let mut incentive_gas = 0;
