@@ -314,36 +314,39 @@ mod tests {
     use tempo_primitives::transaction::tt_signature::PrimitiveSignature;
 
     #[test]
-    fn test_try_into_tx_env_merges_calls_and_to() {
+    fn test_estimate_gas_when_calls_set() {
         let existing_call = Call {
             to: TxKind::Call(address!("0x1111111111111111111111111111111111111111")),
             value: alloy_primitives::U256::from(1),
             input: Bytes::from(vec![0xaa]),
         };
-        let to = TxKind::Call(address!("0x2222222222222222222222222222222222222222"));
 
         let req = TempoTransactionRequest {
             inner: TransactionRequest {
-                to: Some(to),
+                to: Some(TxKind::Call(address!(
+                    "0x2222222222222222222222222222222222222222"
+                ))),
                 value: Some(alloy_primitives::U256::from(2)),
                 input: alloy_rpc_types_eth::TransactionInput::new(Bytes::from(vec![0xbb])),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
                 ..Default::default()
             },
-            calls: vec![existing_call.clone()],
+            calls: vec![existing_call],
             nonce_key: Some(alloy_primitives::U256::ZERO),
             ..Default::default()
         };
 
+        let built_calls = req.clone().build_aa().expect("build_aa").calls;
+
         let evm_env =
             EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
-        let tx_env = req.try_into_tx_env(&evm_env).expect("should succeed");
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+        let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
-        let batch = tx_env.tempo_tx_env.expect("should have tempo_tx_env");
-        assert_eq!(batch.aa_calls.len(), 2);
-        assert_eq!(batch.aa_calls[0], existing_call);
-        assert_eq!(batch.aa_calls[1].to, to);
-        assert_eq!(batch.aa_calls[1].value, alloy_primitives::U256::from(2));
-        assert_eq!(batch.aa_calls[1].input, Bytes::from(vec![0xbb]));
+        assert_eq!(estimated_calls, built_calls);
     }
 
     #[test]
