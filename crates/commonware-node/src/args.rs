@@ -141,19 +141,19 @@ pub struct Args {
 
     /// How long to wait before attempting to dial any peers without a connection..
     #[arg(
-        long = "consensus.wait-before-peers-dial",
+        long = "consensus.wait-before-peers-redial",
         default_value = "1s",
         default_value_if("use_local_defaults", "true", "500ms")
     )]
-    pub wait_before_peers_dial: PositiveDuration,
+    pub wait_before_peers_redial: PositiveDuration,
 
     /// How long to wait before sending a ping message to peers for liveness detection.
     #[arg(
-        long = "consensus.wait-before-peers-ping",
+        long = "consensus.wait-before-peers-reping",
         default_value = "50s",
         default_value_if("use_local_defaults", "true", "5s")
     )]
-    pub wait_before_peers_ping: PositiveDuration,
+    pub wait_before_peers_reping: PositiveDuration,
 
     /// How often to query for new dialable peers. Also limits re-dial rate per peer.
     #[arg(
@@ -188,8 +188,8 @@ pub struct Args {
     pub handshake_per_subnet_min_period: PositiveDuration,
 
     /// Duration after which a handshake message is considered stale.
-    #[arg(long = "consensus.handshake-max-age", default_value = "10s")]
-    pub handshake_max_age: PositiveDuration,
+    #[arg(long = "consensus.handshake-stale-after", default_value = "10s")]
+    pub handshake_stale_after: PositiveDuration,
 
     /// Timeout for the handshake process.
     #[arg(long = "consensus.handshake-timeout", default_value = "5s")]
@@ -197,11 +197,11 @@ pub struct Args {
 
     /// Maximum number of concurrent handshake attempts allowed.
     #[arg(
-        long = "consensus.handshake-max-concurrent",
+        long = "consensus.max-concurrent-handshakes",
         default_value = "512",
         default_value_if("use_local_defaults", "true", "1024")
     )]
-    pub handshake_max_concurrent: NonZeroU32,
+    pub max_concurrent_handshakes: NonZeroU32,
 
     /// Duration after which a blocked peer is allowed to reconnect.
     #[arg(

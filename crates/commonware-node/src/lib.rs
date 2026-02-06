@@ -165,13 +165,13 @@ async fn instantiate_network(
         allow_dns: config.allow_dns,
         tracked_peer_sets: crate::config::PEERSETS_TO_TRACK,
         synchrony_bound: config.synchrony_bound.into_duration(),
-        max_handshake_age: config.handshake_max_age.into_duration(),
+        max_handshake_age: config.handshake_stale_after.into_duration(),
         handshake_timeout: config.handshake_timeout.into_duration(),
-        max_concurrent_handshakes: config.handshake_max_concurrent,
+        max_concurrent_handshakes: config.max_concurrent_handshakes,
         block_duration: config.time_to_unblock_byzantine_peer.into_duration(),
-        dial_frequency: config.wait_before_peers_dial.into_duration(),
+        dial_frequency: config.wait_before_peers_redial.into_duration(),
         query_frequency: config.wait_before_peers_discovery.into_duration(),
-        ping_frequency: config.wait_before_peers_ping.into_duration(),
+        ping_frequency: config.wait_before_peers_reping.into_duration(),
         allowed_connection_rate_per_peer: commonware_runtime::Quota::with_period(
             config.connection_per_peer_min_period.into_duration(),
         )
