@@ -31,7 +31,7 @@ fn dedup_by_frequency(window: &VecDeque<Address>) -> Vec<Address> {
         *counts.entry(*addr).or_default() += 1;
     }
     let mut result: Vec<_> = counts.into_iter().collect();
-    result.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    result.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
     result.into_iter().map(|(addr, _)| addr).collect()
 }
 
