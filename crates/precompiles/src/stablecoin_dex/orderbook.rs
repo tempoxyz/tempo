@@ -552,16 +552,14 @@ mod tests {
         assert!(validate_tick_spacing(MIN_TICK).is_ok());
         assert!(validate_tick_spacing(MAX_TICK).is_ok());
 
-        let min = MIN_TICK / TICK_SPACING;
-        let max = MAX_TICK / TICK_SPACING;
         for _ in 0..100 {
-            let tick = rng.gen_range(min..=max) * TICK_SPACING;
+            let tick = rng.gen_range(MIN_TICK..=MAX_TICK) * TICK_SPACING;
             assert!(validate_tick_spacing(tick).is_ok(),);
         }
 
         for _ in 0..100 {
             let offset = rng.gen_range(1..TICK_SPACING);
-            let base = rng.gen_range(min..=max) * TICK_SPACING;
+            let base = rng.gen_range(MIN_TICK..=MAX_TICK) * TICK_SPACING;
             let tick = base + offset;
             assert!(validate_tick_spacing(tick).is_err(),);
         }
