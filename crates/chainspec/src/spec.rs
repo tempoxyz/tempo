@@ -22,6 +22,14 @@ pub const TEMPO_T0_BASE_FEE: u64 = 10_000_000_000;
 /// At this base fee, a standard TIP-20 transfer (~50,000 gas) costs ~0.1 cent
 pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
 
+/// TIP-1010 general (non-payment) gas limit: 30 million gas per block.
+/// Cap for non-payment transactions.
+pub const TEMPO_T1_GENERAL_GAS_LIMIT: u64 = 30_000_000;
+
+/// TIP-1010 per-transaction gas limit cap: 30 million gas.
+/// Allows maximum-sized contract deployments under TIP-1000 state creation costs.
+pub const TEMPO_T1_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
+
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
