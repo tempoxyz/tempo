@@ -189,16 +189,16 @@ interface IValidatorConfigV2 {
         bytes calldata signature
     ) external;
 
-    /// @notice Deactives a validator (owner or existing validator)
-    /// @dev Marks the validator as deactivate by setting deactivatedAtHeight to the current block height.
+    /// @notice Deactivates a validator (owner or existing validator)
+    /// @dev Marks the validator as deactivated by setting deactivatedAtHeight to the current block height.
     ///      The validator's entry remains in storage for historical queries.
     ///      The address and public key remain reserved and cannot be reused.
-    /// @param validatorAddress The validator address to delete
-    function deactiveValidator(address validatorAddress) external;
+    /// @param validatorAddress The validator address to deactivate
+    function deactivateValidator(address validatorAddress) external;
 
     /// @notice Rotate a validator to a new identity (owner or validator only)
     /// @dev Atomically deletes the specified validator entry and adds a new one. This is equivalent
-    ///      to calling deleteValidator followed by addValidator, but executed atomically.
+    ///      to calling deactivateValidator followed by addValidator, but executed atomically.
     ///      Can be called by the contract owner or by the validator's own address.
     ///      The same validation rules as addValidator apply:
     ///      - The new public key must not already exist
@@ -258,8 +258,8 @@ interface IValidatorConfigV2 {
     ///      On first call, copies owner from V1 if V2 owner is address(0).
     ///      Active V1 validators get addedAtHeight=0 and deactivatedAtHeight=0.
     ///      Inactive V1 validators get addedAtHeight=deactivatedAtHeight=block.timestamp at migration time.
-    ///      Reverts if already initialized if already migrated
-    ///      Reversts if idx != validatorsArray.length.
+    ///      Reverts if already initialized or already migrated.
+    ///      Reverts if idx != validatorsArray.length.
     ///      Reverts if `V2.isInitialized()` (no migrations after V2 is initialized).
     /// @param idx Index of the validator in V1 validators array (must equal current validatorsArray.length)
     function migrateValidator(uint64 idx) external;
@@ -270,8 +270,8 @@ interface IValidatorConfigV2 {
     ///      Copies nextDkgCeremony from V1.
     ///      Reverts if V2 validators count < V1 validators count (ensures all validators migrated).
     ///      Reverts if validator activity does not match between contracts:
-    ///      + if `V1.active == true` then `V2.deletedAtHeight = 0`
-    ///      + if `V1.active == false` then `V2.deletedAtHeight > 0`
+    ///      + if `V1.active == true` then `V2.deactivatedAtHeight = 0`
+    ///      + if `V1.active == false` then `V2.deactivatedAtHeight > 0`
     function initializeIfMigrated() external;
 
     /// @notice Check if V2 has been initialized from V1
@@ -290,16 +290,16 @@ Unlike V1, validators in V2 follow a strict lifecycle:
    `addedAtHeight` set to the current block height and `deactivatedAtHeight = 0`
 2. **Active period**: Validator participates in consensus while
    `deactivatedAtHeight == 0`
-3. **Deletion**: `deleteValidator` sets `deactivatedAtHeight` to the current block
+3. **Deactivation**: `deactivateValidator` sets `deactivatedAtHeight` to the current block
    height
 4. **Preserved**: The validator entry remains in storage forever for historical
    queries
 
 ```
-┌─────────────┐     addValidator()     ┌─────────────┐     deleteValidator()     ┌─────────────┐
+┌─────────────┐     addValidator()     ┌─────────────┐   deactivateValidator()   ┌─────────────┐
 │             │ ────────────────────►  │             │ ────────────────────────► │             │
-│  Not Exist  │                        │   Active    │                           │   Deleted   │
-│             │                        │ deleted=0   │                           │ deleted>0   │
+│  Not Exist  │                        │   Active    │                           │ Deactivated │
+│             │                        │ deactiv.=0  │                           │ deactiv.>0  │
 └─────────────┘                        └─────────────┘                           └─────────────┘
                                               │                                         │
                                               │◄────────────────────────/───────────────┘
@@ -500,18 +500,18 @@ The following invariants must always hold:
    changes.
 
 10. **Owner authorization**: Only the owner can call `addValidator`,
-    `deleteValidator`, `transferOwner`, `setNextFullDkgCeremony`, and `transferValidatorOwnership`.
+    `deactivateValidator`, `transferOwner`, and `setNextFullDkgCeremony`.
 
-11. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
+11. **Dual authorization**: `rotateValidator`, `transferValidatorOwnership`, and
+    `setIpAddresses` can be called by either the owner or the validator itself.
+
+12. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
     transition from 0 to 1, never back to 0.
 
-12. **Validator self-rotation**: Only an existing active validator can call
-    `rotateValidator` on themselves (caller must be the validator being rotated).
-
 13. **Atomic rotation**: `rotateValidator` atomically deletes the old validator
-    (setting its `deactivatedAtHeight`), adds a new validator entry, and sets
-    uppdates the `addresses[validatarAddress]` mapping to point to the new
-    entry. Both operations occur in the same transaction with the same block height.
+    (setting its `deactivatedAtHeight`), adds a new validator entry, and updates
+    the `addresses[validatorAddress]` mapping to point to the new entry. Both
+    operations occur in the same transaction with the same block height.
 
 14. **Address update**: `transferValidatorOwnership` updates the address of an existing
     validator without changing any other fields. This is useful for updating
@@ -766,7 +766,7 @@ The test suite must cover:
     after `initializeIfMigrated()`
 42. **initialize owner only**: Non-owner cannot call `initialize`
 43. **isInitialized returns correct value**: Returns false before initialize, true after
-44. **Writes blocked before init**: `addValidator`, `deleteValidator`, `rotateValidator`
+44. **Writes blocked before init**: `addValidator`, `deactivateValidator`, `rotateValidator`
 45. **initialize reverts if not all migrated**: `initializeIfMigrated()` reverts if
     `validatorsArray.length < V1.getValidators().length`
 
