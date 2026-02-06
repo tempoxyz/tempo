@@ -120,7 +120,7 @@ interface IValidatorConfigV2 {
     /// @param publicKey Ed25519 communication public key (non-zero, unique across all validators)
     /// @param validatorAddress Ethereum-style address of the validator (unique across all validators)
     /// @param ingress Address where other validators can connect (format: `<ip>:<port>`)
-    /// @param egress IP address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>:<port>`)
+    /// @param egress IP address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>`)
     /// @param index Position in validators array (assigned at creation, immutable)
     /// @param addedAtHeight Block height when validator was added
     /// @param deactivatedAtHeight Block height when validator was deleted (0 = active)
@@ -179,7 +179,7 @@ interface IValidatorConfigV2 {
     /// @param validatorAddress The address of the new validator
     /// @param publicKey The validator's Ed25519 communication public key
     /// @param ingress The validator's inbound address `<ip>:<port>` for incoming connections
-    /// @param egress The validator's outbound IP address `<ip>:<port>` for firewall whitelisting
+    /// @param egress The validator's outbound IP address `<ip>` for firewall whitelisting
     /// @param signature Ed25519 signature (64 bytes) proving ownership of the public key
     function addValidator(
         address validatorAddress,
@@ -202,7 +202,8 @@ interface IValidatorConfigV2 {
     ///      Can be called by the contract owner or by the validator's own address.
     ///      The same validation rules as addValidator apply:
     ///      - The new public key must not already exist
-    ///      - Ingress and egress must be parseable as <ip>:<port> pairs.
+    ///      - Ingress parseable as <ip>:<port>.
+    ///      - Egress must be parseable as <ip>.
     ///      - The signature must prove ownership of the new public key
     ///      The signature must be an Ed25519 signature over:
     ///      keccak256(abi.encodePacked(
@@ -212,7 +213,7 @@ interface IValidatorConfigV2 {
     /// @param validatorAddress The address of the validator to rotate
     /// @param publicKey The new validator's Ed25519 communication public key
     /// @param ingress The new validator's inbound address `<ip>:<port>` for incoming connections
-    /// @param egress The new validator's outbound IP address `<ip>:<port>` for firewall whitelisting
+    /// @param egress The new validator's outbound IP address `<ip>` for firewall whitelisting
     /// @param signature Ed25519 signature (64 bytes) proving ownership of the new public key
     function rotateValidator(
         address validatorAddress,
@@ -228,7 +229,7 @@ interface IValidatorConfigV2 {
     ///      a full rotation.
     /// @param validatorAddress The address of the validator to update
     /// @param ingress The new inbound address `<ip>:<port>` for incoming connections
-    /// @param egress The new outbound IP address `<ip>:<port>` for firewall whitelisting
+    /// @param egress The new outbound IP address `<ip>` for firewall whitelisting
     function setIpAddresses(
         address validatorAddress,
         string calldata ingress,
@@ -401,10 +402,10 @@ This distinction matters because:
 ### Address Validation
 
 - **ingress**: Must be in `<ip>:<port>` format.
-- **egress**: Must be in `<ip>:<port>` format.
+- **egress**: Must be in `<ip>` format.
 
-Both IPv4 and IPv6 addresses are supported. IPv6 addresses must be enclosed in
-brackets: `[2001:db8::1]:8080`.
+Both IPv4 and IPv6 addresses are supported. For ingress, IPv6 addresses must be
+enclosed in brackets: `[2001:db8::1]:8080`.
 
 ### Reconstructing DKG Players
 
