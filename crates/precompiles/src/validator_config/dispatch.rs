@@ -1,10 +1,16 @@
 use super::ValidatorConfig;
 use crate::{
-    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void, view,
+    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void,
+    unknown_selector, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::IValidatorConfig::IValidatorConfigCalls;
+use tempo_contracts::precompiles::IValidatorConfig::{
+    IValidatorConfigCalls, changeValidatorStatusByIndexCall,
+};
 
 impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -44,6 +50,18 @@ impl Precompile for ValidatorConfig {
                 IValidatorConfigCalls::changeValidatorStatus(call) => {
                     mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c))
                 }
+                IValidatorConfigCalls::changeValidatorStatusByIndex(call) => {
+                    // T1+: changeValidatorStatusByIndex is only available in T1+
+                    if !self.storage.spec().is_t1() {
+                        return unknown_selector(
+                            changeValidatorStatusByIndexCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.change_validator_status_by_index(s, c)
+                    })
+                }
                 IValidatorConfigCalls::changeOwner(call) => {
                     mutate_void(call, msg_sender, |s, c| self.change_owner(s, c))
                 }
@@ -69,26 +87,38 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::{SolCall, SolValue},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig, IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
     };
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         let owner = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut validator_config = ValidatorConfig::new();
 
-            // Initialize with owner
+        // T1: invalid selector returns reverted output
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;
 
-            // Test invalid selector - should return Ok with reverted status
             let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
             assert!(result.reverted);
 
-            // Test insufficient calldata
+            // T1: insufficient calldata also returns reverted output
+            let result = validator_config.call(&[0x12, 0x34], sender)?;
+            assert!(result.reverted);
+
+            Ok(())
+        })?;
+
+        // Pre-T1 (T0): insufficient calldata returns error
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
             let result = validator_config.call(&[0x12, 0x34], sender);
             assert!(matches!(result, Err(PrecompileError::Other(_))));
 
@@ -207,6 +237,90 @@ mod tests {
             );
 
             assert_full_coverage([unsupported]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_change_validator_status_by_index_t1_gating() -> eyre::Result<()> {
+        use alloy::sol_types::SolError;
+        use tempo_contracts::precompiles::UnknownFunctionSelector;
+
+        let owner = Address::random();
+        let validator = Address::random();
+        let public_key = FixedBytes::<32>::from([0x42; 32]);
+
+        // T0: changeValidatorStatusByIndex returns UnknownFunctionSelector
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            // Add a validator first
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator,
+                    publicKey: public_key,
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            // Try to call changeValidatorStatusByIndex in T0 - should return UnknownFunctionSelector
+            let call = IValidatorConfig::changeValidatorStatusByIndexCall {
+                index: 0,
+                active: false,
+            };
+            let calldata = call.abi_encode();
+            let result = validator_config.call(&calldata, owner)?;
+
+            assert!(result.reverted);
+            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+            assert_eq!(
+                decoded.selector.0,
+                IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR
+            );
+
+            Ok(())
+        })?;
+
+        // T1: changeValidatorStatusByIndex works
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            // Add a validator first
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator,
+                    publicKey: public_key,
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            // changeValidatorStatusByIndex should work in T1
+            let call = IValidatorConfig::changeValidatorStatusByIndexCall {
+                index: 0,
+                active: false,
+            };
+            let calldata = call.abi_encode();
+            let result = validator_config.call(&calldata, owner)?;
+
+            assert!(
+                !result.reverted,
+                "changeValidatorStatusByIndex should succeed in T1"
+            );
+
+            // Verify the status was changed
+            let validators = validator_config.get_validators()?;
+            assert!(!validators[0].active, "Validator should be inactive");
 
             Ok(())
         })

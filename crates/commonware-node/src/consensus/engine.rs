@@ -22,14 +22,14 @@ use commonware_cryptography::{
 use commonware_p2p::{Address, Blocker, Receiver, Sender};
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
+    Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::paged::CacheRef,
     spawn_cell,
 };
 use commonware_storage::archive::immutable;
 use commonware_utils::{NZU64, ordered::Map};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
-use rand::{CryptoRng, Rng};
+use rand_08::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -148,8 +148,7 @@ where
             },
         );
 
-        // Create the buffer pool
-        let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+        let page_cache_ref = CacheRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
         // XXX: All hard-coded values here are the same as prior to commonware
         // making the resolver configurable in
@@ -190,7 +189,7 @@ where
                     "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-key",
                     self.partition_prefix,
                 ),
-                freezer_key_buffer_pool: buffer_pool.clone(),
+                freezer_key_page_cache: page_cache_ref.clone(),
 
                 freezer_value_partition: format!(
                     "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-value",
@@ -240,7 +239,7 @@ where
                     "{}-{FINALIZED_BLOCKS}-freezer-key",
                     self.partition_prefix,
                 ),
-                freezer_key_buffer_pool: buffer_pool.clone(),
+                freezer_key_page_cache: page_cache_ref.clone(),
 
                 freezer_value_partition: format!(
                     "{}-{FINALIZED_BLOCKS}-freezer-value",
@@ -281,7 +280,7 @@ where
                 ),
                 prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
 
-                buffer_pool: buffer_pool.clone(),
+                page_cache: page_cache_ref.clone(),
 
                 replay_buffer: REPLAY_BUFFER,
                 key_write_buffer: WRITE_BUFFER,
@@ -308,6 +307,7 @@ where
         let (feed, feed_mailbox) = crate::feed::init(
             context.with_label("feed"),
             marshal_mailbox.clone(),
+            epoch_strategy.clone(),
             self.feed_state,
         );
 
@@ -342,7 +342,7 @@ where
             epoch::manager::Config {
                 application: application_mailbox.clone(),
                 blocker: self.blocker.clone(),
-                buffer_pool: buffer_pool.clone(),
+                page_cache: page_cache_ref,
                 epoch_strategy: epoch_strategy.clone(),
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
@@ -474,11 +474,11 @@ where
     )]
     pub fn start(
         mut self,
-        pending_network: (
+        votes_network: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        recovered_network: (
+        certificates_network: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -506,8 +506,8 @@ where
         spawn_cell!(
             self.context,
             self.run(
-                pending_network,
-                recovered_network,
+                votes_network,
+                certificates_network,
                 resolver_network,
                 broadcast_network,
                 marshal_network,
@@ -524,11 +524,11 @@ where
     )]
     async fn run(
         self,
-        pending_channel: (
+        votes_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        recovered_channel: (
+        certificates_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -571,7 +571,7 @@ where
 
         let epoch_manager =
             self.epoch_manager
-                .start(pending_channel, recovered_channel, resolver_channel);
+                .start(votes_channel, certificates_channel, resolver_channel);
 
         let feed = self.feed.start();
 

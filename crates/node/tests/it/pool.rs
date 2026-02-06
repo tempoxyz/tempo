@@ -23,7 +23,7 @@ use reth_transaction_pool::{
     pool::AddedTransactionState,
 };
 use std::sync::Arc;
-use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
+use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TempoChainSpec};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{
@@ -166,9 +166,9 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     // Create an AA transaction with `valid_before = current_time + 1` second
     let tx_aa = TempoTransaction {
         chain_id: 1337,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 100_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 1_000_000,
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),
             value: U256::ZERO,
@@ -226,6 +226,100 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
         .pool
         .get_transactions_by_sender(signer_addr);
     assert!(pooled_txs_after.is_empty());
+
+    Ok(())
+}
+
+/// Test that transactions are NOT evicted when a non-active validator changes their
+/// token preference.
+///
+/// Prior to the fix, any `setValidatorToken` call would trigger eviction of pending
+/// transactions that lacked liquidity against the new token. An attacker could exploit
+/// this by calling `setValidatorToken` with an obscure token to evict victims' transactions.
+///
+/// After the fix, eviction only happens if the new token is already in use by actual
+/// block producers (tracked via the AMM liquidity cache).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
+    use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
+    use alloy::signers::local::MnemonicBuilder;
+    use alloy_primitives::address;
+
+    reth_tracing::init_test_tracing();
+
+    // Setup node with direct access
+    let setup = TestNodeBuilder::new().build_with_node_access().await?;
+
+    // Set up signers - first is validator (coinbase), we use second for user transactions
+    let signers = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .into_iter()
+        .take(2)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let user_signer = signers[1].clone();
+    let user_addr = user_signer.address();
+
+    // Create a fake "new validator token" address that is NOT in the active validator set.
+    // This simulates an attacker calling setValidatorToken with an obscure token.
+    let attacker_token = address!("1234567890123456789012345678901234567890");
+
+    let pool = &setup.node.inner.pool;
+
+    // Submit a transaction that uses DEFAULT_FEE_TOKEN (PATH_USD)
+    let tx_default = TempoTransaction {
+        chain_id: 1337,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 1_000_000,
+        calls: vec![Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: alloy_primitives::Bytes::new(),
+        }],
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+
+    let signature = user_signer.sign_hash_sync(&tx_default.signature_hash())?;
+    let envelope: TempoTxEnvelope = tx_default.into_signed(signature.into()).into();
+    let recovered = envelope.try_into_recovered()?;
+    let tx_hash = *recovered.tx_hash();
+
+    // Submit tx to the pool
+    let res = pool
+        .add_consensus_transaction(recovered, TransactionOrigin::Local)
+        .await?;
+    assert!(matches!(res.state, AddedTransactionState::Pending));
+
+    // Verify transaction is in the pool
+    let pooled_txs = pool.get_transactions_by_sender(user_addr);
+    assert_eq!(pooled_txs.len(), 1);
+    assert_eq!(*pooled_txs[0].hash(), tx_hash);
+
+    // Simulate an attacker calling setValidatorToken with a token that:
+    // 1. Has no AMM pool with PATH_USD
+    // 2. Is NOT in the active validator set (never produced blocks)
+    //
+    // This should NOT evict the transaction because the attacker's token is not
+    // used by any active block producers.
+    let updates = tempo_transaction_pool::TempoPoolUpdates {
+        validator_token_changes: vec![(user_addr, attacker_token)],
+        ..Default::default()
+    };
+    pool.evict_invalidated_transactions(&updates);
+
+    // Give time for any eviction to complete
+    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+    // Transaction should NOT be evicted because the attacker's token is not in
+    // the active validator set.
+    let pooled_txs_after = pool.get_transactions_by_sender(user_addr);
+    assert_eq!(
+        pooled_txs_after.len(),
+        1,
+        "Transaction should NOT be evicted when validator token change is from a non-active validator"
+    );
+    assert_eq!(*pooled_txs_after[0].hash(), tx_hash);
 
     Ok(())
 }

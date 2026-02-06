@@ -220,11 +220,11 @@ impl AssertValidatorIsRemoved {
                 .parse::<Url>()
                 .unwrap();
 
+            // The addValidator calls during genesis add validators 0..validators.len().
+            // So the last validator has index `validators.len() - 1`.
+            let last_validator_index = (validators.len() - 1) as u64;
             let receipt = execution_runtime
-                // XXX: The addValidator call above adding the initial set
-                // adds validators 0..validators.len(). So this is the last of
-                // the validators
-                .change_validator_status(http_url, validators.last().unwrap().chain_address, false)
+                .change_validator_status(http_url, last_validator_index, false)
                 .await
                 .unwrap();
 

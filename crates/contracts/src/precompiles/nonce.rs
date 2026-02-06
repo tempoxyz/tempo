@@ -22,6 +22,14 @@ crate::sol! {
         error ProtocolNonceNotSupported();
         error InvalidNonceKey();
         error NonceOverflow();
+
+        // Expiring nonce errors
+        /// Returned when an expiring nonce tx hash has already been seen
+        error ExpiringNonceReplay();
+        /// Returned when the expiring nonce seen set is at capacity
+        error ExpiringNonceSetFull();
+        /// Returned when valid_before is not within the allowed window
+        error InvalidExpiringNonceExpiry();
     }
 }
 
@@ -39,5 +47,20 @@ impl NonceError {
     /// Creates an error for when nonce overflows
     pub const fn nonce_overflow() -> Self {
         Self::NonceOverflow(INonce::NonceOverflow)
+    }
+
+    /// Creates an error for expiring nonce replay
+    pub const fn expiring_nonce_replay() -> Self {
+        Self::ExpiringNonceReplay(INonce::ExpiringNonceReplay)
+    }
+
+    /// Creates an error for expiring nonce set being full
+    pub const fn expiring_nonce_set_full() -> Self {
+        Self::ExpiringNonceSetFull(INonce::ExpiringNonceSetFull)
+    }
+
+    /// Creates an error for invalid expiring nonce expiry
+    pub const fn invalid_expiring_nonce_expiry() -> Self {
+        Self::InvalidExpiringNonceExpiry(INonce::InvalidExpiringNonceExpiry)
     }
 }

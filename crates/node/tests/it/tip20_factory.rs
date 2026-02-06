@@ -4,7 +4,7 @@ use alloy::{
     signers::local::MnemonicBuilder,
     sol_types::SolEvent,
 };
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP20Factory};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::is_tip20_prefix};
 
@@ -38,8 +38,8 @@ async fn test_create_token() -> eyre::Result<()> {
             caller,
             salt,
         )
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(5_000_000)
         .send()
         .await?
         .get_receipt()

@@ -191,7 +191,7 @@ impl Precompile for TIP20Token {
 mod tests {
     use super::*;
     use crate::{
-        storage::StorageCtx,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, setup_storage},
         tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
         tip403_registry::{ITIP403Registry, TIP403Registry},
@@ -200,20 +200,33 @@ mod tests {
         primitives::{Bytes, U256, address},
         sol_types::{SolCall, SolInterface, SolValue},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{IRolesAuth, RolesAuthError, TIP20Error};
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
-        let (mut storage, sender) = setup_storage();
+        let (_, sender) = setup_storage();
 
-        StorageCtx::enter(&mut storage, || {
+        // T1: invalid selector returns reverted output
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
-            // Test invalid selector - should return Ok with reverted status
             let result = token.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender)?;
             assert!(result.reverted);
 
-            // Test insufficient calldata
+            // T1: insufficient calldata also returns reverted output
+            let result = token.call(&Bytes::from([0x12, 0x34]), sender)?;
+            assert!(result.reverted);
+
+            Ok(())
+        })?;
+
+        // Pre-T1 (T0): insufficient calldata returns error
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
+
             let result = token.call(&Bytes::from([0x12, 0x34]), sender);
             assert!(matches!(result, Err(PrecompileError::Other(_))));
 

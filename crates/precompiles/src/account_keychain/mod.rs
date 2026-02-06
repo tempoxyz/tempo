@@ -111,8 +111,11 @@ pub struct AccountKeychain {
 }
 
 impl AccountKeychain {
-    /// Create a hash key for spending limits mapping from account and keyId
-    fn spending_limit_key(account: Address, key_id: Address) -> B256 {
+    /// Create a hash key for spending limits mapping from account and keyId.
+    ///
+    /// This is used to access `spending_limits[key][token]` where `key` is the result
+    /// of this function. The hash combines account and key_id to avoid triple nesting.
+    pub fn spending_limit_key(account: Address, key_id: Address) -> B256 {
         use alloy::primitives::keccak256;
         let mut data = [0u8; 40];
         data[..20].copy_from_slice(account.as_slice());
@@ -371,20 +374,40 @@ impl AccountKeychain {
         Ok(key)
     }
 
-    /// Validate keychain authorization (existence, revocation, and expiry)
+    /// Validate keychain authorization (existence, revocation, expiry, and optionally signature type)
     ///
     /// This consolidates all validation checks into one method.
     /// Returns Ok(()) if the key is valid and authorized, Err otherwise.
+    ///
+    /// # Arguments
+    /// * `account` - The account that owns the key
+    /// * `key_id` - The key identifier to validate
+    /// * `current_timestamp` - Current block timestamp for expiry check
+    /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256, 2=WebAuthn).
+    ///   Pass `None` to skip signature type validation (for backward compatibility with pre-T1 blocks).
     pub fn validate_keychain_authorization(
         &self,
         account: Address,
         key_id: Address,
         current_timestamp: u64,
+        expected_sig_type: Option<u8>,
     ) -> Result<()> {
         let key = self.load_active_key(account, key_id)?;
 
         if current_timestamp >= key.expiry {
             return Err(AccountKeychainError::key_expired().into());
+        }
+
+        // Validate that the signature type matches the key type stored in the keychain
+        // Only check if expected_sig_type is provided (T1+ hardfork)
+        if let Some(sig_type) = expected_sig_type
+            && key.signature_type != sig_type
+        {
+            return Err(AccountKeychainError::signature_type_mismatch(
+                key.signature_type,
+                sig_type,
+            )
+            .into());
         }
 
         Ok(())
@@ -1069,5 +1092,70 @@ mod tests {
         let encoded = revoked.encode_to_slot();
         let decoded = AuthorizedKey::decode_from_slot(encoded);
         assert_eq!(decoded, revoked);
+    }
+
+    #[test]
+    fn test_validate_keychain_authorization_checks_signature_type() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let account = Address::random();
+        let key_id = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Use main key for authorization
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Authorize a P256 key
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::P256,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Test 1: Validation should succeed with matching signature type (P256 = 1)
+            let result = keychain.validate_keychain_authorization(account, key_id, 0, Some(1));
+            assert!(
+                result.is_ok(),
+                "Validation should succeed with matching signature type"
+            );
+
+            // Test 2: Validation should fail with mismatched signature type (Secp256k1 = 0)
+            let mismatch_result =
+                keychain.validate_keychain_authorization(account, key_id, 0, Some(0));
+            assert!(
+                mismatch_result.is_err(),
+                "Validation should fail with mismatched signature type"
+            );
+            match mismatch_result.unwrap_err() {
+                TempoPrecompileError::AccountKeychainError(e) => {
+                    assert!(
+                        matches!(e, AccountKeychainError::SignatureTypeMismatch(_)),
+                        "Expected SignatureTypeMismatch error, got: {e:?}"
+                    );
+                }
+                e => panic!("Expected AccountKeychainError, got: {e:?}"),
+            }
+
+            // Test 3: Validation should fail with WebAuthn (2) when key is P256 (1)
+            let webauthn_mismatch =
+                keychain.validate_keychain_authorization(account, key_id, 0, Some(2));
+            assert!(
+                webauthn_mismatch.is_err(),
+                "Validation should fail with WebAuthn when key is P256"
+            );
+
+            // Test 4: Validation should succeed with None (backward compatibility, pre-T1)
+            let none_result = keychain.validate_keychain_authorization(account, key_id, 0, None);
+            assert!(
+                none_result.is_ok(),
+                "Validation should succeed when signature type check is skipped (pre-T1)"
+            );
+
+            Ok(())
+        })
     }
 }

@@ -136,7 +136,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         max_fee_per_gas: provider.get_gas_price().await?,
         max_priority_fee_per_gas: provider.get_gas_price().await?,
         nonce: provider.get_transaction_count(sender_address).await?,
-        gas_limit: 100000,
+        gas_limit: 1_000_000,
         ..Default::default()
     };
     let signature = wallet.sign_hash_sync(&tx.signature_hash()).unwrap();

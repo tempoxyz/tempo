@@ -21,6 +21,12 @@ pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
 pub const MAX_WEBAUTHN_SIGNATURE_LENGTH: usize = 2048; // 2KB max
 
+/// Nonce key marking an expiring nonce transaction (uses tx hash for replay protection).
+pub const TEMPO_EXPIRING_NONCE_KEY: U256 = U256::MAX;
+
+/// Maximum allowed expiry window for expiring nonce transactions (30 seconds).
+pub const TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
+
 /// Signature type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -270,7 +276,20 @@ impl TempoTransaction {
         TEMPO_TX_TYPE_ID
     }
 
-    /// Validates the transaction according to the spec rules
+    /// Returns true if this is an expiring nonce transaction.
+    ///
+    /// Expiring nonce transactions use the tx hash for replay protection instead of
+    /// sequential nonces. They are identified by `nonce_key == U256::MAX`.
+    #[inline]
+    pub fn is_expiring_nonce_tx(&self) -> bool {
+        self.nonce_key == TEMPO_EXPIRING_NONCE_KEY
+    }
+
+    /// Validates the transaction according to invariant rules.
+    ///
+    /// This performs structural validation that is always required, regardless of hardfork.
+    /// Hardfork-dependent validation (e.g., expiring nonce constraints) is performed by
+    /// the transaction pool validator and execution handler where hardfork context is available.
     pub fn validate(&self) -> Result<(), &'static str> {
         // Validate calls list structure using the shared function
         validate_calls(&self.calls, !self.tempo_authorization_list.is_empty())?;
@@ -662,10 +681,10 @@ impl Transaction for TempoTransaction {
 
     #[inline]
     fn value(&self) -> U256 {
-        // Return sum of all call values
+        // Return sum of all call values, saturating to U256::MAX on overflow
         self.calls
             .iter()
-            .fold(U256::ZERO, |acc, call| acc + call.value)
+            .fold(U256::ZERO, |acc, call| acc.saturating_add(call.value))
     }
 
     #[inline]
@@ -912,11 +931,17 @@ mod serde_input {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::{
-        KeyAuthorization, TempoSignedAuthorization,
-        tt_signature::{PrimitiveSignature, TempoSignature, derive_p256_address},
+    use crate::{
+        TempoTxEnvelope,
+        transaction::{
+            KeyAuthorization, TempoSignedAuthorization,
+            tt_signature::{
+                PrimitiveSignature, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, TempoSignature,
+                derive_p256_address,
+            },
+        },
     };
-    use alloy_eips::eip7702::Authorization;
+    use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
@@ -984,8 +1009,6 @@ mod tests {
 
     #[test]
     fn test_signature_type_detection() {
-        use crate::transaction::tt_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN};
-
         // Secp256k1 (detected by 65-byte length, no type identifier)
         let sig1_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
         let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
@@ -1115,8 +1138,6 @@ mod tests {
 
     #[test]
     fn test_nonce_system() {
-        use alloy_consensus::Transaction;
-
         // Create a dummy call to satisfy validation
         let dummy_call = Call {
             to: TxKind::Create,
@@ -1179,8 +1200,6 @@ mod tests {
 
     #[test]
     fn test_transaction_trait_impl() {
-        use alloy_consensus::Transaction;
-
         let call = Call {
             to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
             value: U256::from(1000),
@@ -1207,8 +1226,6 @@ mod tests {
 
     #[test]
     fn test_effective_gas_price() {
-        use alloy_consensus::Transaction;
-
         // Create a dummy call to satisfy validation
         let dummy_call = Call {
             to: TxKind::Create,
@@ -1685,9 +1702,6 @@ mod tests {
     #[test]
     fn test_tempo_transaction_envelope_roundtrip_without_key_auth() {
         // Test that TempoTransaction in envelope works without key_authorization
-        use crate::TempoTxEnvelope;
-        use alloy_eips::eip2718::{Decodable2718, Encodable2718};
-
         let call = Call {
             to: TxKind::Create,
             value: U256::ZERO,
@@ -1929,5 +1943,72 @@ mod tests {
             ..Default::default()
         };
         assert!(tx.validate().is_ok());
+    }
+
+    #[test]
+    fn test_value_saturates_on_overflow() {
+        let call1 = Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::MAX,
+            input: Bytes::new(),
+        };
+        let call2 = Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::from(1),
+            input: Bytes::new(),
+        };
+
+        let tx = TempoTransaction {
+            calls: vec![call1, call2],
+            ..Default::default()
+        };
+
+        assert_eq!(tx.value(), U256::MAX);
+    }
+
+    #[test]
+    fn test_validate_does_not_check_expiring_nonce_constraints() {
+        let dummy_call = Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        // Transaction with expiring nonce key but nonce != 0 should pass validate()
+        // (expiring nonce constraints are hardfork-dependent and checked elsewhere)
+        let tx_with_nonzero_nonce = TempoTransaction {
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 42,
+            valid_before: None,
+            calls: vec![dummy_call.clone()],
+            ..Default::default()
+        };
+        assert!(
+            tx_with_nonzero_nonce.validate().is_ok(),
+            "validate() should not enforce expiring nonce constraints (hardfork-dependent)"
+        );
+
+        // Transaction with expiring nonce key but no valid_before should pass validate()
+        let tx_without_valid_before = TempoTransaction {
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 0,
+            valid_before: None,
+            calls: vec![dummy_call.clone()],
+            ..Default::default()
+        };
+        assert!(
+            tx_without_valid_before.validate().is_ok(),
+            "validate() should not enforce expiring nonce constraints (hardfork-dependent)"
+        );
+
+        // Sanity check: a fully valid expiring nonce tx should also pass
+        let valid_expiring_tx = TempoTransaction {
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 0,
+            valid_before: Some(1000),
+            calls: vec![dummy_call],
+            ..Default::default()
+        };
+        assert!(valid_expiring_tx.validate().is_ok());
     }
 }

@@ -13,7 +13,7 @@
 //! consensus engine backing the epoch stored in the message. The message also
 //! contains the public polynomial, share of the private key for this node,
 //! and the participants in the next epoch - all determined by the DKG ceremony.
-//! The engine receives a subchannel of the recovered, pending, and resolver
+//! The engine receives a subchannel of the vote, certificate, and resolver
 //! p2p channels, multiplexed by the epoch.
 //!
 //! When the actor receives an `Exit` message, it exists the engine backing the
@@ -26,21 +26,18 @@
 //! then this engine will have a subchannel registered on the multiplexer for
 //! epoch 0.
 //!
-//! If the actor now receives a vote in epoch 5 over its pending mux backup
+//! If the actor now receives a vote in epoch 5 over its vote mux backup
 //! channel (since there are no subchannels registered with the muxer on
-//! epochs 1 through 5), it will request the finalization certificate for the
-//! boundary height of epoch 0 from the voter. This request is done over the
-//! boundary certificates p2p network.
+//! epochs 1 through 5), it hints to the marshal actor that a finalization
+//! certificate for the node's *current* epoch's boundary height must exist.
 //!
-//! Upon receipt of the request for epoch 0 over the boundary certificates p2p
-//! network, the voter will send the finalization certificate to the *recovered*
-//! p2p network, tagged by epoch 0.
-//!
-//! Finally, this certificate is received by the running simplex engine
-//! (since remember, it's active for epoch 0), and subsequently forwarded to
-//! the marshal actor, which finally is able to fetch all finalizations up to
-//! the boundary height, which will eventually trigger the node to transition to
-//! epoch 1.
+//! If such a finalization certificate exists, the marshal actor will fetch
+//! and verify it, and move the network finalized tip there. If that happens,
+//! the epoch manager actor will read the DKG outcome from the finalized tip
+//! and move on to the next epoch. It will not start a full simplex engine
+//! (the DKG manager is responsible for driving that), but it will "soft-enter"
+//! the new epoch by registering the new public polynomial on the scheme
+//! provider.
 //!
 //! This process is repeated until the node catches up to the current network
 //! epoch.
@@ -69,7 +66,7 @@ use commonware_utils::{Acknowledgement as _, vec::NonEmptyVec};
 use eyre::{ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
-use rand::{CryptoRng, Rng};
+use rand_08::{CryptoRng, Rng};
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
@@ -219,7 +216,7 @@ where
 
         loop {
             select!(
-                message = vote_backup.next() => {
+                message = vote_backup.recv() => {
                     let Some((their_epoch, (from, _))) = message else {
                         error_span!("mux channel closed").in_scope(||
                             error!("vote p2p mux channel closed; exiting actor")
@@ -255,7 +252,7 @@ where
                         Content::Exit(exit) => self.exit(cause, exit),
                         Content::Update(update) => {
                             match *update {
-                                Update::Tip(height, digest) => {
+                                Update::Tip(_, height, digest) => {
                                     let _ = self.handle_finalized_tip(height, digest).await;
                                 }
                                 Update::Block(_block, ack) => {
@@ -345,7 +342,7 @@ where
 
                 replay_buffer: REPLAY_BUFFER,
                 write_buffer: WRITE_BUFFER,
-                buffer_pool: self.config.buffer_pool.clone(),
+                page_cache: self.config.page_cache.clone(),
 
                 leader_timeout: self.config.time_to_propose,
                 notarization_timeout: self.config.time_to_collect_notarizations,

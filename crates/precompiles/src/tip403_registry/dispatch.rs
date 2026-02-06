@@ -1,10 +1,17 @@
 use crate::{
-    Precompile, dispatch_call, input_cost, mutate, mutate_void, tip403_registry::TIP403Registry,
-    view,
+    Precompile, dispatch_call, input_cost, mutate, mutate_void,
+    tip403_registry::{AuthRole, TIP403Registry},
+    unknown_selector, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
+use tempo_contracts::precompiles::ITIP403Registry::{
+    ITIP403RegistryCalls, compoundPolicyDataCall, createCompoundPolicyCall,
+    isAuthorizedMintRecipientCall, isAuthorizedRecipientCall, isAuthorizedSenderCall,
+};
 
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -21,7 +28,52 @@ impl Precompile for TIP403Registry {
                 }
                 ITIP403RegistryCalls::policyExists(call) => view(call, |c| self.policy_exists(c)),
                 ITIP403RegistryCalls::policyData(call) => view(call, |c| self.policy_data(c)),
-                ITIP403RegistryCalls::isAuthorized(call) => view(call, |c| self.is_authorized(c)),
+                ITIP403RegistryCalls::isAuthorized(call) => view(call, |c| {
+                    self.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
+                }),
+                // TIP-1015: T2+ only
+                ITIP403RegistryCalls::isAuthorizedSender(call) => {
+                    if !self.storage.spec().is_t2() {
+                        return unknown_selector(
+                            isAuthorizedSenderCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
+                    view(call, |c| {
+                        self.is_authorized_as(c.policyId, c.user, AuthRole::Sender)
+                    })
+                }
+                ITIP403RegistryCalls::isAuthorizedRecipient(call) => {
+                    if !self.storage.spec().is_t2() {
+                        return unknown_selector(
+                            isAuthorizedRecipientCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
+                    view(call, |c| {
+                        self.is_authorized_as(c.policyId, c.user, AuthRole::Recipient)
+                    })
+                }
+                ITIP403RegistryCalls::isAuthorizedMintRecipient(call) => {
+                    if !self.storage.spec().is_t2() {
+                        return unknown_selector(
+                            isAuthorizedMintRecipientCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
+                    view(call, |c| {
+                        self.is_authorized_as(c.policyId, c.user, AuthRole::MintRecipient)
+                    })
+                }
+                ITIP403RegistryCalls::compoundPolicyData(call) => {
+                    if !self.storage.spec().is_t2() {
+                        return unknown_selector(
+                            compoundPolicyDataCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
+                    view(call, |c| self.compound_policy_data(c))
+                }
                 ITIP403RegistryCalls::createPolicy(call) => {
                     mutate(call, msg_sender, |s, c| self.create_policy(s, c))
                 }
@@ -39,6 +91,16 @@ impl Precompile for TIP403Registry {
                 ITIP403RegistryCalls::modifyPolicyBlacklist(call) => {
                     mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c))
                 }
+                // TIP-1015: T2+ only
+                ITIP403RegistryCalls::createCompoundPolicy(call) => {
+                    if !self.storage.spec().is_t2() {
+                        return unknown_selector(
+                            createCompoundPolicyCall::SELECTOR,
+                            self.storage.gas_used(),
+                        );
+                    }
+                    mutate(call, msg_sender, |s, c| self.create_compound_policy(s, c))
+                }
             },
         )
     }
@@ -53,6 +115,7 @@ mod tests {
         tip403_registry::ITIP403Registry,
     };
     use alloy::sol_types::{SolCall, SolValue};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
     #[test]
@@ -421,18 +484,30 @@ mod tests {
 
     #[test]
     fn test_invalid_selector() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
+
+        // T1: invalid selector returns reverted output
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut registry = TIP403Registry::new();
+
+            let invalid_data = vec![0x12, 0x34, 0x56, 0x78];
+            let result = registry.call(&invalid_data, sender)?;
+            assert!(result.reverted);
+
+            // T1: insufficient data also returns reverted output
+            let short_data = vec![0x12, 0x34];
+            let result = registry.call(&short_data, sender)?;
+            assert!(result.reverted);
+
+            Ok(())
+        })?;
+
+        // Pre-T1 (T0): insufficient data returns error
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            // Test with invalid selector - should return Ok with reverted status
-            let invalid_data = vec![0x12, 0x34, 0x56, 0x78];
-            let result = registry.call(&invalid_data, sender);
-            assert!(result.is_ok());
-            assert!(result.unwrap().reverted);
-
-            // Test with insufficient data
             let short_data = vec![0x12, 0x34];
             let result = registry.call(&short_data, sender);
             assert!(result.is_err());
@@ -484,7 +559,8 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        // Use T2 to test all selectors including TIP-1015 compound policy functions
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 

@@ -18,7 +18,7 @@ use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
-use rand::SeedableRng as _;
+use rand_08::SeedableRng as _;
 use rayon::prelude::*;
 use reth_evm::{
     Evm as _, EvmEnv, EvmFactory,
@@ -36,7 +36,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
@@ -81,10 +81,6 @@ pub(crate) struct GenesisArgs {
     /// Chain ID
     #[arg(long, short, default_value = "1337")]
     chain_id: u64,
-
-    /// Base fee
-    #[arg(long, default_value_t = TEMPO_BASE_FEE.into())]
-    base_fee_per_gas: u128,
 
     /// Genesis block gas limit
     #[arg(long, default_value_t = 500_000_000)]
@@ -146,6 +142,18 @@ pub(crate) struct GenesisArgs {
     /// Disable minting pairwise FeeAMM liquidity.
     #[arg(long)]
     no_pairwise_liquidity: bool,
+
+    /// Timestamp for T0 hardfork activation (0 = genesis).
+    #[arg(long, default_value = "0")]
+    t0_time: u64,
+
+    /// T1 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t1_time: u64,
+
+    /// T2 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t2_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -281,12 +289,12 @@ impl GenesisArgs {
 
         let deployment_gas_token = {
             if self.deployment_gas_token {
-                let mut rng = rand::rngs::StdRng::seed_from_u64(
-                    self.seed.unwrap_or_else(rand::random::<u64>),
+                let mut rng = rand_08::rngs::StdRng::seed_from_u64(
+                    self.seed.unwrap_or_else(rand_08::random::<u64>),
                 );
 
                 let mut salt_bytes = [0u8; 32];
-                rand::Rng::fill(&mut rng, &mut salt_bytes);
+                rand_08::Rng::fill(&mut rng, &mut salt_bytes);
 
                 let address = create_and_mint_token(
                     "DONOTUSE",
@@ -480,7 +488,13 @@ impl GenesisArgs {
             .insert_value("epochLength".to_string(), self.epoch_length)?;
         chain_config
             .extra_fields
-            .insert_value("t0Time".to_string(), 0u64)?;
+            .insert_value("t0Time".to_string(), self.t0_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t1Time".to_string(), self.t1_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t2Time".to_string(), self.t2_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -495,9 +509,16 @@ impl GenesisArgs {
             }
         }
 
+        // Base fee determined by hardfork: T1 active at genesis (t1_time=0) uses T1 fee
+        let base_fee: u128 = if self.t1_time == 0 {
+            TempoHardfork::T1.base_fee().into()
+        } else {
+            TempoHardfork::T0.base_fee().into()
+        };
+
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
-            .with_base_fee(Some(self.base_fee_per_gas))
+            .with_base_fee(Some(base_fee))
             .with_nonce(0x42)
             .with_extra_data(extra_data)
             .with_coinbase(self.coinbase);
@@ -562,9 +583,13 @@ fn deploy_permit2(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
 /// Initializes the TIP20Factory contract (should be called once before creating any tokens)
 fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        TIP20Factory::new().initialize()
-    })?;
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || TIP20Factory::new().initialize(),
+    )?;
     Ok(())
 }
 
@@ -577,36 +602,42 @@ fn create_path_usd_token(
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        TIP20Factory::new().create_token_reserved_address(
-            PATH_USD_ADDRESS,
-            "pathUSD",
-            "pathUSD",
-            "USD",
-            Address::ZERO,
-            admin,
-        )?;
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || {
+            TIP20Factory::new().create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
 
-        // Initialize pathUSD directly (not via factory) since it's at a reserved address.
-        let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
-            .expect("Could not create pathUSD token instance");
-        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+            // Initialize pathUSD directly (not via factory) since it's at a reserved address.
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
+                .expect("Could not create pathUSD token instance");
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        // Mint to all recipients
-        for recipient in recipients.iter().progress() {
-            token
-                .mint(
-                    admin,
-                    ITIP20::mintCall {
-                        to: *recipient,
-                        amount: U256::from(amount_per_recipient),
-                    },
-                )
-                .expect("Could not mint pathUSD");
-        }
+            // Mint to all recipients
+            for recipient in recipients.iter().progress() {
+                token
+                    .mint(
+                        admin,
+                        ITIP20::mintCall {
+                            to: *recipient,
+                            amount: U256::from(amount_per_recipient),
+                        },
+                    )
+                    .expect("Could not mint pathUSD");
+            }
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 enum SaltOrAddress {
@@ -628,70 +659,83 @@ fn create_and_mint_token(
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<Address> {
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        let mut factory = TIP20Factory::new();
-        assert!(
-            factory
-                .is_initialized()
-                .expect("Could not check factory initialization"),
-            "TIP20Factory must be initialized before creating tokens"
-        );
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || {
+            let mut factory = TIP20Factory::new();
+            assert!(
+                factory
+                    .is_initialized()
+                    .expect("Could not check factory initialization"),
+                "TIP20Factory must be initialized before creating tokens"
+            );
 
-        let token_address = match salt_or_address {
-            SaltOrAddress::Salt(salt) => factory
-                .create_token(
-                    admin,
-                    ITIP20Factory::createTokenCall {
-                        name: name.into(),
-                        symbol: symbol.into(),
-                        currency: currency.into(),
-                        quoteToken: quote_token,
-                        salt,
+            let token_address = match salt_or_address {
+                SaltOrAddress::Salt(salt) => factory
+                    .create_token(
                         admin,
-                    },
-                )
-                .expect("Could not create token"),
-            SaltOrAddress::Address(address) => factory
-                .create_token_reserved_address(address, name, symbol, currency, quote_token, admin)
-                .expect("Could not create token"),
-        };
+                        ITIP20Factory::createTokenCall {
+                            name: name.into(),
+                            symbol: symbol.into(),
+                            currency: currency.into(),
+                            quoteToken: quote_token,
+                            salt,
+                            admin,
+                        },
+                    )
+                    .expect("Could not create token"),
+                SaltOrAddress::Address(address) => factory
+                    .create_token_reserved_address(
+                        address,
+                        name,
+                        symbol,
+                        currency,
+                        quote_token,
+                        admin,
+                    )
+                    .expect("Could not create token"),
+            };
 
-        let mut token =
-            TIP20Token::from_address(token_address).expect("Could not create token instance");
-        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+            let mut token =
+                TIP20Token::from_address(token_address).expect("Could not create token instance");
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        let result = token.set_supply_cap(
-            admin,
-            ITIP20::setSupplyCapCall {
-                newSupplyCap: U256::from(u128::MAX),
-            },
-        );
-        assert!(result.is_ok());
-
-        token
-            .mint(
+            let result = token.set_supply_cap(
                 admin,
-                ITIP20::mintCall {
-                    to: admin,
-                    amount: mint_amount,
+                ITIP20::setSupplyCapCall {
+                    newSupplyCap: U256::from(u128::MAX),
                 },
-            )
-            .expect("Token minting failed");
+            );
+            assert!(result.is_ok());
 
-        for address in recipients.iter().progress() {
             token
                 .mint(
                     admin,
                     ITIP20::mintCall {
-                        to: *address,
-                        amount: U256::from(u64::MAX),
+                        to: admin,
+                        amount: mint_amount,
                     },
                 )
-                .expect("Could not mint fee token");
-        }
+                .expect("Token minting failed");
 
-        Ok(token.address())
-    })
+            for address in recipients.iter().progress() {
+                token
+                    .mint(
+                        admin,
+                        ITIP20::mintCall {
+                            to: *address,
+                            amount: U256::from(u64::MAX),
+                        },
+                    )
+                    .expect("Could not mint fee token");
+            }
+
+            Ok(token.address())
+        },
+    )
 }
 
 fn initialize_fee_manager(
@@ -703,64 +747,82 @@ fn initialize_fee_manager(
 ) {
     // Update the beneficiary since the validator can't set the validator fee token for themselves
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        let mut fee_manager = TipFeeManager::new();
-        fee_manager
-            .initialize()
-            .expect("Could not init fee manager");
-        for address in initial_accounts.iter().progress() {
-            println!("Setting user token for {user_fee_token_address}");
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || {
+            let mut fee_manager = TipFeeManager::new();
             fee_manager
-                .set_user_token(
-                    *address,
-                    IFeeManager::setUserTokenCall {
-                        token: user_fee_token_address,
-                    },
-                )
-                .expect("Could not set fee token");
-        }
+                .initialize()
+                .expect("Could not init fee manager");
+            for address in initial_accounts.iter().progress() {
+                println!("Setting user token for {user_fee_token_address}");
+                fee_manager
+                    .set_user_token(
+                        *address,
+                        IFeeManager::setUserTokenCall {
+                            token: user_fee_token_address,
+                        },
+                    )
+                    .expect("Could not set fee token");
+            }
 
-        // Set validator fee tokens to pathUSD
-        for validator in validators {
-            println!("Setting user token for {validator} {validator_fee_token_address}");
-            fee_manager
-                .set_validator_token(
-                    validator,
-                    IFeeManager::setValidatorTokenCall {
-                        token: validator_fee_token_address,
-                    },
-                    // use random address to avoid `CannotChangeWithinBlock` error
-                    Address::random(),
-                )
-                .expect("Could not set validator fee token");
-        }
-    });
+            // Set validator fee tokens to pathUSD
+            for validator in validators {
+                println!("Setting user token for {validator} {validator_fee_token_address}");
+                fee_manager
+                    .set_validator_token(
+                        validator,
+                        IFeeManager::setValidatorTokenCall {
+                            token: validator_fee_token_address,
+                        },
+                        // use random address to avoid `CannotChangeWithinBlock` error
+                        Address::random(),
+                    )
+                    .expect("Could not set validator fee token");
+            }
+        },
+    );
 }
 
 /// Initializes the [`TIP403Registry`] contract.
 fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        TIP403Registry::new().initialize()
-    })?;
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || TIP403Registry::new().initialize(),
+    )?;
 
     Ok(())
 }
 
 fn initialize_stablecoin_dex(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        StablecoinDEX::new().initialize()
-    })?;
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || StablecoinDEX::new().initialize(),
+    )?;
 
     Ok(())
 }
 
 fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        NonceManager::new().initialize()
-    })?;
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || NonceManager::new().initialize(),
+    )?;
 
     Ok(())
 }
@@ -768,9 +830,13 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
 /// Initializes the [`AccountKeychain`] contract.
 fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        AccountKeychain::new().initialize()
-    })?;
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || AccountKeychain::new().initialize(),
+    )?;
 
     Ok(())
 }
@@ -787,61 +853,67 @@ fn initialize_validator_config(
     no_dkg_in_genesis: bool,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        let mut validator_config = ValidatorConfig::new();
-        validator_config
-            .initialize(admin)
-            .wrap_err("failed to initialize validator config contract")?;
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config
+                .initialize(admin)
+                .wrap_err("failed to initialize validator config contract")?;
 
-        if no_dkg_in_genesis {
-            println!("no-dkg-in-genesis passed; not writing validators to genesis block");
-            return Ok(());
-        }
-
-        if let Some(consensus_config) = consensus_config.clone() {
-            let num_validators = consensus_config.validators.len();
-
-            if onchain_validator_addresses.len() < num_validators {
-                return Err(eyre!(
-                    "need {} addresses for all validators, but only {} were provided",
-                    num_validators,
-                    onchain_validator_addresses.len()
-                ));
+            if no_dkg_in_genesis {
+                println!("no-dkg-in-genesis passed; not writing validators to genesis block");
+                return Ok(());
             }
 
-            println!("writing {num_validators} validators into contract");
-            for (i, validator) in consensus_config.validators.iter().enumerate() {
-                #[expect(non_snake_case, reason = "field of a snakeCase smart contract call")]
-                let newValidatorAddress = onchain_validator_addresses[i];
-                let public_key = validator.public_key();
-                let addr = validator.addr;
-                validator_config
-                    .add_validator(
-                        admin,
-                        IValidatorConfig::addValidatorCall {
-                            newValidatorAddress,
-                            publicKey: public_key.encode().as_ref().try_into().unwrap(),
-                            active: true,
-                            inboundAddress: addr.to_string(),
-                            outboundAddress: addr.to_string(),
-                        },
-                    )
-                    .wrap_err(
-                        "failed to execute smart contract call to add validator to evm state",
-                    )?;
-                println!(
-                    "added validator\
+            if let Some(consensus_config) = consensus_config.clone() {
+                let num_validators = consensus_config.validators.len();
+
+                if onchain_validator_addresses.len() < num_validators {
+                    return Err(eyre!(
+                        "need {} addresses for all validators, but only {} were provided",
+                        num_validators,
+                        onchain_validator_addresses.len()
+                    ));
+                }
+
+                println!("writing {num_validators} validators into contract");
+                for (i, validator) in consensus_config.validators.iter().enumerate() {
+                    #[expect(non_snake_case, reason = "field of a snakeCase smart contract call")]
+                    let newValidatorAddress = onchain_validator_addresses[i];
+                    let public_key = validator.public_key();
+                    let addr = validator.addr;
+                    validator_config
+                        .add_validator(
+                            admin,
+                            IValidatorConfig::addValidatorCall {
+                                newValidatorAddress,
+                                publicKey: public_key.encode().as_ref().try_into().unwrap(),
+                                active: true,
+                                inboundAddress: addr.to_string(),
+                                outboundAddress: addr.to_string(),
+                            },
+                        )
+                        .wrap_err(
+                            "failed to execute smart contract call to add validator to evm state",
+                        )?;
+                    println!(
+                        "added validator\
                 \n\tpublic key: {public_key}\
                 \n\tonchain address: {newValidatorAddress}\
                 \n\tnet address: {addr}"
-                );
+                    );
+                }
+            } else {
+                println!("no consensus config passed; no validators to write to contract");
             }
-        } else {
-            println!("no consensus config passed; no validators to write to contract");
-        }
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 /// Generates the consensus configs of the validators.
@@ -865,7 +937,7 @@ fn generate_consensus_config(
         _ => {}
     }
 
-    let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
+    let mut rng = rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
 
     let mut signer_keys = repeat_with(|| PrivateKey::random(&mut rng))
         .take(validators.len())
@@ -905,13 +977,19 @@ fn mint_pairwise_liquidity(
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) {
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        let mut fee_manager = TipFeeManager::new();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || {
+            let mut fee_manager = TipFeeManager::new();
 
-        for b_token_address in b_tokens {
-            fee_manager
-                .mint(admin, a_token, b_token_address, amount, admin)
-                .expect("Could not mint A -> B Liquidity pool");
-        }
-    });
+            for b_token_address in b_tokens {
+                fee_manager
+                    .mint(admin, a_token, b_token_address, amount, admin)
+                    .expect("Could not mint A -> B Liquidity pool");
+            }
+        },
+    );
 }

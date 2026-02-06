@@ -7,7 +7,10 @@ use crate::{
     tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
-use alloy_primitives::{Address, B256, map::HashMap};
+use alloy_primitives::{
+    Address, B256, TxHash,
+    map::{AddressMap, HashMap},
+};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
@@ -25,8 +28,8 @@ use reth_transaction_pool::{
     identifier::TransactionId,
 };
 use revm::database::BundleAccount;
-use std::{collections::HashSet, sync::Arc, time::Instant};
-use tempo_chainspec::TempoChainSpec;
+use std::{sync::Arc, time::Instant};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -81,41 +84,317 @@ where
             .notify_on_transaction_updates(promoted, Vec::new());
     }
 
-    /// Evicts all transactions signed with revoked keychain keys.
+    /// Resets the nonce state for the given 2D nonce sequence IDs by reading from a specific
+    /// block's state. Used during reorgs to correct the pool's nonce tracking for slots that
+    /// were modified in the old chain but not in the new chain.
+    pub(crate) fn reset_2d_nonces_from_state(
+        &self,
+        seq_ids: Vec<crate::tt_2d_pool::AASequenceId>,
+        block_hash: B256,
+    ) -> Result<(), reth_provider::ProviderError> {
+        use reth_storage_api::StateProvider;
+        use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
+
+        if seq_ids.is_empty() {
+            return Ok(());
+        }
+
+        let state_provider = self.client().state_by_block_hash(block_hash)?;
+        let mut nonce_changes = HashMap::default();
+
+        for seq_id in seq_ids {
+            // Read the current on-chain nonce for this sequence ID
+            let slot = NonceManager::new().nonces[seq_id.address][seq_id.nonce_key].slot();
+            let current_nonce: u64 = state_provider
+                .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?
+                .unwrap_or_default()
+                .saturating_to();
+
+            nonce_changes.insert(seq_id, current_nonce);
+        }
+
+        // Apply the nonce changes to the 2D pool
+        let (promoted, _mined) = self.aa_2d_pool.write().on_nonce_changes(nonce_changes);
+        if !promoted.is_empty() {
+            self.protocol_pool
+                .inner()
+                .notify_on_transaction_updates(promoted, Vec::new());
+        }
+
+        Ok(())
+    }
+
+    /// Removes expiring nonce transactions that were included in a block.
     ///
-    /// This scans both pools for AA transactions using any of the specified keychain keys
-    /// and removes them. Called once per block when `KeyRevoked` events are detected.
+    /// This is called with the transaction hashes from mined blocks to clean up
+    /// expiring nonce transactions on inclusion, rather than waiting for expiry.
+    pub(crate) fn remove_included_expiring_nonce_txs<'a>(
+        &self,
+        tx_hashes: impl Iterator<Item = &'a TxHash>,
+    ) {
+        self.aa_2d_pool
+            .write()
+            .remove_included_expiring_nonce_txs(tx_hashes);
+    }
+
+    /// Evicts transactions that are no longer valid due to on-chain events.
     ///
-    /// Key revocations are expected to be rare, so this on-demand scan is more
-    /// efficient than tracking all keychain-signed transactions in the pool.
-    pub(crate) fn evict_transactions_by_revoked_keys(&self, revoked_keys: &[(Address, Address)]) {
+    /// This performs a single scan of all pooled transactions and checks for:
+    /// 1. **Revoked keychain keys**: AA transactions signed with keys that have been revoked
+    /// 2. **Spending limit updates**: AA transactions signed with keys whose spending limit
+    ///    changed for a token matching the transaction's fee token
+    /// 3. **Validator token changes**: Transactions that would fail due to insufficient
+    ///    liquidity in the new (user_token, validator_token) AMM pool
+    ///
+    /// All checks are combined into one scan to avoid iterating the pool multiple times
+    /// per block.
+    pub fn evict_invalidated_transactions(
+        &self,
+        updates: &crate::maintain::TempoPoolUpdates,
+    ) -> usize {
+        use reth_storage_api::StateProvider;
+        use tempo_precompiles::{
+            TIP_FEE_MANAGER_ADDRESS,
+            tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
+            tip20::slots as tip20_slots,
+        };
+
+        if !updates.has_invalidation_events() {
+            return 0;
+        }
+
+        // Only fetch state provider if we need to check liquidity, blacklists, or whitelists.
+        // Don't let a provider error skip revoked/spending-limit eviction.
+        let state_provider = if !updates.validator_token_changes.is_empty()
+            || !updates.blacklist_additions.is_empty()
+            || !updates.whitelist_removals.is_empty()
+        {
+            self.client().latest().ok()
+        } else {
+            None
+        };
+
+        // Cache policy lookups per fee token to avoid redundant storage reads
+        let mut policy_cache: AddressMap<u64> = AddressMap::default();
+
+        // Filter validator token changes to only those from active validators.
+        // This prevents DoS via permissionless setValidatorToken: we only process
+        // token changes from validators who have actually produced recent blocks.
+        let amm_cache = self.amm_liquidity_cache();
+        let active_validator_token_changes: Vec<Address> = updates
+            .validator_token_changes
+            .iter()
+            .filter_map(|&(validator, new_token)| {
+                amm_cache
+                    .is_active_validator(&validator)
+                    .then_some(new_token)
+            })
+            .collect();
+
         let mut to_remove = Vec::new();
+        let mut revoked_count = 0;
+        let mut spending_limit_count = 0;
+        let mut liquidity_count = 0;
+        let mut user_token_count = 0;
+        let mut blacklisted_count = 0;
+        let mut unwhitelisted_count = 0;
 
-        // Scan all transactions in both pools once
-        for tx in self.all_transactions().all() {
-            let Some(aa_tx) = tx.inner().as_aa() else {
+        let all_txs = self.all_transactions();
+        for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
+            // Extract keychain subject once per transaction (if applicable)
+            let keychain_subject = tx.transaction.keychain_subject();
+
+            // Check 1: Revoked keychain keys
+            if !updates.revoked_keys.is_empty()
+                && let Some(ref subject) = keychain_subject
+                && subject.matches_revoked(&updates.revoked_keys)
+            {
+                to_remove.push(*tx.hash());
+                revoked_count += 1;
                 continue;
-            };
+            }
 
-            let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
+            // Check 2: Spending limit updates
+            // Only evict if the transaction's fee token matches the token whose limit changed.
+            if !updates.spending_limit_changes.is_empty()
+                && let Some(ref subject) = keychain_subject
+                && subject.matches_spending_limit_update(&updates.spending_limit_changes)
+            {
+                to_remove.push(*tx.hash());
+                spending_limit_count += 1;
                 continue;
-            };
+            }
 
-            // Check if this transaction uses any of the revoked keys
-            for &(account, key_id) in revoked_keys {
-                if keychain_sig.user_address == account
-                    && let Ok(tx_key_id) = keychain_sig.key_id(&aa_tx.signature_hash())
-                    && tx_key_id == key_id
-                {
-                    to_remove.push(*aa_tx.hash());
-                    break;
+            // Check 3: Validator token changes (check liquidity for all transactions)
+            // NOTE: Only process changes from validators whose new token is already in use
+            // by actual block producers. This prevents permissionless setValidatorToken calls
+            // from triggering mass eviction.
+            if let Some(ref provider) = state_provider
+                && !active_validator_token_changes.is_empty()
+            {
+                let user_token = tx
+                    .transaction
+                    .inner()
+                    .fee_token()
+                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+                let cost = tx.transaction.fee_token_cost();
+
+                let amount_out = match compute_amount_out(cost) {
+                    Ok(amount) => amount,
+                    Err(_) => continue,
+                };
+
+                for &new_validator_token in &active_validator_token_changes {
+                    if user_token == new_validator_token {
+                        continue;
+                    }
+
+                    let pool_key = PoolKey::new(user_token, new_validator_token).get_id();
+                    let slot = tempo_precompiles::tip_fee_manager::TipFeeManager::new().pools
+                        [pool_key]
+                        .base_slot();
+
+                    let pool_value = match provider.storage(TIP_FEE_MANAGER_ADDRESS, slot.into()) {
+                        Ok(Some(value)) => value,
+                        Ok(None) => {
+                            to_remove.push(*tx.hash());
+                            liquidity_count += 1;
+                            break;
+                        }
+                        Err(_) => continue,
+                    };
+
+                    let reserve = alloy_primitives::U256::from(
+                        Pool::decode_from_slot(pool_value).reserve_validator_token,
+                    );
+
+                    if reserve < amount_out {
+                        to_remove.push(*tx.hash());
+                        liquidity_count += 1;
+                        break;
+                    }
                 }
+            }
+
+            // Check 4: Blacklisted fee payers
+            // Only check AA transactions with a fee token (non-AA transactions don't have
+            // a fee payer that can be blacklisted via TIP403)
+            if !updates.blacklist_additions.is_empty()
+                && let Some(ref provider) = state_provider
+                && let Some(fee_token) = tx.transaction.inner().fee_token()
+            {
+                let fee_payer = tx
+                    .transaction
+                    .inner()
+                    .fee_payer(tx.transaction.sender())
+                    .unwrap_or(tx.transaction.sender());
+
+                // Check if any blacklist addition applies to this transaction
+                for &(blacklist_policy_id, blacklisted_account) in &updates.blacklist_additions {
+                    if fee_payer != blacklisted_account {
+                        continue;
+                    }
+
+                    // Get the token's transfer policy ID from cache or storage
+                    let token_policy = if let Some(&cached) = policy_cache.get(&fee_token) {
+                        Some(cached)
+                    } else {
+                        provider
+                            .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
+                            .ok()
+                            .flatten()
+                            .map(|packed| {
+                                let policy_id: u64 =
+                                    (packed >> tip20_slots::TRANSFER_POLICY_ID_OFFSET).to();
+                                policy_cache.insert(fee_token, policy_id);
+                                policy_id
+                            })
+                    };
+
+                    // If the token's policy matches the blacklist policy, evict the transaction
+                    if token_policy == Some(blacklist_policy_id) {
+                        to_remove.push(*tx.hash());
+                        blacklisted_count += 1;
+                        break;
+                    }
+                }
+            }
+
+            // Check 5: Un-whitelisted fee payers
+            // When a fee payer is removed from a whitelist, their pending transactions
+            // will fail validation at execution time.
+            if !updates.whitelist_removals.is_empty()
+                && let Some(ref provider) = state_provider
+                && let Some(fee_token) = tx.transaction.inner().fee_token()
+            {
+                let fee_payer = tx
+                    .transaction
+                    .inner()
+                    .fee_payer(tx.transaction.sender())
+                    .unwrap_or(tx.transaction.sender());
+
+                for &(whitelist_policy_id, unwhitelisted_account) in &updates.whitelist_removals {
+                    if fee_payer != unwhitelisted_account {
+                        continue;
+                    }
+
+                    // Get the token's transfer policy ID from cache or storage
+                    let token_policy = if let Some(&cached) = policy_cache.get(&fee_token) {
+                        Some(cached)
+                    } else {
+                        provider
+                            .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
+                            .ok()
+                            .flatten()
+                            .map(|packed| {
+                                let policy_id: u64 =
+                                    (packed >> tip20_slots::TRANSFER_POLICY_ID_OFFSET).to();
+                                policy_cache.insert(fee_token, policy_id);
+                                policy_id
+                            })
+                    };
+
+                    // If the token's policy matches the whitelist policy, evict the transaction
+                    if token_policy == Some(whitelist_policy_id) {
+                        to_remove.push(*tx.hash());
+                        unwhitelisted_count += 1;
+                        break;
+                    }
+                }
+            }
+
+            // Check 6: User fee token preference changes
+            // When a user changes their fee token preference via setUserToken(), transactions
+            // from that user that don't have an explicit fee_token set may now resolve to a
+            // different token at execution time, causing fee payment failures.
+            // Only evict transactions WITHOUT an explicit fee_token (those that rely on storage).
+            if !updates.user_token_changes.is_empty()
+                && tx.transaction.inner().fee_token().is_none()
+                && updates
+                    .user_token_changes
+                    .contains(&tx.transaction.sender())
+            {
+                to_remove.push(*tx.hash());
+                user_token_count += 1;
             }
         }
 
-        if !to_remove.is_empty() {
+        let evicted_count = to_remove.len();
+        if evicted_count > 0 {
+            tracing::debug!(
+                target: "txpool",
+                total = evicted_count,
+                revoked_count,
+                spending_limit_count,
+                liquidity_count,
+                user_token_count,
+                blacklisted_count,
+                unwhitelisted_count,
+                "Evicting invalidated transactions"
+            );
             self.remove_transactions(to_remove);
         }
+        evicted_count
     }
 
     fn add_validated_transactions(
@@ -172,10 +451,22 @@ where
                         authority_ids: authorities
                             .map(|auths| self.protocol_pool.inner().get_sender_ids(auths)),
                     };
-                    let added = self
-                        .aa_2d_pool
-                        .write()
-                        .add_transaction(Arc::new(tx), state_nonce)?;
+
+                    // Get the active Tempo hardfork for expiring nonce handling
+                    let tip_timestamp = self
+                        .protocol_pool
+                        .validator()
+                        .validator()
+                        .inner
+                        .fork_tracker()
+                        .tip_timestamp();
+                    let hardfork = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
+
+                    let added = self.aa_2d_pool.write().add_transaction(
+                        Arc::new(tx),
+                        state_nonce,
+                        hardfork,
+                    )?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
                         self.protocol_pool
@@ -237,6 +528,7 @@ impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
         f.debug_struct("TempoTransactionPool")
             .field("protocol_pool", &"Pool<...>")
             .field("aa_2d_nonce_pool", &"AA2dPool<...>")
+            .field("paused_fee_token_pool", &"PausedFeeTokenPool<...>")
             .finish_non_exhaustive()
     }
 }
@@ -679,7 +971,7 @@ where
         txs
     }
 
-    fn unique_senders(&self) -> HashSet<Address> {
+    fn unique_senders(&self) -> std::collections::HashSet<Address> {
         let mut senders = self.protocol_pool.unique_senders();
         senders.extend(self.aa_2d_pool.read().senders_iter().copied());
         senders

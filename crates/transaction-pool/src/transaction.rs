@@ -8,7 +8,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_evm::FromRecoveredTx;
-use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes};
+use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes, map::AddressMap};
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
@@ -20,7 +20,7 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
-use tempo_precompiles::nonce::NonceManager;
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::TempoTxEnv;
 use thiserror::Error;
@@ -33,16 +33,27 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached payment classification for efficient block building
     is_payment: bool,
+    /// Cached expiring nonce classification
+    is_expiring_nonce: bool,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
+    /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
+    ///
+    /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
+    /// `None` for non-keychain transactions or keys that never expire.
+    key_expiry: OnceLock<Option<u64>>,
 }
 
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
         let is_payment = transaction.is_payment();
+        let is_expiring_nonce = transaction
+            .as_aa()
+            .map(|tx| tx.tx().is_expiring_nonce_tx())
+            .unwrap_or(false);
         Self {
             inner: EthPooledTransaction {
                 cost: calc_gas_balance_spending(
@@ -55,8 +66,10 @@ impl TempoPooledTransaction {
                 transaction,
             },
             is_payment,
+            is_expiring_nonce,
             nonce_key_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
+            key_expiry: OnceLock::new(),
         }
     }
 
@@ -98,13 +111,38 @@ impl TempoPooledTransaction {
     }
 
     /// Returns true if this transaction belongs into the 2D nonce pool:
-    /// - AA transaction with a `nonce key != 0`
+    /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
     pub(crate) fn is_aa_2d(&self) -> bool {
         self.inner
             .transaction
             .as_aa()
             .map(|tx| !tx.tx().nonce_key.is_zero())
             .unwrap_or(false)
+    }
+
+    /// Returns true if this is an expiring nonce transaction.
+    pub(crate) fn is_expiring_nonce(&self) -> bool {
+        self.is_expiring_nonce
+    }
+
+    /// Extracts the keychain subject (account, key_id, fee_token) from this transaction.
+    ///
+    /// Returns `None` if:
+    /// - This is not an AA transaction
+    /// - The signature is not a keychain signature
+    /// - The key_id cannot be recovered from the signature
+    ///
+    /// Used for matching transactions against revocation and spending limit events.
+    pub fn keychain_subject(&self) -> Option<KeychainSubject> {
+        let aa_tx = self.inner().as_aa()?;
+        let keychain_sig = aa_tx.signature().as_keychain()?;
+        let key_id = keychain_sig.key_id(&aa_tx.signature_hash()).ok()?;
+        let fee_token = self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN);
+        Some(KeychainSubject {
+            account: keychain_sig.user_address,
+            key_id,
+            fee_token,
+        })
     }
 
     /// Returns the unique identifier for this AA transaction.
@@ -144,6 +182,23 @@ impl TempoPooledTransaction {
             tx: Arc::new(self.inner.transaction),
         }
     }
+
+    /// Sets the keychain key expiry timestamp for this transaction.
+    ///
+    /// Called during validation when we read the AuthorizedKey from state.
+    /// Pass `Some(expiry)` for keys with finite expiry, `None` for non-keychain txs
+    /// or keys that never expire.
+    pub fn set_key_expiry(&self, expiry: Option<u64>) {
+        let _ = self.key_expiry.set(expiry);
+    }
+
+    /// Returns the keychain key expiry timestamp, if set during validation.
+    ///
+    /// Returns `Some(expiry)` for keychain transactions with finite expiry.
+    /// Returns `None` if not a keychain tx, key never expires, or not yet validated.
+    pub fn key_expiry(&self) -> Option<u64> {
+        self.key_expiry.get().copied().flatten()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -158,6 +213,11 @@ pub enum TempoPoolTransactionError {
     )]
     InvalidFeeToken(Address),
 
+    #[error(
+        "Fee token {0} is paused, please see https://docs.tempo.xyz/errors/tx/PausedFeeToken for more"
+    )]
+    PausedFeeToken(Address),
+
     #[error("No fee token preference configured")]
     MissingFeeToken,
 
@@ -168,6 +228,14 @@ pub enum TempoPoolTransactionError {
 
     #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
     InvalidValidAfter { valid_after: u64, max_allowed: u64 },
+
+    #[error(
+        "max_fee_per_gas {max_fee_per_gas} is below the minimum base fee {min_base_fee} for the current hardfork"
+    )]
+    FeeCapBelowMinBaseFee {
+        max_fee_per_gas: u128,
+        min_base_fee: u64,
+    },
 
     #[error(
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
@@ -209,6 +277,94 @@ pub enum TempoPoolTransactionError {
         "Too many authorizations in AA transaction: {count} exceeds maximum allowed {max_allowed}"
     )]
     TooManyAuthorizations { count: usize, max_allowed: usize },
+
+    /// Thrown when an AA transaction has too many calls.
+    #[error("Too many calls in AA transaction: {count} exceeds maximum allowed {max_allowed}")]
+    TooManyCalls { count: usize, max_allowed: usize },
+
+    /// Thrown when an AA transaction has no calls.
+    #[error("AA transaction has no calls")]
+    NoCalls,
+
+    /// Thrown when a call in an AA transaction is the second call and is a CREATE.
+    #[error("CREATE calls must be the first call in an AA transaction")]
+    CreateCallNotFirst,
+
+    /// Thrown when an AA transaction contains both a CREATE call and an authorization list.
+    #[error("CREATE calls are not allowed in the same transaction that has an authorization list")]
+    CreateCallWithAuthorizationList,
+
+    /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
+    #[error(
+        "Call input size {size} exceeds maximum allowed {max_allowed} bytes (call index: {call_index})"
+    )]
+    CallInputTooLarge {
+        call_index: usize,
+        size: usize,
+        max_allowed: usize,
+    },
+
+    /// Thrown when an AA transaction has too many accounts in its access list.
+    #[error("Too many access list accounts: {count} exceeds maximum allowed {max_allowed}")]
+    TooManyAccessListAccounts { count: usize, max_allowed: usize },
+
+    /// Thrown when an access list entry has too many storage keys.
+    #[error(
+        "Too many storage keys in access list entry {account_index}: {count} exceeds maximum allowed {max_allowed}"
+    )]
+    TooManyStorageKeysPerAccount {
+        account_index: usize,
+        count: usize,
+        max_allowed: usize,
+    },
+
+    /// Thrown when the total number of storage keys across all access list entries is too large.
+    #[error(
+        "Too many total storage keys in access list: {count} exceeds maximum allowed {max_allowed}"
+    )]
+    TooManyTotalStorageKeys { count: usize, max_allowed: usize },
+
+    /// Thrown when a key authorization has too many token limits.
+    #[error(
+        "Too many token limits in key authorization: {count} exceeds maximum allowed {max_allowed}"
+    )]
+    TooManyTokenLimits { count: usize, max_allowed: usize },
+
+    /// Thrown when an expiring nonce transaction's valid_before is too far in the future.
+    #[error(
+        "Expiring nonce 'valid_before' {valid_before} exceeds max allowed {max_allowed} (must be within 30s)"
+    )]
+    ExpiringNonceValidBeforeTooFar { valid_before: u64, max_allowed: u64 },
+
+    /// Thrown when an expiring nonce transaction's hash has already been seen (replay).
+    #[error("Expiring nonce transaction replay: tx hash already seen and not expired")]
+    ExpiringNonceReplay,
+
+    /// Thrown when an expiring nonce transaction is missing the required valid_before field.
+    #[error("Expiring nonce transactions must have 'valid_before' set")]
+    ExpiringNonceMissingValidBefore,
+
+    /// Thrown when an expiring nonce transaction has a non-zero nonce.
+    #[error("Expiring nonce transactions must have nonce == 0")]
+    ExpiringNonceNonceNotZero,
+
+    /// Thrown when an access key has expired.
+    #[error("Access key expired: expiry {expiry} <= current time {current_time}")]
+    AccessKeyExpired { expiry: u64, current_time: u64 },
+
+    /// Thrown when a KeyAuthorization has expired.
+    #[error("KeyAuthorization expired: expiry {expiry} <= current time {current_time}")]
+    KeyAuthorizationExpired { expiry: u64, current_time: u64 },
+
+    /// Thrown when a keychain transaction's fee token cost exceeds the spending limit.
+    #[error(
+        "Fee token spending limit exceeded: cost {cost} exceeds remaining limit {remaining} for token {fee_token}"
+    )]
+    SpendingLimitExceeded {
+        fee_token: Address,
+        cost: U256,
+        remaining: U256,
+    },
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -216,16 +372,34 @@ impl PoolTransactionError for TempoPoolTransactionError {
         match self {
             Self::ExceedsNonPaymentLimit
             | Self::InvalidFeeToken(_)
+            | Self::PausedFeeToken(_)
             | Self::MissingFeeToken
             | Self::BlackListedFeePayer { .. }
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. }
+            | Self::ExpiringNonceValidBeforeTooFar { .. }
+            | Self::ExpiringNonceReplay
             | Self::Keychain(_)
-            | Self::InsufficientLiquidity(_) => false,
+            | Self::InsufficientLiquidity(_)
+            | Self::SpendingLimitExceeded { .. } => false,
             Self::NonZeroValue
             | Self::SubblockNonceKey
             | Self::InsufficientGasForAAIntrinsicCost { .. }
-            | Self::TooManyAuthorizations { .. } => true,
+            | Self::TooManyAuthorizations { .. }
+            | Self::TooManyCalls { .. }
+            | Self::CallInputTooLarge { .. }
+            | Self::TooManyAccessListAccounts { .. }
+            | Self::TooManyStorageKeysPerAccount { .. }
+            | Self::TooManyTotalStorageKeys { .. }
+            | Self::TooManyTokenLimits { .. }
+            | Self::ExpiringNonceMissingValidBefore
+            | Self::ExpiringNonceNonceNotZero
+            | Self::AccessKeyExpired { .. }
+            | Self::KeyAuthorizationExpired { .. }
+            | Self::NoCalls
+            | Self::CreateCallWithAuthorizationList
+            | Self::CreateCallNotFirst
+            | Self::FeeCapBelowMinBaseFee { .. } => true,
         }
     }
 
@@ -463,14 +637,14 @@ mod tests {
         let sender = Address::random();
         let value = U256::from(1000);
         let tx = TxBuilder::aa(sender)
-            .gas_limit(100_000)
+            .gas_limit(1_000_000)
             .value(value)
             .build();
 
         // fee_token_cost = cost - value = gas spending
-        // gas spending = calc_gas_balance_spending(100_000, 2_000_000_000)
-        //              = (100_000 * 2_000_000_000) / 1_000_000_000_000 = 200
-        let expected_fee_cost = U256::from(200);
+        // gas spending = calc_gas_balance_spending(1_000_000, 20_000_000_000)
+        //              = (1_000_000 * 20_000_000_000) / 1_000_000_000_000 = 20000
+        let expected_fee_cost = U256::from(20000);
         assert_eq!(tx.fee_token_cost(), expected_fee_cost);
         assert_eq!(tx.inner.cost, expected_fee_cost + value);
     }
@@ -720,8 +894,8 @@ mod tests {
         let aa_tx = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
-            max_fee_per_gas: 2_000_000_000,
-            gas_limit: 100_000,
+            max_fee_per_gas: 20_000_000_000,
+            gas_limit: 1_000_000,
             calls: vec![Call {
                 to: TxKind::Call(Address::random()),
                 value: U256::ZERO,
@@ -747,15 +921,15 @@ mod tests {
     fn test_transaction_trait_forwarding() {
         let sender = Address::random();
         let tx = TxBuilder::aa(sender)
-            .gas_limit(100_000)
+            .gas_limit(1_000_000)
             .value(U256::from(500))
             .build();
 
         // Test various Transaction trait methods
         assert_eq!(tx.chain_id(), Some(1));
         assert_eq!(tx.nonce(), 0);
-        assert_eq!(tx.gas_limit(), 100_000);
-        assert_eq!(tx.max_fee_per_gas(), 2_000_000_000);
+        assert_eq!(tx.gas_limit(), 1_000_000);
+        assert_eq!(tx.max_fee_per_gas(), 20_000_000_000);
         assert_eq!(tx.max_priority_fee_per_gas(), Some(1_000_000_000));
         assert!(tx.is_dynamic_fee());
         assert!(!tx.is_create());
@@ -764,11 +938,133 @@ mod tests {
     #[test]
     fn test_cost_returns_zero() {
         let tx = TxBuilder::aa(Address::random())
-            .gas_limit(100_000)
+            .gas_limit(1_000_000)
             .value(U256::from(1000))
             .build();
 
         // PoolTransaction::cost() returns &U256::ZERO for Tempo
         assert_eq!(*tx.cost(), U256::ZERO);
+    }
+}
+
+// ========================================
+// Keychain invalidation types
+// ========================================
+
+/// Index of revoked keychain keys, keyed by account for efficient lookup.
+///
+/// Uses account as the primary key with a list of revoked key_ids,
+/// avoiding the need to construct full keys during lookup.
+#[derive(Debug, Clone, Default)]
+pub struct RevokedKeys {
+    /// Map from account to list of revoked key_ids.
+    by_account: AddressMap<Vec<Address>>,
+}
+
+impl RevokedKeys {
+    /// Creates a new empty index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a revoked key.
+    pub fn insert(&mut self, account: Address, key_id: Address) {
+        self.by_account.entry(account).or_default().push(key_id);
+    }
+
+    /// Returns true if the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.by_account.is_empty()
+    }
+
+    /// Returns the total number of revoked keys.
+    pub fn len(&self) -> usize {
+        self.by_account.values().map(Vec::len).sum()
+    }
+
+    /// Returns true if the given (account, key_id) combination is in the index.
+    pub fn contains(&self, account: Address, key_id: Address) -> bool {
+        self.by_account
+            .get(&account)
+            .is_some_and(|key_ids| key_ids.contains(&key_id))
+    }
+}
+
+/// Index of spending limit updates, keyed by account for efficient lookup.
+///
+/// Uses account as the primary key with a list of (key_id, token) pairs,
+/// avoiding the need to construct full keys during lookup.
+#[derive(Debug, Clone, Default)]
+pub struct SpendingLimitUpdates {
+    /// Map from account to list of (key_id, token) pairs that had limit changes.
+    by_account: AddressMap<Vec<(Address, Address)>>,
+}
+
+impl SpendingLimitUpdates {
+    /// Creates a new empty index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a spending limit update.
+    pub fn insert(&mut self, account: Address, key_id: Address, token: Address) {
+        self.by_account
+            .entry(account)
+            .or_default()
+            .push((key_id, token));
+    }
+
+    /// Returns true if the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.by_account.is_empty()
+    }
+
+    /// Returns the total number of spending limit updates.
+    pub fn len(&self) -> usize {
+        self.by_account.values().map(Vec::len).sum()
+    }
+
+    /// Returns true if the given (account, key_id, token) combination is in the index.
+    pub fn contains(&self, account: Address, key_id: Address, token: Address) -> bool {
+        self.by_account
+            .get(&account)
+            .is_some_and(|pairs: &Vec<(Address, Address)>| {
+                pairs.iter().any(|&(k, t)| k == key_id && t == token)
+            })
+    }
+}
+
+/// Keychain identity extracted from a transaction.
+///
+/// Contains the account (user_address), key_id, and fee_token for matching against
+/// revocation and spending limit events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeychainSubject {
+    /// The account that owns the keychain key (from `user_address` in the signature).
+    pub account: Address,
+    /// The key ID recovered from the keychain signature.
+    pub key_id: Address,
+    /// The fee token used by this transaction.
+    pub fee_token: Address,
+}
+
+impl KeychainSubject {
+    /// Returns true if this subject matches any of the revoked keys.
+    ///
+    /// Uses account-keyed index for O(1) account lookup, then linear scan over
+    /// the typically small list of key_ids for that account.
+    pub fn matches_revoked(&self, revoked_keys: &RevokedKeys) -> bool {
+        revoked_keys.contains(self.account, self.key_id)
+    }
+
+    /// Returns true if this subject is affected by any of the spending limit updates.
+    ///
+    /// Uses account-keyed index for O(1) account lookup, then linear scan over
+    /// the typically small list of (key_id, token) pairs for that account.
+    pub fn matches_spending_limit_update(
+        &self,
+        spending_limit_updates: &SpendingLimitUpdates,
+    ) -> bool {
+        spending_limit_updates.contains(self.account, self.key_id, self.fee_token)
     }
 }

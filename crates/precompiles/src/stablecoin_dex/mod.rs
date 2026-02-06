@@ -19,7 +19,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
     tip20_factory::TIP20Factory,
-    tip403_registry::{ITIP403Registry, TIP403Registry},
+    tip403_registry::{AuthRole, TIP403Registry},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
@@ -402,8 +402,9 @@ impl StablecoinDEX {
         };
 
         // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from)
+        // Direction: DEX → sender (order placer receives non-escrow token when filled)
         TIP20Token::from_address(non_escrow_token)?
-            .ensure_transfer_authorized(sender, self.address)?;
+            .ensure_transfer_authorized(self.address, sender)?;
 
         // Debit from user's balance or transfer from wallet
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
@@ -550,8 +551,9 @@ impl StablecoinDEX {
         };
 
         // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from or below)
+        // Direction: DEX → sender (order placer receives non-escrow token when filled)
         TIP20Token::from_address(non_escrow_token)?
-            .ensure_transfer_authorized(sender, self.address)?;
+            .ensure_transfer_authorized(self.address, sender)?;
 
         // Debit from user's balance only. This is set to true after a flip order is filled and the
         // subsequent flip order is being placed.
@@ -1045,6 +1047,7 @@ impl StablecoinDEX {
 
     /// Cancel a stale order where the maker is forbidden by TIP-403 policy
     /// Allows anyone to clean up stale orders from blacklisted makers
+    /// TIP-1015: For T2+, checks sender authorization (maker must be able to send the escrowed token)
     pub fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
         let order = self.orders[order_id].read()?;
 
@@ -1059,20 +1062,13 @@ impl StablecoinDEX {
             book.base
         };
 
-        let token_contract = TIP20Token::from_address(token)?;
-        let policy_id = token_contract.transfer_policy_id()?;
-
-        let registry = TIP403Registry::new();
-        let is_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: order.maker(),
-        })?;
-
-        if is_authorized {
-            return Err(StablecoinDEXError::order_not_stale().into());
+        let policy_id = TIP20Token::from_address(token)?.transfer_policy_id()?;
+        // Invalid policy ids throw under_overflow. Treat as unauthorized to clear the orders.
+        match TIP403Registry::new().is_authorized_as(policy_id, order.maker(), AuthRole::sender()) {
+            Ok(true) => Err(StablecoinDEXError::order_not_stale().into()),
+            Err(e) if e != TempoPrecompileError::under_overflow() => Err(e),
+            _ => self.cancel_active_order(order),
         }
-
-        self.cancel_active_order(order)
     }
 
     /// Withdraw tokens from exchange balance
@@ -1148,16 +1144,17 @@ impl StablecoinDEX {
             };
 
             let amount_out_tick = if is_bid {
-                // Round down amount_out_tick (user receives less quote)
+                // Round down amount_out_tick (user receives less quote).
+                // Cap at remaining_out to avoid underflow from round-trip rounding:
+                // when tick > 0, base_to_quote(quote_to_base(x, Up), Down) can exceed x by 1.
                 base_to_quote(fill_amount, current_tick, RoundingDirection::Down)
                     .ok_or(TempoPrecompileError::under_overflow())?
+                    .min(remaining_out)
             } else {
                 fill_amount
             };
 
-            remaining_out = remaining_out
-                .checked_sub(amount_out_tick)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            remaining_out = remaining_out.saturating_sub(amount_out_tick);
             amount_in = amount_in
                 .checked_add(amount_in_tick)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1373,6 +1370,7 @@ impl StablecoinDEX {
 #[cfg(test)]
 mod tests {
     use alloy::primitives::IntoLogData;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     use crate::{
@@ -2168,6 +2166,43 @@ mod tests {
             let expected_amount_in =
                 (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128);
             assert_eq!(amount_in, expected_amount_in);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_quote_exact_out_bid_positive_tick_no_underflow() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
+            exchange.create_pair(base_token)?;
+
+            let tick = 10;
+            let order_amount = MIN_ORDER_AMOUNT;
+            exchange.place(alice, base_token, order_amount, true, tick)?;
+
+            for amount_out in [100_001u128, 100_003, 100_007, 100_009, 100_011] {
+                let amount_in = exchange
+                    .quote_swap_exact_amount_out(base_token, quote_token, amount_out)
+                    .unwrap_or_else(|_| {
+                        panic!("quote_exact_out should not underflow for amount_out={amount_out}")
+                    });
+
+                let expected =
+                    orderbook::quote_to_base(amount_out, tick, RoundingDirection::Up).unwrap();
+                assert_eq!(
+                    amount_in, expected,
+                    "amount_in should equal quote_to_base(amount_out, tick, Up) for amount_out={amount_out}"
+                );
+            }
 
             Ok(())
         })
@@ -3772,10 +3807,7 @@ mod tests {
                     restricted: true,
                 },
             )?;
-            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: alice,
-            })?);
+            assert!(!registry.is_authorized_as(policy_id, alice, AuthRole::sender())?);
 
             // Attempt to place order using internal balance - should fail
             let tick = 0i16;
@@ -4029,6 +4061,74 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_compound_policy_non_escrow_token_direction() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let (alice, admin) = (Address::random(), Address::random());
+            let mut registry = TIP403Registry::new();
+
+            // Create a sender policy that allows anyone (always-allow = policy 1)
+            // Create a recipient whitelist that does NOT include alice
+            let recipient_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            // Don't add alice to the recipient whitelist - she cannot receive
+
+            // Create compound policy: anyone can send, but only whitelisted can receive
+            let compound_id = registry.create_compound_policy(
+                admin,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: 1,                   // always-allow: anyone can send
+                    recipientPolicyId: recipient_policy, // whitelist: alice NOT included
+                    mintRecipientPolicyId: 1,            // always-allow: anyone can receive mints
+                },
+            )?;
+
+            // Setup tokens
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+
+            // Apply compound policy to quote token (the non-escrow token for asks)
+            let mut quote = TIP20Token::from_address(quote_addr)?;
+            quote.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: compound_id,
+                },
+            )?;
+
+            exchange.create_pair(base_addr)?;
+
+            // Alice places an ask order: sells base token, receives quote token when filled
+            // Since alice is NOT in the recipient whitelist for quote token,
+            // and the non-escrow token (quote) flows DEX → alice, this should FAIL.
+            let res_ask = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0);
+            // Same for flip orders
+            let res_flip =
+                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0, false);
+
+            for res in [res_ask, res_flip] {
+                assert!(
+                    matches!(
+                        res.unwrap_err(),
+                        TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+                    ),
+                    "Order should fail: alice cannot receive quote token (non-escrow) per compound policy"
+                );
+            }
+            Ok(())
+        })
+    }
+
     #[test]
     fn test_swap_exact_amount_out_rounding() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
