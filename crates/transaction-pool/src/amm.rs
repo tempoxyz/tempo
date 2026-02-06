@@ -4,6 +4,7 @@ use alloy_primitives::{
     Address, U256,
     map::{AddressMap, HashMap, U256Map},
 };
+use itertools::Itertools;
 use parking_lot::RwLock;
 use reth_primitives_traits::{BlockHeader, SealedHeader};
 use reth_provider::{
@@ -23,17 +24,6 @@ use tempo_revm::IntoAddress;
 
 /// Number of recent validators/tokens to track.
 const LAST_SEEN_WINDOW: usize = 10;
-
-/// Deduplicates addresses from a sliding window, ordered by frequency (most frequent first).
-fn dedup_by_frequency(window: &VecDeque<Address>) -> Vec<Address> {
-    let mut counts: AddressMap<u8> = AddressMap::default();
-    for addr in window {
-        *counts.entry(*addr).or_default() += 1;
-    }
-    let mut result: Vec<_> = counts.into_iter().collect();
-    result.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
-    result.into_iter().map(|(addr, _)| addr).collect()
-}
 
 #[derive(Debug, Clone)]
 pub struct AmmLiquidityCache {
@@ -204,14 +194,14 @@ impl AmmLiquidityCache {
         if inner.last_seen_tokens.len() > LAST_SEEN_WINDOW {
             inner.last_seen_tokens.pop_front();
         }
-        inner.unique_tokens = dedup_by_frequency(&inner.last_seen_tokens);
+        inner.unique_tokens = inner.last_seen_tokens.iter().copied().unique().collect();
 
         // Track the new observed validator (block producer)
         inner.last_seen_validators.push_back(beneficiary);
         if inner.last_seen_validators.len() > LAST_SEEN_WINDOW {
             inner.last_seen_validators.pop_front();
         }
-        inner.unique_validators = dedup_by_frequency(&inner.last_seen_validators);
+        inner.unique_validators = inner.last_seen_validators.iter().copied().unique().collect();
 
         Ok(())
     }
@@ -486,28 +476,27 @@ mod tests {
             Some(&Address::new([1; 20]))
         );
 
-        inner.unique_validators = dedup_by_frequency(&inner.last_seen_validators);
+        inner.unique_validators = inner.last_seen_validators.iter().copied().unique().collect();
         assert!(inner.unique_validators.contains(&new_validator));
     }
 
     #[test]
-    fn test_unique_tokens_deduplication_and_frequency_ordering() {
+    fn test_unique_tokens_deduplication() {
         let mut inner = AmmLiquidityCacheInner::default();
 
         let token_a = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
         let token_b = address!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
 
-        // token_a appears once, token_b appears three times
         inner.last_seen_tokens.push_back(token_a);
         inner.last_seen_tokens.push_back(token_b);
         inner.last_seen_tokens.push_back(token_b);
         inner.last_seen_tokens.push_back(token_b);
 
-        inner.unique_tokens = dedup_by_frequency(&inner.last_seen_tokens);
+        inner.unique_tokens = inner.last_seen_tokens.iter().copied().unique().collect();
 
         assert_eq!(inner.unique_tokens.len(), 2, "duplicates must be removed");
-        assert_eq!(inner.unique_tokens[0], token_b, "most frequent token first");
-        assert_eq!(inner.unique_tokens[1], token_a);
+        assert_eq!(inner.unique_tokens[0], token_a);
+        assert_eq!(inner.unique_tokens[1], token_b);
     }
 
     // ============================================

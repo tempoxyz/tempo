@@ -38,6 +38,7 @@ alloy-sol-types.workspace = true
 
 futures.workspace = true
 tracing.workspace = true
+itertools.workspace = true
 parking_lot.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
