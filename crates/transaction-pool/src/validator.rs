@@ -401,6 +401,10 @@ where
                 // TIP-1000: Storage pricing updates for launch
                 // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
                 init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+            } else if !tx.nonce_key.is_zero() {
+                // Existing 2D nonce key (nonce > 0): cold SLOAD + warm SSTORE reset
+                // TIP-1000 Invariant 3: existing state updates charge 5,000 gas
+                init_and_floor_gas.initial_gas += EXISTING_NONCE_KEY_GAS;
             }
             // In CREATE tx with 2d nonce, check if account.nonce is 0, if so, add 250,000 gas.
             // This covers caller creation of account.
