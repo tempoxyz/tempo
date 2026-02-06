@@ -112,24 +112,6 @@ impl TipFeeManager {
         Ok(())
     }
 
-    /// T2+: Ensures validator reserves haven't dropped below the pending fee swap reservation.
-    ///
-    /// Returns an error if the given `validator_reserve` is less than the amount reserved
-    /// for pending fee swaps.
-    fn ensure_no_reserved_liquidity_violation(
-        &self,
-        pool_id: B256,
-        validator_reserve: u128,
-    ) -> Result<()> {
-        if self.storage.spec().is_t2() {
-            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
-            if validator_reserve < reserved {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
-            }
-        }
-        Ok(())
-    }
-
     /// Swap to rebalance a fee token pool
     pub fn rebalance_swap(
         &mut self,
@@ -171,7 +153,12 @@ impl TipFeeManager {
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        self.ensure_no_reserved_liquidity_violation(pool_id, pool.reserve_validator_token)?;
+        if self.storage.spec().is_t2() {
+            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
+            if pool.reserve_validator_token < reserved {
+                return Err(TIPFeeAMMError::insufficient_liquidity().into());
+            }
+        }
 
         self.pools[pool_id].write(pool)?;
 
@@ -361,7 +348,12 @@ impl TipFeeManager {
             .reserve_validator_token
             .checked_sub(validator_amount)
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
-        self.ensure_no_reserved_liquidity_violation(pool_id, available_after_burn)?;
+        if self.storage.spec().is_t2() {
+            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
+            if available_after_burn < reserved {
+                return Err(TIPFeeAMMError::insufficient_liquidity().into());
+            }
+        }
 
         // Burn LP tokens
         self.set_liquidity_balances(
@@ -1005,22 +997,21 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
             let liquidity = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
-            let pool_id =
-                setup_pool_with_liquidity(&mut amm, user_token, validator_token, liquidity, liquidity)?;
+            let pool_id = setup_pool_with_liquidity(
+                &mut amm,
+                user_token,
+                validator_token,
+                liquidity,
+                liquidity,
+            )?;
 
             // Exactly at boundary should succeed (100 * 0.997 = 99.7, which is < 100)
             let ok_amount = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
-            assert!(
-                amm.check_sufficient_liquidity(pool_id, ok_amount)
-                    .is_ok()
-            );
+            assert!(amm.check_sufficient_liquidity(pool_id, ok_amount).is_ok());
 
             // Just over boundary should fail (101 * 0.997 = 100.697, which is > 100)
             let too_much = uint!(101_U256) * uint!(10_U256).pow(U256::from(6));
-            assert!(
-                amm.check_sufficient_liquidity(pool_id, too_much)
-                    .is_err()
-            );
+            assert!(amm.check_sufficient_liquidity(pool_id, too_much).is_err());
 
             Ok(())
         })
