@@ -2,7 +2,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use alloy_primitives::{
     Address, U256,
-    map::{AddressMap, HashMap, U256Map},
+    map::{AddressHashSet, AddressMap, HashMap, U256Map},
 };
 use parking_lot::RwLock;
 use reth_primitives_traits::{BlockHeader, SealedHeader};
@@ -193,14 +193,16 @@ impl AmmLiquidityCache {
         if inner.last_seen_tokens.len() > LAST_SEEN_WINDOW {
             inner.last_seen_tokens.pop_front();
         }
-        inner.unique_tokens = inner.last_seen_tokens.iter().copied().collect();
+        let seen: AddressHashSet = inner.last_seen_tokens.iter().copied().collect();
+        inner.unique_tokens = seen.into_iter().collect();
 
         // Track the new observed validator (block producer)
         inner.last_seen_validators.push_back(beneficiary);
         if inner.last_seen_validators.len() > LAST_SEEN_WINDOW {
             inner.last_seen_validators.pop_front();
         }
-        inner.unique_validators = inner.last_seen_validators.iter().copied().collect();
+        let seen: AddressHashSet = inner.last_seen_validators.iter().copied().collect();
+        inner.unique_validators = seen.into_iter().collect();
 
         Ok(())
     }
@@ -475,7 +477,8 @@ mod tests {
             Some(&Address::new([1; 20]))
         );
 
-        inner.unique_validators = inner.last_seen_validators.iter().copied().collect();
+        let seen: AddressHashSet = inner.last_seen_validators.iter().copied().collect();
+        inner.unique_validators = seen.into_iter().collect();
         assert!(inner.unique_validators.contains(&new_validator));
     }
 
@@ -490,10 +493,44 @@ mod tests {
         inner.last_seen_tokens.push_back(token_b);
         inner.last_seen_tokens.push_back(token_a);
 
-        inner.unique_tokens = inner.last_seen_tokens.iter().copied().collect();
+        let seen: AddressHashSet = inner.last_seen_tokens.iter().copied().collect();
+        inner.unique_tokens = seen.into_iter().collect();
 
         assert!(inner.unique_tokens.contains(&token_a));
         assert!(inner.unique_tokens.contains(&token_b));
+        assert_eq!(inner.unique_tokens.len(), 2);
+    }
+
+    #[test]
+    fn test_unique_tokens_deduplicates() {
+        let mut inner = AmmLiquidityCacheInner::default();
+
+        let token = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        for _ in 0..5 {
+            inner.last_seen_tokens.push_back(token);
+        }
+
+        let seen: AddressHashSet = inner.last_seen_tokens.iter().copied().collect();
+        inner.unique_tokens = seen.into_iter().collect();
+
+        assert_eq!(inner.unique_tokens.len(), 1);
+        assert!(inner.unique_tokens.contains(&token));
+    }
+
+    #[test]
+    fn test_unique_validators_deduplicates() {
+        let mut inner = AmmLiquidityCacheInner::default();
+
+        let validator = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        for _ in 0..5 {
+            inner.last_seen_validators.push_back(validator);
+        }
+
+        let seen: AddressHashSet = inner.last_seen_validators.iter().copied().collect();
+        inner.unique_validators = seen.into_iter().collect();
+
+        assert_eq!(inner.unique_validators.len(), 1);
+        assert!(inner.unique_validators.contains(&validator));
     }
 
     // ============================================
