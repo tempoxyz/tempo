@@ -4,7 +4,7 @@ This document specifies the second version of the Validator Config precompile,
 introducing an append-only, delete-once design that eliminates the need for
 historical state access during node recovery.
 
-- **TIP ID**: TIP-XXXX
+- **TIP ID**: TIP-1017
 - **Authors/Owners**: Janis
 - **Status**: Draft
 - **Related Specs/TIPs**: N/A
@@ -16,7 +16,7 @@ historical state access during node recovery.
 
 ## Abstract
 
-TIP-XXXX introduces ValidatorConfig V2, a new precompile for managing consensus
+TIP-1017 introduces ValidatorConfig V2, a new precompile for managing consensus
 validators with append-only semantics. Unlike the original ValidatorConfig, V2
 replaces the mutable `active` boolean with `addedAtHeight` (set when adding an
 entry) and `deactivatedAtHeight` fields (set when deactivating), enabling nodes to
