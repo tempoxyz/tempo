@@ -201,7 +201,12 @@ impl AmmLiquidityCache {
         if inner.last_seen_validators.len() > LAST_SEEN_WINDOW {
             inner.last_seen_validators.pop_front();
         }
-        inner.unique_validators = inner.last_seen_validators.iter().copied().unique().collect();
+        inner.unique_validators = inner
+            .last_seen_validators
+            .iter()
+            .copied()
+            .unique()
+            .collect();
 
         Ok(())
     }
@@ -476,7 +481,12 @@ mod tests {
             Some(&Address::new([1; 20]))
         );
 
-        inner.unique_validators = inner.last_seen_validators.iter().copied().unique().collect();
+        inner.unique_validators = inner
+            .last_seen_validators
+            .iter()
+            .copied()
+            .unique()
+            .collect();
         assert!(inner.unique_validators.contains(&new_validator));
     }
 
