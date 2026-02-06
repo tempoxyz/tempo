@@ -949,9 +949,7 @@ contract StablecoinDEXTest is BaseTest {
             try exchange.priceToTick(price) {
                 revert CallShouldHaveReverted();
             } catch (bytes memory err) {
-                assertEq(
-                    err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector)
-                );
+                assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
             }
         } else {
             // Valid price range and aligned to tick spacing - should succeed
