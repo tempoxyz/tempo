@@ -136,9 +136,7 @@ impl InspectBlock {
                 // Extract dealer pubkey from the start of extra_data (32 bytes for ed25519)
                 let dealer_hex = const_hex::encode_prefixed(&extra_data[..32]);
 
-                ExtraDataContent::DealerLog {
-                    dealer: dealer_hex,
-                }
+                ExtraDataContent::DealerLog { dealer: dealer_hex }
             } else if let Ok(outcome) = OnchainDkgOutcome::read(&mut extra_data.as_ref()) {
                 ExtraDataContent::DkgOutcome {
                     epoch: outcome.epoch.get(),

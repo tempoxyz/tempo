@@ -306,10 +306,7 @@ impl ReplayDkg {
                         let msg = if height == epoch_end {
                             format!("Block {height}: epoch boundary (DKG outcome)")
                         } else {
-                            format!(
-                                "Block {height}: failed reading extra_data: {}",
-                                err.to_string()
-                            )
+                            format!("Block {height}: failed reading extra_data: {err:?}",)
                         };
                         progress.println(msg);
                     }
