@@ -90,17 +90,8 @@ impl TipFeeManager {
     }
 
     /// Ensures that pool has enough liquidity for a fee swap and reserves funds.
-    ///
-    /// T2+: Reserves the required liquidity using transient storage to ensure it remains
-    /// available until the fee swap completes in collect_fee_post_tx.
-    /// Pre-T2: Only checks current reserves without reservation.
-    pub fn check_sufficient_liquidity(
-        &mut self,
-        user_token: Address,
-        validator_token: Address,
-        max_amount: U256,
-    ) -> Result<()> {
-        let pool_id = PoolKey::new(user_token, validator_token).get_id();
+    /// Returns the amount out needed for the swap
+    pub fn check_sufficient_liquidity(&mut self, pool_id: B256, max_amount: U256) -> Result<u128> {
         let amount_out_needed = compute_amount_out(max_amount)?;
         let pool = self.pools[pool_id].read()?;
 
@@ -108,16 +99,34 @@ impl TipFeeManager {
             return Err(TIPFeeAMMError::insufficient_liquidity().into());
         }
 
-        // T2+: Reserve the liquidity to ensure the fee swap can be fulfilled
-        // post execution
+        amount_out_needed
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())
+    }
+
+    ///  Reserves pool liquidity in transient storage for a pending fee swap.
+    #[inline]
+    pub fn reserve_pool_liquidity(&mut self, pool_id: B256, amount: u128) -> Result<()> {
+        self.pending_fee_swap_reservation[pool_id].t_write(amount)?;
+
+        Ok(())
+    }
+
+    /// T2+: Ensures validator reserves haven't dropped below the pending fee swap reservation.
+    ///
+    /// Returns an error if the given `validator_reserve` is less than the amount reserved
+    /// for pending fee swaps.
+    fn ensure_no_reserved_liquidity_violation(
+        &self,
+        pool_id: B256,
+        validator_reserve: u128,
+    ) -> Result<()> {
         if self.storage.spec().is_t2() {
-            let amount_out: u128 = amount_out_needed
-                .try_into()
-                .map_err(|_| TempoPrecompileError::under_overflow())?;
-
-            self.reserved_liquidity[pool_id].t_write(amount_out)?;
+            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
+            if validator_reserve < reserved {
+                return Err(TIPFeeAMMError::insufficient_liquidity().into());
+            }
         }
-
         Ok(())
     }
 
@@ -161,6 +170,8 @@ impl TipFeeManager {
             .reserve_user_token
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
+
+        self.ensure_no_reserved_liquidity_violation(pool_id, pool.reserve_validator_token)?;
 
         self.pools[pool_id].write(pool)?;
 
@@ -342,20 +353,15 @@ impl TipFeeManager {
             self.calculate_burn_amounts(&pool, pool_id, liquidity)?;
 
         // T2+: Check that burn leaves enough liquidity for pending fee swaps
-        // Reserved liquidity is set by check_sufficient_liquidity() during collect_fee_pre_tx
-        if self.storage.spec().is_t2() {
-            let reserved = self.reserved_liquidity[pool_id].t_read()?;
-            let validator_amount: u128 = amount_validator_token
-                .try_into()
-                .map_err(|_| TIPFeeAMMError::invalid_amount())?;
-            let available_after_burn = pool
-                .reserve_validator_token
-                .checked_sub(validator_amount)
-                .ok_or(TIPFeeAMMError::insufficient_reserves())?;
-            if available_after_burn < reserved {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
-            }
-        }
+        // Reservation is set by reserve_pool_liquidity() via check_sufficient_liquidity()
+        let validator_amount: u128 = amount_validator_token
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
+        let available_after_burn = pool
+            .reserve_validator_token
+            .checked_sub(validator_amount)
+            .ok_or(TIPFeeAMMError::insufficient_reserves())?;
+        self.ensure_no_reserved_liquidity_violation(pool_id, available_after_burn)?;
 
         // Burn LP tokens
         self.set_liquidity_balances(
@@ -1329,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t2_reserves_liquidity() -> eyre::Result<()> {
+    fn test_t2_reserve_pool_liquidity() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let admin = Address::random();
 
@@ -1359,7 +1365,7 @@ mod tests {
             let max_amount = uint!(10000_U256);
             amm.check_sufficient_liquidity(user_token, validator_token, max_amount)?;
 
-            let reserved = amm.reserved_liquidity[pool_id].t_read()?;
+            let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
             let expected_reserved: u128 = compute_amount_out(max_amount)?.try_into().unwrap();
             assert_eq!(reserved, expected_reserved);
 
@@ -1441,6 +1447,77 @@ mod tests {
             let result = amm.burn(admin, user_token, validator_token, small_burn, recipient);
 
             assert!(result.is_ok());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t2_rebalance_swap_respects_reservation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let admin = Address::random();
+        let to = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mint_amount = uint!(100000000_U256);
+            let mut amm = TipFeeManager::new();
+            let amm_address = amm.address;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(admin, mint_amount)
+                .with_mint(amm_address, mint_amount)
+                .apply()?
+                .address();
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(admin, mint_amount)
+                .apply()?
+                .address();
+
+            let liq = uint!(100000_U256);
+            let pool_id =
+                setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
+
+            amm.check_sufficient_liquidity(user_token, validator_token, uint!(50000_U256))?;
+
+            amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)?;
+            let pool = amm.pools[pool_id].read()?;
+            let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
+            assert!(pool.reserve_validator_token >= reserved);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_pre_t2_rebalance_swap_skips_reservation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+        let to = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mint_amount = uint!(100000000_U256);
+            let mut amm = TipFeeManager::new();
+            let amm_address = amm.address;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(admin, mint_amount)
+                .with_mint(amm_address, mint_amount)
+                .apply()?
+                .address();
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(admin, mint_amount)
+                .apply()?
+                .address();
+
+            let liq = uint!(100000_U256);
+            setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
+            amm.check_sufficient_liquidity(user_token, validator_token, uint!(90000_U256))?;
+            assert!(
+                amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)
+                    .is_ok()
+            );
 
             Ok(())
         })
