@@ -1008,7 +1008,7 @@ mod tests {
         PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
     };
     use std::sync::Arc;
-    use tempo_chainspec::spec::MODERATO;
+    use tempo_chainspec::spec::{MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP};
     use tempo_precompiles::{
         PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
         tip20::{TIP20Token, slots as tip20_slots},
@@ -1021,7 +1021,7 @@ mod tests {
     fn create_mock_block(timestamp: u64) -> SealedBlock<reth_ethereum_primitives::Block> {
         let header = Header {
             timestamp,
-            gas_limit: 30_000_000,
+            gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
             ..Default::default()
         };
         let block = reth_ethereum_primitives::Block {
@@ -1063,7 +1063,7 @@ mod tests {
         );
         let block_with_gas = Block {
             header: Header {
-                gas_limit: 30_000_000,
+                gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                 ..Default::default()
             },
             ..Default::default()
@@ -1456,7 +1456,7 @@ mod tests {
             };
 
             let valid_before = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-                Some(current_time + 10)
+                Some(current_time + 25)
             } else {
                 None
             };
@@ -1469,6 +1469,7 @@ mod tests {
                 calls,
                 nonce_key,
                 nonce: 0,
+                valid_before,
                 fee_token: Some(address!("0000000000000000000000000000000000000002")),
                 valid_before,
                 ..Default::default()
@@ -1782,11 +1783,10 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        let spec = MODERATO.tempo_hardfork_at(current_time);
-        let min_base_fee = spec.base_fee();
-
+        // Create a transaction with max_fee_per_gas exactly at minimum
+        let active_fork = MODERATO.tempo_hardfork_at(current_time);
         let transaction = TxBuilder::aa(Address::random())
-            .max_fee(min_base_fee as u128)
+            .max_fee(active_fork.base_fee() as u128)
             .max_priority_fee(1_000_000_000)
             .build();
 
@@ -2483,7 +2483,7 @@ mod tests {
             let block = reth_ethereum_primitives::Block {
                 header: Header {
                     timestamp: tip_timestamp,
-                    gas_limit: 30_000_000,
+                    gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                     ..Default::default()
                 },
                 body: Default::default(),
@@ -3334,6 +3334,7 @@ mod tests {
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(address!("0000000000000000000000000000000000000002"))
             .calls(calls)
+            .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .build();
         let validator = setup_validator(&transaction, current_time);
 
@@ -3392,6 +3393,7 @@ mod tests {
             .fee_token(address!("0000000000000000000000000000000000000002"))
             .calls(calls)
             .authorization_list(vec![authorization])
+            .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .build();
         let validator = setup_validator(&transaction, current_time);
 
