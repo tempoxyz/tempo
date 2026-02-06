@@ -417,15 +417,18 @@ impl VectorExecutor {
                 } else {
                     tx.calls
                         .iter()
-                        .map(|c| tempo_primitives::transaction::Call {
-                            to: match c.to {
-                                Some(addr) => TxKind::Call(addr),
-                                None => TxKind::Create,
-                            },
-                            value: c.value,
-                            input: c.input.clone(),
+                        .map(|c| {
+                            let input = c.resolve_calldata()?;
+                            Ok(tempo_primitives::transaction::Call {
+                                to: match c.to {
+                                    Some(addr) => TxKind::Call(addr),
+                                    None => TxKind::Create,
+                                },
+                                value: c.value,
+                                input,
+                            })
                         })
-                        .collect()
+                        .collect::<eyre::Result<Vec<_>>>()?
                 };
 
                 let tempo_tx = TempoTransaction {
@@ -612,12 +615,16 @@ mod tests {
             VectorCall {
                 to: Some(Address::repeat_byte(0xaa)),
                 value: U256::from(100),
-                input: Bytes::from(vec![0x01]),
+                calldata: Bytes::from(vec![0x01]),
+                function: None,
+                args: vec![],
             },
             VectorCall {
                 to: Some(Address::repeat_byte(0xbb)),
                 value: U256::from(200),
-                input: Bytes::from(vec![0x02]),
+                calldata: Bytes::from(vec![0x02]),
+                function: None,
+                args: vec![],
             },
         ];
 

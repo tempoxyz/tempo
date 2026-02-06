@@ -12,7 +12,8 @@
       "calls": [
         {
           "to": "0x20FC000000000000000000000000000000000000",
-          "input": "0x35ec42c900000000000000000000000020c0000000000000000000000000000000000000"
+          "function": "isTIP20(address)",
+          "args": ["0x20C0000000000000000000000000000000000000"]
         }
       ],
       "outcome": { "success": true }
@@ -26,7 +27,8 @@
       "calls": [
         {
           "to": "0x20FC000000000000000000000000000000000000",
-          "input": "0x35ec42c9000000000000000000000000deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+          "function": "isTIP20(address)",
+          "args": ["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF"]
         }
       ],
       "outcome": { "success": true }
@@ -40,7 +42,8 @@
       "calls": [
         {
           "to": "0x20FC000000000000000000000000000000000000",
-          "input": "0x35ec42c900000000000000000000000020c0ffffffffffffffffffffffffffffffffffff"
+          "function": "isTIP20(address)",
+          "args": ["0x20C0fFfFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"]
         }
       ],
       "outcome": { "success": true }

@@ -4,7 +4,7 @@
 //! populated with the prestate defined in a test vector.
 
 use crate::{genesis, vector::Prestate};
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, U256, keccak256};
 use revm::{
     database::{CacheDB, EmptyDB},
     inspector::JournalExt,
@@ -71,7 +71,7 @@ impl VectorDatabase {
             let code_hash = prestate
                 .code
                 .get(address)
-                .map(hash_bytes)
+                .map(keccak256)
                 .unwrap_or(KECCAK_EMPTY);
 
             let info = AccountInfo {
@@ -94,7 +94,7 @@ impl VectorDatabase {
                 let info = AccountInfo {
                     balance: U256::ZERO,
                     nonce: 0,
-                    code_hash: hash_bytes(code),
+                    code_hash: keccak256(code),
                     code: Some(Bytecode::new_raw(code.clone())),
                     ..Default::default()
                 };
@@ -123,16 +123,12 @@ impl VectorDatabase {
     }
 }
 
-/// Compute keccak256 hash of bytes
-fn hash_bytes(data: &Bytes) -> B256 {
-    alloy_primitives::keccak256(data)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vector::AccountState;
-    use alloy_primitives::address;
+    use alloy_primitives::{Bytes, address};
     use revm::DatabaseRef;
     use std::collections::BTreeMap;
     use tempo_precompiles::PATH_USD_ADDRESS;

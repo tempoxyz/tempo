@@ -12,7 +12,7 @@
       "calls": [
         {
           "to": "0x20FC000000000000000000000000000000000000",
-          "input": "0xdeadbeef"
+          "calldata": "0xdeadbeef"
         }
       ],
       "outcome": { "success": false, "error": "0x" }

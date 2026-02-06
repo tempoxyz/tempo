@@ -3,6 +3,7 @@
 //! Executes test vectors against the EVM, validates transaction outcomes, and generates
 //! fingerprints for regression detection.
 
+pub mod abi_encode;
 pub mod database;
 pub mod executor;
 pub mod fingerprint;

@@ -187,6 +187,8 @@ alloy-rpc-types-eth = { version = "1.6.1" }
 alloy-serde = "1.6.1"
 alloy-signer = "1.6.1"
 alloy-signer-local = "1.6.1"
+alloy-dyn-abi = "1.5.4"
+alloy-json-abi = "1.5.4"
 alloy-sol-types = "1.5.4"
 alloy-transport = "1.6.1"
 

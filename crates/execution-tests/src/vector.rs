@@ -266,7 +266,11 @@ impl TxOutcome {
     }
 }
 
-/// A call within a Tempo transaction
+/// A call within a Tempo transaction.
+///
+/// Supports two input formats (mutually exclusive):
+/// 1. Raw calldata: `"calldata": "0x..."` - hex-encoded calldata
+/// 2. Human-readable: `"function": "transfer(address,uint256)"`, `"args": ["0x...", "100"]`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorCall {
     /// Call target (None for contract creation)
@@ -275,9 +279,55 @@ pub struct VectorCall {
     /// Value to transfer
     #[serde(default, with = "u256_dec_or_hex")]
     pub value: U256,
-    /// Input data
+    /// Raw calldata (mutually exclusive with function+args)
     #[serde(default)]
-    pub input: Bytes,
+    pub calldata: Bytes,
+    /// Function signature for human-readable encoding (e.g., "transfer(address,uint256)")
+    /// Mutually exclusive with `calldata`
+    #[serde(default)]
+    pub function: Option<String>,
+    /// Function arguments as JSON values (used with `function`)
+    #[serde(default)]
+    pub args: Vec<serde_json::Value>,
+}
+
+impl VectorCall {
+    /// Validate that calldata and function/args are mutually exclusive.
+    pub fn validate(&self) -> Result<(), String> {
+        let has_calldata = !self.calldata.is_empty();
+        let has_function = self.function.is_some();
+
+        if has_calldata && has_function {
+            return Err(
+                "call has both 'calldata' and 'function' - these are mutually exclusive"
+                    .to_string(),
+            );
+        }
+
+        if has_function && self.args.is_empty() {
+            let sig = self.function.as_ref().unwrap();
+            if !sig.ends_with("()") && sig.contains('(') {
+                let params = &sig[sig.find('(').unwrap() + 1..sig.rfind(')').unwrap_or(sig.len())];
+                if !params.is_empty() {
+                    return Err(format!(
+                        "function '{}' has parameters but no 'args' provided",
+                        sig
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Resolve the calldata, encoding function+args if needed.
+    pub fn resolve_calldata(&self) -> eyre::Result<Bytes> {
+        if let Some(ref sig) = self.function {
+            crate::abi_encode::encode_call(sig, &self.args)
+        } else {
+            Ok(self.calldata.clone())
+        }
+    }
 }
 
 /// Precompile fields to check after execution

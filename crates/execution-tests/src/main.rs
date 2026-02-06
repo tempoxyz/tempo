@@ -54,7 +54,7 @@ enum Commands {
     /// Runs the specified test vectors against the precompile implementations
     /// and generates fingerprints that can be used for differential testing.
     ///
-    /// At least one of --vector or --dir must be specified.
+    /// Defaults to ./vectors if neither --vector nor --dir is specified.
     #[command(visible_alias = "r")]
     Run {
         /// Path to a single vector JSON file.
@@ -62,6 +62,7 @@ enum Commands {
         vector: Option<PathBuf>,
 
         /// Path to a directory of vectors (scanned recursively).
+        /// Defaults to ./vectors if neither --vector nor --dir is specified.
         #[arg(short, long, value_name = "PATH")]
         dir: Option<PathBuf>,
 
@@ -178,9 +179,11 @@ fn run_command(
     output: Option<PathBuf>,
     verbosity: u8,
 ) -> Result<()> {
-    if vector.is_none() && dir.is_none() {
-        bail!("At least one of --vector or --dir must be provided");
-    }
+    let dir = if vector.is_none() && dir.is_none() {
+        Some(PathBuf::from("./vectors"))
+    } else {
+        dir
+    };
 
     let mut vectors = Vec::new();
 

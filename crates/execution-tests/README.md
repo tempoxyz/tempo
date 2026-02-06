@@ -7,14 +7,14 @@ Executes test vectors against the EVM, validates transaction outcomes, and gener
 ## Quick Start
 
 ```bash
-# Run all vectors
-cargo run -p tempo-execution-tests -- run -d crates/execution-tests/vectors
+# Run all vectors (defaults to ./vectors)
+cargo run -p tempo-execution-tests -- run
 
 # Run a single vector
-cargo run -p tempo-execution-tests -- run -f crates/execution-tests/vectors/tip20_factory/create_token.json
+cargo run -p tempo-execution-tests -- run -f vectors/tip20_factory/create_token.json
 
 # List available vectors
-cargo run -p tempo-execution-tests -- list -d crates/execution-tests/vectors
+cargo run -p tempo-execution-tests -- list
 ```
 
 ## Commands
@@ -24,6 +24,7 @@ cargo run -p tempo-execution-tests -- list -d crates/execution-tests/vectors
 Execute test vectors and validate outcomes.
 
 ```bash
+tempo-execution-tests run                    # Run all vectors in ./vectors
 tempo-execution-tests run -d <DIR>           # Run all vectors in directory
 tempo-execution-tests run -f <FILE>          # Run a single vector
 tempo-execution-tests run -d <DIR> -o out.json  # Save fingerprints to file
@@ -127,7 +128,11 @@ vectors/
     ├── setup.json                           # Base template
     ├── create_token.json                    # Success case
     ├── create_token_fails_already_exists.json
-    └── create_token_fails_invalid_quote.json
+    ├── create_token_fails_incompatible_quote.json
+    ├── create_token_fails_invalid_quote.json
+    ├── get_token_address.json
+    ├── is_tip20.json
+    └── unknown_selector.json
 ```
 
 **Naming convention:**
@@ -150,7 +155,15 @@ vectors/
       "calls": [
         {
           "to": "0x20FC000000000000000000000000000000000000",
-          "input": "0x68130445..."
+          "function": "createToken(string,string,string,address,address,bytes32)",
+          "args": [
+            "Test Token",
+            "TEST",
+            "USD",
+            "0x20C0000000000000000000000000000000000000",
+            "0x1111111111111111111111111111111111111111",
+            "0x0000000000000000000000000000000000000000000000000000000000000001"
+          ]
         }
       ],
       "outcome": { "success": true }
@@ -165,6 +178,27 @@ vectors/
       }
     ]
   }
+}
+```
+
+### Call Input Formats
+
+Calls support two mutually exclusive input formats:
+
+**Human-readable (preferred):**
+```json
+{
+  "to": "0x20FC...",
+  "function": "transfer(address,uint256)",
+  "args": ["0x1111111111111111111111111111111111111111", "1000"]
+}
+```
+
+**Raw calldata:**
+```json
+{
+  "to": "0x20FC...",
+  "calldata": "0xa9059cbb000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000003e8"
 }
 ```
 
@@ -241,7 +275,7 @@ When a function is added in a later hardfork, older hardforks should revert with
       "tx_type": "tempo",
       "from": "0x1111111111111111111111111111111111111111",
       "gas_limit": 100000,
-      "calls": [{ "to": "0x20FC...", "input": "0xNewFunction..." }],
+      "calls": [{ "to": "0x20FC...", "function": "newT1Function()", "args": [] }],
       "outcomes": [
         { "hardforks": ["Genesis", "T0"], "outcome": { "success": false, "error": "UnknownSelector()" } },
         { "hardforks": ["T1"], "outcome": { "success": true } }
@@ -266,13 +300,15 @@ Fingerprints enable differential testing: if the hash changes between versions, 
 
 ```yaml
 - name: Run execution tests
-  run: cargo run -p tempo-execution-tests -- run -d crates/execution-tests/vectors
+  working-directory: crates/execution-tests
+  run: cargo run -p tempo-execution-tests -- run
 
 - name: Regression check
+  working-directory: crates/execution-tests
   run: |
     cargo build -p tempo-execution-tests --release
-    cp target/release/tempo-execution-tests /tmp/current
+    cp ../../target/release/tempo-execution-tests /tmp/current
     git checkout main
     cargo build -p tempo-execution-tests --release
-    /tmp/current diff --baseline-binary target/release/tempo-execution-tests -d crates/execution-tests/vectors
+    /tmp/current diff --baseline-binary ../../target/release/tempo-execution-tests
 ```
