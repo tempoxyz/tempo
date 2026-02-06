@@ -107,9 +107,7 @@ impl TipFeeManager {
     ///  Reserves pool liquidity in transient storage for a pending fee swap.
     #[inline]
     pub fn reserve_pool_liquidity(&mut self, pool_id: B256, amount: u128) -> Result<()> {
-        self.pending_fee_swap_reservation[pool_id].t_write(amount)?;
-
-        Ok(())
+        self.pending_fee_swap_reservation[pool_id].t_write(amount)
     }
 
     /// Swap to rebalance a fee token pool
