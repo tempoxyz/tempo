@@ -636,15 +636,6 @@ where
             );
         }
 
-        // Validate AA transaction field limits (calls, access list, token limits).
-        // This prevents DoS attacks via oversized transactions.
-        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
-        }
-
         if transaction.inner().is_aa() {
             // Validate AA transaction intrinsic gas.
             // This ensures the gas limit covers all AA-specific costs (per-call overhead,
