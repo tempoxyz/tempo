@@ -161,7 +161,10 @@ abstract contract ActorManager is Test {
     }
 
     /// @notice Get secp256k1 access key for an actor
-    function _getActorAccessKey(uint256 actorIdx, uint256 keySeed)
+    function _getActorAccessKey(
+        uint256 actorIdx,
+        uint256 keySeed
+    )
         internal
         view
         returns (address keyAddr, uint256 keyPk)
@@ -176,7 +179,10 @@ abstract contract ActorManager is Test {
     }
 
     /// @notice Get P256 access key for an actor
-    function _getActorP256AccessKey(uint256 actorIdx, uint256 keySeed)
+    function _getActorP256AccessKey(
+        uint256 actorIdx,
+        uint256 keySeed
+    )
         internal
         view
         returns (address keyAddr, uint256 keyPk, bytes32 pubKeyX, bytes32 pubKeyY)
@@ -214,7 +220,11 @@ abstract contract ActorManager is Test {
     }
 
     /// @notice Setup a transfer between two different actors
-    function _setupTransfer(uint256 actorSeed, uint256 recipientSeed, uint256 sigTypeSeed)
+    function _setupTransfer(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 sigTypeSeed
+    )
         internal
         view
         returns (TransferContext memory ctx)
@@ -230,7 +240,10 @@ abstract contract ActorManager is Test {
         ctx.recipient = actors[recipientIdx];
     }
 
-    function _getSenderForSigType(uint256 actorIdx, SignatureType sigType)
+    function _getSenderForSigType(
+        uint256 actorIdx,
+        SignatureType sigType
+    )
         internal
         view
         returns (address)

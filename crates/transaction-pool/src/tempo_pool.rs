@@ -195,6 +195,7 @@ where
         let mut revoked_count = 0;
         let mut spending_limit_count = 0;
         let mut liquidity_count = 0;
+        let mut user_token_count = 0;
         let mut blacklisted_count = 0;
         let mut unwhitelisted_count = 0;
 
@@ -361,6 +362,21 @@ where
                     }
                 }
             }
+
+            // Check 6: User fee token preference changes
+            // When a user changes their fee token preference via setUserToken(), transactions
+            // from that user that don't have an explicit fee_token set may now resolve to a
+            // different token at execution time, causing fee payment failures.
+            // Only evict transactions WITHOUT an explicit fee_token (those that rely on storage).
+            if !updates.user_token_changes.is_empty()
+                && tx.transaction.inner().fee_token().is_none()
+                && updates
+                    .user_token_changes
+                    .contains(&tx.transaction.sender())
+            {
+                to_remove.push(*tx.hash());
+                user_token_count += 1;
+            }
         }
 
         let evicted_count = to_remove.len();
@@ -371,6 +387,7 @@ where
                 revoked_count,
                 spending_limit_count,
                 liquidity_count,
+                user_token_count,
                 blacklisted_count,
                 unwhitelisted_count,
                 "Evicting invalidated transactions"
