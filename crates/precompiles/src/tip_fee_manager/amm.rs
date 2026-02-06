@@ -1005,19 +1005,20 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
             let liquidity = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
-            setup_pool_with_liquidity(&mut amm, user_token, validator_token, liquidity, liquidity)?;
+            let pool_id =
+                setup_pool_with_liquidity(&mut amm, user_token, validator_token, liquidity, liquidity)?;
 
             // Exactly at boundary should succeed (100 * 0.997 = 99.7, which is < 100)
             let ok_amount = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
             assert!(
-                amm.check_sufficient_liquidity(user_token, validator_token, ok_amount)
+                amm.check_sufficient_liquidity(pool_id, ok_amount)
                     .is_ok()
             );
 
             // Just over boundary should fail (101 * 0.997 = 100.697, which is > 100)
             let too_much = uint!(101_U256) * uint!(10_U256).pow(U256::from(6));
             assert!(
-                amm.check_sufficient_liquidity(user_token, validator_token, too_much)
+                amm.check_sufficient_liquidity(pool_id, too_much)
                     .is_err()
             );
 
@@ -1363,7 +1364,8 @@ mod tests {
             )?;
 
             let max_amount = uint!(10000_U256);
-            amm.check_sufficient_liquidity(user_token, validator_token, max_amount)?;
+            let amount_out = amm.check_sufficient_liquidity(pool_id, max_amount)?;
+            amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
             let expected_reserved: u128 = compute_amount_out(max_amount)?.try_into().unwrap();
@@ -1402,7 +1404,8 @@ mod tests {
 
             // Reserve most of the validator token liquidity
             let reserve_amount = U256::from(pool.reserve_validator_token) - uint!(100_U256);
-            amm.check_sufficient_liquidity(user_token, validator_token, reserve_amount)?;
+            let amount_out = amm.check_sufficient_liquidity(pool_id, reserve_amount)?;
+            amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
             assert!(matches!(
@@ -1440,8 +1443,10 @@ mod tests {
             let deposit_amount = uint!(100000_U256);
             let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
 
+            let pool_id = amm.pool_id(user_token, validator_token);
             let small_reserve = uint!(1000_U256);
-            amm.check_sufficient_liquidity(user_token, validator_token, small_reserve)?;
+            let amount_out = amm.check_sufficient_liquidity(pool_id, small_reserve)?;
+            amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             let small_burn = liquidity / uint!(10_U256);
             let result = amm.burn(admin, user_token, validator_token, small_burn, recipient);
@@ -1478,7 +1483,8 @@ mod tests {
             let pool_id =
                 setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
 
-            amm.check_sufficient_liquidity(user_token, validator_token, uint!(50000_U256))?;
+            let amount_out = amm.check_sufficient_liquidity(pool_id, uint!(50000_U256))?;
+            amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)?;
             let pool = amm.pools[pool_id].read()?;
@@ -1512,8 +1518,9 @@ mod tests {
                 .address();
 
             let liq = uint!(100000_U256);
-            setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
-            amm.check_sufficient_liquidity(user_token, validator_token, uint!(90000_U256))?;
+            let pool_id =
+                setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
+            amm.check_sufficient_liquidity(pool_id, uint!(90000_U256))?;
             assert!(
                 amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)
                     .is_ok()
@@ -1550,7 +1557,7 @@ mod tests {
             let pool_id = amm.pool_id(user_token, validator_token);
             let pool = amm.pools[pool_id].read()?;
             let reserve_amount = U256::from(pool.reserve_validator_token) - uint!(100_U256);
-            amm.check_sufficient_liquidity(user_token, validator_token, reserve_amount)?;
+            amm.check_sufficient_liquidity(pool_id, reserve_amount)?;
 
             let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
             assert!(result.is_ok());
