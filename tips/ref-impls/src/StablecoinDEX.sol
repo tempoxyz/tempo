@@ -84,12 +84,11 @@ contract StablecoinDEX is IStablecoinDEX {
 
     /// @notice Convert scaled price to relative tick
     function priceToTick(uint32 price) public pure returns (int16 tick) {
+        tick = int16(int32(price) - int32(PRICE_SCALE));
         if (price < MIN_PRICE || price > MAX_PRICE) {
             // Calculate the tick to include in the error
-            tick = int16(int32(price) - int32(PRICE_SCALE));
             revert IStablecoinDEX.TickOutOfBounds(tick);
         }
-        tick = int16(int32(price) - int32(PRICE_SCALE));
         if (tick % TICK_SPACING != 0) revert IStablecoinDEX.InvalidTick();
         return tick;
     }
