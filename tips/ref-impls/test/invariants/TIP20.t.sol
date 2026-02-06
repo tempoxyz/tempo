@@ -461,6 +461,107 @@ contract TIP20InvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @notice Handler for minting tokens with a memo
+    /// @dev Tests TEMPO-TIP6 (supply increase), TEMPO-TIP7 (supply cap) via mintWithMemo
+    function mintWithMemo(
+        uint256 tokenSeed,
+        uint256 recipientSeed,
+        uint256 amount,
+        bytes32 memoSeed
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address recipient = _selectAuthorizedActor(recipientSeed, address(token));
+
+        uint256 currentSupply = token.totalSupply();
+        uint256 supplyCap = token.supplyCap();
+        uint256 remaining = supplyCap > currentSupply ? supplyCap - currentSupply : 0;
+
+        vm.assume(remaining > 0);
+        amount = bound(amount, 1, remaining);
+
+        vm.assume(_isAuthorized(address(token), recipient));
+
+        uint256 recipientBalanceBefore = token.balanceOf(recipient);
+
+        vm.startPrank(admin);
+        try token.mintWithMemo(recipient, amount, memoSeed) {
+            vm.stopPrank();
+
+            _tokenMintSum[address(token)] += amount;
+
+            assertEq(
+                token.totalSupply(),
+                currentSupply + amount,
+                "TEMPO-TIP6: Total supply not increased correctly"
+            );
+
+            assertLe(token.totalSupply(), supplyCap, "TEMPO-TIP7: Total supply exceeds supply cap");
+
+            assertEq(
+                token.balanceOf(recipient),
+                recipientBalanceBefore + amount,
+                "TEMPO-TIP6: Recipient balance not increased"
+            );
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "MINT_WITH_MEMO: ",
+                        vm.toString(amount),
+                        " ",
+                        token.symbol(),
+                        " to ",
+                        _getActorIndex(recipient)
+                    )
+                );
+            }
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
+        }
+    }
+
+    /// @notice Handler for burning tokens with a memo
+    /// @dev Tests TEMPO-TIP8 (supply decrease) via burnWithMemo
+    function burnWithMemo(uint256 tokenSeed, uint256 amount, bytes32 memoSeed) external {
+        TIP20 token = _selectBaseToken(tokenSeed);
+
+        uint256 adminBalance = token.balanceOf(admin);
+        vm.assume(adminBalance > 0);
+
+        amount = bound(amount, 1, adminBalance);
+
+        uint256 totalSupplyBefore = token.totalSupply();
+
+        vm.startPrank(admin);
+        try token.burnWithMemo(amount, memoSeed) {
+            vm.stopPrank();
+
+            _tokenBurnSum[address(token)] += amount;
+
+            assertEq(
+                token.totalSupply(),
+                totalSupplyBefore - amount,
+                "TEMPO-TIP8: Total supply not decreased correctly"
+            );
+
+            assertEq(
+                token.balanceOf(admin),
+                adminBalance - amount,
+                "TEMPO-TIP8: Admin balance not decreased"
+            );
+
+            if (_loggingEnabled) {
+                _log(string.concat("BURN_WITH_MEMO: ", vm.toString(amount), " ", token.symbol()));
+            }
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
+        }
+    }
+
     /// @notice Handler for transfer with memo
     /// @dev Tests TEMPO-TIP9 (memo transfers work like regular transfers)
     function transferWithMemo(
