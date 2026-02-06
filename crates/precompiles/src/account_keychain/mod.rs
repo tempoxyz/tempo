@@ -1030,8 +1030,8 @@ mod tests {
             assert_eq!(
                 webauthn_mismatch.unwrap_err(),
                 AccountKeychainError::signature_type_mismatch(
-                    SignatureTy::P256,
-                    SignatureTy::WebAuthn
+                    SignatureType::P256,
+                    SignatureType::WebAuthn
                 )
                 .into(),
             );

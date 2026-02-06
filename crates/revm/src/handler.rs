@@ -859,9 +859,9 @@ where
                 // Convert signature type to precompile SignatureType enum
                 // Use the key_type field which specifies the type of key being authorized
                 let signature_type = match key_auth.key_type {
-                    SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
-                    SignatureType::P256 => PrecompileSignatureType::P256,
-                    SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+                    SignatureType::Secp256k1 => PrecompileSigType::Secp256k1,
+                    SignatureType::P256 => PrecompileSigType::P256,
+                    SignatureType::WebAuthn => PrecompileSigType::WebAuthn,
                 };
 
                 // Handle expiry: None means never expires (store as u64::MAX)
