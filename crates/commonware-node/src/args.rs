@@ -139,7 +139,8 @@ pub struct Args {
     #[arg(long = "consensus.synchrony-bound", default_value = "5s")]
     pub synchrony_bound: PositiveDuration,
 
-    /// How long to wait before attempting to dial any peers without a connection..
+    /// How long to wait before attempting to dial peers. Run across all peers
+    /// including the newly discovered ones.
     #[arg(
         long = "consensus.wait-before-peers-redial",
         default_value = "1s",
@@ -155,7 +156,7 @@ pub struct Args {
     )]
     pub wait_before_peers_reping: PositiveDuration,
 
-    /// How often to query for new dialable peers. Also limits re-dial rate per peer.
+    /// How often to query for new dialable peers.
     #[arg(
         long = "consensus.wait-before-peers-discovery",
         default_value = "60s",
@@ -163,7 +164,8 @@ pub struct Args {
     )]
     pub wait_before_peers_discovery: PositiveDuration,
 
-    /// Minimum time between connection attempts to the same peer.
+    /// Minimum time between connection attempts to the same peer. A rate-limit
+    /// on connection attempts.
     #[arg(
         long = "consensus.connection-per-peer-min-period",
         default_value = "60s",
@@ -171,7 +173,8 @@ pub struct Args {
     )]
     pub connection_per_peer_min_period: PositiveDuration,
 
-    /// Minimum time between handshake attempts from a single IP address.
+    /// Minimum time between handshake attempts from a single IP address. A rate-limit
+    /// on attempts.
     #[arg(
         long = "consensus.handshake-per-ip-min-period",
         default_value = "5s",
@@ -179,7 +182,8 @@ pub struct Args {
     )]
     pub handshake_per_ip_min_period: PositiveDuration,
 
-    /// Minimum time between handshake attempts from a single subnet.
+    /// Minimum time between handshake attempts from a single subnet. A rate-limit
+    /// on attempts.
     #[arg(
         long = "consensus.handshake-per-subnet-min-period",
         default_value = "15ms",
