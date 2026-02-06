@@ -76,11 +76,12 @@ contract StablecoinDEXTest is BaseTest {
     function test_TickToPrice_RevertsOnInvalidSpacing() public {
         vm.expectRevert(IStablecoinDEX.InvalidTick.selector);
         exchange.tickToPrice(1);
-    }
 
-    function test_TickToPrice_RevertsOnOutOfBounds() public {
-        vm.expectRevert(abi.encodeWithSelector(IStablecoinDEX.TickOutOfBounds.selector, int16(2010)));
-        exchange.tickToPrice(2010);
+        vm.expectRevert(IStablecoinDEX.InvalidTick.selector);
+        exchange.tickToPrice(-5);
+
+        vm.expectRevert(IStablecoinDEX.InvalidTick.selector);
+        exchange.tickToPrice(15);
     }
 
     function test_PriceToTick(uint32 price) public view {
@@ -94,6 +95,9 @@ contract StablecoinDEXTest is BaseTest {
     function test_PriceToTick_RevertsOnInvalidSpacing() public {
         vm.expectRevert(IStablecoinDEX.InvalidTick.selector);
         exchange.priceToTick(exchange.PRICE_SCALE() + 1);
+
+        vm.expectRevert(IStablecoinDEX.InvalidTick.selector);
+        exchange.priceToTick(exchange.PRICE_SCALE() + 5);
     }
 
     function test_PairKey(address base, address quote) public view {
