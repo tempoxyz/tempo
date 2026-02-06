@@ -141,17 +141,17 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 let mock_signature =
                     create_mock_tempo_signature(&key_type, key_data.as_ref(), key_id, caller_addr);
 
-                let calls = if !calls.is_empty() {
-                    calls
-                } else if let Some(to) = &inner.to {
-                    vec![Call {
+                let mut calls = calls;
+                if let Some(to) = &inner.to {
+                    calls.push(Call {
                         to: *to,
                         value: inner.value.unwrap_or_default(),
                         input: inner.input.clone().into_input().unwrap_or_default(),
-                    }]
-                } else {
+                    });
+                }
+                if calls.is_empty() {
                     return Err(EthApiError::InvalidParams("empty calls list".to_string()));
-                };
+                }
 
                 Some(Box::new(TempoBatchCallEnv {
                     aa_calls: calls,
@@ -308,7 +308,43 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::{TxKind, address};
+    use alloy_rpc_types_eth::TransactionRequest;
+    use reth_rpc_convert::TryIntoTxEnv;
     use tempo_primitives::transaction::tt_signature::PrimitiveSignature;
+
+    #[test]
+    fn test_try_into_tx_env_merges_calls_and_to() {
+        let existing_call = Call {
+            to: TxKind::Call(address!("0x1111111111111111111111111111111111111111")),
+            value: alloy_primitives::U256::from(1),
+            input: Bytes::from(vec![0xaa]),
+        };
+        let to = TxKind::Call(address!("0x2222222222222222222222222222222222222222"));
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(to),
+                value: Some(alloy_primitives::U256::from(2)),
+                input: alloy_rpc_types_eth::TransactionInput::new(Bytes::from(vec![0xbb])),
+                ..Default::default()
+            },
+            calls: vec![existing_call.clone()],
+            nonce_key: Some(alloy_primitives::U256::ZERO),
+            ..Default::default()
+        };
+
+        let evm_env =
+            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("should succeed");
+
+        let batch = tx_env.tempo_tx_env.expect("should have tempo_tx_env");
+        assert_eq!(batch.aa_calls.len(), 2);
+        assert_eq!(batch.aa_calls[0], existing_call);
+        assert_eq!(batch.aa_calls[1].to, to);
+        assert_eq!(batch.aa_calls[1].value, alloy_primitives::U256::from(2));
+        assert_eq!(batch.aa_calls[1].input, Bytes::from(vec![0xbb]));
+    }
 
     #[test]
     fn test_webauthn_size_clamped_to_max() {
