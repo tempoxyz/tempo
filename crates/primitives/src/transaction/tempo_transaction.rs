@@ -27,6 +27,15 @@ pub const TEMPO_EXPIRING_NONCE_KEY: U256 = U256::MAX;
 /// Maximum allowed expiry window for expiring nonce transactions (30 seconds).
 pub const TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 
+/// Maximum number of calls allowed during RLP decoding.
+const MAX_RLP_CALLS: usize = 32;
+
+/// Maximum number of access list entries allowed during RLP decoding.
+const MAX_RLP_ACCESS_LIST_ENTRIES: usize = 256;
+
+/// Maximum number of authorization list entries allowed during RLP decoding.
+const MAX_RLP_AUTHORIZATION_LIST_ENTRIES: usize = 64;
+
 /// Signature type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -498,8 +507,14 @@ impl TempoTransaction {
         let max_priority_fee_per_gas = Decodable::decode(buf)?;
         let max_fee_per_gas = Decodable::decode(buf)?;
         let gas_limit = Decodable::decode(buf)?;
-        let calls = Decodable::decode(buf)?;
-        let access_list = Decodable::decode(buf)?;
+        let calls: Vec<Call> = Decodable::decode(buf)?;
+        if calls.len() > MAX_RLP_CALLS {
+            return Err(alloy_rlp::Error::Custom("too many calls"));
+        }
+        let access_list: AccessList = Decodable::decode(buf)?;
+        if access_list.len() > MAX_RLP_ACCESS_LIST_ENTRIES {
+            return Err(alloy_rlp::Error::Custom("too many access list entries"));
+        }
         let nonce_key = Decodable::decode(buf)?;
         let nonce = Decodable::decode(buf)?;
 
@@ -554,7 +569,10 @@ impl TempoTransaction {
             return Err(alloy_rlp::Error::InputTooShort);
         };
 
-        let tempo_authorization_list = Decodable::decode(buf)?;
+        let tempo_authorization_list: Vec<TempoSignedAuthorization> = Decodable::decode(buf)?;
+        if tempo_authorization_list.len() > MAX_RLP_AUTHORIZATION_LIST_ENTRIES {
+            return Err(alloy_rlp::Error::Custom("too many authorization list entries"));
+        }
 
         // Decode optional key_authorization field at the end
         // Check if the next byte looks like it could be a KeyAuthorization (RLP list)
@@ -2010,5 +2028,119 @@ mod tests {
             ..Default::default()
         };
         assert!(valid_expiring_tx.validate().is_ok());
+    }
+
+    #[test]
+    fn test_rlp_decode_rejects_too_many_calls() {
+        let calls: Vec<Call> = (0..MAX_RLP_CALLS + 1)
+            .map(|_| Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            })
+            .collect();
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            gas_limit: 21_000,
+            calls,
+            ..Default::default()
+        };
+
+        let mut buf = Vec::new();
+        tx.encode(&mut buf);
+
+        let result = TempoTransaction::decode(&mut buf.as_slice());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rlp_decode_rejects_too_many_access_list_entries() {
+        use alloy_eips::eip2930::AccessListItem;
+
+        let items: Vec<AccessListItem> = (0..MAX_RLP_ACCESS_LIST_ENTRIES + 1)
+            .map(|_| AccessListItem {
+                address: Address::ZERO,
+                storage_keys: vec![],
+            })
+            .collect();
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            gas_limit: 21_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            access_list: AccessList(items),
+            ..Default::default()
+        };
+
+        let mut buf = Vec::new();
+        tx.encode(&mut buf);
+
+        let result = TempoTransaction::decode(&mut buf.as_slice());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rlp_decode_rejects_too_many_authorization_list_entries() {
+        let auths: Vec<TempoSignedAuthorization> = (0..MAX_RLP_AUTHORIZATION_LIST_ENTRIES + 1)
+            .map(|_| {
+                TempoSignedAuthorization::new_unchecked(
+                    Authorization {
+                        chain_id: U256::ONE,
+                        address: Address::ZERO,
+                        nonce: 0,
+                    },
+                    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                        Signature::test_signature(),
+                    )),
+                )
+            })
+            .collect();
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            gas_limit: 21_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            tempo_authorization_list: auths,
+            ..Default::default()
+        };
+
+        let mut buf = Vec::new();
+        tx.encode(&mut buf);
+
+        let result = TempoTransaction::decode(&mut buf.as_slice());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rlp_decode_accepts_at_limit() {
+        let calls: Vec<Call> = (0..MAX_RLP_CALLS)
+            .map(|_| Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            })
+            .collect();
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            gas_limit: 21_000,
+            calls,
+            ..Default::default()
+        };
+
+        let mut buf = Vec::new();
+        tx.encode(&mut buf);
+
+        let result = TempoTransaction::decode(&mut buf.as_slice());
+        assert!(result.is_ok());
     }
 }
