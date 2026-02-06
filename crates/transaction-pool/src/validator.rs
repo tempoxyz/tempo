@@ -654,6 +654,15 @@ where
             }
         }
 
+        // Validate AA transaction field limits (calls, access list, token limits).
+        // This prevents DoS attacks via oversized transactions.
+        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
+        }
+
         let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
             Ok(fee_payer) => fee_payer,
             Err(err) => {
