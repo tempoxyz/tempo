@@ -236,6 +236,14 @@ interface IValidatorConfigV2 {
         string calldata egress
     ) external;
 
+    /// @notice Transfer a validator entry to a new address (owner or validator only)
+    /// @dev Can be called by the contract owner or by the validator's own address.
+    ///      Updates the validator's address in the lookup maps.
+    ///      Reverts if the new address already exists in the validator set.
+    /// @param currentAddress The current address of the validator to transfer
+    /// @param newAddress The new address to assign to the validator
+    function transferValidatorOwnership(address currentAddress, address newAddress) external;
+
     /// @notice Transfer owner of the contract (owner only)
     /// @param newOwner The new owner address
     function transferOwner(address newOwner) external;
@@ -265,14 +273,6 @@ interface IValidatorConfigV2 {
     ///      + if `V1.active == true` then `V2.deletedAtHeight = 0`
     ///      + if `V1.active == false` then `V2.deletedAtHeight > 0`
     function initializeIfMigrated() external;
-
-    /// @notice Set the validator address for a validator (owner only)
-    /// @dev Allows owner to change the address of an existing validator.
-    ///      The new address must not already exist in the validator set.
-    ///      The old address is replaced in all lookup maps.
-    /// @param validatorIndex The index of the validator in the validatorsArray
-    /// @param newAddress The new address to assign to the validator
-    function setValidatorAddress(uint64 validatorIndex, address newAddress) external;
 
     /// @notice Check if V2 has been initialized from V1
     /// @return True if initialized, false otherwise
@@ -500,7 +500,7 @@ The following invariants must always hold:
    changes.
 
 10. **Owner authorization**: Only the owner can call `addValidator`,
-    `deleteValidator`, `transferOwner`, `setNextFullDkgCeremony`, and `setValidatorAddress`.
+    `deleteValidator`, `transferOwner`, `setNextFullDkgCeremony`, and `transferValidatorOwnership`.
 
 11. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
     transition from 0 to 1, never back to 0.
@@ -513,7 +513,7 @@ The following invariants must always hold:
     uppdates the `addresses[validatarAddress]` mapping to point to the new
     entry. Both operations occur in the same transaction with the same block height.
 
-14. **Address update**: `setValidatorAddress` updates the address of an existing
+14. **Address update**: `transferValidatorOwnership` updates the address of an existing
     validator without changing any other fields. This is useful for updating
     addresses post-migration or correcting address assignments.
 
@@ -605,11 +605,11 @@ precompile does NOT proxy reads to V1.
 - Sets `initialized = true` (bit 255 of slot 0)
 - After this call, CL reads from V2 instead of V1
 
-**`setValidatorAddress(validatorIndex, newAddress)`**:
-- Reverts if caller is not owner
-- Reverts if `validatorIndex >= validatorsArray.length`
+**`transferValidatorOwnership(validatorAddress, newAddress)`**:
+- Reverts if caller is not owner and not the validator
+- Reverts if `currentAddress` does not exist
 - Reverts if `newAddress` already exists in the validator set
-- Updates the validator at `validatorIndex` with the new address
+- Updates the validator with the new address
 - Updates lookup maps: removes old address entry, adds new address entry
 
 ```solidity
@@ -635,7 +635,7 @@ interface IValidatorConfigV1 {
 - **Per-validator migration**: Each validator is migrated with a separate tx
 - **Owner controlled**: Only admin can migrate and initialize
 - **Validator address copied**: The V2 validator address is copied from V1
-- **Address changeable post-migration**: Owner can update validator addresses via `setValidatorAddress`
+- **Address changeable post-migration**: Owner or validator can update validator addresses via `transferValidatorOwnership`
 - **No signatures required**: V1 validators are imported without Ed25519 signatures
   (they were already validated in V1)
 - **All validators imported**: Both active and inactive V1 validators are
@@ -770,22 +770,23 @@ The test suite must cover:
 45. **initialize reverts if not all migrated**: `initializeIfMigrated()` reverts if
     `validatorsArray.length < V1.getValidators().length`
 
-### setValidatorAddress
+### transferValidatorOwnership
 
-46. **setValidatorAddress updates address**: Successfully updates validator address
-47. **setValidatorAddress owner only**: Non-owner cannot call `setValidatorAddress`
-48. **setValidatorAddress reverts on invalid index**: Reverts if `validatorIndex >= validatorsArray.length`
-49. **setValidatorAddress reverts on duplicate address**: Reverts if `newAddress` already exists
-50. **setValidatorAddress updates lookup maps**: Old address is removed, new address is added to lookup
+46. **transferValidatorOwnership by owner**: Owner can transfer any validator to a new address
+47. **transferValidatorOwnership by validator**: Validator can transfer themselves to a new address
+48. **transferValidatorOwnership unauthorized**: Non-owner and non-validator cannot transfer
+49. **transferValidatorOwnership reverts on invalid validator**: Reverts if `validatorAddress` does not exist
+50. **transferValidatorOwnership reverts on duplicate address**: Reverts if `newAddress` already exists
+51. **transferValidatorOwnership updates lookup maps**: Old address is removed, new address is added to lookup
 
 ### setIpAddresses
 
-51. **setIpAddresses by owner**: Owner can update any validator's IP addresses
-52. **setIpAddresses by validator**: Validator can update their own IP addresses
-53. **setIpAddresses unauthorized**: Non-owner and non-validator cannot update IP addresses
-54. **setIpAddresses reverts on invalid validator**: Reverts if validator does not exist
-55. **setIpAddresses reverts on deleted validator**: Reverts if validator is already deleted
-56. **setIpAddresses validates format**: Rejects invalid `<ip>:<port>` format
+52. **setIpAddresses by owner**: Owner can update any validator's IP addresses
+53. **setIpAddresses by validator**: Validator can update their own IP addresses
+54. **setIpAddresses unauthorized**: Non-owner and non-validator cannot update IP addresses
+55. **setIpAddresses reverts on invalid validator**: Reverts if validator does not exist
+56. **setIpAddresses reverts on deleted validator**: Reverts if validator is already deleted
+57. **setIpAddresses validates format**: Rejects invalid `<ip>:<port>` format
 
 ---
 
