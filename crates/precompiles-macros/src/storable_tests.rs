@@ -3,7 +3,7 @@
 //! This module generates comprehensive property tests for all supported storage types,
 //! including complete test function implementations.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
 use crate::storable_primitives::{ALLOY_INT_SIZES, RUST_INT_SIZES};
@@ -11,6 +11,33 @@ const FIXED_BYTES_SIZES: &[usize] = &[
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32,
 ];
+
+fn proptest_block(cases: u32, tests: Vec<TokenStream>) -> TokenStream {
+    quote! {
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(#cases))]
+            #(#tests)*
+        }
+    }
+}
+
+fn storage_key_abi_test(
+    fn_name: Ident,
+    strategy: TokenStream,
+    extra: Option<TokenStream>,
+) -> TokenStream {
+    let extra = extra.unwrap_or_else(TokenStream::new);
+
+    quote! {
+        #[test]
+        fn #fn_name(value in #strategy) {
+            let encoded = crate::storage::StorageKey::abi_encoded(&value);
+            let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
+            prop_assert_eq!(encoded.as_ref(), abi.as_slice());
+            #extra
+        }
+    }
+}
 
 /// Generate all storage type tests.
 ///
@@ -80,28 +107,17 @@ fn gen_rust_unsigned_storage_key_tests() -> TokenStream {
             let type_name = quote::format_ident!("u{size}");
             let alloy_type = quote::format_ident!("U{size}");
             let fn_name = quote::format_ident!("test_storage_key_u{size}_abi_encoding");
+            let extra = quote! {
+                let alloy_value = ::alloy::primitives::#alloy_type::from(value);
+                let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
+                prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
+            };
 
-            quote! {
-                #[test]
-                fn #fn_name(value in any::<#type_name>()) {
-                    let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                    let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                    prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-
-                    let alloy_value = ::alloy::primitives::#alloy_type::from(value);
-                    let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
-                    prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
-                }
-            }
+            storage_key_abi_test(fn_name, quote! { any::<#type_name>() }, Some(extra))
         })
         .collect();
 
-    quote! {
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(500))]
-            #(#tests)*
-        }
-    }
+    proptest_block(500, tests)
 }
 
 fn gen_rust_signed_storage_key_tests() -> TokenStream {
@@ -112,219 +128,122 @@ fn gen_rust_signed_storage_key_tests() -> TokenStream {
             let alloy_type = quote::format_ident!("I{size}");
             let unsigned_type = quote::format_ident!("U{size}");
             let fn_name = quote::format_ident!("test_storage_key_i{size}_abi_encoding");
+            let extra = quote! {
+                let alloy_unsigned = ::alloy::primitives::#unsigned_type::from_be_bytes(value.to_be_bytes());
+                let alloy_value = ::alloy::primitives::#alloy_type::from_raw(alloy_unsigned);
+                let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
+                prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
+            };
 
-            quote! {
-                #[test]
-                fn #fn_name(value in any::<#type_name>()) {
-                    let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                    let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                    prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-
-                    let alloy_unsigned = ::alloy::primitives::#unsigned_type::from_be_bytes(value.to_be_bytes());
-                    let alloy_value = ::alloy::primitives::#alloy_type::from_raw(alloy_unsigned);
-                    let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
-                    prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
-                }
-            }
+            storage_key_abi_test(fn_name, quote! { any::<#type_name>() }, Some(extra))
         })
         .collect();
 
-    quote! {
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(500))]
-            #(#tests)*
-        }
-    }
+    proptest_block(500, tests)
 }
 
 fn gen_bool_storage_key_tests() -> TokenStream {
-    quote! {
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(500))]
+    let test = storage_key_abi_test(
+        quote::format_ident!("test_storage_key_bool_abi_encoding"),
+        quote! { any::<bool>() },
+        None,
+    );
 
-            #[test]
-            fn test_storage_key_bool_abi_encoding(value in any::<bool>()) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-            }
-        }
-    }
+    proptest_block(500, vec![test])
 }
 
 fn gen_address_storage_key_tests() -> TokenStream {
-    quote! {
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(500))]
+    let test = storage_key_abi_test(
+        quote::format_ident!("test_storage_key_address_abi_encoding"),
+        quote! { arb_address() },
+        None,
+    );
 
-            #[test]
-            fn test_storage_key_address_abi_encoding(value in arb_address()) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-            }
-        }
-    }
+    proptest_block(500, vec![test])
 }
 
 fn gen_u256_storage_key_tests() -> TokenStream {
-    quote! {
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(500))]
+    let test = storage_key_abi_test(
+        quote::format_ident!("test_storage_key_u256_abi_encoding"),
+        quote! { any::<[u64; 4]>().prop_map(::alloy::primitives::U256::from_limbs) },
+        None,
+    );
 
-            #[test]
-            fn test_storage_key_u256_abi_encoding(value in any::<[u64; 4]>().prop_map(::alloy::primitives::U256::from_limbs)) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-            }
-        }
-    }
+    proptest_block(500, vec![test])
 }
 
 fn gen_i256_storage_key_tests() -> TokenStream {
-    quote! {
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(500))]
+    let test = storage_key_abi_test(
+        quote::format_ident!("test_storage_key_i256_abi_encoding"),
+        quote! {
+            any::<[u64; 4]>().prop_map(|limbs| {
+                ::alloy::primitives::I256::from_raw(::alloy::primitives::U256::from_limbs(limbs))
+            })
+        },
+        None,
+    );
 
-            #[test]
-            fn test_storage_key_i256_abi_encoding(value in any::<[u64; 4]>().prop_map(|limbs| ::alloy::primitives::I256::from_raw(::alloy::primitives::U256::from_limbs(limbs)))) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-            }
-        }
-    }
+    proptest_block(500, vec![test])
 }
 
 fn gen_fixed_bytes_storage_key_tests() -> TokenStream {
     let tests: Vec<_> = FIXED_BYTES_SIZES
         .iter()
         .map(|&size| {
-            let _type_name = quote::format_ident!("FixedBytes");
             let fn_name = quote::format_ident!("test_storage_key_fixed_bytes_{size}_abi_encoding");
             let arb_fn = quote::format_ident!("arb_fixed_bytes_{size}");
 
-            quote! {
-                #[test]
-                fn #fn_name(value in #arb_fn()) {
-                    let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                    let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                    prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-                }
-            }
+            storage_key_abi_test(fn_name, quote! { #arb_fn() }, None)
         })
         .collect();
 
-    quote! {
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(500))]
-            #(#tests)*
-        }
-    }
+    proptest_block(500, tests)
 }
 
 fn gen_fixed_array_storage_key_tests() -> TokenStream {
-    quote! {
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(200))]
+    let mut tests = Vec::new();
+    tests.push(storage_key_abi_test(
+        quote::format_ident!("test_storage_key_array_address_len_4_abi_encoding"),
+        quote! { prop::array::uniform4(arb_address()) },
+        None,
+    ));
 
-            #[test]
-            fn test_storage_key_array_address_len_4_abi_encoding(value in prop::array::uniform4(arb_address())) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-            }
+    for size in [16usize, 32, 64, 128] {
+        let type_name = quote::format_ident!("u{size}");
+        let alloy_type = quote::format_ident!("U{size}");
+        let fn_name = quote::format_ident!("test_storage_key_array_u{size}_len_4_abi_encoding");
+        let extra = quote! {
+            let alloy_value = value.map(|v| ::alloy::primitives::#alloy_type::from(v));
+            let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
+            prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
+        };
 
-            #[test]
-            fn test_storage_key_array_u16_len_4_abi_encoding(value in prop::array::uniform4(any::<u16>())) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-
-                let alloy_value = value.map(|v| ::alloy::primitives::U16::from(v));
-                let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
-                prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
-            }
-
-            #[test]
-            fn test_storage_key_array_u32_len_4_abi_encoding(value in prop::array::uniform4(any::<u32>())) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-
-                let alloy_value = value.map(|v| ::alloy::primitives::U32::from(v));
-                let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
-                prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
-            }
-
-            #[test]
-            fn test_storage_key_array_u64_len_4_abi_encoding(value in prop::array::uniform4(any::<u64>())) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-
-                let alloy_value = value.map(|v| ::alloy::primitives::U64::from(v));
-                let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
-                prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
-            }
-
-            #[test]
-            fn test_storage_key_array_u128_len_4_abi_encoding(value in prop::array::uniform4(any::<u128>())) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-
-                let alloy_value = value.map(|v| ::alloy::primitives::U128::from(v));
-                let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
-                prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
-            }
-
-            #[test]
-            fn test_storage_key_array_i16_len_4_abi_encoding(value in prop::array::uniform4(any::<i16>())) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-
-                let alloy_value = value.map(|v| ::alloy::primitives::I16::from_be_bytes(v.to_be_bytes()));
-                let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
-                prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
-            }
-
-            #[test]
-            fn test_storage_key_array_i32_len_4_abi_encoding(value in prop::array::uniform4(any::<i32>())) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-
-                let alloy_value = value.map(|v| ::alloy::primitives::I32::from_be_bytes(v.to_be_bytes()));
-                let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
-                prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
-            }
-
-            #[test]
-            fn test_storage_key_array_i64_len_4_abi_encoding(value in prop::array::uniform4(any::<i64>())) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-
-                let alloy_value = value.map(|v| ::alloy::primitives::I64::from_be_bytes(v.to_be_bytes()));
-                let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
-                prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
-            }
-
-            #[test]
-            fn test_storage_key_array_i128_len_4_abi_encoding(value in prop::array::uniform4(any::<i128>())) {
-                let encoded = crate::storage::StorageKey::abi_encoded(&value);
-                let abi = ::alloy::sol_types::SolValue::abi_encode(&value);
-                prop_assert_eq!(encoded.as_ref(), abi.as_slice());
-
-                let alloy_value = value.map(|v| ::alloy::primitives::I128::from_be_bytes(v.to_be_bytes()));
-                let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
-                prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
-            }
-        }
+        tests.push(storage_key_abi_test(
+            fn_name,
+            quote! { prop::array::uniform4(any::<#type_name>()) },
+            Some(extra),
+        ));
     }
+
+    for size in [16usize, 32, 64, 128] {
+        let type_name = quote::format_ident!("i{size}");
+        let alloy_type = quote::format_ident!("I{size}");
+        let fn_name = quote::format_ident!("test_storage_key_array_i{size}_len_4_abi_encoding");
+        let extra = quote! {
+            let alloy_value =
+                value.map(|v| ::alloy::primitives::#alloy_type::from_be_bytes(v.to_be_bytes()));
+            let alloy_encoded = crate::storage::StorageKey::abi_encoded(&alloy_value);
+            prop_assert_eq!(encoded.as_ref(), alloy_encoded.as_ref());
+        };
+
+        tests.push(storage_key_abi_test(
+            fn_name,
+            quote! { prop::array::uniform4(any::<#type_name>()) },
+            Some(extra),
+        ));
+    }
+
+    proptest_block(200, tests)
 }
 
 /// Generate arbitrary functions for Rust unsigned integers
