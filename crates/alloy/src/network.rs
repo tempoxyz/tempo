@@ -328,10 +328,12 @@ mod tests {
     use alloy_eips::eip7702::SignedAuthorization;
     use alloy_primitives::{B256, Signature};
     use alloy_rpc_types_eth::{AccessListItem, Authorization, TransactionRequest};
-    use tempo_primitives::transaction::{
-        KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization, TempoSignedAuthorization,
+    use tempo_primitives::{
+        SignatureType, TempoSignature,
+        transaction::{
+            KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization, TempoSignedAuthorization,
+        },
     };
-    use tempo_primitives::{SignatureType, TempoSignature};
 
     #[test_case::test_case(
         TempoTransactionRequest {
