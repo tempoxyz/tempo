@@ -29,7 +29,6 @@ pub struct TipFeeManager {
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
-
     /// T2+ specific slot to ensure reserved liquidity remains available for pending fee swaps.
     /// This is subtracted from available reserves when checking liquidity for burn operations.
     reserved_liquidity: Mapping<B256, u128>,
