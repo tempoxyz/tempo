@@ -495,6 +495,7 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
+        AccountKeychain::new().authorize_transfer(msg_sender, self.address, call.amount)?;
         self._transfer_from(msg_sender, call.from, call.to, call.amount)
     }
 
@@ -504,6 +505,7 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
+        AccountKeychain::new().authorize_transfer(msg_sender, self.address, call.amount)?;
         self._transfer_from(msg_sender, call.from, call.to, call.amount)?;
 
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
