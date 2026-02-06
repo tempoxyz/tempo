@@ -62,6 +62,13 @@ pub const MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL: usize = 2048;
 /// Maximum number of token limits in a KeyAuthorization (DoS protection).
 pub const MAX_TOKEN_LIMITS: usize = 256;
 
+/// Default maximum allowed `valid_after` offset for AA txs (in seconds).
+///
+/// Aligned with the default queued transaction lifetime (`max_queued_lifetime = 120s`)
+/// so that transactions with a future `valid_after` are not silently evicted before
+/// they become executable.
+pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 120;
+
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
@@ -1104,7 +1111,7 @@ mod tests {
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
             inner,
-            3600,
+            DEFAULT_AA_VALID_AFTER_MAX_SECS,
             DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             amm_cache,
         );
@@ -1216,8 +1223,8 @@ mod tests {
             ));
         }
 
-        // Test case 2: `valid_after` within limit (30 minutes)
-        let tx_within_limit = create_aa_transaction(Some(current_time + 1800), None);
+        // Test case 2: `valid_after` within limit (60 seconds)
+        let tx_within_limit = create_aa_transaction(Some(current_time + 60), None);
         let validator = setup_validator(&tx_within_limit, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_within_limit)
@@ -1230,8 +1237,8 @@ mod tests {
             ));
         }
 
-        // Test case 3: `valid_after` beyond limit (2 hours)
-        let tx_too_far = create_aa_transaction(Some(current_time + 7200), None);
+        // Test case 3: `valid_after` beyond limit (5 minutes, exceeds 120s max)
+        let tx_too_far = create_aa_transaction(Some(current_time + 300), None);
         let validator = setup_validator(&tx_too_far, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_too_far)
@@ -1309,7 +1316,7 @@ mod tests {
             .build(InMemoryBlobStore::default());
         let validator = TempoTransactionValidator::new(
             inner,
-            3600,
+            DEFAULT_AA_VALID_AFTER_MAX_SECS,
             DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             AmmLiquidityCache::new(provider).unwrap(),
         );
@@ -1980,7 +1987,12 @@ mod tests {
                 .build(InMemoryBlobStore::default());
             let amm_cache =
                 AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-            TempoTransactionValidator::new(inner, 3600, DEFAULT_MAX_TEMPO_AUTHORIZATIONS, amm_cache)
+            TempoTransactionValidator::new(
+                inner,
+                DEFAULT_AA_VALID_AFTER_MAX_SECS,
+                DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+                amm_cache,
+            )
         }
 
         #[test]
@@ -2506,7 +2518,7 @@ mod tests {
                 AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
             let validator = TempoTransactionValidator::new(
                 inner,
-                3600,
+                DEFAULT_AA_VALID_AFTER_MAX_SECS,
                 DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
                 amm_cache,
             );
@@ -2863,7 +2875,12 @@ mod tests {
                 .build(InMemoryBlobStore::default());
             let amm_cache =
                 AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-            TempoTransactionValidator::new(inner, 3600, DEFAULT_MAX_TEMPO_AUTHORIZATIONS, amm_cache)
+            TempoTransactionValidator::new(
+                inner,
+                DEFAULT_AA_VALID_AFTER_MAX_SECS,
+                DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+                amm_cache,
+            )
         }
 
         #[test]

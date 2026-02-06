@@ -6,11 +6,12 @@
 pub use tempo_payload_types::{TempoExecutionData, TempoPayloadTypes};
 pub use version::{init_version_metadata, version_metadata};
 
-pub use crate::node::{DEFAULT_AA_VALID_AFTER_MAX_SECS, TempoNodeArgs, TempoPoolBuilder};
 use crate::node::{TempoAddOns, TempoNode};
+pub use crate::node::{TempoNodeArgs, TempoPoolBuilder};
 use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
 use std::sync::Arc;
+pub use tempo_transaction_pool::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS;
 
 pub mod engine;
 pub mod node;
