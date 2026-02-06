@@ -315,11 +315,6 @@ pub fn gen_storable_tests(_input: TokenStream) -> TokenStream {
     storable_tests::gen_storable_tests().into()
 }
 
-#[proc_macro]
-pub fn gen_storage_key_tests(_input: TokenStream) -> TokenStream {
-    storable_tests::gen_storage_key_tests().into()
-}
-
 /// Generate `Storable` implementations for fixed-size arrays of primitive types.
 ///
 /// Generates implementations for arrays of sizes 1-32 for the following element types:

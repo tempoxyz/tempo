@@ -40,13 +40,9 @@ impl FromWord for bool {
 }
 
 impl StorageKey for bool {
-    const ABI_WORDS: usize = 1;
-
     #[inline]
-    fn abi_encoded(&self) -> impl AsRef<[u8]> {
-        let mut out = [0u8; 32];
-        out[31] = if *self { 1 } else { 0 };
-        out
+    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
+        if *self { [1u8] } else { [0u8] }
     }
 }
 
@@ -74,13 +70,9 @@ impl FromWord for Address {
 }
 
 impl StorageKey for Address {
-    const ABI_WORDS: usize = 1;
-
     #[inline]
-    fn abi_encoded(&self) -> impl AsRef<[u8]> {
-        let mut out = [0u8; 32];
-        out[12..].copy_from_slice(self.as_slice());
-        out
+    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
+        self.as_slice()
     }
 }
 
@@ -113,8 +105,6 @@ mod tests {
     // - alloy integers: U8, I8, U16, I16, U32, I32, U64, I64, U128, I128, U256, I256
     // - alloy fixed bytes: FixedBytes<1>, FixedBytes<2>, ..., FixedBytes<32>
     tempo_precompiles_macros::gen_storable_tests!();
-    tempo_precompiles_macros::gen_storage_key_tests!();
-
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(500))]
 

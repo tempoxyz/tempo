@@ -23,8 +23,7 @@ enum StorableConversionStrategy {
 enum StorageKeyStrategy {
     Simple,           // `self.to_be_bytes()`
     WithSize(usize),  // `self.to_be_bytes::<N>()`
-    SignedBytes,      // `self.to_be_bytes()` with sign extension
-    SignedRaw(usize), // `self.into_raw().to_be_bytes::<N>()` with sign extension
+    SignedRaw(usize), // `self.into_raw().to_be_bytes::<N>()`
     AsSlice,          // `self.as_slice()`
 }
 
@@ -58,40 +57,15 @@ fn gen_storage_key_impl(type_path: &TokenStream, strategy: &StorageKeyStrategy) 
     let conversion = match strategy {
         StorageKeyStrategy::Simple => quote! { self.to_be_bytes() },
         StorageKeyStrategy::WithSize(size) => quote! { self.to_be_bytes::<#size>() },
-        StorageKeyStrategy::SignedBytes => quote! { self.to_be_bytes() },
         StorageKeyStrategy::SignedRaw(size) => quote! { self.into_raw().to_be_bytes::<#size>() },
         StorageKeyStrategy::AsSlice => quote! { self.as_slice() },
     };
 
-    let copy_bytes = match strategy {
-        StorageKeyStrategy::AsSlice => quote! {
-            out[..bytes.len()].copy_from_slice(bytes);
-        },
-        StorageKeyStrategy::SignedBytes | StorageKeyStrategy::SignedRaw(_) => quote! {
-            let pad = if bytes.first().is_some_and(|b| b & 0x80 != 0) {
-                0xff
-            } else {
-                0x00
-            };
-            out[..32 - bytes.len()].fill(pad);
-            out[32 - bytes.len()..].copy_from_slice(bytes);
-        },
-        _ => quote! {
-            out[32 - bytes.len()..].copy_from_slice(bytes);
-        },
-    };
-
     quote! {
         impl StorageKey for #type_path {
-            const ABI_WORDS: usize = 1;
-
             #[inline]
-            fn abi_encoded(&self) -> impl AsRef<[u8]> {
-                let bytes = #conversion;
-                let bytes: &[u8] = bytes.as_ref();
-                let mut out = [0u8; 32];
-                #copy_bytes
-                out
+            fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
+                #conversion
             }
         }
     }
@@ -269,7 +243,7 @@ pub(crate) fn gen_storable_rust_ints() -> TokenStream {
             type_path: quote! { #signed_type },
             byte_count,
             storable_strategy: StorableConversionStrategy::SignedRust(unsigned_type.clone()),
-            storage_key_strategy: StorageKeyStrategy::SignedBytes,
+            storage_key_strategy: StorageKeyStrategy::Simple,
         };
         impls.push(gen_complete_impl_set(&signed_config));
     }
@@ -436,24 +410,6 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
             // delete uses the default implementation from the trait
         }
 
-        // Implement StorageKey for use as mapping keys
-        impl crate::storage::StorageKey for [#elem_type; #array_size] {
-            const ABI_WORDS: usize = #array_size * <#elem_type as crate::storage::StorageKey>::ABI_WORDS;
-
-            #[inline]
-            fn abi_encoded(&self) -> impl AsRef<[u8]> {
-                use crate::storage::StorageKey;
-                let elem_words = <#elem_type as crate::storage::StorageKey>::ABI_WORDS;
-                let elem_len = elem_words * 32;
-                let mut bytes = [0u8; #array_size * <#elem_type as crate::storage::StorageKey>::ABI_WORDS * 32];
-                for (index, elem) in self.iter().enumerate() {
-                    let elem_bytes = elem.abi_encoded();
-                    let offset = index * elem_len;
-                    bytes[offset..offset + elem_len].copy_from_slice(elem_bytes.as_ref());
-                }
-                bytes
-            }
-        }
     }
 }
 
@@ -737,24 +693,6 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
             // delete uses the default implementation from the trait
         }
 
-        // Implement StorageKey for use as mapping keys
-        impl crate::storage::StorageKey for [#struct_type; #array_size] {
-            const ABI_WORDS: usize = #array_size * <#struct_type as crate::storage::StorageKey>::ABI_WORDS;
-
-            #[inline]
-            fn abi_encoded(&self) -> impl AsRef<[u8]> {
-                use crate::storage::StorageKey;
-                let elem_words = <#struct_type as crate::storage::StorageKey>::ABI_WORDS;
-                let elem_len = elem_words * 32;
-                let mut bytes = [0u8; #array_size * <#struct_type as crate::storage::StorageKey>::ABI_WORDS * 32];
-                for (index, elem) in self.iter().enumerate() {
-                    let elem_bytes = elem.abi_encoded();
-                    let offset = index * elem_len;
-                    bytes[offset..offset + elem_len].copy_from_slice(elem_bytes.as_ref());
-                }
-                bytes
-            }
-        }
     }
 }
 

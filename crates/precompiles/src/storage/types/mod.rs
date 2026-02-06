@@ -293,23 +293,22 @@ impl<T: Packable> Storable for T {
 /// Keys are hashed using keccak256 along with the mapping's base slot
 /// to determine the final storage location. This trait provides the
 /// byte representation used in that hash.
-pub trait StorageKey {
-    /// Number of words (32-byte chunks) used to ABI-encode this key.
-    const ABI_WORDS: usize;
-
-    /// Returns ABI-encoded key bytes (word-aligned).
-    fn abi_encoded(&self) -> impl AsRef<[u8]>;
+pub trait StorageKey: sealed::OnlyPrimitives {
+    /// Returns key bytes for storage slot computation.
+    fn as_storage_bytes(&self) -> impl AsRef<[u8]>;
 
     /// Compute storage slot for a mapping with this key.
     ///
-    /// Concatenates the ABI-encoded key with the slot and hashes.
+    /// Left-pads the key to the nearest 32-byte multiple, concatenates
+    /// with the slot, and hashes.
     fn mapping_slot(&self, slot: U256) -> U256 {
-        let key_bytes = self.abi_encoded();
-        debug_assert_eq!(key_bytes.as_ref().len(), Self::ABI_WORDS * 32);
+        let key_bytes = self.as_storage_bytes();
+        let key_bytes = key_bytes.as_ref();
+        debug_assert!(key_bytes.len() <= 32);
 
-        let mut buf = Vec::with_capacity(key_bytes.as_ref().len() + 32);
-        buf.extend_from_slice(key_bytes.as_ref());
-        buf.extend_from_slice(&slot.to_be_bytes::<32>());
+        let mut buf = [0u8; 64];
+        buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
+        buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
 
         U256::from_be_bytes(keccak256(buf).0)
     }
