@@ -49,14 +49,16 @@ V2 solves these problems with an append-only design where:
 
 ### Key Design Principle
 
-By recording `addedAtHeight` and `deactivatedAtHeight`, nodes can determine DKG players for any epoch using only current state. When preparing for a DKG ceremony in epoch `E+2`, a node reads the contract at `boundary(E)` and filters:
+By recording `addedAtHeight` and `deactivatedAtHeight`, nodes can determine DKG players for any epoch using only current state. When preparing for a DKG ceremony in epoch `E+1`, a node reads the contract at `boundary(E)` and filters:
 
 ```
-players(E+2) = validators.filter(v =>
-    v.addedAtHeight <= boundary(E) &&
+players(E+1) = validators.filter(v =>
+    v.addedAtHeight <= boundary(E-1) &&
     (v.deactivatedAtHeight == 0 || v.deactivatedAtHeight > boundary(E))
 )
 ```
+
+Note the asymmetry: addition has a one-epoch warmup (`boundary(E-1)`), while deactivation takes effect immediately (`boundary(E)`).
 
 This eliminates the need to retain historical account state for consensus recovery—nodes can derive DKG player sets from the current contract state alone.
 
@@ -342,40 +344,6 @@ message = keccak256(abi.encodePacked(
 
 The old validator is identified by `msg.sender`, which must be an existing active validator.
 
-### DKG Player Selection
-
-The DKG manager uses the validator set from this contract to determine participants in each DKG ceremony. To ensure validators have sufficient time to join the network and synchronize, there is a **one-epoch gap** between registration and DKG participation.
-
-**Rule**: A validator becomes a DKG player in epoch `E+2` if `addedAtHeight <= boundary(E)`, where `boundary(E)` is the last block height of epoch `E`.
-
-```
-Epoch E                    Epoch E+1                  Epoch E+2
-│                          │                          │
-│  addValidator() called   │  Validator syncs,        │  Validator participates
-│  at some height H        │  prepares for DKG        │  as DKG player
-│                          │                          │
-├──────────────────────────┼──────────────────────────┼──────────────────────────►
-│                          │                          │
-           boundary(E)              boundary(E+1)
-           (last block)             (last block)
-```
-
-**Example timeline** (assuming epoch length of 100 blocks):
-1. Validator is added at height 1050 during epoch 10, confirmed at `boundary(10) = 1000`
-2. Epoch 11 (heights 1001–1100): The validator syncs with the network
-3. Epoch 12 (heights 1101–1200): The validator participates as a DKG player and receives a share (on success)
-4. Epoch 13 (heights 1201–1300): The validator becomes a signer using the share from the epoch 12 DKG
-
-**Deletion follows the same pattern**: A deleted validator is excluded from epoch `E+2` if `deactivatedAtHeight <= boundary(E)`.
-
-The complete filter for DKG players at epoch `E+2`:
-```
-players = validators.filter(v =>
-    v.addedAtHeight <= boundary(E) &&
-    (v.deactivatedAtHeight == 0 || v.deactivatedAtHeight > boundary(E))
-)
-```
-
 ### Determining Active Validators
 
 Reading this contract alone is **not sufficient** to determine who the active validators (signers) are during a given epoch. The contract only records which validators are *eligible* to participate in DKG ceremonies—it does not record DKG outcomes.
@@ -407,18 +375,34 @@ This distinction matters because:
 Both IPv4 and IPv6 addresses are supported. For ingress, IPv6 addresses must be
 enclosed in brackets: `[2001:db8::1]:8080`.
 
-### Reconstructing DKG Players
+### Consensus Layer Behavior
 
-Nodes can determine the DKG players for any past or future epoch using only current contract state. To find the players for epoch `E+2`, fetch all validators via `getValidators()` and filter based on `boundary(E)`:
+**IP Address Changes**: When a validator's IP address changes via `setIpAddresses`, the consensus layer is expected to update its peer list on the next finalized block.
+
+**Validator Addition (Warmup Period)**: New validators have a one-epoch warmup period before participating in DKG. A validator added during epoch `E` (i.e., `addedAtHeight <= boundary(E)`) becomes a DKG player in epoch `E+2`.
 
 ```
-players(E+2) = validators.filter(v =>
-    v.addedAtHeight <= boundary(E) &&
+Epoch E                    Epoch E+1                  Epoch E+2
+│                          │                          │
+│  addValidator() called   │  Validator syncs,        │  Validator participates
+│                          │  prepares for DKG        │  as DKG player
+│                          │                          │
+├──────────────────────────┼──────────────────────────┼──────────────────────────►
+           boundary(E)              boundary(E+1)
+```
+
+**Validator Deactivation (Immediate)**: When a validator is deactivated via `deactivateValidator`, it is removed from the validator set at the next epoch boundary. There is no cooldown period—a validator deactivated during epoch `E` is excluded from the DKG for epoch `E+1`.
+
+**DKG Player Selection**: The consensus layer determines DKG players for epoch `E+1` by reading state at `boundary(E)` and filtering:
+
+```
+players(E+1) = validators.filter(v =>
+    v.addedAtHeight <= boundary(E-1) &&
     (v.deactivatedAtHeight == 0 || v.deactivatedAtHeight > boundary(E))
 )
 ```
 
-**Note**: Validators with `addedAtHeight == deactivatedAtHeight` will never match this filter since `deactivatedAtHeight > boundary(E)` cannot be true when `addedAtHeight <= boundary(E)` and they are equal.
+Note the asymmetry: addition uses `boundary(E-1)` (one-epoch warmup) while deactivation uses `boundary(E)` (immediate removal).
 
 This enables nodes to reconstruct DKG player sets without accessing historical account state—critical for node recovery and late-joining validators.
 
