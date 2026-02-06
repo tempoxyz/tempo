@@ -636,6 +636,15 @@ where
             );
         }
 
+        // Validate AA transaction field limits (calls, access list, token limits).
+        // This prevents DoS attacks via oversized transactions.
+        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
+        }
+
         if transaction.inner().is_aa() {
             // Validate AA transaction intrinsic gas.
             // This ensures the gas limit covers all AA-specific costs (per-call overhead,
@@ -652,15 +661,6 @@ where
             if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
                 return TransactionValidationOutcome::Invalid(transaction, err);
             }
-        }
-
-        // Validate AA transaction field limits (calls, access list, token limits).
-        // This prevents DoS attacks via oversized transactions.
-        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
         }
 
         let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
@@ -1455,6 +1455,12 @@ mod tests {
                     .collect()
             };
 
+            let valid_before = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                Some(current_time + 10)
+            } else {
+                None
+            };
+
             let tx = TempoTransaction {
                 chain_id: 1,
                 max_priority_fee_per_gas: 1_000_000_000,
@@ -1464,6 +1470,7 @@ mod tests {
                 nonce_key,
                 nonce: 0,
                 fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                valid_before,
                 ..Default::default()
             };
 
@@ -1775,10 +1782,11 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // T0 base fee is 10 gwei (10_000_000_000 wei)
-        // Create a transaction with max_fee_per_gas exactly at minimum
+        let spec = MODERATO.tempo_hardfork_at(current_time);
+        let min_base_fee = spec.base_fee();
+
         let transaction = TxBuilder::aa(Address::random())
-            .max_fee(10_000_000_000) // exactly 10 gwei
+            .max_fee(min_base_fee as u128)
             .max_priority_fee(1_000_000_000)
             .build();
 
