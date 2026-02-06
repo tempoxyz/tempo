@@ -317,6 +317,12 @@ impl AccountKeychain {
 
     /// Get remaining spending limit
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
+        let key = self.keys[call.account][call.keyId].read()?;
+
+        if key.is_revoked || key.expiry == 0 {
+            return Ok(U256::ZERO);
+        }
+
         let limit_key = Self::spending_limit_key(call.account, call.keyId);
         self.spending_limits[limit_key][call.token].read()
     }
@@ -1154,6 +1160,55 @@ mod tests {
                 none_result.is_ok(),
                 "Validation should succeed when signature type check is skipped (pre-T1)"
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_revoked_key_returns_zero_remaining_limit() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(500),
+                    }],
+                },
+            )?;
+
+            let limit = keychain.get_remaining_limit(getRemainingLimitCall {
+                account,
+                keyId: key_id,
+                token,
+            })?;
+            assert_eq!(limit, U256::from(500));
+
+            keychain.revoke_key(account, revokeKeyCall { keyId: key_id })?;
+
+            let limit_after_revoke = keychain.get_remaining_limit(getRemainingLimitCall {
+                account,
+                keyId: key_id,
+                token,
+            })?;
+            assert_eq!(limit_after_revoke, U256::ZERO);
 
             Ok(())
         })
