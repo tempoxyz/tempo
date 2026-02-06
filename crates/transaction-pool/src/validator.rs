@@ -1496,9 +1496,36 @@ mod tests {
             _ => panic!("Expected Invalid outcome, got: {outcome1:?}"),
         }
 
-        // Test 2: Verify 2D nonce (nonce_key != 0) with same low gas also fails intrinsic gas check
-        // This confirms that 2D nonce adds additional gas requirements (for nonce == 0 case)
-        let tx_2d_low_gas = create_aa_tx(30_000, TEMPO_EXPIRING_NONCE_KEY, false);
+        // Test 2: Verify expiring nonce (nonce_key == MAX) with same low gas also fails intrinsic gas check.
+        // Under T1, expiring nonce txs require valid_before, so set one to reach the gas check.
+        let tx_2d_low_gas = {
+            let calls: Vec<TxCall> = (0..10)
+                .map(|i| TxCall {
+                    to: TxKind::Call(Address::from([i as u8; 20])),
+                    value: U256::ZERO,
+                    input: alloy_primitives::Bytes::from(vec![0x00; 100]),
+                })
+                .collect();
+            let tx = TempoTransaction {
+                chain_id: 1,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit: 30_000,
+                calls,
+                nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+                nonce: 0,
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                valid_before: Some(current_time + 20),
+                ..Default::default()
+            };
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
         let validator2 = setup_validator(&tx_2d_low_gas, current_time);
         let outcome2 = validator2
             .validate_transaction(TransactionOrigin::External, tx_2d_low_gas)
@@ -1775,10 +1802,11 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // T0 base fee is 10 gwei (10_000_000_000 wei)
-        // Create a transaction with max_fee_per_gas exactly at minimum
+        let spec = MODERATO.tempo_hardfork_at(current_time);
+        let min_base_fee = spec.base_fee() as u128;
+
         let transaction = TxBuilder::aa(Address::random())
-            .max_fee(10_000_000_000) // exactly 10 gwei
+            .max_fee(min_base_fee)
             .max_priority_fee(1_000_000_000)
             .build();
 
@@ -3325,6 +3353,7 @@ mod tests {
 
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(address!("0000000000000000000000000000000000000002"))
+            .gas_limit(10_000_000)
             .calls(calls)
             .build();
         let validator = setup_validator(&transaction, current_time);
@@ -3382,6 +3411,7 @@ mod tests {
 
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(address!("0000000000000000000000000000000000000002"))
+            .gas_limit(10_000_000)
             .calls(calls)
             .authorization_list(vec![authorization])
             .build();
