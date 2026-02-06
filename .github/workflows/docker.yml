@@ -136,3 +136,20 @@ jobs:
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+
+      - name: Sign Docker images
+        shell: bash
+        run: |
+          set -euo pipefail
+          images=(
+            "${{ steps.meta-tempo.outputs.tags }}"
+            "${{ steps.meta-tempo-bench.outputs.tags }}"
+            "${{ steps.meta-tempo-sidecar.outputs.tags }}"
+            "${{ steps.meta-tempo-xtask.outputs.tags }}"
+          )
+          for tags in "${images[@]}"; do
+            echo "$tags" | xargs -n1 cosign sign --yes --recursive
+          done
