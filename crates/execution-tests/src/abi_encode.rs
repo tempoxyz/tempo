@@ -74,11 +74,7 @@ fn json_to_dyn_value(ty: &DynSolType, v: &serde_json::Value) -> Result<DynSolVal
                 .as_array()
                 .ok_or_else(|| eyre!("expected array for tuple, got {:?}", v))?;
             if arr.len() != elems.len() {
-                bail!(
-                    "tuple requires {} elements, got {}",
-                    elems.len(),
-                    arr.len()
-                );
+                bail!("tuple requires {} elements, got {}", elems.len(), arr.len());
             }
             let inner = elems
                 .iter()

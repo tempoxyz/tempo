@@ -36,12 +36,7 @@ impl VectorDatabase {
         let balances: Vec<(Address, U256)> = prestate
             .genesis_path_usd
             .as_ref()
-            .map(|g| {
-                g.balances
-                    .iter()
-                    .map(|b| (b.account, b.balance))
-                    .collect()
-            })
+            .map(|g| g.balances.iter().map(|b| (b.account, b.balance)).collect())
             .unwrap_or_default();
 
         // Create a TempoEvm, run genesis, and extract the state from journaled_state
@@ -123,7 +118,6 @@ impl VectorDatabase {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,7 +149,10 @@ mod tests {
 
         // Check that the currency field is set correctly
         let currency_meta = metadata_for("TIP20Token", "currency", &[]).unwrap();
-        let currency_value = db.db.storage_ref(PATH_USD_ADDRESS, currency_meta.slot).unwrap();
+        let currency_value = db
+            .db
+            .storage_ref(PATH_USD_ADDRESS, currency_meta.slot)
+            .unwrap();
         // "USD" as short string: 0x555344...06 (USD bytes + length 3*2=6 in the last nibble)
         assert!(
             !currency_value.is_zero(),

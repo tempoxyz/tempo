@@ -9,7 +9,7 @@ use revm::DatabaseRef;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tempo_precompiles::{
-    resolver::{metadata_for, FieldMetadata},
+    resolver::{FieldMetadata, metadata_for},
     storage::packing::extract_from_word,
 };
 
@@ -69,11 +69,7 @@ fn u256_to_bytes_sized(value: U256, size: usize) -> Bytes {
 /// - Multi-slot fields: reads and concatenates consecutive slots
 ///
 /// Returns the value as `Bytes` with exactly `metadata.bytes` length.
-fn read_field_value<DB>(
-    db: &DB,
-    address: Address,
-    metadata: &FieldMetadata,
-) -> eyre::Result<Bytes>
+fn read_field_value<DB>(db: &DB, address: Address, metadata: &FieldMetadata) -> eyre::Result<Bytes>
 where
     DB: DatabaseRef,
     DB::Error: std::fmt::Debug,
@@ -97,9 +93,8 @@ where
 
     // For packed fields within a single slot, extract the relevant bytes
     if num_slots == 1 && (metadata.offset > 0 || metadata.bytes < 32) {
-        let extracted =
-            extract_from_word::<U256>(slot_values[0], metadata.offset, metadata.bytes)
-                .map_err(|e| eyre::eyre!("extract_from_word failed: {:?}", e))?;
+        let extracted = extract_from_word::<U256>(slot_values[0], metadata.offset, metadata.bytes)
+            .map_err(|e| eyre::eyre!("extract_from_word failed: {:?}", e))?;
         return Ok(u256_to_bytes_sized(extracted, metadata.bytes));
     }
 
@@ -357,7 +352,9 @@ mod tests {
         let token_addr = address!("20C0000000000000000000000000000000000001");
 
         // Get the slot for total_supply
-        let slot = metadata_for("TIP20Token", "total_supply", &[]).unwrap().slot;
+        let slot = metadata_for("TIP20Token", "total_supply", &[])
+            .unwrap()
+            .slot;
 
         // Seed the storage with a value
         let mut prestate = Prestate::default();
@@ -395,7 +392,9 @@ mod tests {
         let holder = "0x1111111111111111111111111111111111111111";
 
         // Get the slot for balances[holder]
-        let slot = metadata_for("TIP20Token", "balances", &[holder]).unwrap().slot;
+        let slot = metadata_for("TIP20Token", "balances", &[holder])
+            .unwrap()
+            .slot;
 
         // Seed the storage with a balance
         let mut prestate = Prestate::default();
@@ -438,7 +437,9 @@ mod tests {
         let spender = "0x2222222222222222222222222222222222222222";
 
         // Get the slot for allowances[owner][spender]
-        let slot = metadata_for("TIP20Token", "allowances", &[owner, spender]).unwrap().slot;
+        let slot = metadata_for("TIP20Token", "allowances", &[owner, spender])
+            .unwrap()
+            .slot;
 
         // Seed the storage with an allowance
         let mut prestate = Prestate::default();
@@ -535,10 +536,7 @@ mod tests {
         };
 
         let value = super::read_field_value(&db.db, addr, &metadata).unwrap();
-        assert_eq!(
-            value,
-            u256_to_bytes(U256::from(0x1234567890ABCDEF_u64))
-        );
+        assert_eq!(value, u256_to_bytes(U256::from(0x1234567890ABCDEF_u64)));
     }
 
     #[test]

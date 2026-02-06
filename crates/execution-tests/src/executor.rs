@@ -11,7 +11,9 @@ use alloy_evm::{EvmEnv, FromRecoveredTx};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
 use reth_chainspec::EthChainSpec;
 use reth_revm::{State, context::BlockEnv};
-use revm::{Context, DatabaseCommit, ExecuteEvm, MainContext, context_interface::result::ExecutionResult};
+use revm::{
+    Context, DatabaseCommit, ExecuteEvm, MainContext, context_interface::result::ExecutionResult,
+};
 use std::sync::Arc;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::MODERATO};
 use tempo_evm::TempoBlockEnv;
