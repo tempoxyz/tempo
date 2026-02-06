@@ -1,0 +1,486 @@
+# Running a Tempo Node on Windows
+
+This guide provides step-by-step instructions for running a Tempo blockchain node on Windows 10 and Windows 11.
+
+## Overview
+
+Tempo's official installation script (`curl -L https://tempo.xyz/install | bash`) is designed for Unix-like systems. Windows users have two recommended approaches:
+
+1. **WSL2 (Windows Subsystem for Linux)** - Recommended for most users
+2. **Docker Desktop** - Alternative method
+
+## Prerequisites
+
+### System Requirements
+
+- **OS**: Windows 10 (build 19041+) or Windows 11
+- **CPU**: 8+ cores (16+ recommended for validators)
+- **RAM**: 32 GB (64 GB recommended for validators)
+- **Storage**: 300 GB NVMe SSD minimum (1 TB recommended)
+- **Network**: 100+ Mbps bandwidth
+
+### Required Ports
+
+Ensure these ports are open in Windows Firewall:
+
+- `30303` (TCP & UDP) - P2P networking & peer discovery
+- `8545` (TCP) - HTTP RPC (optional, keep internal unless needed)
+- `8546` (TCP) - WebSocket RPC (optional)
+- `9000` (TCP) - Metrics (optional, for monitoring)
+
+---
+
+## Method 1: WSL2 (Recommended)
+
+Windows Subsystem for Linux provides a genuine Linux environment on Windows.
+
+### Step 1: Enable WSL2
+
+Open **PowerShell as Administrator** and run:
+
+```powershell
+wsl --install
+```
+
+This installs WSL2 with Ubuntu by default. **Restart your computer** when prompted.
+
+### Step 2: Configure Ubuntu
+
+After restart, Ubuntu will launch automatically. Create your Linux username and password.
+
+Update the system:
+
+```bash
+sudo apt update && sudo apt upgrade -y
+```
+
+### Step 3: Install Dependencies
+
+Install required packages:
+
+```bash
+sudo apt install -y curl git build-essential pkg-config libssl-dev clang lz4 jq htop
+```
+
+### Step 4: Install Rust
+
+Tempo requires Rust. Install it with:
+
+```bash
+curl --proto 'https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+```
+
+Verify installation:
+
+```bash
+rustc --version && cargo --version
+```
+
+### Step 5: Install Tempo
+
+Run the official Tempo installation script:
+
+```bash
+curl -L https://tempo.xyz/install | bash
+```
+
+Reload your shell:
+
+```bash
+source ~/.bashrc
+```
+
+Verify Tempo is installed:
+
+```bash
+tempo --version
+```
+
+### Step 6: Create Working Directory
+
+```bash
+mkdir -p $HOME/tempo-node/data
+cd $HOME/tempo-node
+```
+
+### Step 7: Download Snapshot (Recommended)
+
+Syncing from block zero takes forever. Use a snapshot instead:
+
+1. Check [Tempo Snapshot Service](https://snapshots.tempoxyz.dev/) for the latest snapshot URL
+2. Download and extract:
+
+```bash
+# Replace <SNAPSHOT_URL> with the actual URL
+SNAP_URL="<paste_snapshot_url_here>"
+curl -L "$SNAP_URL" | lz4 -d | tar -xvf - -C $HOME/tempo-node/data
+```
+
+**Note**: This download is ~190GB currently and extraction takes significant space.
+
+Verify extraction:
+
+```bash
+du -sh $HOME/tempo-node/data
+```
+
+Should be 300GB+.
+
+### Step 8: Start Tempo RPC Node
+
+Run the node:
+
+```bash
+tempo node \
+  --follow \
+  --http \
+  --http.port 8545 \
+  --http.api eth,net,web3,txpool,trace
+```
+
+**To run in background with `screen`:**
+
+```bash
+# Install screen
+sudo apt install -y screen
+
+# Create a new screen session
+screen -S tempo
+
+# Run the node
+tempo node \
+  --follow \
+  --http \
+  --http.port 8545 \
+  --http.api eth,net,web3,txpool,trace
+
+# Detach: Ctrl+A then D
+# Reattach: screen -r tempo
+```
+
+### Step 9: Verify Node is Running
+
+Check if it's syncing:
+
+```bash
+curl localhost:8545 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}'
+```
+
+Check latest block:
+
+```bash
+curl localhost:8545 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
+
+### Step 10: Monitor Logs
+
+View sync progress:
+
+```bash
+# If running in screen
+screen -r tempo
+
+# View logs with journalctl (if using systemd service)
+sudo journalctl -u tempo -f
+```
+
+---
+
+## Method 2: Docker Desktop
+
+An alternative approach using Docker.
+
+### Step 1: Install Docker Desktop
+
+1. Download [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/)
+2. Install and restart your computer
+3. Launch Docker Desktop and ensure it's running
+
+### Step 2: Pull Tempo Docker Image
+
+Open **PowerShell** or **Command Prompt**:
+
+```powershell
+docker pull ghcr.io/tempoxyz/tempo:0.7.2
+```
+
+Replace `0.7.2` with the [latest version](https://github.com/tempoxyz/tempo/releases).
+
+### Step 3: Create Data Directory
+
+```powershell
+mkdir C:\tempo-node\data
+```
+
+### Step 4: Run Tempo Container
+
+```powershell
+docker run -d \
+  --name tempo \
+  -v C:\tempo-node\data:/data \
+  -p 30303:30303 \
+  -p 30303:30303/udp \
+  -p 8545:8545 \
+  ghcr.io/tempoxyz/tempo:0.7.2 \
+  tempo node \
+    --datadir /data \
+    --follow \
+    --http \
+    --http.addr 0.0.0.0 \
+    --http.port 8545 \
+    --http.api eth,net,web3,txpool,trace
+```
+
+### Step 5: View Logs
+
+```powershell
+docker logs -f tempo
+```
+
+### Step 6: Stop/Start Node
+
+```powershell
+# Stop
+docker stop tempo
+
+# Start
+docker start tempo
+
+# Remove
+docker rm -f tempo
+```
+
+---
+
+## Troubleshooting
+
+### WSL2 Issues
+
+**Issue**: "WSL 2 requires an update to its kernel component"
+
+**Solution**:
+1. Download the [WSL2 Linux kernel update](https://aka.ms/wsl2kernel)
+2. Install and restart
+
+**Issue**: Ubuntu won't launch
+
+**Solution**:
+```powershell
+wsl --set-default-version 2
+wsl --install -d Ubuntu
+```
+
+### Network/Firewall Issues
+
+**Issue**: Node can't connect to peers
+
+**Solution**:
+1. Open Windows Defender Firewall
+2. Click "Advanced settings"
+3. Create inbound rules for ports 30303 (TCP & UDP)
+
+### Sync Issues
+
+**Issue**: Node syncing very slowly
+
+**Solution**:
+- Use snapshot method instead of syncing from genesis
+- Ensure SSD has sufficient free space (500GB+ free recommended)
+- Check network bandwidth
+
+**Issue**: "Database locked" or corruption errors
+
+**Solution**:
+```bash
+# Stop node, remove data, re-download snapshot
+rm -rf $HOME/tempo-node/data/*
+# Re-download snapshot
+```
+
+### Performance Issues
+
+**Issue**: WSL2 consuming too much RAM
+
+**Solution**:
+Create `.wslconfig` file in `C:\Users\<YourUsername>\.wslconfig`:
+
+```ini
+[wsl2]
+memory=24GB
+processors=8
+swap=8GB
+```
+
+Restart WSL:
+```powershell
+wsl --shutdown
+```
+
+---
+
+## Monitoring (Optional)
+
+### Check Sync Status
+
+```bash
+# Create a simple script
+cat << 'EOF' > check_sync.sh
+#!/bin/bash
+while true; do
+  BLOCK=$(curl -s localhost:8545 \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+    | jq -r '.result' | xargs printf "%d\n")
+  echo "Current block: $BLOCK"
+  sleep 10
+done
+EOF
+
+chmod +x check_sync.sh
+./check_sync.sh
+```
+
+### Expose Metrics (Prometheus)
+
+Add `--metrics 9000` flag when starting the node:
+
+```bash
+tempo node \
+  --follow \
+  --http \
+  --http.port 8545 \
+  --metrics 9000 \
+  --http.api eth,net,web3,txpool,trace
+```
+
+Access metrics:
+```bash
+curl localhost:9000/metrics
+```
+
+---
+
+## Upgrading Tempo
+
+### WSL2 Method
+
+```bash
+# Stop the node (Ctrl+C or exit screen)
+
+# Re-run install script
+curl -L https://tempo.xyz/install | bash
+
+# Reload shell
+source ~/.bashrc
+
+# Verify new version
+tempo --version
+
+# Restart node
+```
+
+### Docker Method
+
+```powershell
+# Stop and remove old container
+docker stop tempo
+docker rm tempo
+
+# Pull latest image
+docker pull ghcr.io/tempoxyz/tempo:latest
+
+# Run with new image (use same command from Step 4)
+```
+
+---
+
+## Running as a Windows Service (Advanced - WSL2)
+
+For automatic startup, create a systemd service inside WSL2:
+
+```bash
+sudo tee /etc/systemd/system/tempo.service > /dev/null <<EOF
+[Unit]
+Description=Tempo RPC Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$HOME/tempo-node
+ExecStart=/usr/local/bin/tempo node \\
+  --datadir $HOME/tempo-node/data \\
+  --follow \\
+  --http \\
+  --http.port 8545 \\
+  --http.api eth,net,web3,txpool,trace \\
+  --metrics 9000
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable tempo
+sudo systemctl start tempo
+```
+
+Check status:
+
+```bash
+sudo systemctl status tempo
+```
+
+View logs:
+
+```bash
+sudo journalctl -u tempo -f
+```
+
+---
+
+## FAQ
+
+**Q: Can I run a validator on Windows?**
+A: Validators require whitelisting by the Tempo team. Once approved, the setup is similar but requires additional `--consensus.signing-key` and `--consensus.fee-recipient` flags.
+
+**Q: How much disk space do I really need?**
+A: Currently ~300GB for the chain data, but plan for 500GB+ to account for growth. Use an NVMe SSD for best performance.
+
+**Q: Can I use Git Bash instead of WSL2?**
+A: Not recommended. Git Bash lacks full Linux compatibility. WSL2 provides a genuine Linux environment.
+
+**Q: Will this work on Windows Server?**
+A: Yes, WSL2 is supported on Windows Server 2019+ (build 19041+).
+
+**Q: How do I check if my node is healthy?**
+A: Run `curl localhost:8545 -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}'` - you should see peers connected.
+
+---
+
+## Additional Resources
+
+- **Official Docs**: https://docs.tempo.xyz/guide/node
+- **Installation Guide**: https://docs.tempo.xyz/guide/node/installation
+- **Snapshots**: https://snapshots.tempoxyz.dev/
+- **GitHub**: https://github.com/tempoxyz/tempo
+- **Discord**: Join Tempo community for support
+
+---
+
+**Last Updated**: January 2026
+**Tempo Version**: 0.7.2+
+**Tested On**: Windows 11 (Build 22H2), WSL2 Ubuntu 22.04
