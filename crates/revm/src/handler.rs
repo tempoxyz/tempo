@@ -1284,6 +1284,9 @@ where
         evm: &mut Self::Evm,
         error: Self::Error,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        evm.ctx().local_mut().clear();
+        evm.frame_stack().clear();
+
         // For subblock transactions that failed `collectFeePreTx` call we catch error and treat such transactions as valid.
         if evm.ctx.tx.is_subblock_transaction()
             && let Some(
@@ -1293,13 +1296,41 @@ where
                 ),
             ) = error.as_invalid_tx_err()
         {
-            // Commit the transaction.
-            //
-            // `collectFeePreTx` call will happen after the nonce bump so this will only commit the nonce increment.
-            evm.ctx.journaled_state.commit_tx();
+            // Clear inner journal state, discarding all changes from the failed transaction.
+            let _ = evm.ctx.journaled_state.finalize();
 
-            evm.ctx().local_mut().clear();
-            evm.frame_stack().clear();
+            // Manually bump the nonce to ensure replay protection.
+            // Choose account nonce or 2D nonce based on tx fields.
+            let caller = evm.ctx.tx.caller();
+            let nonce_key = evm
+                .ctx
+                .tx
+                .tempo_tx_env
+                .as_ref()
+                .map(|env| env.nonce_key)
+                .unwrap_or(U256::ZERO);
+
+            if nonce_key.is_zero() {
+                // Bump protocol nonce (account nonce)
+                if let Ok(mut caller_acc) =
+                    evm.ctx.journaled_state.load_account_with_code_mut(caller)
+                {
+                    caller_acc.data.bump_nonce();
+                }
+            } else {
+                // Bump 2D nonce via NonceManager
+                let context = evm.ctx_mut();
+                let _ = StorageCtx::enter_evm(
+                    &mut context.journaled_state,
+                    &context.block,
+                    &context.cfg,
+                    || {
+                        let mut nonce_manager = NonceManager::new();
+                        let _ = nonce_manager.increment_nonce(caller, nonce_key);
+                        Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+                    },
+                );
+            }
 
             Ok(ExecutionResult::Halt {
                 reason: TempoHaltReason::SubblockTxFeePayment,
