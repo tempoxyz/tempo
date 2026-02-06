@@ -15,15 +15,15 @@ interface IAccountKeychainSubaccounts {
 
     /// @notice Auto-funding rule for a subaccount (max 4 rules per key)
     struct AutoFundRule {
-        address token;         // TIP-20 token address
-        uint256 minBalance;    // Trigger auto-fund when sub-balance drops below this
-        uint256 refillAmount;  // Amount to transfer from root to subaccount
+        address token; // TIP-20 token address
+        uint256 minBalance; // Trigger auto-fund when sub-balance drops below this
+        uint256 refillAmount; // Amount to transfer from root to subaccount
     }
 
     /// @notice Subaccount configuration for an access key
     struct SubaccountConfig {
-        bool enabled;             // Whether this key operates as a subaccount
-        AutoFundRule[] autoFund;  // Auto-funding rules
+        bool enabled; // Whether this key operates as a subaccount
+        AutoFundRule[] autoFund; // Auto-funding rules
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -32,26 +32,17 @@ interface IAccountKeychainSubaccounts {
 
     /// @notice Emitted when tokens are deposited into a subaccount
     event SubaccountDeposit(
-        address indexed account,
-        address indexed keyId,
-        address indexed token,
-        uint256 amount
+        address indexed account, address indexed keyId, address indexed token, uint256 amount
     );
 
     /// @notice Emitted when tokens are withdrawn from a subaccount
     event SubaccountWithdrawal(
-        address indexed account,
-        address indexed keyId,
-        address indexed token,
-        uint256 amount
+        address indexed account, address indexed keyId, address indexed token, uint256 amount
     );
 
     /// @notice Emitted when auto-funding is triggered
     event SubaccountAutoFunded(
-        address indexed account,
-        address indexed keyId,
-        address indexed token,
-        uint256 amount
+        address indexed account, address indexed keyId, address indexed token, uint256 amount
     );
 
     /*//////////////////////////////////////////////////////////////
@@ -113,8 +104,7 @@ interface IAccountKeychainSubaccounts {
      * @param keyId The access key identifier
      * @return The deterministic subaccount address
      */
-    function getSubaccountAddress(address account, address keyId)
-        external pure returns (address);
+    function getSubaccountAddress(address account, address keyId) external pure returns (address);
 
     /**
      * @notice Returns the sub-balance of a token for a specific key's subaccount
@@ -123,8 +113,14 @@ interface IAccountKeychainSubaccounts {
      * @param token The TIP-20 token address
      * @return The sub-balance amount
      */
-    function getSubBalance(address account, address keyId, address token)
-        external view returns (uint256);
+    function getSubBalance(
+        address account,
+        address keyId,
+        address token
+    )
+        external
+        view
+        returns (uint256);
 
     /**
      * @notice Returns the subaccount configuration for a key
@@ -132,13 +128,21 @@ interface IAccountKeychainSubaccounts {
      * @param keyId The access key identifier
      * @return config The subaccount configuration
      */
-    function getSubaccountConfig(address account, address keyId)
-        external view returns (SubaccountConfig memory config);
+    function getSubaccountConfig(
+        address account,
+        address keyId
+    )
+        external
+        view
+        returns (SubaccountConfig memory config);
 
     /// @notice Looks up the (account, keyId) pair for a registered subaccount address
     /// @param subAddr The subaccount address to look up
     /// @return account The root account (address(0) if not registered)
     /// @return keyId The access key identifier (address(0) if not registered)
     function resolveSubaccountAddress(address subAddr)
-        external view returns (address account, address keyId);
+        external
+        view
+        returns (address account, address keyId);
+
 }
