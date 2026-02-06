@@ -104,7 +104,7 @@ impl TipFeeManager {
             .map_err(|_| TempoPrecompileError::under_overflow())
     }
 
-    ///  Reserves pool liquidity in transient storage for a pending fee swap.
+    /// Reserves pool liquidity in transient storage for a pending fee swap.
     #[inline]
     pub fn reserve_pool_liquidity(&mut self, pool_id: B256, amount: u128) -> Result<()> {
         self.pending_fee_swap_reservation[pool_id].t_write(amount)
