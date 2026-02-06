@@ -28,7 +28,7 @@ All release artifacts are cryptographically signed. We recommend verifying signa
 
 ### Binary Signatures (GPG)
 
-Release binaries are signed with GPG. The `tempoup` installer verifies signatures automatically when `gpg` is available.
+Starting from **v1.1.0**, all release binaries are signed with GPG. The `tempoup` installer verifies signatures automatically when `gpg` is available.
 
 To verify manually:
 
@@ -37,13 +37,32 @@ To verify manually:
 gpg --keyserver keyserver.ubuntu.com --recv-keys EE3C5D41EA963E896F310EC3CBBFA54B20D33446
 
 # Verify a downloaded binary
-gpg --verify tempo-v1.0.0-x86_64-unknown-linux-gnu.tar.gz.asc \
-    tempo-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
+gpg --verify tempo-v1.1.0-x86_64-unknown-linux-gnu.tar.gz.asc \
+    tempo-v1.1.0-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 A successful verification will show `Good signature from "Tempo Release Signing Key"`.
 
 **Fingerprint:** `EE3C 5D41 EA96 3E89 6F31 0EC3 CBBF A54B 20D3 3446`
+
+<details>
+<summary>Public Key</summary>
+
+```
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEaYXmJhYJKwYBBAHaRw8BAQdAa+cO3zz4+YQuPgUCNXSW7ApNTCAIwx9wBfPc
+lXyZBw20Xlp5Z2ltYW50YXMgTWFnZWxpbnNrYXMgKFRlbXBvIHJlbGVhc2Ugc2ln
+bmluZyBrZXkgZm9yIDIwMjYgYW5kIG9ud2FyZHMpIDx6eWdpbWFudGFzQHRlbXBv
+Lnh5ej6IkwQTFgoAOxYhBO48XUHqlj6JbzEOw8u/pUsg0zRGBQJpheYmAhsDBQsJ
+CAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJEMu/pUsg0zRGjJABAP8dy+gWx/E8
+EqzkKEUkEfLiRZ6n8APsc0aI5gqwfVAuAP99147oAq9cWVkNMh5PQmvdSG8MIx7Z
+G4OIGIHqFwKSCA==
+=o2TA
+-----END PGP PUBLIC KEY BLOCK-----
+```
+
+</details>
 
 ### Docker Image Signatures (Cosign)
 
