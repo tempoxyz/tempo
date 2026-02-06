@@ -14,7 +14,7 @@ pub use tempo_contracts::precompiles::{
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping, packing::insert_into_word},
 };
 use alloy::primitives::{Address, B256, U256};
@@ -444,6 +444,57 @@ impl AccountKeychain {
 
         // Update remaining limit
         self.spending_limits[limit_key][token].write(remaining - amount)
+    }
+
+    /// Internal: Refund spending limit for a token transfer (e.g., unused gas fees)
+    pub fn refund_spending(
+        &mut self,
+        account: Address,
+        key_id: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        if key_id == Address::ZERO {
+            return Ok(());
+        }
+
+        let key = self.keys[account][key_id].read()?;
+        if !key.enforce_limits {
+            return Ok(());
+        }
+
+        let limit_key = Self::spending_limit_key(account, key_id);
+        let remaining = self.spending_limits[limit_key][token].read()?;
+
+        let new_remaining = remaining
+            .checked_add(amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+
+        self.spending_limits[limit_key][token].write(new_remaining)
+    }
+
+    /// Refund spending limit after a fee refund
+    ///
+    /// Restores the spending limit by the refunded amount.
+    /// Should be called after a fee refund to avoid permanently reducing the spending limit.
+    pub fn refund_spending_limit(
+        &mut self,
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let transaction_key = self.transaction_key.t_read()?;
+
+        if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+
+        let tx_origin = self.tx_origin.t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+
+        self.refund_spending(account, transaction_key, token, amount)
     }
 
     /// Authorize a token transfer with access key spending limits
@@ -1154,6 +1205,76 @@ mod tests {
                 none_result.is_ok(),
                 "Validation should succeed when signature type check is skipped (pre-T1)"
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refund_spending_limit_restores_limit() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                }],
+            };
+            keychain.authorize_key(eoa, auth_call)?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa)?;
+
+            keychain.authorize_transfer(eoa, token, U256::from(60))?;
+
+            let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(remaining, U256::from(40));
+
+            keychain.refund_spending_limit(eoa, token, U256::from(25))?;
+
+            let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(after_refund, U256::from(65));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refund_spending_limit_noop_for_main_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let eoa = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(eoa)?;
+
+            let result = keychain.refund_spending_limit(eoa, token, U256::from(50));
+            assert!(result.is_ok());
 
             Ok(())
         })
