@@ -66,16 +66,34 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     function test_TickToPrice(int16 tick) public view {
+        tick = int16(bound(int256(tick), exchange.MIN_TICK(), exchange.MAX_TICK()));
+        tick = tick - (tick % exchange.TICK_SPACING());
         uint32 price = exchange.tickToPrice(tick);
         uint32 expectedPrice = uint32(int32(exchange.PRICE_SCALE()) + int32(tick));
         assertEq(price, expectedPrice);
     }
 
+    function test_TickToPrice_RevertsOnInvalidSpacing() public {
+        vm.expectRevert(IStablecoinDEX.InvalidTick.selector);
+        exchange.tickToPrice(1);
+    }
+
+    function test_TickToPrice_RevertsOnOutOfBounds() public {
+        vm.expectRevert(abi.encodeWithSelector(IStablecoinDEX.TickOutOfBounds.selector, int16(2010)));
+        exchange.tickToPrice(2010);
+    }
+
     function test_PriceToTick(uint32 price) public view {
         price = uint32(bound(price, exchange.MIN_PRICE(), exchange.MAX_PRICE()));
+        int16 rawTick = int16(int32(price) - int32(exchange.PRICE_SCALE()));
+        vm.assume(rawTick % exchange.TICK_SPACING() == 0);
         int16 tick = exchange.priceToTick(price);
-        int16 expectedTick = int16(int32(price) - int32(exchange.PRICE_SCALE()));
-        assertEq(tick, expectedTick);
+        assertEq(tick, rawTick);
+    }
+
+    function test_PriceToTick_RevertsOnInvalidSpacing() public {
+        vm.expectRevert(IStablecoinDEX.InvalidTick.selector);
+        exchange.priceToTick(exchange.PRICE_SCALE() + 1);
     }
 
     function test_PairKey(address base, address quote) public view {
