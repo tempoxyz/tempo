@@ -50,6 +50,44 @@ impl AmmLiquidityCache {
         Ok(this)
     }
 
+    /// Returns cached AMM reserve for a (user_token, validator_token) pair.
+    ///
+    /// Falls back to a storage read on cache miss and updates the cache.
+    pub fn validator_reserve_for_pair(
+        &self,
+        user_token: Address,
+        validator_token: Address,
+        state_provider: &impl StateProvider,
+    ) -> Result<U256, ProviderError> {
+        let inner = self.inner.read();
+        if let Some(validator_reserve) = inner.cache.get(&(user_token, validator_token)) {
+            return Ok(*validator_reserve);
+        }
+        drop(inner);
+
+        let pool_key = PoolKey::new(user_token, validator_token).get_id();
+        let slot = TipFeeManager::new().pools[pool_key].base_slot();
+
+        let reserve = match state_provider.storage(TIP_FEE_MANAGER_ADDRESS, slot.into())? {
+            Some(pool_value) => {
+                U256::from(Pool::decode_from_slot(pool_value).reserve_validator_token)
+            }
+            None => U256::ZERO, // Pool doesn't exist yet, reserve is zero
+        };
+
+        let mut inner = self.inner.write();
+        // Check again - another thread might have inserted
+        if let Some(validator_reserve) = inner.cache.get(&(user_token, validator_token)) {
+            return Ok(*validator_reserve);
+        }
+        inner.cache.insert((user_token, validator_token), reserve);
+        inner
+            .slot_to_pool
+            .insert(slot, (user_token, validator_token));
+
+        Ok(reserve)
+    }
+
     /// Checks whether there's enough liquidity in at least one of the AMM pools
     /// used by recent validators for the given fee token and fee amount
     pub fn has_enough_liquidity(

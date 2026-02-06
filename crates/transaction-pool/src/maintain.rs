@@ -411,7 +411,7 @@ where
 
             // Process all maintenance operations on new block commit or reorg
             Some(event) = chain_events.next() => {
-                let new = match event {
+                let tip = match event {
                     CanonStateNotification::Reorg { old, new } => {
                         // Handle reorg: identify orphaned AA 2D txs and affected nonce slots
                         let (orphaned_txs, affected_seq_ids) =
@@ -466,7 +466,7 @@ where
 
                 let block_update_start = Instant::now();
 
-                let tip = &new;
+
                 let bundle_state = tip.execution_outcome().state().state();
                 let tip_timestamp = tip.tip().header().timestamp();
 
@@ -491,14 +491,7 @@ where
                 }
 
                 // 1. Collect all block-level invalidation events
-                let mut updates = TempoPoolUpdates::from_chain(tip);
-
-                // Collect mined transaction hashes separately (not an invalidation event)
-                let mined_tx_hashes: Vec<TxHash> = tip
-                    .blocks_iter()
-                    .flat_map(|block| block.body().transactions())
-                    .map(|tx| *tx.tx_hash())
-                    .collect();
+                let mut updates = TempoPoolUpdates::from_chain(&tip);
 
                 // Add expired transactions (from local tracking state)
                 let expired = state.drain_expired(tip_timestamp);
@@ -519,7 +512,8 @@ where
                         tip_timestamp,
                         "Evicting expired AA transactions (valid_before)"
                     );
-                    pool.remove_transactions(updates.expired_txs.clone());
+                    let expired_txs = std::mem::take(&mut updates.expired_txs);
+                    pool.remove_transactions(expired_txs);
                     metrics.expired_transactions_evicted.increment(expired_count as u64);
                 }
 
@@ -662,7 +656,11 @@ where
                 // 7. Remove included expiring nonce transactions
                 // Expiring nonce txs use tx hash for replay protection rather than sequential nonces,
                 // so we need to remove them on inclusion rather than relying on nonce changes.
-                pool.remove_included_expiring_nonce_txs(mined_tx_hashes.iter());
+                pool.remove_included_expiring_nonce_txs(tip
+                    .blocks_iter()
+                    .flat_map(|block| block.body().transactions())
+                    .map(|tx| tx.tx_hash())
+                );
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
                 // 8. Update AMM liquidity cache (must happen before validator token eviction)
@@ -691,7 +689,7 @@ where
                         whitelist_removals = updates.whitelist_removals.len(),
                         "Processing transaction invalidation events"
                     );
-                    let evicted = pool.evict_invalidated_transactions(&updates);
+                    let evicted = pool.evict_invalidated_transactions(&updates, &amm_cache);
                     metrics.transactions_invalidated.increment(evicted as u64);
                     metrics
                         .invalidation_eviction_duration_seconds

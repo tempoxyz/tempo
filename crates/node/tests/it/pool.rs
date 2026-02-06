@@ -306,7 +306,8 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
         validator_token_changes: vec![(user_addr, attacker_token)],
         ..Default::default()
     };
-    pool.evict_invalidated_transactions(&updates);
+    let amm_cache = pool.amm_liquidity_cache();
+    pool.evict_invalidated_transactions(&updates, &amm_cache);
 
     // Give time for any eviction to complete
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
