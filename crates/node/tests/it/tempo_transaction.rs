@@ -15,11 +15,10 @@ use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, account_keychain::IAccountKeychain::revokeKeyCall,
-};
+use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
+    account_keychain::IAccountKeychain::revokeKeyCall,
     tip20::ITIP20::{self, transferCall},
 };
 
@@ -3723,7 +3722,9 @@ async fn test_aa_access_key() -> eyre::Result<()> {
 
     use alloy::sol_types::SolCall;
     use alloy_primitives::address;
-    use tempo_precompiles::account_keychain::{getKeyCall, getRemainingLimitCall};
+    use tempo_precompiles::account_keychain::IAccountKeychain::{
+        getKeyCall, getRemainingLimitCall,
+    };
     const ACCOUNT_KEYCHAIN_ADDRESS: Address =
         address!("0xAAAAAAAA00000000000000000000000000000000");
 
@@ -3735,7 +3736,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     // Query the precompile for the key info using eth_call
     let get_key_call = getKeyCall {
         account: root_key_addr,
-        keyId: access_key_addr,
+        key_id: access_key_addr,
     };
     let call_data = get_key_call.abi_encode();
 
@@ -3746,7 +3747,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     // Query remaining spending limit
     let get_remaining_call = getRemainingLimitCall {
         account: root_key_addr,
-        keyId: access_key_addr,
+        key_id: access_key_addr,
         token: DEFAULT_FEE_TOKEN,
     };
     let call_data = get_remaining_call.abi_encode();
@@ -3774,7 +3775,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
 /// Tests: zero public key, duplicate key, unauthorized authorize
 #[tokio::test]
 async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
-    use tempo_precompiles::account_keychain::{SignatureType, authorizeKeyCall};
+    use tempo_precompiles::account_keychain::{IAccountKeychain::authorizeKeyCall, SignatureType};
     use tempo_primitives::transaction::TokenLimit;
 
     reth_tracing::init_test_tracing();
@@ -3798,10 +3799,10 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     // Test 1: Try to authorize with zero public key (should fail)
     println!("Test 1: Zero public key");
     let authorize_call = authorizeKeyCall {
-        keyId: Address::ZERO,
-        signatureType: SignatureType::P256,
+        key_id: Address::ZERO,
+        signature_type: SignatureType::P256,
         expiry: u64::MAX,
-        enforceLimits: true,
+        enforce_limits: true,
         limits: vec![],
     };
     let tx = TempoTransaction {
@@ -4089,7 +4090,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
 async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Result<()> {
     use alloy::sol_types::SolCall;
     use tempo_contracts::precompiles::ITIP20::{balanceOfCall, transferCall};
-    use tempo_precompiles::account_keychain::updateSpendingLimitCall;
+    use tempo_precompiles::account_keychain::IAccountKeychain::updateSpendingLimitCall;
     use tempo_primitives::transaction::TokenLimit;
 
     reth_tracing::init_test_tracing();
@@ -4179,9 +4180,9 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
             to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
             value: U256::ZERO,
             input: updateSpendingLimitCall {
-                keyId: access_key_addr,
+                key_id: access_key_addr,
                 token: DEFAULT_FEE_TOKEN,
-                newLimit: U256::from(20u64) * U256::from(10).pow(U256::from(18)),
+                new_limit: U256::from(20u64) * U256::from(10).pow(U256::from(18)),
             }
             .abi_encode()
             .into(),
@@ -5783,7 +5784,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     println!("\n=== STEP 3: Revoke the access key ===");
 
     let revoke_call = revokeKeyCall {
-        keyId: access_key_addr,
+        key_id: access_key_addr,
     };
 
     // Use a 2D nonce (different nonce_key) so this tx can be mined independently
@@ -6397,7 +6398,7 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
 /// 4. Transactions should be evicted from the mempool
 #[tokio::test]
 async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
-    use tempo_precompiles::account_keychain::updateSpendingLimitCall;
+    use tempo_precompiles::account_keychain::IAccountKeychain::updateSpendingLimitCall;
 
     reth_tracing::init_test_tracing();
 
@@ -6530,9 +6531,9 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     println!("\n=== STEP 3: Reduce spending limit to 0 ===");
 
     let update_limit_call = updateSpendingLimitCall {
-        keyId: access_key_addr,
+        key_id: access_key_addr,
         token: DEFAULT_FEE_TOKEN,
-        newLimit: U256::ZERO, // Set to 0, making all pending transfers fail
+        new_limit: U256::ZERO, // Set to 0, making all pending transfers fail
     };
 
     // Use a 2D nonce (different nonce_key) so this tx can be mined independently

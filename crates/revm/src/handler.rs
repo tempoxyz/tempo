@@ -32,9 +32,12 @@ use revm::{
         interpreter::EthInterpreter,
     },
 };
-use tempo_contracts::precompiles::IAccountKeychain::SignatureType as PrecompileSignatureType;
 use tempo_precompiles::{
-    account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
+    account_keychain::{
+        AccountKeychain,
+        IAccountKeychain::{SignatureType as PrecompileSigType, TokenLimit},
+        Interface as KeychainInterface,
+    },
     error::TempoPrecompileError,
     nonce::{Interface as NonceInterface, NonceManager},
     storage::{PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider},
@@ -893,16 +896,15 @@ where
                     .unwrap_or_default();
 
                 // Create the authorize key call
-                let authorize_call = authorizeKeyCall {
-                    keyId: access_key_addr,
-                    signatureType: signature_type,
-                    expiry,
-                    enforceLimits: enforce_limits,
-                    limits: precompile_limits,
-                };
-
                 // Call precompile to authorize the key (same phase as nonce increment)
-                match keychain.authorize_key(*root_account, authorize_call) {
+                match keychain.authorize_key(
+                    *root_account,
+                    access_key_addr,
+                    signature_type,
+                    expiry,
+                    enforce_limits,
+                    precompile_limits,
+                ) {
                     // all is good, we can do execution.
                     Ok(_) => Ok(false),
                     // on out of gas we are skipping execution but not invalidating the transaction.
@@ -985,9 +987,12 @@ where
                         // type to authenticate as a key registered with a different type.
                         // Only validate signature type on T1+ to maintain backward compatibility
                         // with historical blocks during re-execution.
-                        let sig_type = spec
-                            .is_t1()
-                            .then_some(keychain_sig.signature.signature_type().into());
+                        let sig_type = spec.is_t1().then_some(
+                            PrecompileSigType::try_from(u8::from(
+                                keychain_sig.signature.signature_type(),
+                            ))
+                            .expect("valid signature type"),
+                        );
 
                         keychain
                             .validate_keychain_authorization(
