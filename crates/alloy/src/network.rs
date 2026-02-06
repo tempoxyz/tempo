@@ -164,6 +164,8 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             || !self.tempo_authorization_list.is_empty()
             || self.key_authorization.is_some()
             || self.key_id.is_some()
+            || self.valid_before.is_some()
+            || self.valid_after.is_some()
         {
             TempoTxType::AA
         } else {
@@ -536,6 +538,21 @@ mod tests {
     fn output_tx_type_key_id_is_aa() {
         let req = TempoTransactionRequest {
             key_id: Some(Address::ZERO),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_validity_window_is_aa() {
+        let req = TempoTransactionRequest {
+            valid_before: Some(1000),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+
+        let req = TempoTransactionRequest {
+            valid_after: Some(500),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);
