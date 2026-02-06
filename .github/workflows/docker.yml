@@ -122,6 +122,7 @@ jobs:
         run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker images
+        id: bake
         uses: depot/bake-action@1d58c2668346981089b088b7ef36755b206b20e9 # v1.13.0
         with:
           files: |
@@ -136,3 +137,17 @@ jobs:
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+
+      - name: Sign Docker images
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata='${{ steps.bake.outputs.metadata }}'
+          for target in tempo tempo-bench tempo-sidecar tempo-xtask; do
+            digest=$(echo "$metadata" | jq -r ".\"${target}\".[\"containerimage.digest\"]")
+            image="${{ env.REGISTRY }}/${target}"
+            cosign sign --yes "${image}@${digest}"
+          done
