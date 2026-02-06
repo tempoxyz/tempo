@@ -461,3 +461,29 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 - **TEMPO-TIP27**: Pause-role enforcement - only accounts with `PAUSE_ROLE` can call `pause` (non-role holders revert with `Unauthorized`).
 - **TEMPO-TIP28**: Unpause-role enforcement - only accounts with `UNPAUSE_ROLE` can call `unpause` (non-role holders revert with `Unauthorized`).
 - **TEMPO-TIP29**: Burn-blocked-role enforcement - only accounts with `BURN_BLOCKED_ROLE` can call `burnBlocked` (non-role holders revert with `Unauthorized`).
+
+## SignatureVerification (TIP-1020)
+
+The SignatureVerification precompile enables contracts to verify Tempo signature types (secp256k1, P256, WebAuthn, Keychain) using the same verification logic as Tempo transaction processing.
+
+### Valid Signature Invariants
+
+- **TEMPO-SIG1**: Valid signature always returns true - `verify(signer, hash, validSig)` never reverts for correctly signed messages.
+- **TEMPO-SIG4**: Signature type consistency - each signature type (secp256k1, P256, WebAuthn, Keychain) correctly identifies and verifies the signer.
+
+### Invalid Signature Invariants
+
+- **TEMPO-SIG2**: Invalid signature always reverts - `verify()` with malformed or unparseable signature bytes reverts with `InvalidSignature()`.
+- **TEMPO-SIG3**: Signer mismatch reverts - valid signature but wrong `signer` parameter reverts with `SignerMismatch(expected, recovered)`.
+- **TEMPO-SIG10**: Hash binding - signature valid for hash H is invalid for H' ≠ H (reverts with `SignerMismatch` or `InvalidSignature`).
+
+### Keychain Signature Invariants
+
+- **TEMPO-SIG6**: Keychain revoked key rejected - keychain signature with a revoked access key reverts with `UnauthorizedKeychainKey()`.
+- **TEMPO-SIG7**: Keychain expired key rejected - keychain signature with an expired key reverts with `UnauthorizedKeychainKey()`.
+- **TEMPO-SIG8**: Keychain signature type mismatch - key authorized for one type (e.g., P256) but signed with another (e.g., secp256k1) reverts with `UnauthorizedKeychainKey()`.
+- **TEMPO-SIG9**: Keychain unauthorized key rejected - keychain signature with a non-existent key (expiry=0) reverts with `UnauthorizedKeychainKey()`.
+
+### Gas Cost Invariants (Tested in Rust)
+
+- **TEMPO-SIG5**: Gas costs match spec - secp256k1=3000, P256=8000, WebAuthn=8000, Keychain=inner+3000. Note: WebAuthn does NOT add calldata gas in the precompile because the EVM already charges for calldata when the signature is passed as a function argument. Verified in `crates/precompiles/src/signature_verification/mod.rs` unit tests.

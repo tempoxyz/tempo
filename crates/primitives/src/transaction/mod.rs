@@ -1,5 +1,6 @@
 pub mod envelope;
 pub mod key_authorization;
+pub mod signature_gas;
 pub mod tempo_transaction;
 pub mod tt_authorization;
 pub mod tt_signature;
@@ -9,6 +10,11 @@ pub use tt_authorization::{MAGIC, RecoveredTempoAuthorization, TempoSignedAuthor
 // Re-export Authorization from alloy for convenience
 pub use tt_signature::{
     KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
+};
+pub use signature_gas::{
+    ECRECOVER_GAS, KEYCHAIN_VALIDATION_GAS, P256_VERIFY_GAS, precompile_signature_verification_gas,
+    primitive_signature_verification_gas, primitive_signature_verification_gas_precompile,
+    tempo_signature_verification_gas,
 };
 
 pub use alloy_eips::eip7702::Authorization;

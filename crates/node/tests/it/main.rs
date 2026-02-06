@@ -7,6 +7,7 @@ mod eth_transactions;
 mod liquidity;
 mod payment_lane;
 mod pool;
+mod signature_verification;
 mod stablecoin_dex;
 mod tempo_transaction;
 mod tip20;

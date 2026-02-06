@@ -12060,6 +12060,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-consensus",
  "tempo-payload-types",
+ "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
  "thiserror 2.0.18",
@@ -12219,6 +12220,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles-macros",
+ "tempo-primitives",
  "thiserror 2.0.18",
  "tracing",
 ]

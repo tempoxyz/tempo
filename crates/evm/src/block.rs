@@ -332,7 +332,31 @@ where
     type Evm = TempoEvm<&'a mut State<DB>, I>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
-        self.inner.apply_pre_execution_changes()
+        self.inner.apply_pre_execution_changes()?;
+
+        // Apply T2 hardfork changes: set bytecode for new precompiles
+        let spec = self.inner.evm.ctx().cfg.spec;
+        if spec.is_t2() {
+            use reth_revm::{context::JournalTr, state::Bytecode};
+            use revm::context::journaled_state::account::JournaledAccountTr;
+            use tempo_precompiles::SIGNATURE_VERIFICATION_ADDRESS;
+
+            // Set bytecode for SignatureVerification precompile unconditionally.
+            // We don't check is_empty() because an attacker could send funds to this
+            // address before T2 activation to prevent the precompile from being enabled.
+            let mut account = self
+                .inner
+                .evm
+                .ctx_mut()
+                .journaled_state
+                .load_account_with_code_mut(SIGNATURE_VERIFICATION_ADDRESS)
+                .map_err(BlockExecutionError::msg)?;
+            account.data.set_code_and_hash_slow(Bytecode::new_legacy(
+                alloy_primitives::Bytes::from_static(&[0xef]),
+            ));
+        }
+
+        Ok(())
     }
 
     fn receipts(&self) -> &[Self::Receipt] {

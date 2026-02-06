@@ -9,6 +9,7 @@ pub mod storage;
 
 pub mod account_keychain;
 pub mod nonce;
+pub mod signature_verification;
 pub mod stablecoin_dex;
 pub mod tip20;
 pub mod tip20_factory;
@@ -22,6 +23,7 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     nonce::NonceManager,
+    signature_verification::SignatureVerification,
     stablecoin_dex::StablecoinDEX,
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
@@ -47,8 +49,8 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    SIGNATURE_VERIFICATION_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -90,6 +92,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(ValidatorConfigPrecompile::create(&cfg))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
             Some(AccountKeychainPrecompile::create(&cfg))
+        } else if *address == SIGNATURE_VERIFICATION_ADDRESS && cfg.spec.is_t2() {
+            Some(SignatureVerificationPrecompile::create(&cfg))
         } else {
             None
         }
@@ -181,6 +185,13 @@ pub struct ValidatorConfigPrecompile;
 impl ValidatorConfigPrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("ValidatorConfig", cfg, |input| { ValidatorConfig::new() })
+    }
+}
+
+pub struct SignatureVerificationPrecompile;
+impl SignatureVerificationPrecompile {
+    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("SignatureVerification", cfg, |input| { SignatureVerification::new() })
     }
 }
 
