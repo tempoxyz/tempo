@@ -13,7 +13,7 @@ interface IAccountKeychainSubaccounts {
                                 STRUCTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Auto-funding rule for a subaccount
+    /// @notice Auto-funding rule for a subaccount (max 4 rules per key)
     struct AutoFundRule {
         address token;         // TIP-20 token address
         uint256 minBalance;    // Trigger auto-fund when sub-balance drops below this
@@ -61,7 +61,9 @@ interface IAccountKeychainSubaccounts {
     error SubaccountNotEnabled();
     error InsufficientSubBalance();
     error InsufficientRootBalance();
-    error AutoFundFailed();
+    error ApproveBlockedForSubaccount();
+    error TooManyAutoFundRules();
+    error FeeExceedsCap();
 
     /*//////////////////////////////////////////////////////////////
                         MANAGEMENT FUNCTIONS
@@ -106,6 +108,7 @@ interface IAccountKeychainSubaccounts {
      * @dev Derived as: address(uint160(uint256(keccak256(
      *      abi.encodePacked(bytes1(0xff), account, keyId)
      *      ))))
+     *      Uses 0xff prefix for collision resistance with regular account addresses
      * @param account The root account address
      * @param keyId The access key identifier
      * @return The deterministic subaccount address
@@ -131,4 +134,11 @@ interface IAccountKeychainSubaccounts {
      */
     function getSubaccountConfig(address account, address keyId)
         external view returns (SubaccountConfig memory config);
+
+    /// @notice Looks up the (account, keyId) pair for a registered subaccount address
+    /// @param subAddr The subaccount address to look up
+    /// @return account The root account (address(0) if not registered)
+    /// @return keyId The access key identifier (address(0) if not registered)
+    function resolveSubaccountAddress(address subAddr)
+        external view returns (address account, address keyId);
 }
