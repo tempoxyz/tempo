@@ -73,6 +73,7 @@ jobs:
   build-release:
     name: Build Release Binaries
     needs: get-version
+    environment: release
     runs-on: ${{ matrix.platform.os }}
     permissions:
       contents: read
@@ -152,6 +153,16 @@ jobs:
         run: |
           shasum -a 256 "${{ steps.prepare.outputs.archive_path }}" > "${{ steps.prepare.outputs.archive_name }}.sha256"
 
+      - name: GPG sign archive
+        shell: bash
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          export GPG_TTY=$(tty)
+          echo -n "$GPG_SIGNING_KEY" | base64 --decode | gpg --batch --import
+          echo "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "${{ steps.prepare.outputs.archive_path }}"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -159,6 +170,7 @@ jobs:
           path: |
             ${{ steps.prepare.outputs.archive_path }}
             ${{ steps.prepare.outputs.archive_name }}.sha256
+            ${{ steps.prepare.outputs.archive_name }}.asc
           if-no-files-found: error
 
   create-release:
