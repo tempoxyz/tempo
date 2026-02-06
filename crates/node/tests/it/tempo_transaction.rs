@@ -6800,3 +6800,182 @@ async fn test_eth_fill_transaction_2d_nonce_with_high_protocol_nonce() -> eyre::
 
     Ok(())
 }
+
+/// Regression test for fill_transaction with expiring nonce when nonce=0 is explicitly provided.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_fill_transaction_expiring_nonce_with_explicit_nonce_zero() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (mut setup, provider, _alice_signer, alice_addr) = setup_test_with_funded_account().await?;
+    let chain_id = provider.get_chain_id().await?;
+    let recipient = Address::random();
+
+    // Bump protocol nonce so it differs from expiring nonce (which must be 0)
+    for i in 0..3 {
+        let tx = TempoTransaction {
+            chain_id,
+            nonce: i,
+            gas_limit: 300_000,
+            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128 + 1_000_000,
+            max_priority_fee_per_gas: 1_000_000,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            calls: vec![Call {
+                to: recipient.into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+
+        let sig_hash = tx.signature_hash();
+        let signature = _alice_signer.sign_hash_sync(&sig_hash)?;
+        let signed = AASigned::new_unhashed(
+            tx,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        );
+        let envelope: TempoTxEnvelope = signed.into();
+
+        setup
+            .node
+            .rpc
+            .inject_tx(envelope.encoded_2718().into())
+            .await?;
+        setup.node.advance_block().await?;
+        tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
+    }
+
+    let protocol_nonce = provider.get_transaction_count(alice_addr).await?;
+    assert_eq!(protocol_nonce, 3, "Protocol nonce should be 3");
+
+    // Advance a few blocks to get a valid timestamp
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let valid_before = block.header.timestamp() + 25;
+
+    // Key: explicitly provide nonce=0 with expiring nonce key
+    let request = serde_json::json!({
+        "from": alice_addr,
+        "nonce": "0x0",
+        "type": "0x76",
+        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
+        "validBefore": format!("0x{valid_before:x}"),
+        "nonceKey": format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
+        "keyType": "secp256k1"
+    });
+
+    let response: serde_json::Value = provider
+        .raw_request("eth_fillTransaction".into(), [request])
+        .await?;
+
+    let tx = response
+        .get("tx")
+        .expect("response should contain 'tx' field");
+    let filled_nonce = tx
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(999));
+
+    assert_eq!(
+        filled_nonce,
+        Some(0),
+        "Nonce should remain 0 for expiring nonce"
+    );
+    assert!(tx.get("gas").is_some(), "tx should have gas filled");
+
+    Ok(())
+}
+
+/// Verifies that `eth_fillTransaction` returns sufficient gas for expiring nonce transactions.
+///
+/// When `nonce=0` is explicitly provided with an expiring nonce key, the gas estimation
+/// must include `EXPIRING_NONCE_GAS` (13,000 gas) for the ring buffer operations.
+/// This test creates a transaction using the gas returned by `eth_fillTransaction`
+/// and verifies it can be successfully executed.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_fill_transaction_expiring_nonce_gas_is_sufficient() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
+    let chain_id = provider.get_chain_id().await?;
+
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let valid_before = block.header.timestamp() + 25;
+
+    // Request with explicit nonce=0 and expiring nonce key
+    let approve_calldata = "0x095ea7b300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000064";
+    let request = serde_json::json!({
+        "from": alice_addr,
+        "nonce": "0x0",
+        "type": "0x76",
+        "calls": [{"to": DEFAULT_FEE_TOKEN, "value": "0x", "data": approve_calldata}],
+        "validBefore": format!("0x{valid_before:x}"),
+        "nonceKey": format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
+    });
+
+    let response: serde_json::Value = provider
+        .raw_request("eth_fillTransaction".into(), [request])
+        .await?;
+
+    let tx_json = response
+        .get("tx")
+        .expect("response should contain 'tx' field");
+
+    let filled_gas_str = tx_json
+        .get("gas")
+        .and_then(|v| v.as_str())
+        .expect("tx should have gas filled");
+    let filled_gas = u64::from_str_radix(filled_gas_str.trim_start_matches("0x"), 16)?;
+
+    // Create and execute a transaction using the filled gas value
+    let tx = TempoTransaction {
+        chain_id,
+        nonce: 0,
+        nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+        gas_limit: filled_gas,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_priority_fee_per_gas: 0,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        valid_before: Some(valid_before),
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: approve_calldata.parse()?,
+        }],
+        ..Default::default()
+    };
+
+    let sig_hash = tx.signature_hash();
+    let signature = alice_signer.sign_hash_sync(&sig_hash)?;
+    let signed = AASigned::new_unhashed(
+        tx,
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+    );
+    let envelope: TempoTxEnvelope = signed.into();
+
+    setup
+        .node
+        .rpc
+        .inject_tx(envelope.encoded_2718().into())
+        .await?;
+    let payload = setup.node.advance_block().await?;
+
+    assert!(
+        payload.block().body().transactions().count() > 0,
+        "Block should contain the transaction"
+    );
+
+    Ok(())
+}
