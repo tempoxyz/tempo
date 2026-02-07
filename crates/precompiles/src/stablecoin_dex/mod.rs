@@ -7,7 +7,7 @@ pub mod orderbook;
 pub use order::Order;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel, base_to_quote,
-    quote_to_base, tick_to_price,
+    quote_to_base, tick_to_price, validate_tick_spacing,
 };
 use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, StablecoinDEXEvents};
@@ -310,9 +310,24 @@ impl StablecoinDEX {
         self.book_keys.read()
     }
 
+    /// Convert relative tick to scaled price
+    pub fn tick_to_price(&self, tick: i16) -> Result<u32> {
+        if self.storage.spec().is_t2() {
+            orderbook::validate_tick_spacing(tick)?;
+        }
+
+        Ok(orderbook::tick_to_price(tick))
+    }
+
     /// Convert scaled price to relative tick
     pub fn price_to_tick(&self, price: u32) -> Result<i16> {
-        orderbook::price_to_tick(price)
+        let tick = orderbook::price_to_tick(price)?;
+
+        if self.storage.spec().is_t2() {
+            orderbook::validate_tick_spacing(tick)?;
+        }
+
+        Ok(tick)
     }
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
