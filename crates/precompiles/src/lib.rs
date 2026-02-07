@@ -8,6 +8,7 @@ pub use error::{IntoPrecompileResult, Result};
 pub mod storage;
 
 pub mod account_keychain;
+pub mod ed25519;
 pub mod nonce;
 pub mod stablecoin_dex;
 pub mod tip20;
@@ -21,6 +22,7 @@ pub mod test_util;
 
 use crate::{
     account_keychain::AccountKeychain,
+    ed25519::Ed25519Verifier,
     nonce::NonceManager,
     stablecoin_dex::StablecoinDEX,
     storage::StorageCtx,
@@ -46,8 +48,8 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, ED25519_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
 
@@ -90,6 +92,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(ValidatorConfigPrecompile::create(&cfg))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
             Some(AccountKeychainPrecompile::create(&cfg))
+        } else if *address == ED25519_ADDRESS {
+            Some(Ed25519Precompile::create())
         } else {
             None
         }
@@ -181,6 +185,25 @@ pub struct ValidatorConfigPrecompile;
 impl ValidatorConfigPrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("ValidatorConfig", cfg, |input| { ValidatorConfig::new() })
+    }
+}
+
+pub struct Ed25519Precompile;
+impl Ed25519Precompile {
+    pub fn create() -> DynPrecompile {
+        DynPrecompile::new_stateful(
+            PrecompileId::Custom("Ed25519".into()),
+            move |input| {
+                if !input.is_direct_call() {
+                    return Ok(PrecompileOutput::new_reverted(
+                        0,
+                        DelegateCallNotAllowed {}.abi_encode().into(),
+                    ));
+                }
+                let mut verifier = Ed25519Verifier::new();
+                verifier.call(input.data, input.caller)
+            },
+        )
     }
 }
 

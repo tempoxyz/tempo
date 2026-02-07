@@ -12208,6 +12208,7 @@ dependencies = [
  "alloy-signer-local",
  "criterion 0.8.2",
  "derive_more",
+ "ed25519-dalek",
  "eyre",
  "proptest",
  "rand 0.8.5",

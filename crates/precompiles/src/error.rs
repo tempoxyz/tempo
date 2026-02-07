@@ -13,9 +13,9 @@ use revm::{
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
-    AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
-    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-    ValidatorConfigError,
+    AccountKeychainError, Ed25519Error, FeeManagerError, NonceError, RolesAuthError,
+    StablecoinDEXError, TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError,
+    UnknownFunctionSelector, ValidatorConfigError,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -26,6 +26,10 @@ pub enum TempoPrecompileError {
     /// Stablecoin DEX error
     #[error("Stablecoin DEX error: {0:?}")]
     StablecoinDEX(StablecoinDEXError),
+
+    /// Ed25519 signature verification error
+    #[error("Ed25519 error: {0:?}")]
+    Ed25519Error(Ed25519Error),
 
     /// Error from TIP20 token
     #[error("TIP20 token error: {0:?}")]
@@ -101,6 +105,7 @@ impl TempoPrecompileError {
     pub fn into_precompile_result(self, gas: u64) -> PrecompileResult {
         let bytes = match self {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
+            Self::Ed25519Error(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
             Self::TIP20Factory(e) => e.abi_encode().into(),
             Self::RolesAuthError(e) => e.abi_encode().into(),
@@ -170,6 +175,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
 
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::Ed25519Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
     add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);

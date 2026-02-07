@@ -1,5 +1,6 @@
 pub mod account_keychain;
 pub mod common_errors;
+pub mod ed25519;
 pub mod nonce;
 pub mod stablecoin_dex;
 pub mod tip20;
@@ -11,6 +12,7 @@ pub mod validator_config;
 pub use account_keychain::*;
 use alloy_primitives::{Address, address};
 pub use common_errors::*;
+pub use ed25519::*;
 pub use nonce::*;
 pub use stablecoin_dex::*;
 pub use tip_fee_manager::*;
@@ -31,3 +33,4 @@ pub const VALIDATOR_CONFIG_ADDRESS: Address =
     address!("0xCCCCCCCC00000000000000000000000000000000");
 pub const ACCOUNT_KEYCHAIN_ADDRESS: Address =
     address!("0xAAAAAAAA00000000000000000000000000000000");
+pub const ED25519_ADDRESS: Address = address!("0xED25519000000000000000000000000000000000");

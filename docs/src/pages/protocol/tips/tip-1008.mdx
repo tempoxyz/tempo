@@ -1,0 +1,135 @@
+---
+title: TIP-1008 Ed25519 Signature Verification
+description: Precompile for efficient Ed25519 signature verification enabling Solana wallet compatibility and cross-chain interoperability.
+---
+
+# TIP-1008: Ed25519 Signature Verification Precompile
+
+This document defines a precompile for efficient Ed25519 signature verification on Tempo.
+
+- **TIP ID**: TIP-1008
+- **Authors/Owners**: Tempo Team
+- **Status**: Draft
+- **Related Specs/TIPs**: N/A
+- **Protocol Version**: TBD
+
+---
+
+# Overview
+
+## Abstract
+
+TIP-1008 introduces an Ed25519 signature verification precompile at address `0xED25519000000000000000000000000000000000`. This precompile enables efficient verification of Ed25519 signatures within EVM smart contracts, providing compatibility with Solana wallets, cross-chain message verification, and cryptographic applications that require the Ed25519 curve.
+
+## Motivation
+
+Ed25519 is a widely-adopted elliptic curve signature scheme offering several advantages:
+
+1. **Cross-Chain Interoperability**: Solana, Sui, Aptos, and many other blockchains use Ed25519 for transaction signing. Tempo's support enables seamless verification of signatures from these ecosystems.
+
+2. **Cryptographic Strength**: Ed25519 provides 128-bit security with strong resistance to timing attacks and is designed to be fast and secure.
+
+3. **Gas Efficiency**: Native precompile implementation is significantly cheaper than on-chain verification using Solidity libraries, which would require expensive elliptic curve operations.
+
+4. **Wallet Compatibility**: Users with existing Ed25519 keypairs (Solana wallets, SSH keys, etc.) can sign messages verifiable on Tempo without creating new keys.
+
+### Alternatives Considered
+
+1. **Solidity Library**: Rejected due to prohibitive gas costs (~500k+ gas for verification vs ~3k for precompile).
+2. **EIP-665 Style**: Rejected as it requires specific input formatting; we prefer a cleaner Solidity interface.
+3. **Batch-only API**: Rejected to keep the interface simple; single verification is the common case.
+
+---
+
+# Specification
+
+## Precompile Address
+
+The Ed25519 precompile is deployed at:
+
+```
+0xED25519000000000000000000000000000000000
+```
+
+This vanity address is derived from "ED25519" for easy recognition.
+
+## Interface
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.13;
+
+interface IEd25519 {
+    function verify(
+        bytes calldata message,
+        bytes32 signatureR,
+        bytes32 signatureS,
+        bytes32 publicKey
+    ) external view returns (bool valid);
+
+    function verifyPacked(
+        bytes calldata message,
+        bytes calldata signature,
+        bytes32 publicKey
+    ) external view returns (bool valid);
+
+    function verifyBatch(
+        bytes[] calldata messages,
+        bytes32[] calldata signaturesR,
+        bytes32[] calldata signaturesS,
+        bytes32[] calldata publicKeys
+    ) external view returns (bool valid);
+
+    // Errors
+    error InvalidSignatureLength();
+    error InvalidPublicKey();
+    error ArrayLengthMismatch();
+    error EmptyBatch();
+}
+```
+
+## Function Specifications
+
+### `verify`
+Verifies a single Ed25519 signature.
+**Parameters:**
+- `message`: Arbitrary bytes to verify
+- `signatureR`: First 32 bytes of the signature (R point)
+- `signatureS`: Last 32 bytes of the signature (S scalar)
+- `publicKey`: The 32-byte compressed Ed25519 public key
+
+**Gas Cost:**
+- Base cost: 3,000 gas
+- Per-byte message cost: 3 gas per 32 bytes (word)
+
+### `verifyPacked`
+Convenience function that accepts the signature as a single 64-byte blob.
+
+### `verifyBatch`
+Verifies multiple signatures in a single call with optimized gas usage.
+**Gas Cost:**
+- Base cost: 3,000 gas
+- Per-signature cost: 2,500 gas (amortized)
+- Per-byte message cost: 3 gas per 32 bytes
+
+## Gas Schedule
+
+| Operation | Gas Cost |
+|-----------|----------|
+| Base verification | 3,000 |
+| Per signature (batch, amortized) | 2,500 |
+| Per 32-byte word of message | 3 |
+| Input decoding overhead | 100 |
+
+**Formula:**
+- Single: `3000 + 100 + (message_len + 31) / 32 * 3`
+- Batch: `3000 + n * 2500 + sum((message_len + 31) / 32 * 3)`
+
+---
+
+# Invariants
+1. **Deterministic Verification**: Same input always yields same result.
+2. **No State Modification**: Precompile is pure/view.
+3. **Valid Signature Acceptance**: Correct signatures MUST return `true`.
+4. **Invalid Signature Rejection**: Invalid signatures MUST return `false` (not revert).
+5. **Malleability Prevention**: Signatures with S >= L (curve order) MUST return `false`.
