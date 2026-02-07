@@ -68,6 +68,10 @@ use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::transaction::tt_signature::normalize_p256_s;
 
+#[macro_use]
+#[path = "test_macros.rs"]
+mod test_macros;
+
 /// Duration to wait for pool maintenance task to process blocks
 const POOL_MAINTENANCE_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 
@@ -2927,23 +2931,69 @@ enum KeyType {
     WebAuthn,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct RawSendTestCase {
-    name: &'static str,
+    name: String,
     key_type: KeyType,
     fee_payer: bool,
     access_key: bool,
 }
 
+fn key_type_label(key_type: KeyType) -> &'static str {
+    match key_type {
+        KeyType::Secp256k1 => "secp256k1",
+        KeyType::P256 => "p256",
+        KeyType::WebAuthn => "webauthn",
+    }
+}
+
+fn nonce_mode_label(nonce_mode: &NonceMode) -> &'static str {
+    match nonce_mode {
+        NonceMode::Protocol => "protocol",
+        NonceMode::TwoD(_) => "2d",
+        NonceMode::Expiring => "expiring",
+        NonceMode::ExpiringAtBoundary => "expiring_at_boundary",
+        NonceMode::ExpiringExceedsBoundary => "expiring_exceeds_boundary",
+    }
+}
+
+fn build_case_name(prefix: &str, base: &str, parts: &[&str]) -> String {
+    let mut name = String::with_capacity(prefix.len() + base.len() + parts.len() * 8 + 2);
+    name.push_str(prefix);
+    name.push_str("::");
+    name.push_str(base);
+    for part in parts {
+        name.push('_');
+        name.push_str(part);
+    }
+    name
+}
+
+fn build_raw_name(key_type: KeyType, flags: &[&str]) -> String {
+    build_case_name("send_raw", key_type_label(key_type), flags)
+}
+
 #[derive(Debug, Clone)]
 struct SendTestCase {
-    name: &'static str,
+    name: String,
     key_type: KeyType,
     fee_payer: bool,
     access_key: bool,
     batch_calls: bool,
     funding_amount: Option<U256>,
     transfer_amount: Option<U256>,
+}
+
+fn build_send_name(key_type: KeyType, flags: &[&str], opts: &[&str]) -> String {
+    let mut parts = Vec::with_capacity(flags.len() + opts.len());
+    parts.extend_from_slice(flags);
+    parts.extend_from_slice(opts);
+    build_case_name("send", key_type_label(key_type), &parts)
+}
+
+fn build_fill_name(nonce_mode: &NonceMode, key_type: KeyType, parts: &[&str]) -> String {
+    let base = format!("{}_{}", nonce_mode_label(nonce_mode), key_type_label(key_type));
+    build_case_name("fill", &base, parts)
 }
 
 type SignTxFn = Box<dyn Fn(&TempoTransaction) -> eyre::Result<TempoSignature> + Send>;
@@ -3577,87 +3627,24 @@ async fn test_eth_send_transaction_matrix() -> eyre::Result<()> {
     let webauthn_transfer_amount = U256::from(5u64) * U256::from(10).pow(U256::from(6));
 
     let test_matrix = [
-        SendTestCase {
-            name: "p256_fee_payer",
-            key_type: KeyType::P256,
-            fee_payer: true,
-            access_key: false,
-            batch_calls: false,
-            funding_amount: None,
-            transfer_amount: None,
-        },
-        SendTestCase {
-            name: "p256_access_key_fee_payer",
-            key_type: KeyType::P256,
-            fee_payer: true,
-            access_key: true,
-            batch_calls: false,
-            funding_amount: None,
-            transfer_amount: None,
-        },
-        SendTestCase {
-            name: "webcrypto_default",
-            key_type: KeyType::P256,
-            fee_payer: false,
-            access_key: false,
-            batch_calls: false,
-            funding_amount: None,
-            transfer_amount: None,
-        },
-        SendTestCase {
-            name: "webcrypto_calls",
-            key_type: KeyType::P256,
-            fee_payer: false,
-            access_key: false,
-            batch_calls: true,
-            funding_amount: Some(transfer_amount * U256::from(10u64)),
-            transfer_amount: Some(transfer_amount),
-        },
-        SendTestCase {
-            name: "webcrypto_fee_payer",
-            key_type: KeyType::P256,
-            fee_payer: true,
-            access_key: false,
-            batch_calls: false,
-            funding_amount: None,
-            transfer_amount: None,
-        },
-        SendTestCase {
-            name: "webcrypto_access_key",
-            key_type: KeyType::P256,
-            fee_payer: false,
-            access_key: true,
-            batch_calls: false,
-            funding_amount: None,
-            transfer_amount: None,
-        },
-        SendTestCase {
-            name: "webauthn_calls",
-            key_type: KeyType::WebAuthn,
-            fee_payer: false,
-            access_key: false,
-            batch_calls: true,
-            funding_amount: Some(webauthn_transfer_amount * U256::from(2u64)),
-            transfer_amount: Some(webauthn_transfer_amount),
-        },
-        SendTestCase {
-            name: "webauthn_fee_payer",
-            key_type: KeyType::WebAuthn,
-            fee_payer: true,
-            access_key: false,
-            batch_calls: false,
-            funding_amount: None,
-            transfer_amount: None,
-        },
-        SendTestCase {
-            name: "webauthn_access_key",
-            key_type: KeyType::WebAuthn,
-            fee_payer: false,
-            access_key: true,
-            batch_calls: false,
-            funding_amount: None,
-            transfer_amount: None,
-        },
+        send_case!(P256, fee_payer),
+        send_case!(P256, fee_payer, access_key),
+        send_case!(P256),
+        send_case!(
+            P256,
+            batch_calls;
+            funding_amount = transfer_amount * U256::from(10u64),
+            transfer_amount = transfer_amount
+        ),
+        send_case!(P256, access_key),
+        send_case!(
+            WebAuthn,
+            batch_calls;
+            funding_amount = webauthn_transfer_amount * U256::from(2u64),
+            transfer_amount = webauthn_transfer_amount
+        ),
+        send_case!(WebAuthn, fee_payer),
+        send_case!(WebAuthn, access_key),
     ];
 
     println!("\n=== eth_sendTransaction matrix ===\n");
@@ -3860,78 +3847,18 @@ async fn test_eth_send_raw_transaction_matrix() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let test_matrix = [
-        RawSendTestCase {
-            name: "secp256k1_fee_payer_off_access_key_off",
-            key_type: KeyType::Secp256k1,
-            fee_payer: false,
-            access_key: false,
-        },
-        RawSendTestCase {
-            name: "secp256k1_fee_payer_on_access_key_off",
-            key_type: KeyType::Secp256k1,
-            fee_payer: true,
-            access_key: false,
-        },
-        RawSendTestCase {
-            name: "secp256k1_fee_payer_off_access_key_on",
-            key_type: KeyType::Secp256k1,
-            fee_payer: false,
-            access_key: true,
-        },
-        RawSendTestCase {
-            name: "secp256k1_fee_payer_on_access_key_on",
-            key_type: KeyType::Secp256k1,
-            fee_payer: true,
-            access_key: true,
-        },
-        RawSendTestCase {
-            name: "p256_fee_payer_off_access_key_off",
-            key_type: KeyType::P256,
-            fee_payer: false,
-            access_key: false,
-        },
-        RawSendTestCase {
-            name: "p256_fee_payer_on_access_key_off",
-            key_type: KeyType::P256,
-            fee_payer: true,
-            access_key: false,
-        },
-        RawSendTestCase {
-            name: "p256_fee_payer_off_access_key_on",
-            key_type: KeyType::P256,
-            fee_payer: false,
-            access_key: true,
-        },
-        RawSendTestCase {
-            name: "p256_fee_payer_on_access_key_on",
-            key_type: KeyType::P256,
-            fee_payer: true,
-            access_key: true,
-        },
-        RawSendTestCase {
-            name: "webauthn_fee_payer_off_access_key_off",
-            key_type: KeyType::WebAuthn,
-            fee_payer: false,
-            access_key: false,
-        },
-        RawSendTestCase {
-            name: "webauthn_fee_payer_on_access_key_off",
-            key_type: KeyType::WebAuthn,
-            fee_payer: true,
-            access_key: false,
-        },
-        RawSendTestCase {
-            name: "webauthn_fee_payer_off_access_key_on",
-            key_type: KeyType::WebAuthn,
-            fee_payer: false,
-            access_key: true,
-        },
-        RawSendTestCase {
-            name: "webauthn_fee_payer_on_access_key_on",
-            key_type: KeyType::WebAuthn,
-            fee_payer: true,
-            access_key: true,
-        },
+        raw_case!(Secp256k1),
+        raw_case!(Secp256k1, fee_payer),
+        raw_case!(Secp256k1, access_key),
+        raw_case!(Secp256k1, fee_payer, access_key),
+        raw_case!(P256),
+        raw_case!(P256, fee_payer),
+        raw_case!(P256, access_key),
+        raw_case!(P256, fee_payer, access_key),
+        raw_case!(WebAuthn),
+        raw_case!(WebAuthn, fee_payer),
+        raw_case!(WebAuthn, access_key),
+        raw_case!(WebAuthn, fee_payer, access_key),
     ];
 
     println!("\n=== Explicit eth_sendRawTransaction matrix ===\n");
@@ -8205,19 +8132,12 @@ async fn test_eth_fill_transaction_basic() -> eyre::Result<()> {
         .unwrap();
     let current_timestamp = block.header.timestamp();
 
-    let test_case = FillTestCase {
-        name: "basic_valid_before_after",
-        nonce_mode: NonceMode::Expiring,
-        key_type: KeyType::Secp256k1,
-        include_nonce_key: true,
-        fee_token: None,
-        fee_payer: false,
-        key_data: None,
-        valid_before_offset: Some(20),
-        valid_after_offset: Some(-10),
-        explicit_nonce: None,
-        expected: ExpectedOutcome::Success,
-    };
+    let test_case = fill_case!(
+        Expiring,
+        Secp256k1;
+        valid_before_offset = 20,
+        valid_after_offset = -10
+    );
 
     let (filled_tx, request_context) =
         fill_transaction_from_case(&provider, &test_case, alice_addr, current_timestamp).await?;
@@ -8255,71 +8175,16 @@ async fn test_eth_fill_transaction_matrix() -> eyre::Result<()> {
     let current_timestamp = block.header.timestamp();
 
     let test_matrix = [
-        FillTestCase {
-            name: "protocol_nonce_key_default",
-            nonce_mode: NonceMode::Protocol,
-            key_type: KeyType::Secp256k1,
-            include_nonce_key: false,
-            fee_token: None,
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: None,
-            valid_after_offset: None,
-            explicit_nonce: None,
-            expected: ExpectedOutcome::Success,
-        },
-        FillTestCase {
-            name: "explicit_2d_nonce_key",
-            nonce_mode: NonceMode::TwoD(42),
-            key_type: KeyType::Secp256k1,
-            include_nonce_key: true,
-            fee_token: None,
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: None,
-            valid_after_offset: None,
-            explicit_nonce: None,
-            expected: ExpectedOutcome::Success,
-        },
-        FillTestCase {
-            name: "expiring_nonce_key_valid_before",
-            nonce_mode: NonceMode::Expiring,
-            key_type: KeyType::Secp256k1,
-            include_nonce_key: true,
-            fee_token: None,
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: Some(20),
-            valid_after_offset: None,
-            explicit_nonce: None,
-            expected: ExpectedOutcome::Success,
-        },
-        FillTestCase {
-            name: "expiring_nonce_key_with_nonce",
-            nonce_mode: NonceMode::Expiring,
-            key_type: KeyType::Secp256k1,
-            include_nonce_key: true,
-            fee_token: None,
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: Some(20),
-            valid_after_offset: None,
-            explicit_nonce: Some(12),
-            expected: ExpectedOutcome::Success,
-        },
-        FillTestCase {
-            name: "fee_token_explicit",
-            nonce_mode: NonceMode::Protocol,
-            key_type: KeyType::Secp256k1,
-            include_nonce_key: true,
-            fee_token: Some(DEFAULT_FEE_TOKEN),
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: None,
-            valid_after_offset: None,
-            explicit_nonce: None,
-            expected: ExpectedOutcome::Success,
-        },
+        fill_case!(Protocol, Secp256k1, omit_nonce_key),
+        fill_case!(TwoD(42), Secp256k1),
+        fill_case!(Expiring, Secp256k1; valid_before_offset = 20),
+        fill_case!(
+            Expiring,
+            Secp256k1;
+            valid_before_offset = 20,
+            explicit_nonce = 12
+        ),
+        fill_case!(Protocol, Secp256k1; fee_token = DEFAULT_FEE_TOKEN),
     ];
 
     println!("\n=== eth_fillTransaction matrix ===\n");
@@ -8351,19 +8216,12 @@ async fn test_eth_fill_transaction_fee_token_and_fee_payer() -> eyre::Result<()>
         .unwrap();
     let current_timestamp = block.header.timestamp();
 
-    let fee_payer_case = FillTestCase {
-        name: "fee_payer_placeholder",
-        nonce_mode: NonceMode::Protocol,
-        key_type: KeyType::Secp256k1,
-        include_nonce_key: true,
-        fee_token: Some(DEFAULT_FEE_TOKEN),
-        fee_payer: true,
-        key_data: None,
-        valid_before_offset: None,
-        valid_after_offset: None,
-        explicit_nonce: None,
-        expected: ExpectedOutcome::Success,
-    };
+    let fee_payer_case = fill_case!(
+        Protocol,
+        Secp256k1,
+        fee_payer;
+        fee_token = DEFAULT_FEE_TOKEN
+    );
     let (fee_payer_tx, fee_payer_context) =
         fill_transaction_from_case(&provider, &fee_payer_case, signer_addr, current_timestamp)
             .await?;
@@ -8520,7 +8378,7 @@ enum ExpectedOutcome {
 
 /// Test case definition for fill tests and E2E matrix
 struct FillTestCase {
-    name: &'static str,
+    name: String,
     nonce_mode: NonceMode,
     key_type: KeyType,
     include_nonce_key: bool,
@@ -8845,97 +8703,13 @@ async fn test_e2e_fill_sign_send_matrix() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let test_matrix = [
-        FillTestCase {
-            name: "protocol_nonce_secp256k1",
-            nonce_mode: NonceMode::Protocol,
-            key_type: KeyType::Secp256k1,
-            include_nonce_key: true,
-            fee_token: None,
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: None,
-            valid_after_offset: None,
-            explicit_nonce: None,
-            expected: ExpectedOutcome::Success,
-        },
-        FillTestCase {
-            name: "2d_nonce_secp256k1",
-            nonce_mode: NonceMode::TwoD(42),
-            key_type: KeyType::Secp256k1,
-            include_nonce_key: true,
-            fee_token: None,
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: None,
-            valid_after_offset: None,
-            explicit_nonce: None,
-            expected: ExpectedOutcome::Success,
-        },
-        FillTestCase {
-            name: "expiring_nonce_secp256k1",
-            nonce_mode: NonceMode::Expiring,
-            key_type: KeyType::Secp256k1,
-            include_nonce_key: true,
-            fee_token: None,
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: None,
-            valid_after_offset: None,
-            explicit_nonce: None,
-            expected: ExpectedOutcome::Success,
-        },
-        FillTestCase {
-            name: "expiring_nonce_p256",
-            nonce_mode: NonceMode::Expiring,
-            key_type: KeyType::P256,
-            include_nonce_key: true,
-            fee_token: None,
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: None,
-            valid_after_offset: None,
-            explicit_nonce: None,
-            expected: ExpectedOutcome::Success,
-        },
-        FillTestCase {
-            name: "expiring_nonce_webauthn",
-            nonce_mode: NonceMode::Expiring,
-            key_type: KeyType::WebAuthn,
-            include_nonce_key: true,
-            fee_token: None,
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: None,
-            valid_after_offset: None,
-            explicit_nonce: None,
-            expected: ExpectedOutcome::Success,
-        },
-        FillTestCase {
-            name: "expiring_at_boundary",
-            nonce_mode: NonceMode::ExpiringAtBoundary,
-            key_type: KeyType::Secp256k1,
-            include_nonce_key: true,
-            fee_token: None,
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: None,
-            valid_after_offset: None,
-            explicit_nonce: None,
-            expected: ExpectedOutcome::Success,
-        },
-        FillTestCase {
-            name: "expiring_exceeds_boundary",
-            nonce_mode: NonceMode::ExpiringExceedsBoundary,
-            key_type: KeyType::Secp256k1,
-            include_nonce_key: true,
-            fee_token: None,
-            fee_payer: false,
-            key_data: None,
-            valid_before_offset: None,
-            valid_after_offset: None,
-            explicit_nonce: None,
-            expected: ExpectedOutcome::Rejection,
-        },
+        fill_case!(Protocol, Secp256k1),
+        fill_case!(TwoD(42), Secp256k1),
+        fill_case!(Expiring, Secp256k1),
+        fill_case!(Expiring, P256),
+        fill_case!(Expiring, WebAuthn),
+        fill_case!(ExpiringAtBoundary, Secp256k1),
+        fill_case!(ExpiringExceedsBoundary, Secp256k1, reject),
     ];
 
     println!("\n=== E2E Test Matrix: fill -> sign -> send ===\n");
