@@ -222,7 +222,9 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
         match self {
-            Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE => Ok(Address::ZERO),
+            Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE => {
+                Ok(TEMPO_SYSTEM_TX_SENDER)
+            }
             Self::Legacy(tx) => alloy_consensus::transaction::SignerRecoverable::recover_signer(tx),
             Self::Eip2930(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
@@ -241,7 +243,9 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
         match self {
-            Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE => Ok(Address::ZERO),
+            Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE => {
+                Ok(TEMPO_SYSTEM_TX_SENDER)
+            }
             Self::Legacy(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
             }
@@ -826,12 +830,11 @@ mod tests {
             "Should be valid system tx"
         );
 
-        // recover_signer returns ZERO for system tx
+        // recover_signer returns TEMPO_SYSTEM_TX_SENDER for system tx
         let signer = system_tx.recover_signer().unwrap();
         assert_eq!(
-            signer,
-            Address::ZERO,
-            "System tx signer should be Address::ZERO"
+            signer, TEMPO_SYSTEM_TX_SENDER,
+            "System tx signer should be TEMPO_SYSTEM_TX_SENDER"
         );
 
         // Invalid: wrong chain_id
