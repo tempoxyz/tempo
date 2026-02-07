@@ -229,3 +229,109 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
         Self::into_precompile_result(self, gas)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempo_contracts::precompiles::StablecoinDEXError;
+
+    #[test]
+    fn test_add_errors_to_registry_populates_registry() {
+        let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
+
+        assert!(registry.is_empty());
+
+        add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
+
+        assert!(!registry.is_empty());
+
+        let order_not_found_selector = StablecoinDEXError::order_does_not_exist().selector();
+        assert!(
+            registry.contains_key(&order_not_found_selector),
+            "Registry should contain OrderDoesNotExist selector"
+        );
+    }
+
+    #[test]
+    fn test_error_decoder_registry_is_not_empty() {
+        let registry = error_decoder_registry();
+
+        assert!(
+            !registry.is_empty(),
+            "error_decoder_registry should return a populated registry"
+        );
+
+        let dex_selector = StablecoinDEXError::order_does_not_exist().selector();
+        assert!(registry.contains_key(&dex_selector));
+    }
+
+    #[test]
+    fn test_decode_error_returns_some_for_valid_error() {
+        let error = StablecoinDEXError::order_does_not_exist();
+        let encoded = error.abi_encode();
+
+        let result = decode_error(&encoded);
+        assert!(
+            result.is_some(),
+            "decode_error should return Some for valid error"
+        );
+
+        let decoded = result.unwrap();
+        assert!(matches!(
+            decoded.error,
+            TempoPrecompileError::StablecoinDEX(StablecoinDEXError::OrderDoesNotExist(_))
+        ));
+    }
+
+    #[test]
+    fn test_decode_error_data_length_boundary() {
+        // Empty data (len = 0) should return None (0 < 4)
+        let result = decode_error(&[]);
+        assert!(result.is_none(), "Empty data should return None");
+
+        // 1 byte (len = 1) should return None (1 < 4)
+        let result = decode_error(&[0x01]);
+        assert!(result.is_none(), "1 byte should return None");
+
+        // 2 bytes (len = 2) should return None (2 < 4)
+        let result = decode_error(&[0x01, 0x02]);
+        assert!(result.is_none(), "2 bytes should return None");
+
+        // 3 bytes (len = 3) should return None (3 < 4)
+        let result = decode_error(&[0x01, 0x02, 0x03]);
+        assert!(result.is_none(), "3 bytes should return None");
+
+        // 4 bytes with unknown selector returns None (selector not found)
+        let result = decode_error(&[0x00, 0x00, 0x00, 0x00]);
+        assert!(
+            result.is_none(),
+            "Unknown 4-byte selector should return None"
+        );
+
+        // 4 bytes with valid selector (exactly at boundary) should succeed
+        let error = StablecoinDEXError::order_does_not_exist();
+        let encoded = error.abi_encode();
+        let result = decode_error(&encoded);
+        assert!(
+            result.is_some(),
+            "Valid error at 4+ bytes should return Some"
+        );
+    }
+
+    #[test]
+    fn test_decode_error_with_tip20_error() {
+        // Use insufficient_allowance which has a unique selector (no collision with other errors)
+        let error = TIP20Error::insufficient_allowance();
+        let encoded = error.abi_encode();
+
+        let result = decode_error(&encoded);
+        assert!(result.is_some(), "Should decode TIP20 errors");
+
+        let decoded = result.unwrap();
+        // Verify it's a TIP20 error
+        match decoded.error {
+            TempoPrecompileError::TIP20(_) => {}
+            other => panic!("Expected TIP20 error, got {other:?}"),
+        }
+    }
+}

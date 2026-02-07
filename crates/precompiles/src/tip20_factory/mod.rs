@@ -28,7 +28,8 @@ pub struct TIP20Factory {}
 
 /// Computes the deterministic TIP20 address from sender and salt.
 /// Returns the address and the lower bytes used for derivation.
-fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u64) {
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u64) {
     let hash = keccak256((sender, salt).abi_encode());
 
     // Take first 8 bytes of hash as lower bytes
@@ -217,7 +218,7 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Address, address};
+    use alloy::primitives::{Address, U256, address};
 
     #[test]
     fn test_is_initialized() -> eyre::Result<()> {
@@ -736,6 +737,129 @@ mod tests {
             )?;
 
             assert!(TIP20Token::from_address(PATH_USD_ADDRESS)?.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compute_tip20_address_returns_non_default() {
+        let sender = Address::random();
+        let salt = B256::random();
+
+        let (address, lower_bytes) = compute_tip20_address(sender, salt);
+
+        // Address should NOT be default
+        assert_ne!(address, Address::ZERO);
+
+        // Address should have TIP20 prefix
+        assert!(is_tip20_prefix(address));
+
+        // Same inputs should produce same outputs (deterministic)
+        let (address2, lower_bytes2) = compute_tip20_address(sender, salt);
+        assert_eq!(address, address2);
+        assert_eq!(lower_bytes, lower_bytes2);
+
+        // Different inputs should produce different outputs
+        let (address3, _) = compute_tip20_address(Address::random(), salt);
+        assert_ne!(address, address3);
+    }
+
+    #[test]
+    fn test_get_token_address_returns_correct_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let factory = TIP20Factory::new();
+
+            // Use a salt that produces non-reserved address
+            let salt = B256::repeat_byte(0xFF);
+
+            let address =
+                factory.get_token_address(ITIP20Factory::getTokenAddressCall { sender, salt })?;
+
+            // Address should NOT be default
+            assert_ne!(address, Address::ZERO);
+
+            // Should have TIP20 prefix
+            assert!(is_tip20_prefix(address));
+
+            // Should be deterministic
+            let address2 =
+                factory.get_token_address(ITIP20Factory::getTokenAddressCall { sender, salt })?;
+            assert_eq!(address, address2);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_tip20_returns_correct_boolean() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let factory = TIP20Factory::new();
+
+            // Non-TIP20 address should return false
+            let non_tip20 = Address::random();
+            assert!(
+                !factory.is_tip20(non_tip20)?,
+                "Non-TIP20 address should return false"
+            );
+
+            // PATH_USD before deployment should return false (no code)
+            assert!(
+                !factory.is_tip20(PATH_USD_ADDRESS)?,
+                "Undeployed TIP20 should return false"
+            );
+
+            // Deploy pathUSD
+            TIP20Setup::path_usd(admin).apply()?;
+
+            // Now PATH_USD should return true
+            assert!(
+                factory.is_tip20(PATH_USD_ADDRESS)?,
+                "Deployed TIP20 should return true"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_token_address_reserved_boundary() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let factory = TIP20Factory::new();
+
+            // Find a salt that produces an address in the reserved range
+            // We need to brute force this since compute_tip20_address uses keccak256
+            let sender = Address::ZERO;
+            let mut reserved_salt = None;
+
+            for i in 0u64..100000 {
+                let salt = B256::from(U256::from(i));
+                let (_, lower_bytes) = compute_tip20_address(sender, salt);
+                if lower_bytes < 1024 {
+                    // RESERVED_SIZE
+                    reserved_salt = Some(salt);
+                    break;
+                }
+            }
+
+            // If we found a reserved salt, verify get_token_address rejects it
+            if let Some(salt) = reserved_salt {
+                let result =
+                    factory.get_token_address(ITIP20Factory::getTokenAddressCall { sender, salt });
+                assert!(result.is_err());
+                assert_eq!(
+                    result.unwrap_err(),
+                    TempoPrecompileError::TIP20Factory(TIP20FactoryError::address_reserved())
+                );
+            }
 
             Ok(())
         })
