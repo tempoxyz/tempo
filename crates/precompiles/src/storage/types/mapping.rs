@@ -68,17 +68,18 @@ impl<K, V: StorableType> Mapping<K, V> {
 
     /// Returns a `Handler` for the given key.
     ///
-    /// This enables the composable pattern: `mapping[key].read()`
+    /// This enables the composable pattern: `mapping.at(&key).read()`
     /// where the mapping slot computation happens once, and the resulting slot
     /// can be used for multiple operations.
     ///
     /// The handler is computed on first access and cached for subsequent accesses.
-    pub fn at(&self, key: K) -> &V::Handler
+    /// Takes a reference to avoid cloning on cache hits.
+    pub fn at(&self, key: &K) -> &V::Handler
     where
         K: StorageKey + Hash + Eq + Clone,
     {
         let (base_slot, address) = (self.base_slot, self.address);
-        self.cache.get_or_insert(key.clone(), || {
+        self.cache.get_or_insert(key, || {
             V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
         })
     }
@@ -88,16 +89,14 @@ impl<K, V: StorableType> Mapping<K, V> {
     /// Use this when you need to call mutable methods like `write()` or `delete()`.
     ///
     /// The handler is computed on first access and cached for subsequent accesses.
-    pub fn at_mut(&mut self, key: K) -> &mut V::Handler
+    /// Takes a reference to avoid cloning on cache hits.
+    pub fn at_mut(&mut self, key: &K) -> &mut V::Handler
     where
         K: StorageKey + Hash + Eq + Clone,
     {
-        self.cache.get_or_insert_mut(key.clone(), || {
-            V::handle(
-                key.mapping_slot(self.base_slot),
-                LayoutCtx::FULL,
-                self.address,
-            )
+        let (base_slot, address) = (self.base_slot, self.address);
+        self.cache.get_or_insert_mut(key, || {
+            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
         })
     }
 }
@@ -119,7 +118,7 @@ where
     /// The handler is computed on first access and cached for subsequent accesses.
     fn index(&self, key: K) -> &Self::Output {
         let (base_slot, address) = (self.base_slot, self.address);
-        self.cache.get_or_insert(key.clone(), || {
+        self.cache.get_or_insert(&key, || {
             V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
         })
     }
@@ -131,12 +130,9 @@ where
 {
     /// Returns a mutable reference to the cached handler for the given key.
     fn index_mut(&mut self, key: K) -> &mut Self::Output {
-        self.cache.get_or_insert_mut(key.clone(), || {
-            V::handle(
-                key.mapping_slot(self.base_slot),
-                LayoutCtx::FULL,
-                self.address,
-            )
+        let (base_slot, address) = (self.base_slot, self.address);
+        self.cache.get_or_insert_mut(&key, || {
+            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
         })
     }
 }

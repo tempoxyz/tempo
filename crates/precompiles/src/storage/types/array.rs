@@ -114,7 +114,7 @@ impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
         let (base_slot, address) = (self.base_slot, self.address);
         Some(
             self.cache
-                .get_or_insert(index, || Self::compute_handler(base_slot, address, index)),
+                .get_or_insert(&index, || Self::compute_handler(base_slot, address, index)),
         )
     }
 
@@ -147,7 +147,7 @@ impl<T: StorableType, const N: usize> Index<usize> for ArrayHandler<T, N> {
         assert!(index < N, "index out of bounds: {index} >= {N}");
         let (base_slot, address) = (self.base_slot, self.address);
         self.cache
-            .get_or_insert(index, || Self::compute_handler(base_slot, address, index))
+            .get_or_insert(&index, || Self::compute_handler(base_slot, address, index))
     }
 }
 
@@ -160,7 +160,7 @@ impl<T: StorableType, const N: usize> IndexMut<usize> for ArrayHandler<T, N> {
         assert!(index < N, "index out of bounds: {index} >= {N}");
         let (base_slot, address) = (self.base_slot, self.address);
         self.cache
-            .get_or_insert_mut(index, || Self::compute_handler(base_slot, address, index))
+            .get_or_insert_mut(&index, || Self::compute_handler(base_slot, address, index))
     }
 }
 
