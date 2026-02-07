@@ -103,9 +103,6 @@ macro_rules! apply_fill_option {
     ($case:ident, fee_token, $value:expr) => {
         $case.fee_token = Some($value);
     };
-    ($case:ident, key_data, $value:expr) => {
-        $case.key_data = Some($value);
-    };
     ($case:ident, valid_before_offset, $value:expr) => {
         $case.valid_before_offset = Some($value);
     };
@@ -138,7 +135,6 @@ macro_rules! fill_case {
             include_nonce_key: true,
             fee_token: None,
             fee_payer: false,
-            key_data: None,
             valid_before_offset: None,
             valid_after_offset: None,
             explicit_nonce: None,
@@ -162,7 +158,6 @@ macro_rules! fill_case {
             include_nonce_key: true,
             fee_token: None,
             fee_payer: false,
-            key_data: None,
             valid_before_offset: None,
             valid_after_offset: None,
             explicit_nonce: None,
@@ -181,7 +176,6 @@ macro_rules! fill_case {
             include_nonce_key: true,
             fee_token: None,
             fee_payer: false,
-            key_data: None,
             valid_before_offset: None,
             valid_after_offset: None,
             explicit_nonce: None,

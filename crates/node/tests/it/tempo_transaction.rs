@@ -3029,7 +3029,7 @@ async fn configure_fee_payer_context(
     tx: &mut TempoTransaction,
     fee_payer_enabled: bool,
     signer_addr: Address,
-    fee_payer_signer: &impl SignerSync,
+    fee_payer_signer: &(impl SignerSync + ?Sized),
     fee_payer_addr: Address,
     self_payer_addr: Address,
 ) -> eyre::Result<FeePayerContext> {
@@ -3038,10 +3038,7 @@ async fn configure_fee_payer_context(
             .balanceOf(fee_payer_addr)
             .call()
             .await?;
-        tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
-        let fee_payer_sig_hash = tx.fee_payer_signature_hash(signer_addr);
-        let fee_payer_signature = fee_payer_signer.sign_hash_sync(&fee_payer_sig_hash)?;
-        tx.fee_payer_signature = Some(fee_payer_signature);
+        sign_fee_payer(tx, signer_addr, fee_payer_signer)?;
 
         Ok(FeePayerContext {
             addr: fee_payer_addr,
@@ -3100,7 +3097,7 @@ async fn inject_and_assert_mined(
 fn sign_fee_payer(
     tx: &mut TempoTransaction,
     signer_addr: Address,
-    fee_payer: &impl SignerSync,
+    fee_payer: &(impl SignerSync + ?Sized),
 ) -> eyre::Result<()> {
     tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
     let fee_payer_sig_hash = tx.fee_payer_signature_hash(signer_addr);
@@ -3346,7 +3343,7 @@ async fn run_raw_send_test_case(test_case: &RawSendTestCase) -> eyre::Result<()>
     }
 }
 
-fn create_send_test_signer_context(test_case: &SendTestCase) -> eyre::Result<(U256, U256)> {
+fn resolve_send_amounts(test_case: &SendTestCase) -> eyre::Result<(U256, U256)> {
     let base_funding = U256::from(1_000_000_000_000_000_000u128);
     let funding_amount = test_case.funding_amount.unwrap_or(base_funding);
     let transfer_amount = test_case
@@ -3410,7 +3407,7 @@ async fn run_send_transaction_test_case(test_case: &SendTestCase) -> eyre::Resul
         ));
     }
 
-    let (funding_amount, transfer_amount) = create_send_test_signer_context(test_case)?;
+    let (funding_amount, transfer_amount) = resolve_send_amounts(test_case)?;
 
     if test_case.access_key {
         let (mut setup, provider, root_signer, root_addr) =
@@ -3434,17 +3431,6 @@ async fn run_send_transaction_test_case(test_case: &SendTestCase) -> eyre::Resul
             Some(create_default_token_limit()),
         )?;
 
-        let fee_payer_balance_before = if test_case.fee_payer {
-            Some(
-                ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
-                    .balanceOf(root_addr)
-                    .call()
-                    .await?,
-            )
-        } else {
-            None
-        };
-
         let recipient_1 = Address::random();
         let recipient_2 = if test_case.batch_calls {
             Some(Address::random())
@@ -3465,9 +3451,17 @@ async fn run_send_transaction_test_case(test_case: &SendTestCase) -> eyre::Resul
             2_000_000,
         );
         tx.key_authorization = Some(key_auth);
-        if test_case.fee_payer {
-            sign_fee_payer(&mut tx, root_addr, &root_signer)?;
-        }
+
+        let fee_payer_ctx = configure_fee_payer_context(
+            &provider,
+            &mut tx,
+            test_case.fee_payer,
+            root_addr,
+            &root_signer,
+            root_addr,
+            root_addr,
+        )
+        .await?;
 
         let signature = match test_case.key_type {
             KeyType::P256 => sign_aa_tx_with_p256_access_key(
@@ -3492,18 +3486,8 @@ async fn run_send_transaction_test_case(test_case: &SendTestCase) -> eyre::Resul
         let encoded = envelope.encoded_2718();
         let tx_hash = *envelope.tx_hash();
 
-        inject_and_assert_mined(&mut setup, &provider, encoded.clone(), tx_hash).await?;
-
-        if let Some(balance_before) = fee_payer_balance_before {
-            let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
-                .balanceOf(root_addr)
-                .call()
-                .await?;
-            assert!(
-                fee_payer_balance_after < balance_before,
-                "Fee payer should cover gas"
-            );
-        }
+        inject_and_assert_mined(&mut setup, &provider, encoded, tx_hash).await?;
+        assert_fee_payer_spent(&provider, fee_payer_ctx).await?;
 
         return Ok(());
     }
@@ -3531,7 +3515,7 @@ async fn run_send_transaction_test_case(test_case: &SendTestCase) -> eyre::Resul
             let encoded = envelope.encoded_2718();
             let tx_hash = *envelope.tx_hash();
 
-            inject_and_assert_mined(&mut setup, &provider, encoded.clone(), tx_hash).await?;
+            inject_and_assert_mined(&mut setup, &provider, encoded, tx_hash).await?;
 
             Ok(())
         }
@@ -3548,17 +3532,6 @@ async fn run_send_transaction_test_case(test_case: &SendTestCase) -> eyre::Resul
                 chain_id,
                 fee_token,
             ) = setup_test_with_p256_funded_account(funding_amount).await?;
-
-            let fee_payer_balance_before = if test_case.fee_payer {
-                Some(
-                    ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
-                        .balanceOf(fee_payer_addr)
-                        .call()
-                        .await?,
-                )
-            } else {
-                None
-            };
 
             let recipient_1 = Address::random();
             let recipient_2 = if test_case.batch_calls {
@@ -3580,9 +3553,17 @@ async fn run_send_transaction_test_case(test_case: &SendTestCase) -> eyre::Resul
                 2_000_000,
             );
             tx.fee_token = Some(fee_token);
-            if test_case.fee_payer {
-                sign_fee_payer(&mut tx, signer_addr, &fee_payer_signer)?;
-            }
+
+            let fee_payer_ctx = configure_fee_payer_context(
+                &provider,
+                &mut tx,
+                test_case.fee_payer,
+                signer_addr,
+                &fee_payer_signer,
+                fee_payer_addr,
+                signer_addr,
+            )
+            .await?;
 
             let signature = match test_case.key_type {
                 KeyType::P256 => sign_aa_tx_p256(&tx, &signing_key, pub_key_x, pub_key_y)?,
@@ -3600,18 +3581,8 @@ async fn run_send_transaction_test_case(test_case: &SendTestCase) -> eyre::Resul
             let encoded = envelope.encoded_2718();
             let tx_hash = *envelope.tx_hash();
 
-            inject_and_assert_mined(&mut setup, &provider, encoded.clone(), tx_hash).await?;
-
-            if let Some(balance_before) = fee_payer_balance_before {
-                let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
-                    .balanceOf(fee_payer_addr)
-                    .call()
-                    .await?;
-                assert!(
-                    fee_payer_balance_after < balance_before,
-                    "Fee payer should cover gas"
-                );
-            }
+            inject_and_assert_mined(&mut setup, &provider, encoded, tx_hash).await?;
+            assert_fee_payer_spent(&provider, fee_payer_ctx).await?;
 
             Ok(())
         }
@@ -3627,6 +3598,8 @@ async fn test_eth_send_transaction_matrix() -> eyre::Result<()> {
     let webauthn_transfer_amount = U256::from(5u64) * U256::from(10).pow(U256::from(6));
 
     let test_matrix = [
+        send_case!(Secp256k1),
+        send_case!(Secp256k1, fee_payer),
         send_case!(P256, fee_payer),
         send_case!(P256, fee_payer, access_key),
         send_case!(P256),
@@ -3688,61 +3661,23 @@ where
         let mut context = access_setup().await?;
         let recipient = Address::random();
 
-        if test_case.fee_payer {
-            let fee_payer_signer = alloy::signers::local::PrivateKeySigner::random();
-            let fee_payer_addr = fee_payer_signer.address();
+        let fee_payer_signer = if test_case.fee_payer {
+            let signer = alloy::signers::local::PrivateKeySigner::random();
+            let addr = signer.address();
             fund_address_with_fee_tokens(
                 &mut context.setup,
                 &context.provider,
                 &context.root_signer,
                 context.root_addr,
-                fee_payer_addr,
+                addr,
                 U256::from(1_000_000_000_000_000_000u128),
                 context.chain_id,
             )
             .await?;
-
-            let mut tx = create_basic_aa_tx(
-                context.chain_id,
-                context
-                    .provider
-                    .get_transaction_count(context.root_addr)
-                    .await?,
-                vec![Call {
-                    to: recipient.into(),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
-                2_000_000,
-            );
-            tx.key_authorization = Some(context.key_auth);
-
-            let fee_payer_context = configure_fee_payer_context(
-                &context.provider,
-                &mut tx,
-                true,
-                context.root_addr,
-                &fee_payer_signer,
-                fee_payer_addr,
-                context.root_addr,
-            )
-            .await?;
-
-            let signature = (context.sign)(&tx)?;
-            let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-            let tx_hash = *envelope.tx_hash();
-
-            send_raw_aa_and_assert_mined(
-                &mut context.setup,
-                &context.provider,
-                envelope.encoded_2718(),
-                tx_hash,
-            )
-            .await?;
-            assert_fee_payer_spent(&context.provider, fee_payer_context).await?;
-
-            return Ok(());
-        }
+            Some(signer)
+        } else {
+            None
+        };
 
         let mut tx = create_basic_aa_tx(
             context.chain_id,
@@ -3759,13 +3694,17 @@ where
         );
         tx.key_authorization = Some(context.key_auth);
 
+        let (fp_signer_ref, fp_addr) = match &fee_payer_signer {
+            Some(s) => (s as &dyn SignerSync, s.address()),
+            None => (&context.root_signer as &dyn SignerSync, context.root_addr),
+        };
         let fee_payer_context = configure_fee_payer_context(
             &context.provider,
             &mut tx,
-            false,
+            test_case.fee_payer,
             context.root_addr,
-            &context.root_signer,
-            context.root_addr,
+            fp_signer_ref,
+            fp_addr,
             context.root_addr,
         )
         .await?;
@@ -4095,8 +4034,6 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
-    // Keep setup alive for the duration of the test
-    let _ = &_setup;
 
     println!("\n=== Testing eth_estimateGas with keyType and keyData ===\n");
     println!("Test address: {signer_addr}");
@@ -4189,8 +4126,6 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, signer, signer_addr) = setup_test_with_funded_account().await?;
-    // Keep setup alive for the duration of the test
-    let _ = &_setup;
 
     println!("\n=== Testing eth_estimateGas with isKeychain and keyAuthorization ===\n");
     println!("Test address: {signer_addr}");
@@ -8166,7 +8101,6 @@ async fn test_eth_fill_transaction_matrix() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
-    let _ = &_setup;
 
     let block = provider
         .get_block_by_number(Default::default())
@@ -8207,7 +8141,6 @@ async fn test_eth_fill_transaction_fee_token_and_fee_payer() -> eyre::Result<()>
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
-    let _ = &_setup;
 
     let fee_payer_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let block = provider
@@ -8249,7 +8182,7 @@ fn parse_filled_tx(filled: &serde_json::Value) -> eyre::Result<TempoTransaction>
         .and_then(|v| v.as_str())
         .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
         .transpose()?
-        .unwrap_or(1);
+        .ok_or_else(|| eyre::eyre!("Missing 'chainId' in filled tx"))?;
 
     let nonce = tx
         .get("nonce")
@@ -8263,21 +8196,21 @@ fn parse_filled_tx(filled: &serde_json::Value) -> eyre::Result<TempoTransaction>
         .and_then(|v| v.as_str())
         .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
         .transpose()?
-        .unwrap_or(0);
+        .ok_or_else(|| eyre::eyre!("Missing 'gas' in filled tx"))?;
 
     let max_fee_per_gas = tx
         .get("maxFeePerGas")
         .and_then(|v| v.as_str())
         .map(|s| u128::from_str_radix(s.trim_start_matches("0x"), 16))
         .transpose()?
-        .unwrap_or(0);
+        .ok_or_else(|| eyre::eyre!("Missing 'maxFeePerGas' in filled tx"))?;
 
     let max_priority_fee_per_gas = tx
         .get("maxPriorityFeePerGas")
         .and_then(|v| v.as_str())
         .map(|s| u128::from_str_radix(s.trim_start_matches("0x"), 16))
         .transpose()?
-        .unwrap_or(0);
+        .ok_or_else(|| eyre::eyre!("Missing 'maxPriorityFeePerGas' in filled tx"))?;
 
     let nonce_key = tx
         .get("nonceKey")
@@ -8384,7 +8317,6 @@ struct FillTestCase {
     include_nonce_key: bool,
     fee_token: Option<Address>,
     fee_payer: bool,
-    key_data: Option<Bytes>,
     valid_before_offset: Option<i64>,
     valid_after_offset: Option<i64>,
     explicit_nonce: Option<u64>,
@@ -8409,7 +8341,7 @@ fn key_type_to_signature_type(key_type: KeyType) -> SignatureType {
 
 fn resolve_timestamp_offset(current_timestamp: u64, offset: i64) -> u64 {
     if offset.is_negative() {
-        current_timestamp - offset.unsigned_abs()
+        current_timestamp.saturating_sub(offset.unsigned_abs())
     } else {
         current_timestamp + offset as u64
     }
@@ -8475,7 +8407,7 @@ fn build_fill_request_context(
             input: Bytes::new(),
         }],
         key_type: Some(key_type_to_signature_type(test_case.key_type)),
-        key_data: test_case.key_data.clone(),
+        key_data: None,
         fee_token: test_case.fee_token,
         fee_payer_signature,
         valid_before,
