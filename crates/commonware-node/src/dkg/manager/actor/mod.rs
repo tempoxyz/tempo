@@ -33,10 +33,11 @@ use futures::{
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
+use reth_ethereum::network::NetworkInfo;
 use reth_provider::{BlockNumReader, HeaderProvider};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
-use tracing::{Level, Span, debug, error, info, info_span, instrument, warn, warn_span};
+use tracing::{Level, Span, debug, info, info_span, instrument, warn, warn_span};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -1472,7 +1473,8 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
     metric: &Counter,
 ) -> ordered::Map<PublicKey, DecodedValidator> {
     let mut attempts = 0;
-    let retry_after = Duration::from_secs(1);
+    const MIN_RETRY: Duration = Duration::from_secs(1);
+    const MAX_RETRY: Duration = Duration::from_secs(30);
 
     let last = epoch_strategy
         .last(epoch)
@@ -1484,20 +1486,24 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
         {
             break validators;
         }
+        let retry_after = MIN_RETRY.saturating_mul(attempts).min(MAX_RETRY);
+        let is_syncing = node.network.is_syncing();
+        let best_block = node.provider.best_block_number();
+        let target_block = last.get();
+        let blocks_behind = best_block
+            .as_ref()
+            .ok()
+            .map(|best| target_block.saturating_sub(*best));
         tracing::warn_span!("read_validator_config_with_retry").in_scope(|| {
-            if attempts < 10 {
-                warn!(
-                    attempts,
-                    retry_after = %tempo_telemetry_util::display_duration(retry_after),
-                    "reading validator config from contract failed; will retry",
-                );
-            } else {
-                error!(
-                    attempts,
-                    retry_after = %tempo_telemetry_util::display_duration(retry_after),
-                    "reading validator config from contract failed; will retry",
-                );
-            }
+            warn!(
+                attempts,
+                retry_after = %tempo_telemetry_util::display_duration(retry_after),
+                is_syncing,
+                best_block = %tempo_telemetry_util::display_result(&best_block),
+                target_block,
+                blocks_behind = %tempo_telemetry_util::display_option(&blocks_behind),
+                "reading validator config from contract failed; will retry",
+            );
         });
         context.sleep(retry_after).await;
     }

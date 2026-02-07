@@ -123,3 +123,80 @@ impl AsTracingValue<private::Eyre> for eyre::Report {
         Box::new(AsRef::<dyn std::error::Error>::as_ref(self))
     }
 }
+
+/// Formats a [`Result`] using [`std::fmt::Display`], showing either the value or the full error chain.
+///
+/// On success, displays the value using its [`std::fmt::Display`] implementation.
+/// On error, displays `<error: {err}: {cause1}: {cause2}...>` with the full source chain,
+/// wrapped in angle brackets to indicate an error occurred where a value was expected.
+///
+/// # Example
+///
+/// ```
+/// use tempo_telemetry_util::display_result;
+///
+/// let ok_result: Result<u64, std::io::Error> = Ok(42);
+/// let err_result: Result<u64, std::io::Error> = Err(std::io::ErrorKind::NotFound.into());
+///
+/// tracing::warn!(
+///     ok_value = %display_result(&ok_result),
+///     err_value = %display_result(&err_result),
+///     "example log",
+/// );
+/// ```
+pub fn display_result<T, E>(result: &Result<T, E>) -> DisplayResult<'_, T, E> {
+    DisplayResult(result)
+}
+
+pub struct DisplayResult<'a, T, E>(&'a Result<T, E>);
+
+impl<T: std::fmt::Display, E: std::error::Error> std::fmt::Display for DisplayResult<'_, T, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Ok(value) => write!(f, "{value}"),
+            Err(err) => {
+                write!(f, "<error: {err}")?;
+                let mut source = err.source();
+                while let Some(cause) = source {
+                    write!(f, ": {cause}")?;
+                    source = cause.source();
+                }
+                write!(f, ">")
+            }
+        }
+    }
+}
+
+/// Formats an [`Option`] using [`std::fmt::Display`], showing either the value or `<not set>`.
+///
+/// On `Some`, displays the value using its [`std::fmt::Display`] implementation.
+/// On `None`, displays `<not set>` to indicate the value is absent.
+///
+/// # Example
+///
+/// ```
+/// use tempo_telemetry_util::display_option;
+///
+/// let some_value: Option<u64> = Some(42);
+/// let none_value: Option<u64> = None;
+///
+/// tracing::warn!(
+///     some_field = %display_option(&some_value),
+///     none_field = %display_option(&none_value),
+///     "example log",
+/// );
+/// ```
+pub fn display_option<T>(option: &Option<T>) -> DisplayOption<'_, T> {
+    DisplayOption(option)
+}
+
+pub struct DisplayOption<'a, T>(&'a Option<T>);
+
+impl<T: std::fmt::Display> std::fmt::Display for DisplayOption<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(value) => write!(f, "{value}"),
+            None => write!(f, "<not set>"),
+        }
+    }
+}
