@@ -44,11 +44,11 @@ use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxTyp
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
     amm::AmmLiquidityCache,
-    validator::{DEFAULT_MAX_TEMPO_AUTHORIZATIONS, TempoTransactionValidator},
+    validator::{
+        DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+        TempoTransactionValidator,
+    },
 };
-
-/// Default maximum allowed `valid_after` offset for AA txs (1 hour).
-pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 3600;
 
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
