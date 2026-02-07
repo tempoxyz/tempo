@@ -458,11 +458,11 @@ impl TIP20Token {
     // Standard token functions
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
         // Check and update spending limits for access keys
-        AccountKeychain::new().authorize_approve(
+        AccountKeychain::new().authorize_approve_lazy(
             msg_sender,
             self.address,
-            self.get_allowance(msg_sender, call.spender)?,
             call.amount,
+            || self.get_allowance(msg_sender, call.spender),
         )?;
 
         // Set the new allowance
@@ -545,16 +545,21 @@ impl TIP20Token {
         self.check_recipient(to)?;
         self.ensure_transfer_authorized(from, to)?;
 
-        let allowed = self.get_allowance(from, msg_sender)?;
-        if amount > allowed {
-            return Err(TIP20Error::insufficient_allowance().into());
-        }
+        // Cache the handler for this allowance slot. This only caches the slot address,
+        // not the value, so reads/writes still hit storage and cannot go stale.
+        {
+            let allowance_slot = self.allowances.at_mut(from).at_mut(msg_sender);
+            let allowed = allowance_slot.read()?;
+            if amount > allowed {
+                return Err(TIP20Error::insufficient_allowance().into());
+            }
 
-        if allowed != U256::MAX {
-            let new_allowance = allowed
-                .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_allowance())?;
-            self.set_allowance(from, msg_sender, new_allowance)?;
+            if allowed != U256::MAX {
+                let new_allowance = allowed
+                    .checked_sub(amount)
+                    .ok_or(TIP20Error::insufficient_allowance())?;
+                allowance_slot.write(new_allowance)?;
+            }
         }
 
         self._transfer(from, to, amount)?;
@@ -704,7 +709,12 @@ impl TIP20Token {
     }
 
     fn _transfer(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
-        let from_balance = self.get_balance(from)?;
+        // Cache balance handlers per account to avoid repeated slot computation;
+        // values are still read from storage on each call.
+        let from_balance = {
+            let balance_slot = self.balances.at_mut(from);
+            balance_slot.read()?
+        };
         if amount > from_balance {
             return Err(
                 TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
@@ -718,15 +728,18 @@ impl TIP20Token {
             .checked_sub(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        self.set_balance(from, new_from_balance)?;
+        {
+            let balance_slot = self.balances.at_mut(from);
+            balance_slot.write(new_from_balance)?;
+        }
 
         if to != Address::ZERO {
-            let to_balance = self.get_balance(to)?;
+            let balance_slot = self.balances.at_mut(to);
+            let to_balance = balance_slot.read()?;
             let new_to_balance = to_balance
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-
-            self.set_balance(to, new_to_balance)?;
+            balance_slot.write(new_to_balance)?;
         }
 
         self.emit_event(TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }))
