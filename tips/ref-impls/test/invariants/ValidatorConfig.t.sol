@@ -295,6 +295,50 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @notice Handler for changing validator status by index (owner only)
+    /// @dev Tests TEMPO-VAL5 (owner can change status), TEMPO-VAL6 (status toggle)
+    function changeValidatorStatusByIndex(uint256 indexSeed, bool newStatus) external {
+        if (_ghostValidatorList.length == 0) return;
+
+        uint64 index = uint64(indexSeed % _ghostValidatorList.length);
+        address validatorAddr = _ghostValidatorList[index];
+
+        vm.startPrank(_ghostOwner);
+        try validatorConfig.changeValidatorStatusByIndex(index, newStatus) {
+            vm.stopPrank();
+
+            // Update ghost state
+            _ghostValidatorActive[validatorAddr] = newStatus;
+
+            // TEMPO-VAL6: Verify status changed
+            IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
+            for (uint256 i = 0; i < validators.length; i++) {
+                if (validators[i].validatorAddress == validatorAddr) {
+                    assertEq(
+                        validators[i].active, newStatus, "TEMPO-VAL6: Status should be updated"
+                    );
+                    break;
+                }
+            }
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "CHANGE_STATUS_BY_INDEX: index=",
+                        vm.toString(index),
+                        " (",
+                        vm.toString(validatorAddr),
+                        ") -> ",
+                        newStatus ? "ACTIVE" : "INACTIVE"
+                    )
+                );
+            }
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            _assertKnownValidatorError(reason);
+        }
+    }
+
     /// @notice Handler for validator trying to change own status (should fail)
     /// @dev Tests TEMPO-VAL5 (only owner can change status)
     function tryValidatorChangeOwnStatus(uint256 validatorSeed) external {
