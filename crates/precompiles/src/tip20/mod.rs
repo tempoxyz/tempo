@@ -703,6 +703,11 @@ impl TIP20Token {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
+    /// Refunds spending limits for access keys after a fee refund.
+    pub fn refund_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
+        AccountKeychain::new().refund_spending_limit(from, self.address, amount)
+    }
+
     fn _transfer(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
@@ -797,6 +802,10 @@ impl TIP20Token {
         // Exit early if there is no refund
         if refund.is_zero() {
             return Ok(());
+        }
+
+        if self.storage.spec().is_t2() {
+            self.refund_spending_limit(to, refund)?;
         }
 
         // Update rewards for the recipient and get their reward recipient
