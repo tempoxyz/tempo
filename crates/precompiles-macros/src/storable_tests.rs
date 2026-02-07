@@ -12,15 +12,6 @@ const FIXED_BYTES_SIZES: &[usize] = &[
     27, 28, 29, 30, 31, 32,
 ];
 
-fn proptest_block(cases: u32, tests: Vec<TokenStream>) -> TokenStream {
-    quote! {
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(#cases))]
-            #(#tests)*
-        }
-    }
-}
-
 /// Generate all storage type tests.
 ///
 /// This function generates:
