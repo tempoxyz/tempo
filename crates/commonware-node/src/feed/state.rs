@@ -137,29 +137,34 @@ impl FeedStateHandle {
         start_epoch: u64,
         full: bool,
     ) -> IdentityTransitionResponse {
-        // Filter transitions to only include those at or before start_epoch
+        // Filter transitions to only include those strictly before start_epoch.
+        // A transition at epoch E means the DKG at E produced a new key that
+        // becomes active at E+1, so only transitions at epochs < start_epoch
+        // are relevant history. This matches the non-cached walk which starts
+        // at search_epoch = start_epoch - 1.
         let transitions: Vec<_> = cache
             .transitions
             .iter()
-            .filter(|t| t.transition_epoch <= start_epoch)
+            .filter(|t| t.transition_epoch < start_epoch)
             .cloned()
             .collect();
 
         // Determine identity at start_epoch:
         // - If start_epoch == from_epoch, use cached identity
-        // - Otherwise, find the first transition AFTER start_epoch and use its old_identity
-        //   (that was the identity at start_epoch before that transition happened)
-        // - If no transition after start_epoch, identity hasn't changed since from_epoch
+        // - Otherwise, find the first transition AT OR AFTER start_epoch and use
+        //   its old_identity (that was the identity active during start_epoch,
+        //   before the transition took effect at transition_epoch + 1)
+        // - If no such transition, identity hasn't changed since from_epoch
         let identity = if start_epoch == cache.from_epoch {
             cache.identity.clone()
         } else {
-            // Find the immediate next transition AFTER start_epoch.
-            // Transitions are stored in descending order, so we need the
-            // *last* match (smallest epoch > start_epoch), not the first.
+            // Find the immediate next transition at or after start_epoch.
+            // Transitions are stored in descending order, so we use rfind
+            // to get the smallest epoch >= start_epoch.
             cache
                 .transitions
                 .iter()
-                .rfind(|t| t.transition_epoch > start_epoch)
+                .rfind(|t| t.transition_epoch >= start_epoch)
                 .map(|t| t.old_identity.clone())
                 .unwrap_or_else(|| cache.identity.clone())
         };
@@ -574,10 +579,10 @@ mod tests {
         );
     }
 
-    /// Invariant: serve_from_cache must filter transitions to only those at or
-    /// before the queried epoch.
+    /// Invariant: serve_from_cache must filter transitions to only those strictly
+    /// before the queried epoch, matching the non-cached walk semantics.
     #[test]
-    fn serve_from_cache_filters_transitions_correctly() {
+    fn serve_from_cache_filters_transitions_strictly_before_start_epoch() {
         let handle = FeedStateHandle::new();
 
         let cache = make_cache(
@@ -591,7 +596,7 @@ mod tests {
             ],
         );
 
-        // Query epoch 60: should only include transitions at epochs <= 60
+        // Query epoch 60: should only include transitions at epochs < 60
         let resp = handle.serve_from_cache(&cache, 60, true);
         let epochs: Vec<u64> = resp
             .transitions
@@ -600,9 +605,65 @@ mod tests {
             .collect();
         assert_eq!(epochs, vec![50, 25]);
 
+        // Query at exactly a transition epoch (50): transition at 50 should NOT
+        // be in the returned list (it's the one that *set* the identity for this
+        // epoch, not a prior transition)
+        let resp = handle.serve_from_cache(&cache, 50, true);
+        let epochs: Vec<u64> = resp
+            .transitions
+            .iter()
+            .map(|t| t.transition_epoch)
+            .collect();
+        assert_eq!(
+            epochs,
+            vec![25],
+            "transition at exactly start_epoch should be excluded"
+        );
+
         // Non-full query should return at most 1 transition
         let resp = handle.serve_from_cache(&cache, 60, false);
         assert!(resp.transitions.len() <= 1);
+    }
+
+    /// Invariant: when querying at exactly a transition epoch, the returned identity
+    /// must be the OLD identity (the one active during that epoch), not the new one.
+    #[test]
+    fn serve_from_cache_at_transition_epoch_returns_old_identity() {
+        let handle = FeedStateHandle::new();
+
+        let cache = make_cache(
+            120,
+            0,
+            "key_100",
+            vec![
+                make_transition(100, "key_50", "key_100"),
+                make_transition(50, "key_25", "key_50"),
+                make_transition(25, "key_genesis", "key_25"),
+            ],
+        );
+
+        // Query at epoch 50 (exactly where a DKG happened):
+        // The DKG at epoch 50 produced key_50, but it becomes active at epoch 51.
+        // During epoch 50, the active identity is still key_25.
+        let resp = handle.serve_from_cache(&cache, 50, true);
+        assert_eq!(
+            resp.identity, "key_25",
+            "at exactly transition_epoch=50, the active identity is key_25 (old)"
+        );
+
+        // Query at epoch 100:
+        let resp = handle.serve_from_cache(&cache, 100, true);
+        assert_eq!(
+            resp.identity, "key_50",
+            "at exactly transition_epoch=100, the active identity is key_50 (old)"
+        );
+
+        // Query at epoch 25:
+        let resp = handle.serve_from_cache(&cache, 25, true);
+        assert_eq!(
+            resp.identity, "key_genesis",
+            "at exactly transition_epoch=25, the active identity is key_genesis (old)"
+        );
     }
 
     #[test]
