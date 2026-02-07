@@ -593,7 +593,11 @@ mod tests {
 
         // Query epoch 60: should only include transitions at epochs <= 60
         let resp = handle.serve_from_cache(&cache, 60, true);
-        let epochs: Vec<u64> = resp.transitions.iter().map(|t| t.transition_epoch).collect();
+        let epochs: Vec<u64> = resp
+            .transitions
+            .iter()
+            .map(|t| t.transition_epoch)
+            .collect();
         assert_eq!(epochs, vec![50, 25]);
 
         // Non-full query should return at most 1 transition
