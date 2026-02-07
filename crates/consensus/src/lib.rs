@@ -172,9 +172,12 @@ impl Consensus<Block> for TempoConsensus {
 
         // Validate that the sequence of end-of-block system txs is correct
         for (tx, expected_to) in end_of_block_system_txs.into_iter().zip(SYSTEM_TX_ADDRESSES) {
-            if tx.to().unwrap_or_default() != expected_to {
+            // Must be a Call (not Create) and to the expected address
+            // Using tx.to() which returns None for Create, then comparing to Some(expected_to)
+            // This explicitly rejects TxKind::Create transactions
+            if tx.to() != Some(expected_to) {
                 return Err(ConsensusError::Other(
-                    "Invalid end-of-block system tx order".to_string(),
+                    "Invalid end-of-block system tx: must be Call to expected address".to_string(),
                 ));
             }
         }
@@ -771,7 +774,356 @@ mod tests {
         assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
             err.to_string()
-                .contains("Invalid end-of-block system tx order")
+                .contains("must be Call to expected address"),
+            "Error should indicate wrong target address"
+        );
+    }
+
+    // ==========================================================================
+    // SECURITY TESTS: Malformed System Transaction Rejection
+    // ==========================================================================
+    // These tests verify that consensus correctly rejects malformed system
+    // transactions before they reach execution. A system transaction is
+    // identified by having TEMPO_SYSTEM_TX_SIGNATURE (all zeros), but must also
+    // satisfy validation rules (zero gas, zero value, correct chain_id, etc).
+    //
+    // Issue context: Ralph deep mode flagged potential issue where malformed
+    // system txs might bypass validation. Local analysis suggests consensus
+    // always rejects these before execution, but we add comprehensive tests
+    // to confirm.
+    // ==========================================================================
+
+    /// Helper to create a malformed system tx (has system signature but invalid fields)
+    fn create_malformed_system_tx(
+        chain_id: Option<u64>,
+        nonce: u64,
+        gas_price: u128,
+        gas_limit: u64,
+        to: TxKind,
+        value: U256,
+    ) -> TempoTxEnvelope {
+        let tx = TxLegacy {
+            chain_id,
+            nonce,
+            gas_price,
+            gas_limit,
+            to,
+            value,
+            input: Default::default(),
+        };
+        // Use system signature to make it look like a system tx
+        let signature = Signature::new(U256::ZERO, U256::ZERO, false);
+        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature))
+    }
+
+    #[test]
+    fn test_malformed_system_tx_wrong_chain_id_none() {
+        // System tx with chain_id = None should be rejected
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+
+        let malformed_tx = create_malformed_system_tx(
+            None, // Wrong: should be Some(chain_id)
+            0,
+            0,
+            0,
+            TxKind::Call(SYSTEM_TX_ADDRESSES[0]),
+            U256::ZERO,
+        );
+
+        assert!(
+            malformed_tx.is_system_tx(),
+            "Should be detected as system tx due to signature"
+        );
+        assert!(
+            !malformed_tx.is_valid_system_tx(ANDANTINO.chain().id()),
+            "Should NOT be valid system tx due to missing chain_id"
+        );
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![malformed_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert!(
+            result.is_err(),
+            "Consensus MUST reject system tx with chain_id=None"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("Invalid system transaction"),
+            "Error should indicate invalid system transaction"
+        );
+    }
+
+    #[test]
+    fn test_malformed_system_tx_wrong_chain_id_value() {
+        // System tx with wrong chain_id value should be rejected
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let wrong_chain_id = ANDANTINO.chain().id() + 1;
+
+        let malformed_tx = create_malformed_system_tx(
+            Some(wrong_chain_id), // Wrong chain_id
+            0,
+            0,
+            0,
+            TxKind::Call(SYSTEM_TX_ADDRESSES[0]),
+            U256::ZERO,
+        );
+
+        assert!(malformed_tx.is_system_tx());
+        assert!(!malformed_tx.is_valid_system_tx(ANDANTINO.chain().id()));
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![malformed_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert!(
+            result.is_err(),
+            "Consensus MUST reject system tx with wrong chain_id"
+        );
+    }
+
+    #[test]
+    fn test_malformed_system_tx_nonzero_nonce() {
+        // System tx with nonce > 0 should be rejected
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let chain_id = ANDANTINO.chain().id();
+
+        let malformed_tx = create_malformed_system_tx(
+            Some(chain_id),
+            1, // Wrong: should be 0
+            0,
+            0,
+            TxKind::Call(SYSTEM_TX_ADDRESSES[0]),
+            U256::ZERO,
+        );
+
+        assert!(malformed_tx.is_system_tx());
+        assert!(!malformed_tx.is_valid_system_tx(chain_id));
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![malformed_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert!(
+            result.is_err(),
+            "Consensus MUST reject system tx with non-zero nonce"
+        );
+    }
+
+    #[test]
+    fn test_malformed_system_tx_nonzero_gas_limit() {
+        // System tx with gas_limit > 0 should be rejected
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let chain_id = ANDANTINO.chain().id();
+
+        let malformed_tx = create_malformed_system_tx(
+            Some(chain_id),
+            0,
+            0,
+            21000, // Wrong: should be 0
+            TxKind::Call(SYSTEM_TX_ADDRESSES[0]),
+            U256::ZERO,
+        );
+
+        assert!(malformed_tx.is_system_tx());
+        assert!(!malformed_tx.is_valid_system_tx(chain_id));
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![malformed_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert!(
+            result.is_err(),
+            "Consensus MUST reject system tx with non-zero gas_limit"
+        );
+    }
+
+    #[test]
+    fn test_malformed_system_tx_nonzero_gas_price() {
+        // System tx with gas_price > 0 should be rejected
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let chain_id = ANDANTINO.chain().id();
+
+        let malformed_tx = create_malformed_system_tx(
+            Some(chain_id),
+            0,
+            1_000_000_000, // Wrong: should be 0
+            0,
+            TxKind::Call(SYSTEM_TX_ADDRESSES[0]),
+            U256::ZERO,
+        );
+
+        assert!(malformed_tx.is_system_tx());
+        assert!(!malformed_tx.is_valid_system_tx(chain_id));
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![malformed_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert!(
+            result.is_err(),
+            "Consensus MUST reject system tx with non-zero gas_price"
+        );
+    }
+
+    #[test]
+    fn test_malformed_system_tx_nonzero_value() {
+        // System tx with value > 0 should be rejected
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let chain_id = ANDANTINO.chain().id();
+
+        let malformed_tx = create_malformed_system_tx(
+            Some(chain_id),
+            0,
+            0,
+            0,
+            TxKind::Call(SYSTEM_TX_ADDRESSES[0]),
+            U256::from(1), // Wrong: should be 0
+        );
+
+        assert!(malformed_tx.is_system_tx());
+        assert!(!malformed_tx.is_valid_system_tx(chain_id));
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![malformed_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert!(
+            result.is_err(),
+            "Consensus MUST reject system tx with non-zero value"
+        );
+    }
+
+    #[test]
+    fn test_malformed_system_tx_create_instead_of_call() {
+        // System tx with TxKind::Create should be rejected by consensus.
+        // Previously there was a gap where tx.to().unwrap_or_default() would
+        // return Address::ZERO for Create, matching SYSTEM_TX_ADDRESSES[0].
+        // Now we use tx.to() != Some(expected_to) which correctly rejects Create.
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let chain_id = ANDANTINO.chain().id();
+
+        let malformed_tx = create_malformed_system_tx(
+            Some(chain_id),
+            0,
+            0,
+            0,
+            TxKind::Create, // Wrong: should be Call
+            U256::ZERO,
+        );
+
+        assert!(malformed_tx.is_system_tx());
+        // Note: is_valid_system_tx doesn't check to field, but end-of-block
+        // validation now catches this
+        assert!(
+            malformed_tx.is_valid_system_tx(chain_id),
+            "is_valid_system_tx only checks gas/value/nonce/chain_id"
+        );
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![malformed_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert!(
+            result.is_err(),
+            "Consensus MUST reject system tx with Create instead of Call"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be Call to expected address"),
+            "Error should indicate Create is not allowed"
+        );
+    }
+
+    #[test]
+    fn test_malformed_system_tx_multiple_violations() {
+        // System tx with multiple invalid fields should be rejected
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+
+        let malformed_tx = create_malformed_system_tx(
+            Some(9999), // Wrong chain_id
+            5,          // Wrong nonce
+            1000,       // Wrong gas_price
+            50000,      // Wrong gas_limit
+            TxKind::Call(SYSTEM_TX_ADDRESSES[0]),
+            U256::from(100), // Wrong value
+        );
+
+        assert!(malformed_tx.is_system_tx());
+        assert!(!malformed_tx.is_valid_system_tx(ANDANTINO.chain().id()));
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![malformed_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert!(
+            result.is_err(),
+            "Consensus MUST reject system tx with multiple violations"
+        );
+    }
+
+    #[test]
+    fn test_malformed_system_tx_in_middle_of_block() {
+        // Malformed system tx in middle of block (not at end) should be rejected
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let chain_id = ANDANTINO.chain().id();
+
+        let user_tx = create_tx(chain_id);
+        let malformed_tx = create_malformed_system_tx(
+            Some(chain_id),
+            0,
+            0,
+            21000, // Invalid: non-zero gas
+            TxKind::Call(Address::repeat_byte(0x42)),
+            U256::ZERO,
+        );
+        let valid_system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        // Malformed system tx in middle, valid at end
+        let block = create_valid_block(header, vec![malformed_tx, user_tx, valid_system_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert!(
+            result.is_err(),
+            "Consensus MUST reject block with malformed system tx anywhere in block"
         );
     }
 }
