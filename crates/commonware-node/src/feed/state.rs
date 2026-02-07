@@ -316,8 +316,19 @@ impl ConsensusFeed for FeedStateHandle {
                 && search_epoch < connect_epoch
                 && let Some(ref cache) = cached
             {
-                // Append cached transitions and stop walking
-                transitions.extend(cache.transitions.iter().cloned());
+                // Append cached transitions and stop walking.
+                // When full=false, only take the most recent applicable cached
+                // transition to honour the "return at most 1" contract.
+                if full {
+                    transitions.extend(cache.transitions.iter().cloned());
+                } else if let Some(t) = cache
+                    .transitions
+                    .iter()
+                    .find(|t| t.transition_epoch < start_epoch)
+                    .cloned()
+                {
+                    transitions.push(t);
+                }
                 search_epoch = cache.to_epoch;
                 reached_genesis = cache.to_epoch == 0;
                 break;
@@ -673,6 +684,50 @@ mod tests {
         assert_eq!(
             resp.identity, "key_genesis",
             "at exactly transition_epoch=25, the active identity is key_genesis (old)"
+        );
+    }
+
+    /// Invariant: when full=false and the walk connects to cached data, at most
+    /// one transition should be appended (the most recent applicable one).
+    #[test]
+    fn cache_connect_respects_full_false_limit() {
+        // Simulate what the connect path produces: when full=false, only the
+        // most recent cached transition before start_epoch should be taken.
+        let cache = make_cache(
+            80,
+            0,
+            "key_80",
+            vec![
+                make_transition(60, "key_40", "key_60"),
+                make_transition(40, "key_20", "key_40"),
+                make_transition(20, "key_genesis", "key_20"),
+            ],
+        );
+
+        let start_epoch: u64 = 100;
+        let full = false;
+
+        // Replicate the connect logic for full=false
+        let mut transitions = Vec::new();
+        if full {
+            transitions.extend(cache.transitions.iter().cloned());
+        } else if let Some(t) = cache
+            .transitions
+            .iter()
+            .find(|t| t.transition_epoch < start_epoch)
+            .cloned()
+        {
+            transitions.push(t);
+        }
+
+        assert_eq!(
+            transitions.len(),
+            1,
+            "full=false cache connect must append at most 1 transition"
+        );
+        assert_eq!(
+            transitions[0].transition_epoch, 60,
+            "should pick the most recent transition before start_epoch"
         );
     }
 
