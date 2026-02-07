@@ -3,7 +3,13 @@ use crate::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use alloy_eips::eip7840::BlobParams;
-use alloy_evm::eth::spec::EthExecutorSpec;
+use alloy_evm::{
+    eth::spec::EthExecutorSpec,
+    revm::interpreter::gas::{
+        COLD_SLOAD_COST as COLD_SLOAD, SSTORE_SET, WARM_SSTORE_RESET,
+        WARM_STORAGE_READ_COST as WARM_SLOAD,
+    },
+};
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use reth_chainspec::{
@@ -33,6 +39,14 @@ pub const TEMPO_T1_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
+
+/// Gas cost for using an existing 2D nonce key (cold SLOAD + 2*warm SLOAD + warm SSTORE reset)
+pub const TEMPO_T1_EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD + WARM_SSTORE_RESET;
+pub const TEMPO_T2_EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD + 2 * WARM_SLOAD + WARM_SSTORE_RESET;
+
+/// Gas cost for using a new 2D nonce key (cold SLOAD + 2*warm SLOAD + SSTORE set for 0 -> non-zero)
+pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + SSTORE_SET;
+pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + 2 * WARM_SLOAD + SSTORE_SET;
 
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
