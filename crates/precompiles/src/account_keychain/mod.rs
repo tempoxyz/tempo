@@ -533,6 +533,50 @@ impl AccountKeychain {
         // Verify and update spending limits for this access key
         self.verify_and_update_spending(account, transaction_key, token, approval_increase)
     }
+
+    /// Authorize a token approval with lazy old-approval loading.
+    ///
+    /// This variant avoids reading the current allowance unless spending limits
+    /// actually need to be enforced (i.e., when using a secondary key and
+    /// `account == tx_origin`).
+    pub fn authorize_approve_lazy<F>(
+        &mut self,
+        account: Address,
+        token: Address,
+        new_approval: U256,
+        old_approval: F,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Result<U256>,
+    {
+        // Get the transaction key for this account
+        let transaction_key = self.transaction_key.t_read()?;
+
+        // If using main key (Address::ZERO), no spending limits apply
+        if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+
+        // Only apply spending limits if the caller is the tx origin.
+        let tx_origin = self.tx_origin.t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+
+        // Load old approval only when needed.
+        let old_approval = old_approval()?;
+
+        // Calculate the increase in approval (only deduct if increasing)
+        let approval_increase = new_approval.saturating_sub(old_approval);
+
+        // Only check spending limits if there's an increase in approval
+        if approval_increase.is_zero() {
+            return Ok(());
+        }
+
+        // Verify and update spending limits for this access key
+        self.verify_and_update_spending(account, transaction_key, token, approval_increase)
+    }
 }
 
 #[cfg(test)]
