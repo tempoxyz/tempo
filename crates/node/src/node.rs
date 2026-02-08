@@ -8,23 +8,23 @@ use crate::{
 };
 use alloy_primitives::B256;
 use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_ethereum::network::{NetworkHandle, PeersInfo};
 use reth_evm::revm::primitives::Address;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodePrimitives, NodeTypes,
-    PayloadAttributesBuilder, PayloadTypes,
+    PayloadAttributesBuilder, PayloadTypes, PrimitivesTy, TxTy,
 };
 use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
+        NetworkBuilder, PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder,
         NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
     },
 };
-use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::{Identity, RethRpcModule};
@@ -33,7 +33,10 @@ use reth_rpc_eth_api::{
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
 use reth_tracing::tracing::{debug, info};
-use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
+use reth_transaction_pool::{
+    PoolPooledTx, PoolTransaction, TransactionPool, TransactionValidationTaskExecutor,
+    blobstore::InMemoryBlobStore,
+};
 use std::{default::Default, sync::Arc};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
@@ -49,6 +52,14 @@ use tempo_transaction_pool::{
 
 /// Default maximum allowed `valid_after` offset for AA txs (1 hour).
 pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 3600;
+
+/// Maximum byte size for a single pooled transactions response (2 MiB).
+///
+/// This limits the raw byte length of transaction messages received over the eth wire protocol,
+/// enforcing a size check before decoding. Analogous to Ethereum's `MAX_MESSAGE_SIZE` but applied
+/// as a soft limit on pooled transaction responses to bound memory usage during transaction
+/// fetching.
+pub const TEMPO_SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESPONSE: usize = 2 * 1024 * 1024;
 
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
@@ -118,7 +129,7 @@ impl TempoNode {
         Node,
         TempoPoolBuilder,
         BasicPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
-        EthereumNetworkBuilder,
+        TempoNetworkBuilder,
         TempoExecutorBuilder,
         TempoConsensusBuilder,
     >
@@ -130,7 +141,7 @@ impl TempoNode {
             .pool(pool_builder)
             .executor(TempoExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
-            .network(EthereumNetworkBuilder::default())
+            .network(TempoNetworkBuilder)
             .consensus(TempoConsensusBuilder::default())
     }
 
@@ -258,7 +269,7 @@ where
         N,
         TempoPoolBuilder,
         BasicPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
-        EthereumNetworkBuilder,
+        TempoNetworkBuilder,
         TempoExecutorBuilder,
         TempoConsensusBuilder,
     >;
@@ -359,6 +370,52 @@ where
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
         Ok(TempoConsensus::new(ctx.chain_spec()))
+    }
+}
+
+/// Tempo network builder that configures the P2P network with Tempo-specific
+/// transaction size limits.
+///
+/// Replaces `EthereumNetworkBuilder` to enforce tighter soft limits on pooled
+/// transaction response sizes, bounding memory usage during transaction fetching
+/// and preventing oversized encoded transactions from being processed.
+#[derive(Debug, Default, Clone, Copy)]
+#[non_exhaustive]
+pub struct TempoNetworkBuilder;
+
+impl<Node, Pool> NetworkBuilder<Node, Pool> for TempoNetworkBuilder
+where
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: reth_ethereum::chainspec::Hardforks>>,
+    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TxTy<Node::Types>>>
+        + Unpin
+        + 'static,
+{
+    type Network = NetworkHandle<
+        reth_ethereum::network::primitives::BasicNetworkPrimitives<
+            PrimitivesTy<Node::Types>,
+            PoolPooledTx<Pool>,
+        >,
+    >;
+
+    async fn build_network(
+        self,
+        ctx: &BuilderContext<Node>,
+        pool: Pool,
+    ) -> eyre::Result<Self::Network> {
+        let network = ctx.network_builder().await?;
+        let mut tx_config = ctx.config().network.transactions_manager_config();
+        tx_config
+            .transaction_fetcher_config
+            .soft_limit_byte_size_pooled_transactions_response =
+            TEMPO_SOFT_LIMIT_BYTE_SIZE_POOLED_TRANSACTIONS_RESPONSE;
+        let handle = ctx.start_network_with(
+            network,
+            pool,
+            tx_config,
+            ctx.config().network.tx_propagation_policy,
+        );
+        info!(target: "reth::cli", enode=%handle.local_node_record(), "Tempo P2P networking initialized");
+        Ok(handle)
     }
 }
 
