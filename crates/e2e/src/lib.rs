@@ -368,6 +368,28 @@ pub async fn link_validators<TClock: commonware_runtime::Clock>(
     }
 }
 
+/// Waits until any single validator reaches the target marshal height.
+pub async fn wait_for_height(context: &deterministic::Context, prefix: &str, target_height: u64) {
+    loop {
+        let metrics = context.encode();
+        for line in metrics.lines() {
+            if !line.starts_with(prefix) {
+                continue;
+            }
+            let mut parts = line.split_whitespace();
+            let metric= parts.next().unwrap();
+            let value = parts.next().unwrap();
+            if metric.ends_with("_marshal_processed_height") {
+                let height = value.parse::<u64>().unwrap();
+                if height >= target_height {
+                    return;
+                }
+            }
+        }
+        context.sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Get the number of pipeline runs from the Prometheus metrics recorder
 pub fn get_pipeline_runs(recorder: &PrometheusRecorder) -> u64 {
     recorder

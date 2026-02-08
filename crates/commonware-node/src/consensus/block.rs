@@ -20,7 +20,8 @@ use crate::consensus::Digest;
 // Sealed because of the frequent accesses to the hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
-pub(crate) struct Block(SealedBlock<tempo_primitives::Block>);
+#[allow(unnameable_types)]
+pub struct Block(SealedBlock<tempo_primitives::Block>);
 
 impl Block {
     pub(crate) fn from_execution_block(block: SealedBlock<tempo_primitives::Block>) -> Self {

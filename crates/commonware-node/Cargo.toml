@@ -21,8 +21,10 @@ tempo-precompiles.workspace = true
 tempo-telemetry-util.workspace = true
 
 alloy-consensus.workspace = true
+alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
+alloy-rpc-types-eth.workspace = true
 alloy-rlp.workspace = true
 
 axum.workspace = true
@@ -37,6 +39,7 @@ commonware-macros.workspace = true
 commonware-math.workspace = true
 commonware-p2p.workspace = true
 commonware-parallel.workspace = true
+commonware-resolver.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-storage.workspace = true
 commonware-utils.workspace = true
@@ -44,6 +47,7 @@ commonware-utils.workspace = true
 eyre.workspace = true
 futures.workspace = true
 governor.workspace = true
+jsonrpsee = { workspace = true, features = ["http-client", "ws-client"] }
 indexmap.workspace = true
 jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true

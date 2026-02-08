@@ -20,7 +20,7 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt, future::BoxFuture};
-use reth_db::mdbx::DatabaseEnv;
+use reth_db::mdbx::{DatabaseEnv, GIGABYTE};
 use reth_ethereum::{
     evm::{
         primitives::EvmEnv,
@@ -689,6 +689,14 @@ impl std::fmt::Debug for ExecutionNode {
 
 pub fn genesis() -> Genesis {
     serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap()
+}
+
+/// Returns MDBX [`DatabaseArguments`] sized for tests (1 GB max instead of 8 TB).
+///
+/// The default 8 TB geometry exhausts process virtual-address space when
+/// many databases are open concurrently across parallel test threads.
+pub fn test_db_args() -> reth_db::mdbx::DatabaseArguments {
+    reth_db::mdbx::DatabaseArguments::default().with_geometry_max_size(Some(1 * GIGABYTE))
 }
 
 /// Launches a tempo execution node.
