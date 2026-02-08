@@ -220,6 +220,7 @@ itertools = "0.14.0"
 jiff = { version = "0.2.15", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.0"
+aws-lc-sys = "0.36.0"
 p256 = "0.13"
 parking_lot = "0.12.4"
 prometheus-client = "0.24.0"

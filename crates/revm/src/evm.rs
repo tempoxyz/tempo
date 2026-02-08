@@ -843,7 +843,7 @@ mod tests {
 
         let result1 = evm.transact_commit(tx_env1)?;
         assert!(result1.is_success());
-        assert_eq!(result1.gas_used(), 28_671);
+        assert_eq!(result1.gas_used(), 26_271);
 
         let ctx = &mut evm.ctx;
         let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
@@ -858,7 +858,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot, U256::from(97_132));
+        assert_eq!(slot, U256::from(97_372));
 
         // Second tx: two calls
         let tx2 = TxBuilder::new()
@@ -875,7 +875,7 @@ mod tests {
 
         let result2 = evm.transact_commit(tx_env2)?;
         assert!(result2.is_success());
-        assert_eq!(result2.gas_used(), 31_286);
+        assert_eq!(result2.gas_used(), 28_886);
 
         let ctx = &mut evm.ctx;
         let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
@@ -890,7 +890,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot, U256::from(94_003));
+        assert_eq!(slot, U256::from(94_483));
 
         Ok(())
     }
@@ -1520,7 +1520,7 @@ mod tests {
         // With T1 TIP-1000: new account cost (250k) + base intrinsic (21k) + WebAuthn (~3.4k) + calldata
         let gas_used = result.gas_used();
         assert_eq!(
-            gas_used, 278738,
+            gas_used, 276338,
             "T1 baseline identity call gas should be exact"
         );
 
@@ -1565,7 +1565,7 @@ mod tests {
         // With TIP-1000: new account (250k) + SSTORE to new slot (250k) + base costs
         let gas_used = result.gas_used();
         assert_eq!(
-            gas_used, 530863,
+            gas_used, 528463,
             "T1 SSTORE to new slot gas should be exact"
         );
 
@@ -1619,7 +1619,7 @@ mod tests {
         // But still has new account cost (250k) + cold SLOAD (2100) + warm SSTORE reset (~2900)
         let gas_used = result.gas_used();
         assert_eq!(
-            gas_used, 283663,
+            gas_used, 281263,
             "T1 SSTORE to existing slot gas should be exact"
         );
 
@@ -1666,7 +1666,7 @@ mod tests {
 
         // With TIP-1000: new account (250k) + 2 SSTOREs to new slots (2 * 250k) = 750k + base
         let gas_used = result.gas_used();
-        assert_eq!(gas_used, 783069, "T1 multiple SSTOREs gas should be exact");
+        assert_eq!(gas_used, 780669, "T1 multiple SSTOREs gas should be exact");
 
         Ok(())
     }
@@ -1698,7 +1698,7 @@ mod tests {
 
         // With TIP-1000: CREATE cost (500k) + new account for sender (250k) + base costs
         let gas_used = result.gas_used();
-        assert_eq!(gas_used, 778720, "T1 CREATE contract gas should be exact");
+        assert_eq!(gas_used, 776320, "T1 CREATE contract gas should be exact");
 
         Ok(())
     }
@@ -1741,8 +1741,8 @@ mod tests {
         let gas_triple = result2.gas_used();
 
         // Three calls should cost more than single call
-        assert_eq!(gas_single, 278738, "T1 single call gas should be exact");
-        assert_eq!(gas_triple, 284102, "T1 triple call gas should be exact");
+        assert_eq!(gas_single, 276338, "T1 single call gas should be exact");
+        assert_eq!(gas_triple, 281702, "T1 triple call gas should be exact");
         assert!(
             gas_triple > gas_single,
             "3 calls should cost more than 1 call"
@@ -1798,7 +1798,7 @@ mod tests {
 
         // T1 costs: new account (250k) + cold SLOAD (2100) + warm SLOAD (100) + cold account (~2.6k)
         let gas_used = result.gas_used();
-        assert_eq!(gas_used, 280866, "T1 SLOAD cold/warm gas should be exact");
+        assert_eq!(gas_used, 278466, "T1 SLOAD cold/warm gas should be exact");
 
         Ok(())
     }

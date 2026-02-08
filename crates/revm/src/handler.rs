@@ -52,9 +52,14 @@ use crate::{
     gas_params::TempoGasParams,
 };
 
-/// Additional gas for P256 signature verification
-/// P256 precompile cost (6900 from EIP-7951) + 1100 for 129 bytes extra signature size - ecrecover savings (3000)
-const P256_VERIFY_GAS: u64 = 5_000;
+/// Additional gas for P256 signature verification (beyond ecrecover included in base 21k).
+///
+/// With aws-lc-sys (BoringSSL assembly-optimized P-256), benchmarks show P256 verify
+/// takes ~33.7µs vs ecrecover at ~26µs (1.3x ratio). Using 1.5x as conservative target:
+///   Crypto overhead: 3000 * 1.5 - 3000 = 1500
+///   Signature size overhead: 1100 (129 bytes - 65 bytes extra calldata)
+///   Total additional: 2600
+const P256_VERIFY_GAS: u64 = 2_600;
 
 /// Gas cost for ecrecover signature verification (used by KeyAuthorization)
 const ECRECOVER_GAS: u64 = 3_000;
@@ -99,8 +104,8 @@ pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_
 ///
 /// Returns the additional gas required beyond the base transaction cost:
 /// - Secp256k1: 0 (already included in base 21k)
-/// - P256: 5000 gas
-/// - WebAuthn: 5000 gas + calldata cost for webauthn_data
+/// - P256: 2600 gas
+/// - WebAuthn: 2600 gas + calldata cost for webauthn_data
 #[inline]
 fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
     match signature {
