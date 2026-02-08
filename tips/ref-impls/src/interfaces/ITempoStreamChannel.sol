@@ -110,7 +110,9 @@ interface ITempoStreamChannel {
         uint256 refundedToPayer
     );
 
-    event CloseRequestCancelled(bytes32 indexed channelId, address indexed payer, address indexed payee);
+    event CloseRequestCancelled(
+        bytes32 indexed channelId, address indexed payer, address indexed payee
+    );
 
     event ChannelExpired(bytes32 indexed channelId, address indexed payer, address indexed payee);
 

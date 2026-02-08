@@ -90,7 +90,9 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
         uint256 refundedToPayer
     );
 
-    event CloseRequestCancelled(bytes32 indexed channelId, address indexed payer, address indexed payee);
+    event CloseRequestCancelled(
+        bytes32 indexed channelId, address indexed payer, address indexed payee
+    );
 
     event ChannelExpired(bytes32 indexed channelId, address indexed payer, address indexed payee);
 
@@ -426,9 +428,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
         returns (bytes32)
     {
         return keccak256(
-            abi.encode(
-                payer, payee, token, salt, authorizedSigner, address(this), block.chainid
-            )
+            abi.encode(payer, payee, token, salt, authorizedSigner, address(this), block.chainid)
         );
     }
 
