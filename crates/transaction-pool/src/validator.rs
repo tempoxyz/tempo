@@ -182,6 +182,31 @@ where
                 )));
             }
 
+            // If the key auth enforces spending limits, verify the fee token is covered.
+            // This prevents transactions from entering the pool that would fail at execution
+            // time when transfer_fee_pre_tx checks spending limits for the fee token.
+            if let Some(ref limits) = auth.limits {
+                let fee_token = transaction
+                    .inner()
+                    .fee_token()
+                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+                let fee_cost = transaction.fee_token_cost();
+
+                let fee_limit = limits
+                    .iter()
+                    .find(|l| l.token == fee_token)
+                    .map(|l| l.limit)
+                    .unwrap_or(U256::ZERO);
+
+                if fee_cost > fee_limit {
+                    return Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded {
+                        fee_token,
+                        cost: fee_cost,
+                        remaining: fee_limit,
+                    }));
+                }
+            }
+
             // KeyAuthorization is valid - skip keychain storage check (key will be authorized during execution)
             return Ok(Ok(()));
         }
@@ -1883,7 +1908,7 @@ mod tests {
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
         use tempo_primitives::transaction::{
-            KeyAuthorization, SignatureType, SignedKeyAuthorization, TempoTransaction,
+            KeyAuthorization, SignatureType, SignedKeyAuthorization, TempoTransaction, TokenLimit,
             tempo_transaction::Call,
             tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
             tt_signed::AASigned,
@@ -3062,6 +3087,204 @@ mod tests {
                 ),
                 "Wrong token spending limit should be rejected (fee token has 0 limit)"
             );
+        }
+
+        #[test]
+        fn test_key_authorization_limits_missing_fee_token_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let fee_token = address!("0000000000000000000000000000000000000002");
+            let different_token = address!("0000000000000000000000000000000000000099");
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![TokenLimit {
+                    token: different_token,
+                    limit: U256::MAX,
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            assert_eq!(
+                transaction
+                    .inner()
+                    .fee_token()
+                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN),
+                fee_token,
+                "test assumes fee token is 0x...0002"
+            );
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::SpendingLimitExceeded { .. })
+                ),
+                "KeyAuthorization with limits missing fee token should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_limits_insufficient_fee_token_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let fee_token = address!("0000000000000000000000000000000000000002");
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![TokenLimit {
+                    token: fee_token,
+                    limit: U256::from(1), // way too low for fee cost
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::SpendingLimitExceeded { .. })
+                ),
+                "KeyAuthorization with insufficient fee token limit should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_limits_sufficient_fee_token_accepted() -> Result<(), ProviderError>
+        {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let fee_token = address!("0000000000000000000000000000000000000002");
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![TokenLimit {
+                    token: fee_token,
+                    limit: U256::MAX,
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            assert!(
+                result.is_ok(),
+                "KeyAuthorization with sufficient fee token limit should be accepted, got: {result:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_unlimited_spending_accepted() -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None, // unlimited spending
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            assert!(
+                result.is_ok(),
+                "KeyAuthorization with unlimited spending should be accepted, got: {result:?}"
+            );
+            Ok(())
         }
     }
 
