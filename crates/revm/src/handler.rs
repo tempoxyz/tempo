@@ -2386,184 +2386,158 @@ mod tests {
 
     #[test]
     fn test_2d_nonce_gas_in_intrinsic_gas() {
-        use revm::handler::Handler;
+        use crate::gas_params::tempo_gas_params;
+        use revm::{context_interface::cfg::GasId, handler::Handler};
 
-        // Base intrinsic gas for AA tx with one call (no 2D nonce)
         const BASE_INTRINSIC_GAS: u64 = 21_000;
-        const SPEC: TempoHardfork = TempoHardfork::T0;
-        const NEW_NONCE_KEY_GAS: u64 = SPEC.gas_new_nonce_key();
-        const EXISTING_NONCE_KEY_GAS: u64 = SPEC.gas_existing_nonce_key();
 
-        // Test case 1: Protocol nonce (nonce_key == 0) - no additional gas
-        {
-            let db = CacheDB::new(EmptyDB::default());
-            let journal = Journal::new(db);
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.spec = SPEC;
-            let ctx = Context::mainnet()
-                .with_db(CacheDB::new(EmptyDB::default()))
-                .with_block(TempoBlockEnv::default())
-                .with_cfg(cfg)
-                .with_tx(TempoTxEnv {
-                    inner: revm::context::TxEnv {
-                        gas_limit: 1_000_000,
-                        ..Default::default()
-                    },
-                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-                        aa_calls: vec![Call {
-                            to: TxKind::Call(Address::random()),
-                            value: U256::ZERO,
-                            input: Bytes::new(),
-                        }],
-                        nonce_key: U256::ZERO, // Protocol nonce
-                        ..Default::default()
-                    })),
-                    ..Default::default()
-                })
-                .with_new_journal(journal);
+        for spec in [TempoHardfork::T0, TempoHardfork::T1, TempoHardfork::T2] {
+            let gas_params = tempo_gas_params(spec);
 
-            let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+            let make_evm = |nonce: u64, nonce_key: U256| {
+                let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+                let mut cfg = CfgEnv::<TempoHardfork>::default();
+                cfg.spec = spec;
+                cfg.gas_params = gas_params.clone();
+                let ctx = Context::mainnet()
+                    .with_db(CacheDB::new(EmptyDB::default()))
+                    .with_block(TempoBlockEnv::default())
+                    .with_cfg(cfg)
+                    .with_tx(TempoTxEnv {
+                        inner: revm::context::TxEnv {
+                            gas_limit: 1_000_000,
+                            nonce,
+                            ..Default::default()
+                        },
+                        tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                            aa_calls: vec![Call {
+                                to: TxKind::Call(Address::random()),
+                                value: U256::ZERO,
+                                input: Bytes::new(),
+                            }],
+                            nonce_key,
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    })
+                    .with_new_journal(journal);
+                TempoEvm::<_, ()>::new(ctx, ())
+            };
+
             let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-            let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
-            assert_eq!(gas.initial_gas, BASE_INTRINSIC_GAS);
-        }
 
-        // Test case 2: New 2D nonce key (nonce_key != 0, tx_nonce == 0)
-        {
-            let db = CacheDB::new(EmptyDB::default());
-            let journal = Journal::new(db);
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.spec = SPEC;
-            let ctx = Context::mainnet()
-                .with_db(CacheDB::new(EmptyDB::default()))
-                .with_block(TempoBlockEnv::default())
-                .with_cfg(cfg)
-                .with_tx(TempoTxEnv {
-                    inner: revm::context::TxEnv {
-                        gas_limit: 1_000_000,
-                        nonce: 0, // First use of this key
-                        ..Default::default()
-                    },
-                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-                        aa_calls: vec![Call {
-                            to: TxKind::Call(Address::random()),
-                            value: U256::ZERO,
-                            input: Bytes::new(),
-                        }],
-                        nonce_key: U256::from(42), // Non-zero nonce key
-                        ..Default::default()
-                    })),
-                    ..Default::default()
-                })
-                .with_new_journal(journal);
+            // Case 1: Protocol nonce (nonce_key == 0, nonce > 0) - no additional gas
+            {
+                let mut evm = make_evm(5, U256::ZERO);
+                let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+                assert_eq!(
+                    gas.initial_gas, BASE_INTRINSIC_GAS,
+                    "{spec:?}: protocol nonce (nonce_key=0, nonce>0) should have no extra gas"
+                );
+            }
 
-            let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-            let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-            let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
-            assert_eq!(gas.initial_gas, BASE_INTRINSIC_GAS + NEW_NONCE_KEY_GAS);
-        }
+            // Case 2: nonce_key != 0, nonce == 0
+            {
+                let expected = if spec.is_t1() {
+                    // T1+: any nonce==0 charges new_account_cost (250k)
+                    BASE_INTRINSIC_GAS + gas_params.get(GasId::new_account_cost())
+                } else {
+                    // T0: charges gas_new_nonce_key for new 2D key
+                    BASE_INTRINSIC_GAS + spec.gas_new_nonce_key()
+                };
+                let mut evm = make_evm(0, U256::from(42));
+                let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+                assert_eq!(
+                    gas.initial_gas, expected,
+                    "{spec:?}: nonce_key!=0, nonce==0 gas mismatch"
+                );
+            }
 
-        // Test case 3: Existing 2D nonce key (nonce_key != 0, tx_nonce > 0)
-        {
-            let db = CacheDB::new(EmptyDB::default());
-            let journal = Journal::new(db);
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.spec = SPEC;
-            let ctx = Context::mainnet()
-                .with_db(CacheDB::new(EmptyDB::default()))
-                .with_block(TempoBlockEnv::default())
-                .with_cfg(cfg)
-                .with_tx(TempoTxEnv {
-                    inner: revm::context::TxEnv {
-                        gas_limit: 1_000_000,
-                        nonce: 5, // Existing key (nonce > 0)
-                        ..Default::default()
-                    },
-                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-                        aa_calls: vec![Call {
-                            to: TxKind::Call(Address::random()),
-                            value: U256::ZERO,
-                            input: Bytes::new(),
-                        }],
-                        nonce_key: U256::from(42), // Non-zero nonce key
-                        ..Default::default()
-                    })),
-                    ..Default::default()
-                })
-                .with_new_journal(journal);
-
-            let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-            let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-            let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
-            assert_eq!(gas.initial_gas, BASE_INTRINSIC_GAS + EXISTING_NONCE_KEY_GAS);
+            // Case 3: Existing 2D nonce key (nonce_key != 0, nonce > 0)
+            {
+                let mut evm = make_evm(5, U256::from(42));
+                let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+                assert_eq!(
+                    gas.initial_gas,
+                    BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(),
+                    "{spec:?}: existing 2D nonce key gas mismatch"
+                );
+            }
         }
     }
 
     #[test]
     fn test_2d_nonce_gas_limit_validation() {
-        use revm::handler::Handler;
+        use crate::gas_params::tempo_gas_params;
+        use revm::{context_interface::cfg::GasId, handler::Handler};
 
-        const SPEC: TempoHardfork = TempoHardfork::T0;
         const BASE_INTRINSIC_GAS: u64 = 21_000;
-        const NEW_NONCE_KEY_GAS: u64 = SPEC.gas_new_nonce_key();
-        const EXISTING_NONCE_KEY_GAS: u64 = SPEC.gas_existing_nonce_key();
 
-        // Test cases: (gas_limit, nonce, expected_result)
-        // With new 2D nonce key (tx_nonce == 0), need BASE + NEW_NONCE_KEY_GAS
-        let cases = [
-            (BASE_INTRINSIC_GAS + 10_000, 0, false), // Insufficient for new 2D nonce
-            (BASE_INTRINSIC_GAS + NEW_NONCE_KEY_GAS, 0, true), // Exactly sufficient for new key
-            (BASE_INTRINSIC_GAS + EXISTING_NONCE_KEY_GAS, 1, true), // Exactly sufficient for existing key
-        ];
+        for spec in [TempoHardfork::T0, TempoHardfork::T1, TempoHardfork::T2] {
+            let gas_params = tempo_gas_params(spec);
 
-        for (gas_limit, nonce, should_succeed) in cases {
-            let db = CacheDB::new(EmptyDB::default());
-            let journal = Journal::new(db);
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.spec = SPEC;
-            let ctx = Context::mainnet()
-                .with_db(CacheDB::new(EmptyDB::default()))
-                .with_block(TempoBlockEnv::default())
-                .with_cfg(cfg)
-                .with_tx(TempoTxEnv {
-                    inner: revm::context::TxEnv {
-                        gas_limit,
-                        nonce,
-                        ..Default::default()
-                    },
-                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-                        aa_calls: vec![Call {
-                            to: TxKind::Call(Address::random()),
-                            value: U256::ZERO,
-                            input: Bytes::new(),
-                        }],
-                        nonce_key: U256::from(1), // Non-zero to trigger 2D nonce gas
-                        ..Default::default()
-                    })),
-                    ..Default::default()
-                })
-                .with_new_journal(journal);
-
-            let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-            let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-            let result = handler.validate_initial_tx_gas(&mut evm);
-
-            if should_succeed {
-                assert!(
-                    result.is_ok(),
-                    "gas_limit={gas_limit}, nonce={nonce}: expected success but got error"
-                );
+            // Build spec-specific test cases: (gas_limit, nonce, expected_result)
+            let nonce_zero_gas = if spec.is_t1() {
+                gas_params.get(GasId::new_account_cost())
             } else {
-                let err = result.expect_err(&format!(
-                    "gas_limit={gas_limit}, nonce={nonce}: should fail"
-                ));
-                assert!(
-                    matches!(
-                        err.as_invalid_tx_err(),
-                        Some(TempoInvalidTransaction::InsufficientGasForIntrinsicCost { .. })
-                    ),
-                    "Expected InsufficientGasForIntrinsicCost, got: {err:?}"
-                );
+                spec.gas_new_nonce_key()
+            };
+
+            let cases = [
+                (BASE_INTRINSIC_GAS + 10_000, 0, false), // Insufficient for nonce==0
+                (BASE_INTRINSIC_GAS + nonce_zero_gas, 0, true), // Exactly sufficient for nonce==0
+                (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Exactly sufficient for existing key
+            ];
+
+            for (gas_limit, nonce, should_succeed) in cases {
+                let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+                let mut cfg = CfgEnv::<TempoHardfork>::default();
+                cfg.spec = spec;
+                cfg.gas_params = gas_params.clone();
+                let ctx = Context::mainnet()
+                    .with_db(CacheDB::new(EmptyDB::default()))
+                    .with_block(TempoBlockEnv::default())
+                    .with_cfg(cfg)
+                    .with_tx(TempoTxEnv {
+                        inner: revm::context::TxEnv {
+                            gas_limit,
+                            nonce,
+                            ..Default::default()
+                        },
+                        tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                            aa_calls: vec![Call {
+                                to: TxKind::Call(Address::random()),
+                                value: U256::ZERO,
+                                input: Bytes::new(),
+                            }],
+                            nonce_key: U256::from(1), // Non-zero to trigger 2D nonce gas
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    })
+                    .with_new_journal(journal);
+
+                let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+                let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+                let result = handler.validate_initial_tx_gas(&mut evm);
+
+                if should_succeed {
+                    assert!(
+                        result.is_ok(),
+                        "{spec:?}: gas_limit={gas_limit}, nonce={nonce}: expected success but got error"
+                    );
+                } else {
+                    let err = result.expect_err(&format!(
+                        "{spec:?}: gas_limit={gas_limit}, nonce={nonce}: should fail"
+                    ));
+                    assert!(
+                        matches!(
+                            err.as_invalid_tx_err(),
+                            Some(TempoInvalidTransaction::InsufficientGasForIntrinsicCost { .. })
+                        ),
+                        "Expected InsufficientGasForIntrinsicCost, got: {err:?}"
+                    );
+                }
             }
         }
     }

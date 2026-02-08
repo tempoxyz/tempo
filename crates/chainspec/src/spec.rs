@@ -40,13 +40,15 @@ pub const TEMPO_T1_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
 
-/// Gas cost for using an existing 2D nonce key (cold SLOAD + 2*warm SLOAD + warm SSTORE reset)
+/// Gas cost for using an existing 2D nonce key (cold SLOAD + warm SSTORE reset)
 pub const TEMPO_T1_EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD + WARM_SSTORE_RESET;
-pub const TEMPO_T2_EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD + 2 * WARM_SLOAD + WARM_SSTORE_RESET;
+/// T2 adds 2 warm SLOADs for the extended nonce key lookup
+pub const TEMPO_T2_EXISTING_NONCE_KEY_GAS: u64 = TEMPO_T1_EXISTING_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 
-/// Gas cost for using a new 2D nonce key (cold SLOAD + 2*warm SLOAD + SSTORE set for 0 -> non-zero)
+/// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero)
 pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + SSTORE_SET;
-pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + 2 * WARM_SLOAD + SSTORE_SET;
+/// T2 adds 2 warm SLOADs for the extended nonce key lookup
+pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = TEMPO_T1_NEW_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
