@@ -1017,6 +1017,9 @@ mod tests {
     use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
     use tempo_revm::TempoStateAccess;
 
+    /// Arbitrary validity window (in seconds) used for expiring-nonce transactions in tests.
+    const TEST_VALIDITY_WINDOW: u64 = 25;
+
     /// Helper to create a mock sealed block with the given timestamp.
     fn create_mock_block(timestamp: u64) -> SealedBlock<reth_ethereum_primitives::Block> {
         let header = Header {
@@ -1456,7 +1459,7 @@ mod tests {
             };
 
             let valid_before = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-                Some(current_time + 25)
+                Some(current_time + TEST_VALIDITY_WINDOW)
             } else {
                 None
             };
