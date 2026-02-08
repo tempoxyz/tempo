@@ -11950,9 +11950,11 @@ name = "tempo-commonware-node"
 version = "1.2.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-network",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
+ "alloy-rpc-types-eth",
  "axum",
  "bytes",
  "clap",
@@ -11964,6 +11966,7 @@ dependencies = [
  "commonware-math",
  "commonware-p2p",
  "commonware-parallel",
+ "commonware-resolver",
  "commonware-runtime",
  "commonware-storage",
  "commonware-utils",
@@ -11972,6 +11975,7 @@ dependencies = [
  "governor",
  "indexmap 2.13.0",
  "jiff",
+ "jsonrpsee",
  "parking_lot",
  "pin-project",
  "prometheus-client",

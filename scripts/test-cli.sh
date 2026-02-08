@@ -27,10 +27,11 @@ run_ok "tempo --help" "$TEMPO" --help
 run_ok "tempo node --help" "$TEMPO" node --help
 
 # --- node --follow: verify it stays alive for 15s with no crashes ---
-echo "--- Test: tempo node --follow (no crash)"
+# NOTE: We can only run in --follow mode when our RPC nodes are updated as follower full nodes.
+echo "--- Test: tempo node --follow-uncertified (no crash)"
 DATADIR=$(mktemp -d)
 NODE_LOG=$(mktemp)
-$TEMPO node --chain moderato --follow --datadir "$DATADIR" --http --http.port 18545 >"$NODE_LOG" 2>&1 &
+$TEMPO node --chain moderato --follow-uncertified --datadir "$DATADIR" --http --http.port 18545 >"$NODE_LOG" 2>&1 &
 NODE_PID=$!
 trap 'kill "$NODE_PID" 2>/dev/null || true; wait "$NODE_PID" 2>/dev/null || true; rm -rf "$DATADIR" "$NODE_LOG"' EXIT
 
