@@ -32,8 +32,7 @@ use tempo_primitives::{
     },
 };
 use tempo_revm::{
-    EXISTING_NONCE_KEY_GAS, NEW_NONCE_KEY_GAS, TempoBatchCallEnv, TempoStateAccess,
-    calculate_aa_batch_intrinsic_gas,
+    TempoBatchCallEnv, TempoStateAccess, calculate_aa_batch_intrinsic_gas,
     gas_params::{TempoGasParams, tempo_gas_params},
     handler::EXPIRING_NONCE_GAS,
 };
@@ -420,10 +419,10 @@ where
             // Pre-T1: Add 2D nonce gas if nonce_key is non-zero
             if tx.nonce == 0 {
                 // New key - cold SLOAD + SSTORE set (0 -> non-zero)
-                init_and_floor_gas.initial_gas += NEW_NONCE_KEY_GAS;
+                init_and_floor_gas.initial_gas += spec.gas_new_nonce_key();
             } else {
                 // Existing key - cold SLOAD + warm SSTORE reset
-                init_and_floor_gas.initial_gas += EXISTING_NONCE_KEY_GAS;
+                init_and_floor_gas.initial_gas += spec.gas_existing_nonce_key();
             }
         }
 
