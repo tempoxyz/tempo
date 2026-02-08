@@ -27,21 +27,15 @@ interface ITempoStreamChannel {
         uint128 deposit,
         bytes32 salt,
         address authorizedSigner
-    ) external returns (bytes32 channelId);
+    )
+        external
+        returns (bytes32 channelId);
 
-    function settle(
-        bytes32 channelId,
-        uint128 cumulativeAmount,
-        bytes calldata signature
-    ) external;
+    function settle(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external;
 
     function topUp(bytes32 channelId, uint128 additionalDeposit) external;
 
-    function close(
-        bytes32 channelId,
-        uint128 cumulativeAmount,
-        bytes calldata signature
-    ) external;
+    function close(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external;
 
     function requestClose(bytes32 channelId) external;
 
@@ -61,9 +55,15 @@ interface ITempoStreamChannel {
         uint128 deposit,
         bytes32 salt,
         address authorizedSigner
-    ) external view returns (bytes32);
+    )
+        external
+        view
+        returns (bytes32);
 
-    function getVoucherDigest(bytes32 channelId, uint128 cumulativeAmount)
+    function getVoucherDigest(
+        bytes32 channelId,
+        uint128 cumulativeAmount
+    )
         external
         view
         returns (bytes32);
@@ -111,11 +111,7 @@ interface ITempoStreamChannel {
         uint256 refundedToPayer
     );
 
-    event ChannelExpired(
-        bytes32 indexed channelId,
-        address indexed payer,
-        address indexed payee
-    );
+    event ChannelExpired(bytes32 indexed channelId, address indexed payer, address indexed payee);
 
     error ChannelAlreadyExists();
     error ChannelNotFound();
@@ -127,4 +123,5 @@ interface ITempoStreamChannel {
     error NotPayee();
     error TransferFailed();
     error CloseNotReady();
+
 }
