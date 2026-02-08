@@ -27,6 +27,11 @@ pub const TEMPO_EXPIRING_NONCE_KEY: U256 = U256::MAX;
 /// Maximum allowed expiry window for expiring nonce transactions (30 seconds).
 pub const TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 
+/// Maximum allowed RLP-encoded byte size of a single TempoTransaction.
+/// Bounds memory allocation during deserialization to prevent DoS via
+/// oversized vector fields (calls, access list, authorization list).
+pub const MAX_TEMPO_TX_RLP_BYTES: usize = 8 * 1024 * 1024;
+
 /// Signature type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -771,12 +776,19 @@ impl Encodable for TempoTransaction {
 
 impl Decodable for TempoTransaction {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let start_len = buf.len();
         let header = alloy_rlp::Header::decode(buf)?;
         if !header.list {
             return Err(alloy_rlp::Error::UnexpectedString);
         }
-        let remaining = buf.len();
 
+        let header_len = start_len - buf.len();
+        let total_len = header_len.saturating_add(header.payload_length);
+        if total_len > MAX_TEMPO_TX_RLP_BYTES {
+            return Err(alloy_rlp::Error::Custom("tempo tx rlp exceeds size limit"));
+        }
+
+        let remaining = buf.len();
         if header.payload_length > remaining {
             return Err(alloy_rlp::Error::InputTooShort);
         }
@@ -2010,5 +2022,37 @@ mod tests {
             ..Default::default()
         };
         assert!(valid_expiring_tx.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_oversized_rlp() {
+        let payload_len = MAX_TEMPO_TX_RLP_BYTES + 1;
+        let mut buf = Vec::new();
+        alloy_rlp::Header { list: true, payload_length: payload_len }.encode(&mut buf);
+        buf.resize(buf.len() + payload_len, 0);
+        let result = TempoTransaction::decode(&mut buf.as_slice());
+        assert!(result.is_err(), "oversized RLP should be rejected");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, alloy_rlp::Error::Custom(msg) if msg.contains("size limit")),
+            "expected size limit error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_normal_size_rlp() {
+        let tx = TempoTransaction {
+            chain_id: 1,
+            gas_limit: 21_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        tx.encode(&mut buf);
+        assert!(TempoTransaction::decode(&mut buf.as_slice()).is_ok());
     }
 }

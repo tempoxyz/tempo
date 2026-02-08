@@ -1,5 +1,5 @@
 use super::{
-    tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
+    tempo_transaction::{MAX_TEMPO_TX_RLP_BYTES, TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
@@ -144,12 +144,19 @@ impl AASigned {
 
     /// Decode the RLP fields (without type byte).
     pub fn rlp_decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let start_len = buf.len();
         let header = alloy_rlp::Header::decode(buf)?;
         if !header.list {
             return Err(alloy_rlp::Error::UnexpectedString);
         }
-        let remaining = buf.len();
 
+        let header_len = start_len - buf.len();
+        let total_len = header_len.saturating_add(header.payload_length);
+        if total_len > MAX_TEMPO_TX_RLP_BYTES {
+            return Err(alloy_rlp::Error::Custom("tempo tx rlp exceeds size limit"));
+        }
+
+        let remaining = buf.len();
         if header.payload_length > remaining {
             return Err(alloy_rlp::Error::InputTooShort);
         }
@@ -600,5 +607,20 @@ mod tests {
         let bad_signed = AASigned::new_unhashed(tx, wrong_sig);
         let bad_recovered = bad_signed.recover_signer().unwrap();
         assert_ne!(bad_recovered, expected_address);
+    }
+
+    #[test]
+    fn rejects_oversized_aa_signed_rlp() {
+        let payload_len = MAX_TEMPO_TX_RLP_BYTES + 1;
+        let mut buf = Vec::new();
+        alloy_rlp::Header { list: true, payload_length: payload_len }.encode(&mut buf);
+        buf.resize(buf.len() + payload_len, 0);
+        let result = AASigned::rlp_decode(&mut buf.as_slice());
+        assert!(result.is_err(), "oversized RLP should be rejected");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, alloy_rlp::Error::Custom(msg) if msg.contains("size limit")),
+            "expected size limit error, got: {err:?}"
+        );
     }
 }

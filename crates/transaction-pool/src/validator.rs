@@ -636,6 +636,15 @@ where
             );
         }
 
+        // Validate AA transaction field limits (calls, access list, token limits).
+        // Run before intrinsic gas to reject oversized transactions cheaply.
+        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
+        }
+
         if transaction.inner().is_aa() {
             // Validate AA transaction intrinsic gas.
             // This ensures the gas limit covers all AA-specific costs (per-call overhead,
@@ -652,15 +661,6 @@ where
             if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
                 return TransactionValidationOutcome::Invalid(transaction, err);
             }
-        }
-
-        // Validate AA transaction field limits (calls, access list, token limits).
-        // This prevents DoS attacks via oversized transactions.
-        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
         }
 
         let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
