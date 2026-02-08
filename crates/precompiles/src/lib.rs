@@ -17,6 +17,8 @@ pub mod tip_fee_manager;
 pub mod validator_config;
 
 #[cfg(any(test, feature = "test-utils"))]
+pub mod resolver;
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test_util;
 
 use crate::{

@@ -161,6 +161,7 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
                 Ok(())
             }
         }
+
     };
 
     // Generate array implementations if requested

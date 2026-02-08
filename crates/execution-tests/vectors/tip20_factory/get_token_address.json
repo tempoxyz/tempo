@@ -1,0 +1,38 @@
+{
+  "extends": "setup.json",
+  "description": "getTokenAddress returns deterministic addresses. Different senders produce different addresses. Tests FAC9, FAC10",
+  "check_regression": true,
+  "transactions": [
+    {
+      "tx_type": "tempo",
+      "from": "0x1111111111111111111111111111111111111111",
+      "gas_limit": 500000,
+      "max_fee_per_gas": "100",
+      "nonce_key": "1",
+      "calls": [
+        {
+          "to": "0x20FC000000000000000000000000000000000000",
+          "function": "getTokenAddress(address,bytes32)",
+          "args": ["0x1111111111111111111111111111111111111111", "0x0000000000000000000000000000000000000000000000000000000000000001"]
+        }
+      ],
+      "outcome": { "success": true }
+    },
+    {
+      "tx_type": "tempo",
+      "from": "0x1111111111111111111111111111111111111111",
+      "gas_limit": 500000,
+      "max_fee_per_gas": "100",
+      "nonce_key": "2",
+      "calls": [
+        {
+          "to": "0x20FC000000000000000000000000000000000000",
+          "function": "getTokenAddress(address,bytes32)",
+          "args": ["0x2222222222222222222222222222222222222222", "0x0000000000000000000000000000000000000000000000000000000000000001"]
+        }
+      ],
+      "outcome": { "success": true }
+    }
+  ],
+  "checks": {}
+}

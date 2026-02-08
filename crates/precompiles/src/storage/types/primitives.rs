@@ -44,6 +44,14 @@ impl StorageKey for bool {
     fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
         if *self { [1u8] } else { [0u8] }
     }
+
+    fn parse_key(s: &str) -> core::result::Result<Self, &'static str> {
+        match s {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            _ => Err("invalid bool"),
+        }
+    }
 }
 
 impl StorableType for Address {
@@ -73,6 +81,10 @@ impl StorageKey for Address {
     #[inline]
     fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
         self.as_slice()
+    }
+
+    fn parse_key(s: &str) -> core::result::Result<Self, &'static str> {
+        s.parse().map_err(|_| "invalid address")
     }
 }
 

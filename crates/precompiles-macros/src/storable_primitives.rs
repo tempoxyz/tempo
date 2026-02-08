@@ -61,12 +61,40 @@ fn gen_storage_key_impl(type_path: &TokenStream, strategy: &StorageKeyStrategy) 
         StorageKeyStrategy::AsSlice => quote! { self.as_slice() },
     };
 
+    // Generate parse_key based on strategy
+    let parse_key = match strategy {
+        // Rust integers: u8, u16, u32, u64, u128
+        StorageKeyStrategy::Simple => quote! {
+            fn parse_key(s: &str) -> ::core::result::Result<Self, &'static str> {
+                if s.starts_with("0x") || s.starts_with("0X") {
+                    Self::from_str_radix(&s[2..], 16).map_err(|_| "invalid hex integer")
+                } else {
+                    s.parse().map_err(|_| "invalid integer")
+                }
+            }
+        },
+        // Alloy integers: U8, U16, ..., U256, I8, I16, ..., I256
+        StorageKeyStrategy::WithSize(_) | StorageKeyStrategy::SignedRaw(_) => quote! {
+            fn parse_key(s: &str) -> ::core::result::Result<Self, &'static str> {
+                s.parse().map_err(|_| "invalid alloy integer")
+            }
+        },
+        // FixedBytes: B256, etc.
+        StorageKeyStrategy::AsSlice => quote! {
+            fn parse_key(s: &str) -> ::core::result::Result<Self, &'static str> {
+                s.parse().map_err(|_| "invalid fixed bytes")
+            }
+        },
+    };
+
     quote! {
         impl StorageKey for #type_path {
             #[inline]
             fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
                 #conversion
             }
+
+            #parse_key
         }
     }
 }
@@ -421,6 +449,10 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
                 }
                 bytes
             }
+
+            fn parse_key(_s: &str) -> ::core::result::Result<Self, &'static str> {
+                Err("array keys cannot be parsed from string")
+            }
         }
     }
 }
@@ -716,6 +748,10 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
                     bytes.extend_from_slice(elem.as_storage_bytes().as_ref());
                 }
                 bytes
+            }
+
+            fn parse_key(_s: &str) -> ::core::result::Result<Self, &'static str> {
+                Err("array keys cannot be parsed from string")
             }
         }
     }

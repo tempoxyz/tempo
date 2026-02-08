@@ -1,0 +1,30 @@
+{
+  "extends": "setup.json",
+  "description": "createToken with non-TIP20 quote token should revert. Tests FAC4",
+  "check_regression": true,
+  "transactions": [
+    {
+      "tx_type": "tempo",
+      "from": "0x1111111111111111111111111111111111111111",
+      "gas_limit": 1000000,
+      "max_fee_per_gas": "100",
+      "nonce_key": "1",
+      "calls": [
+        {
+          "to": "0x20FC000000000000000000000000000000000000",
+          "function": "createToken(string,string,string,address,address,bytes32)",
+          "args": [
+            "Bad Token",
+            "BAD",
+            "USD",
+            "0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF",
+            "0x1111111111111111111111111111111111111111",
+            "0x0000000000000000000000000000000000000000000000000000000000000002"
+          ]
+        }
+      ],
+      "outcome": { "success": false, "error": "InvalidQuoteToken()" }
+    }
+  ],
+  "checks": {}
+}

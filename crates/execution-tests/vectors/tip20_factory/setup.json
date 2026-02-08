@@ -1,0 +1,21 @@
+{
+  "description": "TIP20Factory with genesis state initialized and sender funded",
+  "prestate": {
+    "genesis_path_usd": {
+      "balances": [
+        { "account": "0x1111111111111111111111111111111111111111", "balance": "1000000000000" }
+      ]
+    },
+    "accounts": {
+      "0x1111111111111111111111111111111111111111": { "nonce": 0 }
+    }
+  },
+  "block": {
+    "number": 1,
+    "timestamp": 1700000000,
+    "basefee": "100",
+    "gas_limit": 30000000
+  },
+  "transactions": [],
+  "checks": {}
+}

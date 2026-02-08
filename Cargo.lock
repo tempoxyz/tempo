@@ -5049,9 +5049,9 @@ dependencies = [
 
 [[package]]
 name = "interprocess"
-version = "2.2.3"
+version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d941b405bd2322993887859a8ee6ac9134945a24ec5ec763a8a962fc64dfec2d"
+checksum = "7b00d05442c2106c75b7410f820b152f61ec0edc7befcb9b381b673a20314753"
 dependencies = [
  "doctest-file",
  "futures-core",
@@ -7084,9 +7084,9 @@ dependencies = [
 
 [[package]]
 name = "proptest"
-version = "1.9.0"
+version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bee689443a2bd0a16ab0348b52ee43e3b2d1b1f931c8aa5c9f8de4c86fbe8c40"
+checksum = "37566cb3fdacef14c0737f9546df7cfeadbfbc9fef10991038bf5015d0c80532"
 dependencies = [
  "bit-set",
  "bit-vec",
@@ -12064,6 +12064,32 @@ dependencies = [
  "tempo-revm",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "tempo-execution-tests"
+version = "1.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-dyn-abi",
+ "alloy-evm",
+ "alloy-json-abi",
+ "alloy-primitives",
+ "clap",
+ "eyre",
+ "reth-chainspec",
+ "reth-revm",
+ "revm",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tempo-chainspec",
+ "tempo-contracts",
+ "tempo-evm",
+ "tempo-precompiles",
+ "tempo-primitives",
+ "tempo-revm",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

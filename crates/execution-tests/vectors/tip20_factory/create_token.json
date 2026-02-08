@@ -1,0 +1,38 @@
+{
+  "extends": "setup.json",
+  "description": "Create a TIP20 token via factory. Tests FAC1, FAC2, FAC6, FAC11, FAC12",
+  "check_regression": true,
+  "transactions": [
+    {
+      "tx_type": "tempo",
+      "from": "0x1111111111111111111111111111111111111111",
+      "gas_limit": 1000000,
+      "max_fee_per_gas": "100",
+      "nonce_key": "1",
+      "calls": [
+        {
+          "to": "0x20FC000000000000000000000000000000000000",
+          "function": "createToken(string,string,string,address,address,bytes32)",
+          "args": [
+            "Test Token",
+            "TEST",
+            "USD",
+            "0x20C0000000000000000000000000000000000000",
+            "0x1111111111111111111111111111111111111111",
+            "0x0000000000000000000000000000000000000000000000000000000000000001"
+          ]
+        }
+      ],
+      "outcome": { "success": true }
+    }
+  ],
+  "checks": {
+    "precompiles": [
+      {
+        "name": "TIP20Token",
+        "address": "0x20C0000000000000000000008eec1c9afb183a84",
+        "fields": ["name", "symbol", "currency", "quote_token", "total_supply"]
+      }
+    ]
+  }
+}

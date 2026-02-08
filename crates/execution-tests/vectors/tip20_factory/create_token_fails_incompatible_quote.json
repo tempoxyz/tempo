@@ -1,0 +1,46 @@
+{
+  "extends": "setup.json",
+  "description": "USD currency token with non-USD quote token should revert. Tests FAC7",
+  "check_regression": true,
+  "prestate": {
+    "precompiles": [
+      {
+        "name": "TIP20Token",
+        "address": "0x20C0000000000000000000000000000000000001",
+        "fields": {
+          "name": "Euro Token",
+          "symbol": "EUR",
+          "currency": "EUR",
+          "quote_token": "0x20C0000000000000000000000000000000000000",
+          "transfer_policy_id": 1,
+          "total_supply": "0"
+        }
+      }
+    ]
+  },
+  "transactions": [
+    {
+      "tx_type": "tempo",
+      "from": "0x1111111111111111111111111111111111111111",
+      "gas_limit": 1000000,
+      "max_fee_per_gas": "100",
+      "nonce_key": "1",
+      "calls": [
+        {
+          "to": "0x20FC000000000000000000000000000000000000",
+          "function": "createToken(string,string,string,address,address,bytes32)",
+          "args": [
+            "USD Token",
+            "USDT",
+            "USD",
+            "0x20C0000000000000000000000000000000000001",
+            "0x1111111111111111111111111111111111111111",
+            "0x0000000000000000000000000000000000000000000000000000000000000003"
+          ]
+        }
+      ],
+      "outcome": { "success": false, "error": "InvalidQuoteToken()" }
+    }
+  ],
+  "checks": {}
+}

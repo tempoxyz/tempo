@@ -23,6 +23,7 @@ tracing.workspace = true
 thiserror.workspace = true
 derive_more.workspace = true
 scoped-tls = "1.0"
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -38,7 +39,7 @@ tempo-evm.workspace = true
 
 [features]
 default = ["rpc"]
-test-utils = ["alloy/getrandom"]
+test-utils = ["alloy/getrandom", "dep:serde_json"]
 rpc = ["tempo-contracts/rpc"]
 
 [[test]]
