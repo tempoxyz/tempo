@@ -11,14 +11,18 @@ pub(crate) mod dkg;
 pub(crate) mod epoch;
 pub(crate) mod executor;
 pub mod feed;
+pub mod follow;
 pub mod metrics;
+pub(crate) mod storage;
 pub(crate) mod utils;
 
 pub(crate) mod subblocks;
 
+use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
+use commonware_utils::NZU64;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_commonware_node_config::SigningShare;
 use tempo_node::TempoFullNode;
@@ -31,6 +35,10 @@ pub use crate::config::{
 };
 
 pub use args::{Args, PositiveDuration};
+
+// Shared by both the consensus and follow engines such that
+// snapshots for overlapping archives can be reused.
+const PARTITION_PREFIX: &str = "engine";
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
@@ -91,7 +99,7 @@ pub async fn run_consensus_stack(
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),
         // TODO: Set this through config?
-        partition_prefix: "engine".into(),
+        partition_prefix: PARTITION_PREFIX.into(),
         signer: signing_key.into_inner(),
         share,
 
@@ -141,6 +149,39 @@ pub async fn run_consensus_stack(
                 .wrap_err("consensus engine task failed")
         }
     }
+}
+
+/// Run the follower stack. This uses RPC to sync consensus state and drive
+/// the execution layer from the upstream node.
+pub async fn run_follow_stack(
+    context: &commonware_runtime::tokio::Context,
+    config: Args,
+    upstream_url: String,
+    execution_node: TempoFullNode,
+    feed_state: feed::FeedStateHandle,
+) -> eyre::Result<()> {
+    let epoch_length = execution_node
+        .chain_spec()
+        .info
+        .epoch_length()
+        .ok_or_eyre("chainspec did not contain epochLength")?;
+
+    let engine = follow::Builder {
+        execution_node,
+        feed_state,
+        partition_prefix: PARTITION_PREFIX.into(),
+        upstream_url,
+        epoch_strategy: FixedEpocher::new(NZU64!(epoch_length)),
+        mailbox_size: config.mailbox_size,
+        fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
+    };
+
+    engine
+        .try_init(context.with_label("engine"))
+        .await
+        .wrap_err("failed initializing follow engine")?
+        .start()
+        .await
 }
 
 async fn instantiate_network(

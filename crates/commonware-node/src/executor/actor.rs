@@ -449,23 +449,17 @@ where
         block: Block,
         acknowledgment: Exact,
     ) -> eyre::Result<()> {
-        self.canonicalize(
-            Span::current(),
-            HeadOrFinalized::Finalized,
-            block.height(),
-            block.digest(),
-            oneshot::channel().0,
-        )
-        .await
-        .wrap_err("failed canonicalizing finalized block")?;
-
-        let block = block.into_inner();
+        // Send new_payload first to insert the block into the EL.
+        // This must happen before FCU for blocks the EL doesn't have yet
+        // (e.g., during follow mode sync). For blocks already in the EL
+        // (e.g., built by payload builder), this is a no-op that returns VALID.
+        let inner_block = block.clone().into_inner();
         let payload_status = self
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
             .new_payload(TempoExecutionData {
-                block: Arc::new(block),
+                block: Arc::new(inner_block),
                 // can be omitted for finalized blocks
                 validator_set: None,
             })
@@ -481,6 +475,17 @@ where
             "this is a problem: payload status of block-to-be-finalized was \
             neither valid nor syncing: `{payload_status}`"
         );
+
+        // Now send FCU to finalize the block
+        self.canonicalize(
+            Span::current(),
+            HeadOrFinalized::Finalized,
+            block.height(),
+            block.digest(),
+            oneshot::channel().0,
+        )
+        .await
+        .wrap_err("failed canonicalizing finalized block")?;
 
         acknowledgment.acknowledge();
 

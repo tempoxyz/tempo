@@ -20,32 +20,36 @@ use crate::consensus::Digest;
 // Sealed because of the frequent accesses to the hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
-pub(crate) struct Block(SealedBlock<tempo_primitives::Block>);
+pub struct Block(SealedBlock<tempo_primitives::Block>);
 
 impl Block {
-    pub(crate) fn from_execution_block(block: SealedBlock<tempo_primitives::Block>) -> Self {
+    /// Create a Block from an execution layer SealedBlock.
+    pub fn from_execution_block(block: SealedBlock<tempo_primitives::Block>) -> Self {
         Self(block)
     }
 
-    pub(crate) fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
+    /// Consume the Block and return the inner SealedBlock.
+    pub fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
         self.0
     }
 
     /// Returns the (eth) hash of the wrapped block.
-    pub(crate) fn block_hash(&self) -> B256 {
+    pub fn block_hash(&self) -> B256 {
         self.0.hash()
     }
 
     /// Returns the hash of the wrapped block as a commonware [`Digest`].
-    pub(crate) fn digest(&self) -> Digest {
+    pub fn digest(&self) -> Digest {
         Digest(self.hash())
     }
 
-    pub(crate) fn parent_digest(&self) -> Digest {
+    /// Returns the parent block's digest.
+    pub fn parent_digest(&self) -> Digest {
         Digest(self.0.parent_hash())
     }
 
-    pub(crate) fn timestamp(&self) -> u64 {
+    /// Returns the block timestamp.
+    pub fn timestamp(&self) -> u64 {
         self.0.timestamp()
     }
 }
