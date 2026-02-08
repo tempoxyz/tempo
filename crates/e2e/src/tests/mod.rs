@@ -6,6 +6,7 @@ use crate::{ExecutionRuntime, execution_runtime::chainspec};
 mod backfill;
 mod consensus_rpc;
 mod dkg;
+mod follow;
 mod linkage;
 mod metrics;
 mod restart;
@@ -45,7 +46,7 @@ fn spawning_execution_node_works() {
         let db_path = handle.nodes_dir().join("node-1").join("db");
         std::fs::create_dir_all(&db_path).expect("failed to create database directory");
         let database = std::sync::Arc::new(
-            reth_db::init_db(db_path, reth_db::mdbx::DatabaseArguments::default())
+            reth_db::init_db(db_path, crate::execution_runtime::test_db_args())
                 .expect("failed to init database")
                 .with_metrics(),
         );
