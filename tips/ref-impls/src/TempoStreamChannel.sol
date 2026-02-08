@@ -90,6 +90,8 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
         uint256 refundedToPayer
     );
 
+    event CloseRequestCancelled(bytes32 indexed channelId, address indexed payer, address indexed payee);
+
     event ChannelExpired(bytes32 indexed channelId, address indexed payer, address indexed payee);
 
     // --- Errors ---
@@ -139,7 +141,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
         nonReentrant
         returns (bytes32 channelId)
     {
-        channelId = computeChannelId(msg.sender, payee, token, deposit, salt, authorizedSigner);
+        channelId = computeChannelId(msg.sender, payee, token, salt, authorizedSigner);
 
         if (channels[channelId].payer != address(0)) {
             revert ChannelAlreadyExists();
@@ -246,6 +248,11 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
                 revert TransferFailed();
             }
             channel.deposit += additionalDeposit;
+        }
+
+        if (channel.closeRequestedAt != 0) {
+            channel.closeRequestedAt = 0;
+            emit CloseRequestCancelled(channelId, channel.payer, channel.payee);
         }
 
         emit TopUp(channelId, channel.payer, channel.payee, additionalDeposit, channel.deposit);
@@ -404,7 +411,6 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
      * @param payer Address that deposited funds
      * @param payee Address authorized to withdraw
      * @param token TIP-20 token address
-     * @param deposit Amount deposited
      * @param salt Random salt
      * @param authorizedSigner Address authorized to sign vouchers
      */
@@ -412,7 +418,6 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
         address payer,
         address payee,
         address token,
-        uint128 deposit,
         bytes32 salt,
         address authorizedSigner
     )
@@ -422,7 +427,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
     {
         return keccak256(
             abi.encode(
-                payer, payee, token, deposit, salt, authorizedSigner, address(this), block.chainid
+                payer, payee, token, salt, authorizedSigner, address(this), block.chainid
             )
         );
     }

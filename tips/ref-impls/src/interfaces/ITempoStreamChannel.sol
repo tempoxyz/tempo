@@ -52,7 +52,6 @@ interface ITempoStreamChannel {
         address payer,
         address payee,
         address token,
-        uint128 deposit,
         bytes32 salt,
         address authorizedSigner
     )
@@ -110,6 +109,8 @@ interface ITempoStreamChannel {
         uint256 settledToPayee,
         uint256 refundedToPayer
     );
+
+    event CloseRequestCancelled(bytes32 indexed channelId, address indexed payer, address indexed payee);
 
     event ChannelExpired(bytes32 indexed channelId, address indexed payer, address indexed payee);
 
