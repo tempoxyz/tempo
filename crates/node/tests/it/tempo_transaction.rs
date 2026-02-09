@@ -823,7 +823,7 @@ fn sign_aa_tx_webauthn(
     )))
 }
 
-// ===== Transaction Encoding Helper Functions =====
+// ===== Assertion Helper Functions =====
 
 /// Helper to fetch a transaction receipt and assert its status.
 /// Use `expected_success = true` to assert status == "0x1", `false` for "0x0".
@@ -843,8 +843,6 @@ async fn assert_receipt_status(
     assert_eq!(status, expected, "Receipt status mismatch for {tx_hash}");
     Ok(())
 }
-
-// ===== Token Helper Functions =====
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
@@ -2911,7 +2909,7 @@ async fn run_send_transaction_test_case(test_case: &SendTestCase) -> eyre::Resul
 }
 
 #[tokio::test(flavor = "multi_thread")]
-// Covers AA key type (p256/webauthn), fee payer on/off, access key on/off, and batch call variants.
+// Covers key type (secp256k1/p256/webauthn) x fee payer; P256/WebAuthn also cover access key and batch calls.
 async fn test_eth_send_transaction_matrix() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -7043,7 +7041,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-// Covers eth_fillTransaction field filling for nonceKey, validBefore, validAfter, feeToken, and fee payer placeholder.
+// Covers eth_fillTransaction field filling for nonceKey, validBefore, validAfter, feeToken, and fee payer signature hash recovery.
 async fn test_eth_fill_transaction_matrix() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
