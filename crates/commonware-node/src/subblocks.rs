@@ -701,8 +701,9 @@ async fn build_subblock(
     let (transactions, senders) = match evm_at_block(&node, parent_hash) {
         Ok(mut evm) => {
             let (mut selected, mut senders, mut to_remove) = (Vec::new(), Vec::new(), Vec::new());
-            let gas_budget =
-                evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
+            let gas_budget = (evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR)
+                .checked_div(num_validators as u64)
+                .expect("validator set must not be empty");
 
             let mut gas_left = gas_budget;
             let txs = transactions.lock().clone();
