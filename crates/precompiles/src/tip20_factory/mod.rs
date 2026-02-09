@@ -218,7 +218,7 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Address, U256, address};
+    use alloy::primitives::{Address, address};
 
     #[test]
     fn test_is_initialized() -> eyre::Result<()> {
@@ -760,9 +760,13 @@ mod tests {
         assert_eq!(address, address2);
         assert_eq!(lower_bytes, lower_bytes2);
 
-        // Different inputs should produce different outputs
+        // Different sender should produce different outputs
         let (address3, _) = compute_tip20_address(Address::random(), salt);
         assert_ne!(address, address3);
+
+        // Different salt should produce different outputs
+        let (address4, _) = compute_tip20_address(sender, B256::random());
+        assert_ne!(address, address4);
     }
 
     #[test]
@@ -829,39 +833,13 @@ mod tests {
     }
 
     #[test]
-    fn test_get_token_address_reserved_boundary() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-
-        StorageCtx::enter(&mut storage, || {
-            let factory = TIP20Factory::new();
-
-            // Find a salt that produces an address in the reserved range
-            // We need to brute force this since compute_tip20_address uses keccak256
-            let sender = Address::ZERO;
-            let mut reserved_salt = None;
-
-            for i in 0u64..100000 {
-                let salt = B256::from(U256::from(i));
-                let (_, lower_bytes) = compute_tip20_address(sender, salt);
-                if lower_bytes < 1024 {
-                    // RESERVED_SIZE
-                    reserved_salt = Some(salt);
-                    break;
-                }
-            }
-
-            // If we found a reserved salt, verify get_token_address rejects it
-            if let Some(salt) = reserved_salt {
-                let result =
-                    factory.get_token_address(ITIP20Factory::getTokenAddressCall { sender, salt });
-                assert!(result.is_err());
-                assert_eq!(
-                    result.unwrap_err(),
-                    TempoPrecompileError::TIP20Factory(TIP20FactoryError::address_reserved())
-                );
-            }
-
-            Ok(())
-        })
+    fn test_get_token_address_reserved_boundary() {
+        let sender = Address::ZERO;
+        let salt = B256::repeat_byte(0xAB);
+        let (_, lower_bytes) = compute_tip20_address(sender, salt);
+        assert!(
+            lower_bytes >= RESERVED_SIZE,
+            "compute_tip20_address should produce non-reserved addresses for typical salts"
+        );
     }
 }

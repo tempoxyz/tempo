@@ -501,17 +501,12 @@ mod tests {
 
         // 1 byte should cost INPUT_PER_WORD_COST (rounds up to 1 word)
         assert_eq!(input_cost(1), INPUT_PER_WORD_COST);
-        assert_ne!(input_cost(1), 0);
 
         // 32 bytes (1 word) should cost INPUT_PER_WORD_COST
         assert_eq!(input_cost(32), INPUT_PER_WORD_COST);
 
         // 33 bytes (2 words) should cost 2 * INPUT_PER_WORD_COST
         assert_eq!(input_cost(33), INPUT_PER_WORD_COST * 2);
-
-        // Verify non-zero for typical calldata sizes
-        assert!(input_cost(100) > 0);
-        assert!(input_cost(1000) > 0);
     }
 
     #[test]

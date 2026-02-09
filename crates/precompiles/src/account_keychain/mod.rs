@@ -1094,14 +1094,6 @@ mod tests {
         assert_eq!(decoded, revoked);
     }
 
-    // ============================================================================
-    // Mutation testing gap coverage tests
-    // These tests target specific mutations that were previously missed.
-    // See: https://tempoxyz.slack.com/archives/C0A87C21805/p1770287621833629
-    // ============================================================================
-
-    /// Test: authorize_key:157 - boundary check for existing key (> vs <)
-    /// Verifies that a key with expiry > 0 is correctly detected as existing.
     #[test]
     fn test_authorize_key_rejects_existing_key_boundary() -> eyre::Result<()> {
         // Use pre-T0 to avoid expiry validation (focus on existence check)
@@ -1147,8 +1139,6 @@ mod tests {
         })
     }
 
-    /// Test: spending_limit_key:119 - verify correct derived key value
-    /// Ensures spending_limit_key produces deterministic, distinct hashes.
     #[test]
     fn test_spending_limit_key_derivation() {
         let account1 = Address::repeat_byte(0x01);
@@ -1187,8 +1177,6 @@ mod tests {
         assert_ne!(hash1a, B256::ZERO, "Hash should not be zero");
     }
 
-    /// Test: initialize:128 - verify storage state after init
-    /// Ensures initialize actually sets up storage, not just returns Ok(()).
     #[test]
     fn test_initialize_sets_up_storage_state() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -1225,8 +1213,6 @@ mod tests {
         })
     }
 
-    /// Test: authorize_key:170 - WebAuthn signature type path
-    /// Explicitly tests the WebAuthn arm in the signature type match.
     #[test]
     fn test_authorize_key_webauthn_signature_type() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -1273,8 +1259,6 @@ mod tests {
         })
     }
 
-    /// Test: update_spending_limit:261 - boundary check (>= vs <)
-    /// Verifies that a key with current_timestamp >= expiry is correctly detected as expired.
     #[test]
     fn test_update_spending_limit_expiry_boundary() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -1323,8 +1307,6 @@ mod tests {
         })
     }
 
-    /// Test: update_spending_limit:266 - boolean negation (!key.enforce_limits)
-    /// Verifies both branches: when enforce_limits is true and false.
     #[test]
     fn test_update_spending_limit_enforce_limits_toggle() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -1386,8 +1368,6 @@ mod tests {
         })
     }
 
-    /// Test: get_key:291 - OR logic (|| vs &&) for key existence check
-    /// Verifies that key.expiry == 0 OR key.is_revoked returns empty key info.
     #[test]
     fn test_get_key_or_logic_existence_check() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -1476,8 +1456,6 @@ mod tests {
         })
     }
 
-    /// Test: get_key:303 - match arm 0 distinguished from other arms
-    /// Verifies each signature type arm returns the correct enum value.
     #[test]
     fn test_get_key_signature_type_match_arms() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -1563,10 +1541,6 @@ mod tests {
             Ok(())
         })
     }
-
-    // ============================================================================
-    // End of mutation testing gap coverage tests
-    // ============================================================================
 
     #[test]
     fn test_validate_keychain_authorization_checks_signature_type() -> eyre::Result<()> {
