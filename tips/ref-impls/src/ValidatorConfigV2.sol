@@ -25,7 +25,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     address private _owner;
     bool private _initialized;
 
-    IValidatorConfig public immutable v1 = IValidatorConfig(0xCccCcCCC00000000000000000000000000000000);
+    IValidatorConfig public immutable v1 =
+        IValidatorConfig(0xCccCcCCC00000000000000000000000000000000);
 
     Validator[] internal validatorsArray;
 
