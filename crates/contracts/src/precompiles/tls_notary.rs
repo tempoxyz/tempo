@@ -6,41 +6,63 @@ crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface ITLSNotary {
-        /// Verify a validator quorum attestation over a TLSNotary proof.
-        /// @param attestation ABI-encoded attestation (epoch, proofHash, statementHash, serverNameHash, bitmap, signatures)
-        /// @return ok Whether the attestation is valid and meets quorum
-        /// @return epoch The epoch at which the attestation was created
-        /// @return signedPower The total voting power that signed
-        /// @return totalPower The total voting power of the validator set
-        function verifyAttestation(bytes calldata attestation) external view returns (bool ok, uint64 epoch, uint256 signedPower, uint256 totalPower);
+        // ──── Notary Management (owner only) ────
 
-        /// Register an attestation on-chain for indexing and replay prevention.
-        /// @param epoch The epoch at which the attestation was created
-        /// @param proofHash The keccak256 hash of the TLSNotary proof body
-        /// @param statementHash The keccak256 hash of the revealed/proven statement
-        /// @param serverNameHash The keccak256 hash of the TLS server name
-        /// @param signatures Concatenated ECDSA signatures from validators (65 bytes each: r[32] || s[32] || v[1])
-        /// @param bitmap Packed bitmap indicating which validators signed (bit i = validator at index i)
-        /// @return sessionId A unique session identifier derived from epoch and proofHash
+        /// Add a trusted notary address.
+        function addNotary(address notary) external;
+
+        /// Remove a trusted notary address.
+        function removeNotary(address notary) external;
+
+        /// Check if an address is a registered notary.
+        function isNotary(address notary) external view returns (bool);
+
+        /// Get the owner of the precompile.
+        function owner() external view returns (address);
+
+        /// Transfer ownership.
+        function transferOwnership(address newOwner) external;
+
+        // ──── Attestation Registration ────
+
+        /// Register an attestation signed by a quorum of notaries.
+        /// @param proofHash keccak256 of the full TLSNotary proof blob
+        /// @param statementHash keccak256 of the proven statement (e.g., email ownership)
+        /// @param serverNameHash keccak256 of the TLS server name (e.g., "accounts.google.com")
+        /// @param signatures Concatenated ECDSA sigs from notaries (65 bytes each: r‖s‖v)
+        /// @return sessionId Unique ID for this attestation
         function registerAttestation(
-            uint64 epoch,
             bytes32 proofHash,
             bytes32 statementHash,
             bytes32 serverNameHash,
-            bytes calldata signatures,
-            bytes calldata bitmap
+            bytes calldata signatures
         ) external returns (bytes32 sessionId);
 
-        /// Get a registered session by its ID.
-        /// @param sessionId The session identifier
-        /// @return epoch The epoch at which the session was attested
-        /// @return proofHash The proof hash
-        /// @return statementHash The statement hash
-        /// @return serverNameHash The server name hash
-        /// @return submitter The address that registered the session
-        /// @return timestamp The block timestamp when it was registered
+        // ──── Email Ownership Claims ────
+
+        /// Register a TLSNotary-attested email ownership claim.
+        /// After verification, maps keccak256(email) → claimant on-chain.
+        /// @param email The email address being claimed (e.g., "user@example.com")
+        /// @param serverNameHash keccak256 of the TLS server (e.g., keccak256("accounts.google.com"))
+        /// @param proofHash keccak256 of the TLSNotary proof
+        /// @param signatures Notary signatures over the claim
+        function claimEmail(
+            string calldata email,
+            bytes32 serverNameHash,
+            bytes32 proofHash,
+            bytes calldata signatures
+        ) external returns (bytes32 claimId);
+
+        /// Look up who has proven ownership of an email.
+        /// @param emailHash keccak256 of the email address
+        /// @return claimant The address that proved ownership (address(0) if unclaimed)
+        /// @return timestamp When the claim was registered
+        function emailOwner(bytes32 emailHash) external view returns (address claimant, uint64 timestamp);
+
+        // ──── Session Queries ────
+
+        /// Get a registered session.
         function getSession(bytes32 sessionId) external view returns (
-            uint64 epoch,
             bytes32 proofHash,
             bytes32 statementHash,
             bytes32 serverNameHash,
@@ -48,73 +70,78 @@ crate::sol! {
             uint64 timestamp
         );
 
-        /// Check if a proof hash has been registered.
-        /// @param proofHash The proof hash to check
-        /// @return Whether the proof has been registered
+        /// Check if a proof has been registered.
         function isProofRegistered(bytes32 proofHash) external view returns (bool);
 
-        /// Get the session ID for a given epoch and proof hash.
-        /// @param epoch The epoch
-        /// @param proofHash The proof hash
-        /// @return sessionId The derived session ID
-        function getSessionId(uint64 epoch, bytes32 proofHash) external pure returns (bytes32 sessionId);
+        // ──── Events ────
 
-        // Events
+        event NotaryAdded(address indexed notary, address indexed addedBy);
+        event NotaryRemoved(address indexed notary, address indexed removedBy);
         event AttestationRegistered(
             bytes32 indexed sessionId,
             bytes32 indexed proofHash,
-            uint64 epoch,
             bytes32 statementHash,
             bytes32 serverNameHash,
             address indexed submitter
         );
+        event EmailClaimed(
+            bytes32 indexed emailHash,
+            address indexed claimant,
+            bytes32 proofHash,
+            bytes32 serverNameHash
+        );
 
-        // Errors
-        error InvalidAttestation();
-        error InsufficientQuorum(uint256 signedPower, uint256 requiredPower);
-        error SessionAlreadyRegistered(bytes32 sessionId);
-        error SessionNotFound(bytes32 sessionId);
+        // ──── Errors ────
+
+        error Unauthorized();
+        error NotaryAlreadyRegistered(address notary);
+        error NotaryNotFound(address notary);
+        error InsufficientSignatures(uint256 provided, uint256 required);
         error InvalidSignatureLength();
-        error InvalidBitmapLength();
-        error SignatureVerificationFailed(uint64 validatorIndex);
+        error SignatureVerificationFailed(uint256 index);
+        error ProofAlreadyRegistered(bytes32 proofHash);
+        error SessionNotFound(bytes32 sessionId);
+        error EmailAlreadyClaimed(bytes32 emailHash, address existingClaimant);
     }
 }
 
 impl TLSNotaryError {
-    pub const fn invalid_attestation() -> Self {
-        Self::InvalidAttestation(ITLSNotary::InvalidAttestation {})
+    pub const fn unauthorized() -> Self {
+        Self::Unauthorized(ITLSNotary::Unauthorized {})
     }
 
-    pub fn insufficient_quorum(signed_power: alloy_primitives::U256, required_power: alloy_primitives::U256) -> Self {
-        Self::InsufficientQuorum(ITLSNotary::InsufficientQuorum {
-            signedPower: signed_power,
-            requiredPower: required_power,
-        })
+    pub fn notary_already_registered(notary: alloy_primitives::Address) -> Self {
+        Self::NotaryAlreadyRegistered(ITLSNotary::NotaryAlreadyRegistered { notary })
     }
 
-    pub fn session_already_registered(session_id: alloy_primitives::B256) -> Self {
-        Self::SessionAlreadyRegistered(ITLSNotary::SessionAlreadyRegistered {
-            sessionId: session_id,
-        })
+    pub fn notary_not_found(notary: alloy_primitives::Address) -> Self {
+        Self::NotaryNotFound(ITLSNotary::NotaryNotFound { notary })
     }
 
-    pub fn session_not_found(session_id: alloy_primitives::B256) -> Self {
-        Self::SessionNotFound(ITLSNotary::SessionNotFound {
-            sessionId: session_id,
-        })
+    pub fn insufficient_signatures(provided: alloy_primitives::U256, required: alloy_primitives::U256) -> Self {
+        Self::InsufficientSignatures(ITLSNotary::InsufficientSignatures { provided, required })
     }
 
     pub const fn invalid_signature_length() -> Self {
         Self::InvalidSignatureLength(ITLSNotary::InvalidSignatureLength {})
     }
 
-    pub const fn invalid_bitmap_length() -> Self {
-        Self::InvalidBitmapLength(ITLSNotary::InvalidBitmapLength {})
+    pub fn signature_verification_failed(index: alloy_primitives::U256) -> Self {
+        Self::SignatureVerificationFailed(ITLSNotary::SignatureVerificationFailed { index })
     }
 
-    pub fn signature_verification_failed(validator_index: u64) -> Self {
-        Self::SignatureVerificationFailed(ITLSNotary::SignatureVerificationFailed {
-            validatorIndex: validator_index,
+    pub fn proof_already_registered(proof_hash: alloy_primitives::B256) -> Self {
+        Self::ProofAlreadyRegistered(ITLSNotary::ProofAlreadyRegistered { proofHash: proof_hash })
+    }
+
+    pub fn session_not_found(session_id: alloy_primitives::B256) -> Self {
+        Self::SessionNotFound(ITLSNotary::SessionNotFound { sessionId: session_id })
+    }
+
+    pub fn email_already_claimed(email_hash: alloy_primitives::B256, existing_claimant: alloy_primitives::Address) -> Self {
+        Self::EmailAlreadyClaimed(ITLSNotary::EmailAlreadyClaimed {
+            emailHash: email_hash,
+            existingClaimant: existing_claimant,
         })
     }
 }
