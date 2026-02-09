@@ -50,6 +50,7 @@ contract TempoStreamChannel is EIP712 {
         address indexed payee,
         address token,
         address authorizedSigner,
+        bytes32 salt,
         uint256 deposit
     );
 
@@ -160,7 +161,7 @@ contract TempoStreamChannel is EIP712 {
             revert TransferFailed();
         }
 
-        emit ChannelOpened(channelId, msg.sender, payee, token, authorizedSigner, deposit);
+        emit ChannelOpened(channelId, msg.sender, payee, token, authorizedSigner, salt, deposit);
     }
 
     /**

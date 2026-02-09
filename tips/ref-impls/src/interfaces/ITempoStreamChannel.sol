@@ -75,6 +75,7 @@ interface ITempoStreamChannel {
         address indexed payee,
         address token,
         address authorizedSigner,
+        bytes32 salt,
         uint256 deposit
     );
 
