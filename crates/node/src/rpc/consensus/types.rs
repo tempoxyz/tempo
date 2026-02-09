@@ -127,6 +127,64 @@ pub struct TransitionProofData {
     pub finalization_certificate: String,
 }
 
+/// Query for DKG outcomes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DkgOutcomeQuery {
+    /// Get the latest finalized epoch outcome.
+    Latest,
+    /// Get a specific epoch outcome.
+    Epoch(u64),
+}
+
+/// Error type for DKG outcome requests.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum DkgOutcomeError {
+    /// Node is not ready - consensus state not yet initialized.
+    #[error("node not ready")]
+    NotReady,
+    /// Block data has been pruned.
+    #[error("block data pruned at height {0}")]
+    PrunedData(u64),
+    /// Failed to decode DKG outcome from block.
+    #[error("malformed DKG outcome at height {0}")]
+    MalformedData(u64),
+}
+
+/// Response for get_dkg_outcome.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DkgOutcomeResponse {
+    /// Epoch for which this outcome is used.
+    pub epoch: u64,
+    /// Block height where this outcome was stored.
+    pub height: u64,
+    /// Block digest where this outcome was stored.
+    pub digest: B256,
+    /// DKG outcome data.
+    pub outcome: DkgOutcomeData,
+}
+
+/// Serializable DKG outcome details.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DkgOutcomeData {
+    /// Dealers that participated in the ceremony (ed25519 public keys).
+    pub dealers: Vec<String>,
+    /// Players that received shares (ed25519 public keys).
+    pub players: Vec<String>,
+    /// Players for the next ceremony (ed25519 public keys).
+    pub next_players: Vec<String>,
+    /// Whether the next DKG should be a full ceremony.
+    pub is_next_full_dkg: bool,
+    /// Network identity (group public key).
+    pub network_identity: String,
+    /// Threshold required for signing.
+    pub threshold: u32,
+    /// Total number of participants.
+    pub total_participants: u32,
+}
+
 /// Trait for accessing consensus feed data.
 pub trait ConsensusFeed: Send + Sync + 'static {
     /// Get a finalization by query (supports `Latest` or `Height`).
@@ -148,4 +206,10 @@ pub trait ConsensusFeed: Send + Sync + 'static {
         from_epoch: Option<u64>,
         full: bool,
     ) -> impl Future<Output = Result<IdentityTransitionResponse, IdentityProofError>> + Send;
+
+    /// Get DKG outcome (latest or specific epoch).
+    fn get_dkg_outcome(
+        &self,
+        query: DkgOutcomeQuery,
+    ) -> impl Future<Output = Result<DkgOutcomeResponse, DkgOutcomeError>> + Send;
 }
