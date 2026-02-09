@@ -144,6 +144,11 @@ interface IValidatorConfigV2 {
     /// @return validators Array of active validators
     function getActiveValidators() external view returns (Validator[] memory validators);
 
+    /// @notice Get the height at which the contract was initialized
+    /// @return the height at which the contract was initialized. Note that this
+    ///         value only makes sense in conjuction with isInitialized()
+    function getInitializedAtHeight() external view turns (uint64);
+
     /// @notice Get the owner of the precompile
     /// @return The owner address
     function owner() external view returns (address);
@@ -268,7 +273,8 @@ interface IValidatorConfigV2 {
 
     /// @notice Initialize V2 and enable reads (owner only)
     /// @dev Should only be called after all validators have been migrated via migrateValidator.
-    ///      Sets initialized=true. After this call, CL reads from V2 instead of V1.
+    ///      Sets initialized=true and initializedAtheight=block.height. After this call
+     ///     CL reads from V2 instead of V1.
     ///      Copies nextDkgCeremony from V1.
     ///      Reverts if V2 validators count < V1 validators count (ensures all validators migrated).
     ///      Reverts if validator activity does not match between contracts:
@@ -419,7 +425,8 @@ This ensures historical queries always return consistent results.
 
 | Slot | Field | Description |
 |------|-------|-------------|
-| 0 (bits 0-159) | `owner` | Owner address (160 bits, right-aligned) |
+| 0 (bits 0-159) | `owner` | Owner address (160 bits, left-aligned) |
+| 0 (bits 191-254) | `initializedAtHeight` | What height V2 has been initialized at (64 bits, right-aligned) |
 | 0 (bit 255) | `initialized` | Whether V2 has been initialized from V1 (1 bit) |
 | 1 | `validatorsArray.length` | Count of validators ever added |
 | keccak256(1) + i | `validatorsArray[i]` | Validator address at index i |
@@ -428,8 +435,8 @@ This ensures historical queries always return consistent results.
 | 4 | `nextDkgCeremony` | Next full DKG ceremony epoch |
 
 The `owner` address is right-aligned (bits 0-159) following Solidity's standard
-packing. The `initialized` flag uses bit 255 (the highest bit), leaving bits
-160-254 unused.
+packing. The `initializedAtHeight` flag uses bits 191-254. The `initialized` flag
+uses bit 255, leaving bits 160-190 unused.
 
 ## Differences from V1
 
@@ -497,7 +504,7 @@ The following invariants must always hold:
     `transferValidatorOwnership`, and `setIpAddresses` can be called by either
     the owner or the validator itself.
 
-13. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
+13. **Initialized once**: The `initializedAtHeight` bit (bit 255 of slot 0) can only
     transition from 0 to 1, never back to 0.
 
 14. **Atomic rotation**: `rotateValidator` atomically deletes the old validator
@@ -667,9 +674,10 @@ Existing networks are defined as those with hardfork_timestamp > timestamp_at_ge
 
 ### For New Networks
 
-New networks are defined as those that have the V2 validator config contract at genesis. In these cases, the V1 validator config contract is not required if validators are set up in V2 state.
+New networks are defined as those that have the V2 validator config contract at genesis.
+In these cases, the V1 validator config contract is not required if validators are set up in V2 state.
 
-1. Call `initializeIfMigrated()` to set `initialized = true`
+1. Call `initializeIfMigrated()` to set `initialized = true` and `initializeAtHeight = 0`.
 2. Call `addValidator()` for each initial validator
 3. Set `<hardforkTime> = 0` to activate V2 immediately
 4. V1 Validator Config contract/precompile is not necessary in this flow
