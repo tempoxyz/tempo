@@ -58,7 +58,10 @@ pub const MAX_STORAGE_KEYS_PER_ACCOUNT: usize = 256;
 /// Maximum total number of storage keys across all accounts in the access list (DoS protection).
 pub const MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL: usize = 2048;
 
-/// Maximum encoded transaction length in bytes (1 MiB, DoS protection).
+/// Per-transaction cap on raw encoded (RLP) byte size, checked before decoding (DoS protection).
+///
+/// Aligned with Tempo's consensus `max_message_size_bytes` and the Ethereum CL gossip
+/// `MAX_PAYLOAD_SIZE`. Field-level limits (e.g. [`MAX_AA_CALLS`]) are checked post-decode.
 pub const MAX_ENCODED_TX_LEN: usize = 1_048_576;
 
 /// Maximum number of token limits in a KeyAuthorization (DoS protection).
