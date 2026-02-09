@@ -13,7 +13,7 @@ pub use tt_signature::{
 
 pub use alloy_eips::eip7702::Authorization;
 pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
-pub use key_authorization::{KeyAuthorization, SignedKeyAuthorization, TokenLimit};
+pub use key_authorization::{CallScope, KeyAuthorization, Selector, SignedKeyAuthorization, TokenLimit};
 pub use tempo_transaction::{
     Call, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
     SignatureType, TEMPO_EXPIRING_NONCE_KEY, TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS,

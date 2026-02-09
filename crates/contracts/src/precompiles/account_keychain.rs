@@ -1,3 +1,5 @@
+use alloy_primitives::{Address, FixedBytes};
+
 pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
 };
@@ -25,6 +27,12 @@ crate::sol! {
         struct TokenLimit {
             address token;
             uint256 amount;
+        }
+
+        /// Call scope for restricting allowed (address, selector) pairs (TIP-1011)
+        struct CallScope {
+            address target;   // Target address (address(0) = wildcard)
+            bytes4 selector;  // Function selector (bytes4(0) = wildcard)
         }
 
         /// Key information structure
@@ -93,6 +101,12 @@ crate::sol! {
         /// @return The keyId used in the current transaction
         function getTransactionKey() external view returns (address);
 
+        /// Get allowed call scopes for a key (TIP-1011)
+        /// @param account The account address
+        /// @param keyId The key ID
+        /// @return calls Array of allowed call scopes (empty = unrestricted)
+        function getAllowedCalls(address account, address keyId) external view returns (CallScope[] memory calls);
+
         // Errors
         error UnauthorizedCaller();
         error KeyAlreadyExists();
@@ -104,6 +118,8 @@ crate::sol! {
         error ExpiryInPast();
         error KeyAlreadyRevoked();
         error SignatureTypeMismatch(uint8 expected, uint8 actual);
+        /// Call not in allowed list (TIP-1011)
+        error CallNotAllowed(address destination, bytes4 selector);
     }
 }
 
@@ -158,5 +174,13 @@ impl AccountKeychainError {
     /// This prevents replay attacks where a revoked key's authorization is reused.
     pub const fn key_already_revoked() -> Self {
         Self::KeyAlreadyRevoked(IAccountKeychain::KeyAlreadyRevoked {})
+    }
+
+    /// Creates an error for call not allowed (TIP-1011).
+    pub const fn call_not_allowed(destination: Address, selector: FixedBytes<4>) -> Self {
+        Self::CallNotAllowed(IAccountKeychain::CallNotAllowed {
+            destination,
+            selector,
+        })
     }
 }
