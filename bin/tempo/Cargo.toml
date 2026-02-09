@@ -103,6 +103,16 @@ jemalloc-prof = [
 	"reth-ethereum/jemalloc-prof",
 ]
 
+tracy = [
+	"reth-ethereum-cli/tracy",
+	"tempo-node/tracy",
+]
+tracy-allocator = [
+	"reth-cli-util/tracy-allocator",
+	"reth-ethereum-cli/tracy-allocator",
+	"tracy",
+]
+
 min-error-logs = [
 	"tracing/release_max_level_error",
 	"reth-ethereum-cli/min-error-logs",
