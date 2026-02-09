@@ -1,26 +1,35 @@
 //! AA Transaction Flows
 //!
-//! - P256/WebAuthn signature negative cases.
-//! - Sponsored raw tx flows.
+//! - Sponsored raw tx flow (multi-party fee payer cosigning).
+//! - WebAuthn signature negative cases.
+//! - Empty call batch rejection.
+//! - Contract creation address correctness.
+//! - Nonce bump on tx failure.
 //!
 //! Nonce Semantics
 //!
-//! - 2D nonce system behavior and pool ordering.
+//! - 2D nonce system behavior, pool ordering, and out-of-order arrival.
 //! - Expiring nonce flow, replay protection, validity windows, and independence from protocol nonce.
 //!
 //! Keychain / Access Keys
 //!
-//! - Authorization creation and validation.
+//! - Authorization creation, validation, and chain ID scoping.
 //! - Keychain negative cases and RPC validation.
-//! - Spending limits, expiry, revocation TOCTOU cases.
+//! - Spending limits, expiry, enforcement, and revocation/spending-limit TOCTOU cases.
 //! - Access key usage with key authorization.
+//! - Authorization list interaction with keychain authorizations.
 //!
 //! RPC Matrices
 //!
 //! - eth_sendRawTransaction matrix: key type x fee payer x access key.
-//! - eth_sendTransaction AA matrix: key type (P256/WebAuthn) x fee payer x access key x batch calls; secp256k1 x fee payer.
-//! - eth_fillTransaction matrix: nonceKey + validBefore + feeToken + fee payer.
+//! - eth_sendTransaction matrix: key type (P256/WebAuthn) x fee payer x access key x batch calls; secp256k1 x fee payer.
+//! - eth_fillTransaction matrix: nonceKey + validBefore + validAfter + feeToken + fee payer.
+//! - eth_estimateGas matrix.
 //! - E2E fill -> sign -> send matrix across nonce modes + key types.
+//!
+//! Network
+//!
+//! - Transaction propagation across 2D nonce channels.
 use alloy::{
     consensus::{BlockHeader, Transaction},
     hex,
