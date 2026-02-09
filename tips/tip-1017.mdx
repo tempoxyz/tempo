@@ -456,50 +456,53 @@ The following invariants must always hold:
    decreases.
 
 2. **Immutable identity**: Once a validator is added, its `publicKey`,
-   `validatorAddress`, `index`, and `addedAtHeight` fields never change.
-   The `ingress` and `egress` fields can be updated via `setIpAddresses`.
+   `index`, and `addedAtHeight` fields never change. The `ingress` and `egress`
+   fields can be updated via `setIpAddresses`. `validatorAddress` can only be
+   changed by the contract owner.
 
-3. **Delete-once**: A validator's `deactivatedAtHeight` can only transition from 0
+3. **Address update**: `transferValidatorOwnership` updates the address of an
+    existing validator without changing any other fields. This can only be called
+    by the contract owner (not the owner of the entry) and is required to for
+    post-migration fixes: validator contract v1 contains unusable dummy addresses
+    that are not usable.
+
+4. **Delete-once**: A validator's `deactivatedAtHeight` can only transition from 0
    to a non-zero value, never back to 0 or to a different non-zero value.
 
-4. **Unique addresses**: No two validators (including deleted ones) can have the
+5. **Unique addresses**: No two validators (including deleted ones) can have the
    same `validatorAddress`.
 
-5. **Unique public keys**: No two validators (including deleted ones) can have
+6. **Unique public keys**: No two validators (including deleted ones) can have
    the same `publicKey`.
 
-6. **Non-zero public keys**: All validators must have a non-zero `publicKey`.
+7. **Non-zero public keys**: All validators must have a non-zero `publicKey`.
 
-7. **Monotonic index**: Validator `index` equals its position in
+8. **Monotonic index**: Validator `index` equals its position in
    `validatorsArray` and equals `validatorCount - 1` at creation time.
 
-8. **Historical consistency**: For any height H, the active validator set
+9. **Historical consistency**: For any height H, the active validator set
    consists of validators where `addedAtHeight <= H && (deactivatedAtHeight == 0 ||
    deactivatedAtHeight > H)`. Validators with `addedAtHeight == deactivatedAtHeight` are
    never considered active.
 
-9. **Signature binding**: The signature message includes `chainId`,
+10. **Signature binding**: The signature message includes `chainId`,
    `contractAddress`, `validatorAddress`, `ingress`, and
    `egress`, preventing replay across chains, contracts, or parameter
    changes.
 
-10. **Owner authorization**: Only the owner can call `addValidator`,
+11. **Owner authorization**: Only the owner can call `addValidator`,
     `deactivateValidator`, `transferOwner`, and `setNextFullDkgCeremony`.
 
-11. **Dual authorization**: `rotateValidator`, `transferValidatorOwnership`, and
+12. **Dual authorization**: `rotateValidator`, `transferValidatorOwnership`, and
     `setIpAddresses` can be called by either the owner or the validator itself.
 
-12. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
+13. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
     transition from 0 to 1, never back to 0.
 
-13. **Atomic rotation**: `rotateValidator` atomically deletes the old validator
+14. **Atomic rotation**: `rotateValidator` atomically deletes the old validator
     (setting its `deactivatedAtHeight`), adds a new validator entry, and updates
     the `addresses[validatorAddress]` mapping to point to the new entry. Both
     operations occur in the same transaction with the same block height.
-
-14. **Address update**: `transferValidatorOwnership` updates the address of an existing
-    validator without changing any other fields. This is useful for updating
-    addresses post-migration or correcting address assignments.
 
 ---
 
