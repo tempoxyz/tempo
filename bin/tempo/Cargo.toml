@@ -25,10 +25,11 @@ tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
 alloy-consensus.workspace = true
+alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = [
-	"reqwest",
-	"reqwest-rustls-tls",
+        "reqwest",
+        "reqwest-rustls-tls",
 ] }
 alloy-rpc-types-eth.workspace = true
 alloy-sol-types.workspace = true
@@ -45,6 +46,7 @@ serde_json.workspace = true
 tempo-alloy.workspace = true
 tempo-contracts.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
+foundry-wallets = { git = "https://github.com/foundry-rs/foundry", tag = "v1.5.1" }
 reth-cli-commands.workspace = true
 reth-cli-runner.workspace = true
 reth-cli-util.workspace = true

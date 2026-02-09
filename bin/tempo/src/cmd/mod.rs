@@ -2,7 +2,6 @@ use std::{collections::HashMap, fs::OpenOptions, path::PathBuf, sync::Arc};
 
 use alloy_primitives::Address;
 use alloy_provider::Provider;
-
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
@@ -20,6 +19,10 @@ use tempo_chainspec::spec::TempoChainSpec;
 use tempo_commonware_node_config::SigningKey;
 use tempo_contracts::precompiles::{IValidatorConfig, VALIDATOR_CONFIG_ADDRESS};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+
+mod validator;
+
+use validator::AddValidator;
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
@@ -43,6 +46,8 @@ pub(crate) enum ConsensusSubcommand {
     GeneratePrivateKey(GeneratePrivateKey),
     /// Calculates the public key from an ed25519 signing key.
     CalculatePublicKey(CalculatePublicKey),
+    /// Add a validator via the on-chain validator config contract.
+    AddValidator(AddValidator),
     /// Query validator info from the previous epoch's DKG outcome and current contract state.
     ValidatorsInfo(ValidatorsInfo),
 }
@@ -52,6 +57,7 @@ impl ConsensusSubcommand {
         match self {
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
+            Self::AddValidator(args) => args.run(),
             Self::ValidatorsInfo(args) => args.run(),
         }
     }

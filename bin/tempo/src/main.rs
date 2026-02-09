@@ -18,8 +18,8 @@
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
+mod cmd;
 mod defaults;
-mod tempo_cmd;
 
 use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
@@ -118,7 +118,7 @@ fn main() -> eyre::Result<()> {
         TempoChainSpecParser,
         TempoArgs,
         DefaultRpcModuleValidator,
-        tempo_cmd::TempoSubcommand,
+        cmd::TempoSubcommand,
     >::parse();
 
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
