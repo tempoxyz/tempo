@@ -626,9 +626,10 @@ interface IValidatorConfigV1 {
 - **No signatures required**: V1 validators are imported without Ed25519 signatures
   (they were already validated in V1)
 - **All validators imported**: Both active and inactive V1 validators are
-  imported; inactive ones have `addedAtHeight == deactivatedAtHeight == block.height`,
-  active ones have `addedAtHeight == 0` (indicating they were active before V2 existed)
-- **Initialize validates migration**: `initializeIfMigrated()` reverts if not all V1 validators have been migrated
+  imported; active ones have `addedAtHeght.block.height`, inactive ones have
+  `addedAtHeight == deactivatedAtHeight == block.height`.
+- **Initialize validates migration**: `initializeIfMigrated()` reverts if not
+  all V1 validators have been migrated
 
 ## Timeline
 
@@ -743,10 +744,12 @@ The test suite must cover:
     if `isInitialized() == true`
 36. **migrateValidator owner only**: Non-owner cannot call `migrateValidator`
 37. **All validators imported on migration**: Both V1 active and inactive validators
-    are imported; inactive ones have `addedAtHeight == deactivatedAtHeight == block.height`,
-    active ones have `addedAtHeight == 0`
-38. **addedAtHeight set correctly**: Active validators have `addedAtHeight == 0`,
-    inactive validators have `addedAtHeight == block.height` at migration time
+    are imported; active ones have `addedAtHeight = block.height`, inactive ones have
+    `addedAtHeight == deactivatedAtHeight == block.height`.
+38. **addedAtHeight set correctly**: Active validators have `addedAtHeight > 0`
+    at migration time.
+38. **deletedAtHeight set correctly**: Deleted validators have
+    `addedAtHeight == deletedAtHeight` at migration time.
 39. **initialize sets flag**: After `initializeIfMigrated()`, `isInitialized()` returns true
 40. **migrateValidator copies owner**: V2 `owner()` matches V1 after first `migrateValidator` call
 41. **initialize copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
