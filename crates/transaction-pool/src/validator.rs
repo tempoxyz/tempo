@@ -572,47 +572,100 @@ where
         Ok(())
     }
 
-    fn validate_one(
+    /// Performs stateless validation checks that don't require state access.
+    ///
+    /// Returns the transaction if all checks pass, so it can continue to stateful validation.
+    #[allow(clippy::result_large_err)]
+    fn validate_one_stateless(
         &self,
-        origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
-        mut state_provider: impl StateProvider,
-    ) -> TransactionValidationOutcome<TempoPooledTransaction> {
-        // Get the current hardfork based on tip timestamp
-        let spec = self
-            .inner
-            .chain_spec()
-            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
-
+        spec: TempoHardfork,
+    ) -> Result<TempoPooledTransaction, TransactionValidationOutcome<TempoPooledTransaction>> {
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
-            return TransactionValidationOutcome::Error(
+            return Err(TransactionValidationOutcome::Error(
                 *transaction.hash(),
                 InvalidTransactionError::TxTypeNotSupported.into(),
-            );
+            ));
         }
 
-        // Early reject oversized transactions before doing any expensive validation.
+        // Reject oversized transactions before doing any expensive validation.
         let tx_size = transaction.encoded_length();
         let max_size = self.inner.max_tx_input_bytes();
         if tx_size > max_size {
-            return TransactionValidationOutcome::Invalid(
+            return Err(TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::OversizedData {
                     size: tx_size,
                     limit: max_size,
                 },
-            );
+            ));
         }
 
         // Validate that max_fee_per_gas meets the minimum base fee for the current hardfork.
         if let Err(err) = self.ensure_min_base_fee(&transaction, spec) {
-            return TransactionValidationOutcome::Invalid(
+            return Err(TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
-            );
+            ));
         }
 
+        // Balance transfer is not allowed as there is no balances in accounts yet.
+        // Check added in https://github.com/tempoxyz/tempo/pull/759
+        // AATx will aggregate all call values, so we dont need additional check for AA transactions.
+        if !transaction.inner().value().is_zero() {
+            return Err(TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::NonZeroValue),
+            ));
+        }
+
+        // Validate AA transaction temporal conditionals (`valid_before` and `valid_after`).
+        if let Some(tx) = transaction.inner().as_aa()
+            && let Err(err) = self.ensure_valid_conditionals(tx.tx())
+        {
+            return Err(TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            ));
+        }
+
+        // Validate AA transaction authorization list size.
+        if let Err(err) = self.ensure_authorization_list_size(&transaction) {
+            return Err(TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            ));
+        }
+
+        // Validate AA transaction field limits (calls, access list, token limits).
+        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
+            return Err(TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            ));
+        }
+
+        if !transaction.inner().is_aa() {
+            // Validate intrinsic gas with additional TIP-1000 and T1 checks (non-AA only).
+            if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
+                return Err(TransactionValidationOutcome::Invalid(transaction, err));
+            }
+        }
+
+        Ok(transaction)
+    }
+
+    /// Performs stateful validation checks that require state access.
+    ///
+    /// Called after [`validate_one_stateless`](Self::validate_one_stateless) passes.
+    fn validate_one_stateful(
+        &self,
+        origin: TransactionOrigin,
+        transaction: TempoPooledTransaction,
+        spec: TempoHardfork,
+        mut state_provider: impl StateProvider,
+    ) -> TransactionValidationOutcome<TempoPooledTransaction> {
         // Validate transactions that involve keychain keys
         match self.validate_against_keychain(&transaction, &state_provider) {
             Ok(Ok(())) => {}
@@ -627,34 +680,6 @@ where
             }
         }
 
-        // Balance transfer is not allowed as there is no balances in accounts yet.
-        // Check added in https://github.com/tempoxyz/tempo/pull/759
-        // AATx will aggregate all call values, so we dont need additional check for AA transactions.
-        if !transaction.inner().value().is_zero() {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(TempoPoolTransactionError::NonZeroValue),
-            );
-        }
-
-        // Validate AA transaction temporal conditionals (`valid_before` and `valid_after`).
-        if let Some(tx) = transaction.inner().as_aa()
-            && let Err(err) = self.ensure_valid_conditionals(tx.tx())
-        {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
-        }
-
-        // Validate AA transaction authorization list size.
-        if let Err(err) = self.ensure_authorization_list_size(&transaction) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
-        }
-
         if transaction.inner().is_aa() {
             // Validate AA transaction intrinsic gas.
             // This ensures the gas limit covers all AA-specific costs (per-call overhead,
@@ -666,20 +691,6 @@ where
                     InvalidPoolTransactionError::other(err),
                 );
             }
-        } else {
-            // validate intrinsic gas with additional TIP-1000 and T1 checks
-            if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
-                return TransactionValidationOutcome::Invalid(transaction, err);
-            }
-        }
-
-        // Validate AA transaction field limits (calls, access list, token limits).
-        // This prevents DoS attacks via oversized transactions.
-        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
         }
 
         let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
@@ -952,6 +963,16 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
+        let spec = self
+            .inner
+            .chain_spec()
+            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+
+        let transaction = match self.validate_one_stateless(transaction, spec) {
+            Ok(tx) => tx,
+            Err(outcome) => return outcome,
+        };
+
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
             Err(err) => {
@@ -959,13 +980,18 @@ where
             }
         };
 
-        self.validate_one(origin, transaction, state_provider)
+        self.validate_one_stateful(origin, transaction, spec, state_provider)
     }
 
     async fn validate_transactions(
         &self,
         transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let spec = self
+            .inner
+            .chain_spec()
+            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
             Err(err) => {
@@ -980,7 +1006,10 @@ where
 
         transactions
             .into_iter()
-            .map(|(origin, tx)| self.validate_one(origin, tx, &state_provider))
+            .map(|(origin, tx)| match self.validate_one_stateless(tx, spec) {
+                Ok(tx) => self.validate_one_stateful(origin, tx, spec, &state_provider),
+                Err(outcome) => outcome,
+            })
             .collect()
     }
 
@@ -989,6 +1018,11 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let spec = self
+            .inner
+            .chain_spec()
+            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
             Err(err) => {
@@ -1003,7 +1037,10 @@ where
 
         transactions
             .into_iter()
-            .map(|tx| self.validate_one(origin, tx, &state_provider))
+            .map(|tx| match self.validate_one_stateless(tx, spec) {
+                Ok(tx) => self.validate_one_stateful(origin, tx, spec, &state_provider),
+                Err(outcome) => outcome,
+            })
             .collect()
     }
 
