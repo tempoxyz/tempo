@@ -1587,8 +1587,10 @@ mod tests {
 
     #[test]
     fn test_keychain_signature_hash_differs_for_different_sigs() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        use std::{
+            collections::hash_map::DefaultHasher,
+            hash::{Hash, Hasher},
+        };
 
         let sig = PrimitiveSignature::Secp256k1(Signature::test_signature());
         let a = KeychainSignature::new(Address::repeat_byte(0x01), sig.clone());
@@ -1601,7 +1603,11 @@ mod tests {
             h.finish()
         };
 
-        assert_ne!(hash(&a), hash(&b), "different address should produce different hash");
+        assert_ne!(
+            hash(&a),
+            hash(&b),
+            "different address should produce different hash"
+        );
         assert_eq!(hash(&a), hash(&c), "same fields should produce same hash");
     }
 
@@ -1631,7 +1637,8 @@ mod tests {
 
     #[test]
     fn test_is_keychain_returns_false_for_primitive() {
-        let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
         assert!(!sig.is_keychain());
     }
 
