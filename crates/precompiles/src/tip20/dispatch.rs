@@ -4,9 +4,12 @@ use crate::{
     input_cost, metadata, mutate, mutate_void,
     storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
-    view,
+    unknown_selector, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
@@ -86,6 +89,16 @@ impl Precompile for TIP20Token {
             TIP20Call::TIP20(ITIP20Calls::BURN_BLOCKED_ROLE(call)) => {
                 view(call, |_| Ok(Self::burn_blocked_role()))
             }
+            // TIP-1006: T2+ only
+            TIP20Call::TIP20(ITIP20Calls::BURN_AT_ROLE(call)) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(
+                        ITIP20::BURN_AT_ROLECall::SELECTOR,
+                        self.storage.gas_used(),
+                    );
+                }
+                view(call, |_| Ok(Self::burn_at_role()))
+            }
 
             // State changing functions
             TIP20Call::TIP20(ITIP20Calls::transferFrom(call)) => {
@@ -133,6 +146,13 @@ impl Precompile for TIP20Token {
             }
             TIP20Call::TIP20(ITIP20Calls::burnBlocked(call)) => {
                 mutate_void(call, msg_sender, |s, c| self.burn_blocked(s, c))
+            }
+            // TIP-1006: T2+ only
+            TIP20Call::TIP20(ITIP20Calls::burnAt(call)) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(ITIP20::burnAtCall::SELECTOR, self.storage.gas_used());
+                }
+                mutate_void(call, msg_sender, |s, c| self.burn_at(s, c))
             }
             TIP20Call::TIP20(ITIP20Calls::transferWithMemo(call)) => {
                 mutate_void(call, msg_sender, |s, c| self.transfer_with_memo(s, c))
@@ -198,10 +218,12 @@ mod tests {
     };
     use alloy::{
         primitives::{Bytes, U256, address},
-        sol_types::{SolCall, SolInterface, SolValue},
+        sol_types::{SolCall, SolError, SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{IRolesAuth, RolesAuthError, TIP20Error};
+    use tempo_contracts::precompiles::{
+        IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
+    };
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
@@ -229,6 +251,48 @@ mod tests {
 
             let result = token.call(&Bytes::from([0x12, 0x34]), sender);
             assert!(matches!(result, Err(PrecompileError::Other(_))));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_unknown_selector_before_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            let calldata = ITIP20::burnAtCall {
+                from: Address::random(),
+                amount: U256::from(1),
+            }
+            .abi_encode();
+            let result = token.call(&calldata, admin)?;
+
+            assert!(result.reverted);
+            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+            assert_eq!(decoded.selector, ITIP20::burnAtCall::SELECTOR);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_role_unknown_selector_before_t2() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            let calldata = ITIP20::BURN_AT_ROLECall {}.abi_encode();
+            let result = token.call(&calldata, admin)?;
+
+            assert!(result.reverted);
+            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+            assert_eq!(decoded.selector, ITIP20::BURN_AT_ROLECall::SELECTOR);
 
             Ok(())
         })
@@ -720,7 +784,8 @@ mod tests {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        let (mut storage, admin) = setup_storage();
+        let admin = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;

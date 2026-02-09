@@ -1074,6 +1074,54 @@ contract TIP20InvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @notice Handler for burning tokens from any account using burnAt
+    /// @dev Tests TIP-1006 burnAt functionality (policy independent)
+    function burnAt(uint256 tokenSeed, uint256 targetSeed, uint256 amount) external {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address target = _selectActor(targetSeed);
+
+        uint256 targetBalance = token.balanceOf(target);
+        vm.assume(targetBalance > 0);
+
+        amount = bound(amount, 1, targetBalance);
+        uint256 totalSupplyBefore = token.totalSupply();
+
+        vm.startPrank(admin);
+        token.grantRole(_BURN_AT_ROLE, admin);
+        try token.burnAt(target, amount) {
+            vm.stopPrank();
+
+            _tokenBurnSum[address(token)] += amount;
+
+            assertEq(
+                token.balanceOf(target),
+                targetBalance - amount,
+                "TIP-1006: Target balance not decreased"
+            );
+            assertEq(
+                token.totalSupply(),
+                totalSupplyBefore - amount,
+                "TIP-1006: Total supply not decreased"
+            );
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "BURN_AT: ",
+                        vm.toString(amount),
+                        " ",
+                        token.symbol(),
+                        " from ",
+                        _getActorIndex(target)
+                    )
+                );
+            }
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
+        }
+    }
+
     /// @notice Handler for attempting burnBlocked on protected addresses
     /// @dev Tests TEMPO-TIP24 (protected addresses cannot be burned from)
     function burnBlockedProtectedAddress(uint256 tokenSeed, uint256 amount) external {
@@ -1109,6 +1157,43 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 bytes4(reason),
                 ITIP20.ProtectedAddress.selector,
                 "TEMPO-TIP24: Should revert with ProtectedAddress for DEX"
+            );
+        }
+    }
+
+    /// @notice Handler for attempting burnAt on protected addresses
+    /// @dev Tests TIP-1006 protected address constraints
+    function burnAtProtectedAddress(uint256 tokenSeed, uint256 amount) external {
+        TIP20 token = _selectBaseToken(tokenSeed);
+
+        amount = bound(amount, 1, 1_000_000);
+
+        address feeManager = 0xfeEC000000000000000000000000000000000000;
+        address dex = 0xDEc0000000000000000000000000000000000000;
+
+        vm.startPrank(admin);
+        token.grantRole(_BURN_AT_ROLE, admin);
+
+        try token.burnAt(feeManager, amount) {
+            vm.stopPrank();
+            revert("TIP-1006: Should revert for FeeManager");
+        } catch (bytes memory reason) {
+            assertEq(
+                bytes4(reason),
+                ITIP20.ProtectedAddress.selector,
+                "TIP-1006: Should revert with ProtectedAddress for FeeManager"
+            );
+        }
+
+        try token.burnAt(dex, amount) {
+            vm.stopPrank();
+            revert("TIP-1006: Should revert for DEX");
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertEq(
+                bytes4(reason),
+                ITIP20.ProtectedAddress.selector,
+                "TIP-1006: Should revert with ProtectedAddress for DEX"
             );
         }
     }
@@ -1199,6 +1284,36 @@ contract TIP20InvariantTest is InvariantBaseTest {
         try token.burnBlocked(target, amount) {
             vm.stopPrank();
             revert("TEMPO-TIP29: Non-burn-blocked-role should not be able to call burnBlocked");
+        } catch {
+            vm.stopPrank();
+            // Expected to revert - access control enforced
+        }
+    }
+
+    /// @notice Handler for unauthorized burnAt attempts
+    /// @dev Tests TIP-1006 access control on burnAt
+    function burnAtUnauthorized(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 targetSeed,
+        uint256 amount
+    )
+        external
+    {
+        address attacker = _selectActor(actorSeed);
+        address target = _selectActor(targetSeed);
+        TIP20 token = _selectBaseToken(tokenSeed);
+
+        vm.assume(!token.hasRole(attacker, _BURN_AT_ROLE));
+
+        uint256 targetBalance = token.balanceOf(target);
+        vm.assume(targetBalance > 0);
+        amount = bound(amount, 1, targetBalance);
+
+        vm.startPrank(attacker);
+        try token.burnAt(target, amount) {
+            vm.stopPrank();
+            revert("TIP-1006: Non-burn-at-role should not be able to call burnAt");
         } catch {
             vm.stopPrank();
             // Expected to revert - access control enforced

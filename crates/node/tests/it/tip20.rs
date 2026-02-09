@@ -6,8 +6,8 @@ use alloy::{
 };
 use futures::future::try_join_all;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, TIP20Error};
-use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
+use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP403Registry, TIP20Error};
+use tempo_precompiles::{TIP403_REGISTRY_ADDRESS, tip20::BURN_AT_ROLE};
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
@@ -218,6 +218,166 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     assert_eq!(
         err.as_decoded_interface_error::<TIP20Error>(),
         Some(TIP20Error::SupplyCapExceeded(ITIP20::SupplyCapExceeded {}))
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_burn_at() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let token = setup_test_token(provider.clone(), admin).await?;
+    let roles = IRolesAuth::new(*token.address(), provider.clone());
+    let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
+
+    let blocked_account = Address::random();
+    let authorized_account = Address::random();
+    let blocked_initial = U256::from(700u64);
+    let authorized_initial = U256::from(500u64);
+    let blocked_burn = U256::from(200u64);
+    let authorized_burn = U256::from(100u64);
+
+    roles
+        .grantRole(*BURN_AT_ROLE, admin)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    token
+        .mint(blocked_account, blocked_initial)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    token
+        .mint(authorized_account, authorized_initial)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let policy_receipt = registry
+        .createPolicy(admin, ITIP403Registry::PolicyType::BLACKLIST)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    let policy_id = policy_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
+        .next()
+        .expect("PolicyCreated event should be emitted")
+        .policyId;
+
+    registry
+        .modifyPolicyBlacklist(policy_id, blocked_account, true)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    token
+        .changeTransferPolicyId(policy_id)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Policy-independent behavior: both blocked and authorized accounts can be burned via burnAt.
+    token.burnAt(blocked_account, blocked_burn).call().await?;
+    token
+        .burnAt(authorized_account, authorized_burn)
+        .call()
+        .await?;
+
+    let blocked_receipt = token
+        .burnAt(blocked_account, blocked_burn)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    let blocked_transfer_event = blocked_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+        .next()
+        .expect("Transfer event should be emitted");
+    assert_eq!(blocked_transfer_event.from, blocked_account);
+    assert_eq!(blocked_transfer_event.to, Address::ZERO);
+    assert_eq!(blocked_transfer_event.amount, blocked_burn);
+
+    let blocked_burn_event = blocked_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::BurnAt::decode_log(&log.inner).ok())
+        .next()
+        .expect("BurnAt event should be emitted");
+    assert_eq!(blocked_burn_event.from, blocked_account);
+    assert_eq!(blocked_burn_event.amount, blocked_burn);
+
+    let authorized_receipt = token
+        .burnAt(authorized_account, authorized_burn)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    let authorized_transfer_event = authorized_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+        .next()
+        .expect("Transfer event should be emitted");
+    assert_eq!(authorized_transfer_event.from, authorized_account);
+    assert_eq!(authorized_transfer_event.to, Address::ZERO);
+    assert_eq!(authorized_transfer_event.amount, authorized_burn);
+
+    let authorized_burn_event = authorized_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::BurnAt::decode_log(&log.inner).ok())
+        .next()
+        .expect("BurnAt event should be emitted");
+    assert_eq!(authorized_burn_event.from, authorized_account);
+    assert_eq!(authorized_burn_event.amount, authorized_burn);
+
+    assert_eq!(
+        token.balanceOf(blocked_account).call().await?,
+        blocked_initial - blocked_burn
+    );
+    assert_eq!(
+        token.balanceOf(authorized_account).call().await?,
+        authorized_initial - authorized_burn
+    );
+    assert_eq!(
+        token.totalSupply().call().await?,
+        blocked_initial + authorized_initial - blocked_burn - authorized_burn
     );
 
     Ok(())

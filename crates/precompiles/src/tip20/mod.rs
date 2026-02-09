@@ -90,6 +90,7 @@ pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"
 pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
+pub static BURN_AT_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_AT_ROLE"));
 
 impl TIP20Token {
     pub fn name(&self) -> Result<String> {
@@ -162,6 +163,14 @@ impl TIP20Token {
     /// The role is computed as `keccak256("BURN_BLOCKED_ROLE")`.
     pub fn burn_blocked_role() -> B256 {
         *BURN_BLOCKED_ROLE
+    }
+
+    /// Returns the BURN_AT_ROLE constant
+    ///
+    /// This role identifier grants permission to burn tokens from any account.
+    /// The role is computed as `keccak256("BURN_AT_ROLE")`.
+    pub fn burn_at_role() -> B256 {
+        *BURN_AT_ROLE
     }
 
     // View functions
@@ -433,6 +442,34 @@ impl TIP20Token {
         self.set_total_supply(new_supply)?;
 
         self.emit_event(TIP20Event::BurnBlocked(ITIP20::BurnBlocked {
+            from: call.from,
+            amount: call.amount,
+        }))
+    }
+
+    /// Burns tokens from any address, independent of transfer policy authorization.
+    pub fn burn_at(&mut self, msg_sender: Address, call: ITIP20::burnAtCall) -> Result<()> {
+        self.check_role(msg_sender, *BURN_AT_ROLE)?;
+
+        // Prevent burning from `FeeManager` and `StablecoinDEX` to protect accounting invariants.
+        if matches!(call.from, TIP_FEE_MANAGER_ADDRESS | STABLECOIN_DEX_ADDRESS) {
+            return Err(TIP20Error::protected_address().into());
+        }
+
+        self._transfer(call.from, Address::ZERO, call.amount)?;
+
+        let total_supply = self.total_supply()?;
+        let new_supply =
+            total_supply
+                .checked_sub(call.amount)
+                .ok_or(TIP20Error::insufficient_balance(
+                    total_supply,
+                    call.amount,
+                    self.address,
+                ))?;
+        self.set_total_supply(new_supply)?;
+
+        self.emit_event(TIP20Event::BurnAt(ITIP20::BurnAt {
             from: call.from,
             amount: call.amount,
         }))
@@ -1729,6 +1766,319 @@ pub(crate) mod tests {
                 account: STABLECOIN_DEX_ADDRESS,
             })?;
             assert_eq!(balance, amount);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_succeeds_and_emits_events() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+        let holder = Address::random();
+        let amount = U256::from(500);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_AT_ROLE)
+                .with_mint(holder, amount)
+                .clear_events()
+                .apply()?;
+
+            token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount,
+                },
+            )?;
+
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: holder })?,
+                U256::ZERO
+            );
+            assert_eq!(token.total_supply()?, U256::ZERO);
+
+            token.assert_emitted_events(vec![
+                TIP20Event::Transfer(ITIP20::Transfer {
+                    from: holder,
+                    to: Address::ZERO,
+                    amount,
+                }),
+                TIP20Event::BurnAt(ITIP20::BurnAt {
+                    from: holder,
+                    amount,
+                }),
+            ]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_unauthorized() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let caller = Address::random();
+        let holder = Address::random();
+        let amount = U256::from(100);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_mint(holder, amount)
+                .apply()?;
+
+            let result = token.burn_at(
+                caller,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount,
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::RolesAuthError(
+                    RolesAuthError::Unauthorized(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_policy_independent_for_blocked_account() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+        let holder = Address::random();
+        let amount = U256::from(300);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_AT_ROLE)
+                .with_mint(holder, amount)
+                .apply()?;
+
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: holder,
+                    restricted: true,
+                },
+            )?;
+
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount,
+                },
+            )?;
+
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: holder })?,
+                U256::ZERO
+            );
+            assert_eq!(token.total_supply()?, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_preserves_rewards_claimability() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+        let holder = Address::random();
+        let mint_amount = U256::from(1_000);
+        let burn_amount = U256::from(400);
+        let reward_amount = U256::from(200);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_AT_ROLE)
+                .with_mint(holder, mint_amount)
+                .with_mint(admin, reward_amount)
+                .apply()?;
+
+            token.set_reward_recipient(
+                holder,
+                ITIP20::setRewardRecipientCall { recipient: holder },
+            )?;
+            assert_eq!(token.get_opted_in_supply()?, 1_000u128);
+
+            token.distribute_reward(
+                admin,
+                ITIP20::distributeRewardCall {
+                    amount: reward_amount,
+                },
+            )?;
+
+            token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount: burn_amount,
+                },
+            )?;
+
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: holder })?,
+                mint_amount - burn_amount
+            );
+            assert_eq!(token.get_opted_in_supply()?, 600u128);
+
+            let info = token.get_user_reward_info(holder)?;
+            assert_eq!(info.reward_balance, reward_amount);
+
+            let claimed = token.claim_rewards(holder)?;
+            assert_eq!(claimed, reward_amount);
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: holder })?,
+                mint_amount - burn_amount + reward_amount
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_unable_to_burn_at_from_protected_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+        let amount = U256::from(100);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_AT_ROLE)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
+                .with_mint(STABLECOIN_DEX_ADDRESS, amount)
+                .apply()?;
+
+            let result = token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: TIP_FEE_MANAGER_ADDRESS,
+                    amount,
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
+            ));
+
+            let result = token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: STABLECOIN_DEX_ADDRESS,
+                    amount,
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_zero_amount() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+        let holder = Address::random();
+        let mint_amount = U256::from(500);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_AT_ROLE)
+                .with_mint(holder, mint_amount)
+                .clear_events()
+                .apply()?;
+
+            token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount: U256::ZERO,
+                },
+            )?;
+
+            // Balance and supply unchanged
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: holder })?,
+                mint_amount
+            );
+            assert_eq!(token.total_supply()?, mint_amount);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_succeeds_while_paused() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+        let holder = Address::random();
+        let amount = U256::from(300);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(admin, *PAUSE_ROLE)
+                .with_role(burner, *BURN_AT_ROLE)
+                .with_mint(holder, amount)
+                .apply()?;
+
+            // Pause the token
+            token.pause(admin, ITIP20::pauseCall {})?;
+            assert!(token.paused()?);
+
+            // burnAt should still succeed while paused
+            token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount,
+                },
+            )?;
+
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: holder })?,
+                U256::ZERO
+            );
+            assert_eq!(token.total_supply()?, U256::ZERO);
 
             Ok(())
         })

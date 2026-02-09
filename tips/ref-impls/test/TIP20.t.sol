@@ -25,6 +25,7 @@ contract TIP20Test is BaseTest {
     event Approval(address indexed owner, address indexed spender, uint256 amount);
     event Mint(address indexed to, uint256 amount);
     event Burn(address indexed from, uint256 amount);
+    event BurnAt(address indexed from, uint256 amount);
     event NextQuoteTokenSet(address indexed updater, TIP20 indexed nextQuoteToken);
     event QuoteTokenUpdate(address indexed updater, TIP20 indexed newQuoteToken);
     event RewardDistributed(address indexed funder, uint256 amount);
@@ -483,9 +484,8 @@ contract TIP20Test is BaseTest {
         // Create a policy that blocks alice
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 blockingPolicy = registry.createPolicyWithAccounts(
-            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
-        );
+        uint64 blockingPolicy =
+            registry.createPolicyWithAccounts(admin, ITIP403Registry.PolicyType.BLACKLIST, accounts);
 
         vm.prank(admin);
         token.changeTransferPolicyId(blockingPolicy);
@@ -854,9 +854,8 @@ contract TIP20Test is BaseTest {
         // Create a policy that blocks alice
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 blockingPolicy = registry.createPolicyWithAccounts(
-            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
-        );
+        uint64 blockingPolicy =
+            registry.createPolicyWithAccounts(admin, ITIP403Registry.PolicyType.BLACKLIST, accounts);
 
         // Change to a policy where alice is blocked
         vm.startPrank(admin);
@@ -873,6 +872,146 @@ contract TIP20Test is BaseTest {
         vm.stopPrank();
     }
 
+    function testBurnAtUnauthorized() public {
+        vm.prank(alice);
+        try token.burnAt(bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+        }
+    }
+
+    function testBurnAtInsufficientBalance() public {
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+        try token.burnAt(charlie, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(
+                err,
+                abi.encodeWithSelector(
+                    ITIP20.InsufficientBalance.selector, 0, 100e18, address(token)
+                )
+            );
+        }
+        vm.stopPrank();
+    }
+
+    function testBurnAtSuccess_AuthorizedAddress() public {
+        uint256 burnAmount = 100e18;
+
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+
+        uint256 aliceBalanceBefore = token.balanceOf(alice);
+        uint256 totalSupplyBefore = token.totalSupply();
+
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(alice, address(0), burnAmount);
+        vm.expectEmit(true, true, true, true);
+        emit BurnAt(alice, burnAmount);
+
+        token.burnAt(alice, burnAmount);
+
+        assertEq(token.balanceOf(alice), aliceBalanceBefore - burnAmount);
+        assertEq(token.totalSupply(), totalSupplyBefore - burnAmount);
+        vm.stopPrank();
+    }
+
+    function testBurnAtSuccess_BlockedAddress() public {
+        // Create a policy that blocks alice
+        address[] memory accounts = new address[](1);
+        accounts[0] = alice;
+        uint64 blockingPolicy =
+            registry.createPolicyWithAccounts(admin, ITIP403Registry.PolicyType.BLACKLIST, accounts);
+
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+        token.changeTransferPolicyId(blockingPolicy);
+
+        uint256 aliceBalanceBefore = token.balanceOf(alice);
+        uint256 totalSupplyBefore = token.totalSupply();
+
+        token.burnAt(alice, 100e18);
+
+        assertEq(token.balanceOf(alice), aliceBalanceBefore - 100e18);
+        assertEq(token.totalSupply(), totalSupplyBefore - 100e18);
+        vm.stopPrank();
+    }
+
+    function testBurnAt_RewardAccounting() public {
+        uint256 rewardAmount = 100e18;
+        uint256 burnAmount = 400e18;
+
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+        token.mint(admin, rewardAmount);
+        vm.stopPrank();
+
+        vm.prank(alice);
+        token.setRewardRecipient(alice);
+        assertEq(token.optedInSupply(), 1000e18);
+
+        vm.prank(admin);
+        token.distributeReward(rewardAmount);
+
+        vm.prank(admin);
+        token.burnAt(alice, burnAmount);
+
+        // Rewards should have accrued before the burn and remain claimable.
+        uint256 pending = token.getPendingRewards(alice);
+        assertEq(pending, rewardAmount);
+        assertEq(token.balanceOf(alice), 600e18);
+        assertEq(token.optedInSupply(), 600e18);
+
+        vm.prank(alice);
+        uint256 claimed = token.claimRewards();
+        assertEq(claimed, rewardAmount);
+        assertEq(token.balanceOf(alice), 700e18);
+    }
+
+    function testBurnAtZeroAmount() public {
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+
+        uint256 aliceBalanceBefore = token.balanceOf(alice);
+        uint256 totalSupplyBefore = token.totalSupply();
+
+        token.burnAt(alice, 0);
+
+        assertEq(token.balanceOf(alice), aliceBalanceBefore);
+        assertEq(token.totalSupply(), totalSupplyBefore);
+        vm.stopPrank();
+    }
+
+    function testBurnAtWhilePaused() public {
+        uint256 burnAmount = 100e18;
+
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+        token.grantRole(_PAUSE_ROLE, admin);
+        token.pause();
+        vm.stopPrank();
+
+        // Regular transfer should fail while paused
+        vm.prank(alice);
+        try token.transfer(bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.ContractPaused.selector));
+        }
+
+        // burnAt should succeed while paused
+        uint256 aliceBalanceBefore = token.balanceOf(alice);
+        uint256 totalSupplyBefore = token.totalSupply();
+
+        vm.prank(admin);
+        token.burnAt(alice, burnAmount);
+
+        assertEq(token.balanceOf(alice), aliceBalanceBefore - burnAmount);
+        assertEq(token.totalSupply(), totalSupplyBefore - burnAmount);
+    }
+
     function testTransferPolicyForbids() public {
         vm.prank(alice);
         token.approve(bob, 1000e18);
@@ -880,9 +1019,8 @@ contract TIP20Test is BaseTest {
         // Create a policy that blocks alice
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 blockingPolicy = registry.createPolicyWithAccounts(
-            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
-        );
+        uint64 blockingPolicy =
+            registry.createPolicyWithAccounts(admin, ITIP403Registry.PolicyType.BLACKLIST, accounts);
 
         vm.prank(admin);
         token.changeTransferPolicyId(blockingPolicy);
@@ -1054,9 +1192,8 @@ contract TIP20Test is BaseTest {
     }
 
     function testCompleteQuoteTokenUpdateCannotCreateIndirectLoop() public {
-        TIP20 newToken = TIP20(
-            factory.createToken("New Token", "NEW", "USD", token, admin, bytes32("newtoken"))
-        );
+        TIP20 newToken =
+            TIP20(factory.createToken("New Token", "NEW", "USD", token, admin, bytes32("newtoken")));
 
         // Try to set token's quote token to newToken (which would create a loop)
         vm.startPrank(admin);
@@ -2100,6 +2237,27 @@ contract TIP20Test is BaseTest {
         vm.stopPrank();
     }
 
+    function testBurnAt_RevertsIf_ProtectedAddress() public {
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+
+        // Test burning from TIP_FEE_MANAGER_ADDRESS
+        try token.burnAt(0xfeEC000000000000000000000000000000000000, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.ProtectedAddress.selector));
+        }
+
+        // Test burning from STABLECOIN_DEX_ADDRESS
+        try token.burnAt(0xDEc0000000000000000000000000000000000000, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.ProtectedAddress.selector));
+        }
+
+        vm.stopPrank();
+    }
+
     /*//////////////////////////////////////////////////////////////
                     SECTION: GET PENDING REWARDS TESTS
     //////////////////////////////////////////////////////////////*/
@@ -2270,9 +2428,8 @@ contract TIP20Test is BaseTest {
     function test_ClaimRewards_RevertsIf_UserUnauthorized() public {
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 blacklistPolicy = registry.createPolicyWithAccounts(
-            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
-        );
+        uint64 blacklistPolicy =
+            registry.createPolicyWithAccounts(admin, ITIP403Registry.PolicyType.BLACKLIST, accounts);
 
         vm.prank(admin);
         token.changeTransferPolicyId(blacklistPolicy);

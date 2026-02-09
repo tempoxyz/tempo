@@ -40,6 +40,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     bytes32 public constant UNPAUSE_ROLE = keccak256("UNPAUSE_ROLE");
     bytes32 public constant ISSUER_ROLE = keccak256("ISSUER_ROLE");
     bytes32 public constant BURN_BLOCKED_ROLE = keccak256("BURN_BLOCKED_ROLE");
+    bytes32 public constant BURN_AT_ROLE = keccak256("BURN_AT_ROLE");
 
     uint64 public transferPolicyId = 1; // "Always-allow" policy by default.
 
@@ -187,7 +188,28 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         emit BurnBlocked(from, amount);
     }
 
-    function mintWithMemo(address to, uint256 amount, bytes32 memo) external onlyRole(ISSUER_ROLE) {
+    function burnAt(address from, uint256 amount) external onlyRole(BURN_AT_ROLE) {
+        // Prevent burning from protected precompile addresses
+        if (from == TIP_FEE_MANAGER_ADDRESS || from == STABLECOIN_DEX_ADDRESS) {
+            revert ProtectedAddress();
+        }
+
+        _transfer(from, address(0), amount);
+        unchecked {
+            _totalSupply -= uint128(amount);
+        }
+
+        emit BurnAt(from, amount);
+    }
+
+    function mintWithMemo(
+        address to,
+        uint256 amount,
+        bytes32 memo
+    )
+        external
+        onlyRole(ISSUER_ROLE)
+    {
         _mint(to, amount);
         emit TransferWithMemo(address(0), to, amount, memo);
         emit Mint(to, amount);
@@ -556,4 +578,4 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
     }
 
-    }
+}

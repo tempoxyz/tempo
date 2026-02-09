@@ -35,6 +35,7 @@ contract BaseTest is Test {
     bytes32 internal constant _TRANSFER_ROLE = keccak256("TRANSFER_ROLE");
     bytes32 internal constant _RECEIVE_WITH_MEMO_ROLE = keccak256("RECEIVE_WITH_MEMO_ROLE");
     bytes32 internal constant _BURN_BLOCKED_ROLE = keccak256("BURN_BLOCKED_ROLE");
+    bytes32 internal constant _BURN_AT_ROLE = keccak256("BURN_AT_ROLE");
 
     // Common test addresses
     address public admin = address(this);
@@ -62,8 +63,7 @@ contract BaseTest is Test {
     function setUp() public virtual {
         // Is this tempo chain?
         isTempo = _TIP403REGISTRY.code.length + _TIP20FACTORY.code.length + _PATH_USD.code.length
-                + _STABLECOIN_DEX.code.length + _NONCE.code.length + _ACCOUNT_KEYCHAIN.code.length
-            > 0;
+            + _STABLECOIN_DEX.code.length + _NONCE.code.length + _ACCOUNT_KEYCHAIN.code.length > 0;
 
         console.log("Tests running with isTempo =", isTempo);
 
