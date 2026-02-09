@@ -21,7 +21,10 @@ contract TIP20Factory is ITIP20Factory {
         ITIP20 quoteToken,
         address admin,
         bytes32 salt
-    ) external returns (address) {
+    )
+        external
+        returns (address)
+    {
         if (!TempoUtilities.isTIP20(address(quoteToken))) {
             revert InvalidQuoteToken();
         }

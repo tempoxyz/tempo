@@ -45,6 +45,8 @@ hardfork!(
         T0,
         /// T1 hardfork - adds expiring nonce transactions
         T1,
+        /// T2 hardfork - adds compound transfer policies (TIP-1015)
+        T2,
     }
 );
 
@@ -59,23 +61,56 @@ impl TempoHardfork {
         *self >= Self::T1
     }
 
+    /// Returns true if this hardfork is T2 or later.
+    pub fn is_t2(&self) -> bool {
+        *self >= Self::T2
+    }
+
     /// Returns the base fee for this hardfork.
     /// - Pre-T1: 10 gwei
     /// - T1+: 20 gwei (targets ~0.1 cent per TIP-20 transfer)
     pub const fn base_fee(&self) -> u64 {
         match self {
-            Self::T1 => crate::spec::TEMPO_T1_BASE_FEE,
+            Self::T1 | Self::T2 => crate::spec::TEMPO_T1_BASE_FEE,
             Self::T0 | Self::Genesis => crate::spec::TEMPO_T0_BASE_FEE,
         }
     }
 
     /// Returns the fixed general gas limit for T1+, or None for pre-T1.
-    /// - T1+: 30M gas (fixed)
     /// - Pre-T1: None
+    /// - T1+: 30M gas (fixed)
     pub const fn general_gas_limit(&self) -> Option<u64> {
         match self {
-            Self::T1 => Some(30_000_000),
+            Self::T1 | Self::T2 => Some(crate::spec::TEMPO_T1_GENERAL_GAS_LIMIT),
             Self::T0 | Self::Genesis => None,
+        }
+    }
+
+    /// Returns the per-transaction gas limit cap, or None if uncapped.
+    /// - Pre-T1: None (no per-tx cap)
+    /// - T1+: 30M gas (allows maximum-sized contract deployments under TIP-1000 state creation)
+    pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
+        match self {
+            Self::T1 | Self::T2 => Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
+            Self::T0 | Self::Genesis => None,
+        }
+    }
+
+    /// Gas cost for using an existing 2D nonce key
+    pub const fn gas_existing_nonce_key(&self) -> u64 {
+        match self {
+            Self::Genesis => 0,
+            Self::T0 | Self::T1 => crate::spec::TEMPO_T1_EXISTING_NONCE_KEY_GAS,
+            Self::T2 => crate::spec::TEMPO_T2_EXISTING_NONCE_KEY_GAS,
+        }
+    }
+
+    /// Gas cost for using a new 2D nonce key
+    pub const fn gas_new_nonce_key(&self) -> u64 {
+        match self {
+            Self::Genesis => 0,
+            Self::T0 | Self::T1 => crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS,
+            Self::T2 => crate::spec::TEMPO_T2_NEW_NONCE_KEY_GAS,
         }
     }
 }
@@ -87,6 +122,9 @@ pub trait TempoHardforks: EthereumHardforks {
 
     /// Retrieves the Tempo hardfork active at a given timestamp.
     fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+        if self.is_t2_active_at_timestamp(timestamp) {
+            return TempoHardfork::T2;
+        }
         if self.is_t1_active_at_timestamp(timestamp) {
             return TempoHardfork::T1;
         }
@@ -105,6 +143,12 @@ pub trait TempoHardforks: EthereumHardforks {
     /// Returns true if T1 is active at the given timestamp.
     fn is_t1_active_at_timestamp(&self, timestamp: u64) -> bool {
         self.tempo_fork_activation(TempoHardfork::T1)
+            .active_at_timestamp(timestamp)
+    }
+
+    /// Returns true if T2 is active at the given timestamp.
+    fn is_t2_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::T2)
             .active_at_timestamp(timestamp)
     }
 
@@ -149,6 +193,7 @@ mod tests {
         assert_eq!(TempoHardfork::Genesis.name(), "Genesis");
         assert_eq!(TempoHardfork::T0.name(), "T0");
         assert_eq!(TempoHardfork::T1.name(), "T1");
+        assert_eq!(TempoHardfork::T2.name(), "T2");
     }
 
     #[test]
@@ -156,6 +201,7 @@ mod tests {
         assert!(!TempoHardfork::Genesis.is_t0());
         assert!(TempoHardfork::T0.is_t0());
         assert!(TempoHardfork::T1.is_t0());
+        assert!(TempoHardfork::T2.is_t0());
     }
 
     #[test]
@@ -163,6 +209,15 @@ mod tests {
         assert!(!TempoHardfork::Genesis.is_t1());
         assert!(!TempoHardfork::T0.is_t1());
         assert!(TempoHardfork::T1.is_t1());
+        assert!(TempoHardfork::T2.is_t1());
+    }
+
+    #[test]
+    fn test_is_t2() {
+        assert!(!TempoHardfork::Genesis.is_t2());
+        assert!(!TempoHardfork::T0.is_t2());
+        assert!(!TempoHardfork::T1.is_t2());
+        assert!(TempoHardfork::T2.is_t2());
     }
 
     #[test]

@@ -9,6 +9,9 @@ set -e
 TEMPOUP_INSTALLER_VERSION="0.0.1"
 
 REPO="tempoxyz/tempo"
+# GPG key fingerprint for release signing verification
+GPG_KEY_FINGERPRINT="EE3C5D41EA963E896F310EC3CBBFA54B20D33446"
+GPG_KEYSERVER="keyserver.ubuntu.com"
 INSTALL_DIR="${TEMPO_DIR:-$HOME/.tempo}"
 BIN_DIR="$INSTALL_DIR/bin"
 TEMPOUP_BIN_URL="https://raw.githubusercontent.com/tempoxyz/tempo/main/tempoup/tempoup"
@@ -354,6 +357,32 @@ main() {
     fi
 
     info "Checksum verified ✓"
+
+    # GPG signature verification
+    if command -v gpg >/dev/null 2>&1; then
+        info "Verifying GPG signature..."
+        download_file "$VERSION_TAG" "${ARCHIVE_NAME}.asc" "$TMP_DIR"
+
+        # Import the release signing key if not already present
+        if ! gpg --list-keys "$GPG_KEY_FINGERPRINT" >/dev/null 2>&1; then
+            info "Fetching Tempo release signing key from $GPG_KEYSERVER..."
+            if ! gpg --keyserver "$GPG_KEYSERVER" --recv-keys "$GPG_KEY_FINGERPRINT" 2>/dev/null; then
+                warn "Failed to fetch GPG key from keyserver. Skipping signature verification."
+                warn "You can manually import the key: gpg --keyserver $GPG_KEYSERVER --recv-keys $GPG_KEY_FINGERPRINT"
+            fi
+        fi
+
+        if gpg --list-keys "$GPG_KEY_FINGERPRINT" >/dev/null 2>&1; then
+            if gpg --batch --verify "$TMP_DIR/${ARCHIVE_NAME}.asc" "$ARCHIVE_PATH" 2>/dev/null; then
+                info "GPG signature verified ✓"
+            else
+                error "GPG signature verification failed. The binary may have been tampered with."
+            fi
+        fi
+    else
+        warn "gpg not found. Skipping signature verification."
+        warn "Install gpg to enable signature verification of releases."
+    fi
 
     # Extract archive
     info "Extracting archive..."
