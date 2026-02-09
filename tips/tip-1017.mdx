@@ -253,7 +253,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Transfer owner of the contract (owner only)
     /// @param newOwner The new owner address
-    function transferOwner(address newOwner) external;
+    function transferOwnership(address newOwner) external;
 
     /// @notice Set the epoch at which a fresh DKG ceremony will be triggered (owner only)
     /// @param epoch The epoch in which to run the fresh DKG ceremony.
@@ -486,7 +486,7 @@ The following invariants must always hold:
    changes.
 
 11. **Owner authorization**: Only the owner can call `addValidator`,
-    `transferOwner`, `migrateValidator`, `initializeIfMigrated`, and
+    `transferOwnership`, `migrateValidator`, `initializeIfMigrated`, and
     `setNextFullDkgCeremony`.
 
 12. **Dual authorization**: `rotateValidator`, `deactivateValidator`,
