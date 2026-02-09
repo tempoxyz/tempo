@@ -119,51 +119,51 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 
 # reth v1.10.1
-reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-codecs = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction", default-features = false }
-reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction", default-features = false }
-reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-rpc = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
-reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-codecs = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label", default-features = false }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label", default-features = false }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
+reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label" }
 
-reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "mattsse/split-disconnect-metrics-direction", features = [
+reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "feat/backed-off-peers-reason-label", features = [
   "std",
   "optional-checks",
 ] }
