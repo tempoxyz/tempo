@@ -188,6 +188,9 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
         if (channel.payer == address(0)) {
             revert ChannelNotFound();
         }
+        if (msg.sender != channel.payee) {
+            revert NotPayee();
+        }
         if (channel.finalized) {
             revert ChannelFinalized();
         }

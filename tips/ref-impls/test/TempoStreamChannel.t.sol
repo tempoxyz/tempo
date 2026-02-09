@@ -120,9 +120,11 @@ contract TempoStreamChannelTest is Test {
         bytes32 channelId = _openChannel();
 
         bytes memory sig1 = _signVoucher(channelId, 200_000);
+        vm.prank(payee);
         channel.settle(channelId, 200_000, sig1);
 
         bytes memory sig2 = _signVoucher(channelId, 500_000);
+        vm.prank(payee);
         channel.settle(channelId, 500_000, sig2);
 
         assertEq(token.balanceOf(payee), 500_000);
@@ -133,9 +135,11 @@ contract TempoStreamChannelTest is Test {
         bytes32 channelId = _openChannel();
 
         bytes memory sig1 = _signVoucher(channelId, 500_000);
+        vm.prank(payee);
         channel.settle(channelId, 500_000, sig1);
 
         bytes memory sig2 = _signVoucher(channelId, 400_000);
+        vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.AmountNotIncreasing.selector);
         channel.settle(channelId, 400_000, sig2);
     }
@@ -144,6 +148,7 @@ contract TempoStreamChannelTest is Test {
         bytes32 channelId = _openChannel();
 
         bytes memory sig = _signVoucher(channelId, DEPOSIT + 1);
+        vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.AmountExceedsDeposit.selector);
         channel.settle(channelId, DEPOSIT + 1, sig);
     }
@@ -156,6 +161,7 @@ contract TempoStreamChannelTest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongKey, digest);
         bytes memory sig = abi.encodePacked(r, s, v);
 
+        vm.prank(payee);
         vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
         channel.settle(channelId, 500_000, sig);
     }
@@ -301,6 +307,7 @@ contract TempoStreamChannelTest is Test {
             channel.open(payee, address(token), DEPOSIT, bytes32(uint256(2)), address(0));
 
         bytes memory sig = _signVoucher(channelId1, 500_000);
+        vm.prank(payee);
         channel.settle(channelId1, 500_000, sig);
 
         bytes32[] memory channelIds = new bytes32[](2);
@@ -314,6 +321,358 @@ contract TempoStreamChannelTest is Test {
         assertEq(states[1].settled, 0);
     }
 
+    // --- AuthorizedSigner Tests ---
+
+    function test_authorizedSigner_settleSuccess() public {
+        (address delegateSigner, uint256 delegateKey) = makeAddrAndKey("delegate");
+
+        vm.prank(payer);
+        bytes32 channelId = channel.open(payee, address(token), DEPOSIT, SALT, delegateSigner);
+
+        bytes32 digest = channel.getVoucherDigest(channelId, 500_000);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(delegateKey, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        vm.prank(payee);
+        channel.settle(channelId, 500_000, sig);
+
+        assertEq(channel.getChannel(channelId).settled, 500_000);
+        assertEq(token.balanceOf(payee), 500_000);
+    }
+
+    function test_authorizedSigner_payerSignatureRejected() public {
+        (address delegateSigner,) = makeAddrAndKey("delegate");
+
+        vm.prank(payer);
+        bytes32 channelId = channel.open(payee, address(token), DEPOSIT, SALT, delegateSigner);
+
+        bytes32 digest = channel.getVoucherDigest(channelId, 500_000);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerKey, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
+        channel.settle(channelId, 500_000, sig);
+    }
+
+    function test_authorizedSigner_closeWithDelegateVoucher() public {
+        (address delegateSigner, uint256 delegateKey) = makeAddrAndKey("delegate");
+
+        vm.prank(payer);
+        bytes32 channelId = channel.open(payee, address(token), DEPOSIT, SALT, delegateSigner);
+
+        uint128 amount = 400_000;
+        bytes32 digest = channel.getVoucherDigest(channelId, amount);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(delegateKey, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        vm.prank(payee);
+        channel.close(channelId, amount, sig);
+
+        assertTrue(channel.getChannel(channelId).finalized);
+        assertEq(token.balanceOf(payee), amount);
+        assertEq(token.balanceOf(payer), 10_000_000 - DEPOSIT + (DEPOSIT - amount));
+    }
+
+    function test_authorizedSigner_equalsPayer() public {
+        vm.prank(payer);
+        bytes32 channelId = channel.open(payee, address(token), DEPOSIT, SALT, payer);
+
+        bytes memory sig = _signVoucher(channelId, 500_000);
+        vm.prank(payee);
+        channel.settle(channelId, 500_000, sig);
+
+        assertEq(channel.getChannel(channelId).settled, 500_000);
+    }
+
+    // --- TopUp + Settle Beyond Initial Deposit ---
+
+    function test_topUp_thenSettleBeyondInitialDeposit() public {
+        bytes32 channelId = _openChannel();
+
+        bytes memory sig1 = _signVoucher(channelId, 900_000);
+        vm.prank(payee);
+        channel.settle(channelId, 900_000, sig1);
+        assertEq(channel.getChannel(channelId).settled, 900_000);
+
+        vm.prank(payer);
+        channel.topUp(channelId, 500_000);
+        assertEq(channel.getChannel(channelId).deposit, DEPOSIT + 500_000);
+
+        uint128 beyondInitial = DEPOSIT + 200_000;
+        bytes memory sig2 = _signVoucher(channelId, beyondInitial);
+        vm.prank(payee);
+        channel.settle(channelId, beyondInitial, sig2);
+
+        assertEq(channel.getChannel(channelId).settled, beyondInitial);
+        assertEq(token.balanceOf(payee), beyondInitial);
+    }
+
+    function test_topUp_zeroAmount() public {
+        bytes32 channelId = _openChannel();
+
+        uint256 balanceBefore = token.balanceOf(address(channel));
+        vm.prank(payer);
+        channel.topUp(channelId, 0);
+
+        assertEq(channel.getChannel(channelId).deposit, DEPOSIT);
+        assertEq(token.balanceOf(address(channel)), balanceBefore);
+    }
+
+    function test_topUp_cancelsCloseRequest() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payer);
+        channel.requestClose(channelId);
+        assertEq(channel.getChannel(channelId).closeRequestedAt, block.timestamp);
+
+        vm.prank(payer);
+        channel.topUp(channelId, 100_000);
+
+        assertEq(channel.getChannel(channelId).closeRequestedAt, 0);
+    }
+
+    function test_topUp_revert_finalized() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payee);
+        channel.close(channelId, 0, "");
+
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        channel.topUp(channelId, 100_000);
+    }
+
+    // --- Grace Period Boundary Tests ---
+
+    function test_payeeCanSettleDuringGracePeriod() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payer);
+        channel.requestClose(channelId);
+
+        vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() - 1);
+
+        bytes memory sig = _signVoucher(channelId, 600_000);
+        vm.prank(payee);
+        channel.settle(channelId, 600_000, sig);
+
+        assertEq(channel.getChannel(channelId).settled, 600_000);
+        assertEq(token.balanceOf(payee), 600_000);
+    }
+
+    function test_payeeCanCloseDuringGracePeriod() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payer);
+        channel.requestClose(channelId);
+
+        vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() - 1);
+
+        uint128 amount = 700_000;
+        bytes memory sig = _signVoucher(channelId, amount);
+
+        vm.prank(payee);
+        channel.close(channelId, amount, sig);
+
+        assertTrue(channel.getChannel(channelId).finalized);
+        assertEq(token.balanceOf(payee), amount);
+    }
+
+    function test_withdraw_exactGraceBoundary() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payer);
+        channel.requestClose(channelId);
+
+        vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD());
+
+        vm.prank(payer);
+        channel.withdraw(channelId);
+
+        assertTrue(channel.getChannel(channelId).finalized);
+    }
+
+    function test_withdraw_afterPartialSettle() public {
+        bytes32 channelId = _openChannel();
+
+        bytes memory sig = _signVoucher(channelId, 300_000);
+        vm.prank(payee);
+        channel.settle(channelId, 300_000, sig);
+
+        vm.prank(payer);
+        channel.requestClose(channelId);
+        vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() + 1);
+
+        uint256 payerBalanceBefore = token.balanceOf(payer);
+        vm.prank(payer);
+        channel.withdraw(channelId);
+
+        uint128 expectedRefund = DEPOSIT - 300_000;
+        assertEq(token.balanceOf(payer), payerBalanceBefore + expectedRefund);
+        assertTrue(channel.getChannel(channelId).finalized);
+    }
+
+    // --- Close Edge Cases ---
+
+    function test_close_cumulativeEqualToSettled() public {
+        bytes32 channelId = _openChannel();
+
+        bytes memory sig = _signVoucher(channelId, 500_000);
+        vm.prank(payee);
+        channel.settle(channelId, 500_000, sig);
+
+        uint256 payerBalanceBefore = token.balanceOf(payer);
+
+        vm.prank(payee);
+        channel.close(channelId, 500_000, "");
+
+        assertTrue(channel.getChannel(channelId).finalized);
+        assertEq(token.balanceOf(payer), payerBalanceBefore + (DEPOSIT - 500_000));
+    }
+
+    function test_close_cumulativeLessThanSettled() public {
+        bytes32 channelId = _openChannel();
+
+        bytes memory sig = _signVoucher(channelId, 500_000);
+        vm.prank(payee);
+        channel.settle(channelId, 500_000, sig);
+
+        uint256 payerBalanceBefore = token.balanceOf(payer);
+        uint256 payeeBalanceBefore = token.balanceOf(payee);
+
+        vm.prank(payee);
+        channel.close(channelId, 200_000, "");
+
+        assertTrue(channel.getChannel(channelId).finalized);
+        assertEq(token.balanceOf(payer), payerBalanceBefore + (DEPOSIT - 500_000));
+        assertEq(token.balanceOf(payee), payeeBalanceBefore);
+    }
+
+    function test_close_zeroAfterPartialSettle() public {
+        bytes32 channelId = _openChannel();
+
+        bytes memory sig = _signVoucher(channelId, 300_000);
+        vm.prank(payee);
+        channel.settle(channelId, 300_000, sig);
+
+        uint256 payerBalanceBefore = token.balanceOf(payer);
+
+        vm.prank(payee);
+        channel.close(channelId, 0, "");
+
+        assertTrue(channel.getChannel(channelId).finalized);
+        assertEq(token.balanceOf(payer), payerBalanceBefore + (DEPOSIT - 300_000));
+    }
+
+    function test_close_fullDeposit() public {
+        bytes32 channelId = _openChannel();
+
+        bytes memory sig = _signVoucher(channelId, DEPOSIT);
+
+        vm.prank(payee);
+        channel.close(channelId, DEPOSIT, sig);
+
+        assertTrue(channel.getChannel(channelId).finalized);
+        assertEq(token.balanceOf(payee), DEPOSIT);
+        assertEq(token.balanceOf(address(channel)), 0);
+    }
+
+    // --- RequestClose Edge Cases ---
+
+    function test_requestClose_idempotent() public {
+        bytes32 channelId = _openChannel();
+
+        vm.warp(1000);
+        vm.prank(payer);
+        channel.requestClose(channelId);
+
+        uint64 firstTimestamp = channel.getChannel(channelId).closeRequestedAt;
+
+        vm.warp(2000);
+        vm.prank(payer);
+        channel.requestClose(channelId);
+
+        assertEq(channel.getChannel(channelId).closeRequestedAt, firstTimestamp);
+    }
+
+    function test_requestClose_revert_finalized() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payee);
+        channel.close(channelId, 0, "");
+
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        channel.requestClose(channelId);
+    }
+
+    // --- Settle Edge Cases ---
+
+    function test_settle_revert_finalized() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payee);
+        channel.close(channelId, 0, "");
+
+        bytes memory sig = _signVoucher(channelId, 100_000);
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.ChannelFinalized.selector);
+        channel.settle(channelId, 100_000, sig);
+    }
+
+    function test_settle_revert_nonExistentChannel() public {
+        bytes32 fakeId = bytes32(uint256(999));
+        bytes memory sig = _signVoucher(fakeId, 100_000);
+
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.ChannelNotFound.selector);
+        channel.settle(fakeId, 100_000, sig);
+    }
+
+    function test_settle_revert_sameAmount() public {
+        bytes32 channelId = _openChannel();
+
+        bytes memory sig1 = _signVoucher(channelId, 500_000);
+        vm.prank(payee);
+        channel.settle(channelId, 500_000, sig1);
+
+        bytes memory sig2 = _signVoucher(channelId, 500_000);
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.AmountNotIncreasing.selector);
+        channel.settle(channelId, 500_000, sig2);
+    }
+
+    function test_settle_revert_notPayee() public {
+        bytes32 channelId = _openChannel();
+
+        address randomCaller = makeAddr("random");
+        bytes memory sig = _signVoucher(channelId, 500_000);
+
+        vm.prank(randomCaller);
+        vm.expectRevert(TempoStreamChannel.NotPayee.selector);
+        channel.settle(channelId, 500_000, sig);
+    }
+
+    // --- View Function Tests ---
+
+    function test_computeChannelId_deterministic() public view {
+        bytes32 id1 = channel.computeChannelId(payer, payee, address(token), SALT, address(0));
+        bytes32 id2 = channel.computeChannelId(payer, payee, address(token), SALT, address(0));
+        assertEq(id1, id2);
+    }
+
+    function test_computeChannelId_differentSaltDifferentId() public view {
+        bytes32 id1 = channel.computeChannelId(payer, payee, address(token), SALT, address(0));
+        bytes32 id2 =
+            channel.computeChannelId(payer, payee, address(token), bytes32(uint256(2)), address(0));
+        assertTrue(id1 != id2);
+    }
+
+    function test_domainSeparator_nonZero() public view {
+        assertTrue(channel.domainSeparator() != bytes32(0));
+    }
+
     // --- Fuzz Tests ---
 
     function testFuzz_settle_monotonic(uint128 amount1, uint128 amount2) public {
@@ -323,10 +682,12 @@ contract TempoStreamChannelTest is Test {
         bytes32 channelId = _openChannel();
 
         bytes memory sig1 = _signVoucher(channelId, amount1);
+        vm.prank(payee);
         channel.settle(channelId, amount1, sig1);
         assertEq(channel.getChannel(channelId).settled, amount1);
 
         bytes memory sig2 = _signVoucher(channelId, amount2);
+        vm.prank(payee);
         channel.settle(channelId, amount2, sig2);
         assertEq(channel.getChannel(channelId).settled, amount2);
     }
@@ -358,6 +719,43 @@ contract TempoStreamChannelTest is Test {
 }
 
 // --- Malicious Token Models ---
+
+contract FeeOnTransferToken {
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    uint256 public feePercent = 10;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        require(balanceOf[msg.sender] >= amount, "insufficient balance");
+        uint256 fee = amount * feePercent / 100;
+        uint256 net = amount - fee;
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += net;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(balanceOf[from] >= amount, "insufficient balance");
+        require(allowance[from][msg.sender] >= amount, "insufficient allowance");
+        uint256 fee = amount * feePercent / 100;
+        uint256 net = amount - fee;
+        balanceOf[from] -= amount;
+        balanceOf[to] += net;
+        allowance[from][msg.sender] -= amount;
+        return true;
+    }
+
+}
 
 contract NonTransferringToken {
 
@@ -470,6 +868,27 @@ contract MaliciousTokenTest is Test {
 
         TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
         assertEq(ch.deposit, 1_000_000, "Channel shows deposit");
+    }
+
+    function test_feeOnTransferToken_insolvency() public {
+        FeeOnTransferToken feeToken = new FeeOnTransferToken();
+        feeToken.mint(payer, 1_000_000);
+
+        vm.startPrank(payer);
+        feeToken.approve(address(channel), 1_000_000);
+
+        bytes32 channelId =
+            channel.open(payee, address(feeToken), 1_000_000, bytes32(uint256(1)), address(0));
+        vm.stopPrank();
+
+        assertEq(feeToken.balanceOf(address(channel)), 900_000, "Contract got 90% due to fee");
+
+        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
+        assertEq(ch.deposit, 1_000_000, "Channel records full deposit (insolvency risk)");
+        assertTrue(
+            ch.deposit > feeToken.balanceOf(address(channel)),
+            "Recorded deposit exceeds actual balance"
+        );
     }
 
     function test_reentrantToken_blockedByNonReentrant() public {
