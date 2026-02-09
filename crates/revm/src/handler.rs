@@ -3078,47 +3078,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_nonce_gas_selection_logic() {
-        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
-
-        // Helper to compute nonce gas based on the logic in validate_aa_initial_tx_gas
-        fn compute_nonce_gas(nonce_key: U256, tx_nonce: u64) -> u64 {
-            if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-                EXPIRING_NONCE_GAS
-            } else if !nonce_key.is_zero() {
-                if tx_nonce == 0 {
-                    NEW_NONCE_KEY_GAS
-                } else {
-                    EXISTING_NONCE_KEY_GAS
-                }
-            } else {
-                0
-            }
-        }
-
-        // Regular nonce (nonce_key == 0) should have no additional gas
-        assert_eq!(compute_nonce_gas(U256::ZERO, 0), 0);
-        assert_eq!(compute_nonce_gas(U256::ZERO, 5), 0);
-
-        // 2D nonce with new key (tx_nonce == 0) should use NEW_NONCE_KEY_GAS
-        assert_eq!(compute_nonce_gas(U256::from(1), 0), NEW_NONCE_KEY_GAS);
-        assert_eq!(compute_nonce_gas(U256::from(42), 0), NEW_NONCE_KEY_GAS);
-
-        // 2D nonce with existing key (tx_nonce > 0) should use EXISTING_NONCE_KEY_GAS
-        assert_eq!(compute_nonce_gas(U256::from(1), 1), EXISTING_NONCE_KEY_GAS);
-        assert_eq!(
-            compute_nonce_gas(U256::from(42), 100),
-            EXISTING_NONCE_KEY_GAS
-        );
-
-        // Expiring nonce (nonce_key == MAX) should use EXPIRING_NONCE_GAS
-        assert_eq!(
-            compute_nonce_gas(TEMPO_EXPIRING_NONCE_KEY, 0),
-            EXPIRING_NONCE_GAS
-        );
-    }
-
     /// Regression test for pre-T0 2D nonce gas underflow panic.
     ///
     /// When:
