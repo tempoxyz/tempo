@@ -593,7 +593,7 @@ mod tests {
         primitives::{Address, Log},
         sol_types::SolEvent,
     };
-    use rand::Rng;
+    use rand_08::Rng;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
 
@@ -751,7 +751,7 @@ mod tests {
             assert!(registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: 1 })?);
 
             // Test 100 random policy IDs > 1 should not exist initially
-            let mut rng = rand::thread_rng();
+            let mut rng = rand_08::thread_rng();
             for _ in 0..100 {
                 let random_policy_id = rng.gen_range(2..u64::MAX);
                 assert!(!registry.policy_exists(ITIP403Registry::policyExistsCall {

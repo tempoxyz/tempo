@@ -66,16 +66,55 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     function test_TickToPrice(int16 tick) public view {
+        tick = int16(bound(int256(tick), exchange.MIN_TICK(), exchange.MAX_TICK()));
+        tick = tick - (tick % exchange.TICK_SPACING());
         uint32 price = exchange.tickToPrice(tick);
         uint32 expectedPrice = uint32(int32(exchange.PRICE_SCALE()) + int32(tick));
         assertEq(price, expectedPrice);
     }
 
+    function test_TickToPrice_RevertsOnInvalidSpacing() public {
+        try exchange.tickToPrice(1) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+        }
+
+        try exchange.tickToPrice(-5) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+        }
+
+        try exchange.tickToPrice(15) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+        }
+    }
+
     function test_PriceToTick(uint32 price) public view {
         price = uint32(bound(price, exchange.MIN_PRICE(), exchange.MAX_PRICE()));
+        int16 rawTick = int16(int32(price) - int32(exchange.PRICE_SCALE()));
+        vm.assume(rawTick % exchange.TICK_SPACING() == 0);
         int16 tick = exchange.priceToTick(price);
-        int16 expectedTick = int16(int32(price) - int32(exchange.PRICE_SCALE()));
-        assertEq(tick, expectedTick);
+        assertEq(tick, rawTick);
+    }
+
+    function test_PriceToTick_RevertsOnInvalidSpacing() public {
+        uint32 scale = exchange.PRICE_SCALE();
+
+        try exchange.priceToTick(scale + 1) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+        }
+
+        try exchange.priceToTick(scale + 5) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+        }
     }
 
     function test_PairKey(address base, address quote) public view {
@@ -227,7 +266,10 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     /// @notice Fuzz test that escrow always rounds UP for bid orders
-    function testFuzz_PlaceBidOrder_EscrowAlwaysRoundsUp(uint128 amount, int16 tickMultiplier)
+    function testFuzz_PlaceBidOrder_EscrowAlwaysRoundsUp(
+        uint128 amount,
+        int16 tickMultiplier
+    )
         public
     {
         // Constrain amount to be >= MIN_ORDER_AMOUNT and reasonable for our balance
@@ -688,7 +730,9 @@ contract StablecoinDEXTest is BaseTest {
         int16 tick,
         int16 flipTick,
         bool isBid
-    ) public {
+    )
+        public
+    {
         tick = int16(bound(int256(tick), type(int16).min, type(int16).max));
         flipTick = int16(bound(int256(flipTick), type(int16).min, type(int16).max));
 
@@ -794,7 +838,10 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     // Test withdraw validation
-    function testFuzz_Withdraw_RevertIf_InsufficientBalance(uint128 balance, uint128 withdrawAmount)
+    function testFuzz_Withdraw_RevertIf_InsufficientBalance(
+        uint128 balance,
+        uint128 withdrawAmount
+    )
         public
     {
         vm.assume(balance < type(uint128).max); // Avoid overflow in balance + 1
@@ -897,8 +944,15 @@ contract StablecoinDEXTest is BaseTest {
                     abi.encodeWithSelector(IStablecoinDEX.TickOutOfBounds.selector, expectedTick)
                 );
             }
+        } else if (expectedTick % exchange.TICK_SPACING() != 0) {
+            // Valid range but not aligned to tick spacing - should revert
+            try exchange.priceToTick(price) {
+                revert CallShouldHaveReverted();
+            } catch (bytes memory err) {
+                assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+            }
         } else {
-            // Valid price range - should succeed
+            // Valid price range and aligned to tick spacing - should succeed
             int16 tick = exchange.priceToTick(price);
             assertEq(tick, expectedTick);
         }
@@ -1097,7 +1151,9 @@ contract StablecoinDEXTest is BaseTest {
         bool useToken1,
         bool useToken2,
         bool swapDirection
-    ) public {
+    )
+        public
+    {
         // Setup both token pairs
         exchange.createPair(address(token2));
 
@@ -1763,7 +1819,11 @@ contract StablecoinDEXTest is BaseTest {
                         HELPER FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function _placeBidOrder(address user, uint128 amount, int16 tick)
+    function _placeBidOrder(
+        address user,
+        uint128 amount,
+        int16 tick
+    )
         internal
         returns (uint128 orderId)
     {
@@ -1778,7 +1838,11 @@ contract StablecoinDEXTest is BaseTest {
         orderId = exchange.place(address(token1), amount, true, tick);
     }
 
-    function _placeAskOrder(address user, uint128 amount, int16 tick)
+    function _placeAskOrder(
+        address user,
+        uint128 amount,
+        int16 tick
+    )
         internal
         returns (uint128 orderId)
     {
@@ -1914,7 +1978,9 @@ contract StablecoinDEXTest is BaseTest {
         uint128 totalBaseOut,
         uint8 numSplits,
         int16 tick
-    ) public {
+    )
+        public
+    {
         // Bound inputs
         totalBaseOut = uint128(bound(totalBaseOut, exchange.MIN_ORDER_AMOUNT() * 2, 1e18));
         numSplits = uint8(bound(numSplits, 2, 10));

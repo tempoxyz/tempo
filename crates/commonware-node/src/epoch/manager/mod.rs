@@ -14,7 +14,7 @@ use commonware_consensus::{
 };
 use commonware_p2p::Blocker;
 use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef};
-use rand::{CryptoRng, Rng};
+use rand_08::{CryptoRng, Rng};
 
 use crate::{consensus::block::Block, epoch::scheme_provider::SchemeProvider, feed, subblocks};
 

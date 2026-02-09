@@ -12,31 +12,35 @@
 
 - **TEMPO-DEX4**: `amountOut >= minAmountOut` when executing `swapExactAmountIn`.
 - **TEMPO-DEX5**: `amountIn <= maxAmountIn` when executing `swapExactAmountOut`.
-- **TEMPO-DEX14**: Swapper total balance (external + internal) changes correctly - loses exact `amountIn` of tokenIn and gains exact `amountOut` of tokenOut. Skipped when swapper has active orders (self-trade makes accounting complex).
-- **TEMPO-DEX16**: Quote functions (`quoteSwapExactAmountIn/Out`) return values matching actual swap execution.
-- **TEMPO-DEX18**: Dust invariant - each swap can at maximum increase the dust in the DEX by the number of orders filled.
-- **TEMPO-DEX19**: Post-swap dust bounded - maximum dust accumulation in the protocol is bounded and tracked via `_maxDust`.
+- **TEMPO-DEX6**: Swapper total balance (external + internal) changes correctly - loses exact `amountIn` of tokenIn and gains exact `amountOut` of tokenOut. Skipped when swapper has active orders (self-trade makes accounting complex).
+- **TEMPO-DEX7**: Quote functions (`quoteSwapExactAmountIn/Out`) return values matching actual swap execution.
+- **TEMPO-DEX8**: Dust invariant - each swap can at maximum increase the dust in the DEX by the number of orders filled plus the number of hops (rounding occurs at each hop, not just at hop boundaries).
+- **TEMPO-DEX9**: Post-swap dust bounded - maximum dust accumulation in the protocol is bounded and tracked via `_maxDust`.
 
 ### Balance Invariants
 
-- **TEMPO-DEX6**: DEX token balance >= sum of all internal user balances (the difference accounts for escrowed order amounts).
+- **TEMPO-DEX10**: DEX token balance >= sum of all internal user balances (the difference accounts for escrowed order amounts).
 
 ### Orderbook Structure Invariants
 
-- **TEMPO-DEX7**: Total liquidity at a tick level equals the sum of remaining amounts of all orders at that tick. If liquidity > 0, head and tail must be non-zero.
-- **TEMPO-DEX8**: Best bid tick points to the highest tick with non-empty bid liquidity, or `type(int16).min` if no bids exist.
-- **TEMPO-DEX9**: Best ask tick points to the lowest tick with non-empty ask liquidity, or `type(int16).max` if no asks exist.
-- **TEMPO-DEX10**: Order linked list is consistent - `prev.next == current` and `next.prev == current`. If head is zero, tail must also be zero.
-- **TEMPO-DEX11**: Tick bitmap accurately reflects which ticks have liquidity (bit set iff tick has orders).
-- **TEMPO-DEX17**: Linked list head/tail is terminal - `head.prev == None` and `tail.next == None`
+- **TEMPO-DEX11**: Total liquidity at a tick level equals the sum of remaining amounts of all orders at that tick. If liquidity > 0, head and tail must be non-zero.
+- **TEMPO-DEX12**: Best bid tick points to the highest tick with non-empty bid liquidity, or `type(int16).min` if no bids exist.
+- **TEMPO-DEX13**: Best ask tick points to the lowest tick with non-empty ask liquidity, or `type(int16).max` if no asks exist.
+- **TEMPO-DEX14**: Order linked list is consistent - `prev.next == current` and `next.prev == current`. If head is zero, tail must also be zero.
+- **TEMPO-DEX15**: Tick bitmap accurately reflects which ticks have liquidity (bit set iff tick has orders).
+- **TEMPO-DEX16**: Linked list head/tail is terminal - `head.prev == None` and `tail.next == None`
 
 ### Flip Order Invariants
 
-- **TEMPO-DEX12**: Flip orders have valid tick constraints - for bids `flipTick > tick`, for asks `flipTick < tick`.
+- **TEMPO-DEX17**: Flip orders have valid tick constraints - for bids `flipTick > tick`, for asks `flipTick < tick`.
 
 ### Blacklist Invariants
 
-- **TEMPO-DEX13**: Anyone can cancel a stale order from a blacklisted maker via `cancelStaleOrder`. The escrowed funds are refunded to the blacklisted maker's internal balance.
+- **TEMPO-DEX18**: Anyone can cancel a stale order from a blacklisted maker via `cancelStaleOrder`. The escrowed funds are refunded to the blacklisted maker's internal balance.
+
+### Rounding Invariants
+
+- **TEMPO-DEX19**: Divisibility edge cases - when `(amount * price) % PRICE_SCALE == 0`, bid escrow must be exact (no +1 rounding) since ceil equals floor for perfectly divisible amounts.
 
 ## FeeAMM
 

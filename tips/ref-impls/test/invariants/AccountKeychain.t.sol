@@ -150,7 +150,10 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @param seed Random seed for selection
     /// @return keyId The found key ID (address(0) if not found)
     /// @return found Whether a matching key was found
-    function _findActiveKey(address account, uint256 seed)
+    function _findActiveKey(
+        address account,
+        uint256 seed
+    )
         internal
         view
         returns (address keyId, bool found)
@@ -176,7 +179,10 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @return account The actor with an active key
     /// @return keyId The active key ID
     /// @return skip True if no active key could be found or created
-    function _ensureActorWithActiveKey(uint256 actorSeed, uint256 keyIdSeed)
+    function _ensureActorWithActiveKey(
+        uint256 actorSeed,
+        uint256 keyIdSeed
+    )
         internal
         returns (address account, address keyId, bool skip)
     {
@@ -224,7 +230,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         uint256 expirySeed,
         bool enforceLimits,
         uint256 limitAmountSeed
-    ) external {
+    )
+        external
+    {
         address account = _selectActor(accountSeed);
         address keyId = _selectKeyId(keyIdSeed);
 
@@ -450,7 +458,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         uint256 keyIdSeed,
         uint256 tokenSeed,
         uint256 newLimitSeed
-    ) external {
+    )
+        external
+    {
         // Need tokens for spending limits
         if (_tokens.length == 0) {
             return;
@@ -630,7 +640,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for verifying account isolation
     /// @dev Tests TEMPO-KEY10 (keys are isolated per account)
-    function verifyAccountIsolation(uint256 account1Seed, uint256 account2Seed, uint256 keyIdSeed)
+    function verifyAccountIsolation(
+        uint256 account1Seed,
+        uint256 account2Seed,
+        uint256 keyIdSeed
+    )
         external
     {
         address account1 = _selectActor(account1Seed);
@@ -836,7 +850,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for testing operations on expired keys
     /// @dev Tests TEMPO-KEY18 (operations on expired keys fail with KeyExpired)
-    function testExpiredKeyOperations(uint256 accountSeed, uint256 keyIdSeed, uint256 warpAmount)
+    function testExpiredKeyOperations(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint256 warpAmount
+    )
         external
     {
         if (_tokens.length == 0) {
@@ -890,7 +908,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for testing invalid signature type
     /// @dev Tests TEMPO-KEY19 (invalid enum values >= 3 are rejected with InvalidSignatureType)
-    function testInvalidSignatureType(uint256 accountSeed, uint256 keyIdSeed, uint8 badType)
+    function testInvalidSignatureType(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint8 badType
+    )
         external
     {
         address account = _selectActor(accountSeed);

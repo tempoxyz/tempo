@@ -317,6 +317,14 @@ impl AccountKeychain {
 
     /// Get remaining spending limit
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
+        // T2+: return zero if key doesn't exist or has been revoked
+        if self.storage.spec().is_t2() {
+            let key = self.keys[call.account][call.keyId].read()?;
+            if key.expiry == 0 || key.is_revoked {
+                return Ok(U256::ZERO);
+            }
+        }
+
         let limit_key = Self::spending_limit_key(call.account, call.keyId);
         self.spending_limits[limit_key][call.token].read()
     }
@@ -674,9 +682,10 @@ mod tests {
 
     #[test]
     fn test_replay_protection_revoked_key_cannot_be_reauthorized() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let account = Address::random();
         let key_id = Address::random();
+        let token = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
@@ -684,35 +693,54 @@ mod tests {
             // Use main key for all operations
             keychain.set_transaction_key(Address::ZERO)?;
 
-            // Step 1: Authorize a key
+            // Step 1: Authorize a key with a spending limit
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
-                enforceLimits: false,
-                limits: vec![],
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                }],
             };
             keychain.authorize_key(account, auth_call.clone())?;
 
-            // Verify key exists
+            // Verify key exists and limit is set
             let key_info = keychain.get_key(getKeyCall {
                 account,
                 keyId: key_id,
             })?;
             assert_eq!(key_info.expiry, u64::MAX);
             assert!(!key_info.isRevoked);
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: key_id,
+                    token,
+                })?,
+                U256::from(100)
+            );
 
             // Step 2: Revoke the key
             let revoke_call = revokeKeyCall { keyId: key_id };
             keychain.revoke_key(account, revoke_call)?;
 
-            // Verify key is revoked
+            // Verify key is revoked and remaining limit returns 0
             let key_info = keychain.get_key(getKeyCall {
                 account,
                 keyId: key_id,
             })?;
             assert_eq!(key_info.expiry, 0);
             assert!(key_info.isRevoked);
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: key_id,
+                    token,
+                })?,
+                U256::ZERO
+            );
 
             // Step 3: Try to re-authorize the same key (replay attack)
             // This should fail because the key was revoked

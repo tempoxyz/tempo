@@ -147,7 +147,11 @@ library TxBuilder {
         bytes memory data,
         uint64 nonce,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
             .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(callGas(data, nonce) + GAS_LIMIT_BUFFER)
             .withTo(to).withData(data);
@@ -164,7 +168,11 @@ library TxBuilder {
         uint64 nonce,
         uint64 gasLimit,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
             .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(gasLimit).withTo(to).withData(data);
 
@@ -178,7 +186,11 @@ library TxBuilder {
         bytes memory initcode,
         uint64 nonce,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
             .withGasPrice(DEFAULT_GAS_PRICE)
             .withGasLimit(createGas(initcode, nonce) + GAS_LIMIT_BUFFER).withTo(address(0))
@@ -195,7 +207,11 @@ library TxBuilder {
         uint64 nonce,
         uint64 gasLimit,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         LegacyTransaction memory tx_ = LegacyTransactionLib.create().withNonce(nonce)
             .withGasPrice(DEFAULT_GAS_PRICE).withGasLimit(gasLimit).withTo(address(0))
             .withData(initcode);
@@ -214,7 +230,11 @@ library TxBuilder {
         uint64 nonceKey,
         uint64 txNonce,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({ to: to, value: 0, data: data });
 
@@ -234,7 +254,11 @@ library TxBuilder {
         uint64 nonceKey,
         uint64 txNonce,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
@@ -257,7 +281,11 @@ library TxBuilder {
         uint256 p256PrivateKey,
         bytes32 pubKeyX,
         bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({ to: to, value: 0, data: data });
 
@@ -279,7 +307,11 @@ library TxBuilder {
         uint256 p256PrivateKey,
         bytes32 pubKeyX,
         bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
@@ -302,7 +334,11 @@ library TxBuilder {
         uint256 p256PrivateKey,
         bytes32 pubKeyX,
         bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({ to: to, value: 0, data: data });
 
@@ -324,7 +360,11 @@ library TxBuilder {
         uint256 p256PrivateKey,
         bytes32 pubKeyX,
         bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
@@ -346,7 +386,11 @@ library TxBuilder {
         uint64 txNonce,
         uint256 accessKeyPrivateKey,
         address userAddress
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({ to: to, value: 0, data: data });
 
@@ -367,9 +411,12 @@ library TxBuilder {
         uint64 txNonce,
         uint256 accessKeyPrivateKey,
         address userAddress
-    ) internal view returns (bytes memory) {
-        uint64 gasLimit =
-            multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
+        uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
@@ -390,7 +437,11 @@ library TxBuilder {
         bytes32 pubKeyX,
         bytes32 pubKeyY,
         address userAddress
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({ to: to, value: 0, data: data });
 
@@ -414,7 +465,11 @@ library TxBuilder {
         uint64 nonceKey,
         uint64 txNonce,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({ to: address(0), value: 0, data: initcode });
 
@@ -435,7 +490,11 @@ library TxBuilder {
         uint64 txNonce,
         uint64 gasLimit,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({ to: address(0), value: 0, data: initcode });
 
@@ -456,7 +515,11 @@ library TxBuilder {
         uint64 nonceKey,
         uint64 txNonce,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         TempoCall[] memory calls = new TempoCall[](2);
         calls[0] = TempoCall({ to: callTarget, value: 0, data: callData });
         calls[1] = TempoCall({ to: address(0), value: 0, data: initcode }); // CREATE as second call
@@ -480,7 +543,11 @@ library TxBuilder {
         uint64 nonceKey,
         uint64 txNonce,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         TempoCall[] memory calls = new TempoCall[](2);
         calls[0] = TempoCall({ to: address(0), value: 0, data: initcode1 }); // First CREATE
         calls[1] = TempoCall({ to: address(0), value: 0, data: initcode2 }); // Second CREATE
@@ -502,7 +569,11 @@ library TxBuilder {
         uint64 nonceKey,
         uint64 txNonce,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({ to: address(0), value: value, data: initcode });
 
@@ -523,7 +594,11 @@ library TxBuilder {
         uint64 nonceKey,
         uint64 txNonce,
         uint256 privateKey
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({ to: address(0), value: 0, data: initcode });
 
@@ -537,7 +612,12 @@ library TxBuilder {
 
     // ============ Internal Helpers - Legacy Signing ============
 
-    function _signLegacy(VmRlp vmRlp, Vm vm, LegacyTransaction memory tx_, uint256 privateKey)
+    function _signLegacy(
+        VmRlp vmRlp,
+        Vm vm,
+        LegacyTransaction memory tx_,
+        uint256 privateKey
+    )
         internal
         view
         returns (bytes memory)
@@ -550,7 +630,12 @@ library TxBuilder {
         );
     }
 
-    function _signTempo(VmRlp vmRlp, Vm vm, TempoTransaction memory tx_, uint256 privateKey)
+    function _signTempo(
+        VmRlp vmRlp,
+        Vm vm,
+        TempoTransaction memory tx_,
+        uint256 privateKey
+    )
         internal
         view
         returns (bytes memory)
@@ -566,7 +651,11 @@ library TxBuilder {
     // ============ Unified Signing (Internal) ============
 
     /// @dev Create signature bytes for any strategy
-    function _createSignature(Vm vm, bytes32 txHash, SigningParams memory params)
+    function _createSignature(
+        Vm vm,
+        bytes32 txHash,
+        SigningParams memory params
+    )
         internal
         view
         returns (bytes memory)
@@ -599,7 +688,11 @@ library TxBuilder {
         uint256 privateKey,
         bytes32 pubKeyX,
         bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         (bytes32 r, bytes32 s) = vm.signP256(privateKey, txHash);
         s = _normalizeP256S(s);
         return abi.encodePacked(SIGNATURE_TYPE_P256, r, s, pubKeyX, pubKeyY, uint8(0));
@@ -611,7 +704,11 @@ library TxBuilder {
         uint256 privateKey,
         bytes32 pubKeyX,
         bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         bytes memory webauthnData = _buildWebAuthnData(txHash);
         bytes memory authData = _slice(webauthnData, 0, 37);
         bytes memory clientDataJSON = _slice(webauthnData, 37, webauthnData.length - 37);
@@ -628,7 +725,11 @@ library TxBuilder {
         Vm vm,
         LegacyTransaction memory tx_,
         SigningParams memory params
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         require(
             params.strategy == SigningStrategy.Secp256k1,
             "Legacy transactions only support secp256k1 signatures"
@@ -642,7 +743,12 @@ library TxBuilder {
     }
 
     /// @notice Sign a tempo tx with unified params
-    function signTempo(VmRlp vmRlp, Vm vm, TempoTransaction memory tx_, SigningParams memory params)
+    function signTempo(
+        VmRlp vmRlp,
+        Vm vm,
+        TempoTransaction memory tx_,
+        SigningParams memory params
+    )
         internal
         view
         returns (bytes memory)
@@ -668,7 +774,11 @@ library TxBuilder {
         uint256 p256PrivateKey,
         bytes32 pubKeyX,
         bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         return signTempo(
             vmRlp,
             vm,
@@ -684,7 +794,11 @@ library TxBuilder {
         uint256 p256PrivateKey,
         bytes32 pubKeyX,
         bytes32 pubKeyY
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         return signTempo(
             vmRlp,
             vm,
@@ -699,7 +813,11 @@ library TxBuilder {
         TempoTransaction memory tx_,
         uint256 accessKeyPrivateKey,
         address userAddress
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         return signTempo(
             vmRlp,
             vm,
@@ -722,7 +840,11 @@ library TxBuilder {
         bytes32 pubKeyX,
         bytes32 pubKeyY,
         address userAddress
-    ) internal view returns (bytes memory) {
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         return signTempo(
             vmRlp,
             vm,
@@ -734,7 +856,11 @@ library TxBuilder {
     }
 
     /// @notice Encode a signed Tempo transaction with arbitrary signature bytes
-    function _encodeSignedTempo(VmRlp vmRlp, TempoTransaction memory tx_, bytes memory signature)
+    function _encodeSignedTempo(
+        VmRlp vmRlp,
+        TempoTransaction memory tx_,
+        bytes memory signature
+    )
         internal
         pure
         returns (bytes memory)
@@ -877,7 +1003,11 @@ library TxBuilder {
     }
 
     /// @notice Slice bytes array
-    function _slice(bytes memory data, uint256 start, uint256 length)
+    function _slice(
+        bytes memory data,
+        uint256 start,
+        uint256 length
+    )
         internal
         pure
         returns (bytes memory)

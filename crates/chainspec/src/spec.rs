@@ -3,7 +3,13 @@ use crate::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use alloy_eips::eip7840::BlobParams;
-use alloy_evm::eth::spec::EthExecutorSpec;
+use alloy_evm::{
+    eth::spec::EthExecutorSpec,
+    revm::interpreter::gas::{
+        COLD_SLOAD_COST as COLD_SLOAD, SSTORE_SET, WARM_SSTORE_RESET,
+        WARM_STORAGE_READ_COST as WARM_SLOAD,
+    },
+};
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use reth_chainspec::{
@@ -22,9 +28,27 @@ pub const TEMPO_T0_BASE_FEE: u64 = 10_000_000_000;
 /// At this base fee, a standard TIP-20 transfer (~50,000 gas) costs ~0.1 cent
 pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
 
+/// TIP-1010 general (non-payment) gas limit: 30 million gas per block.
+/// Cap for non-payment transactions.
+pub const TEMPO_T1_GENERAL_GAS_LIMIT: u64 = 30_000_000;
+
+/// TIP-1010 per-transaction gas limit cap: 30 million gas.
+/// Allows maximum-sized contract deployments under TIP-1000 state creation costs.
+pub const TEMPO_T1_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
+
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
+
+/// Gas cost for using an existing 2D nonce key (cold SLOAD + warm SSTORE reset)
+pub const TEMPO_T1_EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD + WARM_SSTORE_RESET;
+/// T2 adds 2 warm SLOADs for the extended nonce key lookup
+pub const TEMPO_T2_EXISTING_NONCE_KEY_GAS: u64 = TEMPO_T1_EXISTING_NONCE_KEY_GAS + 2 * WARM_SLOAD;
+
+/// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero)
+pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + SSTORE_SET;
+/// T2 adds 2 warm SLOADs for the extended nonce key lookup
+pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = TEMPO_T1_NEW_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -179,7 +203,7 @@ impl TempoChainSpec {
         Self {
             inner: base_spec.map_header(|inner| TempoHeader {
                 general_gas_limit: 0,
-                timestamp_millis_part: inner.timestamp * 1000,
+                timestamp_millis_part: inner.timestamp % 1000,
                 shared_gas_limit: 0,
                 inner,
             }),
@@ -202,7 +226,7 @@ impl From<ChainSpec> for TempoChainSpec {
         Self {
             inner: spec.map_header(|inner| TempoHeader {
                 general_gas_limit: 0,
-                timestamp_millis_part: inner.timestamp * 1000,
+                timestamp_millis_part: inner.timestamp % 1000,
                 inner,
                 shared_gas_limit: 0,
             }),
