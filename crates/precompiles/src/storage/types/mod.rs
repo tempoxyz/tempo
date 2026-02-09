@@ -293,28 +293,47 @@ impl<T: Packable> Storable for T {
 /// Keys are hashed using keccak256 along with the mapping's base slot
 /// to determine the final storage location. This trait provides the
 /// byte representation used in that hash.
-pub trait StorageKey {
-    /// Returns a byte slice for this type.
+///
+/// # Sealed to single-word primitives
+///
+/// Only types that implement `sealed::OnlyPrimitives` (single-word types ≤32 bytes)
+/// can be mapping keys. This prevents arrays, structs, and dynamic types from being
+/// used as keys — matching Solidity's restriction to value types.
+///
+/// # Encoding
+///
+/// Mapping slots are computed as `keccak256(bytes32(key) | bytes32(slot))`, where the
+/// key's raw bytes are left-padded to 32 bytes
+/// and the slot is appended in big-endian.
+///
+/// This differs from Solidity's `keccak256(abi.encode(key, slot))`, where signed integers
+/// are sign-extended and `bytesN` (N < 32) are right-padded. Per-type equivalence:
+///
+/// - **Unsigned integers, `Address`, `bytes32`**: identical — both zero-left-pad.
+/// - **Signed integers**: diverges — Solidity sign-extends negative values to 32 bytes,
+///   we zero-left-pad the two's complement representation.
+/// - **`bytesN` (N < 32)**: diverges — Solidity right-pads, we left-pad.
+///
+/// This is **not** a soundness issue — there are no slot collision risks — but off-chain
+/// tools that reconstruct storage slots using Solidity's `abi.encode` rules will compute
+/// different locations for the divergent types. View functions should be used instead.
+pub trait StorageKey: sealed::OnlyPrimitives {
+    /// Returns key bytes for storage slot computation.
     fn as_storage_bytes(&self) -> impl AsRef<[u8]>;
 
     /// Compute storage slot for a mapping with this key.
     ///
-    /// Left-pads the key to the nearest 32-byte multiple, concatenates
-    /// with the slot, and hashes.
+    /// Left-pads the key to 32 bytes, concatenates with the slot, and hashes.
     fn mapping_slot(&self, slot: U256) -> U256 {
         let key_bytes = self.as_storage_bytes();
         let key_bytes = key_bytes.as_ref();
+        debug_assert!(key_bytes.len() <= 32);
 
-        // Pad key to nearest multiple of 32 bytes
-        let padded_len = key_bytes.len().div_ceil(32) * 32;
-        let mut buf = vec![0u8; padded_len + 32];
+        let mut buf = [0u8; 64];
+        buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
+        buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
 
-        // Left-pad the key bytes
-        buf[padded_len - key_bytes.len()..padded_len].copy_from_slice(key_bytes);
-        // Append slot in big-endian
-        buf[padded_len..].copy_from_slice(&slot.to_be_bytes::<32>());
-
-        U256::from_be_bytes(keccak256(&buf).0)
+        U256::from_be_bytes(keccak256(buf).0)
     }
 }
 
