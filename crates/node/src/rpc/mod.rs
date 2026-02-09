@@ -5,7 +5,7 @@ pub mod eth_ext;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
@@ -22,6 +22,7 @@ use tempo_chainspec::TempoChainSpec;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+use tempo_transaction_pool::validator::MAX_ENCODED_TX_LEN;
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::{node::TempoNode, rpc::error::TempoEthApiError};
@@ -56,6 +57,7 @@ use reth_rpc_eth_api::{
 use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, FillTransaction, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
+    utils::recover_raw_transaction,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
@@ -343,6 +345,20 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
 
     fn send_raw_transaction_sync_timeout(&self) -> std::time::Duration {
         self.inner.send_raw_transaction_sync_timeout()
+    }
+
+    async fn send_raw_transaction(&self, tx: Bytes) -> Result<B256, Self::Error> {
+        if tx.len() > MAX_ENCODED_TX_LEN {
+            return Err(EthApiError::from(RethError::msg(format!(
+                "transaction size {} exceeds maximum allowed size {}",
+                tx.len(),
+                MAX_ENCODED_TX_LEN
+            )))
+            .into());
+        }
+
+        let recovered = recover_raw_transaction::<PoolPooledTx<Self::Pool>>(&tx)?;
+        self.send_transaction(WithEncoded::new(tx, recovered)).await
     }
 
     fn send_transaction(

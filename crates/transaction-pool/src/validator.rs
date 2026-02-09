@@ -58,6 +58,9 @@ pub const MAX_STORAGE_KEYS_PER_ACCOUNT: usize = 256;
 /// Maximum total number of storage keys across all accounts in the access list (DoS protection).
 pub const MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL: usize = 2048;
 
+/// Maximum encoded transaction length in bytes (1 MiB, DoS protection).
+pub const MAX_ENCODED_TX_LEN: usize = 1_048_576;
+
 /// Maximum number of token limits in a KeyAuthorization (DoS protection).
 pub const MAX_TOKEN_LIMITS: usize = 256;
 

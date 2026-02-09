@@ -1,6 +1,7 @@
 use crate::utils::TEST_MNEMONIC;
 use alloy::{
     consensus::Transaction,
+    providers::Provider,
     signers::{
         SignerSync,
         local::{MnemonicBuilder, PrivateKeySigner},
@@ -320,6 +321,38 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
         "Transaction should NOT be evicted when validator token change is from a non-active validator"
     );
     assert_eq!(*pooled_txs_after[0].hash(), tx_hash);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_send_raw_transaction_rejects_oversized_before_decode() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = crate::utils::TestNodeBuilder::new()
+        .build_http_only()
+        .await?;
+
+    let provider = alloy::providers::ProviderBuilder::new().connect_http(setup.http_url.clone());
+
+    let oversized_bytes = vec![0u8; tempo_transaction_pool::validator::MAX_ENCODED_TX_LEN + 1];
+    let err = provider
+        .send_raw_transaction(&oversized_bytes)
+        .await
+        .expect_err("oversized transaction should be rejected");
+    let payload = err
+        .as_error_resp()
+        .expect("should be a JSON-RPC error response");
+    assert_eq!(
+        payload.code,
+        jsonrpsee::types::error::INTERNAL_ERROR_CODE as i64,
+        "expected INTERNAL_ERROR code, got: {payload:?}"
+    );
+    assert!(
+        payload.message.contains("exceeds maximum allowed size"),
+        "unexpected error message: {}",
+        payload.message
+    );
 
     Ok(())
 }
