@@ -35,9 +35,6 @@ contract TempoStreamChannel is EIP712 {
 
     uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
 
-    uint256 private constant SECP256K1_HALF_ORDER =
-        0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
-
     // --- State ---
 
     mapping(bytes32 => Channel) public channels;
@@ -104,7 +101,8 @@ contract TempoStreamChannel is EIP712 {
     error NotPayee();
     error TransferFailed();
     error CloseNotReady();
-    error MalleableSignature();
+    error InvalidPayee();
+    error DepositOverflow();
 
     // --- EIP-712 Domain ---
 
@@ -139,6 +137,10 @@ contract TempoStreamChannel is EIP712 {
         external
         returns (bytes32 channelId)
     {
+        if (payee == address(0)) {
+            revert InvalidPayee();
+        }
+
         channelId = computeChannelId(msg.sender, payee, token, salt, authorizedSigner);
 
         if (channels[channelId].payer != address(0)) {
@@ -195,8 +197,6 @@ contract TempoStreamChannel is EIP712 {
             revert AmountNotIncreasing();
         }
 
-        _requireLowS(signature);
-
         bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
         bytes32 digest = _hashTypedData(structHash);
         address signer = ECDSA.recoverCalldata(digest, signature);
@@ -240,6 +240,9 @@ contract TempoStreamChannel is EIP712 {
         }
 
         if (additionalDeposit > 0) {
+            if (additionalDeposit > type(uint128).max - channel.deposit) {
+                revert DepositOverflow();
+            }
             channel.deposit += uint128(additionalDeposit);
 
             bool success =
@@ -311,8 +314,6 @@ contract TempoStreamChannel is EIP712 {
             if (cumulativeAmount > channel.deposit) {
                 revert AmountExceedsDeposit();
             }
-
-            _requireLowS(signature);
 
             bytes32 structHash =
                 keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
@@ -460,16 +461,6 @@ contract TempoStreamChannel is EIP712 {
         for (uint256 i = 0; i < length; ++i) {
             channelStates[i] = channels[channelIds[i]];
         }
-    }
-
-    // --- Internal Helpers ---
-
-    function _requireLowS(bytes calldata signature) internal pure {
-        uint256 s;
-        assembly {
-            s := calldataload(add(signature.offset, 0x20))
-        }
-        if (s > SECP256K1_HALF_ORDER) revert MalleableSignature();
     }
 
 }

@@ -667,42 +667,6 @@ contract TempoStreamChannelTest is BaseTest {
         channel.settle(channelId, 500_000, sig);
     }
 
-    // --- Signature Malleability Tests ---
-
-    function test_settle_revert_highSSignature() public {
-        bytes32 channelId = _openChannel();
-        bytes32 digest = channel.getVoucherDigest(channelId, 500_000);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerKey, digest);
-
-        uint256 secp256k1n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
-        bytes32 highS = bytes32(secp256k1n - uint256(s));
-
-        bytes memory malleableSigFlippedV =
-            abi.encodePacked(r, highS, v == 27 ? uint8(28) : uint8(27));
-        vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.MalleableSignature.selector);
-        channel.settle(channelId, 500_000, malleableSigFlippedV);
-
-        bytes memory malleableSigSameV = abi.encodePacked(r, highS, v);
-        vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.MalleableSignature.selector);
-        channel.settle(channelId, 500_000, malleableSigSameV);
-    }
-
-    function test_close_revert_highSSignature() public {
-        bytes32 channelId = _openChannel();
-        bytes32 digest = channel.getVoucherDigest(channelId, 500_000);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerKey, digest);
-
-        uint256 secp256k1n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
-        bytes32 highS = bytes32(secp256k1n - uint256(s));
-
-        bytes memory malleableSig = abi.encodePacked(r, highS, v == 27 ? uint8(28) : uint8(27));
-        vm.prank(payee);
-        vm.expectRevert(TempoStreamChannel.MalleableSignature.selector);
-        channel.close(channelId, 500_000, malleableSig);
-    }
-
     // --- Cross-Contract / Cross-Chain Replay Tests ---
 
     function test_settle_revert_crossContractReplay() public {
@@ -858,6 +822,48 @@ contract TempoStreamChannelTest is BaseTest {
             token.balanceOf(payer) + token.balanceOf(payee) + token.balanceOf(address(channel));
 
         assertEq(totalAfter, totalBefore);
+    }
+
+    // --- TopUp Overflow Tests ---
+
+    function test_topUp_revert_overflowUint128() public {
+        bytes32 channelId = _openChannel();
+
+        uint256 tooLarge = uint256(type(uint128).max);
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.DepositOverflow.selector);
+        channel.topUp(channelId, tooLarge);
+    }
+
+    function test_topUp_revert_overflowExact() public {
+        bytes32 channelId = _openChannel();
+
+        uint256 maxAdditional = uint256(type(uint128).max) - DEPOSIT;
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.DepositOverflow.selector);
+        channel.topUp(channelId, maxAdditional + 1);
+    }
+
+    // --- Settle Exact Deposit ---
+
+    function test_settle_exactDeposit() public {
+        bytes32 channelId = _openChannel();
+
+        bytes memory sig = _signVoucher(channelId, DEPOSIT);
+        vm.prank(payee);
+        channel.settle(channelId, DEPOSIT, sig);
+
+        assertEq(channel.getChannel(channelId).settled, DEPOSIT);
+        assertEq(token.balanceOf(payee), DEPOSIT);
+        assertEq(token.balanceOf(address(channel)), 0);
+    }
+
+    // --- InvalidPayee Tests ---
+
+    function test_open_revert_zeroPayee() public {
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.InvalidPayee.selector);
+        channel.open(address(0), address(token), DEPOSIT, SALT, address(0));
     }
 
 }

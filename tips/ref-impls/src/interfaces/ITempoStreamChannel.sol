@@ -127,6 +127,7 @@ interface ITempoStreamChannel {
     error NotPayee();
     error TransferFailed();
     error CloseNotReady();
-    error MalleableSignature();
+    error InvalidPayee();
+    error DepositOverflow();
 
 }
