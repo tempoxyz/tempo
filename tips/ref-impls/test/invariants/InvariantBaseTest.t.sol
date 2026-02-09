@@ -16,6 +16,12 @@ abstract contract InvariantBaseTest is BaseTest {
                               STATE
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev Fork mode flag - when true, use mainnet tokens instead of factory-created ones
+    bool internal _forkMode = vm.envOr("FORK_MODE", false);
+
+    /// @dev Set for O(1) lookup of existing actors (used in fork mode)
+    mapping(address => bool) internal _forkActorSet;
+
     /// @dev Array of test actors that interact with the contracts
     address[] internal _actors;
 
@@ -47,7 +53,26 @@ abstract contract InvariantBaseTest is BaseTest {
 
     /// @notice Common setup for invariant tests
     /// @dev Creates tokens, sets up roles, creates blacklist policies
+    /// In fork mode, loads real mainnet tokens from environment variables
     function _setupInvariantBase() internal {
+        if (_forkMode) {
+            _setupInvariantBaseFork();
+        } else {
+            _setupInvariantBaseLocal();
+        }
+
+        // Register known balance holders for invariant checks
+        _registerBalanceHolder(address(amm));
+        _registerBalanceHolder(address(exchange));
+        _registerBalanceHolder(admin);
+        _registerBalanceHolder(alice);
+        _registerBalanceHolder(bob);
+        _registerBalanceHolder(charlie);
+        _registerBalanceHolder(pathUSDAdmin);
+    }
+
+    /// @dev Setup for local (non-fork) testing - creates tokens and policies
+    function _setupInvariantBaseLocal() internal {
         // Create additional tokens (token1, token2 already created in BaseTest)
         token3 =
             TIP20(factory.createToken("TOKEN3", "T3", "USD", pathUSD, admin, bytes32("token3")));
@@ -79,15 +104,37 @@ abstract contract InvariantBaseTest is BaseTest {
         _pathUsdPolicyId = registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
         pathUSD.changeTransferPolicyId(_pathUsdPolicyId);
         vm.stopPrank();
+    }
 
-        // Register known balance holders for invariant checks
-        _registerBalanceHolder(address(amm));
-        _registerBalanceHolder(address(exchange));
-        _registerBalanceHolder(admin);
-        _registerBalanceHolder(alice);
-        _registerBalanceHolder(bob);
-        _registerBalanceHolder(charlie);
-        _registerBalanceHolder(pathUSDAdmin);
+    /// @dev Setup for fork testing - loads real mainnet tokens from env vars
+    /// FORK_TOKEN_1 is required; FORK_TOKEN_2-4 are optional
+    /// Validates that trading paths exist between all token pairs and collects relevant book keys
+    function _setupInvariantBaseFork() internal {
+        // Load mainnet tokens from environment (FORK_TOKEN_1 required, 2-4 optional)
+        address forkToken1 = vm.envAddress("FORK_TOKEN_1");
+        require(forkToken1 != address(0), "FORK_TOKEN_1 required in fork mode");
+
+        token1 = TIP20(forkToken1);
+        _tokens.push(token1);
+
+        // Load optional tokens
+        address forkToken2 = vm.envOr("FORK_TOKEN_2", address(0));
+        if (forkToken2 != address(0)) {
+            token2 = TIP20(forkToken2);
+            _tokens.push(token2);
+        }
+
+        address forkToken3 = vm.envOr("FORK_TOKEN_3", address(0));
+        if (forkToken3 != address(0)) {
+            token3 = TIP20(forkToken3);
+            _tokens.push(token3);
+        }
+
+        address forkToken4 = vm.envOr("FORK_TOKEN_4", address(0));
+        if (forkToken4 != address(0)) {
+            token4 = TIP20(forkToken4);
+            _tokens.push(token4);
+        }
     }
 
     /// @dev Registers an address as a potential balance holder
@@ -149,10 +196,15 @@ abstract contract InvariantBaseTest is BaseTest {
     }
 
     /// @notice Creates test actors with initial balances
-    /// @dev Each actor gets funded with all tokens
+    /// @dev In local mode, actors are funded with all tokens.
+    ///      In fork mode, actors are real addresses with open orders (no artificial funding).
     /// @param noOfActors_ Number of actors to create
     /// @return actorsAddress Array of created actor addresses
     function _buildActors(uint256 noOfActors_) internal virtual returns (address[] memory) {
+        if (_forkMode) {
+            return _buildActorsForFork(noOfActors_);
+        }
+
         address[] memory actorsAddress = new address[](noOfActors_);
 
         for (uint256 i = 0; i < noOfActors_; i++) {
@@ -167,6 +219,31 @@ abstract contract InvariantBaseTest is BaseTest {
         }
 
         return actorsAddress;
+    }
+
+    /// @notice Creates test actors for fork mode - override in subclass for protocol-specific logic
+    /// @dev Base implementation reverts. Subclasses should implement protocol-specific actor collection.
+    /// @param noOfActors_ Required number of actors to find
+    /// @return actorsAddress Array of found actor addresses
+    function _buildActorsForFork(uint256 noOfActors_) internal virtual returns (address[] memory) {
+        revert("Fork mode actor collection not implemented - override _buildActorsForFork");
+    }
+
+    /// @dev Helper for fork mode: adds actor if unique, returns true if added
+    function _addForkActor(
+        address candidate,
+        address[] memory actors,
+        uint256 currentCount
+    )
+        internal
+        returns (bool added)
+    {
+        if (_forkActorSet[candidate]) return false;
+
+        _forkActorSet[candidate] = true;
+        actors[currentCount] = candidate;
+        _registerBalanceHolder(candidate);
+        return true;
     }
 
     /// @notice Creates test actors with approvals for a specific contract
