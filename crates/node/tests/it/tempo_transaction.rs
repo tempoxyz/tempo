@@ -1,6 +1,6 @@
 //! AA Transaction Flows
 //!
-//! - Sponsored raw tx flow (multi-party fee payer cosigning).
+//! - Sponsored raw tx flow (multi-party fee payer cosigning via eth_signTransaction).
 //! - WebAuthn signature negative cases.
 //! - Empty call batch rejection.
 //! - Contract creation address correctness.
@@ -11,13 +11,16 @@
 //! - 2D nonce system behavior, pool ordering, and out-of-order arrival.
 //! - Expiring nonce flow, replay protection, validity windows, and independence from protocol nonce.
 //!
+//! EIP-7702 Authorization Lists
+//!
+//! - Multi-key-type authorization list (secp256k1 + P256 + WebAuthn delegation).
+//! - Keychain authorization in auth list is skipped (attack prevention).
+//!
 //! Keychain / Access Keys
 //!
-//! - Authorization creation, validation, and chain ID scoping.
+//! - Access key usage with key authorization and chain ID scoping.
 //! - Keychain negative cases and RPC validation.
 //! - Spending limits, expiry, enforcement, and revocation/spending-limit TOCTOU cases.
-//! - Access key usage with key authorization.
-//! - Authorization list interaction with keychain authorizations.
 //!
 //! RPC Matrices
 //!
@@ -25,7 +28,7 @@
 //! - eth_sendTransaction matrix: key type (P256/WebAuthn) x fee payer x access key x batch calls; secp256k1 x fee payer.
 //! - eth_fillTransaction matrix: nonceKey + validBefore + validAfter + feeToken + fee payer.
 //! - eth_estimateGas matrix.
-//! - E2E fill -> sign -> send matrix across nonce modes + key types.
+//! - E2E fill → sign → send matrix across nonce modes, key types, and pre-bumped protocol nonces.
 //!
 //! Network
 //!
