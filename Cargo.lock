@@ -12340,6 +12340,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-sol-types",
  "futures",
+ "itertools 0.14.0",
  "metrics",
  "parking_lot",
  "reth-chainspec",
