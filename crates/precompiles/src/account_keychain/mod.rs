@@ -476,6 +476,8 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        // Silently skip refund if the key was revoked or expired — the fee was already
+        // collected and the key is no longer active, so there is nothing to restore.
         let key = match self.load_active_key(account, transaction_key) {
             Ok(key) => key,
             Err(_) => return Ok(()),
