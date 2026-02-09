@@ -257,38 +257,32 @@ impl ValidatorsInfo {
             IValidatorConfig::getNextFullDkgCeremonyCall::abi_decode_returns(&next_dkg_result)
                 .wrap_err("failed to decode getNextFullDkgCeremony response")?;
 
-        let contract_validators: HashMap<[u8; 32], IValidatorConfig::Validator> =
-            decoded_validators
-                .into_iter()
-                .map(|v| (v.publicKey.0, v))
-                .collect();
+        let players: HashMap<[u8; 32], ()> = dkg_outcome
+            .players()
+            .iter()
+            .map(|player| Ok((player.as_ref().try_into()?, ())))
+            .collect::<Result<_, eyre::Error>>()
+            .wrap_err("invalid player pubkey")?;
 
-        let players = dkg_outcome.players().clone();
+        let next_players: HashMap<[u8; 32], ()> = dkg_outcome
+            .next_players()
+            .iter()
+            .map(|player| Ok((player.as_ref().try_into()?, ())))
+            .collect::<Result<_, eyre::Error>>()
+            .wrap_err("invalid next player pubkey")?;
 
-        let mut validator_entries = Vec::new();
-        for player in players.into_iter() {
-            let pubkey_bytes: [u8; 32] = player.as_ref().try_into().wrap_err("invalid pubkey")?;
-
-            let (onchain_address, active, inbound, outbound) =
-                if let Some(v) = contract_validators.get(&pubkey_bytes) {
-                    (
-                        v.validatorAddress,
-                        v.active,
-                        v.inboundAddress.clone(),
-                        v.outboundAddress.clone(),
-                    )
-                } else {
-                    (Address::ZERO, false, String::new(), String::new())
-                };
+        let mut validator_entries = Vec::with_capacity(decoded_validators.len());
+        for validator in decoded_validators.into_iter() {
+            let pubkey_bytes = validator.publicKey.0;
 
             validator_entries.push(ValidatorEntry {
-                onchain_address,
+                onchain_address: validator.validatorAddress,
                 public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                inbound_address: inbound,
-                outbound_address: outbound,
-                active,
-                is_dealer: dkg_outcome.players().position(&player).is_some(),
-                is_player: dkg_outcome.next_players().position(&player).is_some(),
+                inbound_address: validator.inboundAddress,
+                outbound_address: validator.outboundAddress,
+                active: validator.active,
+                is_dealer: players.contains_key(&pubkey_bytes),
+                is_player: next_players.contains_key(&pubkey_bytes),
             });
         }
 
