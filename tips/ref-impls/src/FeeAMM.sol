@@ -49,7 +49,11 @@ contract FeeAMM is IFeeAMM {
         return pools[poolId];
     }
 
-    function checkSufficientLiquidity(address userToken, address validatorToken, uint256 maxAmount)
+    function checkSufficientLiquidity(
+        address userToken,
+        address validatorToken,
+        uint256 maxAmount
+    )
         internal
         view
     {
@@ -58,7 +62,11 @@ contract FeeAMM is IFeeAMM {
         if (pools[poolId].reserveValidatorToken < amountOutNeeded) revert InsufficientLiquidity();
     }
 
-    function executeFeeSwap(address userToken, address validatorToken, uint256 amountIn)
+    function executeFeeSwap(
+        address userToken,
+        address validatorToken,
+        uint256 amountIn
+    )
         internal
         returns (uint256 amountOut)
     {
@@ -76,7 +84,12 @@ contract FeeAMM is IFeeAMM {
         pool.reserveValidatorToken -= uint128(amountOut);
     }
 
-    function rebalanceSwap(address userToken, address validatorToken, uint256 amountOut, address to)
+    function rebalanceSwap(
+        address userToken,
+        address validatorToken,
+        uint256 amountOut,
+        address to
+    )
         external
         returns (uint256 amountIn)
     {
@@ -117,7 +130,10 @@ contract FeeAMM is IFeeAMM {
         address validatorToken,
         uint256 amountValidatorToken,
         address to
-    ) external returns (uint256 liquidity) {
+    )
+        external
+        returns (uint256 liquidity)
+    {
         if (userToken == validatorToken) revert IdenticalAddresses();
         if (amountValidatorToken == 0) revert InvalidAmount();
 
@@ -165,7 +181,12 @@ contract FeeAMM is IFeeAMM {
         emit Mint(msg.sender, to, userToken, validatorToken, amountValidatorToken, liquidity);
     }
 
-    function burn(address userToken, address validatorToken, uint256 liquidity, address to)
+    function burn(
+        address userToken,
+        address validatorToken,
+        uint256 liquidity,
+        address to
+    )
         external
         returns (uint256 amountUserToken, uint256 amountValidatorToken)
     {
@@ -210,7 +231,11 @@ contract FeeAMM is IFeeAMM {
         );
     }
 
-    function _calculateBurnAmounts(Pool storage pool, bytes32 poolId, uint256 liquidity)
+    function _calculateBurnAmounts(
+        Pool storage pool,
+        bytes32 poolId,
+        uint256 liquidity
+    )
         private
         view
         returns (uint256 amountUserToken, uint256 amountValidatorToken)

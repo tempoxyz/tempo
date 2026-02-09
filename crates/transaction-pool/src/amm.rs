@@ -4,6 +4,7 @@ use alloy_primitives::{
     Address, U256,
     map::{AddressMap, HashMap, U256Map},
 };
+use itertools::Itertools;
 use parking_lot::RwLock;
 use reth_primitives_traits::{BlockHeader, SealedHeader};
 use reth_provider::{
@@ -193,14 +194,19 @@ impl AmmLiquidityCache {
         if inner.last_seen_tokens.len() > LAST_SEEN_WINDOW {
             inner.last_seen_tokens.pop_front();
         }
-        inner.unique_tokens = inner.last_seen_tokens.iter().copied().collect();
+        inner.unique_tokens = inner.last_seen_tokens.iter().copied().unique().collect();
 
         // Track the new observed validator (block producer)
         inner.last_seen_validators.push_back(beneficiary);
         if inner.last_seen_validators.len() > LAST_SEEN_WINDOW {
             inner.last_seen_validators.pop_front();
         }
-        inner.unique_validators = inner.last_seen_validators.iter().copied().collect();
+        inner.unique_validators = inner
+            .last_seen_validators
+            .iter()
+            .copied()
+            .unique()
+            .collect();
 
         Ok(())
     }
@@ -475,12 +481,17 @@ mod tests {
             Some(&Address::new([1; 20]))
         );
 
-        inner.unique_validators = inner.last_seen_validators.iter().copied().collect();
+        inner.unique_validators = inner
+            .last_seen_validators
+            .iter()
+            .copied()
+            .unique()
+            .collect();
         assert!(inner.unique_validators.contains(&new_validator));
     }
 
     #[test]
-    fn test_unique_tokens_updated_from_last_seen() {
+    fn test_unique_tokens_deduplication() {
         let mut inner = AmmLiquidityCacheInner::default();
 
         let token_a = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
@@ -488,12 +499,14 @@ mod tests {
 
         inner.last_seen_tokens.push_back(token_a);
         inner.last_seen_tokens.push_back(token_b);
-        inner.last_seen_tokens.push_back(token_a);
+        inner.last_seen_tokens.push_back(token_b);
+        inner.last_seen_tokens.push_back(token_b);
 
-        inner.unique_tokens = inner.last_seen_tokens.iter().copied().collect();
+        inner.unique_tokens = inner.last_seen_tokens.iter().copied().unique().collect();
 
-        assert!(inner.unique_tokens.contains(&token_a));
-        assert!(inner.unique_tokens.contains(&token_b));
+        assert_eq!(inner.unique_tokens.len(), 2, "duplicates must be removed");
+        assert_eq!(inner.unique_tokens[0], token_a);
+        assert_eq!(inner.unique_tokens[1], token_b);
     }
 
     // ============================================

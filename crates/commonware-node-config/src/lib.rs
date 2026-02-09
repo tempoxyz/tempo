@@ -15,9 +15,8 @@ use commonware_cryptography::{
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, PartialEq, Eq, derive_more::Debug)]
+#[derive(Clone, Debug)]
 pub struct SigningKey {
-    #[debug(skip)]
     inner: PrivateKey,
 }
 

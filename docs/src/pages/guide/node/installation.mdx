@@ -1,0 +1,73 @@
+# Installation
+
+## Quick Install
+
+The easiest way to install Tempo is using `tempoup`:
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/tempoxyz/tempo/main/tempoup/install | bash
+```
+
+This will install the `tempoup` tool and the latest `tempo` binary. To install a specific version:
+
+```bash
+tempoup -i v1.0.0
+```
+
+## Docker
+
+Official Docker images are available at `ghcr.io/tempoxyz`:
+
+```bash
+docker pull ghcr.io/tempoxyz/tempo:latest
+```
+
+## Verifying Releases
+
+All release artifacts are cryptographically signed. We recommend verifying signatures before running any binary.
+
+### Binary Signatures (GPG)
+
+Release binaries are signed with GPG. The `tempoup` installer verifies signatures automatically when `gpg` is available.
+
+To verify manually:
+
+```bash
+# Import the Tempo release signing key
+gpg --keyserver keyserver.ubuntu.com --recv-keys EE3C5D41EA963E896F310EC3CBBFA54B20D33446
+
+# Verify a downloaded binary
+gpg --verify tempo-v1.0.0-x86_64-unknown-linux-gnu.tar.gz.asc \
+    tempo-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
+```
+
+A successful verification will show `Good signature from "Tempo Release Signing Key"`.
+
+**Fingerprint:** `EE3C 5D41 EA96 3E89 6F31 0EC3 CBBF A54B 20D3 3446`
+
+### Docker Image Signatures (Cosign)
+
+Docker images are signed with [Cosign](https://docs.sigstore.dev/cosign/overview/) using keyless signing via GitHub Actions OIDC.
+
+To verify a Docker image:
+
+```bash
+# Install cosign: https://docs.sigstore.dev/cosign/system_config/installation/
+cosign verify ghcr.io/tempoxyz/tempo:latest \
+  --certificate-identity-regexp="https://github.com/tempoxyz/tempo/" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+```
+
+This verifies that the image was built and signed by the official Tempo CI pipeline.
+
+### SHA256 Checksums
+
+Every release archive includes a `.sha256` checksum file:
+
+```bash
+# Download the checksum file
+curl -sSfLO https://github.com/tempoxyz/tempo/releases/download/v1.0.0/tempo-v1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+
+# Verify
+shasum -a 256 -c tempo-v1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+```

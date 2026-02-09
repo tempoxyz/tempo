@@ -141,17 +141,17 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 let mock_signature =
                     create_mock_tempo_signature(&key_type, key_data.as_ref(), key_id, caller_addr);
 
-                let calls = if !calls.is_empty() {
-                    calls
-                } else if let Some(to) = &inner.to {
-                    vec![Call {
+                let mut calls = calls;
+                if let Some(to) = &inner.to {
+                    calls.push(Call {
                         to: *to,
                         value: inner.value.unwrap_or_default(),
                         input: inner.input.clone().into_input().unwrap_or_default(),
-                    }]
-                } else {
+                    });
+                }
+                if calls.is_empty() {
                     return Err(EthApiError::InvalidParams("empty calls list".to_string()));
-                };
+                }
 
                 Some(Box::new(TempoBatchCallEnv {
                     aa_calls: calls,
@@ -241,6 +241,7 @@ fn create_mock_primitive_signature(
             const AUTH_DATA_SIZE: usize = 37;
             const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len(); // 87 bytes
             const DEFAULT_WEBAUTHN_SIZE: usize = 800; // Default when no key_data provided
+            const MAX_WEBAUTHN_SIZE: usize = 8192; // Maximum realistic WebAuthn signature size
 
             // Parse size from key_data, or use default
             let size = if let Some(data) = key_data.as_ref() {
@@ -254,8 +255,8 @@ fn create_mock_primitive_signature(
                 DEFAULT_WEBAUTHN_SIZE // Default size when no key_data provided
             };
 
-            // Ensure size is at least minimum
-            let size = size.max(MIN_WEBAUTHN_SIZE);
+            // Clamp size to safe bounds to prevent DoS via unbounded allocation
+            let size = size.clamp(MIN_WEBAUTHN_SIZE, MAX_WEBAUTHN_SIZE);
 
             // Construct authenticatorData (37 bytes)
             let mut webauthn_data = vec![0u8; AUTH_DATA_SIZE];
@@ -301,5 +302,101 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
             timestamp_millis: header.timestamp_millis(),
             inner: FromConsensusHeader::from_consensus_header(header, block_size),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{TxKind, address};
+    use alloy_rpc_types_eth::TransactionRequest;
+    use reth_rpc_convert::TryIntoTxEnv;
+    use tempo_primitives::transaction::tt_signature::PrimitiveSignature;
+
+    #[test]
+    fn test_estimate_gas_when_calls_set() {
+        let existing_call = Call {
+            to: TxKind::Call(address!("0x1111111111111111111111111111111111111111")),
+            value: alloy_primitives::U256::from(1),
+            input: Bytes::from(vec![0xaa]),
+        };
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(address!(
+                    "0x2222222222222222222222222222222222222222"
+                ))),
+                value: Some(alloy_primitives::U256::from(2)),
+                input: alloy_rpc_types_eth::TransactionInput::new(Bytes::from(vec![0xbb])),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                ..Default::default()
+            },
+            calls: vec![existing_call],
+            nonce_key: Some(alloy_primitives::U256::ZERO),
+            ..Default::default()
+        };
+
+        let built_calls = req.clone().build_aa().expect("build_aa").calls;
+
+        let evm_env =
+            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+        let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
+
+        assert_eq!(estimated_calls, built_calls);
+    }
+
+    #[test]
+    fn test_webauthn_size_clamped_to_max() {
+        // Attempt to create a signature with u32::MAX size (would be ~4GB without fix)
+        let malicious_key_data = Bytes::from(0xFFFFFFFFu32.to_be_bytes().to_vec());
+        let sig =
+            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(malicious_key_data));
+
+        // Extract webauthn_data and verify it's clamped to MAX_WEBAUTHN_SIZE (8192)
+        let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
+            panic!("Expected WebAuthn signature");
+        };
+
+        // The webauthn_data should be at most MAX_WEBAUTHN_SIZE bytes
+        assert!(
+            webauthn_sig.webauthn_data.len() <= 8192,
+            "WebAuthn data size {} exceeds maximum 8192",
+            webauthn_sig.webauthn_data.len()
+        );
+    }
+
+    #[test]
+    fn test_webauthn_size_respects_minimum() {
+        // Attempt to create a signature with size 0
+        let key_data = Bytes::from(vec![0u8]);
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data));
+
+        let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
+            panic!("Expected WebAuthn signature");
+        };
+
+        // Should be at least MIN_WEBAUTHN_SIZE (87 bytes)
+        assert!(
+            webauthn_sig.webauthn_data.len() >= 87,
+            "WebAuthn data size {} is below minimum 87",
+            webauthn_sig.webauthn_data.len()
+        );
+    }
+
+    #[test]
+    fn test_webauthn_default_size() {
+        // No key_data should use default size (800)
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, None);
+
+        let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
+            panic!("Expected WebAuthn signature");
+        };
+
+        // Default is 800 bytes
+        assert_eq!(webauthn_sig.webauthn_data.len(), 800);
     }
 }
