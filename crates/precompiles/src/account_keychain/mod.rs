@@ -446,7 +446,7 @@ impl AccountKeychain {
         self.spending_limits[limit_key][token].write(remaining - amount)
     }
 
-    /// Internal: Refund spending limit for a token transfer (e.g., unused gas fees)
+    /// Refund spending limit for a token transfer (e.g., unused gas fees)
     pub fn refund_spending(
         &mut self,
         account: Address,
