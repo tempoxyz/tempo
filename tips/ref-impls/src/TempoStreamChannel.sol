@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import { ITIP20 } from "./interfaces/ITIP20.sol";
 import { ECDSA } from "solady/utils/ECDSA.sol";
 import { EIP712 } from "solady/utils/EIP712.sol";
-import { ReentrancyGuard } from "solady/utils/ReentrancyGuard.sol";
-
-interface ITIP20 {
-
-    function transfer(address to, uint256 value) external returns (bool);
-    function transferFrom(address from, address to, uint256 value) external returns (bool);
-    function balanceOf(address who) external view returns (uint256);
-
-}
 
 /**
  * @title TempoStreamChannel
@@ -21,7 +13,7 @@ interface ITIP20 {
  *      closed either cooperatively by the server or after a grace period
  *      following a user's close request.
  */
-contract TempoStreamChannel is EIP712, ReentrancyGuard {
+contract TempoStreamChannel is EIP712 {
 
     // --- Types ---
 
@@ -42,6 +34,9 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
         keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount)");
 
     uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
+
+    uint256 private constant SECP256K1_HALF_ORDER =
+        0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
 
     // --- State ---
 
@@ -108,6 +103,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
     error NotPayee();
     error TransferFailed();
     error CloseNotReady();
+    error MalleableSignature();
 
     // --- EIP-712 Domain ---
 
@@ -140,19 +136,12 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
         address authorizedSigner
     )
         external
-        nonReentrant
         returns (bytes32 channelId)
     {
         channelId = computeChannelId(msg.sender, payee, token, salt, authorizedSigner);
 
         if (channels[channelId].payer != address(0)) {
             revert ChannelAlreadyExists();
-        }
-
-        // Transfer tokens to this contract
-        bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
-        if (!success) {
-            revert TransferFailed();
         }
 
         channels[channelId] = Channel({
@@ -165,6 +154,11 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
             closeRequestedAt: 0,
             finalized: false
         });
+
+        bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
+        if (!success) {
+            revert TransferFailed();
+        }
 
         emit ChannelOpened(channelId, msg.sender, payee, token, authorizedSigner, deposit);
     }
@@ -181,7 +175,6 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
         bytes calldata signature
     )
         external
-        nonReentrant
     {
         Channel storage channel = channels[channelId];
 
@@ -201,12 +194,12 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
             revert AmountNotIncreasing();
         }
 
-        // Verify signature
+        _requireLowS(signature);
+
         bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
         bytes32 digest = _hashTypedData(structHash);
         address signer = ECDSA.recoverCalldata(digest, signature);
 
-        // Check against authorizedSigner if set, otherwise payer
         address expectedSigner =
             channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
 
@@ -214,7 +207,6 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
             revert InvalidSignature();
         }
 
-        // Calculate delta and transfer
         uint128 delta = cumulativeAmount - channel.settled;
         channel.settled = cumulativeAmount;
 
@@ -233,7 +225,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
      * @param channelId The channel to top up
      * @param additionalDeposit Amount to add
      */
-    function topUp(bytes32 channelId, uint128 additionalDeposit) external nonReentrant {
+    function topUp(bytes32 channelId, uint256 additionalDeposit) external {
         Channel storage channel = channels[channelId];
 
         if (channel.payer == address(0)) {
@@ -247,12 +239,13 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
         }
 
         if (additionalDeposit > 0) {
+            channel.deposit += uint128(additionalDeposit);
+
             bool success =
                 ITIP20(channel.token).transferFrom(msg.sender, address(this), additionalDeposit);
             if (!success) {
                 revert TransferFailed();
             }
-            channel.deposit += additionalDeposit;
         }
 
         if (channel.closeRequestedAt != 0) {
@@ -297,14 +290,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
      * @param cumulativeAmount Final cumulative amount (0 if no payments)
      * @param signature EIP-712 signature (empty if cumulativeAmount == 0 or same as settled)
      */
-    function close(
-        bytes32 channelId,
-        uint128 cumulativeAmount,
-        bytes calldata signature
-    )
-        external
-        nonReentrant
-    {
+    function close(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external {
         Channel storage channel = channels[channelId];
 
         if (channel.payer == address(0)) {
@@ -325,7 +311,8 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
                 revert AmountExceedsDeposit();
             }
 
-            // Verify signature
+            _requireLowS(signature);
+
             bytes32 structHash =
                 keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
             bytes32 digest = _hashTypedData(structHash);
@@ -338,7 +325,6 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
                 revert InvalidSignature();
             }
 
-            // Transfer delta to payee
             uint128 delta = cumulativeAmount - settledAmount;
             settledAmount = cumulativeAmount;
             channel.settled = cumulativeAmount;
@@ -367,7 +353,7 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
      * @notice Withdraw remaining funds after close grace period.
      * @param channelId The channel to withdraw from
      */
-    function withdraw(bytes32 channelId) external nonReentrant {
+    function withdraw(bytes32 channelId) external {
         Channel storage channel = channels[channelId];
 
         if (channel.payer == address(0)) {
@@ -473,6 +459,16 @@ contract TempoStreamChannel is EIP712, ReentrancyGuard {
         for (uint256 i = 0; i < length; ++i) {
             channelStates[i] = channels[channelIds[i]];
         }
+    }
+
+    // --- Internal Helpers ---
+
+    function _requireLowS(bytes calldata signature) internal pure {
+        uint256 s;
+        assembly {
+            s := calldataload(add(signature.offset, 0x20))
+        }
+        if (s > SECP256K1_HALF_ORDER) revert MalleableSignature();
     }
 
 }

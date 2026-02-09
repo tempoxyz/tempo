@@ -33,7 +33,7 @@ interface ITempoStreamChannel {
 
     function settle(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external;
 
-    function topUp(bytes32 channelId, uint128 additionalDeposit) external;
+    function topUp(bytes32 channelId, uint256 additionalDeposit) external;
 
     function close(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external;
 
@@ -126,5 +126,6 @@ interface ITempoStreamChannel {
     error NotPayee();
     error TransferFailed();
     error CloseNotReady();
+    error MalleableSignature();
 
 }

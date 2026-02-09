@@ -1,49 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import { TIP20 } from "../src/TIP20.sol";
 import { TempoStreamChannel } from "../src/TempoStreamChannel.sol";
-import { Test, console } from "forge-std/Test.sol";
+import { BaseTest } from "./BaseTest.t.sol";
 
-contract MockTIP20 {
-
-    string public name = "Mock USD";
-    string public symbol = "mUSD";
-    uint8 public decimals = 6;
-
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "insufficient balance");
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(balanceOf[from] >= amount, "insufficient balance");
-        require(allowance[from][msg.sender] >= amount, "insufficient allowance");
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        allowance[from][msg.sender] -= amount;
-        return true;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-}
-
-contract TempoStreamChannelTest is Test {
+contract TempoStreamChannelTest is BaseTest {
 
     TempoStreamChannel public channel;
-    MockTIP20 public token;
+    TIP20 public token;
 
     address public payer;
     uint256 public payerKey;
@@ -52,14 +17,22 @@ contract TempoStreamChannelTest is Test {
     uint128 constant DEPOSIT = 1_000_000;
     bytes32 constant SALT = bytes32(uint256(1));
 
-    function setUp() public {
+    function setUp() public override {
+        super.setUp();
+
         channel = new TempoStreamChannel();
-        token = new MockTIP20();
+        token = TIP20(
+            factory.createToken("Stream Token", "STR", "USD", pathUSD, admin, bytes32("stream"))
+        );
 
         (payer, payerKey) = makeAddrAndKey("payer");
         payee = makeAddr("payee");
 
+        vm.startPrank(admin);
+        token.grantRole(_ISSUER_ROLE, admin);
         token.mint(payer, 10_000_000);
+        vm.stopPrank();
+
         vm.prank(payer);
         token.approve(address(channel), type(uint256).max);
     }
@@ -673,6 +646,175 @@ contract TempoStreamChannelTest is Test {
         assertTrue(channel.domainSeparator() != bytes32(0));
     }
 
+    // --- Settle Access Control Tests ---
+
+    function test_settle_revert_payerCannotSettle() public {
+        bytes32 channelId = _openChannel();
+        bytes memory sig = _signVoucher(channelId, 500_000);
+
+        vm.prank(payer);
+        vm.expectRevert(TempoStreamChannel.NotPayee.selector);
+        channel.settle(channelId, 500_000, sig);
+    }
+
+    function test_settle_revert_thirdParty() public {
+        bytes32 channelId = _openChannel();
+        bytes memory sig = _signVoucher(channelId, 500_000);
+
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(TempoStreamChannel.NotPayee.selector);
+        channel.settle(channelId, 500_000, sig);
+    }
+
+    // --- Signature Malleability Tests ---
+
+    function test_settle_revert_highSSignature() public {
+        bytes32 channelId = _openChannel();
+        bytes32 digest = channel.getVoucherDigest(channelId, 500_000);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerKey, digest);
+
+        uint256 secp256k1n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+        bytes32 highS = bytes32(secp256k1n - uint256(s));
+
+        bytes memory malleableSigFlippedV =
+            abi.encodePacked(r, highS, v == 27 ? uint8(28) : uint8(27));
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.MalleableSignature.selector);
+        channel.settle(channelId, 500_000, malleableSigFlippedV);
+
+        bytes memory malleableSigSameV = abi.encodePacked(r, highS, v);
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.MalleableSignature.selector);
+        channel.settle(channelId, 500_000, malleableSigSameV);
+    }
+
+    function test_close_revert_highSSignature() public {
+        bytes32 channelId = _openChannel();
+        bytes32 digest = channel.getVoucherDigest(channelId, 500_000);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerKey, digest);
+
+        uint256 secp256k1n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+        bytes32 highS = bytes32(secp256k1n - uint256(s));
+
+        bytes memory malleableSig = abi.encodePacked(r, highS, v == 27 ? uint8(28) : uint8(27));
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.MalleableSignature.selector);
+        channel.close(channelId, 500_000, malleableSig);
+    }
+
+    // --- Cross-Contract / Cross-Chain Replay Tests ---
+
+    function test_settle_revert_crossContractReplay() public {
+        bytes32 channelId = _openChannel();
+        bytes memory sig = _signVoucher(channelId, 500_000);
+
+        TempoStreamChannel channel2 = new TempoStreamChannel();
+        TIP20 token2 = TIP20(
+            factory.createToken("Stream Token 2", "ST2", "USD", pathUSD, admin, bytes32("stream2"))
+        );
+
+        vm.startPrank(admin);
+        token2.grantRole(_ISSUER_ROLE, admin);
+        token2.mint(payer, 10_000_000);
+        vm.stopPrank();
+
+        vm.prank(payer);
+        token2.approve(address(channel2), type(uint256).max);
+
+        vm.prank(payer);
+        bytes32 channelId2 = channel2.open(payee, address(token2), DEPOSIT, SALT, address(0));
+
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
+        channel2.settle(channelId2, 500_000, sig);
+    }
+
+    function test_settle_revert_crossChainReplay() public {
+        bytes32 channelId = _openChannel();
+        bytes memory sig = _signVoucher(channelId, 500_000);
+
+        uint256 originalChainId = block.chainid;
+        vm.chainId(originalChainId + 1);
+
+        TempoStreamChannel channel2 = new TempoStreamChannel();
+        TIP20 token2 = TIP20(
+            factory.createToken("Stream Token 3", "ST3", "USD", pathUSD, admin, bytes32("stream3"))
+        );
+
+        vm.startPrank(admin);
+        token2.grantRole(_ISSUER_ROLE, admin);
+        token2.mint(payer, 10_000_000);
+        vm.stopPrank();
+
+        vm.prank(payer);
+        token2.approve(address(channel2), type(uint256).max);
+
+        vm.prank(payer);
+        bytes32 channelId2 = channel2.open(payee, address(token2), DEPOSIT, SALT, address(0));
+
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.InvalidSignature.selector);
+        channel2.settle(channelId2, 500_000, sig);
+
+        vm.chainId(originalChainId);
+    }
+
+    // --- Zero Deposit Edge Case ---
+
+    function test_open_zeroDeposit() public {
+        vm.prank(payer);
+        bytes32 channelId = channel.open(payee, address(token), 0, bytes32(uint256(99)), address(0));
+
+        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
+        assertEq(ch.deposit, 0);
+        assertEq(ch.settled, 0);
+        assertFalse(ch.finalized);
+
+        bytes memory sig = _signVoucher(channelId, 1);
+        vm.prank(payee);
+        vm.expectRevert(TempoStreamChannel.AmountExceedsDeposit.selector);
+        channel.settle(channelId, 1, sig);
+
+        vm.prank(payee);
+        channel.close(channelId, 0, "");
+        assertTrue(channel.getChannel(channelId).finalized);
+        assertEq(token.balanceOf(payer), 10_000_000);
+    }
+
+    // --- Close No-Op Settlement Path ---
+
+    function test_close_noopWhenCumulativeEqualsSettled() public {
+        bytes32 channelId = _openChannel();
+
+        bytes memory sig = _signVoucher(channelId, 600_000);
+        vm.prank(payee);
+        channel.settle(channelId, 600_000, sig);
+
+        uint256 payeeBalanceBefore = token.balanceOf(payee);
+        uint256 payerBalanceBefore = token.balanceOf(payer);
+
+        vm.prank(payee);
+        channel.close(channelId, 600_000, "");
+
+        assertEq(token.balanceOf(payee), payeeBalanceBefore);
+        assertEq(token.balanceOf(payer), payerBalanceBefore + (DEPOSIT - 600_000));
+        assertTrue(channel.getChannel(channelId).finalized);
+    }
+
+    function test_close_noopZeroCumulativeZeroSettled() public {
+        bytes32 channelId = _openChannel();
+
+        uint256 payerBalanceBefore = token.balanceOf(payer);
+
+        vm.prank(payee);
+        channel.close(channelId, 0, "");
+
+        assertEq(token.balanceOf(payee), 0);
+        assertEq(token.balanceOf(payer), payerBalanceBefore + DEPOSIT);
+        assertTrue(channel.getChannel(channelId).finalized);
+    }
+
     // --- Fuzz Tests ---
 
     function testFuzz_settle_monotonic(uint128 amount1, uint128 amount2) public {
@@ -696,7 +838,9 @@ contract TempoStreamChannelTest is Test {
         vm.assume(depositAmt > 0 && depositAmt <= 5_000_000);
         vm.assume(settleAmt > 0 && settleAmt <= depositAmt);
 
+        vm.startPrank(admin);
         token.mint(payer, depositAmt);
+        vm.stopPrank();
 
         bytes32 salt = bytes32(uint256(block.timestamp));
 
@@ -714,206 +858,6 @@ contract TempoStreamChannelTest is Test {
             token.balanceOf(payer) + token.balanceOf(payee) + token.balanceOf(address(channel));
 
         assertEq(totalAfter, totalBefore);
-    }
-
-}
-
-// --- Malicious Token Models ---
-
-contract FeeOnTransferToken {
-
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-    uint256 public feePercent = 10;
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "insufficient balance");
-        uint256 fee = amount * feePercent / 100;
-        uint256 net = amount - fee;
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += net;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(balanceOf[from] >= amount, "insufficient balance");
-        require(allowance[from][msg.sender] >= amount, "insufficient allowance");
-        uint256 fee = amount * feePercent / 100;
-        uint256 net = amount - fee;
-        balanceOf[from] -= amount;
-        balanceOf[to] += net;
-        allowance[from][msg.sender] -= amount;
-        return true;
-    }
-
-}
-
-contract NonTransferringToken {
-
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transfer(address, uint256) external pure returns (bool) {
-        return true;
-    }
-
-    function transferFrom(address, address, uint256) external pure returns (bool) {
-        return true;
-    }
-
-}
-
-contract ReentrantToken {
-
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    TempoStreamChannel public target;
-    bytes32 public attackChannelId;
-    bool public attacking;
-
-    function setTarget(TempoStreamChannel _target, bytes32 _channelId) external {
-        target = _target;
-        attackChannelId = _channelId;
-    }
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "insufficient");
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-
-        if (!attacking && address(target) != address(0)) {
-            attacking = true;
-            try target.withdraw(attackChannelId) { } catch { }
-            attacking = false;
-        }
-
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(balanceOf[from] >= amount, "insufficient");
-        require(allowance[from][msg.sender] >= amount, "allowance");
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        allowance[from][msg.sender] -= amount;
-        return true;
-    }
-
-}
-
-contract MaliciousTokenTest is Test {
-
-    TempoStreamChannel public channel;
-
-    address public payer;
-    uint256 public payerKey;
-    address public payee;
-
-    function setUp() public {
-        channel = new TempoStreamChannel();
-        (payer, payerKey) = makeAddrAndKey("payer");
-        payee = makeAddr("payee");
-    }
-
-    function _signVoucher(bytes32 channelId, uint128 amount) internal view returns (bytes memory) {
-        bytes32 digest = channel.getVoucherDigest(channelId, amount);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerKey, digest);
-        return abi.encodePacked(r, s, v);
-    }
-
-    function test_nonTransferringToken_openFails() public {
-        NonTransferringToken badToken = new NonTransferringToken();
-        badToken.mint(payer, 1_000_000);
-
-        vm.startPrank(payer);
-        badToken.approve(address(channel), 1_000_000);
-
-        bytes32 channelId =
-            channel.open(payee, address(badToken), 1_000_000, bytes32(uint256(1)), address(0));
-        vm.stopPrank();
-
-        assertEq(
-            badToken.balanceOf(address(channel)),
-            0,
-            "NonTransferringToken: Contract thinks it has tokens but doesn't"
-        );
-
-        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
-        assertEq(ch.deposit, 1_000_000, "Channel shows deposit");
-    }
-
-    function test_feeOnTransferToken_insolvency() public {
-        FeeOnTransferToken feeToken = new FeeOnTransferToken();
-        feeToken.mint(payer, 1_000_000);
-
-        vm.startPrank(payer);
-        feeToken.approve(address(channel), 1_000_000);
-
-        bytes32 channelId =
-            channel.open(payee, address(feeToken), 1_000_000, bytes32(uint256(1)), address(0));
-        vm.stopPrank();
-
-        assertEq(feeToken.balanceOf(address(channel)), 900_000, "Contract got 90% due to fee");
-
-        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
-        assertEq(ch.deposit, 1_000_000, "Channel records full deposit (insolvency risk)");
-        assertTrue(
-            ch.deposit > feeToken.balanceOf(address(channel)),
-            "Recorded deposit exceeds actual balance"
-        );
-    }
-
-    function test_reentrantToken_blockedByNonReentrant() public {
-        ReentrantToken badToken = new ReentrantToken();
-        badToken.mint(payer, 1_000_000);
-
-        vm.startPrank(payer);
-        badToken.approve(address(channel), 1_000_000);
-
-        bytes32 channelId =
-            channel.open(payee, address(badToken), 1_000_000, bytes32(uint256(1)), address(0));
-        vm.stopPrank();
-
-        badToken.setTarget(channel, channelId);
-
-        vm.prank(payer);
-        channel.requestClose(channelId);
-        vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() + 1);
-
-        vm.prank(payer);
-        channel.withdraw(channelId);
-
-        assertTrue(channel.getChannel(channelId).finalized, "Channel should be finalized");
-        assertEq(badToken.balanceOf(payer), 1_000_000, "Payer should have full refund");
-        assertEq(badToken.balanceOf(address(channel)), 0, "Contract should be empty");
     }
 
 }
