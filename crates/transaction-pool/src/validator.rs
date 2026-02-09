@@ -592,6 +592,19 @@ where
             );
         }
 
+        // Early reject oversized transactions before doing any expensive validation.
+        let tx_size = transaction.encoded_length();
+        let max_size = self.inner.max_tx_input_bytes();
+        if tx_size > max_size {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::OversizedData {
+                    size: tx_size,
+                    limit: max_size,
+                },
+            );
+        }
+
         // Validate that max_fee_per_gas meets the minimum base fee for the current hardfork.
         if let Err(err) = self.ensure_min_base_fee(&transaction, spec) {
             return TransactionValidationOutcome::Invalid(
@@ -3782,15 +3795,17 @@ mod tests {
 
         match outcome {
             TransactionValidationOutcome::Invalid(_, ref err) => {
+                let is_oversized = matches!(err, InvalidPoolTransactionError::OversizedData { .. });
+                let is_call_input_too_large = matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::CallInputTooLarge { .. })
+                );
                 assert!(
-                    matches!(
-                        err.downcast_other_ref::<TempoPoolTransactionError>(),
-                        Some(TempoPoolTransactionError::CallInputTooLarge { .. })
-                    ),
-                    "Expected CallInputTooLarge error, got: {err:?}"
+                    is_oversized || is_call_input_too_large,
+                    "Expected OversizedData or CallInputTooLarge error, got: {err:?}"
                 );
             }
-            _ => panic!("Expected Invalid outcome with CallInputTooLarge error, got: {outcome:?}"),
+            _ => panic!("Expected Invalid outcome, got: {outcome:?}"),
         }
     }
 
