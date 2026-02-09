@@ -328,7 +328,8 @@ message = keccak256(abi.encodePacked(
 The signature must be exactly 64 bytes and must verify against the provided
 public key.
 
-When rotating a validator, the signature message format is identical to `addValidator`:
+When rotating a validator, the signature message format is identical to `addValidator`
+except for the namespace:
 
 ```
 message = keccak256(abi.encodePacked(
@@ -341,8 +342,6 @@ message = keccak256(abi.encodePacked(
     egress                            // string: Binds network configuration
 ))
 ```
-
-The old validator is identified by `msg.sender`, which must be an existing active validator.
 
 ### Determining Active Validators
 
@@ -491,10 +490,12 @@ The following invariants must always hold:
    changes.
 
 11. **Owner authorization**: Only the owner can call `addValidator`,
-    `deactivateValidator`, `transferOwner`, and `setNextFullDkgCeremony`.
+    `transferOwner`, `migrateValidator`, `initiatializeIfMigraated` and
+    `setNextFullDkgCeremony`.
 
-12. **Dual authorization**: `rotateValidator`, `transferValidatorOwnership`, and
-    `setIpAddresses` can be called by either the owner or the validator itself.
+12. **Dual authorization**: `rotateValidator`, `deactivateValidator`,
+    `transferValidatorOwnership`, and `setIpAddresses` can be called by either
+    the owner or the validator itself.
 
 13. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
     transition from 0 to 1, never back to 0.
