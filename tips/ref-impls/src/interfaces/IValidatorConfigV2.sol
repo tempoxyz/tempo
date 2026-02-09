@@ -99,7 +99,8 @@ interface IValidatorConfigV2 {
         string calldata ingress,
         string calldata egress,
         bytes calldata signature
-    ) external;
+    )
+        external;
 
     /// @notice Deactivates a validator (owner only)
     /// @dev Marks the validator as deactivated by setting deactivatedAtHeight to the current block height.

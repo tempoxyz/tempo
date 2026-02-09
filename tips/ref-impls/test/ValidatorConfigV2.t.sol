@@ -134,9 +134,7 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         // 4. InvalidSignature (short)
-        try validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, hex"0000"
-        ) {
+        try validatorConfigV2.addValidator(validator1, PUB_KEY_0, ingress1, egress1, hex"0000") {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidSignature.selector));
@@ -166,7 +164,9 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         // 7. PublicKeyAlreadyExists (SETUP_PUB_KEY_A already migrated)
-        try validatorConfigV2.addValidator(validator2, SETUP_PUB_KEY_A, ingress2, egress2, SIG_ADD_V2) {
+        try validatorConfigV2.addValidator(
+            validator2, SETUP_PUB_KEY_A, ingress2, egress2, SIG_ADD_V2
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
@@ -227,9 +227,7 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.addValidator(validator1, PUB_KEY_0, ingress1, egress1, SIG_ADD_V1);
 
         // Owner rotates
-        validatorConfigV2.rotateValidator(
-            validator1, PUB_KEY_3, ingress2, egress2, SIG_ROTATE_V1
-        );
+        validatorConfigV2.rotateValidator(validator1, PUB_KEY_3, ingress2, egress2, SIG_ROTATE_V1);
 
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getValidators();
         assertEq(vals.length, 4); // 2 setup + original (deactivated) + rotated
@@ -245,9 +243,7 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.addValidator(validator1, PUB_KEY_0, ingress1, egress1, SIG_ADD_V1);
 
         vm.prank(validator1);
-        validatorConfigV2.rotateValidator(
-            validator1, PUB_KEY_3, ingress2, egress2, SIG_ROTATE_V1
-        );
+        validatorConfigV2.rotateValidator(validator1, PUB_KEY_3, ingress2, egress2, SIG_ROTATE_V1);
 
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getValidators();
         assertEq(vals.length, 4); // 2 setup + original (deactivated) + rotated
@@ -299,9 +295,7 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         // 5. InvalidSignature (short)
-        try validatorConfigV2.rotateValidator(
-            validator1, PUB_KEY_3, ingress2, egress2, hex"0000"
-        ) {
+        try validatorConfigV2.rotateValidator(validator1, PUB_KEY_3, ingress2, egress2, hex"0000") {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidSignature.selector));
@@ -401,8 +395,7 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // Owner transfers
         validatorConfigV2.transferValidatorOwnership(validator1, validator2);
-        IValidatorConfigV2.Validator memory v =
-            validatorConfigV2.validatorByAddress(validator2);
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(validator2);
         assertEq(v.publicKey, PUB_KEY_0);
         assertEq(v.validatorAddress, validator2);
 
@@ -421,8 +414,7 @@ contract ValidatorConfigV2Test is BaseTest {
         vm.prank(validator1);
         validatorConfigV2.transferValidatorOwnership(validator1, validator2);
 
-        IValidatorConfigV2.Validator memory v =
-            validatorConfigV2.validatorByAddress(validator2);
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(validator2);
         assertEq(v.validatorAddress, validator2);
     }
 
@@ -553,8 +545,7 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.addValidator(validator2, PUB_KEY_1, ingress2, egress2, SIG_ADD_V2);
         validatorConfigV2.deactivateValidator(validator1);
 
-        IValidatorConfigV2.Validator[] memory active =
-            validatorConfigV2.getActiveValidators();
+        IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
         assertEq(active.length, 3); // 2 setup + validator2 (validator1 deactivated)
         assertEq(active[0].validatorAddress, setupVal1);
         assertEq(active[1].validatorAddress, setupVal2);
@@ -599,8 +590,7 @@ contract ValidatorConfigV2Test is BaseTest {
         _initializeV2();
         validatorConfigV2.addValidator(validator1, PUB_KEY_0, ingress1, egress1, SIG_ADD_V1);
 
-        IValidatorConfigV2.Validator memory v =
-            validatorConfigV2.validatorByAddress(validator1);
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(validator1);
         assertEq(v.publicKey, PUB_KEY_0);
     }
 
@@ -616,8 +606,7 @@ contract ValidatorConfigV2Test is BaseTest {
         _initializeV2();
         validatorConfigV2.addValidator(validator1, PUB_KEY_0, ingress1, egress1, SIG_ADD_V1);
 
-        IValidatorConfigV2.Validator memory v =
-            validatorConfigV2.validatorByPublicKey(PUB_KEY_0);
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByPublicKey(PUB_KEY_0);
         assertEq(v.validatorAddress, validator1);
     }
 
@@ -644,9 +633,7 @@ contract ValidatorConfigV2Test is BaseTest {
         // V2 starts uninitialized with owner=address(0) from deployment.
         // setUp already added 2 V1 validators (setupVal1, setupVal2).
         // Add one more inactive V1 validator to test both active/inactive migration.
-        validatorConfig.addValidator(
-            validator1, PUB_KEY_0, false, ingress1, "192.168.1.1:9000"
-        );
+        validatorConfig.addValidator(validator1, PUB_KEY_0, false, ingress1, "192.168.1.1:9000");
 
         // First call copies owner from V1
         validatorConfigV2.migrateValidator(0);
@@ -681,9 +668,7 @@ contract ValidatorConfigV2Test is BaseTest {
         try validatorConfigV2.migrateValidator(1) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(
-                err, abi.encodeWithSelector(IValidatorConfigV2.InvalidMigrationIndex.selector)
-            );
+            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidMigrationIndex.selector));
         }
 
         // 2. Unauthorized (migrate idx 0 sets owner, then nonOwner tries idx 1)
@@ -708,9 +693,7 @@ contract ValidatorConfigV2Test is BaseTest {
         try validatorConfigV2.migrateValidator(0) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(
-                err, abi.encodeWithSelector(IValidatorConfigV2.AlreadyInitialized.selector)
-            );
+            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.AlreadyInitialized.selector));
         }
     }
 
@@ -738,9 +721,7 @@ contract ValidatorConfigV2Test is BaseTest {
         try validatorConfigV2.initializeIfMigrated() {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(
-                err, abi.encodeWithSelector(IValidatorConfigV2.MigrationNotComplete.selector)
-            );
+            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.MigrationNotComplete.selector));
         }
 
         // 2. Unauthorized (all migrated, but nonOwner calls)
@@ -757,9 +738,7 @@ contract ValidatorConfigV2Test is BaseTest {
         try validatorConfigV2.initializeIfMigrated() {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(
-                err, abi.encodeWithSelector(IValidatorConfigV2.AlreadyInitialized.selector)
-            );
+            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.AlreadyInitialized.selector));
         }
     }
 
