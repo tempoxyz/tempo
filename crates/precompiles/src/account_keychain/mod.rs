@@ -472,8 +472,12 @@ impl AccountKeychain {
 
             if current_timestamp >= period_end {
                 // Period expired - reset the remaining amount and update period_end
+                // Advance period_end by whole multiples of `period` so it lands in
+                // the future without drifting from the original schedule.
                 let limit_max = self.spending_limit_max[limit_key][token].read()?;
-                let new_period_end = current_timestamp.saturating_add(period);
+                let elapsed = current_timestamp.saturating_sub(period_end);
+                let periods_elapsed = elapsed / period + 1;
+                let new_period_end = period_end.saturating_add(periods_elapsed.saturating_mul(period));
 
                 self.spending_limit_period_end[limit_key][token].write(new_period_end)?;
                 self.spending_limits[limit_key][token].write(limit_max)?;
@@ -1424,8 +1428,11 @@ mod tests {
             let (remaining, period_end) =
                 keychain.get_remaining_limit_with_period(account, key_id, token)?;
             assert_eq!(remaining, U256::from(70));
-            // Period end should be updated to current_timestamp + 3600
-            assert_eq!(period_end, current_timestamp + 3600);
+            // Period end should advance from past_period_end by whole periods
+            // past_period_end was current_timestamp - 100, period is 3600
+            // elapsed = 100, periods_elapsed = 100/3600 + 1 = 1
+            // new_period_end = (current_timestamp - 100) + 3600 = current_timestamp + 3500
+            assert_eq!(period_end, past_period_end + 3600);
 
             Ok(())
         })
