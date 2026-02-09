@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 use crate::{
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet, get_dkg_outcome::GetDkgOutcome,
+    generate_localnet::GenerateLocalnet, get_dkg_outcome::GetDkgOutcome, replay_dkg::ReplayDkg,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -16,6 +16,7 @@ mod generate_genesis;
 mod generate_localnet;
 mod genesis_args;
 mod get_dkg_outcome;
+mod replay_dkg;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -32,6 +33,7 @@ async fn main() -> eyre::Result<()> {
             .await
             .wrap_err("failed to generate localnet configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
+        Action::ReplayDkg(args) => args.run().await.wrap_err("failed to replay DKG"),
     }
 }
 
@@ -52,6 +54,12 @@ enum Action {
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
     GenerateAddPeer(GenerateAddPeer),
+    /// Replay a DKG ceremony from block headers.
+    ///
+    /// Given the boundary block of epoch E-1, fetches all block headers from
+    /// epoch E, extracts dealer logs, and replays the DKG ceremony to verify
+    /// the on-chain outcome.
+    ReplayDkg(ReplayDkg),
 }
 
 #[derive(Debug, clap::Args)]

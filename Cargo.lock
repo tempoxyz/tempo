@@ -12376,6 +12376,7 @@ dependencies = [
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-math",
+ "commonware-parallel",
  "commonware-utils",
  "const-hex",
  "eyre",
