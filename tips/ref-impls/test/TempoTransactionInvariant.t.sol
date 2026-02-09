@@ -4364,12 +4364,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         });
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid))
-            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(highGasLimit)
-            .withCalls(calls)
-            .withNonceKey(0)
-            .withNonce(currentNonce);
+            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(highGasLimit).withCalls(calls).withNonceKey(0).withNonce(currentNonce);
 
         bytes memory signedTx = TxBuilder.signTempo(
             vmRlp,
@@ -4384,7 +4380,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             })
         );
 
-        uint256 remainingBefore = keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+        uint256 remainingBefore =
+            keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
 
         ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
         vm.coinbase(validator);
@@ -4393,7 +4390,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _recordProtocolNonceTxSuccess(ctx.owner);
             _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
 
-            uint256 remainingAfter = keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+            uint256 remainingAfter =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
 
             // K-REFUND1: After tx, the remaining limit should be greater than
             // (remainingBefore - amount - maxFee) because unused gas was refunded.
@@ -4484,16 +4482,16 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         }
 
         // Step 3: Snapshot remaining limit (should be unchanged after revocation)
-        uint256 remainingAfterRevoke = keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+        uint256 remainingAfterRevoke =
+            keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
 
         // Step 4: Execute another tx (with main key) that would have refunded the revoked key
         // The refund_spending_limit uses load_active_key which fails for revoked keys -> no-op
         _ensureFeeTokenBalance(ctx.owner, 1e6);
         currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
 
-        (bytes memory mainKeyTx,) = _buildAndSignTransfer(
-            ctx.actorIdx, recipient, 1e6, currentNonce, 0
-        );
+        (bytes memory mainKeyTx,) =
+            _buildAndSignTransfer(ctx.actorIdx, recipient, 1e6, currentNonce, 0);
 
         ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
         vm.coinbase(validator);
@@ -4501,7 +4499,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         try vmExec.executeTransaction(mainKeyTx) {
             _recordProtocolNonceTxSuccess(ctx.owner);
 
-            uint256 remainingAfterMainTx = keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+            uint256 remainingAfterMainTx =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
 
             // K-REFUND2: Remaining limit should not change since the key was revoked
             // (the refund should be a no-op for revoked keys)

@@ -1318,7 +1318,11 @@ mod tests {
                 keyId: access_key,
                 token,
             })?;
-            assert_eq!(after_refund, U256::from(40), "limit should be unchanged after revoked key refund");
+            assert_eq!(
+                after_refund,
+                U256::from(40),
+                "limit should be unchanged after revoked key refund"
+            );
 
             Ok(())
         })
