@@ -112,6 +112,9 @@ macro_rules! apply_fill_option {
     ($case:ident, explicit_nonce, $value:expr) => {
         $case.explicit_nonce = Some($value);
     };
+    ($case:ident, pre_bump_nonce, $value:expr) => {
+        $case.pre_bump_nonce = Some($value);
+    };
 }
 
 macro_rules! apply_fill_flag {
@@ -138,6 +141,7 @@ macro_rules! fill_case {
             valid_before_offset: None,
             valid_after_offset: None,
             explicit_nonce: None,
+            pre_bump_nonce: None,
             expected: ExpectedOutcome::Success,
         };
         $( apply_fill_flag!(case, $flag); )+
@@ -161,6 +165,7 @@ macro_rules! fill_case {
             valid_before_offset: None,
             valid_after_offset: None,
             explicit_nonce: None,
+            pre_bump_nonce: None,
             expected: ExpectedOutcome::Success,
         };
         $( apply_fill_option!(case, $opt, $value); )+
@@ -179,6 +184,7 @@ macro_rules! fill_case {
             valid_before_offset: None,
             valid_after_offset: None,
             explicit_nonce: None,
+            pre_bump_nonce: None,
             expected: ExpectedOutcome::Success,
         };
         $( apply_fill_flag!(case, $flag); )*

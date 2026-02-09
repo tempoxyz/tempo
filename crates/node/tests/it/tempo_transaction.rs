@@ -516,6 +516,28 @@ async fn submit_and_mine_aa_tx(
     Ok(tx_hash)
 }
 
+/// Low-level P256 prehash signing. Returns a `PrimitiveSignature::P256`.
+fn sign_p256_primitive(
+    sig_hash: B256,
+    signing_key: &p256::ecdsa::SigningKey,
+    pub_key_x: B256,
+    pub_key_y: B256,
+) -> eyre::Result<PrimitiveSignature> {
+    use sha2::{Digest, Sha256};
+
+    let pre_hashed = Sha256::digest(sig_hash);
+    let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
+    let sig_bytes = p256_signature.to_bytes();
+
+    Ok(PrimitiveSignature::P256(P256SignatureWithPreHash {
+        r: B256::from_slice(&sig_bytes[0..32]),
+        s: normalize_p256_s(&sig_bytes[32..64]),
+        pub_key_x,
+        pub_key_y,
+        pre_hash: true,
+    }))
+}
+
 /// Helper to sign AA transaction with P256 access key (wrapped in Keychain signature)
 fn sign_aa_tx_with_p256_access_key(
     tx: &TempoTransaction,
@@ -524,26 +546,14 @@ fn sign_aa_tx_with_p256_access_key(
     access_pub_key_y: &B256,
     root_key_addr: Address,
 ) -> eyre::Result<TempoSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-    use tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash;
-
-    let sig_hash = tx.signature_hash();
-    let pre_hashed = Sha256::digest(sig_hash);
-    let p256_signature: p256::ecdsa::Signature =
-        access_key_signing_key.sign_prehash(&pre_hashed)?;
-    let sig_bytes = p256_signature.to_bytes();
-
-    let inner_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
-        r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: normalize_p256_s(&sig_bytes[32..64]),
-        pub_key_x: *access_pub_key_x,
-        pub_key_y: *access_pub_key_y,
-        pre_hash: true,
-    });
-
+    let inner = sign_p256_primitive(
+        tx.signature_hash(),
+        access_key_signing_key,
+        *access_pub_key_x,
+        *access_pub_key_y,
+    )?;
     Ok(TempoSignature::Keychain(
-        tempo_primitives::transaction::KeychainSignature::new(root_key_addr, inner_signature),
+        tempo_primitives::transaction::KeychainSignature::new(root_key_addr, inner),
     ))
 }
 
@@ -562,19 +572,16 @@ fn sign_aa_tx_with_secp256k1_access_key(
     ))
 }
 
-/// Helper to sign AA transaction with WebAuthn access key (wrapped in Keychain signature)
-fn sign_aa_tx_with_webauthn_access_key(
-    tx: &TempoTransaction,
+/// Low-level WebAuthn signing. Returns a `PrimitiveSignature::WebAuthn`.
+fn sign_webauthn_primitive(
+    sig_hash: B256,
     signing_key: &p256::ecdsa::SigningKey,
     pub_key_x: B256,
     pub_key_y: B256,
     origin: &str,
-    root_key_addr: Address,
-) -> eyre::Result<TempoSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
+) -> eyre::Result<PrimitiveSignature> {
     use sha2::{Digest, Sha256};
 
-    let sig_hash = tx.signature_hash();
     let (authenticator_data, client_data_json) = create_webauthn_data(sig_hash, origin);
 
     let client_data_hash = Sha256::digest(client_data_json.as_bytes());
@@ -590,17 +597,34 @@ fn sign_aa_tx_with_webauthn_access_key(
     webauthn_data.extend_from_slice(&authenticator_data);
     webauthn_data.extend_from_slice(client_data_json.as_bytes());
 
-    let inner_signature = PrimitiveSignature::WebAuthn(WebAuthnSignature {
+    Ok(PrimitiveSignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(webauthn_data),
         r: B256::from_slice(&sig_bytes[0..32]),
         s: normalize_p256_s(&sig_bytes[32..64]),
         pub_key_x,
         pub_key_y,
-    });
+    }))
+}
 
+/// Helper to sign AA transaction with WebAuthn access key (wrapped in Keychain signature)
+fn sign_aa_tx_with_webauthn_access_key(
+    tx: &TempoTransaction,
+    signing_key: &p256::ecdsa::SigningKey,
+    pub_key_x: B256,
+    pub_key_y: B256,
+    origin: &str,
+    root_key_addr: Address,
+) -> eyre::Result<TempoSignature> {
+    let inner = sign_webauthn_primitive(
+        tx.signature_hash(),
+        signing_key,
+        pub_key_x,
+        pub_key_y,
+        origin,
+    )?;
     Ok(TempoSignature::Keychain(KeychainSignature::new(
         root_key_addr,
-        inner_signature,
+        inner,
     )))
 }
 
@@ -744,24 +768,8 @@ fn sign_aa_tx_p256(
     pub_key_x: B256,
     pub_key_y: B256,
 ) -> eyre::Result<TempoSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-    use tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash;
-
-    let sig_hash = tx.signature_hash();
-    let pre_hashed = Sha256::digest(sig_hash);
-    let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
-    let sig_bytes = p256_signature.to_bytes();
-
-    Ok(TempoSignature::Primitive(PrimitiveSignature::P256(
-        P256SignatureWithPreHash {
-            r: B256::from_slice(&sig_bytes[0..32]),
-            s: normalize_p256_s(&sig_bytes[32..64]),
-            pub_key_x,
-            pub_key_y,
-            pre_hash: true,
-        },
-    )))
+    let inner = sign_p256_primitive(tx.signature_hash(), signing_key, pub_key_x, pub_key_y)?;
+    Ok(TempoSignature::Primitive(inner))
 }
 
 /// Helper to create WebAuthn authenticator data and client data JSON
@@ -790,37 +798,14 @@ fn sign_aa_tx_webauthn(
     pub_key_y: B256,
     origin: &str,
 ) -> eyre::Result<TempoSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-
-    let sig_hash = tx.signature_hash();
-    let (authenticator_data, client_data_json) = create_webauthn_data(sig_hash, origin);
-
-    // Compute message hash per WebAuthn spec
-    let client_data_hash = Sha256::digest(client_data_json.as_bytes());
-    let mut final_hasher = Sha256::new();
-    final_hasher.update(&authenticator_data);
-    final_hasher.update(client_data_hash);
-    let message_hash = final_hasher.finalize();
-
-    // Sign
-    let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&message_hash)?;
-    let sig_bytes = signature.to_bytes();
-
-    // Construct WebAuthn data
-    let mut webauthn_data = Vec::new();
-    webauthn_data.extend_from_slice(&authenticator_data);
-    webauthn_data.extend_from_slice(client_data_json.as_bytes());
-
-    Ok(TempoSignature::Primitive(PrimitiveSignature::WebAuthn(
-        WebAuthnSignature {
-            webauthn_data: Bytes::from(webauthn_data),
-            r: B256::from_slice(&sig_bytes[0..32]),
-            s: normalize_p256_s(&sig_bytes[32..64]),
-            pub_key_x,
-            pub_key_y,
-        },
-    )))
+    let inner = sign_webauthn_primitive(
+        tx.signature_hash(),
+        signing_key,
+        pub_key_x,
+        pub_key_y,
+        origin,
+    )?;
+    Ok(TempoSignature::Primitive(inner))
 }
 
 // ===== Assertion Helper Functions =====
@@ -909,7 +894,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         }],
         2_000_000,
     );
-    tx_parallel.nonce_key = U256::from(1); // Parallel nonce - should be rejected
+    tx_parallel.nonce_key = U256::from(1);
 
     // Sign and encode transaction
     let aa_signature_parallel = sign_aa_tx_secp256k1(&tx_parallel, &alice_signer)?;
@@ -3532,13 +3517,8 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
     println!("Delegate address: {delegate_address}");
 
     use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
-    use sha2::{Digest, Sha256};
-    use tempo_primitives::transaction::{
-        TempoSignedAuthorization,
-        tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
-    };
+    use tempo_primitives::transaction::TempoSignedAuthorization;
 
-    // Shared helper: build authorization, derive P256/WebAuthn address, sign, return signed auth
     fn sign_p256_authorization(
         sig_hash: B256,
         auth: alloy_eips::eip7702::Authorization,
@@ -3546,17 +3526,8 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
         pub_key_x: B256,
         pub_key_y: B256,
     ) -> eyre::Result<TempoSignedAuthorization> {
-        let pre_hashed = Sha256::digest(sig_hash);
-        let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
-        let sig_bytes = signature.to_bytes();
-        let aa_sig =
-            TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
-                r: B256::from_slice(&sig_bytes[0..32]),
-                s: normalize_p256_s(&sig_bytes[32..64]),
-                pub_key_x,
-                pub_key_y,
-                pre_hash: true,
-            }));
+        let inner = sign_p256_primitive(sig_hash, signing_key, pub_key_x, pub_key_y)?;
+        let aa_sig = TempoSignature::Primitive(inner);
         Ok(TempoSignedAuthorization::new_unchecked(auth, aa_sig))
     }
 
@@ -3594,28 +3565,10 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
     println!("\n--- Authority 3: WebAuthn ---");
     let (auth3_key, pub3_x, pub3_y, auth3_addr) = generate_p256_key();
     let (auth3, sig_hash3) = build_authorization(chain_id, delegate_address);
-    let (authenticator_data, client_data_json) =
-        create_webauthn_data(sig_hash3, "https://example.com");
-    let client_data_hash = Sha256::digest(client_data_json.as_bytes());
-    let mut final_hasher = Sha256::new();
-    final_hasher.update(&authenticator_data);
-    final_hasher.update(client_data_hash);
-    let message_hash = final_hasher.finalize();
-    let webauthn_sig: p256::ecdsa::Signature = auth3_key.sign_prehash(&message_hash)?;
-    let webauthn_sig_bytes = webauthn_sig.to_bytes();
-    let mut webauthn_data = Vec::new();
-    webauthn_data.extend_from_slice(&authenticator_data);
-    webauthn_data.extend_from_slice(client_data_json.as_bytes());
-    let auth3_signed = TempoSignedAuthorization::new_unchecked(
-        auth3,
-        TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
-            webauthn_data: Bytes::from(webauthn_data),
-            r: B256::from_slice(&webauthn_sig_bytes[0..32]),
-            s: normalize_p256_s(&webauthn_sig_bytes[32..64]),
-            pub_key_x: pub3_x,
-            pub_key_y: pub3_y,
-        })),
-    );
+    let inner =
+        sign_webauthn_primitive(sig_hash3, &auth3_key, pub3_x, pub3_y, "https://example.com")?;
+    let auth3_signed =
+        TempoSignedAuthorization::new_unchecked(auth3, TempoSignature::Primitive(inner));
     println!("Authority 3 address: {auth3_addr}");
 
     // ========================================================================
@@ -7250,6 +7203,7 @@ struct FillTestCase {
     valid_before_offset: Option<i64>,
     valid_after_offset: Option<i64>,
     explicit_nonce: Option<u64>,
+    pre_bump_nonce: Option<u64>,
     expected: ExpectedOutcome,
 }
 
@@ -7417,6 +7371,59 @@ fn assert_fill_request_expectations(
     Ok(())
 }
 
+/// Send `count` no-op transactions to bump the protocol nonce.
+async fn bump_protocol_nonce(
+    setup: &mut SingleNodeSetup,
+    provider: &impl Provider,
+    signer: &impl SignerSync,
+    signer_addr: Address,
+    count: u64,
+) -> eyre::Result<()> {
+    let recipient = Address::random();
+    let chain_id = provider.get_chain_id().await?;
+    let start_nonce = provider.get_transaction_count(signer_addr).await?;
+
+    for i in 0..count {
+        let tx = TempoTransaction {
+            chain_id,
+            nonce: start_nonce + i,
+            gas_limit: 300_000,
+            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128 + 1_000_000,
+            max_priority_fee_per_gas: 1_000_000,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            calls: vec![Call {
+                to: recipient.into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+
+        let sig_hash = tx.signature_hash();
+        let signature = signer.sign_hash_sync(&sig_hash)?;
+        let signed = AASigned::new_unhashed(
+            tx,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        );
+        let envelope: TempoTxEnvelope = signed.into();
+        setup
+            .node
+            .rpc
+            .inject_tx(envelope.encoded_2718().into())
+            .await?;
+        setup.node.advance_block().await?;
+        tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
+    }
+
+    let final_nonce = provider.get_transaction_count(signer_addr).await?;
+    assert_eq!(
+        final_nonce,
+        start_nonce + count,
+        "Protocol nonce should have bumped"
+    );
+    Ok(())
+}
+
 /// Run a single E2E test case from the matrix
 async fn run_fill_sign_send_test(test_case: &FillTestCase) -> eyre::Result<()> {
     println!("\n=== E2E Test: {} ===\n", test_case.name);
@@ -7435,6 +7442,10 @@ async fn run_fill_sign_send_test(test_case: &FillTestCase) -> eyre::Result<()> {
 /// Run test with secp256k1 key
 async fn run_fill_sign_send_test_secp256k1(test_case: &FillTestCase) -> eyre::Result<()> {
     let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
+
+    if let Some(count) = test_case.pre_bump_nonce {
+        bump_protocol_nonce(&mut setup, &provider, &alice_signer, alice_addr, count).await?;
+    }
 
     for _ in 0..3 {
         setup.node.advance_block().await?;
@@ -7572,6 +7583,9 @@ async fn test_e2e_fill_sign_send_matrix() -> eyre::Result<()> {
         fill_case!(Expiring, WebAuthn),
         fill_case!(ExpiringAtBoundary, Secp256k1),
         fill_case!(ExpiringExceedsBoundary, Secp256k1, reject),
+        fill_case!(TwoD(12345), Secp256k1; pre_bump_nonce = 5),
+        fill_case!(Expiring, Secp256k1; explicit_nonce = 0, pre_bump_nonce = 3),
+        fill_case!(Expiring, Secp256k1; explicit_nonce = 0),
     ];
 
     println!("\n=== E2E Test Matrix: fill -> sign -> send ===\n");
@@ -7583,297 +7597,5 @@ async fn test_e2e_fill_sign_send_matrix() -> eyre::Result<()> {
     }
 
     println!("\n✓ All {} test cases passed", test_matrix.len());
-    Ok(())
-}
-
-/// Regression test for fill_transaction with 2D nonce when protocol nonce > 2D nonce.
-///
-/// Verifies that eth_fillTransaction correctly uses the 2D nonce from the nonce manager
-/// storage, not the protocol nonce from the account basic info.
-///
-/// Setup: An account sends 5 transactions to get protocol nonce = 5, then calls
-/// eth_fillTransaction with a new nonce key (2D nonce = 0). The filled transaction
-/// should have nonce = 0 (2D nonce), not nonce = 5 (protocol nonce).
-#[tokio::test(flavor = "multi_thread")]
-async fn test_eth_fill_transaction_2d_nonce_with_high_protocol_nonce() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    println!("\n=== Testing eth_fillTransaction with 2D nonce (protocol nonce > 2D nonce) ===\n");
-
-    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
-    let chain_id = provider.get_chain_id().await?;
-
-    // First, send several transactions to bump the protocol nonce
-    // This simulates the scenario where an account has been active (high protocol nonce)
-    // but is now using a new 2D nonce key (low 2D nonce)
-    println!("Sending transactions to bump protocol nonce...");
-    let recipient = Address::random();
-
-    for i in 0..5 {
-        let tx = TempoTransaction {
-            chain_id,
-            nonce: i,
-            gas_limit: 300_000,
-            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128 + 1_000_000,
-            max_priority_fee_per_gas: 1_000_000,
-            fee_token: Some(DEFAULT_FEE_TOKEN),
-            calls: vec![Call {
-                to: recipient.into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
-            ..Default::default()
-        };
-
-        let sig_hash = tx.signature_hash();
-        let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-        let signed = AASigned::new_unhashed(
-            tx,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-        );
-        let envelope: TempoTxEnvelope = signed.into();
-        let encoded = envelope.encoded_2718();
-
-        let tx_hash = setup.node.rpc.inject_tx(encoded.into()).await?;
-        setup.node.advance_block().await?;
-        tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
-        println!(
-            "  Transaction {} confirmed (hash: {:?}), nonce now: {}",
-            i,
-            tx_hash,
-            i + 1
-        );
-    }
-
-    // Verify protocol nonce is now 5
-    let protocol_nonce = provider.get_transaction_count(alice_addr).await?;
-    println!("Protocol nonce after transactions: {protocol_nonce}");
-    assert_eq!(protocol_nonce, 5, "Protocol nonce should be 5");
-
-    // Now call fill_transaction with a 2D nonce key
-    // The 2D nonce for this key is 0 (never used), but protocol nonce is 5
-    let nonce_key = U256::from(12345); // Arbitrary nonce key that hasn't been used
-
-    for _ in 0..3 {
-        setup.node.advance_block().await?;
-    }
-
-    let block = provider
-        .get_block_by_number(Default::default())
-        .await?
-        .unwrap();
-    let current_timestamp = block.header.timestamp();
-    let valid_before = current_timestamp + 60;
-    let valid_after = current_timestamp - 10;
-
-    let request = serde_json::json!({
-        "from": alice_addr,
-        "type": "0x76",
-        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
-        "validBefore": format!("0x{valid_before:x}"),
-        "validAfter": format!("0x{valid_after:x}"),
-        "nonceKey": format!("{nonce_key:#x}"),
-        "keyType": "secp256k1"
-    });
-
-    let response: serde_json::Value = provider
-        .raw_request("eth_fillTransaction".into(), [request])
-        .await?;
-
-    let tx = response
-        .get("tx")
-        .expect("response should contain 'tx' field");
-
-    let filled_nonce = tx
-        .get("nonce")
-        .and_then(|v| v.as_str())
-        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(999));
-
-    assert_eq!(
-        filled_nonce,
-        Some(0),
-        "Nonce should be 0 (2D nonce), not 5 (protocol nonce)"
-    );
-    assert!(tx.get("gas").is_some(), "tx should have gas filled");
-
-    Ok(())
-}
-
-/// Regression test for fill_transaction with expiring nonce when nonce=0 is explicitly provided.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_eth_fill_transaction_expiring_nonce_with_explicit_nonce_zero() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let (mut setup, provider, _alice_signer, alice_addr) = setup_test_with_funded_account().await?;
-    let chain_id = provider.get_chain_id().await?;
-    let recipient = Address::random();
-
-    // Bump protocol nonce so it differs from expiring nonce (which must be 0)
-    for i in 0..3 {
-        let tx = TempoTransaction {
-            chain_id,
-            nonce: i,
-            gas_limit: 300_000,
-            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128 + 1_000_000,
-            max_priority_fee_per_gas: 1_000_000,
-            fee_token: Some(DEFAULT_FEE_TOKEN),
-            calls: vec![Call {
-                to: recipient.into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
-            ..Default::default()
-        };
-
-        let sig_hash = tx.signature_hash();
-        let signature = _alice_signer.sign_hash_sync(&sig_hash)?;
-        let signed = AASigned::new_unhashed(
-            tx,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-        );
-        let envelope: TempoTxEnvelope = signed.into();
-
-        setup
-            .node
-            .rpc
-            .inject_tx(envelope.encoded_2718().into())
-            .await?;
-        setup.node.advance_block().await?;
-        tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
-    }
-
-    let protocol_nonce = provider.get_transaction_count(alice_addr).await?;
-    assert_eq!(protocol_nonce, 3, "Protocol nonce should be 3");
-
-    // Advance a few blocks to get a valid timestamp
-    for _ in 0..3 {
-        setup.node.advance_block().await?;
-    }
-
-    let block = provider
-        .get_block_by_number(Default::default())
-        .await?
-        .unwrap();
-    let valid_before = block.header.timestamp() + 25;
-
-    // Key: explicitly provide nonce=0 with expiring nonce key
-    let request = serde_json::json!({
-        "from": alice_addr,
-        "nonce": "0x0",
-        "type": "0x76",
-        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
-        "validBefore": format!("0x{valid_before:x}"),
-        "nonceKey": format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
-        "keyType": "secp256k1"
-    });
-
-    let response: serde_json::Value = provider
-        .raw_request("eth_fillTransaction".into(), [request])
-        .await?;
-
-    let tx = response
-        .get("tx")
-        .expect("response should contain 'tx' field");
-    let filled_nonce = tx
-        .get("nonce")
-        .and_then(|v| v.as_str())
-        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(999));
-
-    assert_eq!(
-        filled_nonce,
-        Some(0),
-        "Nonce should remain 0 for expiring nonce"
-    );
-    assert!(tx.get("gas").is_some(), "tx should have gas filled");
-
-    Ok(())
-}
-
-/// Verifies that `eth_fillTransaction` returns sufficient gas for expiring nonce transactions.
-///
-/// When `nonce=0` is explicitly provided with an expiring nonce key, the gas estimation
-/// must include `EXPIRING_NONCE_GAS` (13,000 gas) for the ring buffer operations.
-/// This test creates a transaction using the gas returned by `eth_fillTransaction`
-/// and verifies it can be successfully executed.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_eth_fill_transaction_expiring_nonce_gas_is_sufficient() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
-    let chain_id = provider.get_chain_id().await?;
-
-    for _ in 0..3 {
-        setup.node.advance_block().await?;
-    }
-
-    let block = provider
-        .get_block_by_number(Default::default())
-        .await?
-        .unwrap();
-    let valid_before = block.header.timestamp() + 25;
-
-    // Request with explicit nonce=0 and expiring nonce key
-    let approve_calldata = "0x095ea7b300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000064";
-    let request = serde_json::json!({
-        "from": alice_addr,
-        "nonce": "0x0",
-        "type": "0x76",
-        "calls": [{"to": DEFAULT_FEE_TOKEN, "value": "0x", "data": approve_calldata}],
-        "validBefore": format!("0x{valid_before:x}"),
-        "nonceKey": format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
-    });
-
-    let response: serde_json::Value = provider
-        .raw_request("eth_fillTransaction".into(), [request])
-        .await?;
-
-    let tx_json = response
-        .get("tx")
-        .expect("response should contain 'tx' field");
-
-    let filled_gas_str = tx_json
-        .get("gas")
-        .and_then(|v| v.as_str())
-        .expect("tx should have gas filled");
-    let filled_gas = u64::from_str_radix(filled_gas_str.trim_start_matches("0x"), 16)?;
-
-    // Create and execute a transaction using the filled gas value
-    let tx = TempoTransaction {
-        chain_id,
-        nonce: 0,
-        nonce_key: TEMPO_EXPIRING_NONCE_KEY,
-        gas_limit: filled_gas,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_priority_fee_per_gas: 0,
-        fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(valid_before),
-        calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN.into(),
-            value: U256::ZERO,
-            input: approve_calldata.parse()?,
-        }],
-        ..Default::default()
-    };
-
-    let sig_hash = tx.signature_hash();
-    let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-    let signed = AASigned::new_unhashed(
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    );
-    let envelope: TempoTxEnvelope = signed.into();
-
-    setup
-        .node
-        .rpc
-        .inject_tx(envelope.encoded_2718().into())
-        .await?;
-    let payload = setup.node.advance_block().await?;
-
-    assert!(
-        payload.block().body().transactions().count() > 0,
-        "Block should contain the transaction"
-    );
-
     Ok(())
 }
