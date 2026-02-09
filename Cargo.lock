@@ -12221,6 +12221,7 @@ dependencies = [
  "tempo-precompiles-macros",
  "thiserror 2.0.18",
  "tracing",
+ "tracing-subscriber 0.3.22",
 ]
 
 [[package]]

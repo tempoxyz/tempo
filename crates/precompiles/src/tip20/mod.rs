@@ -22,7 +22,19 @@ use alloy::{
 };
 use std::sync::LazyLock;
 use tempo_precompiles_macros::contract;
-use tracing::trace;
+use tracing::{error, trace};
+
+macro_rules! tip20_under_overflow {
+    ($token:expr, $operation:expr, $message:literal $(, $key:ident = $value:expr )* $(,)?) => {{
+        error!(
+            token = %$token,
+            operation = $operation,
+            $($key = %$value,)*
+            $message
+        );
+        TempoPrecompileError::under_overflow()
+    }};
+}
 
 /// u128::MAX as U256
 pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
@@ -345,11 +357,18 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        let new_supply = total_supply
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
         let supply_cap = self.supply_cap()?;
+        let new_supply = total_supply.checked_add(amount).ok_or_else(|| {
+            tip20_under_overflow!(
+                self.address,
+                "mint",
+                "TIP20 mint: total supply overflow detected",
+                to = to,
+                total_supply = total_supply,
+                amount = amount,
+                supply_cap = supply_cap
+            )
+        })?;
         if new_supply > supply_cap {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
@@ -358,9 +377,18 @@ impl TIP20Token {
 
         self.set_total_supply(new_supply)?;
         let to_balance = self.get_balance(to)?;
-        let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_to_balance = to_balance.checked_add(amount).ok_or_else(|| {
+            tip20_under_overflow!(
+                self.address,
+                "mint",
+                "TIP20 mint: recipient balance overflow detected",
+                to = to,
+                to_balance = to_balance,
+                amount = amount,
+                total_supply = new_supply,
+                supply_cap = supply_cap
+            )
+        })?;
         self.set_balance(to, new_to_balance)?;
 
         self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
@@ -419,7 +447,7 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        self._transfer(call.from, Address::ZERO, call.amount)?;
+        self._transfer(call.from, Address::ZERO, call.amount, "burn_blocked")?;
 
         let total_supply = self.total_supply()?;
         let new_supply =
@@ -441,7 +469,7 @@ impl TIP20Token {
     fn _burn(&mut self, msg_sender: Address, amount: U256) -> Result<()> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
 
-        self._transfer(msg_sender, Address::ZERO, amount)?;
+        self._transfer(msg_sender, Address::ZERO, amount, "burn")?;
 
         let total_supply = self.total_supply()?;
         let new_supply =
@@ -486,7 +514,7 @@ impl TIP20Token {
         // Check and update spending limits for access keys
         AccountKeychain::new().authorize_transfer(msg_sender, self.address, call.amount)?;
 
-        self._transfer(msg_sender, call.to, call.amount)?;
+        self._transfer(msg_sender, call.to, call.amount, "transfer")?;
         Ok(true)
     }
 
@@ -529,7 +557,7 @@ impl TIP20Token {
         self.ensure_transfer_authorized(from, to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        self._transfer(from, to, amount)?;
+        self._transfer(from, to, amount, "transfer")?;
 
         Ok(true)
     }
@@ -557,7 +585,7 @@ impl TIP20Token {
             self.set_allowance(from, msg_sender, new_allowance)?;
         }
 
-        self._transfer(from, to, amount)?;
+        self._transfer(from, to, amount, "transfer")?;
 
         Ok(true)
     }
@@ -573,7 +601,7 @@ impl TIP20Token {
         self.ensure_transfer_authorized(msg_sender, call.to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        self._transfer(msg_sender, call.to, call.amount)?;
+        self._transfer(msg_sender, call.to, call.amount, "transfer")?;
 
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
             from: msg_sender,
@@ -703,7 +731,13 @@ impl TIP20Token {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
-    fn _transfer(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
+    fn _transfer(
+        &mut self,
+        from: Address,
+        to: Address,
+        amount: U256,
+        operation: &'static str,
+    ) -> Result<()> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
             return Err(
@@ -711,20 +745,36 @@ impl TIP20Token {
             );
         }
 
-        self.handle_rewards_on_transfer(from, to, amount)?;
+        self.handle_rewards_on_transfer(from, to, amount, operation)?;
 
         // Adjust balances
-        let new_from_balance = from_balance
-            .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_from_balance = from_balance.checked_sub(amount).ok_or_else(|| {
+            tip20_under_overflow!(
+                self.address,
+                operation,
+                "TIP20 transfer: sender balance underflow detected",
+                from = from,
+                to = to,
+                from_balance = from_balance,
+                amount = amount
+            )
+        })?;
 
         self.set_balance(from, new_from_balance)?;
 
         if to != Address::ZERO {
             let to_balance = self.get_balance(to)?;
-            let new_to_balance = to_balance
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let new_to_balance = to_balance.checked_add(amount).ok_or_else(|| {
+                tip20_under_overflow!(
+                    self.address,
+                    operation,
+                    "TIP20 transfer: recipient balance overflow detected",
+                    from = from,
+                    to = to,
+                    to_balance = to_balance,
+                    amount = amount
+                )
+            })?;
 
             self.set_balance(to, new_to_balance)?;
         }
@@ -753,14 +803,29 @@ impl TIP20Token {
 
         // If user is opted into rewards, decrease opted-in supply
         if from_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?);
+            let opted_in_supply = opted_in_supply.checked_sub(amount).ok_or_else(|| {
+                tip20_under_overflow!(
+                    self.address,
+                    "transfer_fee_pre_tx",
+                    "TIP20 transfer_fee_pre_tx: opted-in supply underflow detected",
+                    from = from,
+                    delegate = from_reward_recipient,
+                    opted_in_supply = opted_in_supply,
+                    amount = amount
+                )
+            })?;
+            self.set_opted_in_supply(opted_in_supply.try_into().map_err(|_| {
+                tip20_under_overflow!(
+                    self.address,
+                    "transfer_fee_pre_tx",
+                    "TIP20 transfer_fee_pre_tx: opted-in supply conversion overflow detected",
+                    from = from,
+                    delegate = from_reward_recipient,
+                    opted_in_supply = opted_in_supply,
+                    amount = amount
+                )
+            })?)?;
         }
 
         let new_from_balance =
@@ -804,14 +869,29 @@ impl TIP20Token {
 
         // If user is opted into rewards, increase opted-in supply by refund amount
         if to_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(refund)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?);
+            let opted_in_supply = opted_in_supply.checked_add(refund).ok_or_else(|| {
+                tip20_under_overflow!(
+                    self.address,
+                    "transfer_fee_post_tx",
+                    "TIP20 transfer_fee_post_tx: opted-in supply overflow detected",
+                    to = to,
+                    delegate = to_reward_recipient,
+                    opted_in_supply = opted_in_supply,
+                    refund = refund
+                )
+            })?;
+            self.set_opted_in_supply(opted_in_supply.try_into().map_err(|_| {
+                tip20_under_overflow!(
+                    self.address,
+                    "transfer_fee_post_tx",
+                    "TIP20 transfer_fee_post_tx: opted-in supply conversion overflow detected",
+                    to = to,
+                    delegate = to_reward_recipient,
+                    opted_in_supply = opted_in_supply,
+                    refund = refund
+                )
+            })?)?;
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
@@ -836,7 +916,10 @@ impl TIP20Token {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use alloy::primitives::{Address, FixedBytes, IntoLogData, U256};
+    use alloy::{
+        primitives::{Address, FixedBytes, IntoLogData, U256},
+        sol_types::PanicKind,
+    };
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20Factory};
 
     use super::*;
@@ -844,7 +927,7 @@ pub(crate) mod tests {
         PATH_USD_ADDRESS,
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, setup_storage},
+        test_util::{TIP20Setup, capture_error_logs, setup_storage},
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
 
@@ -1153,6 +1236,232 @@ pub(crate) mod tests {
                     amount: gas_used
                 })
                 .into_log_data()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_overflow_logging_transfer_fee_post_tx_opted_in_supply() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(1))
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10))
+                .apply()?;
+
+            token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
+            token.set_opted_in_supply(u128::MAX)?;
+
+            let (result, logs) =
+                capture_error_logs(|| token.transfer_fee_post_tx(user, U256::from(1), U256::ZERO));
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::Panic(PanicKind::UnderOverflow))
+            ));
+            assert!(
+                logs.contains("TIP20 transfer_fee_post_tx: opted-in supply"),
+                "expected contextual overflow log is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains("operation=\"transfer_fee_post_tx\""),
+                "expected operation field is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains("token=") && logs.contains("to=") && logs.contains("refund=1"),
+                "expected structured fields are missing; logs: {logs}"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_overflow_logging_mint_total_supply_overflow() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let recipient = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .apply()?;
+
+            token.set_total_supply(U256::MAX)?;
+
+            let (result, logs) = capture_error_logs(|| {
+                token.mint(
+                    admin,
+                    ITIP20::mintCall {
+                        to: recipient,
+                        amount: U256::from(1),
+                    },
+                )
+            });
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::Panic(PanicKind::UnderOverflow))
+            ));
+            assert!(
+                logs.contains("TIP20 mint: total supply overflow"),
+                "expected mint total supply overflow log is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains("operation=\"mint\""),
+                "expected operation field is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains("token=")
+                    && logs.contains("total_supply=")
+                    && logs.contains("amount=1")
+                    && logs.contains("supply_cap="),
+                "expected structured fields are missing; logs: {logs}"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_overflow_logging_mint_recipient_balance_overflow() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let recipient = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .apply()?;
+
+            token.set_balance(recipient, U256::MAX)?;
+
+            let (result, logs) = capture_error_logs(|| {
+                token.mint(
+                    admin,
+                    ITIP20::mintCall {
+                        to: recipient,
+                        amount: U256::from(1),
+                    },
+                )
+            });
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::Panic(PanicKind::UnderOverflow))
+            ));
+            assert!(
+                logs.contains("TIP20 mint: recipient balance overflow"),
+                "expected mint recipient balance overflow log is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains("operation=\"mint\""),
+                "expected operation field is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains("token=")
+                    && logs.contains("to=")
+                    && logs.contains("to_balance=")
+                    && logs.contains("amount=1"),
+                "expected structured fields are missing; logs: {logs}"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_overflow_logging_burn_uses_burn_operation_context() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(admin, U256::from(1))
+                .apply()?;
+
+            token
+                .set_reward_recipient(admin, ITIP20::setRewardRecipientCall { recipient: admin })?;
+            token.set_opted_in_supply(0)?;
+
+            let (result, logs) = capture_error_logs(|| {
+                token.burn(
+                    admin,
+                    ITIP20::burnCall {
+                        amount: U256::from(1),
+                    },
+                )
+            });
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::Panic(PanicKind::UnderOverflow))
+            ));
+            assert!(
+                logs.contains("operation=\"burn\""),
+                "expected burn operation field is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains(
+                    "TIP20 rewards handle_rewards_on_transfer: opted-in supply underflow"
+                ),
+                "expected rewards underflow log is missing; logs: {logs}"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_overflow_logging_transfer_recipient_balance_overflow() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let from = Address::random();
+        let to = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, U256::from(1))
+                .apply()?;
+
+            token.set_balance(to, U256::MAX)?;
+
+            let (result, logs) = capture_error_logs(|| {
+                token.transfer(
+                    from,
+                    ITIP20::transferCall {
+                        to,
+                        amount: U256::from(1),
+                    },
+                )
+            });
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::Panic(PanicKind::UnderOverflow))
+            ));
+            assert!(
+                logs.contains("TIP20 transfer: recipient balance overflow"),
+                "expected transfer recipient balance overflow log is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains("operation=\"transfer\""),
+                "expected operation field is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains("token=")
+                    && logs.contains("from=")
+                    && logs.contains("to=")
+                    && logs.contains("amount=1"),
+                "expected structured fields are missing; logs: {logs}"
             );
 
             Ok(())
