@@ -384,30 +384,19 @@ enclosed in brackets: `[2001:db8::1]:8080`.
 
 **IP Address Changes**: When a validator's IP address changes via `setIpAddresses`, the consensus layer is expected to update its peer list on the next finalized block.
 
-**Validator Addition (Warmup Period)**: New validators have a one-epoch warmup period before participating in DKG. A validator added during epoch `E` (i.e., `addedAtHeight <= boundary(E)`) becomes a DKG player in epoch `E+2`.
-
-```
-Epoch E                    Epoch E+1                  Epoch E+2
-│                          │                          │
-│  addValidator() called   │  Validator syncs,        │  Validator participates
-│                          │  prepares for DKG        │  as DKG player
-│                          │                          │
-├──────────────────────────┼──────────────────────────┼──────────────────────────►
-           boundary(E)              boundary(E+1)
-```
-
-**Validator Deactivation (Immediate)**: When a validator is deactivated via `deactivateValidator`, it is removed from the validator set at the next epoch boundary. There is no cooldown period—a validator deactivated during epoch `E` is excluded from the DKG for epoch `E+1`.
+**Validator Addition and Deactivation**: When validators are added or deleted (this also applies to rotation),
+there is no warmup period: deactivated validators are immediately removed from the set of players on the next epoch,
+while activated validators are immediately added on the next epoch. This means that compared to validator config V1,
+there is no cooldown and no warmup period.
 
 **DKG Player Selection**: The consensus layer determines DKG players for epoch `E+1` by reading state at `boundary(E)` and filtering:
 
 ```
 players(E+1) = validators.filter(v =>
-    v.addedAtHeight <= boundary(E-1) &&
+    v.addedAtHeight <= boundary(E) &&
     (v.deactivatedAtHeight == 0 || v.deactivatedAtHeight > boundary(E))
 )
 ```
-
-Note the asymmetry: addition uses `boundary(E-1)` (one-epoch warmup) while deactivation uses `boundary(E)` (immediate removal).
 
 This enables nodes to reconstruct DKG player sets without accessing historical account state—critical for node recovery and late-joining validators.
 
