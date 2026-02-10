@@ -233,9 +233,6 @@ interface IValidatorConfigV2 {
     ///      Sets initialized=true. After this call, CL reads from V2 instead of V1.
     ///      Copies nextDkgCeremony from V1.
     ///      Reverts if V2 validators count < V1 validators count (ensures all validators migrated).
-    ///      Reverts if validator activity does not match between contracts:
-    ///      + if `V1.active == true` then `V2.deactivatedAtHeight = 0`
-    ///      + if `V1.active == false` then `V2.deactivatedAtHeight > 0`
     function initializeIfMigrated() external;
 
 }
