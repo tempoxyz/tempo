@@ -799,6 +799,10 @@ impl TIP20Token {
             return Ok(());
         }
 
+        if self.storage.spec().is_t2() {
+            AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
+        }
+
         // Update rewards for the recipient and get their reward recipient
         let to_reward_recipient = self.update_rewards(to)?;
 
