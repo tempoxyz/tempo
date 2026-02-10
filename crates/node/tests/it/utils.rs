@@ -206,13 +206,6 @@ impl TestNodeBuilder {
         self
     }
 
-    /// Set a custom validator address for block production
-    #[allow(dead_code)]
-    pub(crate) fn with_validator(mut self, validator: Address) -> Self {
-        self.custom_validator = Some(validator);
-        self
-    }
-
     /// Set a dynamic validator that can be changed at runtime
     pub(crate) fn with_dynamic_validator(
         mut self,
