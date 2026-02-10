@@ -7,7 +7,7 @@ use std::{borrow::Cow, str::FromStr, time::Duration};
 use tempo_chainspec::hardfork::TempoHardfork;
 use url::Url;
 
-pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/42431";
+pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
 
 /// Default OTLP logs filter level for telemetry.
 const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
@@ -118,6 +118,7 @@ pub(crate) struct TelemetryConfig {
 fn init_download_urls() {
     let download_defaults = DownloadDefaults {
         available_snapshots: vec![
+            Cow::Owned(format!("{DEFAULT_DOWNLOAD_URL} (mainnet)")),
             Cow::Borrowed("https://snapshots.tempoxyz.dev/42431 (moderato)"),
             Cow::Borrowed("https://snapshots.tempoxyz.dev/42429 (andantino)"),
         ],
