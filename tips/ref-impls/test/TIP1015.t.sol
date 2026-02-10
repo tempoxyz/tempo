@@ -10,7 +10,6 @@ import { BaseTest } from "./BaseTest.t.sol";
 /// @title TIP-1015 Compound Policy Tests
 /// @notice Unit tests and stateless fuzz tests for compound transfer policies as specified in TIP-1015
 /// @dev Tests both TIP403Registry compound policy functions and TIP-20 integration
-/// forge-config: default.hardfork = "tempo:T2"
 contract TIP1015Test is BaseTest {
 
     /*//////////////////////////////////////////////////////////////

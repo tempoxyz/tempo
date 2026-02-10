@@ -2057,7 +2057,6 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     /// @notice Test cancelStaleOrder with compound policy - maker blocked as sender
-    /// forge-config: default.hardfork = "tempo:T2"
     function test_CancelStaleOrder_Succeeds_BlockedMaker_CompoundPolicy() public {
         // Create compound policy: sender blacklist, recipient always-allow, mint always-allow
         uint64 senderBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
@@ -2087,7 +2086,6 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     /// @notice Test cancelStaleOrder fails with compound policy when maker only blocked as recipient
-    /// forge-config: default.hardfork = "tempo:T2"
     function test_CancelStaleOrder_Fails_MakerOnlyBlockedAsRecipient_CompoundPolicy() public {
         // Create compound policy: sender always-allow, recipient blacklist, mint always-allow
         uint64 recipientBlacklist =

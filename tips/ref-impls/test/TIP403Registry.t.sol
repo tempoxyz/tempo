@@ -5,7 +5,6 @@ import { TIP403Registry } from "../src/TIP403Registry.sol";
 import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
 import { BaseTest } from "./BaseTest.t.sol";
 
-/// forge-config: default.hardfork = "tempo:T2"
 contract TIP403RegistryTest is BaseTest {
 
     address public david = address(0x500);

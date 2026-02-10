@@ -9,7 +9,6 @@ import { ITIP20RolesAuth } from "../src/interfaces/ITIP20RolesAuth.sol";
 import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
 import { BaseTest } from "./BaseTest.t.sol";
 
-/// forge-config: default.hardfork = "tempo:T2"
 contract TIP20Test is BaseTest {
 
     TIP20 token;
