@@ -2056,4 +2056,71 @@ contract StablecoinDEXTest is BaseTest {
         );
     }
 
+    /// @notice Test cancelStaleOrder with compound policy - maker blocked as sender
+    function test_CancelStaleOrder_Succeeds_BlockedMaker_CompoundPolicy() public {
+        // Create compound policy: sender blacklist, recipient always-allow, mint always-allow
+        uint64 senderBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        uint64 compoundPolicy = registry.createCompoundPolicy(senderBlacklist, 1, 1);
+
+        // Set compound policy on token1
+        vm.prank(admin);
+        token1.changeTransferPolicyId(compoundPolicy);
+
+        // Alice places an ask order (selling token1)
+        uint128 orderId = _placeAskOrder(alice, exchange.MIN_ORDER_AMOUNT() * 2, 100);
+
+        // Blacklist alice as sender
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(senderBlacklist, alice, true);
+
+        // Alice is now blocked as sender
+        assertFalse(
+            registry.isAuthorizedSender(compoundPolicy, alice),
+            "Alice should not be authorized as sender"
+        );
+
+        // Cancel the stale order - should succeed because alice can't send
+        vm.prank(bob);
+        exchange.cancelStaleOrder(orderId);
+    }
+
+    /// @notice Test cancelStaleOrder fails with compound policy when maker only blocked as recipient
+    function test_CancelStaleOrder_Fails_MakerOnlyBlockedAsRecipient_CompoundPolicy() public {
+        // Create compound policy: sender always-allow, recipient blacklist, mint always-allow
+        uint64 recipientBlacklist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        uint64 compoundPolicy = registry.createCompoundPolicy(1, recipientBlacklist, 1);
+
+        // Set compound policy on token1
+        vm.prank(admin);
+        token1.changeTransferPolicyId(compoundPolicy);
+
+        // Alice places an ask order
+        uint128 orderId = _placeAskOrder(alice, exchange.MIN_ORDER_AMOUNT() * 2, 100);
+
+        // Blacklist alice as recipient (but NOT as sender)
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(recipientBlacklist, alice, true);
+
+        // Alice is authorized as sender, just not as recipient
+        assertTrue(
+            registry.isAuthorizedSender(compoundPolicy, alice),
+            "Alice should be authorized as sender"
+        );
+        assertFalse(
+            registry.isAuthorizedRecipient(compoundPolicy, alice),
+            "Alice should not be authorized as recipient"
+        );
+
+        // Cancel should fail - alice can still send (order not stale)
+        vm.prank(bob);
+        try exchange.cancelStaleOrder(orderId) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.OrderNotStale.selector));
+        }
+    }
+
 }

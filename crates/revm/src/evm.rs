@@ -854,10 +854,7 @@ mod tests {
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
         let slot = StorageCtx::enter(&mut provider, || {
-            TIP20Token::from_address(PATH_USD_ADDRESS)?
-                .balances
-                .at(caller)
-                .read()
+            TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
         })?;
         drop(provider);
 
@@ -873,10 +870,7 @@ mod tests {
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
         let slot = StorageCtx::enter(&mut provider, || {
-            TIP20Token::from_address(PATH_USD_ADDRESS)?
-                .balances
-                .at(caller)
-                .read()
+            TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
         })?;
         drop(provider);
 
@@ -905,10 +899,7 @@ mod tests {
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
         let slot = StorageCtx::enter(&mut provider, || {
-            TIP20Token::from_address(PATH_USD_ADDRESS)?
-                .balances
-                .at(caller)
-                .read()
+            TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
         })?;
         drop(provider);
 

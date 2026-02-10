@@ -2391,7 +2391,12 @@ mod tests {
 
         const BASE_INTRINSIC_GAS: u64 = 21_000;
 
-        for spec in [TempoHardfork::T0, TempoHardfork::T1, TempoHardfork::T2] {
+        for spec in [
+            TempoHardfork::Genesis,
+            TempoHardfork::T0,
+            TempoHardfork::T1,
+            TempoHardfork::T2,
+        ] {
             let gas_params = tempo_gas_params(spec);
 
             let make_evm = |nonce: u64, nonce_key: U256| {
@@ -2442,7 +2447,7 @@ mod tests {
                     // T1+: any nonce==0 charges new_account_cost (250k)
                     BASE_INTRINSIC_GAS + gas_params.get(GasId::new_account_cost())
                 } else {
-                    // T0: charges gas_new_nonce_key for new 2D key
+                    // Pre-T1: charges gas_new_nonce_key for new 2D key
                     BASE_INTRINSIC_GAS + spec.gas_new_nonce_key()
                 };
                 let mut evm = make_evm(0, U256::from(42));
@@ -2473,7 +2478,12 @@ mod tests {
 
         const BASE_INTRINSIC_GAS: u64 = 21_000;
 
-        for spec in [TempoHardfork::T0, TempoHardfork::T1, TempoHardfork::T2] {
+        for spec in [
+            TempoHardfork::Genesis,
+            TempoHardfork::T0,
+            TempoHardfork::T1,
+            TempoHardfork::T2,
+        ] {
             let gas_params = tempo_gas_params(spec);
 
             // Build spec-specific test cases: (gas_limit, nonce, expected_result)
@@ -2483,11 +2493,21 @@ mod tests {
                 spec.gas_new_nonce_key()
             };
 
-            let cases = [
-                (BASE_INTRINSIC_GAS + 10_000, 0, false), // Insufficient for nonce==0
-                (BASE_INTRINSIC_GAS + nonce_zero_gas, 0, true), // Exactly sufficient for nonce==0
-                (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Exactly sufficient for existing key
-            ];
+            let cases = if spec.is_t0() {
+                vec![
+                    (BASE_INTRINSIC_GAS + 10_000, 0u64, false), // Insufficient for nonce==0
+                    (BASE_INTRINSIC_GAS + nonce_zero_gas, 0, true), // Exactly sufficient for nonce==0
+                    (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Exactly sufficient for existing key
+                ]
+            } else {
+                // Genesis: nonce gas is added AFTER validation, so lower gas_limit still passes
+                vec![
+                    (BASE_INTRINSIC_GAS + 10_000, 0u64, true), // Passes validation (nonce gas added after)
+                    (BASE_INTRINSIC_GAS + nonce_zero_gas, 0, true), // Also passes
+                    (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Also passes
+                    (BASE_INTRINSIC_GAS - 1, 0, false),        // Below base intrinsic gas
+                ]
+            };
 
             for (gas_limit, nonce, should_succeed) in cases {
                 let journal = Journal::new(CacheDB::new(EmptyDB::default()));

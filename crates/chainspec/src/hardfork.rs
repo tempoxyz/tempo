@@ -99,8 +99,7 @@ impl TempoHardfork {
     /// Gas cost for using an existing 2D nonce key
     pub const fn gas_existing_nonce_key(&self) -> u64 {
         match self {
-            Self::Genesis => 0,
-            Self::T0 | Self::T1 => crate::spec::TEMPO_T1_EXISTING_NONCE_KEY_GAS,
+            Self::Genesis | Self::T0 | Self::T1 => crate::spec::TEMPO_T1_EXISTING_NONCE_KEY_GAS,
             Self::T2 => crate::spec::TEMPO_T2_EXISTING_NONCE_KEY_GAS,
         }
     }
@@ -108,8 +107,7 @@ impl TempoHardfork {
     /// Gas cost for using a new 2D nonce key
     pub const fn gas_new_nonce_key(&self) -> u64 {
         match self {
-            Self::Genesis => 0,
-            Self::T0 | Self::T1 => crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS,
+            Self::Genesis | Self::T0 | Self::T1 => crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS,
             Self::T2 => crate::spec::TEMPO_T2_NEW_NONCE_KEY_GAS,
         }
     }
