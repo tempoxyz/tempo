@@ -174,8 +174,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             revert ProtectedAddress();
         }
 
-        // Only allow burning from addresses that are blocked from transferring.
-        if (TIP403_REGISTRY.isAuthorized(transferPolicyId, from)) {
+        // TIP-1015: Only allow burning from addresses that are blocked from sending
+        if (TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, from)) {
             revert PolicyForbids();
         }
 
@@ -221,9 +221,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     modifier transferAuthorized(address from, address to) {
+        // TIP-1015: Use directional sender/recipient authorization
         if (
-            !TIP403_REGISTRY.isAuthorized(transferPolicyId, from)
-                || !TIP403_REGISTRY.isAuthorized(transferPolicyId, to)
+            !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, from)
+                || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, to)
         ) revert PolicyForbids();
         _;
     }
@@ -309,7 +310,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function _mint(address to, uint256 amount) internal {
-        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, to)) {
+        // TIP-1015: Use mint recipient authorization
+        if (!TIP403_REGISTRY.isAuthorizedMintRecipient(transferPolicyId, to)) {
             revert PolicyForbids();
         }
         if (_totalSupply + amount > supplyCap) revert SupplyCapExceeded(); // Catches overflow.
@@ -468,7 +470,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     /// @notice Distributes rewards to opted-in token holders.
     function distributeReward(uint256 amount) external virtual notPaused {
         if (amount == 0) revert InvalidAmount();
-        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) {
+        // TIP-1015: Use directional authorization for sender -> contract transfer
+        if (
+            !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, msg.sender)
+                || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, address(this))
+        ) {
             revert PolicyForbids();
         }
 
@@ -485,11 +491,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function setRewardRecipient(address newRewardRecipient) external virtual notPaused {
-        // Check TIP-403 authorization
+        // TIP-1015: Check sender/recipient authorization for reward claiming path
         if (newRewardRecipient != address(0)) {
             if (
-                !TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)
-                    || !TIP403_REGISTRY.isAuthorized(transferPolicyId, newRewardRecipient)
+                !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, msg.sender)
+                    || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, newRewardRecipient)
             ) revert PolicyForbids();
         }
 
@@ -507,9 +513,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function claimRewards() external virtual notPaused returns (uint256 maxAmount) {
+        // TIP-1015: Use directional authorization for contract -> recipient transfer
         if (
-            !TIP403_REGISTRY.isAuthorized(transferPolicyId, address(this))
-                || !TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)
+            !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, address(this))
+                || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, msg.sender)
         ) {
             revert PolicyForbids();
         }

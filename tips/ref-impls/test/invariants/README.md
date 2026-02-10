@@ -231,6 +231,40 @@ The Nonce precompile manages 2D nonces for accounts, enabling multiple independe
 
 - **TEMPO-NON11**: Reserved expiring nonce key - `type(uint256).max` is reserved for `TEMPO_EXPIRING_NONCE_KEY`. Reading it returns 0 for uninitialized accounts (readable but reserved for special use).
 
+## TIP-1015 Compound Policies
+
+TIP-1015 extends TIP-403 with compound policies that specify different authorization rules for senders, recipients, and mint recipients.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-1015-2**: Compound policy immutability - compound policies have `PolicyType.COMPOUND` and `admin == address(0)`.
+- **TEMPO-1015-3**: Compound policy existence - all created compound policies return true for `policyExists()`.
+- **TEMPO-1015-4**: Simple policy equivalence - for simple policies, `isAuthorizedSender == isAuthorizedRecipient == isAuthorizedMintRecipient`.
+- **TEMPO-1015-5**: isAuthorized equivalence - for compound policies, `isAuthorized(p, u) == isAuthorizedSender(p, u) && isAuthorizedRecipient(p, u)`.
+- **TEMPO-1015-6**: Compound delegation correctness - directional authorization delegates to the correct sub-policy.
+
+### Per-Handler Assertions
+
+#### Compound Policy Creation
+
+- **TEMPO-1015-1**: Simple policy constraint - `createCompoundPolicy` reverts with `PolicyNotSimple` if any referenced policy is compound.
+- **TEMPO-1015-2**: Immutability - newly created compound policies have no admin (address(0)).
+- **TEMPO-1015-3**: Existence check - `createCompoundPolicy` reverts with `PolicyNotFound` if any referenced policy doesn't exist.
+- **TEMPO-1015-6**: Built-in policy compatibility - compound policies can reference built-in policies 0 (always-reject) and 1 (always-allow).
+
+#### Compound Policy Modification
+
+- **TEMPO-1015-2**: Cannot modify compound policy - `modifyPolicyWhitelist` and `modifyPolicyBlacklist` revert for compound policies.
+
+#### TIP-20 Integration
+
+- Mint uses `mintRecipientPolicyId` for authorization (not sender or recipient).
+- Transfer uses `senderPolicyId` for sender and `recipientPolicyId` for recipient.
+- `burnBlocked` uses `senderPolicyId` to check if address is blocked.
+- DEX `cancelStaleOrder` uses `senderPolicyId` to check if maker is blocked.
+
 ## TIP20Factory
 
 The TIP20Factory is the factory contract for creating TIP-20 compliant tokens with deterministic addresses.
