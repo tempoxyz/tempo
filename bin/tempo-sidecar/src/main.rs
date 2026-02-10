@@ -8,6 +8,10 @@ mod synthetic_load;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install default rustls crypto provider");
+
     let args = TempoSidecar::parse();
 
     match args.cmd {

@@ -94,6 +94,13 @@ struct PyroscopeArgs {
 }
 
 fn main() -> eyre::Result<()> {
+    // Force-install the default rustls crypto provider. Required because rustls 0.23+ no longer
+    // ships a built-in default, and transitive users (tokio-tungstenite, reqwest, etc.) will panic
+    // if none is set. See: https://github.com/snapview/tokio-tungstenite/issues/353
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install default rustls crypto provider");
+
     reth_cli_util::sigsegv_handler::install();
 
     // XXX: ensures that the error source chain is preserved in
