@@ -385,7 +385,7 @@ The ValidatorConfigV2 precompile replaces V1 with append-only, delete-once seman
 
 ### Per-Handler Assertions
 
-- **TEMPO-VALV2-1**: Owner-only enforcement - only the owner can add or deactivate validators (non-owners revert with `Unauthorized`).
+- **TEMPO-VALV2-1**: Auth enforcement - only the owner can add validators; only the owner or the validator itself can deactivate (third parties revert with `Unauthorized`).
 - **TEMPO-VALV2-2**: Append-only count - `validatorCount` only increases; increments by 1 on each addition.
 - **TEMPO-VALV2-3**: Sequential indices - new validators receive index equal to the count before addition.
 - **TEMPO-VALV2-4**: Height tracking - `addedAtHeight == block.number` and `deactivatedAtHeight == 0` on add; `deactivatedAtHeight == block.number` on deactivation.

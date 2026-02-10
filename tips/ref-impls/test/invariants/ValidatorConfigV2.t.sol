@@ -325,15 +325,17 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice Handler for deactivating validators (owner only)
+    /// @notice Handler for deactivating validators (owner or validator)
     /// @dev Tests TEMPO-VALV2-4 (height tracking), TEMPO-VALV2-5 (deactivate-once)
-    function deactivateValidator(uint256 validatorSeed) external {
+    function deactivateValidator(uint256 validatorSeed, bool asValidator) external {
         (address validatorAddr, uint64 ghostIdx, bool found) = _selectActiveValidator(validatorSeed);
         if (!found) return;
 
         if (validatorAddr == _setupVal1 || validatorAddr == _setupVal2) return;
 
-        vm.startPrank(_ghostOwner);
+        address caller = asValidator ? validatorAddr : _ghostOwner;
+
+        vm.startPrank(caller);
         try validatorConfigV2.deactivateValidator(validatorAddr) {
             vm.stopPrank();
 
@@ -352,6 +354,8 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                     string.concat(
                         "DEACTIVATE: ",
                         vm.toString(validatorAddr),
+                        " by ",
+                        asValidator ? "validator" : "owner",
                         " at height=",
                         vm.toString(block.number)
                     )
@@ -398,18 +402,19 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for unauthorized deactivation attempts
-    /// @dev Tests TEMPO-VALV2-1 (owner-only deactivation)
+    /// @dev Tests TEMPO-VALV2-1 (third-party deactivation rejected)
     function tryDeactivateUnauthorized(uint256 callerSeed, uint256 validatorSeed) external {
         address caller = _selectPotentialValidator(callerSeed);
         if (caller == _ghostOwner) return;
 
         (address validatorAddr,, bool found) = _selectActiveValidator(validatorSeed);
         if (!found) return;
+        if (caller == validatorAddr) return;
 
         vm.startPrank(caller);
         try validatorConfigV2.deactivateValidator(validatorAddr) {
             vm.stopPrank();
-            revert("TEMPO-VALV2-1: Non-owner should not be able to deactivate");
+            revert("TEMPO-VALV2-1: Third party should not be able to deactivate");
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertEq(
