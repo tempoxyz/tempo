@@ -484,42 +484,48 @@ impl AccountKeychain {
         self.verify_and_update_spending(account, transaction_key, token, amount)
     }
 
-    /// Authorize a token approval with access key spending limits
+    /// Returns the transaction key if spending limits should be enforced.
+    pub fn spending_limit_tx_key(&self, account: Address) -> Result<Option<Address>> {
+        let transaction_key = self.transaction_key.t_read()?;
+
+        // If using main key (Address::ZERO), no spending limits apply.
+        if transaction_key == Address::ZERO {
+            return Ok(None);
+        }
+
+        // Only apply spending limits if the caller is the tx origin.
+        let tx_origin = self.tx_origin.t_read()?;
+        if account != tx_origin {
+            return Ok(None);
+        }
+
+        Ok(Some(transaction_key))
+    }
+
+    /// Authorize a token approval with access key spending limits.
     ///
-    /// This method checks if the transaction is using an access key, and if so,
-    /// verifies and updates the spending limits for that key.
-    /// Should be called before executing an approval.
+    /// This method assumes the caller has already determined that spending limits
+    /// should be enforced (e.g., via `spending_limit_tx_key`) and provides the
+    /// transaction key to apply limits against.
     ///
     /// # Arguments
     /// * `account` - The account performing the approval
     /// * `token` - The token being approved
     /// * `old_approval` - The current approval amount
     /// * `new_approval` - The new approval amount being set
+    /// * `tx_key` - The transaction key used for spending limits
     ///
     /// # Returns
-    /// Ok(()) if authorized (either using main key or access key with sufficient limits)
-    /// Err if unauthorized or spending limit exceeded
+    /// Ok(()) if authorized
+    /// Err if spending limit exceeded
     pub fn authorize_approve(
         &mut self,
         account: Address,
         token: Address,
         old_approval: U256,
         new_approval: U256,
+        tx_key: Address,
     ) -> Result<()> {
-        // Get the transaction key for this account
-        let transaction_key = self.transaction_key.t_read()?;
-
-        // If using main key (Address::ZERO), no spending limits apply
-        if transaction_key == Address::ZERO {
-            return Ok(());
-        }
-
-        // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.tx_origin.t_read()?;
-        if account != tx_origin {
-            return Ok(());
-        }
-
         // Calculate the increase in approval (only deduct if increasing)
         // If old approval is 100 and new approval is 120, deduct 20 from spending limit
         // If old approval is 100 and new approval is 80, deduct 0 (decreasing approval is free)
@@ -531,51 +537,7 @@ impl AccountKeychain {
         }
 
         // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, approval_increase)
-    }
-
-    /// Authorize a token approval with lazy old-approval loading.
-    ///
-    /// This variant avoids reading the current allowance unless spending limits
-    /// actually need to be enforced (i.e., when using a secondary key and
-    /// `account == tx_origin`).
-    pub fn authorize_approve_lazy<F>(
-        &mut self,
-        account: Address,
-        token: Address,
-        new_approval: U256,
-        old_approval: F,
-    ) -> Result<()>
-    where
-        F: FnOnce() -> Result<U256>,
-    {
-        // Get the transaction key for this account
-        let transaction_key = self.transaction_key.t_read()?;
-
-        // If using main key (Address::ZERO), no spending limits apply
-        if transaction_key == Address::ZERO {
-            return Ok(());
-        }
-
-        // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.tx_origin.t_read()?;
-        if account != tx_origin {
-            return Ok(());
-        }
-
-        // Load old approval only when needed.
-        let old_approval = old_approval()?;
-
-        // Calculate the increase in approval (only deduct if increasing)
-        let approval_increase = new_approval.saturating_sub(old_approval);
-
-        // Only check spending limits if there's an increase in approval
-        if approval_increase.is_zero() {
-            return Ok(());
-        }
-
-        // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, approval_increase)
+        self.verify_and_update_spending(account, tx_key, token, approval_increase)
     }
 }
 
@@ -929,7 +891,8 @@ mod tests {
             keychain.set_transaction_key(access_key)?;
 
             // Increase approval by 30, which deducts from the limit
-            keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(30))?;
+            let tx_key = keychain.spending_limit_tx_key(eoa)?.expect("expected tx key");
+            keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(30), tx_key)?;
 
             let limit_after = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -939,7 +902,8 @@ mod tests {
             assert_eq!(limit_after, U256::from(70));
 
             // Decrease approval to 20, does not affect limit
-            keychain.authorize_approve(eoa, token, U256::from(30), U256::from(20))?;
+            let tx_key = keychain.spending_limit_tx_key(eoa)?.expect("expected tx key");
+            keychain.authorize_approve(eoa, token, U256::from(30), U256::from(20), tx_key)?;
 
             let limit_unchanged = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -949,7 +913,8 @@ mod tests {
             assert_eq!(limit_unchanged, U256::from(70));
 
             // Increase from 20 to 50, reducing the limit by 30
-            keychain.authorize_approve(eoa, token, U256::from(20), U256::from(50))?;
+            let tx_key = keychain.spending_limit_tx_key(eoa)?.expect("expected tx key");
+            keychain.authorize_approve(eoa, token, U256::from(20), U256::from(50), tx_key)?;
 
             let limit_after_increase = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -959,7 +924,8 @@ mod tests {
             assert_eq!(limit_after_increase, U256::from(40));
 
             // Assert that spending limits only applied when account is tx origin
-            keychain.authorize_approve(contract, token, U256::ZERO, U256::from(1000))?;
+            let contract_tx_key = keychain.spending_limit_tx_key(contract)?;
+            assert!(contract_tx_key.is_none());
 
             let limit_after_contract = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -969,7 +935,9 @@ mod tests {
             assert_eq!(limit_after_contract, U256::from(40)); // unchanged
 
             // Assert that exceeding remaining limit fails
-            let exceed_result = keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(50));
+            let tx_key = keychain.spending_limit_tx_key(eoa)?.expect("expected tx key");
+            let exceed_result =
+                keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(50), tx_key);
             assert!(matches!(
                 exceed_result,
                 Err(TempoPrecompileError::AccountKeychainError(
@@ -979,7 +947,8 @@ mod tests {
 
             // Assert that the main key bypasses spending limits, does not affect existing limits
             keychain.set_transaction_key(Address::ZERO)?;
-            keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(1000))?;
+            let main_tx_key = keychain.spending_limit_tx_key(eoa)?;
+            assert!(main_tx_key.is_none());
 
             let limit_main_key = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,

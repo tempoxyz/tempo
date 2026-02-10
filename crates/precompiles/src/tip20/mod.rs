@@ -457,13 +457,33 @@ impl TIP20Token {
 
     // Standard token functions
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
-        // Check and update spending limits for access keys
-        AccountKeychain::new().authorize_approve_lazy(
-            msg_sender,
-            self.address,
-            call.amount,
-            || self.get_allowance(msg_sender, call.spender),
-        )?;
+        let mut keychain = AccountKeychain::new();
+
+        if self.storage.spec().is_t2() {
+            // T2+: avoid loading old allowance unless spending limits apply.
+            if let Some(tx_key) = keychain.spending_limit_tx_key(msg_sender)? {
+                let old_approval = self.get_allowance(msg_sender, call.spender)?;
+                keychain.authorize_approve(
+                    msg_sender,
+                    self.address,
+                    old_approval,
+                    call.amount,
+                    tx_key,
+                )?;
+            }
+        } else {
+            // Pre-T2: preserve gas behavior by always loading the allowance.
+            let old_approval = self.get_allowance(msg_sender, call.spender)?;
+            if let Some(tx_key) = keychain.spending_limit_tx_key(msg_sender)? {
+                keychain.authorize_approve(
+                    msg_sender,
+                    self.address,
+                    old_approval,
+                    call.amount,
+                    tx_key,
+                )?;
+            }
+        }
 
         // Set the new allowance
         self.set_allowance(msg_sender, call.spender, call.amount)?;
@@ -545,8 +565,8 @@ impl TIP20Token {
         self.check_recipient(to)?;
         self.ensure_transfer_authorized(from, to)?;
 
-        // Cache the handler for this allowance slot. This only caches the slot address,
-        // not the value, so reads/writes still hit storage and cannot go stale.
+        // Reuse the allowance handler to avoid repeated cache lookups/borrows.
+        // Reads/writes still hit storage and cannot go stale.
         {
             let allowance_slot = self.allowances.at_mut(from).at_mut(msg_sender);
             let allowed = allowance_slot.read()?;
@@ -709,7 +729,7 @@ impl TIP20Token {
     }
 
     fn _transfer(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
-        // Cache balance handlers per account to avoid repeated slot computation;
+        // Reuse balance handlers per account to avoid repeated cache lookups/borrows;
         // values are still read from storage on each call.
         let from_balance = {
             let balance_slot = self.balances.at_mut(from);
