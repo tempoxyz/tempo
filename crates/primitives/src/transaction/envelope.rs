@@ -14,28 +14,24 @@ use core::fmt;
 /// Same as TIP20_TOKEN_PREFIX
 pub const TIP20_PAYMENT_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
-/// ERC-20 `transfer(address,uint256)` selector
-const TRANSFER_SELECTOR: [u8; 4] = hex!("a9059cbb");
-
-/// TIP-20 `transferWithMemo(address,uint256,bytes32)` selector
-const TRANSFER_WITH_MEMO_SELECTOR: [u8; 4] = hex!("95777d59");
-
-/// Expected calldata length for `transfer(address,uint256)`: 4 + 32 + 32 = 68
-const TRANSFER_CALLDATA_LEN: usize = 68;
-
-/// Expected calldata length for `transferWithMemo(address,uint256,bytes32)`: 4 + 32 + 32 + 32 = 100
-const TRANSFER_WITH_MEMO_CALLDATA_LEN: usize = 100;
+/// Valid TIP-20 payment selectors with their expected calldata lengths.
+const PAYMENT_CALLDATA: &[([u8; 4], usize)] = &[
+    (hex!("a9059cbb"), 68),  // transfer(address,uint256)
+    (hex!("95777d59"), 100), // transferWithMemo(address,uint256,bytes32)
+    (hex!("23b872dd"), 100), // transferFrom(address,address,uint256)
+    (hex!("929c2539"), 132), // transferFromWithMemo(address,address,uint256,bytes32)
+];
 
 /// Returns `true` if `input` has a recognized TIP-20 payment selector and its length exactly
 /// matches the expected ABI-encoded size for that function.
 fn is_valid_payment_calldata(input: &[u8]) -> bool {
-    match input.first_chunk::<4>() {
-        Some(&s) if s == TRANSFER_SELECTOR => input.len() == TRANSFER_CALLDATA_LEN,
-        Some(&s) if s == TRANSFER_WITH_MEMO_SELECTOR => {
-            input.len() == TRANSFER_WITH_MEMO_CALLDATA_LEN
-        }
-        _ => false,
-    }
+    input
+        .first_chunk::<4>()
+        .is_some_and(|selector| {
+            PAYMENT_CALLDATA
+                .iter()
+                .any(|(sel, len)| selector == sel && input.len() == *len)
+        })
 }
 
 /// Fake signature for Tempo system transactions.
@@ -667,16 +663,27 @@ mod tests {
 
     const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
 
-    fn transfer_calldata() -> Bytes {
-        let mut data = vec![0u8; TRANSFER_CALLDATA_LEN];
-        data[..4].copy_from_slice(&TRANSFER_SELECTOR);
+    fn payment_calldata(index: usize) -> Bytes {
+        let (selector, len) = PAYMENT_CALLDATA[index];
+        let mut data = vec![0u8; len];
+        data[..4].copy_from_slice(&selector);
         Bytes::from(data)
     }
 
+    fn transfer_calldata() -> Bytes {
+        payment_calldata(0)
+    }
+
     fn transfer_with_memo_calldata() -> Bytes {
-        let mut data = vec![0u8; TRANSFER_WITH_MEMO_CALLDATA_LEN];
-        data[..4].copy_from_slice(&TRANSFER_WITH_MEMO_SELECTOR);
-        Bytes::from(data)
+        payment_calldata(1)
+    }
+
+    fn transfer_from_calldata() -> Bytes {
+        payment_calldata(2)
+    }
+
+    fn transfer_from_with_memo_calldata() -> Bytes {
+        payment_calldata(3)
     }
 
     #[test]
@@ -717,6 +724,26 @@ mod tests {
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
         assert!(envelope.is_payment());
+
+        let tx = TxLegacy {
+            to: TxKind::Call(PAYMENT_TKN),
+            gas_limit: 21000,
+            input: transfer_from_calldata(),
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::Legacy(signed);
+        assert!(envelope.is_payment());
+
+        let tx = TxLegacy {
+            to: TxKind::Call(PAYMENT_TKN),
+            gas_limit: 21000,
+            input: transfer_from_with_memo_calldata(),
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::Legacy(signed);
+        assert!(envelope.is_payment());
     }
 
     #[test]
@@ -733,8 +760,9 @@ mod tests {
 
     #[test]
     fn test_payment_rejects_excess_calldata() {
-        let mut data = vec![0u8; TRANSFER_CALLDATA_LEN + 32];
-        data[..4].copy_from_slice(&TRANSFER_SELECTOR);
+        let (selector, len) = PAYMENT_CALLDATA[0];
+        let mut data = vec![0u8; len + 32];
+        data[..4].copy_from_slice(&selector);
         let tx = TxLegacy {
             to: TxKind::Call(PAYMENT_TKN),
             gas_limit: 21000,
@@ -748,7 +776,8 @@ mod tests {
 
     #[test]
     fn test_payment_rejects_unknown_selector() {
-        let mut data = vec![0u8; TRANSFER_CALLDATA_LEN];
+        let (_, len) = PAYMENT_CALLDATA[0];
+        let mut data = vec![0u8; len];
         data[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         let tx = TxLegacy {
             to: TxKind::Call(PAYMENT_TKN),
