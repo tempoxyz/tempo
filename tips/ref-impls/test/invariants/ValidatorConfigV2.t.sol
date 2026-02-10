@@ -17,15 +17,18 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @dev Array of potential validator addresses
     address[] private _potentialValidators;
 
-    /// @dev Ghost tracking for validators (mirrors contract state)
-    address[] private _ghostValidatorList;
-    mapping(address => bool) private _ghostValidatorExists;
-    mapping(address => bytes32) private _ghostValidatorPubKey;
-    mapping(address => uint64) private _ghostValidatorIndex;
-    mapping(address => uint64) private _ghostAddedAtHeight;
-    mapping(address => uint64) private _ghostDeactivatedAtHeight;
-    mapping(address => string) private _ghostIngress;
-    mapping(address => string) private _ghostEgress;
+    /// @dev Ghost tracking for validators — index-keyed to mirror contract's append-only array.
+    ///      Address-keyed mappings would break on rotateValidator (same address, two entries).
+    mapping(uint64 => address) private _ghostAddress;
+    mapping(uint64 => bytes32) private _ghostPubKey;
+    mapping(uint64 => uint64) private _ghostAddedAtHeight;
+    mapping(uint64 => uint64) private _ghostDeactivatedAtHeight;
+    mapping(uint64 => string) private _ghostIngress;
+    mapping(uint64 => string) private _ghostEgress;
+
+    /// @dev Reverse lookup: address -> latest active index (updated on add/transfer/rotate)
+    mapping(address => uint64) private _ghostActiveIndex;
+    mapping(address => bool) private _ghostAddressInUse;
 
     /// @dev Ghost tracking for public key uniqueness
     mapping(bytes32 => bool) private _ghostPubKeyUsed;
@@ -62,7 +65,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         _setupInvariantBase();
         _actors = _buildActors(5);
-        _potentialValidators = _buildAddressPool(30, VALIDATOR_POOL_OFFSET);
+        _potentialValidators = _buildAddressPool(500, VALIDATOR_POOL_OFFSET);
         _ghostOwner = admin;
 
         validatorConfig.addValidator(
@@ -79,20 +82,20 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         validatorConfigV2.initializeIfMigrated();
         _ghostInitialized = true;
 
-        _ghostValidatorList.push(_setupVal1);
-        _ghostValidatorExists[_setupVal1] = true;
-        _ghostValidatorPubKey[_setupVal1] = SETUP_PUB_KEY_A;
-        _ghostValidatorIndex[_setupVal1] = 0;
-        _ghostAddedAtHeight[_setupVal1] = 0;
-        _ghostDeactivatedAtHeight[_setupVal1] = 0;
+        _ghostAddress[0] = _setupVal1;
+        _ghostPubKey[0] = SETUP_PUB_KEY_A;
+        _ghostAddedAtHeight[0] = 0;
+        _ghostDeactivatedAtHeight[0] = 0;
+        _ghostActiveIndex[_setupVal1] = 0;
+        _ghostAddressInUse[_setupVal1] = true;
         _ghostPubKeyUsed[SETUP_PUB_KEY_A] = true;
 
-        _ghostValidatorList.push(_setupVal2);
-        _ghostValidatorExists[_setupVal2] = true;
-        _ghostValidatorPubKey[_setupVal2] = SETUP_PUB_KEY_B;
-        _ghostValidatorIndex[_setupVal2] = 1;
-        _ghostAddedAtHeight[_setupVal2] = 0;
-        _ghostDeactivatedAtHeight[_setupVal2] = 0;
+        _ghostAddress[1] = _setupVal2;
+        _ghostPubKey[1] = SETUP_PUB_KEY_B;
+        _ghostAddedAtHeight[1] = 0;
+        _ghostDeactivatedAtHeight[1] = 0;
+        _ghostActiveIndex[_setupVal2] = 1;
+        _ghostAddressInUse[_setupVal2] = true;
         _ghostPubKeyUsed[SETUP_PUB_KEY_B] = true;
 
         _ghostTotalCount = 2;
@@ -122,22 +125,17 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         return string(abi.encodePacked("192.168.1.", _uint8ToString(lastOctet)));
     }
 
-    function _selectExistingValidator(uint256 seed) internal view returns (address) {
-        if (_ghostValidatorList.length == 0) return address(0);
-        return _ghostValidatorList[seed % _ghostValidatorList.length];
-    }
-
-    function _selectActiveValidator(uint256 seed) internal view returns (address, bool) {
-        uint256 len = _ghostValidatorList.length;
-        if (len == 0) return (address(0), false);
+    function _selectActiveValidator(uint256 seed) internal view returns (address, uint64, bool) {
+        uint256 len = _ghostTotalCount;
+        if (len == 0) return (address(0), 0, false);
         uint256 start = seed % len;
         for (uint256 i = 0; i < len; i++) {
-            address addr = _ghostValidatorList[(start + i) % len];
-            if (_ghostDeactivatedAtHeight[addr] == 0) {
-                return (addr, true);
+            uint64 idx = uint64((start + i) % len);
+            if (_ghostDeactivatedAtHeight[idx] == 0) {
+                return (_ghostAddress[idx], idx, true);
             }
         }
-        return (address(0), false);
+        return (address(0), 0, false);
     }
 
     // Storage slot constants for ValidatorConfigV2
@@ -159,11 +157,13 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             || selector == IValidatorConfigV2.ValidatorNotFound.selector
             || selector == IValidatorConfigV2.ValidatorAlreadyDeleted.selector
             || selector == IValidatorConfigV2.InvalidPublicKey.selector
+            || selector == IValidatorConfigV2.InvalidValidatorAddress.selector
             || selector == IValidatorConfigV2.NotInitialized.selector
             || selector == IValidatorConfigV2.AlreadyInitialized.selector
             || selector == IValidatorConfigV2.MigrationNotComplete.selector
             || selector == IValidatorConfigV2.InvalidMigrationIndex.selector
-            || selector == IValidatorConfigV2.NotIpPort.selector;
+            || selector == IValidatorConfigV2.NotIpPort.selector
+            || selector == IValidatorConfigV2.InvalidSignature.selector;
         assertTrue(isKnown, string.concat("Unknown error: ", vm.toString(selector)));
     }
 
@@ -185,6 +185,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @dev Directly writes a Validator into ValidatorConfigV2 storage via vm.store,
     ///      bypassing addValidator (and thus Ed25519 signature verification).
     ///      Only works for inline strings (<=31 bytes).
+    ///      Safety: verifies addressToIndex and pubkeyToIndex slots are empty before writing.
     function _addValidatorDirect(
         address validatorAddr,
         bytes32 publicKey,
@@ -195,6 +196,12 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         internal
     {
         address target = address(validatorConfigV2);
+
+        bytes32 addrSlot = keccak256(abi.encode(validatorAddr, SLOT_ADDRESS_TO_INDEX));
+        require(uint256(vm.load(target, addrSlot)) == 0, "addressToIndex slot not empty");
+
+        bytes32 pubkeySlot = keccak256(abi.encode(publicKey, SLOT_PUBKEY_TO_INDEX));
+        require(uint256(vm.load(target, pubkeySlot)) == 0, "pubkeyToIndex slot not empty");
 
         uint256 arrayLen = uint256(vm.load(target, bytes32(SLOT_VALIDATORS_ARRAY)));
         uint64 idx = uint64(arrayLen);
@@ -212,10 +219,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         vm.store(target, bytes32(SLOT_VALIDATORS_ARRAY), bytes32(arrayLen + 1));
 
-        bytes32 addrSlot = keccak256(abi.encode(validatorAddr, SLOT_ADDRESS_TO_INDEX));
         vm.store(target, addrSlot, bytes32(uint256(idx) + 1));
-
-        bytes32 pubkeySlot = keccak256(abi.encode(publicKey, SLOT_PUBKEY_TO_INDEX));
         vm.store(target, pubkeySlot, bytes32(uint256(idx) + 1));
     }
 
@@ -228,17 +232,18 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     )
         internal
     {
+        uint64 idx = uint64(_ghostTotalCount);
+
         _addValidatorDirect(validatorAddr, publicKey, ingress, egress, uint64(block.number));
 
-        uint64 idx = uint64(_ghostValidatorList.length);
-        _ghostValidatorList.push(validatorAddr);
-        _ghostValidatorExists[validatorAddr] = true;
-        _ghostValidatorPubKey[validatorAddr] = publicKey;
-        _ghostValidatorIndex[validatorAddr] = idx;
-        _ghostAddedAtHeight[validatorAddr] = uint64(block.number);
-        _ghostDeactivatedAtHeight[validatorAddr] = 0;
-        _ghostIngress[validatorAddr] = ingress;
-        _ghostEgress[validatorAddr] = egress;
+        _ghostAddress[idx] = validatorAddr;
+        _ghostPubKey[idx] = publicKey;
+        _ghostAddedAtHeight[idx] = uint64(block.number);
+        _ghostDeactivatedAtHeight[idx] = 0;
+        _ghostIngress[idx] = ingress;
+        _ghostEgress[idx] = egress;
+        _ghostActiveIndex[validatorAddr] = idx;
+        _ghostAddressInUse[validatorAddr] = true;
         _ghostPubKeyUsed[publicKey] = true;
         _ghostTotalCount++;
     }
@@ -253,7 +258,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     function addValidator(uint256 validatorSeed, uint256 keySeed) external {
         address validatorAddr = _selectPotentialValidator(validatorSeed);
 
-        if (_ghostValidatorExists[validatorAddr]) return;
+        if (_ghostAddressInUse[validatorAddr]) return;
 
         bytes32 publicKey = _generatePublicKey(keySeed);
         if (_ghostPubKeyUsed[publicKey]) return;
@@ -323,17 +328,16 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @notice Handler for deactivating validators (owner only)
     /// @dev Tests TEMPO-VALV2-4 (height tracking), TEMPO-VALV2-5 (deactivate-once)
     function deactivateValidator(uint256 validatorSeed) external {
-        (address validatorAddr, bool found) = _selectActiveValidator(validatorSeed);
+        (address validatorAddr, uint64 ghostIdx, bool found) = _selectActiveValidator(validatorSeed);
         if (!found) return;
 
-        // Skip setup validators to keep the validator set functional
         if (validatorAddr == _setupVal1 || validatorAddr == _setupVal2) return;
 
         vm.startPrank(_ghostOwner);
         try validatorConfigV2.deactivateValidator(validatorAddr) {
             vm.stopPrank();
 
-            _ghostDeactivatedAtHeight[validatorAddr] = uint64(block.number);
+            _ghostDeactivatedAtHeight[ghostIdx] = uint64(block.number);
 
             IValidatorConfigV2.Validator memory v =
                 validatorConfigV2.validatorByAddress(validatorAddr);
@@ -361,14 +365,21 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for double-deactivation (should fail)
     /// @dev Tests TEMPO-VALV2-5 (deactivate-once semantics)
+    ///      Must find a deactivated entry whose address's current mapping also points to a
+    ///      deactivated entry (i.e. not rotated into a new active entry).
     function tryDeactivateAlreadyDeleted(uint256 validatorSeed) external {
-        uint256 len = _ghostValidatorList.length;
+        uint256 len = _ghostTotalCount;
         if (len == 0) return;
 
         uint256 start = validatorSeed % len;
         for (uint256 i = 0; i < len; i++) {
-            address addr = _ghostValidatorList[(start + i) % len];
-            if (_ghostDeactivatedAtHeight[addr] != 0) {
+            uint64 idx = uint64((start + i) % len);
+            if (_ghostDeactivatedAtHeight[idx] != 0) {
+                address addr = _ghostAddress[idx];
+                if (!_ghostAddressInUse[addr]) continue;
+                uint64 activeIdx = _ghostActiveIndex[addr];
+                if (_ghostDeactivatedAtHeight[activeIdx] == 0) continue;
+
                 vm.startPrank(_ghostOwner);
                 try validatorConfigV2.deactivateValidator(addr) {
                     vm.stopPrank();
@@ -392,7 +403,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         address caller = _selectPotentialValidator(callerSeed);
         if (caller == _ghostOwner) return;
 
-        (address validatorAddr, bool found) = _selectActiveValidator(validatorSeed);
+        (address validatorAddr,, bool found) = _selectActiveValidator(validatorSeed);
         if (!found) return;
 
         vm.startPrank(caller);
@@ -412,9 +423,8 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @notice Handler for duplicate address rejection
     /// @dev Tests TEMPO-VALV2-6 (address uniqueness)
     function tryAddDuplicateAddress(uint256 validatorSeed, uint256 keySeed) external {
-        if (_ghostValidatorList.length == 0) return;
-
-        address existingAddr = _selectExistingValidator(validatorSeed);
+        (address existingAddr,, bool found) = _selectActiveValidator(validatorSeed);
+        if (!found) return;
         bytes32 publicKey = _generatePublicKey(keySeed);
         string memory ingress = _generateIngress(validatorSeed);
         string memory egress = _generateEgress(validatorSeed);
@@ -436,14 +446,14 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @notice Handler for duplicate public key rejection
     /// @dev Tests TEMPO-VALV2-7 (public key uniqueness)
     function tryAddDuplicatePubKey(uint256 validatorSeed, uint256 existingSeed) external {
-        if (_ghostValidatorList.length == 0) return;
+        if (_ghostTotalCount == 0) return;
 
-        address existingAddr = _selectExistingValidator(existingSeed);
-        bytes32 existingPubKey = _ghostValidatorPubKey[existingAddr];
+        uint64 existingIdx = uint64(existingSeed % _ghostTotalCount);
+        bytes32 existingPubKey = _ghostPubKey[existingIdx];
         if (existingPubKey == bytes32(0)) return;
 
         address newAddr = _selectPotentialValidator(validatorSeed);
-        if (_ghostValidatorExists[newAddr]) return;
+        if (_ghostAddressInUse[newAddr]) return;
 
         string memory ingress = _generateIngress(validatorSeed);
         string memory egress = _generateEgress(validatorSeed);
@@ -466,7 +476,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-VALV2-7 (zero key rejection)
     function tryAddZeroPubKey(uint256 validatorSeed) external {
         address validatorAddr = _selectPotentialValidator(validatorSeed);
-        if (_ghostValidatorExists[validatorAddr]) return;
+        if (_ghostAddressInUse[validatorAddr]) return;
 
         string memory ingress = _generateIngress(validatorSeed);
         string memory egress = _generateEgress(validatorSeed);
@@ -581,7 +591,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @notice Handler for setting IP addresses (owner or validator)
     /// @dev Tests TEMPO-VALV2-10 (dual-auth IP update)
     function setIpAddresses(uint256 validatorSeed, uint256 ipSeed, bool asValidator) external {
-        (address validatorAddr, bool found) = _selectActiveValidator(validatorSeed);
+        (address validatorAddr, uint64 ghostIdx, bool found) = _selectActiveValidator(validatorSeed);
         if (!found) return;
 
         string memory newIngress = _generateIngress(ipSeed);
@@ -593,8 +603,8 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         try validatorConfigV2.setIpAddresses(validatorAddr, newIngress, newEgress) {
             vm.stopPrank();
 
-            _ghostIngress[validatorAddr] = newIngress;
-            _ghostEgress[validatorAddr] = newEgress;
+            _ghostIngress[ghostIdx] = newIngress;
+            _ghostEgress[ghostIdx] = newEgress;
 
             IValidatorConfigV2.Validator memory v =
                 validatorConfigV2.validatorByAddress(validatorAddr);
@@ -631,7 +641,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         address caller = _selectPotentialValidator(callerSeed);
         if (caller == _ghostOwner) return;
 
-        (address validatorAddr, bool found) = _selectActiveValidator(validatorSeed);
+        (address validatorAddr,, bool found) = _selectActiveValidator(validatorSeed);
         if (!found) return;
         if (caller == validatorAddr) return;
 
@@ -661,11 +671,11 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     )
         external
     {
-        (address currentAddr, bool found) = _selectActiveValidator(validatorSeed);
+        (address currentAddr, uint64 ghostIdx, bool found) = _selectActiveValidator(validatorSeed);
         if (!found) return;
 
         address newAddr = _selectPotentialValidator(newAddrSeed);
-        if (_ghostValidatorExists[newAddr] || newAddr == currentAddr) return;
+        if (_ghostAddressInUse[newAddr] || newAddr == currentAddr) return;
 
         address caller = asValidator ? currentAddr : _ghostOwner;
 
@@ -673,34 +683,19 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         try validatorConfigV2.transferValidatorOwnership(currentAddr, newAddr) {
             vm.stopPrank();
 
-            bytes32 pubKey = _ghostValidatorPubKey[currentAddr];
-            uint64 idx = _ghostValidatorIndex[currentAddr];
-            uint64 addedAt = _ghostAddedAtHeight[currentAddr];
-            uint64 deactivatedAt = _ghostDeactivatedAtHeight[currentAddr];
-            string memory ingress = _ghostIngress[currentAddr];
-            string memory egress = _ghostEgress[currentAddr];
-
-            delete _ghostValidatorExists[currentAddr];
-            delete _ghostValidatorPubKey[currentAddr];
-            delete _ghostValidatorIndex[currentAddr];
-            delete _ghostAddedAtHeight[currentAddr];
-            delete _ghostDeactivatedAtHeight[currentAddr];
-            delete _ghostIngress[currentAddr];
-            delete _ghostEgress[currentAddr];
-
-            _ghostValidatorExists[newAddr] = true;
-            _ghostValidatorPubKey[newAddr] = pubKey;
-            _ghostValidatorIndex[newAddr] = idx;
-            _ghostAddedAtHeight[newAddr] = addedAt;
-            _ghostDeactivatedAtHeight[newAddr] = deactivatedAt;
-            _ghostIngress[newAddr] = ingress;
-            _ghostEgress[newAddr] = egress;
-
-            _ghostValidatorList[idx] = newAddr;
+            _ghostAddress[ghostIdx] = newAddr;
+            delete _ghostAddressInUse[currentAddr];
+            _ghostAddressInUse[newAddr] = true;
+            _ghostActiveIndex[newAddr] = ghostIdx;
+            delete _ghostActiveIndex[currentAddr];
 
             IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(newAddr);
             assertEq(v.validatorAddress, newAddr, "TEMPO-VALV2-11: Address should be updated");
-            assertEq(v.publicKey, pubKey, "TEMPO-VALV2-11: Public key preserved after transfer");
+            assertEq(
+                v.publicKey,
+                _ghostPubKey[ghostIdx],
+                "TEMPO-VALV2-11: Public key preserved after transfer"
+            );
 
             if (_loggingEnabled) {
                 _log(
@@ -721,12 +716,14 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @notice Handler for transferring to existing address (should fail)
     /// @dev Tests TEMPO-VALV2-11 (duplicate address on transfer)
     function tryTransferValidatorToDuplicate(uint256 seed1, uint256 seed2) external {
-        if (_ghostValidatorList.length < 2) return;
+        if (_ghostTotalCount < 2) return;
 
-        address addr1 = _ghostValidatorList[seed1 % _ghostValidatorList.length];
-        address addr2 = _ghostValidatorList[seed2 % _ghostValidatorList.length];
+        uint64 idx1 = uint64(seed1 % _ghostTotalCount);
+        uint64 idx2 = uint64(seed2 % _ghostTotalCount);
+        address addr1 = _ghostAddress[idx1];
+        address addr2 = _ghostAddress[idx2];
         if (addr1 == addr2) return;
-        if (!_ghostValidatorExists[addr1] || !_ghostValidatorExists[addr2]) return;
+        if (!_ghostAddressInUse[addr1] || !_ghostAddressInUse[addr2]) return;
 
         vm.startPrank(_ghostOwner);
         try validatorConfigV2.transferValidatorOwnership(addr1, addr2) {
@@ -739,6 +736,69 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 IValidatorConfigV2.ValidatorAlreadyExists.selector,
                 "TEMPO-VALV2-11: Should revert with ValidatorAlreadyExists"
             );
+        }
+    }
+
+    /// @notice Handler for rotating validators (owner or validator)
+    /// @dev Tests rotation: atomically deactivates old entry + adds new entry with same address.
+    ///      Skips setup validators to keep the set functional.
+    function rotateValidator(uint256 validatorSeed, uint256 keySeed, bool asValidator) external {
+        (address validatorAddr, uint64 oldGhostIdx, bool found) =
+            _selectActiveValidator(validatorSeed);
+        if (!found) return;
+
+        if (validatorAddr == _setupVal1 || validatorAddr == _setupVal2) return;
+
+        bytes32 newPubKey = _generatePublicKey(keySeed);
+        if (_ghostPubKeyUsed[newPubKey]) return;
+
+        string memory ingress = _generateIngress(keySeed);
+        string memory egress = _generateEgress(keySeed);
+
+        address caller = asValidator ? validatorAddr : _ghostOwner;
+
+        vm.startPrank(caller);
+        try validatorConfigV2.rotateValidator(validatorAddr, newPubKey, ingress, egress, "") {
+            vm.stopPrank();
+
+            _ghostDeactivatedAtHeight[oldGhostIdx] = uint64(block.number);
+
+            uint64 newIdx = uint64(_ghostTotalCount);
+            _ghostAddress[newIdx] = validatorAddr;
+            _ghostPubKey[newIdx] = newPubKey;
+            _ghostAddedAtHeight[newIdx] = uint64(block.number);
+            _ghostDeactivatedAtHeight[newIdx] = 0;
+            _ghostIngress[newIdx] = ingress;
+            _ghostEgress[newIdx] = egress;
+            _ghostActiveIndex[validatorAddr] = newIdx;
+            _ghostPubKeyUsed[newPubKey] = true;
+            _ghostTotalCount++;
+
+            IValidatorConfigV2.Validator memory v =
+                validatorConfigV2.validatorByAddress(validatorAddr);
+            assertEq(v.publicKey, newPubKey, "ROTATE: New public key should be set");
+            assertEq(
+                v.addedAtHeight,
+                uint64(block.number),
+                "ROTATE: addedAtHeight should be current block"
+            );
+            assertEq(v.deactivatedAtHeight, 0, "ROTATE: New entry should be active");
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "ROTATE: ",
+                        vm.toString(validatorAddr),
+                        " oldIdx=",
+                        vm.toString(oldGhostIdx),
+                        " newIdx=",
+                        vm.toString(newIdx)
+                    )
+                );
+            }
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            _assertKnownV2Error(reason);
         }
     }
 
@@ -772,30 +832,26 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         );
     }
 
-    /// @notice TEMPO-VALV2-12: All validator data matches ghost state
+    /// @notice TEMPO-VALV2-12: All validator data matches ghost state (index-keyed)
     function _invariantValidatorDataConsistency() internal view {
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getValidators();
-        assertEq(vals.length, _ghostValidatorList.length, "TEMPO-VALV2-12: Array length mismatch");
+        assertEq(vals.length, _ghostTotalCount, "TEMPO-VALV2-12: Array length mismatch");
 
         for (uint256 i = 0; i < vals.length; i++) {
-            address addr = vals[i].validatorAddress;
-            assertTrue(
-                _ghostValidatorExists[addr], "TEMPO-VALV2-12: Validator should exist in ghost state"
-            );
+            uint64 idx = uint64(i);
             assertEq(
-                vals[i].publicKey,
-                _ghostValidatorPubKey[addr],
-                "TEMPO-VALV2-12: Public key mismatch"
+                vals[i].validatorAddress, _ghostAddress[idx], "TEMPO-VALV2-12: Address mismatch"
             );
-            assertEq(vals[i].index, _ghostValidatorIndex[addr], "TEMPO-VALV2-12: Index mismatch");
+            assertEq(vals[i].publicKey, _ghostPubKey[idx], "TEMPO-VALV2-12: Public key mismatch");
+            assertEq(vals[i].index, idx, "TEMPO-VALV2-12: Index mismatch");
             assertEq(
                 vals[i].addedAtHeight,
-                _ghostAddedAtHeight[addr],
+                _ghostAddedAtHeight[idx],
                 "TEMPO-VALV2-12: addedAtHeight mismatch"
             );
             assertEq(
                 vals[i].deactivatedAtHeight,
-                _ghostDeactivatedAtHeight[addr],
+                _ghostDeactivatedAtHeight[idx],
                 "TEMPO-VALV2-12: deactivatedAtHeight mismatch"
             );
         }

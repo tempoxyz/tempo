@@ -36,6 +36,9 @@ interface IValidatorConfigV2 {
     /// @notice Thrown when public key is invalid (zero)
     error InvalidPublicKey();
 
+    /// @notice Thrown when validator address is invalid (zero)
+    error InvalidValidatorAddress();
+
     /// @notice Thrown when the Ed25519 signature verification fails
     error InvalidSignature();
 
