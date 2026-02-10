@@ -379,6 +379,37 @@ The ValidatorConfig precompile manages the set of validators that participate in
 - **TEMPO-VAL15**: Validator data consistency - all validator data (active status, public key, index) matches ghost state.
 - **TEMPO-VAL16**: Index consistency - each validator's index matches the ghost-tracked index assigned at creation.
 
+## ValidatorConfigV2
+
+The ValidatorConfigV2 precompile replaces V1 with append-only, delete-once semantics. Validators are immutable after creation, tracked by `addedAtHeight` and `deactivatedAtHeight` for historical reconstruction. Ed25519 signature verification proves key ownership at registration. Both owner and validator can call dual-auth functions (rotate, setIpAddresses, transferValidatorOwnership).
+
+### Per-Handler Assertions
+
+- **TEMPO-VALV2-1**: Owner-only enforcement - only the owner can add or deactivate validators (non-owners revert with `Unauthorized`).
+- **TEMPO-VALV2-2**: Append-only count - `validatorCount` only increases; increments by 1 on each addition.
+- **TEMPO-VALV2-3**: Sequential indices - new validators receive index equal to the count before addition.
+- **TEMPO-VALV2-4**: Height tracking - `addedAtHeight == block.number` and `deactivatedAtHeight == 0` on add; `deactivatedAtHeight == block.number` on deactivation.
+- **TEMPO-VALV2-5**: Delete-once - deactivating an already-deactivated validator reverts with `ValidatorAlreadyDeleted`.
+- **TEMPO-VALV2-6**: Address uniqueness - adding a validator with an existing address reverts with `ValidatorAlreadyExists` (addresses reserved forever).
+- **TEMPO-VALV2-7**: Public key uniqueness - all public keys must be unique and non-zero. Duplicates revert with `PublicKeyAlreadyExists`; zero keys revert with `InvalidPublicKey`.
+- **TEMPO-VALV2-8**: Owner transfer - `transferOwnership` correctly updates the owner; only the current owner can call it.
+- **TEMPO-VALV2-9**: DKG ceremony - `setNextFullDkgCeremony` correctly stores the epoch; only the owner can call it.
+- **TEMPO-VALV2-10**: Dual-auth IP update - owner or validator can update ingress/egress via `setIpAddresses`; third parties revert with `Unauthorized`.
+- **TEMPO-VALV2-11**: Validator address transfer - `transferValidatorOwnership` updates address and lookup maps; reverts with `ValidatorAlreadyExists` if the target address is taken.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-VALV2-2**: Append-only count consistency - `validatorCount` matches ghost total.
+- **TEMPO-VALV2-3**: Index sequential - each validator's `index` equals its array position.
+- **TEMPO-VALV2-7**: Public key uniqueness - all public keys are unique and non-zero across all validators.
+- **TEMPO-VALV2-8**: Owner consistency - contract owner matches ghost state.
+- **TEMPO-VALV2-9**: DKG ceremony consistency - `getNextFullDkgCeremony` matches ghost state.
+- **TEMPO-VALV2-12**: Validator data consistency - all validator data (public key, index, addedAtHeight, deactivatedAtHeight) matches ghost state.
+- **TEMPO-VALV2-13**: Active validator subset - `getActiveValidators` returns exactly the validators with `deactivatedAtHeight == 0`.
+- **TEMPO-VALV2-14**: Height ordering - for deactivated validators, `deactivatedAtHeight >= addedAtHeight`.
+
 ## AccountKeychain
 
 The AccountKeychain precompile manages authorized Access Keys for accounts, enabling Root Keys to provision scoped secondary keys with expiry timestamps and per-TIP20 token spending limits.
