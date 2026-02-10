@@ -61,6 +61,13 @@ pub const MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL: usize = 2048;
 /// Maximum number of token limits in a KeyAuthorization (DoS protection).
 pub const MAX_TOKEN_LIMITS: usize = 256;
 
+/// Default maximum allowed `valid_after` offset for AA txs (in seconds).
+///
+/// Aligned with the default queued transaction lifetime (`max_queued_lifetime = 120s`)
+/// so that transactions with a future `valid_after` are not silently evicted before
+/// they become executable.
+pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 120;
+
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
@@ -400,6 +407,10 @@ where
                 // TIP-1000: Storage pricing updates for launch
                 // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
                 init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+            } else if !tx.nonce_key.is_zero() {
+                // Existing 2D nonce key (nonce > 0): cold SLOAD + warm SSTORE reset
+                // TIP-1000 Invariant 3: existing state updates charge 5,000 gas
+                init_and_floor_gas.initial_gas += spec.gas_existing_nonce_key();
             }
             // In CREATE tx with 2d nonce, check if account.nonce is 0, if so, add 250,000 gas.
             // This covers caller creation of account.
@@ -582,6 +593,19 @@ where
             return TransactionValidationOutcome::Error(
                 *transaction.hash(),
                 InvalidTransactionError::TxTypeNotSupported.into(),
+            );
+        }
+
+        // Early reject oversized transactions before doing any expensive validation.
+        let tx_size = transaction.encoded_length();
+        let max_size = self.inner.max_tx_input_bytes();
+        if tx_size > max_size {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::OversizedData {
+                    size: tx_size,
+                    limit: max_size,
+                },
             );
         }
 
@@ -1106,7 +1130,7 @@ mod tests {
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
             inner,
-            3600,
+            DEFAULT_AA_VALID_AFTER_MAX_SECS,
             DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             amm_cache,
         );
@@ -1218,8 +1242,8 @@ mod tests {
             ));
         }
 
-        // Test case 2: `valid_after` within limit (30 minutes)
-        let tx_within_limit = create_aa_transaction(Some(current_time + 1800), None);
+        // Test case 2: `valid_after` within limit (60 seconds)
+        let tx_within_limit = create_aa_transaction(Some(current_time + 60), None);
         let validator = setup_validator(&tx_within_limit, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_within_limit)
@@ -1232,8 +1256,8 @@ mod tests {
             ));
         }
 
-        // Test case 3: `valid_after` beyond limit (2 hours)
-        let tx_too_far = create_aa_transaction(Some(current_time + 7200), None);
+        // Test case 3: `valid_after` beyond limit (5 minutes, exceeds 120s max)
+        let tx_too_far = create_aa_transaction(Some(current_time + 300), None);
         let validator = setup_validator(&tx_too_far, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_too_far)
@@ -1276,12 +1300,16 @@ mod tests {
         // USD_CURRENCY_SLOT_VALUE: "USD" left-padded with length marker (3 bytes * 2 = 6)
         let usd_currency_value =
             uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+        // transfer_policy_id is packed at byte offset 20 in slot 7, so we need to shift
+        // policy_id left by TRANSFER_POLICY_ID_OFFSET bits to position it correctly
+        let transfer_policy_id_packed =
+            U256::from(policy_id) << tip20_slots::TRANSFER_POLICY_ID_OFFSET;
         provider.add_account(
             fee_token,
             ExtendedAccount::new(0, U256::ZERO).extend_storage([
                 (
                     tip20_slots::TRANSFER_POLICY_ID.into(),
-                    U256::from(policy_id),
+                    transfer_policy_id_packed,
                 ),
                 (tip20_slots::CURRENCY.into(), usd_currency_value),
             ]),
@@ -1311,7 +1339,7 @@ mod tests {
             .build(InMemoryBlobStore::default());
         let validator = TempoTransactionValidator::new(
             inner,
-            3600,
+            DEFAULT_AA_VALID_AFTER_MAX_SECS,
             DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             AmmLiquidityCache::new(provider).unwrap(),
         );
@@ -1629,6 +1657,150 @@ mod tests {
             assert!(
                 !is_intrinsic_gas_error,
                 "Expiring nonce tx with 50k gas should NOT fail intrinsic gas check, got: {err:?}"
+            );
+        }
+    }
+
+    /// Test that existing 2D nonce keys (nonce_key != 0 && nonce > 0) charge
+    /// EXISTING_NONCE_KEY_GAS (5,000) during pool admission, matching handler.rs.
+    ///
+    /// Without this charge, transactions with a gas_limit 5,000 too low could
+    /// pass pool validation but fail at execution time.
+    #[tokio::test]
+    async fn test_existing_2d_nonce_key_intrinsic_gas() {
+        use alloy_primitives::{Signature, TxKind, address};
+        use tempo_primitives::transaction::{
+            TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Helper to create AA tx with a specific nonce_key and nonce
+        let create_aa_tx = |gas_limit: u64, nonce_key: U256, nonce: u64| {
+            let calls: Vec<Call> = vec![Call {
+                to: TxKind::Call(Address::from([1u8; 20])),
+                value: U256::ZERO,
+                input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]), // increment()
+            }];
+
+            let tx = TempoTransaction {
+                chain_id: 1,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit,
+                calls,
+                nonce_key,
+                nonce,
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                ..Default::default()
+            };
+
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        // Test 1: 1D nonce (nonce_key=0) with nonce > 0 has no extra 2D nonce charge.
+        // 50k gas should be sufficient (base ~21k + calldata).
+        let tx_1d = create_aa_tx(50_000, U256::ZERO, 5);
+        let validator = setup_validator(&tx_1d, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_1d)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            let is_gas_error = matches!(
+                err.downcast_other_ref::<TempoPoolTransactionError>(),
+                Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+            ) || matches!(
+                err.downcast_other_ref::<InvalidPoolTransactionError>(),
+                Some(InvalidPoolTransactionError::IntrinsicGasTooLow)
+            );
+            assert!(
+                !is_gas_error,
+                "1D nonce with nonce>0 and 50k gas should NOT fail intrinsic gas check, got: {err:?}"
+            );
+        }
+
+        // Test 2: 2D nonce (nonce_key != 0) with nonce > 0, same 50k gas.
+        // This triggers the EXISTING_NONCE_KEY_GAS branch (+5k), but 50k is still enough.
+        let tx_2d_ok = create_aa_tx(50_000, U256::from(1), 5);
+        let validator = setup_validator(&tx_2d_ok, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_2d_ok)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            let is_gas_error = matches!(
+                err.downcast_other_ref::<TempoPoolTransactionError>(),
+                Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+            ) || matches!(
+                err.downcast_other_ref::<InvalidPoolTransactionError>(),
+                Some(InvalidPoolTransactionError::IntrinsicGasTooLow)
+            );
+            assert!(
+                !is_gas_error,
+                "Existing 2D nonce key with 50k gas should NOT fail intrinsic gas check, got: {err:?}"
+            );
+        }
+
+        // Test 3: 2D nonce (nonce_key != 0), nonce > 0, with gas that is sufficient for
+        // base intrinsic gas but NOT sufficient when EXISTING_NONCE_KEY_GAS (5k) is added.
+        // Use 22_000 gas: enough for base ~21k + calldata but not when +5k is charged.
+        let tx_2d_low = create_aa_tx(22_000, U256::from(1), 5);
+        let validator = setup_validator(&tx_2d_low, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_2d_low)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                let is_gas_error = matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+                ) || matches!(
+                    err.downcast_other_ref::<InvalidPoolTransactionError>(),
+                    Some(InvalidPoolTransactionError::IntrinsicGasTooLow)
+                );
+                assert!(
+                    is_gas_error,
+                    "Existing 2D nonce key with 22k gas should fail intrinsic gas check, got: {err:?}"
+                );
+            }
+            _ => panic!(
+                "Expected Invalid outcome for existing 2D nonce with insufficient gas, got: {outcome:?}"
+            ),
+        }
+
+        // Test 4: Same scenario as test 3, but with 1D nonce (nonce_key=0).
+        // Without the 5k charge, 22k should be sufficient.
+        let tx_1d_low = create_aa_tx(22_000, U256::ZERO, 5);
+        let validator = setup_validator(&tx_1d_low, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_1d_low)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            let is_gas_error = matches!(
+                err.downcast_other_ref::<TempoPoolTransactionError>(),
+                Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+            ) || matches!(
+                err.downcast_other_ref::<InvalidPoolTransactionError>(),
+                Some(InvalidPoolTransactionError::IntrinsicGasTooLow)
+            );
+            assert!(
+                !is_gas_error,
+                "1D nonce with nonce>0 and 22k gas should NOT fail intrinsic gas check, got: {err:?}"
             );
         }
     }
@@ -1982,7 +2154,12 @@ mod tests {
                 .build(InMemoryBlobStore::default());
             let amm_cache =
                 AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-            TempoTransactionValidator::new(inner, 3600, DEFAULT_MAX_TEMPO_AUTHORIZATIONS, amm_cache)
+            TempoTransactionValidator::new(
+                inner,
+                DEFAULT_AA_VALID_AFTER_MAX_SECS,
+                DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+                amm_cache,
+            )
         }
 
         #[test]
@@ -2508,7 +2685,7 @@ mod tests {
                 AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
             let validator = TempoTransactionValidator::new(
                 inner,
-                3600,
+                DEFAULT_AA_VALID_AFTER_MAX_SECS,
                 DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
                 amm_cache,
             );
@@ -2865,7 +3042,12 @@ mod tests {
                 .build(InMemoryBlobStore::default());
             let amm_cache =
                 AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-            TempoTransactionValidator::new(inner, 3600, DEFAULT_MAX_TEMPO_AUTHORIZATIONS, amm_cache)
+            TempoTransactionValidator::new(
+                inner,
+                DEFAULT_AA_VALID_AFTER_MAX_SECS,
+                DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+                amm_cache,
+            )
         }
 
         #[test]
@@ -3761,15 +3943,17 @@ mod tests {
 
         match outcome {
             TransactionValidationOutcome::Invalid(_, ref err) => {
+                let is_oversized = matches!(err, InvalidPoolTransactionError::OversizedData { .. });
+                let is_call_input_too_large = matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::CallInputTooLarge { .. })
+                );
                 assert!(
-                    matches!(
-                        err.downcast_other_ref::<TempoPoolTransactionError>(),
-                        Some(TempoPoolTransactionError::CallInputTooLarge { .. })
-                    ),
-                    "Expected CallInputTooLarge error, got: {err:?}"
+                    is_oversized || is_call_input_too_large,
+                    "Expected OversizedData or CallInputTooLarge error, got: {err:?}"
                 );
             }
-            _ => panic!("Expected Invalid outcome with CallInputTooLarge error, got: {outcome:?}"),
+            _ => panic!("Expected Invalid outcome, got: {outcome:?}"),
         }
     }
 

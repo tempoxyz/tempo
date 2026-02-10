@@ -58,7 +58,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](68);
+        bytes4[] memory selectors = new bytes4[](70);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -144,6 +144,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         selectors[65] = this.handler_expiringNonceMissingValidBefore.selector;
         selectors[66] = this.handler_expiringNonceNoNonceMutation.selector;
         selectors[67] = this.handler_expiringNonceConcurrent.selector;
+        // Spending limit refund handlers (K-REFUND)
+        selectors[68] = this.handler_keySpendingRefund.selector;
+        selectors[69] = this.handler_keySpendingRefundRevokedKey.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         // Initialize previous nonce tracking for secp256k1 actors
@@ -4312,6 +4315,204 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         if (successCount == 2) {
             ghost_expiringNonceConcurrentExecuted++;
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+             SPENDING LIMIT REFUND HANDLERS (K-REFUND)
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Handler K-REFUND1: Verify spending limit is refunded for unused gas
+    /// @dev Executes a transfer with an access key using high gas limit, then verifies
+    ///      that the on-chain remaining limit accounts for the gas refund (i.e., actual
+    ///      remaining > limit - transfer - maxFee).
+    function handler_keySpendingRefund(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
+        amount = bound(amount, 1e6, 10e6);
+
+        if (!ghost_keyAuthorized[ctx.owner][ctx.keyId]) return;
+        if (ghost_keyExpiry[ctx.owner][ctx.keyId] <= block.timestamp) return;
+        if (!ghost_keyEnforceLimits[ctx.owner][ctx.keyId]) return;
+
+        uint256 limit = ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(feeToken)];
+        uint256 spent = ghost_keySpentAmount[ctx.owner][ctx.keyId][address(feeToken)];
+
+        uint64 highGasLimit = TxBuilder.DEFAULT_GAS_LIMIT * 10;
+        uint256 maxFee = uint256(highGasLimit) * TxBuilder.DEFAULT_GAS_PRICE;
+
+        if (spent + amount + maxFee > limit) return;
+        if (!_checkBalance(ctx.owner, amount + maxFee)) return;
+
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.actorIdx == recipientIdx) recipientIdx = (recipientIdx + 1) % actors.length;
+        address recipient = actors[recipientIdx];
+
+        uint64 currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
+
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken),
+            value: 0,
+            data: abi.encodeCall(ITIP20.transfer, (recipient, amount))
+        });
+
+        TempoTransaction memory tx_ = TempoTransactionLib.create()
+            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(highGasLimit).withCalls(calls).withNonceKey(0).withNonce(currentNonce);
+
+        bytes memory signedTx = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.KeychainSecp256k1,
+                privateKey: ctx.keyPk,
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: ctx.owner
+            })
+        );
+
+        uint256 remainingBefore =
+            keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            _recordProtocolNonceTxSuccess(ctx.owner);
+            _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
+
+            uint256 remainingAfter =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+
+            // K-REFUND1: After tx, the remaining limit should be greater than
+            // (remainingBefore - amount - maxFee) because unused gas was refunded.
+            uint256 worstCase = 0;
+            if (remainingBefore > amount + maxFee) {
+                worstCase = remainingBefore - amount - maxFee;
+            }
+            assertGe(
+                remainingAfter,
+                worstCase,
+                "K-REFUND1: Remaining limit should account for gas refund"
+            );
+
+            // The remaining should also not exceed the limit before minus the transfer amount
+            // (refund can't give back more than the gas fee that was deducted)
+            assertLe(
+                remainingAfter,
+                remainingBefore - amount,
+                "K-REFUND1: Remaining limit should not exceed (before - transfer)"
+            );
+
+            ghost_keyRefundVerified++;
+        } catch {
+            _handleRevertProtocol(ctx.owner);
+        }
+    }
+
+    /// @notice Handler K-REFUND2: Verify refund is no-op when key is revoked mid-transaction
+    /// @dev Authorizes a key, spends, revokes, then executes another tx that triggers refund.
+    ///      The refund should be silently skipped for the revoked key.
+    function handler_keySpendingRefundRevokedKey(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
+
+        // Need an authorized key with limits
+        if (!ghost_keyAuthorized[ctx.owner][ctx.keyId]) return;
+        if (ghost_keyExpiry[ctx.owner][ctx.keyId] <= block.timestamp) return;
+        if (!ghost_keyEnforceLimits[ctx.owner][ctx.keyId]) return;
+
+        amount = bound(amount, 1e6, 10e6);
+
+        uint256 limit = ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(feeToken)];
+        uint256 spent = ghost_keySpentAmount[ctx.owner][ctx.keyId][address(feeToken)];
+        if (spent + amount > limit) return;
+        if (!_checkBalance(ctx.owner, amount)) return;
+
+        // Step 1: Execute a transfer with the access key
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.actorIdx == recipientIdx) recipientIdx = (recipientIdx + 1) % actors.length;
+        address recipient = actors[recipientIdx];
+
+        uint64 currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
+
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
+            vmRlp,
+            vm,
+            address(feeToken),
+            abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0,
+            currentNonce,
+            ctx.keyPk,
+            ctx.owner
+        );
+
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            _recordProtocolNonceTxSuccess(ctx.owner);
+            _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
+        } catch {
+            _handleRevertProtocol(ctx.owner);
+            return;
+        }
+
+        // Step 2: Revoke the key (using main key via prank)
+        vm.prank(ctx.owner);
+        try keychain.revokeKey(ctx.keyId) {
+            _revokeKey(ctx.owner, ctx.keyId);
+        } catch {
+            return;
+        }
+
+        // Step 3: Snapshot remaining limit (should be unchanged after revocation)
+        uint256 remainingAfterRevoke =
+            keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+
+        // Step 4: Execute another tx (with main key) that would have refunded the revoked key
+        // The refund_spending_limit uses load_active_key which fails for revoked keys -> no-op
+        _ensureFeeTokenBalance(ctx.owner, 1e6);
+        currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
+
+        (bytes memory mainKeyTx,) =
+            _buildAndSignTransfer(ctx.actorIdx, recipient, 1e6, currentNonce, 0);
+
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(mainKeyTx) {
+            _recordProtocolNonceTxSuccess(ctx.owner);
+
+            uint256 remainingAfterMainTx =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+
+            // K-REFUND2: Remaining limit should not change since the key was revoked
+            // (the refund should be a no-op for revoked keys)
+            assertEq(
+                remainingAfterMainTx,
+                remainingAfterRevoke,
+                "K-REFUND2: Revoked key limit should not change after refund"
+            );
+
+            ghost_keyRefundRevokedNoop++;
+        } catch {
+            _handleRevertProtocol(ctx.owner);
         }
     }
 

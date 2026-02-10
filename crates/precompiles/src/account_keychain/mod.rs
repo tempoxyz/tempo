@@ -317,6 +317,14 @@ impl AccountKeychain {
 
     /// Get remaining spending limit
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
+        // T2+: return zero if key doesn't exist or has been revoked
+        if self.storage.spec().is_t2() {
+            let key = self.keys[call.account][call.keyId].read()?;
+            if key.expiry == 0 || key.is_revoked {
+                return Ok(U256::ZERO);
+            }
+        }
+
         let limit_key = Self::spending_limit_key(call.account, call.keyId);
         self.spending_limits[limit_key][call.token].read()
     }
@@ -413,7 +421,7 @@ impl AccountKeychain {
         Ok(())
     }
 
-    /// Internal: Verify and update spending for a token transfer
+    /// Verify and update spending for a token transfer
     pub fn verify_and_update_spending(
         &mut self,
         account: Address,
@@ -444,6 +452,47 @@ impl AccountKeychain {
 
         // Update remaining limit
         self.spending_limits[limit_key][token].write(remaining - amount)
+    }
+
+    /// Refund spending limit after a fee refund.
+    ///
+    /// Restores the spending limit by the refunded amount, clamped so it never
+    /// exceeds the limit that was set when the key was authorized.
+    /// Should be called after a fee refund to avoid permanently reducing the spending limit.
+    pub fn refund_spending_limit(
+        &mut self,
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let transaction_key = self.transaction_key.t_read()?;
+
+        if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+
+        let tx_origin = self.tx_origin.t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+
+        // Silently skip refund if the key was revoked or expired — the fee was already
+        // collected and the key is no longer active, so there is nothing to restore.
+        let key = match self.load_active_key(account, transaction_key) {
+            Ok(key) => key,
+            Err(_) => return Ok(()),
+        };
+
+        if !key.enforce_limits {
+            return Ok(());
+        }
+
+        let limit_key = Self::spending_limit_key(account, transaction_key);
+        let remaining = self.spending_limits[limit_key][token].read()?;
+
+        let new_remaining = remaining.saturating_add(amount);
+
+        self.spending_limits[limit_key][token].write(new_remaining)
     }
 
     /// Authorize a token transfer with access key spending limits
@@ -674,9 +723,10 @@ mod tests {
 
     #[test]
     fn test_replay_protection_revoked_key_cannot_be_reauthorized() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let account = Address::random();
         let key_id = Address::random();
+        let token = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
@@ -684,35 +734,54 @@ mod tests {
             // Use main key for all operations
             keychain.set_transaction_key(Address::ZERO)?;
 
-            // Step 1: Authorize a key
+            // Step 1: Authorize a key with a spending limit
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
-                enforceLimits: false,
-                limits: vec![],
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                }],
             };
             keychain.authorize_key(account, auth_call.clone())?;
 
-            // Verify key exists
+            // Verify key exists and limit is set
             let key_info = keychain.get_key(getKeyCall {
                 account,
                 keyId: key_id,
             })?;
             assert_eq!(key_info.expiry, u64::MAX);
             assert!(!key_info.isRevoked);
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: key_id,
+                    token,
+                })?,
+                U256::from(100)
+            );
 
             // Step 2: Revoke the key
             let revoke_call = revokeKeyCall { keyId: key_id };
             keychain.revoke_key(account, revoke_call)?;
 
-            // Verify key is revoked
+            // Verify key is revoked and remaining limit returns 0
             let key_info = keychain.get_key(getKeyCall {
                 account,
                 keyId: key_id,
             })?;
             assert_eq!(key_info.expiry, 0);
             assert!(key_info.isRevoked);
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: key_id,
+                    token,
+                })?,
+                U256::ZERO
+            );
 
             // Step 3: Try to re-authorize the same key (replay attack)
             // This should fail because the key was revoked
@@ -1601,6 +1670,191 @@ mod tests {
             assert!(
                 none_result.is_ok(),
                 "Validation should succeed when signature type check is skipped (pre-T1)"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refund_spending_limit_restores_limit() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                }],
+            };
+            keychain.authorize_key(eoa, auth_call)?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa)?;
+
+            keychain.authorize_transfer(eoa, token, U256::from(60))?;
+
+            let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(remaining, U256::from(40));
+
+            keychain.refund_spending_limit(eoa, token, U256::from(25))?;
+
+            let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(after_refund, U256::from(65));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refund_spending_limit_noop_for_main_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let eoa = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(eoa)?;
+
+            let result = keychain.refund_spending_limit(eoa, token, U256::from(50));
+            assert!(result.is_ok());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refund_spending_limit_noop_after_key_revocation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                }],
+            };
+            keychain.authorize_key(eoa, auth_call)?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa)?;
+
+            keychain.authorize_transfer(eoa, token, U256::from(60))?;
+
+            let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(remaining, U256::from(40));
+
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.revoke_key(eoa, revokeKeyCall { keyId: access_key })?;
+
+            keychain.set_transaction_key(access_key)?;
+
+            let result = keychain.refund_spending_limit(eoa, token, U256::from(25));
+            assert!(result.is_ok());
+
+            let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                after_refund,
+                U256::from(40),
+                "limit should be unchanged after revoked key refund"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refund_spending_limit_clamped_by_saturating_add() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+        let original_limit = U256::from(100);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: original_limit,
+                }],
+            };
+            keychain.authorize_key(eoa, auth_call)?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa)?;
+
+            keychain.authorize_transfer(eoa, token, U256::from(10))?;
+
+            let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(remaining, U256::from(90));
+
+            keychain.refund_spending_limit(eoa, token, U256::from(50))?;
+
+            let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                after_refund,
+                U256::from(140),
+                "saturating_add should allow refund beyond original limit without overflow"
             );
 
             Ok(())

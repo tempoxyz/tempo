@@ -151,11 +151,6 @@ impl AA2dPool {
             .aa_transaction_id()
             .expect("Transaction added to AA2D pool must be an AA transaction");
 
-        // Cache the nonce key slot for reverse lookup, if this transaction uses 2D nonce.
-        if transaction.transaction.is_aa_2d() {
-            self.record_2d_slot(&transaction.transaction);
-        }
-
         if transaction.nonce() < on_chain_nonce {
             // outdated transaction
             return Err(PoolError::new(
@@ -216,6 +211,13 @@ impl AA2dPool {
                 None
             }
         };
+
+        // Cache the nonce key slot for reverse lookup, if this transaction uses 2D nonce.
+        // This must happen after successful by_id insertion to avoid leaking slot entries
+        // when the transaction is rejected (e.g., by per-sender limit or replacement check).
+        if transaction.transaction.is_aa_2d() {
+            self.record_2d_slot(&transaction.transaction);
+        }
 
         // clean up replaced
         if let Some(replaced) = &replaced {
@@ -5212,6 +5214,67 @@ mod tests {
 
         let (pending, _) = pool.pending_and_queued_txn_count();
         assert_eq!(pending, 0);
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_rejected_2d_tx_does_not_leak_slot_entries() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            max_txs_per_sender: 1,
+        };
+        let mut pool = AA2dPool::new(config);
+        let sender = Address::random();
+
+        let tx0 = TxBuilder::aa(sender)
+            .nonce_key(U256::from(1))
+            .nonce(0)
+            .build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        assert_eq!(pool.slot_to_seq_id.len(), 1);
+        assert_eq!(pool.seq_id_to_slot.len(), 1);
+
+        for i in 2..12u64 {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::from(i))
+                .nonce(0)
+                .build();
+            let result = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
+            assert!(
+                result.is_err(),
+                "tx with nonce_key {i} should be rejected by sender limit"
+            );
+        }
+
+        assert_eq!(
+            pool.slot_to_seq_id.len(),
+            1,
+            "rejected txs with new nonce keys should not grow slot_to_seq_id"
+        );
+        assert_eq!(
+            pool.seq_id_to_slot.len(),
+            1,
+            "rejected txs with new nonce keys should not grow seq_id_to_slot"
+        );
+
         pool.assert_invariants();
     }
 }

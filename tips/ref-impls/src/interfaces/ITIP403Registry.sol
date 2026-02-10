@@ -8,9 +8,11 @@ interface ITIP403Registry {
     /// @notice Policy types available for transfer restrictions
     /// @param WHITELIST Only addresses on the whitelist are authorized for transfers
     /// @param BLACKLIST All addresses except those on the blacklist are authorized for transfers
+    /// @param COMPOUND TIP-1015: Compound policy referencing three simple policies
     enum PolicyType {
         WHITELIST,
-        BLACKLIST
+        BLACKLIST,
+        COMPOUND
     }
 
     /// @notice Data structure containing policy configuration
@@ -24,11 +26,17 @@ interface ITIP403Registry {
     /// @notice Error when caller lacks authorization to perform the requested action
     error Unauthorized();
 
+    /// @notice Error when querying a policy that does not exist
+    error PolicyNotFound();
+
+    /// @notice TIP-1015: Error when a compound policy references a non-simple policy
+    error PolicyNotSimple();
+
     /// @notice Error when attempting to operate on a policy with incompatible type
     error IncompatiblePolicyType();
 
-    /// @notice Error when querying a policy that does not exist
-    error PolicyNotFound();
+    /// @notice Error when policy has an invalid type
+    error InvalidPolicyType();
 
     /// @notice Emitted when a policy's admin is updated
     /// @param policyId The ID of the policy that was updated
@@ -126,5 +134,59 @@ interface ITIP403Registry {
     /// @param user The address to check authorization for
     /// @return True if the user is authorized, false otherwise
     function isAuthorized(uint64 policyId, address user) external view returns (bool);
+
+    // =========================================================================
+    //                      TIP-1015: Compound Policies
+    // =========================================================================
+
+    /// @notice TIP-1015: Emitted when a new compound policy is created
+    event CompoundPolicyCreated(
+        uint64 indexed policyId,
+        address indexed creator,
+        uint64 senderPolicyId,
+        uint64 recipientPolicyId,
+        uint64 mintRecipientPolicyId
+    );
+
+    /// @notice TIP-1015: Creates a new immutable compound policy
+    /// @param senderPolicyId Policy ID to check for transfer senders
+    /// @param recipientPolicyId Policy ID to check for transfer recipients
+    /// @param mintRecipientPolicyId Policy ID to check for mint recipients
+    /// @return newPolicyId ID of the newly created compound policy
+    function createCompoundPolicy(
+        uint64 senderPolicyId,
+        uint64 recipientPolicyId,
+        uint64 mintRecipientPolicyId
+    )
+        external
+        returns (uint64 newPolicyId);
+
+    /// @notice TIP-1015: Checks if a user is authorized as a sender
+    /// @param policyId Policy ID to check against
+    /// @param user Address to check
+    /// @return True if authorized to send
+    function isAuthorizedSender(uint64 policyId, address user) external view returns (bool);
+
+    /// @notice TIP-1015: Checks if a user is authorized as a recipient
+    /// @param policyId Policy ID to check against
+    /// @param user Address to check
+    /// @return True if authorized to receive
+    function isAuthorizedRecipient(uint64 policyId, address user) external view returns (bool);
+
+    /// @notice TIP-1015: Checks if a user is authorized as a mint recipient
+    /// @param policyId Policy ID to check against
+    /// @param user Address to check
+    /// @return True if authorized to receive mints
+    function isAuthorizedMintRecipient(uint64 policyId, address user) external view returns (bool);
+
+    /// @notice TIP-1015: Returns the constituent policy IDs for a compound policy
+    /// @param policyId ID of the compound policy to query
+    /// @return senderPolicyId Policy ID for sender checks
+    /// @return recipientPolicyId Policy ID for recipient checks
+    /// @return mintRecipientPolicyId Policy ID for mint recipient checks
+    function compoundPolicyData(uint64 policyId)
+        external
+        view
+        returns (uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
 
 }
