@@ -5,7 +5,9 @@ pub mod mapping;
 pub use mapping::*;
 
 pub mod array;
+pub mod set;
 pub mod vec;
+pub use set::{Set, SetHandler};
 
 pub mod bytes_like;
 mod primitives;
@@ -366,24 +368,32 @@ impl<K, H> Clone for HandlerCache<K, H> {
     }
 }
 
-impl<K: Hash + Eq, H> HandlerCache<K, H> {
+impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
     /// Returns a reference to a lazily initialized handler for the given key.
     #[inline]
-    pub(super) fn get_or_insert(&self, key: K, f: impl FnOnce() -> H) -> &H {
+    pub(super) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
         let mut cache = self.inner.borrow_mut();
-        let boxed = cache.entry(key).or_insert_with(|| Box::new(f()));
-        // SAFETY: Box provides stable heap address.
-        // Cache is append-only, so `Box` is never moved or deallocated during handler lifetime.
+        // Lookup first to avoid cloning on cache hit
+        if let Some(boxed) = cache.get(key) {
+            // SAFETY: Box provides stable heap address. Cache is append-only.
+            return unsafe { &*(boxed.as_ref() as *const H) };
+        }
+        let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
+        // SAFETY: Box provides stable heap address. Cache is append-only.
         unsafe { &*(boxed.as_ref() as *const H) }
     }
 
     /// Returns a mutable reference to a lazily initialized handler for the given key.
     #[inline]
-    pub(super) fn get_or_insert_mut(&mut self, key: K, f: impl FnOnce() -> H) -> &mut H {
+    pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
         let mut cache = self.inner.borrow_mut();
-        let boxed = cache.entry(key).or_insert_with(|| Box::new(f()));
-        // SAFETY: Box provides stable heap address.
-        // Cache is append-only, `&mut self` ensures exclusive access.
+        // Lookup first to avoid cloning on cache hit
+        if let Some(boxed) = cache.get_mut(key) {
+            // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
+            return unsafe { &mut *(boxed.as_mut() as *mut H) };
+        }
+        let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
+        // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
         unsafe { &mut *(boxed.as_mut() as *mut H) }
     }
 }
