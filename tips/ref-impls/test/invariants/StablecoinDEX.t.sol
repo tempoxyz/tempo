@@ -16,7 +16,8 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     mapping(address => uint128[]) private _placedOrders;
 
     /// @dev Fixed set of valid ticks used for order placement
-    int16[10] private _ticks = [int16(10), 20, 30, 40, 50, 60, 70, 80, 90, 100];
+    int16[15] private _ticks =
+        [int16(-2000), -1000, -500, -200, -100, -50, -10, 0, 10, 50, 100, 200, 500, 1000, 2000];
 
     /// @dev Expected next order ID, used to verify TEMPO-DEX1
     uint128 private _nextOrderId;
@@ -420,6 +421,10 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         TIP20 token = _tokens[tokenRnd % _tokens.length];
         amount = uint128(bound(amount, 100_000_000, 10_000_000_000));
 
+        int16 flipTick = isBid ? int16(200) : int16(-200);
+        if (isBid && tick >= flipTick) return;
+        if (!isBid && tick <= flipTick) return;
+
         // Ensure funds for the token being escrowed (pathUSD for bids, base token for asks)
         // For bids, escrow = baseToQuoteCeil(amount, tick), so we need to ensure enough funds
         if (isBid) {
@@ -433,12 +438,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
         vm.startPrank(actor);
         uint128 orderId;
-        int16 flipTick;
         if (isBid) {
-            flipTick = 200;
             orderId = exchange.placeFlip(address(token), amount, true, tick, flipTick);
         } else {
-            flipTick = -200;
             orderId = exchange.placeFlip(address(token), amount, false, tick, flipTick);
         }
         _assertNextOrderId(orderId);
