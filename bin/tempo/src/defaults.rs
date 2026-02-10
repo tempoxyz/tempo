@@ -118,7 +118,7 @@ pub(crate) struct TelemetryConfig {
 fn init_download_urls() {
     let download_defaults = DownloadDefaults {
         available_snapshots: vec![
-            Cow::Borrowed("https://snapshots.tempoxyz.dev/4217 (mainnet)"),
+            Cow::Owned(format!("{DEFAULT_DOWNLOAD_URL} (mainnet)")),
             Cow::Borrowed("https://snapshots.tempoxyz.dev/42431 (moderato)"),
             Cow::Borrowed("https://snapshots.tempoxyz.dev/42429 (andantino)"),
         ],
