@@ -308,8 +308,9 @@ contract TempoStreamChannel is EIP712 {
         }
 
         uint128 settledAmount = channel.settled;
+        uint128 delta = 0;
 
-        // If cumulativeAmount > settled, validate and settle the voucher
+        // If cumulativeAmount > settled, validate the voucher
         if (cumulativeAmount > settledAmount) {
             if (cumulativeAmount > channel.deposit) {
                 revert AmountExceedsDeposit();
@@ -327,19 +328,22 @@ contract TempoStreamChannel is EIP712 {
                 revert InvalidSignature();
             }
 
-            uint128 delta = cumulativeAmount - settledAmount;
+            delta = cumulativeAmount - settledAmount;
             settledAmount = cumulativeAmount;
             channel.settled = cumulativeAmount;
+        }
 
+        // Effects before interactions
+        uint128 refund = channel.deposit - settledAmount;
+        channel.finalized = true;
+
+        // Interactions
+        if (delta > 0) {
             bool success = ITIP20(channel.token).transfer(channel.payee, delta);
             if (!success) {
                 revert TransferFailed();
             }
         }
-
-        // Refund remainder to payer
-        uint128 refund = channel.deposit - settledAmount;
-        channel.finalized = true;
 
         if (refund > 0) {
             bool success = ITIP20(channel.token).transfer(channel.payer, refund);
