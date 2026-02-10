@@ -202,6 +202,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         onlyInitialized
         onlyOwnerOrValidator(currentAddress)
     {
+        if (newAddress == address(0)) {
+            revert InvalidValidatorAddress();
+        }
+
         uint256 idx = addressToIndex[currentAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
@@ -390,6 +394,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         internal
         view
     {
+        if (validatorAddress == address(0)) {
+            revert InvalidValidatorAddress();
+        }
         if (addressToIndex[validatorAddress] != 0) {
             revert ValidatorAlreadyExists();
         }
@@ -439,8 +446,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         pubkeyToIndex[publicKey] = idx + 1; // 1-indexed
     }
 
-    // Note: This is a stub implementation. The actual implementation would perform
-    // Ed25519 signature verification.
+    // Note: This is a stub implementation. The precompile implementation
+    // would perform Ed25519 signature verification.
     function _verifyEd25519Signature(
         bytes32, /* publicKey */
         bytes32, /* message */
