@@ -7554,20 +7554,29 @@ async fn run_fill_sign_send_test_p256(test_case: &FillTestCase) -> eyre::Result<
     let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
     let tx_hash = *envelope.tx_hash();
 
-    let _ = provider
+    let send_result = provider
         .send_raw_transaction(&envelope.encoded_2718())
-        .await?;
-    setup.node.advance_block().await?;
+        .await;
 
-    let raw_receipt: Option<serde_json::Value> = provider
-        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-        .await?;
-    assert!(raw_receipt.is_some(), "Transaction should be mined");
-    let status = raw_receipt.unwrap()["status"]
-        .as_str()
-        .map(|s| s == "0x1")
-        .unwrap_or(false);
-    assert!(status, "Transaction should succeed");
+    match test_case.expected {
+        ExpectedOutcome::Success => {
+            let _ = send_result?;
+            setup.node.advance_block().await?;
+
+            let raw_receipt: Option<serde_json::Value> = provider
+                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+                .await?;
+            assert!(raw_receipt.is_some(), "Transaction should be mined");
+            let status = raw_receipt.unwrap()["status"]
+                .as_str()
+                .map(|s| s == "0x1")
+                .unwrap_or(false);
+            assert!(status, "Transaction should succeed");
+        }
+        ExpectedOutcome::Rejection => {
+            assert!(send_result.is_err(), "Transaction should be rejected");
+        }
+    }
 
     println!("✓ Test passed: {}", test_case.name);
     Ok(())
@@ -7585,7 +7594,11 @@ async fn test_e2e_fill_sign_send_matrix() -> eyre::Result<()> {
         fill_case!(Expiring, P256),
         fill_case!(Expiring, WebAuthn),
         fill_case!(ExpiringAtBoundary, Secp256k1),
+        fill_case!(ExpiringAtBoundary, P256),
+        fill_case!(ExpiringAtBoundary, WebAuthn),
         fill_case!(ExpiringExceedsBoundary, Secp256k1, reject),
+        fill_case!(ExpiringExceedsBoundary, P256, reject),
+        fill_case!(ExpiringExceedsBoundary, WebAuthn, reject),
         fill_case!(TwoD(12345), Secp256k1; pre_bump_nonce = 5),
         fill_case!(Expiring, Secp256k1; explicit_nonce = 0, pre_bump_nonce = 3),
         fill_case!(Expiring, Secp256k1; explicit_nonce = 0),
