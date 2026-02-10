@@ -933,11 +933,7 @@ mod tests {
 
             handler.insert(U256::from(1))?;
 
-            let new_set = Set::from(vec![
-                U256::from(10),
-                U256::from(20),
-                U256::from(30),
-            ]);
+            let new_set = Set::from(vec![U256::from(10), U256::from(20), U256::from(30)]);
             handler.write(new_set)?;
 
             assert_eq!(handler.len()?, 3);
@@ -1069,7 +1065,7 @@ mod tests {
         let address = Address::ZERO;
         let handler = SetHandler::<U256>::new(U256::from(7), address);
 
-        let debug_str = format!("{:?}", handler);
+        let debug_str = format!("{handler:?}");
         assert!(debug_str.contains("SetHandler"));
         assert!(debug_str.contains("base_slot"));
 
