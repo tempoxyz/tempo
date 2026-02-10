@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.2"
+TEMPOUP_INSTALLER_VERSION="0.0.3"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -358,8 +358,8 @@ main() {
 
     info "Checksum verified ✓"
 
-    # GPG signature verification (only for versions after 1.1.0, as earlier releases lack .asc files)
-    if version_gt "$VERSION_TAG" "1.1.0"; then
+    # GPG signature verification (only for versions after 1.1.1, as earlier releases lack .asc files)
+    if version_gt "$VERSION_TAG" "1.1.1"; then
         if command -v gpg >/dev/null 2>&1; then
             info "Verifying GPG signature..."
             download_file "$VERSION_TAG" "${ARCHIVE_NAME}.asc" "$TMP_DIR"
@@ -385,7 +385,7 @@ main() {
             warn "Install gpg to enable signature verification of releases."
         fi
     else
-        info "Skipping GPG signature verification (not available for versions <= 1.1.0)"
+        info "Skipping GPG signature verification (not available for versions <= 1.1.1)"
     fi
 
     # Extract archive
