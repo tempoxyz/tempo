@@ -222,13 +222,26 @@ contract ValidatorConfigV2Test is BaseTest {
         assertEq(v.deactivatedAtHeight, uint64(block.number));
     }
 
+    function test_deactivateValidator_passByValidator() public {
+        _initializeV2();
+        validatorConfigV2.addValidator(
+            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+        );
+
+        vm.prank(validator1);
+        validatorConfigV2.deactivateValidator(validator1);
+
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(validator1);
+        assertEq(v.deactivatedAtHeight, uint64(block.number));
+    }
+
     function test_deactivateValidator_fail() public {
         _initializeV2();
         validatorConfigV2.addValidator(
             validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
         );
 
-        // 1. Unauthorized
+        // 1. Unauthorized (third party, neither owner nor validator)
         vm.prank(nonOwner);
         try validatorConfigV2.deactivateValidator(validator1) {
             revert CallShouldHaveReverted();
