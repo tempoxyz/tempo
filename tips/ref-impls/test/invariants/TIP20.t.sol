@@ -108,7 +108,12 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for token transfers
     /// @dev Tests TEMPO-TIP1 (balance conservation), TEMPO-TIP2 (total supply unchanged)
-    function transfer(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed, uint256 amount)
+    function transfer(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
@@ -173,7 +178,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for zero-amount transfer edge case
     /// @dev Tests that zero-amount transfers are handled correctly
-    function transferZeroAmount(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed)
+    function transferZeroAmount(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed
+    )
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
@@ -234,7 +243,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 ownerSeed,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         TIP20 token = _selectBaseToken(tokenSeed);
         address owner = _selectAuthorizedActor(ownerSeed, address(token));
         address spender = _selectActorExcluding(actorSeed, owner);
@@ -310,7 +321,12 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for approvals
     /// @dev Tests TEMPO-TIP5 (allowance setting)
-    function approve(uint256 actorSeed, uint256 tokenSeed, uint256 spenderSeed, uint256 amount)
+    function approve(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 spenderSeed,
+        uint256 amount
+    )
         external
     {
         address actor = _selectActor(actorSeed);
@@ -453,7 +469,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 recipientSeed,
         uint256 amount,
         bytes32 memo
-    ) external {
+    )
+        external
+    {
         TIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
         address recipient = _selectActorExcluding(recipientSeed, actor);
@@ -516,7 +534,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 recipientSeed,
         uint256 amount,
         bytes32 memo
-    ) external {
+    )
+        external
+    {
         TIP20 token = _selectBaseToken(tokenSeed);
         address owner = _selectAuthorizedActor(ownerSeed, address(token));
         address spender = _selectActorExcluding(actorSeed, owner);
@@ -595,7 +615,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for setting reward recipient (opt-in, opt-out, or delegate)
     /// @dev Tests TEMPO-TIP10 (opted-in supply), TEMPO-TIP11 (supply updates), TEMPO-TIP25 (delegation)
-    function setRewardRecipient(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed)
+    function setRewardRecipient(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed
+    )
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
@@ -1157,7 +1181,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 tokenSeed,
         uint256 targetSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         address attacker = _selectActor(actorSeed);
         address target = _selectActor(targetSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
@@ -1356,7 +1382,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for unauthorized supply cap change attempts
     /// @dev Tests that non-admin cannot change supply cap
-    function setSupplyCapUnauthorized(uint256 actorSeed, uint256 tokenSeed, uint256 newCap)
+    function setSupplyCapUnauthorized(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 newCap
+    )
         external
     {
         address attacker = _selectActor(actorSeed);
@@ -1475,7 +1505,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler that verifies paused tokens reject transfers with ContractPaused
     /// @dev Tests TEMPO-TIP17: pause enforcement - transfers revert with ContractPaused
-    function tryTransferWhilePaused(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed)
+    function tryTransferWhilePaused(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed
+    )
         external
     {
         address actor = _selectActor(actorSeed);

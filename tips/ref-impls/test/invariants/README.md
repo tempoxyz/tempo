@@ -12,31 +12,35 @@
 
 - **TEMPO-DEX4**: `amountOut >= minAmountOut` when executing `swapExactAmountIn`.
 - **TEMPO-DEX5**: `amountIn <= maxAmountIn` when executing `swapExactAmountOut`.
-- **TEMPO-DEX14**: Swapper total balance (external + internal) changes correctly - loses exact `amountIn` of tokenIn and gains exact `amountOut` of tokenOut. Skipped when swapper has active orders (self-trade makes accounting complex).
-- **TEMPO-DEX16**: Quote functions (`quoteSwapExactAmountIn/Out`) return values matching actual swap execution.
-- **TEMPO-DEX18**: Dust invariant - each swap can at maximum increase the dust in the DEX by the number of orders filled.
-- **TEMPO-DEX19**: Post-swap dust bounded - maximum dust accumulation in the protocol is bounded and tracked via `_maxDust`.
+- **TEMPO-DEX6**: Swapper total balance (external + internal) changes correctly - loses exact `amountIn` of tokenIn and gains exact `amountOut` of tokenOut. Skipped when swapper has active orders (self-trade makes accounting complex).
+- **TEMPO-DEX7**: Quote functions (`quoteSwapExactAmountIn/Out`) return values matching actual swap execution.
+- **TEMPO-DEX8**: Dust invariant - each swap can at maximum increase the dust in the DEX by the number of orders filled plus the number of hops (rounding occurs at each hop, not just at hop boundaries).
+- **TEMPO-DEX9**: Post-swap dust bounded - maximum dust accumulation in the protocol is bounded and tracked via `_maxDust`.
 
 ### Balance Invariants
 
-- **TEMPO-DEX6**: DEX token balance >= sum of all internal user balances (the difference accounts for escrowed order amounts).
+- **TEMPO-DEX10**: DEX token balance >= sum of all internal user balances (the difference accounts for escrowed order amounts).
 
 ### Orderbook Structure Invariants
 
-- **TEMPO-DEX7**: Total liquidity at a tick level equals the sum of remaining amounts of all orders at that tick. If liquidity > 0, head and tail must be non-zero.
-- **TEMPO-DEX8**: Best bid tick points to the highest tick with non-empty bid liquidity, or `type(int16).min` if no bids exist.
-- **TEMPO-DEX9**: Best ask tick points to the lowest tick with non-empty ask liquidity, or `type(int16).max` if no asks exist.
-- **TEMPO-DEX10**: Order linked list is consistent - `prev.next == current` and `next.prev == current`. If head is zero, tail must also be zero.
-- **TEMPO-DEX11**: Tick bitmap accurately reflects which ticks have liquidity (bit set iff tick has orders).
-- **TEMPO-DEX17**: Linked list head/tail is terminal - `head.prev == None` and `tail.next == None`
+- **TEMPO-DEX11**: Total liquidity at a tick level equals the sum of remaining amounts of all orders at that tick. If liquidity > 0, head and tail must be non-zero.
+- **TEMPO-DEX12**: Best bid tick points to the highest tick with non-empty bid liquidity, or `type(int16).min` if no bids exist.
+- **TEMPO-DEX13**: Best ask tick points to the lowest tick with non-empty ask liquidity, or `type(int16).max` if no asks exist.
+- **TEMPO-DEX14**: Order linked list is consistent - `prev.next == current` and `next.prev == current`. If head is zero, tail must also be zero.
+- **TEMPO-DEX15**: Tick bitmap accurately reflects which ticks have liquidity (bit set iff tick has orders).
+- **TEMPO-DEX16**: Linked list head/tail is terminal - `head.prev == None` and `tail.next == None`
 
 ### Flip Order Invariants
 
-- **TEMPO-DEX12**: Flip orders have valid tick constraints - for bids `flipTick > tick`, for asks `flipTick < tick`.
+- **TEMPO-DEX17**: Flip orders have valid tick constraints - for bids `flipTick > tick`, for asks `flipTick < tick`.
 
 ### Blacklist Invariants
 
-- **TEMPO-DEX13**: Anyone can cancel a stale order from a blacklisted maker via `cancelStaleOrder`. The escrowed funds are refunded to the blacklisted maker's internal balance.
+- **TEMPO-DEX18**: Anyone can cancel a stale order from a blacklisted maker via `cancelStaleOrder`. The escrowed funds are refunded to the blacklisted maker's internal balance.
+
+### Rounding Invariants
+
+- **TEMPO-DEX19**: Divisibility edge cases - when `(amount * price) % PRICE_SCALE == 0`, bid escrow must be exact (no +1 rounding) since ceil equals floor for perfectly divisible amounts.
 
 ## FeeAMM
 
@@ -226,6 +230,40 @@ The Nonce precompile manages 2D nonces for accounts, enabling multiple independe
 ### Reserved Key Invariants
 
 - **TEMPO-NON11**: Reserved expiring nonce key - `type(uint256).max` is reserved for `TEMPO_EXPIRING_NONCE_KEY`. Reading it returns 0 for uninitialized accounts (readable but reserved for special use).
+
+## TIP-1015 Compound Policies
+
+TIP-1015 extends TIP-403 with compound policies that specify different authorization rules for senders, recipients, and mint recipients.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-1015-2**: Compound policy immutability - compound policies have `PolicyType.COMPOUND` and `admin == address(0)`.
+- **TEMPO-1015-3**: Compound policy existence - all created compound policies return true for `policyExists()`.
+- **TEMPO-1015-4**: Simple policy equivalence - for simple policies, `isAuthorizedSender == isAuthorizedRecipient == isAuthorizedMintRecipient`.
+- **TEMPO-1015-5**: isAuthorized equivalence - for compound policies, `isAuthorized(p, u) == isAuthorizedSender(p, u) && isAuthorizedRecipient(p, u)`.
+- **TEMPO-1015-6**: Compound delegation correctness - directional authorization delegates to the correct sub-policy.
+
+### Per-Handler Assertions
+
+#### Compound Policy Creation
+
+- **TEMPO-1015-1**: Simple policy constraint - `createCompoundPolicy` reverts with `PolicyNotSimple` if any referenced policy is compound.
+- **TEMPO-1015-2**: Immutability - newly created compound policies have no admin (address(0)).
+- **TEMPO-1015-3**: Existence check - `createCompoundPolicy` reverts with `PolicyNotFound` if any referenced policy doesn't exist.
+- **TEMPO-1015-6**: Built-in policy compatibility - compound policies can reference built-in policies 0 (always-reject) and 1 (always-allow).
+
+#### Compound Policy Modification
+
+- **TEMPO-1015-2**: Cannot modify compound policy - `modifyPolicyWhitelist` and `modifyPolicyBlacklist` revert for compound policies.
+
+#### TIP-20 Integration
+
+- Mint uses `mintRecipientPolicyId` for authorization (not sender or recipient).
+- Transfer uses `senderPolicyId` for sender and `recipientPolicyId` for recipient.
+- `burnBlocked` uses `senderPolicyId` to check if address is blocked.
+- DEX `cancelStaleOrder` uses `senderPolicyId` to check if maker is blocked.
 
 ## TIP20Factory
 

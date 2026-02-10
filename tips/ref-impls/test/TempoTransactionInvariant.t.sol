@@ -58,7 +58,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](68);
+        bytes4[] memory selectors = new bytes4[](70);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -144,6 +144,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         selectors[65] = this.handler_expiringNonceMissingValidBefore.selector;
         selectors[66] = this.handler_expiringNonceNoNonceMutation.selector;
         selectors[67] = this.handler_expiringNonceConcurrent.selector;
+        // Spending limit refund handlers (K-REFUND)
+        selectors[68] = this.handler_keySpendingRefund.selector;
+        selectors[69] = this.handler_keySpendingRefundRevokedKey.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         // Initialize previous nonce tracking for secp256k1 actors
@@ -222,7 +225,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Build SigningParams for the given actor and signature type
-    function _getSigningParams(uint256 actorIndex, SignatureType sigType, uint256 keySeed)
+    function _getSigningParams(
+        uint256 actorIndex,
+        SignatureType sigType,
+        uint256 keySeed
+    )
         internal
         view
         returns (TxBuilder.SigningParams memory params, address sender)
@@ -282,7 +289,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint64 nonceValue,
         uint256 sigTypeSeed
-    ) internal view returns (bytes memory signedTx, address sender) {
+    )
+        internal
+        view
+        returns (bytes memory signedTx, address sender)
+    {
         return _buildAndSignTransfer(actorIndex, to, amount, 0, nonceValue, sigTypeSeed);
     }
 
@@ -293,7 +304,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint64 nonceKey,
         uint64 nonceValue,
         uint256 sigTypeSeed
-    ) internal view returns (bytes memory signedTx, address sender) {
+    )
+        internal
+        view
+        returns (bytes memory signedTx, address sender)
+    {
         SignatureType sigType = _getRandomSignatureType(sigTypeSeed);
         (TxBuilder.SigningParams memory params, address senderAddr) =
             _getSigningParams(actorIndex, sigType, sigTypeSeed);
@@ -331,7 +346,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         bytes memory initcode,
         uint64 nonceValue,
         uint256 sigTypeSeed
-    ) internal view returns (bytes memory signedTx, address sender) {
+    )
+        internal
+        view
+        returns (bytes memory signedTx, address sender)
+    {
         SignatureType sigType = _getRandomSignatureType(sigTypeSeed);
         (TxBuilder.SigningParams memory params, address senderAddr) =
             _getSigningParams(actorIndex, sigType, sigTypeSeed);
@@ -366,10 +385,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 sigTypeSeed
-    ) external {
-        TxContext memory ctx = _setupTransferContext(
-            actorSeed, recipientSeed, amount, sigTypeSeed, 1e6, 100e6
-        );
+    )
+        external
+    {
+        TxContext memory ctx =
+            _setupTransferContext(actorSeed, recipientSeed, amount, sigTypeSeed, 1e6, 100e6);
 
         uint64 currentNonce = uint64(ghost_protocolNonce[ctx.sender]);
         (bytes memory signedTx,) = _buildAndSignTransfer(
@@ -388,7 +408,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Execute multiple transfers in sequence from same actor with random sig types
     /// @dev Tests sequential nonce bumping across all signature types
-    function handler_sequentialTransfers(uint256 actorSeed, uint256 count, uint256 sigTypeSeed)
+    function handler_sequentialTransfers(
+        uint256 actorSeed,
+        uint256 count,
+        uint256 sigTypeSeed
+    )
         external
     {
         count = bound(count, 1, 5);
@@ -530,7 +554,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 nonceKey,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         uint256 actorIdx = actorSeed % actors.length;
         address actor = actors[actorIdx];
 
@@ -595,7 +621,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 key2,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         uint256 actorIdx = actorSeed % actors.length;
         address actor = actors[actorIdx];
 
@@ -662,7 +690,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint256 nonceKeySeed,
         uint256 sigTypeSeed
-    ) external {
+    )
+        external
+    {
         TxContext memory ctx = _setup2dNonceTransferContext(
             actorSeed, recipientSeed, amount, nonceKeySeed, sigTypeSeed, 1e6, 100e6
         );
@@ -688,10 +718,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 sigTypeSeed
-    ) external {
-        TxContext memory ctx = _setupTransferContext(
-            actorSeed, recipientSeed, amount, sigTypeSeed, 1e6, 100e6
-        );
+    )
+        external
+    {
+        TxContext memory ctx =
+            _setupTransferContext(actorSeed, recipientSeed, amount, sigTypeSeed, 1e6, 100e6);
 
         uint64 currentNonce = uint64(ghost_protocolNonce[ctx.sender]);
         (bytes memory signedTx, address sender) = _buildAndSignTransfer(
@@ -716,7 +747,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
         amount = bound(amount, 1e6, 50e6);
 
@@ -762,7 +795,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         AccessKeyContext memory ctx = _setupP256KeyContext(actorSeed, keySeed);
         amount = bound(amount, 1e6, 50e6);
 
@@ -813,7 +848,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 keySeed,
         uint256 expirySeed,
         uint256 limitSeed
-    ) external {
+    )
+        external
+    {
         AccessKeyContext memory ctx = _setupRandomKeyContext(actorSeed, keySeed);
         if (ghost_keyAuthorized[ctx.owner][ctx.keyId]) {
             return;
@@ -860,7 +897,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 keySeed,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
 
         // Skip if key is still authorized (not revoked)
@@ -918,7 +957,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 timeWarpSeed
-    ) external {
+    )
+        external
+    {
         AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
 
         // Need an authorized key with an expiry in the past
@@ -979,7 +1020,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 keySeed,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
         amount = bound(amount, 1e6, 50e6);
 
@@ -1018,7 +1061,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Attempt transfer with insufficient balance
     /// @dev Tests F9 (insufficient balance rejected) - tx reverts but nonce is consumed
-    function handler_insufficientBalanceTransfer(uint256 actorSeed, uint256 recipientSeed)
+    function handler_insufficientBalanceTransfer(
+        uint256 actorSeed,
+        uint256 recipientSeed
+    )
         external
     {
         uint256 senderIdx = actorSeed % actors.length;
@@ -1075,7 +1121,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Execute a Tempo CREATE with 2D nonce (nonceKey > 0)
     /// @dev Tests N9 - CREATE address derivation still uses protocol nonce, not 2D nonce
-    function handler_tempoCreate(uint256 actorSeed, uint256 initValue, uint256 nonceKeySeed)
+    function handler_tempoCreate(
+        uint256 actorSeed,
+        uint256 initValue,
+        uint256 nonceKeySeed
+    )
         external
     {
         CreateContext memory ctx = _setupCreateContext(actorSeed, nonceKeySeed);
@@ -1125,7 +1175,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Attempt CREATE as second call in multicall (invalid - C1)
     /// @dev C1: CREATE only allowed as first call in batch
-    function handler_createNotFirst(uint256 actorSeed, uint256 initValue, uint256 nonceKeySeed)
+    function handler_createNotFirst(
+        uint256 actorSeed,
+        uint256 initValue,
+        uint256 nonceKeySeed
+    )
         external
     {
         CreateContext memory ctx = _setupCreateContext(actorSeed, nonceKeySeed);
@@ -1164,7 +1218,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 initValue1,
         uint256 initValue2,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         CreateContext memory ctx = _setupCreateContext(actorSeed, nonceKeySeed);
         initValue1 = bound(initValue1, 0, 1000);
         initValue2 = bound(initValue2, 0, 1000);
@@ -1197,7 +1253,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Attempt CREATE with EIP-7702 authorization list (invalid - C3)
     /// @dev C3: CREATE forbidden with authorization list
-    function handler_createWithAuthList(uint256 actorSeed, uint256 initValue, uint256 nonceKeySeed)
+    function handler_createWithAuthList(
+        uint256 actorSeed,
+        uint256 initValue,
+        uint256 nonceKeySeed
+    )
         external
     {
         CreateContext memory ctx = _setupCreateContext(actorSeed, nonceKeySeed);
@@ -1247,7 +1307,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 initValue,
         uint256 valueSeed,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         CreateContext memory ctx = _setupCreateContext(actorSeed, nonceKeySeed);
         initValue = bound(initValue, 0, 1000);
         uint256 value = bound(valueSeed, 1, 1 ether);
@@ -1336,7 +1398,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Attempt to replay a Legacy transaction with same protocol nonce
     /// @dev Tests N12 - replay with same protocol nonce fails
-    function handler_replayProtocolNonce(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
+    function handler_replayProtocolNonce(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
         external
     {
         // Need 2x amount for replay test, so use amount*2 as min/max
@@ -1386,7 +1452,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         // Need 2x amount for replay test
         amount = bound(amount, 1e6, 10e6);
         TxContext memory ctx =
@@ -1453,7 +1521,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Attempt to use nonce higher than current (nonce + 1)
     /// @dev Tests N14 - nonce too high is rejected
-    function handler_nonceTooHigh(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
+    function handler_nonceTooHigh(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
         external
     {
         TxContext memory ctx =
@@ -1479,7 +1551,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Attempt to use nonce lower than current (nonce - 1)
     /// @dev Tests N15 - nonce too low is rejected (requires at least 1 tx executed)
-    function handler_nonceTooLow(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
+    function handler_nonceTooLow(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
         external
     {
         TxContext memory ctx =
@@ -1513,7 +1589,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 nonceKeySeed,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         // Need 2x amount for two transactions
         amount = bound(amount, 1e6, 10e6);
         TxContext memory ctx =
@@ -1615,7 +1693,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 keySeed,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         uint256 actorIdx = actorSeed % actors.length;
         address owner = actors[actorIdx];
 
@@ -1665,7 +1745,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler K2: Attempt to have access key A authorize access key B
     /// @dev Access key can only authorize itself, not other keys
-    function handler_keyAuthNotSelf(uint256 actorSeed, uint256 keyASeed, uint256 keyBSeed)
+    function handler_keyAuthNotSelf(
+        uint256 actorSeed,
+        uint256 keyASeed,
+        uint256 keyBSeed
+    )
         external
     {
         uint256 actorIdx = actorSeed % actors.length;
@@ -1733,7 +1817,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 actorSeed,
         uint256 keySeed,
         uint256 wrongChainIdSeed
-    ) external {
+    )
+        external
+    {
         uint256 actorIdx = actorSeed % actors.length;
         address owner = actors[actorIdx];
 
@@ -1795,7 +1881,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler K6: Authorize key and use it in same transaction batch (multicall)
     /// @dev Same-tx authorize + use is permitted
-    function handler_keySameTxAuthorizeAndUse(uint256 actorSeed, uint256 keySeed, uint256 amount)
+    function handler_keySameTxAuthorizeAndUse(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 amount
+    )
         external
     {
         uint256 actorIdx = actorSeed % actors.length;
@@ -1881,7 +1971,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 keySeed,
         uint256 timeWarpSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         uint256 actorIdx = actorSeed % actors.length;
         address owner = actors[actorIdx];
         address recipient = actors[(actorIdx + 1) % actors.length];
@@ -1952,7 +2044,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler K11: Verify keys without spending limits can spend unlimited
     /// @dev None = unlimited spending for that token
-    function handler_keyUnlimitedSpending(uint256 actorSeed, uint256 keySeed, uint256 amount)
+    function handler_keyUnlimitedSpending(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 amount
+    )
         external
     {
         uint256 actorIdx = actorSeed % actors.length;
@@ -2017,7 +2113,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler K12: Verify keys with empty limits array cannot spend anything
     /// @dev Empty array = zero spending allowed
-    function handler_keyZeroSpendingLimit(uint256 actorSeed, uint256 keySeed, uint256 amount)
+    function handler_keyZeroSpendingLimit(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 amount
+    )
         external
     {
         uint256 actorIdx = actorSeed % actors.length;
@@ -2088,7 +2188,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     /// @notice Handler K16: Verify using an unauthorized P256 key is rejected when secp256k1 key is authorized
     /// @dev Authorizes a secp256k1 key, then attempts to use a different P256 key for the same account
     /// This tests that unauthorized keys are rejected regardless of signature type
-    function handler_keySigTypeMismatch(uint256 actorSeed, uint256 keySeed, uint256 amount)
+    function handler_keySigTypeMismatch(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 amount
+    )
         external
     {
         uint256 actorIdx = actorSeed % actors.length;
@@ -2176,7 +2280,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount1,
         uint256 amount2,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         (TxContext memory ctx, uint256 totalAmount) =
             _setupMulticallContext(actorSeed, recipientSeed, amount1, amount2, nonceKeySeed);
 
@@ -2221,7 +2327,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         TxContext memory ctx = _setup2dNonceTransferContext(
             actorSeed, recipientSeed, amount, nonceKeySeed, 0, 1e6, 10e6
         );
@@ -2284,7 +2392,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         TxContext memory ctx = _setup2dNonceTransferContext(
             actorSeed, recipientSeed, amount, nonceKeySeed, 0, 1e6, 10e6
         );
@@ -2356,7 +2466,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         FeeTestContext memory ctx =
             _setupFeeTestContext(actorSeed, recipientSeed, amount, nonceKeySeed);
 
@@ -2424,7 +2536,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         FeeTestContext memory ctx =
             _setupFeeTestContext(actorSeed, recipientSeed, amount, nonceKeySeed);
 
@@ -2496,7 +2610,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         FeeTestContext memory ctx =
             _setupFeeTestContext(actorSeed, recipientSeed, amount, nonceKeySeed);
 
@@ -2603,7 +2719,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
         if (senderIdx == recipientIdx) {
@@ -2676,7 +2794,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         FeeTestContext memory ctx =
             _setupFeeTestContext(actorSeed, recipientSeed, amount, nonceKeySeed);
 
@@ -2727,7 +2847,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         FeeTestContext memory ctx =
             _setupFeeTestContext(actorSeed, recipientSeed, amount, nonceKeySeed);
 
@@ -2778,7 +2900,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
         if (senderIdx == recipientIdx) {
@@ -2862,7 +2986,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint64 txNonce,
         uint64 validAfter,
         uint64 validBefore
-    ) internal view returns (bytes memory signedTx, address sender) {
+    )
+        internal
+        view
+        returns (bytes memory signedTx, address sender)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({
             to: address(feeToken), value: 0, data: abi.encodeCall(ITIP20.transfer, (to, amount))
@@ -2903,10 +3031,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 futureOffset
-    ) external {
-        TxContext memory ctx = _setup2dNonceTransferContext(
-            actorSeed, recipientSeed, amount, 1, 0, 1e6, 100e6
-        );
+    )
+        external
+    {
+        TxContext memory ctx =
+            _setup2dNonceTransferContext(actorSeed, recipientSeed, amount, 1, 0, 1e6, 100e6);
         ctx.nonceKey = 1;
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
 
@@ -2934,10 +3063,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 pastOffset
-    ) external {
-        TxContext memory ctx = _setup2dNonceTransferContext(
-            actorSeed, recipientSeed, amount, 2, 0, 1e6, 100e6
-        );
+    )
+        external
+    {
+        TxContext memory ctx =
+            _setup2dNonceTransferContext(actorSeed, recipientSeed, amount, 2, 0, 1e6, 100e6);
         ctx.nonceKey = 2;
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
 
@@ -2966,10 +3096,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 windowSize
-    ) external {
-        TxContext memory ctx = _setup2dNonceTransferContext(
-            actorSeed, recipientSeed, amount, 3, 0, 1e6, 100e6
-        );
+    )
+        external
+    {
+        TxContext memory ctx =
+            _setup2dNonceTransferContext(actorSeed, recipientSeed, amount, 3, 0, 1e6, 100e6);
         ctx.nonceKey = 3;
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
 
@@ -2997,7 +3128,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler T4: No time bounds = always valid
     /// @dev Creates a Tempo tx without time bounds, should always succeed (if other conditions met)
-    function handler_timeBoundOpen(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
+    function handler_timeBoundOpen(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
         external
     {
         TxContext memory ctx =
@@ -3030,7 +3165,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 priorityFee
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
         if (senderIdx == recipientIdx) {
@@ -3080,7 +3217,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 actorSeed,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
         if (senderIdx == recipientIdx) {
@@ -3131,7 +3270,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 authoritySeed,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         uint256 authorityIdx = authoritySeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
@@ -3275,7 +3416,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         uint256 feePayerIdx = feePayerSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
@@ -3403,7 +3546,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Track gas for simple transfer (G1, G2, G3)
     /// @dev G1: TX_BASE_COST; G2: COLD_ACCOUNT_ACCESS per call; G3: Calldata gas
-    function handler_gasTrackingBasic(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
+    function handler_gasTrackingBasic(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
         external
     {
         uint256 senderIdx = actorSeed % actors.length;
@@ -3457,7 +3604,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 numCallsSeed,
         uint256 amount,
         uint256 nonceKeySeed
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         address sender = actors[senderIdx];
         address recipient = actors[(senderIdx + 1) % actors.length];
@@ -3562,7 +3711,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 actorSeed,
         uint256 sigTypeSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         address recipient = actors[(senderIdx + 1) % actors.length];
 
@@ -3614,7 +3765,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Track gas for KeyAuthorization with spending limits (G9, G10)
     /// @dev G9: Base key auth = 27,000; G10: Each spending limit adds 22,000
-    function handler_gasTrackingKeyAuth(uint256 actorSeed, uint256 keySeed, uint256 numLimitsSeed)
+    function handler_gasTrackingKeyAuth(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 numLimitsSeed
+    )
         external
     {
         uint256 actorIdx = actorSeed % actors.length;
@@ -3671,7 +3826,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         address to,
         uint256 amount,
         uint64 validBefore
-    ) internal view returns (bytes memory signedTx, bytes32 txHash) {
+    )
+        internal
+        view
+        returns (bytes memory signedTx, bytes32 txHash)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({
             to: address(feeToken), value: 0, data: abi.encodeCall(ITIP20.transfer, (to, amount))
@@ -3707,7 +3866,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint64 validBefore,
         uint64 txNonce
-    ) internal view returns (bytes memory signedTx) {
+    )
+        internal
+        view
+        returns (bytes memory signedTx)
+    {
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({
             to: address(feeToken), value: 0, data: abi.encodeCall(ITIP20.transfer, (to, amount))
@@ -3735,7 +3898,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     }
 
     /// @notice Build an expiring nonce tx without validBefore (for testing E5)
-    function _buildExpiringNonceTxNoValidBefore(uint256 actorIndex, address to, uint256 amount)
+    function _buildExpiringNonceTxNoValidBefore(
+        uint256 actorIndex,
+        address to,
+        uint256 amount
+    )
         internal
         view
         returns (bytes memory signedTx)
@@ -3768,7 +3935,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Execute a basic expiring nonce transaction
     /// @dev Tests basic flow - submit tx with valid expiring nonce, should succeed
-    function handler_expiringNonceBasic(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
+    function handler_expiringNonceBasic(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
         external
     {
         uint256 senderIdx = actorSeed % actors.length;
@@ -3805,7 +3976,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler E1: Attempt to replay an expiring nonce tx within validity window
     /// @dev The same tx hash should be rejected while validBefore > now
-    function handler_expiringNonceReplay(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
+    function handler_expiringNonceReplay(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
         external
     {
         uint256 senderIdx = actorSeed % actors.length;
@@ -3853,7 +4028,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler E2: Attempt to execute an expired transaction
     /// @dev Tx with validBefore <= block.timestamp should be rejected
-    function handler_expiringNonceExpired(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
+    function handler_expiringNonceExpired(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
         external
     {
         uint256 senderIdx = actorSeed % actors.length;
@@ -3894,7 +4073,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 extraOffset
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
         if (senderIdx == recipientIdx) {
@@ -3934,7 +4115,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount,
         uint256 nonceSeed
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
         if (senderIdx == recipientIdx) {
@@ -3973,7 +4156,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 actorSeed,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
         if (senderIdx == recipientIdx) {
@@ -4008,7 +4193,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 actorSeed,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
         if (senderIdx == recipientIdx) {
@@ -4068,7 +4255,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 recipientSeed,
         uint256 amount1,
         uint256 amount2
-    ) external {
+    )
+        external
+    {
         uint256 senderIdx = actorSeed % actors.length;
         uint256 recipientIdx = recipientSeed % actors.length;
         if (senderIdx == recipientIdx) {
@@ -4126,6 +4315,204 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         if (successCount == 2) {
             ghost_expiringNonceConcurrentExecuted++;
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+             SPENDING LIMIT REFUND HANDLERS (K-REFUND)
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Handler K-REFUND1: Verify spending limit is refunded for unused gas
+    /// @dev Executes a transfer with an access key using high gas limit, then verifies
+    ///      that the on-chain remaining limit accounts for the gas refund (i.e., actual
+    ///      remaining > limit - transfer - maxFee).
+    function handler_keySpendingRefund(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
+        amount = bound(amount, 1e6, 10e6);
+
+        if (!ghost_keyAuthorized[ctx.owner][ctx.keyId]) return;
+        if (ghost_keyExpiry[ctx.owner][ctx.keyId] <= block.timestamp) return;
+        if (!ghost_keyEnforceLimits[ctx.owner][ctx.keyId]) return;
+
+        uint256 limit = ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(feeToken)];
+        uint256 spent = ghost_keySpentAmount[ctx.owner][ctx.keyId][address(feeToken)];
+
+        uint64 highGasLimit = TxBuilder.DEFAULT_GAS_LIMIT * 10;
+        uint256 maxFee = uint256(highGasLimit) * TxBuilder.DEFAULT_GAS_PRICE;
+
+        if (spent + amount + maxFee > limit) return;
+        if (!_checkBalance(ctx.owner, amount + maxFee)) return;
+
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.actorIdx == recipientIdx) recipientIdx = (recipientIdx + 1) % actors.length;
+        address recipient = actors[recipientIdx];
+
+        uint64 currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
+
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken),
+            value: 0,
+            data: abi.encodeCall(ITIP20.transfer, (recipient, amount))
+        });
+
+        TempoTransaction memory tx_ = TempoTransactionLib.create()
+            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(highGasLimit).withCalls(calls).withNonceKey(0).withNonce(currentNonce);
+
+        bytes memory signedTx = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.KeychainSecp256k1,
+                privateKey: ctx.keyPk,
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: ctx.owner
+            })
+        );
+
+        uint256 remainingBefore =
+            keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            _recordProtocolNonceTxSuccess(ctx.owner);
+            _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
+
+            uint256 remainingAfter =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+
+            // K-REFUND1: After tx, the remaining limit should be greater than
+            // (remainingBefore - amount - maxFee) because unused gas was refunded.
+            uint256 worstCase = 0;
+            if (remainingBefore > amount + maxFee) {
+                worstCase = remainingBefore - amount - maxFee;
+            }
+            assertGe(
+                remainingAfter,
+                worstCase,
+                "K-REFUND1: Remaining limit should account for gas refund"
+            );
+
+            // The remaining should also not exceed the limit before minus the transfer amount
+            // (refund can't give back more than the gas fee that was deducted)
+            assertLe(
+                remainingAfter,
+                remainingBefore - amount,
+                "K-REFUND1: Remaining limit should not exceed (before - transfer)"
+            );
+
+            ghost_keyRefundVerified++;
+        } catch {
+            _handleRevertProtocol(ctx.owner);
+        }
+    }
+
+    /// @notice Handler K-REFUND2: Verify refund is no-op when key is revoked mid-transaction
+    /// @dev Authorizes a key, spends, revokes, then executes another tx that triggers refund.
+    ///      The refund should be silently skipped for the revoked key.
+    function handler_keySpendingRefundRevokedKey(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
+
+        // Need an authorized key with limits
+        if (!ghost_keyAuthorized[ctx.owner][ctx.keyId]) return;
+        if (ghost_keyExpiry[ctx.owner][ctx.keyId] <= block.timestamp) return;
+        if (!ghost_keyEnforceLimits[ctx.owner][ctx.keyId]) return;
+
+        amount = bound(amount, 1e6, 10e6);
+
+        uint256 limit = ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(feeToken)];
+        uint256 spent = ghost_keySpentAmount[ctx.owner][ctx.keyId][address(feeToken)];
+        if (spent + amount > limit) return;
+        if (!_checkBalance(ctx.owner, amount)) return;
+
+        // Step 1: Execute a transfer with the access key
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.actorIdx == recipientIdx) recipientIdx = (recipientIdx + 1) % actors.length;
+        address recipient = actors[recipientIdx];
+
+        uint64 currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
+
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
+            vmRlp,
+            vm,
+            address(feeToken),
+            abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0,
+            currentNonce,
+            ctx.keyPk,
+            ctx.owner
+        );
+
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            _recordProtocolNonceTxSuccess(ctx.owner);
+            _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
+        } catch {
+            _handleRevertProtocol(ctx.owner);
+            return;
+        }
+
+        // Step 2: Revoke the key (using main key via prank)
+        vm.prank(ctx.owner);
+        try keychain.revokeKey(ctx.keyId) {
+            _revokeKey(ctx.owner, ctx.keyId);
+        } catch {
+            return;
+        }
+
+        // Step 3: Snapshot remaining limit (should be unchanged after revocation)
+        uint256 remainingAfterRevoke =
+            keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+
+        // Step 4: Execute another tx (with main key) that would have refunded the revoked key
+        // The refund_spending_limit uses load_active_key which fails for revoked keys -> no-op
+        _ensureFeeTokenBalance(ctx.owner, 1e6);
+        currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
+
+        (bytes memory mainKeyTx,) =
+            _buildAndSignTransfer(ctx.actorIdx, recipient, 1e6, currentNonce, 0);
+
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(mainKeyTx) {
+            _recordProtocolNonceTxSuccess(ctx.owner);
+
+            uint256 remainingAfterMainTx =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+
+            // K-REFUND2: Remaining limit should not change since the key was revoked
+            // (the refund should be a no-op for revoked keys)
+            assertEq(
+                remainingAfterMainTx,
+                remainingAfterRevoke,
+                "K-REFUND2: Revoked key limit should not change after refund"
+            );
+
+            ghost_keyRefundRevokedNoop++;
+        } catch {
+            _handleRevertProtocol(ctx.owner);
         }
     }
 

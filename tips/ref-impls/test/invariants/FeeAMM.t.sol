@@ -11,6 +11,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title FeeAMM Invariant Test
 /// @notice Invariant tests for the FeeAMM/FeeManager implementation
+/// @dev Tests invariants TEMPO-AMM1 through TEMPO-AMM34 and TEMPO-FEE1 through TEMPO-FEE6 as documented in README.md
 contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Log file path for recording amm actions
@@ -126,7 +127,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param poolId The pool ID to check liquidity for
     /// @return actor The selected actor with liquidity > 0
     /// @return liquidity The actor's liquidity balance
-    function _selectLiquidityHolder(uint256 seed, bytes32 poolId)
+    function _selectLiquidityHolder(
+        uint256 seed,
+        bytes32 poolId
+    )
         internal
         view
         returns (address actor, uint256 liquidity)
@@ -192,7 +196,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param token Token to check blacklist status for
     /// @return actor The selected blacklisted actor, or address(0) if none
     /// @return balance The actor's balance of the token
-    function _selectBlacklistedActor(uint256 seed, address token)
+    function _selectBlacklistedActor(
+        uint256 seed,
+        address token
+    )
         internal
         view
         returns (address actor, uint256 balance)
@@ -426,7 +433,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         BurnContext memory ctx,
         uint256 amountUserToken,
         uint256 amountValidatorToken
-    ) internal view {
+    )
+        internal
+        view
+    {
         // TEMPO-AMM5: Returned amounts should match pro-rata calculation
         uint256 expectedUserAmount =
             (ctx.liquidityToBurn * ctx.reserveUserBefore) / ctx.totalSupplyBefore;
@@ -538,7 +548,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     }
 
     /// @dev Verifies rebalance swap invariants
-    function _assertRebalanceInvariants(RebalanceContext memory ctx, uint256 amountIn)
+    function _assertRebalanceInvariants(
+        RebalanceContext memory ctx,
+        uint256 amountIn
+    )
         internal
         view
     {
@@ -865,7 +878,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param actorSeed Seed for selecting actor
     /// @param tokenSeed Seed for selecting token
     /// @param probabilitySeed Seed for probabilistic decisions
-    function toggleBlacklist(uint256 actorSeed, uint256 tokenSeed, uint256 probabilitySeed)
+    function toggleBlacklist(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 probabilitySeed
+    )
         external
     {
         address actor = _selectActor(actorSeed);
@@ -983,7 +1000,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 validatorSeed,
         uint256 feeAmountRaw,
         uint256 crossTokenBias
-    ) external {
+    )
+        external
+    {
         address user = _selectActor(userSeed);
         address validator = _selectActor(validatorSeed);
 
@@ -1113,7 +1132,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 expectedOut,
         address userToken,
         address validatorToken
-    ) internal {
+    )
+        internal
+    {
         if (!_loggingEnabled) return;
         _log(
             string.concat(
@@ -1139,7 +1160,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         address validator,
         uint256 feeAmount,
         address token
-    ) internal {
+    )
+        internal
+    {
         if (!_loggingEnabled) return;
         _log(
             string.concat(
@@ -1157,7 +1180,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     }
 
     /// @dev Stores pool reserves directly using vm.store
-    function _storePoolReserves(bytes32 poolId, uint128 reserveUser, uint128 reserveValidator)
+    function _storePoolReserves(
+        bytes32 poolId,
+        uint128 reserveUser,
+        uint128 reserveValidator
+    )
         internal
     {
         // Storage layout differs between Rust and Solidity implementations:
@@ -2198,7 +2225,12 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     }
 
     /// @dev Logs a burn action
-    function _logBurn(address actor, uint256 liquidity, uint256 amountUser, uint256 amountValidator)
+    function _logBurn(
+        address actor,
+        uint256 liquidity,
+        uint256 amountUser,
+        uint256 amountValidator
+    )
         internal
     {
         if (!_loggingEnabled) return;

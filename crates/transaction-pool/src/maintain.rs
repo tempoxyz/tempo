@@ -376,6 +376,7 @@ impl KeyExpiryTracker {
 pub async fn maintain_tempo_pool<Client>(pool: TempoTransactionPool<Client>)
 where
     Client: StateProviderFactory
+        + reth_provider::HeaderProvider<Header: reth_primitives_traits::BlockHeader>
         + ChainSpecProvider<ChainSpec = TempoChainSpec>
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
@@ -459,6 +460,13 @@ where
 
                         // Update nonce state based on the new canonical chain
                         pool.notify_aa_pool_on_state_updates(new.execution_outcome().state().state());
+
+                        // Repopulate AMM liquidity cache from the new canonical chain
+                        // to invalidate stale entries from orphaned blocks.
+                        if let Err(err) = amm_cache.repopulate(pool.client()) {
+                            error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
+                        }
+
                         continue;
                     }
                     CanonStateNotification::Commit { new } => new,

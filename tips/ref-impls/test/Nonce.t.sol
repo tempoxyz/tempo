@@ -24,7 +24,10 @@ contract NonceTest is BaseTest {
     /// @param account The account whose nonce to increment
     /// @param nonceKey The nonce key to increment (must be > 0)
     /// @return newNonce The new nonce value after incrementing
-    function _incrementNonceViaStorage(address account, uint256 nonceKey)
+    function _incrementNonceViaStorage(
+        address account,
+        uint256 nonceKey
+    )
         internal
         returns (uint64 newNonce)
     {
@@ -123,7 +126,10 @@ contract NonceTest is BaseTest {
     }
 
     /// @dev External wrapper for testing reverts
-    function externalIncrementNonceViaStorage(address account, uint256 nonceKey)
+    function externalIncrementNonceViaStorage(
+        address account,
+        uint256 nonceKey
+    )
         external
         returns (uint64)
     {
@@ -181,7 +187,11 @@ contract NonceTest is BaseTest {
         assertEq(result, 0, "New nonce key should always return 0");
     }
 
-    function testFuzz_IncrementNonce_Sequential(address account, uint256 nonceKey, uint8 count)
+    function testFuzz_IncrementNonce_Sequential(
+        address account,
+        uint256 nonceKey,
+        uint8 count
+    )
         public
     {
         vm.assume(nonceKey > 0); // Protocol nonce not supported
@@ -201,7 +211,9 @@ contract NonceTest is BaseTest {
         uint256 nonceKey,
         uint8 count1,
         uint8 count2
-    ) public {
+    )
+        public
+    {
         vm.assume(account1 != account2);
         vm.assume(nonceKey > 0);
         vm.assume(count1 > 0 && count1 <= 50);

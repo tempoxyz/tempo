@@ -192,8 +192,7 @@ impl TempoTransactionRequest {
         }
 
         Ok(TempoTransaction {
-            // TODO: use tempo mainnet chainid once assigned
-            chain_id: self.inner.chain_id.unwrap_or(1),
+            chain_id: self.inner.chain_id.unwrap_or(4217),
             nonce,
             fee_payer_signature: self.fee_payer_signature,
             valid_before: self.valid_before,

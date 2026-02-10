@@ -29,7 +29,7 @@ use commonware_storage::archive::immutable;
 use commonware_utils::{NZU64, ordered::Map};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
-use rand::{CryptoRng, Rng};
+use rand_08::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
 

@@ -66,7 +66,7 @@ use commonware_utils::{Acknowledgement as _, vec::NonEmptyVec};
 use eyre::{ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
-use rand::{CryptoRng, Rng};
+use rand_08::{CryptoRng, Rng};
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{

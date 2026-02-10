@@ -73,14 +73,14 @@ serde_json.workspace = true
 tempo-contracts.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 alloy = { workspace = true, features = [
-    "full",
-    "providers",
-    "signers",
-    "signer-mnemonic-all-languages",
+	"full",
+	"providers",
+	"signers",
+	"signer-mnemonic-all-languages",
 ] }
 alloy-rlp.workspace = true
-rand = "0.9.2"
-futures = "0.3"
+rand.workspace = true
+futures.workspace = true
 test-case.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2 = { workspace = true }
@@ -93,46 +93,35 @@ vergen-git2.workspace = true
 [features]
 default = []
 asm-keccak = [
-    "alloy/asm-keccak",
-    "alloy-primitives/asm-keccak",
-    "reth-node-core/asm-keccak",
-    "reth-node-ethereum/asm-keccak",
-    "tempo-alloy/asm-keccak"
+	"alloy/asm-keccak",
+	"alloy-primitives/asm-keccak",
+	"reth-node-core/asm-keccak",
+	"reth-node-ethereum/asm-keccak",
+	"tempo-alloy/asm-keccak",
 ]
-otlp = [
-	"reth-ethereum/otlp",
-	"reth-node-core/otlp"
-]
+otlp = ["reth-ethereum/otlp", "reth-node-core/otlp"]
 js-tracer = [
 	"reth-ethereum/js-tracer",
 	"reth-node-builder/js-tracer",
 	"reth-node-ethereum/js-tracer",
 	"reth-rpc/js-tracer",
 	"reth-rpc-eth-api/js-tracer",
-	"reth-rpc-eth-types/js-tracer"
+	"reth-rpc-eth-types/js-tracer",
 ]
 jemalloc = [
 	"reth-ethereum/jemalloc",
 	"reth-node-core/jemalloc",
-	"reth-node-metrics/jemalloc"
+	"reth-node-metrics/jemalloc",
 ]
 jemalloc-prof = [
 	"reth-ethereum/jemalloc-prof",
-	"reth-node-metrics/jemalloc-prof"
+	"reth-node-metrics/jemalloc-prof",
 ]
 
-min-error-logs = [
-	"reth-node-core/min-error-logs"
-]
-min-warn-logs = [
-	"reth-node-core/min-warn-logs"
-]
-min-info-logs = [
-	"reth-node-core/min-info-logs"
-]
-min-debug-logs = [
-	"reth-node-core/min-debug-logs"
-]
-min-trace-logs = [
-	"reth-node-core/min-trace-logs"
-]
+tracy = ["reth-node-core/tracy"]
+
+min-error-logs = ["reth-node-core/min-error-logs"]
+min-warn-logs = ["reth-node-core/min-warn-logs"]
+min-info-logs = ["reth-node-core/min-info-logs"]
+min-debug-logs = ["reth-node-core/min-debug-logs"]
+min-trace-logs = ["reth-node-core/min-trace-logs"]
