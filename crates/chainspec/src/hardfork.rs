@@ -99,8 +99,7 @@ impl TempoHardfork {
     /// Gas cost for using an existing 2D nonce key
     pub const fn gas_existing_nonce_key(&self) -> u64 {
         match self {
-            Self::Genesis => 0,
-            Self::T0 | Self::T1 => crate::spec::TEMPO_T1_EXISTING_NONCE_KEY_GAS,
+            Self::Genesis | Self::T0 | Self::T1 => crate::spec::TEMPO_T1_EXISTING_NONCE_KEY_GAS,
             Self::T2 => crate::spec::TEMPO_T2_EXISTING_NONCE_KEY_GAS,
         }
     }
@@ -108,8 +107,7 @@ impl TempoHardfork {
     /// Gas cost for using a new 2D nonce key
     pub const fn gas_new_nonce_key(&self) -> u64 {
         match self {
-            Self::Genesis => 0,
-            Self::T0 | Self::T1 => crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS,
+            Self::Genesis | Self::T0 | Self::T1 => crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS,
             Self::T2 => crate::spec::TEMPO_T2_NEW_NONCE_KEY_GAS,
         }
     }
@@ -231,6 +229,25 @@ mod tests {
         let fork = TempoHardfork::Genesis;
         // Should implement Hardfork trait
         let _name: &str = Hardfork::name(&fork);
+    }
+
+    #[test]
+    fn test_genesis_nonce_key_gas_matches_t0() {
+        assert_eq!(
+            TempoHardfork::Genesis.gas_new_nonce_key(),
+            TempoHardfork::T0.gas_new_nonce_key(),
+            "Genesis must charge the same new nonce key gas as T0 for historical block replay"
+        );
+        assert_eq!(
+            TempoHardfork::Genesis.gas_existing_nonce_key(),
+            TempoHardfork::T0.gas_existing_nonce_key(),
+            "Genesis must charge the same existing nonce key gas as T0 for historical block replay"
+        );
+        assert_ne!(
+            TempoHardfork::Genesis.gas_new_nonce_key(),
+            0,
+            "Genesis nonce key gas must not be zero"
+        );
     }
 
     #[test]
