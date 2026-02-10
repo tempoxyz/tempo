@@ -62,8 +62,9 @@ contract BaseTest is Test {
     error CallShouldHaveReverted();
 
     function setUp() public virtual {
-        // Is this tempo chain?
-        isTempo = block.chainid != _FOUNDRY_CHAIN_ID;
+        // Is this tempo chain? Check chain ID first, but also detect tempo-foundry
+        // which uses Rust precompiles with foundry's default chain ID (31337).
+        isTempo = block.chainid != _FOUNDRY_CHAIN_ID || _ACCOUNT_KEYCHAIN.code.length > 0;
 
         console.log("Tests running with isTempo =", isTempo);
 
