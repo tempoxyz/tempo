@@ -43,7 +43,9 @@ jobs:
         id: meta-tempo
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
-          images: ${{ env.REGISTRY }}/tempo
+          images: |
+            ${{ env.REGISTRY }}/tempo
+            docker.io/tempoxyz/tempo
           bake-target: tempo
           tags: |
             type=schedule,pattern=nightly
@@ -117,6 +119,12 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ vars.DOCKER_HUB_USER }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
       - id: shortsha
         run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
