@@ -1005,14 +1005,13 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         // TEMPO-DEX12: If bestBidTick is not MIN, it should have liquidity
         if (bestBidTick != type(int16).min) {
             (,, uint128 bidLiquidity) = exchange.getTickLevel(baseToken, bestBidTick, true);
-            // Note: during swaps, bestBidTick may temporarily point to empty tick
-            // This is acceptable as it gets updated on next operation
+            assertTrue(bidLiquidity > 0, "TEMPO-DEX12: best bid tick has zero liquidity");
         }
 
         // TEMPO-DEX13: If bestAskTick is not MAX, it should have liquidity
         if (bestAskTick != type(int16).max) {
             (,, uint128 askLiquidity) = exchange.getTickLevel(baseToken, bestAskTick, false);
-            // Note: during swaps, bestAskTick may temporarily point to empty tick
+            assertTrue(askLiquidity > 0, "TEMPO-DEX13: best ask tick has zero liquidity");
         }
     }
 
