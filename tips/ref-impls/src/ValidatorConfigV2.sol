@@ -146,15 +146,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert ValidatorAlreadyDeleted();
         }
 
-        if (publicKey == bytes32(0)) {
-            revert InvalidPublicKey();
-        }
-        if (pubkeyToIndex[publicKey] != 0) {
-            revert PublicKeyAlreadyExists();
-        }
-
-        _validateIpPort(ingress, "ingress");
-        _validateIp(egress, "egress");
+        _validateRotateParams(publicKey, ingress, egress);
 
         bytes32 message = keccak256(
             abi.encodePacked(
@@ -398,11 +390,22 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         internal
         view
     {
-        if (publicKey == bytes32(0)) {
-            revert InvalidPublicKey();
-        }
         if (addressToIndex[validatorAddress] != 0) {
             revert ValidatorAlreadyExists();
+        }
+        _validateRotateParams(publicKey, ingress, egress);
+    }
+
+    function _validateRotateParams(
+        bytes32 publicKey,
+        string calldata ingress,
+        string calldata egress
+    )
+        internal
+        view
+    {
+        if (publicKey == bytes32(0)) {
+            revert InvalidPublicKey();
         }
         if (pubkeyToIndex[publicKey] != 0) {
             revert PublicKeyAlreadyExists();
@@ -436,6 +439,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         pubkeyToIndex[publicKey] = idx + 1; // 1-indexed
     }
 
+    // Note: This is a stub implementation. The actual implementation would perform
+    // Ed25519 signature verification.
     function _verifyEd25519Signature(
         bytes32, /* publicKey */
         bytes32, /* message */
