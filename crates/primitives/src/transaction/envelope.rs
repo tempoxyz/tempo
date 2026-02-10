@@ -25,13 +25,11 @@ const PAYMENT_CALLDATA: &[([u8; 4], usize)] = &[
 /// Returns `true` if `input` has a recognized TIP-20 payment selector and its length exactly
 /// matches the expected ABI-encoded size for that function.
 fn is_valid_payment_calldata(input: &[u8]) -> bool {
-    input
-        .first_chunk::<4>()
-        .is_some_and(|selector| {
-            PAYMENT_CALLDATA
-                .iter()
-                .any(|(sel, len)| selector == sel && input.len() == *len)
-        })
+    input.first_chunk::<4>().is_some_and(|selector| {
+        PAYMENT_CALLDATA
+            .iter()
+            .any(|(sel, len)| selector == sel && input.len() == *len)
+    })
 }
 
 /// Returns `true` if `to` has the TIP-20 payment prefix and `input` is valid payment calldata.
@@ -814,7 +812,10 @@ mod tests {
                 input: payment_calldata(i),
             };
             let envelope = create_aa_envelope(call);
-            assert!(envelope.is_payment(), "PAYMENT_CALLDATA[{i}] should be classified as payment");
+            assert!(
+                envelope.is_payment(),
+                "PAYMENT_CALLDATA[{i}] should be classified as payment"
+            );
         }
     }
 
@@ -851,7 +852,10 @@ mod tests {
                 input: payment_calldata(i),
             };
             let envelope = create_aa_envelope(call);
-            assert!(envelope.is_payment(), "PAYMENT_CALLDATA[{i}] should match partial TIP20 prefix");
+            assert!(
+                envelope.is_payment(),
+                "PAYMENT_CALLDATA[{i}] should match partial TIP20 prefix"
+            );
         }
     }
 
