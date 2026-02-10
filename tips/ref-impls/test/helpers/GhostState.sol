@@ -79,6 +79,12 @@ abstract contract GhostState {
     mapping(address => mapping(address => uint8)) public ghost_keySignatureType;
     mapping(address => mapping(address => bool)) public ghost_keyUnlimitedSpending;
 
+    // ============ Spending Limit Refund Tracking (K-REFUND) ============
+
+    uint256 public ghost_keyRefundVerified;
+    uint256 public ghost_keyRefundRevokedNoop;
+    uint256 public ghost_keyRefundOverflowSafe;
+
     // ============ Access Key Invariant Tracking (K1-K3, K6, K10-K12, K16) ============
 
     uint256 public ghost_keyAuthRejectedWrongSigner;

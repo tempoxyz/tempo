@@ -14,6 +14,7 @@ mod layouts;
 mod mappings;
 mod packing;
 mod roundtrip;
+mod sets;
 mod solidity;
 mod strings;
 mod structs;

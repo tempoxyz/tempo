@@ -78,17 +78,19 @@ contract StablecoinDEX is IStablecoinDEX {
 
     /// @notice Convert relative tick to scaled price
     function tickToPrice(int16 tick) public pure returns (uint32 price) {
+        if (tick % TICK_SPACING != 0) revert IStablecoinDEX.InvalidTick();
         return uint32(int32(PRICE_SCALE) + int32(tick));
     }
 
     /// @notice Convert scaled price to relative tick
     function priceToTick(uint32 price) public pure returns (int16 tick) {
+        tick = int16(int32(price) - int32(PRICE_SCALE));
         if (price < MIN_PRICE || price > MAX_PRICE) {
             // Calculate the tick to include in the error
-            tick = int16(int32(price) - int32(PRICE_SCALE));
             revert IStablecoinDEX.TickOutOfBounds(tick);
         }
-        return int16(int32(price) - int32(PRICE_SCALE));
+        if (tick % TICK_SPACING != 0) revert IStablecoinDEX.InvalidTick();
+        return tick;
     }
 
     /// @notice Convert base amount to quote amount at a given tick, rounding UP

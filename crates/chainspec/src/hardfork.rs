@@ -77,12 +77,40 @@ impl TempoHardfork {
     }
 
     /// Returns the fixed general gas limit for T1+, or None for pre-T1.
-    /// - T1+: 30M gas (fixed)
     /// - Pre-T1: None
+    /// - T1+: 30M gas (fixed)
     pub const fn general_gas_limit(&self) -> Option<u64> {
         match self {
-            Self::T1 | Self::T2 => Some(30_000_000),
+            Self::T1 | Self::T2 => Some(crate::spec::TEMPO_T1_GENERAL_GAS_LIMIT),
             Self::T0 | Self::Genesis => None,
+        }
+    }
+
+    /// Returns the per-transaction gas limit cap, or None if uncapped.
+    /// - Pre-T1: None (no per-tx cap)
+    /// - T1+: 30M gas (allows maximum-sized contract deployments under TIP-1000 state creation)
+    pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
+        match self {
+            Self::T1 | Self::T2 => Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
+            Self::T0 | Self::Genesis => None,
+        }
+    }
+
+    /// Gas cost for using an existing 2D nonce key
+    pub const fn gas_existing_nonce_key(&self) -> u64 {
+        match self {
+            Self::Genesis => 0,
+            Self::T0 | Self::T1 => crate::spec::TEMPO_T1_EXISTING_NONCE_KEY_GAS,
+            Self::T2 => crate::spec::TEMPO_T2_EXISTING_NONCE_KEY_GAS,
+        }
+    }
+
+    /// Gas cost for using a new 2D nonce key
+    pub const fn gas_new_nonce_key(&self) -> u64 {
+        match self {
+            Self::Genesis => 0,
+            Self::T0 | Self::T1 => crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS,
+            Self::T2 => crate::spec::TEMPO_T2_NEW_NONCE_KEY_GAS,
         }
     }
 }

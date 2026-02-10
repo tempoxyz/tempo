@@ -641,7 +641,7 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
         .await?
         .get_receipt()
         .await?;
-    assert!(burn_receipt.status());
+    assert!(!burn_receipt.status());
 
     Ok(())
 }
