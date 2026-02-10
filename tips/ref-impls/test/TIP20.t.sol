@@ -333,7 +333,9 @@ contract TIP20Test is BaseTest {
         uint256 allowanceAmount,
         uint256 transferAmount,
         bytes32 memo
-    ) public {
+    )
+        public
+    {
         // Avoid invalid addresses
         vm.assume(spender != address(0) && to != address(0));
         vm.assume((uint160(to) >> 64) != 0x20C000000000000000000000);
@@ -665,7 +667,7 @@ contract TIP20Test is BaseTest {
         }
     }
 
-    function testFuzz_ChangeTransferPolicyId_RevertsIf_PolicyDoesNotExist(uint64 policyId) public {
+    function testFuzz_ChangeTransferPolicyId_RevertsIf_PolicyNotFound(uint64 policyId) public {
         vm.assume(policyId >= registry.policyIdCounter());
         vm.prank(admin);
         try token.changeTransferPolicyId(policyId) {
@@ -1553,7 +1555,9 @@ contract TIP20Test is BaseTest {
         uint256 aliceBalance,
         uint256 bobBalance,
         uint256 rewardAmount
-    ) public {
+    )
+        public
+    {
         // Bound inputs
         aliceBalance = bound(aliceBalance, 1e18, 1000e18);
         bobBalance = bound(bobBalance, 1e18, 1000e18);
@@ -1691,7 +1695,9 @@ contract TIP20Test is BaseTest {
         address to,
         uint256 allowanceAmount,
         uint256 transferAmount
-    ) public {
+    )
+        public
+    {
         vm.assume(spender != address(0) && to != address(0));
         vm.assume((uint160(to) >> 64) != 0x20C000000000000000000000);
         vm.assume(spender != 0x1559c00000000000000000000000000000000000);
@@ -1736,7 +1742,9 @@ contract TIP20Test is BaseTest {
         uint256 amount1,
         uint256 amount2,
         uint256 amount3
-    ) public {
+    )
+        public
+    {
         vm.assume(spender != address(0));
         amount1 = bound(amount1, 0, type(uint128).max);
         amount2 = bound(amount2, 0, type(uint128).max);
@@ -1792,7 +1800,12 @@ contract TIP20Test is BaseTest {
         vm.stopPrank();
     }
 
-    function testFuzz_mintBurnSequence(uint256 mint1, uint256 mint2, uint256 burn1, uint256 mint3)
+    function testFuzz_mintBurnSequence(
+        uint256 mint1,
+        uint256 mint2,
+        uint256 burn1,
+        uint256 mint3
+    )
         public
     {
         mint1 = bound(mint1, 1e18, type(uint128).max / 5);
@@ -1864,7 +1877,9 @@ contract TIP20Test is BaseTest {
         uint256 aliceBalance,
         uint256 bobBalance,
         uint256 rewardAmount
-    ) public {
+    )
+        public
+    {
         aliceBalance = bound(aliceBalance, 1e18, 1000e18);
         bobBalance = bound(bobBalance, 1e18, 1000e18);
         rewardAmount = bound(rewardAmount, 1e18, 500e18);
@@ -1927,7 +1942,9 @@ contract TIP20Test is BaseTest {
         uint256 bobAmount,
         bool aliceOpts,
         bool bobOpts
-    ) public {
+    )
+        public
+    {
         aliceAmount = bound(aliceAmount, 1e18, type(uint128).max / 4);
         bobAmount = bound(bobAmount, 1e18, type(uint128).max / 4);
 
@@ -2266,6 +2283,255 @@ contract TIP20Test is BaseTest {
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
         }
+    }
+
+    function test_Mint_Succeeds_AuthorizedMintRecipient_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 mintWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+
+        registry.modifyPolicyWhitelist(mintWhitelist, charlie, true);
+
+        uint64 compound =
+            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
+
+        TIP20 compoundToken = TIP20(
+            factory.createToken("COMPOUND", "CMP", "USD", pathUSD, admin, bytes32("compound"))
+        );
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(compound);
+
+        compoundToken.mint(charlie, 1000);
+        assertEq(compoundToken.balanceOf(charlie), 1000);
+
+        vm.stopPrank();
+    }
+
+    function test_Mint_Fails_UnauthorizedMintRecipient_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 mintWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+
+        // charlie is NOT in mintWhitelist
+
+        uint64 compound =
+            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
+
+        TIP20 compoundToken = TIP20(
+            factory.createToken("COMPOUND2", "CMP2", "USD", pathUSD, admin, bytes32("compound2"))
+        );
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(compound);
+
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.mint(charlie, 1000) {
+            revert("mint should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+
+        vm.stopPrank();
+    }
+
+    function test_Transfer_Succeeds_BothAuthorized_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+
+        registry.modifyPolicyWhitelist(senderWhitelist, alice, true);
+        registry.modifyPolicyWhitelist(recipientWhitelist, bob, true);
+
+        uint64 compound = registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, 1);
+
+        TIP20 compoundToken = TIP20(
+            factory.createToken("COMPOUND3", "CMP3", "USD", pathUSD, admin, bytes32("compound3"))
+        );
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(alice, 1000);
+        compoundToken.changeTransferPolicyId(compound);
+
+        vm.stopPrank();
+
+        vm.prank(alice);
+        compoundToken.transfer(bob, 500);
+
+        assertEq(compoundToken.balanceOf(alice), 500);
+        assertEq(compoundToken.balanceOf(bob), 500);
+    }
+
+    function test_Transfer_Fails_SenderUnauthorized_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        // alice is NOT in senderWhitelist
+
+        uint64 compound = registry.createCompoundPolicy(senderWhitelist, 1, 1);
+
+        TIP20 compoundToken = TIP20(
+            factory.createToken("COMPOUND4", "CMP4", "USD", pathUSD, admin, bytes32("compound4"))
+        );
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(alice, 1000);
+        compoundToken.changeTransferPolicyId(compound);
+
+        vm.stopPrank();
+
+        vm.prank(alice);
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.transfer(bob, 500) {
+            revert("transfer should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+    }
+
+    function test_Transfer_Fails_RecipientUnauthorized_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        // bob is NOT in recipientWhitelist
+
+        uint64 compound = registry.createCompoundPolicy(1, recipientWhitelist, 1);
+
+        TIP20 compoundToken = TIP20(
+            factory.createToken("COMPOUND5", "CMP5", "USD", pathUSD, admin, bytes32("compound5"))
+        );
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(alice, 1000);
+        compoundToken.changeTransferPolicyId(compound);
+
+        vm.stopPrank();
+
+        vm.prank(alice);
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.transfer(bob, 500) {
+            revert("transfer should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+    }
+
+    function test_Transfer_AsymmetricCompound_BlockedCanReceiveNotSend() public {
+        vm.startPrank(admin);
+
+        uint64 senderBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        registry.modifyPolicyBlacklist(senderBlacklist, charlie, true);
+
+        // charlie blocked from sending, but anyone can receive
+        uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
+
+        TIP20 compoundToken =
+            TIP20(factory.createToken("ASYM", "ASY", "USD", pathUSD, admin, bytes32("asym")));
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(alice, 1000);
+        compoundToken.mint(charlie, 500);
+        compoundToken.changeTransferPolicyId(asymmetricCompound);
+
+        vm.stopPrank();
+
+        // alice can send to charlie (charlie can receive)
+        vm.prank(alice);
+        compoundToken.transfer(charlie, 200);
+        assertEq(compoundToken.balanceOf(charlie), 700);
+
+        // charlie cannot send (blocked as sender)
+        vm.prank(charlie);
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.transfer(alice, 100) {
+            revert("transfer should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+    }
+
+    function test_BurnBlocked_Succeeds_BlockedSender_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        registry.modifyPolicyBlacklist(senderBlacklist, charlie, true);
+
+        uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
+
+        TIP20 compoundToken =
+            TIP20(factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1")));
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(charlie, 1000);
+        compoundToken.changeTransferPolicyId(asymmetricCompound);
+
+        compoundToken.burnBlocked(charlie, 500);
+        assertEq(compoundToken.balanceOf(charlie), 500);
+
+        vm.stopPrank();
+    }
+
+    function test_BurnBlocked_Fails_AuthorizedSender_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        // alice is NOT blacklisted, so she's authorized as sender
+
+        uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
+
+        TIP20 compoundToken =
+            TIP20(factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2")));
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(alice, 1000);
+        compoundToken.changeTransferPolicyId(asymmetricCompound);
+
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.burnBlocked(alice, 500) {
+            revert("burnBlocked should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+
+        vm.stopPrank();
+    }
+
+    function test_BurnBlocked_ChecksCorrectSubPolicy() public {
+        vm.startPrank(admin);
+
+        // Create compound where only recipient is blocked, sender is allowed
+        uint64 recipientBlacklist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        registry.modifyPolicyBlacklist(recipientBlacklist, charlie, true);
+
+        uint64 recipientBlockedCompound = registry.createCompoundPolicy(1, recipientBlacklist, 1);
+
+        TIP20 compoundToken =
+            TIP20(factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3")));
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(charlie, 1000);
+        compoundToken.changeTransferPolicyId(recipientBlockedCompound);
+
+        // charlie is blocked as recipient but NOT as sender, so burnBlocked should fail
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.burnBlocked(charlie, 500) {
+            revert("burnBlocked should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+
+        vm.stopPrank();
     }
 
 }

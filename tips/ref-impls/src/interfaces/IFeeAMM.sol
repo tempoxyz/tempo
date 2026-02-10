@@ -54,7 +54,12 @@ interface IFeeAMM {
 
     function SCALE() external view returns (uint256);
 
-    function burn(address userToken, address validatorToken, uint256 liquidity, address to)
+    function burn(
+        address userToken,
+        address validatorToken,
+        uint256 liquidity,
+        address to
+    )
         external
         returns (uint256 amountUserToken, uint256 amountValidatorToken);
 
@@ -69,14 +74,21 @@ interface IFeeAMM {
         address validatorToken,
         uint256 amountValidatorToken,
         address to
-    ) external returns (uint256 liquidity);
+    )
+        external
+        returns (uint256 liquidity);
 
     function pools(bytes32)
         external
         view
         returns (uint128 reserveUserToken, uint128 reserveValidatorToken);
 
-    function rebalanceSwap(address userToken, address validatorToken, uint256 amountOut, address to)
+    function rebalanceSwap(
+        address userToken,
+        address validatorToken,
+        uint256 amountOut,
+        address to
+    )
         external
         returns (uint256 amountIn);
 

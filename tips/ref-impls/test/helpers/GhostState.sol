@@ -10,6 +10,8 @@ abstract contract GhostState {
     mapping(address => uint256) public ghost_protocolNonce;
     mapping(address => mapping(uint256 => uint256)) public ghost_2dNonce;
     mapping(address => mapping(uint256 => bool)) public ghost_2dNonceUsed;
+    /// @dev Array of 2D nonce keys used per account (for efficient iteration)
+    mapping(address => uint256[]) public ghost_account2dNonceKeys;
 
     // ============ Transaction Tracking ============
 
@@ -25,10 +27,6 @@ abstract contract GhostState {
 
     mapping(bytes32 => address) public ghost_createAddresses;
     mapping(address => uint256) public ghost_createCount;
-
-    // ============ Fee Tracking ============
-
-    mapping(address => uint256) public ghost_feeTokenBalance;
 
     // ============ CREATE Rejection Tracking ============
 
@@ -80,6 +78,12 @@ abstract contract GhostState {
     mapping(address => mapping(address => uint256)) public ghost_keySpendingPeriodDuration;
     mapping(address => mapping(address => uint8)) public ghost_keySignatureType;
     mapping(address => mapping(address => bool)) public ghost_keyUnlimitedSpending;
+
+    // ============ Spending Limit Refund Tracking (K-REFUND) ============
+
+    uint256 public ghost_keyRefundVerified;
+    uint256 public ghost_keyRefundRevokedNoop;
+    uint256 public ghost_keyRefundOverflowSafe;
 
     // ============ Access Key Invariant Tracking (K1-K3, K6, K10-K12, K16) ============
 
@@ -146,7 +150,15 @@ abstract contract GhostState {
 
     function _update2dNonce(address account, uint256 nonceKey) internal {
         ghost_2dNonce[account][nonceKey]++;
-        ghost_2dNonceUsed[account][nonceKey] = true;
+        _mark2dNonceKeyUsed(account, nonceKey);
+    }
+
+    /// @dev Mark a 2D nonce key as used and track in array for efficient iteration
+    function _mark2dNonceKeyUsed(address account, uint256 nonceKey) internal {
+        if (!ghost_2dNonceUsed[account][nonceKey]) {
+            ghost_2dNonceUsed[account][nonceKey] = true;
+            ghost_account2dNonceKeys[account].push(nonceKey);
+        }
     }
 
     function _recordTxSuccess() internal {
@@ -161,7 +173,11 @@ abstract contract GhostState {
         ghost_totalCallsExecuted++;
     }
 
-    function _recordCreateSuccess(address caller, uint256 protocolNonce, address deployed)
+    function _recordCreateSuccess(
+        address caller,
+        uint256 protocolNonce,
+        address deployed
+    )
         internal
     {
         bytes32 key = keccak256(abi.encodePacked(caller, protocolNonce));
@@ -177,7 +193,9 @@ abstract contract GhostState {
         bool enforceLimits,
         address[] memory tokens,
         uint256[] memory limits
-    ) internal {
+    )
+        internal
+    {
         ghost_keyAuthorized[owner][keyId] = true;
         ghost_keyExpiry[owner][keyId] = expiry;
         ghost_keyEnforceLimits[owner][keyId] = enforceLimits;
@@ -191,7 +209,12 @@ abstract contract GhostState {
         ghost_keyExpiry[owner][keyId] = 0;
     }
 
-    function _recordKeySpending(address owner, address keyId, address token, uint256 amount)
+    function _recordKeySpending(
+        address owner,
+        address keyId,
+        address token,
+        uint256 amount
+    )
         internal
     {
         ghost_keySpentAmount[owner][keyId][token] += amount;
@@ -285,6 +308,18 @@ abstract contract GhostState {
     function _recordGasTrackingKeyAuth() internal {
         ghost_gasTrackingKeyAuth++;
         ghost_totalGasTracked++;
+    }
+
+    // ============ Expected Rejection Recording Functions ============
+
+    /// @notice Record key wrong signer rejection (K1, K7, K8)
+    function _recordKeyWrongSigner() internal {
+        ghost_keyAuthRejectedWrongSigner++;
+    }
+
+    /// @notice Record key zero limit rejection (K12)
+    function _recordKeyZeroLimit() internal {
+        ghost_keyZeroLimitRejected++;
     }
 
 }

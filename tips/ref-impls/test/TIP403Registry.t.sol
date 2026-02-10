@@ -162,7 +162,10 @@ contract TIP403RegistryTest is BaseTest {
         }
     }
 
-    function testFuzz_SetPolicyAdmin_FixedPolicyCannotChange(address caller, address newAdmin)
+    function testFuzz_SetPolicyAdmin_FixedPolicyCannotChange(
+        address caller,
+        address newAdmin
+    )
         public
     {
         // Create a fixed policy (admin is address(0))
@@ -236,7 +239,7 @@ contract TIP403RegistryTest is BaseTest {
         }
     }
 
-    function test_ModifyPolicyWhitelist_PolicyDoesNotExist() public {
+    function test_ModifyPolicyWhitelist_PolicyNotFound() public {
         // For non-existent policies, isAuthorized returns false (default blacklist behavior)
         // So modifyPolicyWhitelist will fail with Unauthorized
         try registry.modifyPolicyWhitelist(999, alice, true) {
@@ -304,7 +307,7 @@ contract TIP403RegistryTest is BaseTest {
         }
     }
 
-    function test_ModifyPolicyBlacklist_PolicyDoesNotExist() public {
+    function test_ModifyPolicyBlacklist_PolicyNotFound() public {
         // For non-existent policies, admin is address(0)
         // So modifyPolicyBlacklist will fail with Unauthorized
         vm.prank(alice);
@@ -475,7 +478,7 @@ contract TIP403RegistryTest is BaseTest {
         assertTrue(registry.policyExists(policyId));
     }
 
-    function testFuzz_PolicyExists_ReturnsFalseIf_PolicyDoesNotExist(uint64 policyId) public {
+    function testFuzz_PolicyExists_ReturnsFalseIf_PolicyNotFound(uint64 policyId) public {
         vm.assume(policyId >= registry.policyIdCounter());
         assertFalse(registry.policyExists(policyId));
     }
@@ -880,6 +883,247 @@ contract TIP403RegistryTest is BaseTest {
         assertTrue(registry.isAuthorized(policyId, david)); // Initially added
         assertTrue(registry.isAuthorized(policyId, charlie)); // Added by bob
         assertTrue(registry.isAuthorized(policyId, eve)); // Added by charlie
+    }
+
+    function test_CreateCompoundPolicy_Basic() public {
+        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 blacklist = registry.createPolicy(alice, ITIP403Registry.PolicyType.BLACKLIST);
+
+        uint64 compound = registry.createCompoundPolicy(whitelist, blacklist, whitelist);
+
+        (uint64 senderPid, uint64 recipientPid, uint64 mintPid) =
+            registry.compoundPolicyData(compound);
+        assertEq(senderPid, whitelist);
+        assertEq(recipientPid, blacklist);
+        assertEq(mintPid, whitelist);
+    }
+
+    function test_CreateCompoundPolicy_HasNoAdmin() public {
+        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+
+        uint64 compound = registry.createCompoundPolicy(whitelist, whitelist, whitelist);
+
+        (ITIP403Registry.PolicyType policyType, address policyAdmin) = registry.policyData(compound);
+        assertEq(uint8(policyType), uint8(ITIP403Registry.PolicyType.COMPOUND));
+        assertEq(policyAdmin, address(0));
+    }
+
+    function test_CreateCompoundPolicy_CannotReferenceCompound() public {
+        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 compound = registry.createCompoundPolicy(whitelist, whitelist, whitelist);
+
+        vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
+        this.createCompoundPolicyExternal(compound, whitelist, whitelist);
+
+        vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
+        this.createCompoundPolicyExternal(whitelist, compound, whitelist);
+
+        vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
+        this.createCompoundPolicyExternal(whitelist, whitelist, compound);
+    }
+
+    function createCompoundPolicyExternal(uint64 s, uint64 r, uint64 m) external returns (uint64) {
+        return registry.createCompoundPolicy(s, r, m);
+    }
+
+    function test_CreateCompoundPolicy_RevertsOnNonExistentPolicy() public {
+        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 nonExistent = 99_999;
+
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try registry.createCompoundPolicy(nonExistent, whitelist, whitelist) returns (uint64) {
+            revert("createCompoundPolicy should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP403Registry.PolicyNotFound.selector);
+        }
+
+        try registry.createCompoundPolicy(whitelist, nonExistent, whitelist) returns (uint64) {
+            revert("createCompoundPolicy should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP403Registry.PolicyNotFound.selector);
+        }
+
+        try registry.createCompoundPolicy(whitelist, whitelist, nonExistent) returns (uint64) {
+            revert("createCompoundPolicy should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP403Registry.PolicyNotFound.selector);
+        }
+    }
+
+    function test_CreateCompoundPolicy_CanReferenceBuiltinPolicies() public {
+        uint64 alwaysReject = 0;
+        uint64 alwaysAllow = 1;
+
+        uint64 cpAllow = registry.createCompoundPolicy(alwaysAllow, alwaysAllow, alwaysAllow);
+        assertTrue(registry.isAuthorizedSender(cpAllow, alice));
+        assertTrue(registry.isAuthorizedRecipient(cpAllow, alice));
+
+        uint64 cpReject = registry.createCompoundPolicy(alwaysReject, alwaysAllow, alwaysAllow);
+        assertFalse(registry.isAuthorizedSender(cpReject, alice));
+        assertTrue(registry.isAuthorizedRecipient(cpReject, alice));
+    }
+
+    function test_CreateCompoundPolicy_CannotModify() public {
+        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 compound = registry.createCompoundPolicy(whitelist, whitelist, whitelist);
+
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try registry.modifyPolicyWhitelist(compound, alice, true) {
+            revert("modifyPolicyWhitelist should have reverted");
+        } catch { }
+
+        try registry.modifyPolicyBlacklist(compound, alice, true) {
+            revert("modifyPolicyBlacklist should have reverted");
+        } catch { }
+    }
+
+    function test_CompoundPolicyData_RevertsForNonCompound() public {
+        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try registry.compoundPolicyData(whitelist) returns (uint64, uint64, uint64) {
+            revert("compoundPolicyData should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP403Registry.IncompatiblePolicyType.selector);
+        }
+    }
+
+    function test_IsAuthorizedSender_SimplePolicy() public {
+        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        vm.prank(alice);
+        registry.modifyPolicyWhitelist(whitelist, bob, true);
+
+        assertTrue(registry.isAuthorizedSender(whitelist, bob));
+        assertFalse(registry.isAuthorizedSender(whitelist, charlie));
+    }
+
+    function test_IsAuthorizedRecipient_SimplePolicy() public {
+        uint64 blacklist = registry.createPolicy(alice, ITIP403Registry.PolicyType.BLACKLIST);
+        vm.prank(alice);
+        registry.modifyPolicyBlacklist(blacklist, bob, true);
+
+        assertFalse(registry.isAuthorizedRecipient(blacklist, bob));
+        assertTrue(registry.isAuthorizedRecipient(blacklist, charlie));
+    }
+
+    function test_IsAuthorizedMintRecipient_SimplePolicy() public {
+        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        vm.prank(alice);
+        registry.modifyPolicyWhitelist(whitelist, bob, true);
+
+        assertTrue(registry.isAuthorizedMintRecipient(whitelist, bob));
+        assertFalse(registry.isAuthorizedMintRecipient(whitelist, charlie));
+    }
+
+    function test_SimplePolicyEquivalence() public {
+        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        vm.prank(alice);
+        registry.modifyPolicyWhitelist(whitelist, bob, true);
+
+        bool senderAuth = registry.isAuthorizedSender(whitelist, bob);
+        bool recipientAuth = registry.isAuthorizedRecipient(whitelist, bob);
+        bool mintAuth = registry.isAuthorizedMintRecipient(whitelist, bob);
+        bool general = registry.isAuthorized(whitelist, bob);
+
+        assertEq(senderAuth, recipientAuth);
+        assertEq(recipientAuth, mintAuth);
+        assertEq(senderAuth, general);
+    }
+
+    function test_CompoundPolicy_DirectionalAuthorization() public {
+        uint64 senderWhitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+
+        vm.startPrank(alice);
+        registry.modifyPolicyWhitelist(senderWhitelist, bob, true);
+        registry.modifyPolicyWhitelist(recipientWhitelist, charlie, true);
+        vm.stopPrank();
+
+        uint64 compound =
+            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, senderWhitelist);
+
+        // Bob is authorized as sender but not recipient
+        assertTrue(registry.isAuthorizedSender(compound, bob));
+        assertFalse(registry.isAuthorizedRecipient(compound, bob));
+
+        // Charlie is authorized as recipient but not sender
+        assertFalse(registry.isAuthorizedSender(compound, charlie));
+        assertTrue(registry.isAuthorizedRecipient(compound, charlie));
+    }
+
+    function test_CompoundPolicy_IsAuthorizedEquivalence() public {
+        uint64 senderWhitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+
+        vm.startPrank(alice);
+        registry.modifyPolicyWhitelist(senderWhitelist, bob, true);
+        registry.modifyPolicyWhitelist(recipientWhitelist, bob, true);
+        vm.stopPrank();
+
+        uint64 compound =
+            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, senderWhitelist);
+
+        bool senderAuth = registry.isAuthorizedSender(compound, bob);
+        bool recipientAuth = registry.isAuthorizedRecipient(compound, bob);
+        bool isAuth = registry.isAuthorized(compound, bob);
+
+        assertEq(isAuth, senderAuth && recipientAuth);
+    }
+
+    function test_CompoundPolicy_IsAuthorizedShortCircuits() public {
+        uint64 senderWhitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+
+        // Bob is not in sender whitelist, so isAuthorized should short-circuit
+        uint64 compound =
+            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, senderWhitelist);
+
+        // This should return false without checking recipient
+        assertFalse(registry.isAuthorized(compound, bob));
+    }
+
+    function testFuzz_SimplePolicyEquivalence(uint256 policySeed, address user) public {
+        vm.assume(user != address(0));
+
+        ITIP403Registry.PolicyType policyType = policySeed % 2 == 0
+            ? ITIP403Registry.PolicyType.WHITELIST
+            : ITIP403Registry.PolicyType.BLACKLIST;
+
+        uint64 testPolicy = registry.createPolicy(alice, policyType);
+
+        if (policySeed % 3 == 0) {
+            vm.prank(alice);
+            if (policyType == ITIP403Registry.PolicyType.WHITELIST) {
+                registry.modifyPolicyWhitelist(testPolicy, user, true);
+            } else {
+                registry.modifyPolicyBlacklist(testPolicy, user, true);
+            }
+        }
+
+        bool senderAuth = registry.isAuthorizedSender(testPolicy, user);
+        bool recipientAuth = registry.isAuthorizedRecipient(testPolicy, user);
+        bool mintAuth = registry.isAuthorizedMintRecipient(testPolicy, user);
+
+        assertEq(senderAuth, recipientAuth, "Fuzz: Sender != Recipient");
+        assertEq(recipientAuth, mintAuth, "Fuzz: Recipient != MintRecipient");
+    }
+
+    function testFuzz_IsAuthorizedEquivalence(address user) public {
+        vm.assume(user != address(0));
+
+        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 blacklist = registry.createPolicy(alice, ITIP403Registry.PolicyType.BLACKLIST);
+
+        uint64 compound = registry.createCompoundPolicy(whitelist, blacklist, whitelist);
+
+        bool senderAuth = registry.isAuthorizedSender(compound, user);
+        bool recipientAuth = registry.isAuthorizedRecipient(compound, user);
+        bool isAuth = registry.isAuthorized(compound, user);
+
+        assertEq(isAuth, senderAuth && recipientAuth, "Fuzz: isAuthorized != sender && recipient");
     }
 
 }
