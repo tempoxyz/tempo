@@ -19,17 +19,17 @@ use commonware_cryptography::{
     certificate::Scheme as _,
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_p2p::{Address, Blocker, Receiver, Sender};
+use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
+    Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::paged::CacheRef,
     spawn_cell,
 };
 use commonware_storage::archive::immutable;
-use commonware_utils::{NZU64, ordered::Map};
+use commonware_utils::NZU64;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
-use rand::{CryptoRng, Rng};
+use rand_08::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -98,8 +98,7 @@ pub struct Builder<TBlocker, TPeerManager> {
 impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TPeerManager:
-        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>> + Sync,
+    TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
     pub fn with_execution_node(mut self, execution_node: TempoFullNode) -> Self {
         self.execution_node = Some(execution_node);
@@ -148,15 +147,14 @@ where
             },
         );
 
-        // Create the buffer pool
-        let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+        let page_cache_ref = CacheRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
         // XXX: All hard-coded values here are the same as prior to commonware
         // making the resolver configurable in
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
-            manager: self.peer_manager.clone(),
+            provider: self.peer_manager.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
             initial: Duration::from_secs(1),
@@ -190,7 +188,7 @@ where
                     "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-key",
                     self.partition_prefix,
                 ),
-                freezer_key_buffer_pool: buffer_pool.clone(),
+                freezer_key_page_cache: page_cache_ref.clone(),
 
                 freezer_value_partition: format!(
                     "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-value",
@@ -240,7 +238,7 @@ where
                     "{}-{FINALIZED_BLOCKS}-freezer-key",
                     self.partition_prefix,
                 ),
-                freezer_key_buffer_pool: buffer_pool.clone(),
+                freezer_key_page_cache: page_cache_ref.clone(),
 
                 freezer_value_partition: format!(
                     "{}-{FINALIZED_BLOCKS}-freezer-value",
@@ -281,7 +279,7 @@ where
                 ),
                 prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
 
-                buffer_pool: buffer_pool.clone(),
+                page_cache: page_cache_ref.clone(),
 
                 replay_buffer: REPLAY_BUFFER,
                 key_write_buffer: WRITE_BUFFER,
@@ -343,7 +341,7 @@ where
             epoch::manager::Config {
                 application: application_mailbox.clone(),
                 blocker: self.blocker.clone(),
-                buffer_pool: buffer_pool.clone(),
+                page_cache: page_cache_ref,
                 epoch_strategy: epoch_strategy.clone(),
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
@@ -417,7 +415,7 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>>,
+    TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
     context: ContextCell<TContext>,
 
@@ -466,8 +464,7 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager:
-        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>> + Sync,
+    TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
     #[expect(
         clippy::too_many_arguments,

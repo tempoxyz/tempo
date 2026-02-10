@@ -69,7 +69,7 @@ impl FaucetArgs {
 
     pub fn provider(&self) -> DynProvider<TempoNetwork> {
         ProviderBuilder::new_with_network::<TempoNetwork>()
-            .with_random_2d_nonces()
+            .with_expiring_nonces()
             .wallet(self.wallet())
             .connect_http(
                 self.node_address

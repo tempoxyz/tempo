@@ -912,4 +912,101 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_validators_array_returns_correct_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator1 = Address::random();
+        let validator2 = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            let public_key1 = FixedBytes::<32>::from([0x11; 32]);
+            let public_key2 = FixedBytes::<32>::from([0x22; 32]);
+
+            // Add validators
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator1,
+                    publicKey: public_key1,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator2,
+                    publicKey: public_key2,
+                    inboundAddress: "192.168.1.2:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.2:9000".to_string(),
+                },
+            )?;
+
+            // validators_array should return the actual addresses, not default
+            assert_eq!(validator_config.validators_array(0)?, validator1);
+            assert_eq!(validator_config.validators_array(1)?, validator2);
+
+            // Verify they're not default
+            assert_ne!(validator_config.validators_array(0)?, Address::ZERO);
+            assert_ne!(validator_config.validators_array(1)?, Address::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_next_dkg_ceremony_returns_correct_value() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            // Default should be 0
+            assert_eq!(validator_config.get_next_full_dkg_ceremony()?, 0);
+
+            // Set to a specific value
+            validator_config.set_next_full_dkg_ceremony(
+                owner,
+                IValidatorConfig::setNextFullDkgCeremonyCall { epoch: 100 },
+            )?;
+
+            // Should return the set value, not 0 or 1
+            let result = validator_config.get_next_full_dkg_ceremony()?;
+            assert_eq!(result, 100);
+            assert_ne!(result, 0);
+            assert_ne!(result, 1);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ensure_address_is_ip_port_rejects_invalid() {
+        // Test invalid formats are rejected (not silently returning Ok)
+        let invalid_cases = [
+            "not-an-ip:8000",    // hostname, not IP
+            "192.168.1.1",       // missing port
+            "8000",              // just port
+            "",                  // empty
+            "192.168.1.1:abc",   // non-numeric port
+            "192.168.1.1:99999", // port out of range
+        ];
+
+        for invalid in invalid_cases {
+            let result = ensure_address_is_ip_port(invalid);
+            assert!(result.is_err(), "Expected error for '{invalid}', got Ok");
+        }
+
+        // Valid IP:port should succeed
+        assert!(ensure_address_is_ip_port("192.168.1.1:8000").is_ok());
+        assert!(ensure_address_is_ip_port("[::1]:8000").is_ok());
+    }
 }

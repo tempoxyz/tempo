@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::OpenOptions, path::PathBuf, sync::Arc};
+use std::{fs::OpenOptions, path::PathBuf, sync::Arc};
 
 use alloy_primitives::Address;
 use alloy_provider::Provider;
@@ -6,9 +6,12 @@ use alloy_provider::Provider;
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
-use commonware_codec::ReadExt as _;
+use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
-use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+use commonware_cryptography::{
+    Signer as _,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_math::algebra::Random as _;
 use commonware_utils::NZU64;
 use eyre::{OptionExt as _, Report, WrapErr as _, eyre};
@@ -71,7 +74,7 @@ pub(crate) struct GeneratePrivateKey {
 impl GeneratePrivateKey {
     fn run(self) -> eyre::Result<()> {
         let Self { output, force } = self;
-        let signing_key = PrivateKey::random(&mut rand::thread_rng());
+        let signing_key = PrivateKey::random(&mut rand_08::thread_rng());
         let public_key = signing_key.public_key();
         let signing_key = SigningKey::from(signing_key);
         OpenOptions::new()
@@ -145,10 +148,12 @@ struct ValidatorEntry {
     outbound_address: String,
     /// Whether the validator is active in the current contract state
     active: bool,
-    /// Whether the validator is a player in the current epoch.
-    is_player: bool,
     // Whether the validator is a dealer in th ecurrent epoch.
-    is_dealer: bool,
+    is_dkg_dealer: bool,
+    /// Whether the validator is a player in the current epoch.
+    is_dkg_player: bool,
+    /// Whether the validator is in the committee for the given epoch.
+    in_committee: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -160,6 +165,10 @@ pub(crate) struct ValidatorsInfo {
     /// RPC URL to query. Defaults to <https://rpc.presto.tempo.xyz>
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
+
+    /// Whethr to include historic validators (deactivated and not in the current committee).
+    #[arg(long)]
+    with_historic: bool,
 }
 
 impl ValidatorsInfo {
@@ -257,39 +266,26 @@ impl ValidatorsInfo {
             IValidatorConfig::getNextFullDkgCeremonyCall::abi_decode_returns(&next_dkg_result)
                 .wrap_err("failed to decode getNextFullDkgCeremony response")?;
 
-        let contract_validators: HashMap<[u8; 32], IValidatorConfig::Validator> =
-            decoded_validators
-                .into_iter()
-                .map(|v| (v.publicKey.0, v))
-                .collect();
+        let mut validator_entries = Vec::with_capacity(decoded_validators.len());
+        for validator in decoded_validators.into_iter() {
+            let pubkey_bytes = validator.publicKey.0;
+            let key = PublicKey::decode(&mut &validator.publicKey.0[..])
+                .wrap_err("failed decoding on-chain ed25519 key")?;
 
-        let players = dkg_outcome.players().clone();
+            let in_committee = dkg_outcome.players().position(&key).is_some();
 
-        let mut validator_entries = Vec::new();
-        for player in players.into_iter() {
-            let pubkey_bytes: [u8; 32] = player.as_ref().try_into().wrap_err("invalid pubkey")?;
-
-            let (onchain_address, active, inbound, outbound) =
-                if let Some(v) = contract_validators.get(&pubkey_bytes) {
-                    (
-                        v.validatorAddress,
-                        v.active,
-                        v.inboundAddress.clone(),
-                        v.outboundAddress.clone(),
-                    )
-                } else {
-                    (Address::ZERO, false, String::new(), String::new())
-                };
-
-            validator_entries.push(ValidatorEntry {
-                onchain_address,
-                public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                inbound_address: inbound,
-                outbound_address: outbound,
-                active,
-                is_dealer: dkg_outcome.players().position(&player).is_some(),
-                is_player: dkg_outcome.next_players().position(&player).is_some(),
-            });
+            if self.with_historic || (validator.active || in_committee) {
+                validator_entries.push(ValidatorEntry {
+                    onchain_address: validator.validatorAddress,
+                    public_key: alloy_primitives::hex::encode(pubkey_bytes),
+                    inbound_address: validator.inboundAddress,
+                    outbound_address: validator.outboundAddress,
+                    active: validator.active,
+                    is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
+                    is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),
+                    in_committee,
+                });
+            }
         }
 
         let output = ValidatorInfoOutput {

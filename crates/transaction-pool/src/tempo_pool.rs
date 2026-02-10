@@ -7,7 +7,10 @@ use crate::{
     tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
-use alloy_primitives::{Address, B256, TxHash, map::HashMap};
+use alloy_primitives::{
+    Address, B256, TxHash,
+    map::{AddressMap, HashMap},
+};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
@@ -25,7 +28,7 @@ use reth_transaction_pool::{
     identifier::TransactionId,
 };
 use revm::database::BundleAccount;
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 
 /// Tempo transaction pool that routes based on nonce_key
@@ -172,12 +175,27 @@ where
         };
 
         // Cache policy lookups per fee token to avoid redundant storage reads
-        let mut policy_cache: HashMap<Address, u64> = HashMap::default();
+        let mut policy_cache: AddressMap<u64> = AddressMap::default();
+
+        // Filter validator token changes to only those from active validators.
+        // This prevents DoS via permissionless setValidatorToken: we only process
+        // token changes from validators who have actually produced recent blocks.
+        let amm_cache = self.amm_liquidity_cache();
+        let active_validator_token_changes: Vec<Address> = updates
+            .validator_token_changes
+            .iter()
+            .filter_map(|&(validator, new_token)| {
+                amm_cache
+                    .is_active_validator(&validator)
+                    .then_some(new_token)
+            })
+            .collect();
 
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
         let mut spending_limit_count = 0;
         let mut liquidity_count = 0;
+        let mut user_token_count = 0;
         let mut blacklisted_count = 0;
         let mut unwhitelisted_count = 0;
 
@@ -208,7 +226,12 @@ where
             }
 
             // Check 3: Validator token changes (check liquidity for all transactions)
-            if let Some(ref provider) = state_provider {
+            // NOTE: Only process changes from validators whose new token is already in use
+            // by actual block producers. This prevents permissionless setValidatorToken calls
+            // from triggering mass eviction.
+            if let Some(ref provider) = state_provider
+                && !active_validator_token_changes.is_empty()
+            {
                 let user_token = tx
                     .transaction
                     .inner()
@@ -221,7 +244,7 @@ where
                     Err(_) => continue,
                 };
 
-                for &(_validator, new_validator_token) in &updates.validator_token_changes {
+                for &new_validator_token in &active_validator_token_changes {
                     if user_token == new_validator_token {
                         continue;
                     }
@@ -339,6 +362,21 @@ where
                     }
                 }
             }
+
+            // Check 6: User fee token preference changes
+            // When a user changes their fee token preference via setUserToken(), transactions
+            // from that user that don't have an explicit fee_token set may now resolve to a
+            // different token at execution time, causing fee payment failures.
+            // Only evict transactions WITHOUT an explicit fee_token (those that rely on storage).
+            if !updates.user_token_changes.is_empty()
+                && tx.transaction.inner().fee_token().is_none()
+                && updates
+                    .user_token_changes
+                    .contains(&tx.transaction.sender())
+            {
+                to_remove.push(*tx.hash());
+                user_token_count += 1;
+            }
         }
 
         let evicted_count = to_remove.len();
@@ -349,6 +387,7 @@ where
                 revoked_count,
                 spending_limit_count,
                 liquidity_count,
+                user_token_count,
                 blacklisted_count,
                 unwhitelisted_count,
                 "Evicting invalidated transactions"
@@ -932,7 +971,7 @@ where
         txs
     }
 
-    fn unique_senders(&self) -> HashSet<Address> {
+    fn unique_senders(&self) -> std::collections::HashSet<Address> {
         let mut senders = self.protocol_pool.unique_senders();
         senders.extend(self.aa_2d_pool.read().senders_iter().copied());
         senders

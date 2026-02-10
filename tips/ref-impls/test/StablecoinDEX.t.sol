@@ -66,16 +66,55 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     function test_TickToPrice(int16 tick) public view {
+        tick = int16(bound(int256(tick), exchange.MIN_TICK(), exchange.MAX_TICK()));
+        tick = tick - (tick % exchange.TICK_SPACING());
         uint32 price = exchange.tickToPrice(tick);
         uint32 expectedPrice = uint32(int32(exchange.PRICE_SCALE()) + int32(tick));
         assertEq(price, expectedPrice);
     }
 
+    function test_TickToPrice_RevertsOnInvalidSpacing() public {
+        try exchange.tickToPrice(1) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+        }
+
+        try exchange.tickToPrice(-5) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+        }
+
+        try exchange.tickToPrice(15) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+        }
+    }
+
     function test_PriceToTick(uint32 price) public view {
         price = uint32(bound(price, exchange.MIN_PRICE(), exchange.MAX_PRICE()));
+        int16 rawTick = int16(int32(price) - int32(exchange.PRICE_SCALE()));
+        vm.assume(rawTick % exchange.TICK_SPACING() == 0);
         int16 tick = exchange.priceToTick(price);
-        int16 expectedTick = int16(int32(price) - int32(exchange.PRICE_SCALE()));
-        assertEq(tick, expectedTick);
+        assertEq(tick, rawTick);
+    }
+
+    function test_PriceToTick_RevertsOnInvalidSpacing() public {
+        uint32 scale = exchange.PRICE_SCALE();
+
+        try exchange.priceToTick(scale + 1) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+        }
+
+        try exchange.priceToTick(scale + 5) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+        }
     }
 
     function test_PairKey(address base, address quote) public view {
@@ -227,7 +266,10 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     /// @notice Fuzz test that escrow always rounds UP for bid orders
-    function testFuzz_PlaceBidOrder_EscrowAlwaysRoundsUp(uint128 amount, int16 tickMultiplier)
+    function testFuzz_PlaceBidOrder_EscrowAlwaysRoundsUp(
+        uint128 amount,
+        int16 tickMultiplier
+    )
         public
     {
         // Constrain amount to be >= MIN_ORDER_AMOUNT and reasonable for our balance
@@ -688,7 +730,9 @@ contract StablecoinDEXTest is BaseTest {
         int16 tick,
         int16 flipTick,
         bool isBid
-    ) public {
+    )
+        public
+    {
         tick = int16(bound(int256(tick), type(int16).min, type(int16).max));
         flipTick = int16(bound(int256(flipTick), type(int16).min, type(int16).max));
 
@@ -794,7 +838,10 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     // Test withdraw validation
-    function testFuzz_Withdraw_RevertIf_InsufficientBalance(uint128 balance, uint128 withdrawAmount)
+    function testFuzz_Withdraw_RevertIf_InsufficientBalance(
+        uint128 balance,
+        uint128 withdrawAmount
+    )
         public
     {
         vm.assume(balance < type(uint128).max); // Avoid overflow in balance + 1
@@ -881,6 +928,10 @@ contract StablecoinDEXTest is BaseTest {
 
     // Test price conversion validates bounds and reverts for out-of-range prices
     function testFuzz_PriceToTick_Conversion(uint32 price) public view {
+        // Bound price to avoid int32 overflow when computing expectedTick
+        // int32 max is 2^31-1, so price must be < 2^31 to safely cast to int32
+        price = uint32(bound(price, 0, uint32(type(int32).max)));
+
         int16 expectedTick = int16(int32(price) - int32(exchange.PRICE_SCALE()));
 
         if (price < exchange.MIN_PRICE() || price > exchange.MAX_PRICE()) {
@@ -893,8 +944,15 @@ contract StablecoinDEXTest is BaseTest {
                     abi.encodeWithSelector(IStablecoinDEX.TickOutOfBounds.selector, expectedTick)
                 );
             }
+        } else if (expectedTick % exchange.TICK_SPACING() != 0) {
+            // Valid range but not aligned to tick spacing - should revert
+            try exchange.priceToTick(price) {
+                revert CallShouldHaveReverted();
+            } catch (bytes memory err) {
+                assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector));
+            }
         } else {
-            // Valid price range - should succeed
+            // Valid price range and aligned to tick spacing - should succeed
             int16 tick = exchange.priceToTick(price);
             assertEq(tick, expectedTick);
         }
@@ -1093,7 +1151,9 @@ contract StablecoinDEXTest is BaseTest {
         bool useToken1,
         bool useToken2,
         bool swapDirection
-    ) public {
+    )
+        public
+    {
         // Setup both token pairs
         exchange.createPair(address(token2));
 
@@ -1759,7 +1819,11 @@ contract StablecoinDEXTest is BaseTest {
                         HELPER FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function _placeBidOrder(address user, uint128 amount, int16 tick)
+    function _placeBidOrder(
+        address user,
+        uint128 amount,
+        int16 tick
+    )
         internal
         returns (uint128 orderId)
     {
@@ -1774,7 +1838,11 @@ contract StablecoinDEXTest is BaseTest {
         orderId = exchange.place(address(token1), amount, true, tick);
     }
 
-    function _placeAskOrder(address user, uint128 amount, int16 tick)
+    function _placeAskOrder(
+        address user,
+        uint128 amount,
+        int16 tick
+    )
         internal
         returns (uint128 orderId)
     {
@@ -1910,7 +1978,9 @@ contract StablecoinDEXTest is BaseTest {
         uint128 totalBaseOut,
         uint8 numSplits,
         int16 tick
-    ) public {
+    )
+        public
+    {
         // Bound inputs
         totalBaseOut = uint128(bound(totalBaseOut, exchange.MIN_ORDER_AMOUNT() * 2, 1e18));
         numSplits = uint8(bound(numSplits, 2, 10));
@@ -1984,6 +2054,73 @@ contract StablecoinDEXTest is BaseTest {
         assertGe(
             totalOneAtATime, singleTradeQuote, "Splitting into 1-unit trades should not be cheaper"
         );
+    }
+
+    /// @notice Test cancelStaleOrder with compound policy - maker blocked as sender
+    function test_CancelStaleOrder_Succeeds_BlockedMaker_CompoundPolicy() public {
+        // Create compound policy: sender blacklist, recipient always-allow, mint always-allow
+        uint64 senderBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        uint64 compoundPolicy = registry.createCompoundPolicy(senderBlacklist, 1, 1);
+
+        // Set compound policy on token1
+        vm.prank(admin);
+        token1.changeTransferPolicyId(compoundPolicy);
+
+        // Alice places an ask order (selling token1)
+        uint128 orderId = _placeAskOrder(alice, exchange.MIN_ORDER_AMOUNT() * 2, 100);
+
+        // Blacklist alice as sender
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(senderBlacklist, alice, true);
+
+        // Alice is now blocked as sender
+        assertFalse(
+            registry.isAuthorizedSender(compoundPolicy, alice),
+            "Alice should not be authorized as sender"
+        );
+
+        // Cancel the stale order - should succeed because alice can't send
+        vm.prank(bob);
+        exchange.cancelStaleOrder(orderId);
+    }
+
+    /// @notice Test cancelStaleOrder fails with compound policy when maker only blocked as recipient
+    function test_CancelStaleOrder_Fails_MakerOnlyBlockedAsRecipient_CompoundPolicy() public {
+        // Create compound policy: sender always-allow, recipient blacklist, mint always-allow
+        uint64 recipientBlacklist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        uint64 compoundPolicy = registry.createCompoundPolicy(1, recipientBlacklist, 1);
+
+        // Set compound policy on token1
+        vm.prank(admin);
+        token1.changeTransferPolicyId(compoundPolicy);
+
+        // Alice places an ask order
+        uint128 orderId = _placeAskOrder(alice, exchange.MIN_ORDER_AMOUNT() * 2, 100);
+
+        // Blacklist alice as recipient (but NOT as sender)
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(recipientBlacklist, alice, true);
+
+        // Alice is authorized as sender, just not as recipient
+        assertTrue(
+            registry.isAuthorizedSender(compoundPolicy, alice),
+            "Alice should be authorized as sender"
+        );
+        assertFalse(
+            registry.isAuthorizedRecipient(compoundPolicy, alice),
+            "Alice should not be authorized as recipient"
+        );
+
+        // Cancel should fail - alice can still send (order not stale)
+        vm.prank(bob);
+        try exchange.cancelStaleOrder(orderId) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.OrderNotStale.selector));
+        }
     }
 
 }

@@ -28,13 +28,13 @@ futures.workspace = true
 hex = "0.4"
 itertools = "0.14.0"
 tempo-precompiles = { workspace = true, features = ["rpc"] }
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { version = "0.13", default-features = false, features = [
     "json",
-    "rustls-tls",
-    "rustls-tls-native-roots",
+    "rustls",
 ] }
-metrics-exporter-prometheus = { version = "0.17.2", default-features = false }
-metrics = "0.24.2"
+rustls.workspace = true
+metrics-exporter-prometheus = { version = "0.18.1", default-features = false }
+metrics = "0.24.3"
 poem = "3.1.12"
 rand_distr = "0.5.1"
 tempo-telemetry-util.workspace = true

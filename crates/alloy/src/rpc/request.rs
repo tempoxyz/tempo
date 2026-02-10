@@ -73,7 +73,7 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
 
-    /// Transaction valid before timestamp (for expiring nonces, TIP-1009).
+    /// Transaction valid before timestamp in seconds (for expiring nonces, TIP-1009).
     /// Transaction can only be included in a block before this timestamp.
     #[serde(
         default,
@@ -82,7 +82,7 @@ pub struct TempoTransactionRequest {
     )]
     pub valid_before: Option<u64>,
 
-    /// Transaction valid after timestamp (for expiring nonces, TIP-1009).
+    /// Transaction valid after timestamp in seconds (for expiring nonces, TIP-1009).
     /// Transaction can only be included in a block after this timestamp.
     #[serde(
         default,
@@ -192,8 +192,7 @@ impl TempoTransactionRequest {
         }
 
         Ok(TempoTransaction {
-            // TODO: use tempo mainnet chainid once assigned
-            chain_id: self.inner.chain_id.unwrap_or(1),
+            chain_id: self.inner.chain_id.unwrap_or(4217),
             nonce,
             fee_payer_signature: self.fee_payer_signature,
             valid_before: self.valid_before,

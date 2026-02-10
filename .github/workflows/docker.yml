@@ -1,5 +1,7 @@
 name: Docker Build
 
+permissions: {}
+
 on:
   push:
     branches:
@@ -31,15 +33,19 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
-      - uses: depot/setup-action@b0b1ea4f69e92ebf5dea3f8713a1b0c37b2126a5 # v1.6.0
+      - uses: depot/setup-action@15c09a5f77a0840ad4bce955686522a257853461 # v1.7.1
 
       - name: Docker metadata for tempo
         id: meta-tempo
-        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
-          images: ${{ env.REGISTRY }}/tempo
+          images: |
+            ${{ env.REGISTRY }}/tempo
+            docker.io/tempoxyz/tempo
           bake-target: tempo
           tags: |
             type=schedule,pattern=nightly
@@ -55,9 +61,11 @@ jobs:
 
       - name: Docker metadata for tempo-bench
         id: meta-tempo-bench
-        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
-          images: ${{ env.REGISTRY }}/tempo-bench
+          images: |
+            ${{ env.REGISTRY }}/tempo-bench
+            docker.io/tempoxyz/tempo-bench
           bake-target: tempo-bench
           tags: |
             type=schedule,pattern=nightly
@@ -73,9 +81,11 @@ jobs:
 
       - name: Docker metadata for tempo-sidecar
         id: meta-tempo-sidecar
-        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
-          images: ${{ env.REGISTRY }}/tempo-sidecar
+          images: |
+            ${{ env.REGISTRY }}/tempo-sidecar
+            docker.io/tempoxyz/tempo-sidecar
           bake-target: tempo-sidecar
           tags: |
             type=schedule,pattern=nightly
@@ -91,9 +101,11 @@ jobs:
 
       - name: Docker metadata for tempo-xtask
         id: meta-tempo-xtask
-        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
-          images: ${{ env.REGISTRY }}/tempo-xtask
+          images: |
+            ${{ env.REGISTRY }}/tempo-xtask
+            docker.io/tempoxyz/tempo-xtask
           bake-target: tempo-xtask
           tags: |
             type=schedule,pattern=nightly
@@ -108,17 +120,23 @@ jobs:
             type=ref,event=pr
 
       - name: Log in to Container Registry
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ vars.DOCKER_HUB_USER }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
       - id: shortsha
         run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker images
-        uses: depot/bake-action@2ae2529115bba41de62b77b345de48d57eca7564 # v1.12.1
+        uses: depot/bake-action@1d58c2668346981089b088b7ef36755b206b20e9 # v1.13.0
         with:
           files: |
             docker-bake.hcl
@@ -132,3 +150,20 @@ jobs:
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+
+      - name: Sign Docker images
+        shell: bash
+        run: |
+          set -euo pipefail
+          images=(
+            "${{ steps.meta-tempo.outputs.tags }}"
+            "${{ steps.meta-tempo-bench.outputs.tags }}"
+            "${{ steps.meta-tempo-sidecar.outputs.tags }}"
+            "${{ steps.meta-tempo-xtask.outputs.tags }}"
+          )
+          for tags in "${images[@]}"; do
+            echo "$tags" | xargs -n1 cosign sign --yes --recursive
+          done

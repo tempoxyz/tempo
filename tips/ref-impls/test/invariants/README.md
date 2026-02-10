@@ -12,31 +12,35 @@
 
 - **TEMPO-DEX4**: `amountOut >= minAmountOut` when executing `swapExactAmountIn`.
 - **TEMPO-DEX5**: `amountIn <= maxAmountIn` when executing `swapExactAmountOut`.
-- **TEMPO-DEX14**: Swapper total balance (external + internal) changes correctly - loses exact `amountIn` of tokenIn and gains exact `amountOut` of tokenOut. Skipped when swapper has active orders (self-trade makes accounting complex).
-- **TEMPO-DEX16**: Quote functions (`quoteSwapExactAmountIn/Out`) return values matching actual swap execution.
-- **TEMPO-DEX18**: Dust invariant - each swap can at maximum increase the dust in the DEX by the number of orders filled.
-- **TEMPO-DEX19**: Post-swap dust bounded - maximum dust accumulation in the protocol is bounded and tracked via `_maxDust`.
+- **TEMPO-DEX6**: Swapper total balance (external + internal) changes correctly - loses exact `amountIn` of tokenIn and gains exact `amountOut` of tokenOut. Skipped when swapper has active orders (self-trade makes accounting complex).
+- **TEMPO-DEX7**: Quote functions (`quoteSwapExactAmountIn/Out`) return values matching actual swap execution.
+- **TEMPO-DEX8**: Dust invariant - each swap can at maximum increase the dust in the DEX by the number of orders filled plus the number of hops (rounding occurs at each hop, not just at hop boundaries).
+- **TEMPO-DEX9**: Post-swap dust bounded - maximum dust accumulation in the protocol is bounded and tracked via `_maxDust`.
 
 ### Balance Invariants
 
-- **TEMPO-DEX6**: DEX token balance >= sum of all internal user balances (the difference accounts for escrowed order amounts).
+- **TEMPO-DEX10**: DEX token balance >= sum of all internal user balances (the difference accounts for escrowed order amounts).
 
 ### Orderbook Structure Invariants
 
-- **TEMPO-DEX7**: Total liquidity at a tick level equals the sum of remaining amounts of all orders at that tick. If liquidity > 0, head and tail must be non-zero.
-- **TEMPO-DEX8**: Best bid tick points to the highest tick with non-empty bid liquidity, or `type(int16).min` if no bids exist.
-- **TEMPO-DEX9**: Best ask tick points to the lowest tick with non-empty ask liquidity, or `type(int16).max` if no asks exist.
-- **TEMPO-DEX10**: Order linked list is consistent - `prev.next == current` and `next.prev == current`. If head is zero, tail must also be zero.
-- **TEMPO-DEX11**: Tick bitmap accurately reflects which ticks have liquidity (bit set iff tick has orders).
-- **TEMPO-DEX17**: Linked list head/tail is terminal - `head.prev == None` and `tail.next == None`
+- **TEMPO-DEX11**: Total liquidity at a tick level equals the sum of remaining amounts of all orders at that tick. If liquidity > 0, head and tail must be non-zero.
+- **TEMPO-DEX12**: Best bid tick points to the highest tick with non-empty bid liquidity, or `type(int16).min` if no bids exist.
+- **TEMPO-DEX13**: Best ask tick points to the lowest tick with non-empty ask liquidity, or `type(int16).max` if no asks exist.
+- **TEMPO-DEX14**: Order linked list is consistent - `prev.next == current` and `next.prev == current`. If head is zero, tail must also be zero.
+- **TEMPO-DEX15**: Tick bitmap accurately reflects which ticks have liquidity (bit set iff tick has orders).
+- **TEMPO-DEX16**: Linked list head/tail is terminal - `head.prev == None` and `tail.next == None`
 
 ### Flip Order Invariants
 
-- **TEMPO-DEX12**: Flip orders have valid tick constraints - for bids `flipTick > tick`, for asks `flipTick < tick`.
+- **TEMPO-DEX17**: Flip orders have valid tick constraints - for bids `flipTick > tick`, for asks `flipTick < tick`.
 
 ### Blacklist Invariants
 
-- **TEMPO-DEX13**: Anyone can cancel a stale order from a blacklisted maker via `cancelStaleOrder`. The escrowed funds are refunded to the blacklisted maker's internal balance.
+- **TEMPO-DEX18**: Anyone can cancel a stale order from a blacklisted maker via `cancelStaleOrder`. The escrowed funds are refunded to the blacklisted maker's internal balance.
+
+### Rounding Invariants
+
+- **TEMPO-DEX19**: Divisibility edge cases - when `(amount * price) % PRICE_SCALE == 0`, bid escrow must be exact (no +1 rounding) since ceil equals floor for perfectly divisible amounts.
 
 ## FeeAMM
 
@@ -91,6 +95,7 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 - **TEMPO-AMM20**: Reserves are always bounded by uint128.
 - **TEMPO-AMM21**: Spread between fee swap (M) and rebalance (N) prevents arbitrage - M < N with 15 bps spread.
 - **TEMPO-AMM22**: Rebalance swap rounding always favors the pool - the +1 in the formula ensures pool never loses to rounding, even when `(amountOut * N) % SCALE == 0` (exact division case).
+
 
 - **TEMPO-AMM23**: Burn rounding dust accumulates in pool - integer division rounds down, so users receive <= theoretical amount.
 - **TEMPO-AMM24**: All participants can exit with solvency guaranteed. After distributing all fees and burning all LP positions:
@@ -226,6 +231,40 @@ The Nonce precompile manages 2D nonces for accounts, enabling multiple independe
 
 - **TEMPO-NON11**: Reserved expiring nonce key - `type(uint256).max` is reserved for `TEMPO_EXPIRING_NONCE_KEY`. Reading it returns 0 for uninitialized accounts (readable but reserved for special use).
 
+## TIP-1015 Compound Policies
+
+TIP-1015 extends TIP-403 with compound policies that specify different authorization rules for senders, recipients, and mint recipients.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-1015-2**: Compound policy immutability - compound policies have `PolicyType.COMPOUND` and `admin == address(0)`.
+- **TEMPO-1015-3**: Compound policy existence - all created compound policies return true for `policyExists()`.
+- **TEMPO-1015-4**: Simple policy equivalence - for simple policies, `isAuthorizedSender == isAuthorizedRecipient == isAuthorizedMintRecipient`.
+- **TEMPO-1015-5**: isAuthorized equivalence - for compound policies, `isAuthorized(p, u) == isAuthorizedSender(p, u) && isAuthorizedRecipient(p, u)`.
+- **TEMPO-1015-6**: Compound delegation correctness - directional authorization delegates to the correct sub-policy.
+
+### Per-Handler Assertions
+
+#### Compound Policy Creation
+
+- **TEMPO-1015-1**: Simple policy constraint - `createCompoundPolicy` reverts with `PolicyNotSimple` if any referenced policy is compound.
+- **TEMPO-1015-2**: Immutability - newly created compound policies have no admin (address(0)).
+- **TEMPO-1015-3**: Existence check - `createCompoundPolicy` reverts with `PolicyNotFound` if any referenced policy doesn't exist.
+- **TEMPO-1015-6**: Built-in policy compatibility - compound policies can reference built-in policies 0 (always-reject) and 1 (always-allow).
+
+#### Compound Policy Modification
+
+- **TEMPO-1015-2**: Cannot modify compound policy - `modifyPolicyWhitelist` and `modifyPolicyBlacklist` revert for compound policies.
+
+#### TIP-20 Integration
+
+- Mint uses `mintRecipientPolicyId` for authorization (not sender or recipient).
+- Transfer uses `senderPolicyId` for sender and `recipientPolicyId` for recipient.
+- `burnBlocked` uses `senderPolicyId` to check if address is blocked.
+- DEX `cancelStaleOrder` uses `senderPolicyId` to check if maker is blocked.
+
 ## TIP20Factory
 
 The TIP20Factory is the factory contract for creating TIP-20 compliant tokens with deterministic addresses.
@@ -339,6 +378,66 @@ The ValidatorConfig precompile manages the set of validators that participate in
 - **TEMPO-VAL14**: Owner consistency - contract owner always matches ghost state.
 - **TEMPO-VAL15**: Validator data consistency - all validator data (active status, public key, index) matches ghost state.
 - **TEMPO-VAL16**: Index consistency - each validator's index matches the ghost-tracked index assigned at creation.
+
+## AccountKeychain
+
+The AccountKeychain precompile manages authorized Access Keys for accounts, enabling Root Keys to provision scoped secondary keys with expiry timestamps and per-TIP20 token spending limits.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-KEY13**: Key data consistency - all key data (expiry, enforceLimits, signatureType) matches ghost state for tracked keys.
+- **TEMPO-KEY14**: Spending limit consistency - all spending limits match ghost state for active keys with limits enforced.
+- **TEMPO-KEY15**: Revocation permanence - revoked keys remain revoked (isRevoked stays true).
+- **TEMPO-KEY16**: Signature type consistency - key signature type matches ghost state for all active keys.
+
+### Per-Handler Assertions
+
+These verify correct behavior when the specific function is called:
+
+#### Key Authorization
+
+- **TEMPO-KEY1**: Key authorization - `authorizeKey` correctly stores key info (keyId, expiry, signatureType, enforceLimits).
+- **TEMPO-KEY2**: Spending limit initialization - initial spending limits are correctly stored when `enforceLimits` is true.
+
+#### Key Revocation
+
+- **TEMPO-KEY3**: Key revocation - `revokeKey` marks key as revoked and clears expiry.
+- **TEMPO-KEY4**: Revocation finality - revoked keys cannot be reauthorized (reverts with `KeyAlreadyRevoked`).
+
+#### Spending Limits
+
+- **TEMPO-KEY5**: Limit update - `updateSpendingLimit` correctly updates the spending limit for a token.
+- **TEMPO-KEY6**: Limit enforcement activation - calling `updateSpendingLimit` on a key with `enforceLimits=false` enables limit enforcement.
+
+#### Input Validation
+
+- **TEMPO-KEY7**: Zero key rejection - authorizing a key with `keyId=address(0)` reverts with `ZeroPublicKey`.
+- **TEMPO-KEY8**: Duplicate key rejection - authorizing a key that already exists reverts with `KeyAlreadyExists`.
+- **TEMPO-KEY9**: Non-existent key revocation - revoking a key that doesn't exist reverts with `KeyNotFound`.
+
+#### Isolation
+
+- **TEMPO-KEY10**: Account isolation - keys are scoped per account; the same keyId can be authorized for different accounts with different settings.
+- **TEMPO-KEY11**: Transaction key context - `getTransactionKey` returns `address(0)` when called outside of a transaction signed by an access key.
+- **TEMPO-KEY12**: Non-existent key defaults - `getKey` for a non-existent key returns default values (keyId=0, expiry=0, enforceLimits=false).
+
+#### Expiry Boundaries
+
+- **TEMPO-KEY17**: Expiry at current timestamp is expired - Rust uses `timestamp >= expiry` so `expiry == block.timestamp` counts as expired.
+- **TEMPO-KEY18**: Operations on expired keys fail with `KeyExpired` - `updateSpendingLimit` on a key where `timestamp >= expiry` reverts.
+
+#### Signature Type Validation
+
+- **TEMPO-KEY19**: Invalid signature type rejection - enum values >= 3 are invalid and revert with `InvalidSignatureType`.
+
+#### Transaction Context
+
+> **Note**: KEY20/21 cannot be tested in Foundry invariant tests because `transaction_key` uses transient storage (TSTORE/TLOAD) which `vm.store` cannot modify. These invariants require integration tests in `crates/node/tests/it/` that submit real signed transactions.
+
+- **TEMPO-KEY20**: Main-key-only administration - `authorizeKey`, `revokeKey`, and `updateSpendingLimit` require `transaction_key == 0` (Root Key context). When called with a non-zero transaction key (i.e., from an Access Key), these operations revert with `UnauthorizedCaller`. This ensures only the Root Key can manage Access Keys.
+- **TEMPO-KEY21**: Spending limit tx_origin enforcement - spending limits are only consumed when `msg_sender == tx_origin`. Contract-initiated transfers (where msg_sender is a contract, not the signing EOA) do not consume the EOA's spending limit. This prevents contracts from unexpectedly draining a user's spending limits.
 
 ## TIP20
 
