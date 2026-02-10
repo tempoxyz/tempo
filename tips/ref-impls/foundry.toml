@@ -11,7 +11,8 @@ fs_permissions = [{ access = "read-write", path = "./"}]
 via_ir = true
 remappings = [
     "tempo-std/=lib/tempo-std/src/",
-    "forge-std/=lib/forge-std/src/"
+    "forge-std/=lib/forge-std/src/",
+    "solady/=lib/solady/src/"
 ]
 
 [profile.ci]

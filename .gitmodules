@@ -4,3 +4,6 @@
 [submodule "tips/ref-impls/lib/tempo-std"]
 	path = tips/ref-impls/lib/tempo-std
 	url = https://github.com/tempoxyz/tempo-std
+[submodule "tips/ref-impls/lib/solady"]
+	path = tips/ref-impls/lib/solady
+	url = https://github.com/Vectorized/solady
