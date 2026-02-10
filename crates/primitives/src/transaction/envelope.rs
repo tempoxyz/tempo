@@ -742,9 +742,8 @@ mod tests {
 
     #[test]
     fn test_payment_rejects_excess_calldata() {
-        let (selector, len) = PAYMENT_CALLDATA[0];
-        let mut data = vec![0u8; len + 32];
-        data[..4].copy_from_slice(&selector);
+        let mut data = transfer_calldata().to_vec();
+        data.extend_from_slice(&[0u8; 32]);
         let tx = TxLegacy {
             to: TxKind::Call(PAYMENT_TKN),
             gas_limit: 21000,
@@ -758,8 +757,7 @@ mod tests {
 
     #[test]
     fn test_payment_rejects_unknown_selector() {
-        let (_, len) = PAYMENT_CALLDATA[0];
-        let mut data = vec![0u8; len];
+        let mut data = transfer_calldata().to_vec();
         data[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         let tx = TxLegacy {
             to: TxKind::Call(PAYMENT_TKN),
