@@ -728,11 +728,11 @@ contract ValidatorConfigV2Test is BaseTest {
         assertEq(v1.addedAtHeight, 0);
         assertEq(v1.deactivatedAtHeight, 0);
 
-        // Inactive validator: addedAtHeight=deactivatedAtHeight=block.timestamp
+        // Inactive validator: addedAtHeight=0, deactivatedAtHeight=block.number
         IValidatorConfigV2.Validator memory v2 = validatorConfigV2.validatorByIndex(2);
         assertEq(v2.validatorAddress, validator1);
-        assertEq(v2.addedAtHeight, uint64(block.timestamp));
-        assertEq(v2.deactivatedAtHeight, uint64(block.timestamp));
+        assertEq(v2.addedAtHeight, 0);
+        assertEq(v2.deactivatedAtHeight, uint64(block.number));
     }
 
     function test_migrateValidator_fail() public {
