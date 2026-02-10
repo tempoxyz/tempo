@@ -12,7 +12,7 @@ variable "VERGEN_GIT_SHA_SHORT" {
 target "chef" {
   dockerfile = "Dockerfile.chef"
   context = "."
-  platforms = ["linux/amd64"]
+  platforms = ["linux/amd64", "linux/arm64"]
   args = {
     RUST_PROFILE = "profiling"
     RUST_FEATURES = "asm-keccak,jemalloc,otlp"
@@ -33,7 +33,7 @@ target "_common" {
     VERGEN_GIT_SHA = "${VERGEN_GIT_SHA}"
     VERGEN_GIT_SHA_SHORT = "${VERGEN_GIT_SHA_SHORT}"
   }
-  platforms = ["linux/amd64"]
+  platforms = ["linux/amd64", "linux/arm64"]
 }
 
 target "tempo" {
