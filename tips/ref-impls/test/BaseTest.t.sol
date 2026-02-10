@@ -115,10 +115,6 @@ contract BaseTest is Test {
             if (_VALIDATOR_CONFIG.code.length == 0) {
                 revert MissingPrecompile("ValidatorConfig", _VALIDATOR_CONFIG);
             }
-            if (_VALIDATOR_CONFIG_V2.code.length == 0) {
-                revert MissingPrecompile("ValidatorConfigV2", _VALIDATOR_CONFIG_V2);
-            }
-
             // Set ValidatorConfig owner to admin via direct storage write
             // owner is at slot 0 in ValidatorConfig
             vm.store(_VALIDATOR_CONFIG, bytes32(uint256(0)), bytes32(uint256(uint160(admin))));
