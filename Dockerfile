@@ -4,6 +4,7 @@ FROM ${CHEF_IMAGE} AS builder
 
 ARG TARGETARCH
 ARG RUST_PROFILE=profiling
+ARG RUST_FEATURES="asm-keccak,jemalloc,otlp"
 ARG VERGEN_GIT_SHA
 ARG VERGEN_GIT_SHA_SHORT
 ARG EXTRA_RUSTFLAGS=""
@@ -16,7 +17,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
     cargo build --profile ${RUST_PROFILE} \
-        --bin tempo --features "asm-keccak,jemalloc,otlp" \
+        --bin tempo --features "${RUST_FEATURES}" \
         --bin tempo-bench \
         --bin tempo-sidecar \
         --bin tempo-xtask
