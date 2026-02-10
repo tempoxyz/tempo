@@ -87,8 +87,9 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         }
 
         // Pre-create one compound policy so handlers don't waste calls on early returns
-        uint64 compoundPid =
-            registry.createCompoundPolicy(_simplePolicies[0], _simplePolicies[1], _simplePolicies[2]);
+        uint64 compoundPid = registry.createCompoundPolicy(
+            _simplePolicies[0], _simplePolicies[1], _simplePolicies[2]
+        );
         _compoundPolicies.push(compoundPid);
         _policyTypes[compoundPid] = ITIP403Registry.PolicyType.COMPOUND;
         _compoundSenderPolicy[compoundPid] = _simplePolicies[0];
@@ -99,7 +100,12 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         // Pre-create one compound token so token-dependent handlers are productive immediately
         TIP20 initialToken = TIP20(
             factory.createToken(
-                "CMPTKN", "CT", "USD", pathUSD, admin, keccak256(abi.encode(compoundPid, uint256(0)))
+                "CMPTKN",
+                "CT",
+                "USD",
+                pathUSD,
+                admin,
+                keccak256(abi.encode(compoundPid, uint256(0)))
             )
         );
         initialToken.grantRole(_ISSUER_ROLE, admin);
