@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import { IValidatorConfig } from "../../src/interfaces/IValidatorConfig.sol";
-import { IValidatorConfigV2 } from "../../src/interfaces/IValidatorConfigV2.sol";
-import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
+import {IValidatorConfig} from "../../src/interfaces/IValidatorConfig.sol";
+import {IValidatorConfigV2} from "../../src/interfaces/IValidatorConfigV2.sol";
+import {InvariantBaseTest} from "./InvariantBaseTest.t.sol";
 
 /// @title ValidatorConfigV2 Invariant Tests
 /// @notice Fuzz-based invariant tests for the ValidatorConfigV2 precompile
 /// @dev Tests invariants TEMPO-VALV2-1 through TEMPO-VALV2-14 covering append-only semantics,
 ///      height tracking, Ed25519 signatures, dual-auth, migration, and view consistency.
 contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
-
     /// @dev Starting offset for validator address pool
     uint256 private constant VALIDATOR_POOL_OFFSET = 0x7000;
 
@@ -45,10 +44,8 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @dev V1 setup validators (migrated during setUp)
     address private _setupVal1 = address(0xA000);
     address private _setupVal2 = address(0xB000);
-    bytes32 private constant SETUP_PUB_KEY_A =
-        0x1111111111111111111111111111111111111111111111111111111111111111;
-    bytes32 private constant SETUP_PUB_KEY_B =
-        0x2222222222222222222222222222222222222222222222222222222222222222;
+    bytes32 private constant SETUP_PUB_KEY_A = 0x1111111111111111111111111111111111111111111111111111111111111111;
+    bytes32 private constant SETUP_PUB_KEY_B = 0x2222222222222222222222222222222222222222222222222222222222222222;
 
     /*//////////////////////////////////////////////////////////////
                                SETUP
@@ -65,12 +62,8 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         _potentialValidators = _buildAddressPool(30, VALIDATOR_POOL_OFFSET);
         _ghostOwner = admin;
 
-        validatorConfig.addValidator(
-            _setupVal1, SETUP_PUB_KEY_A, true, "10.0.0.100:8000", "10.0.0.100:9000"
-        );
-        validatorConfig.addValidator(
-            _setupVal2, SETUP_PUB_KEY_B, true, "10.0.0.101:8000", "10.0.0.101:9000"
-        );
+        validatorConfig.addValidator(_setupVal1, SETUP_PUB_KEY_A, true, "10.0.0.100:8000", "10.0.0.100:9000");
+        validatorConfig.addValidator(_setupVal2, SETUP_PUB_KEY_B, true, "10.0.0.101:8000", "10.0.0.101:9000");
 
         IValidatorConfig.Validator[] memory v1Vals = validatorConfig.getValidators();
         for (uint64 i = 0; i < v1Vals.length; i++) {
@@ -164,12 +157,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     ///      NOTE: Because Ed25519 sigs cannot be computed in the fuzzer, this handler
     ///      will mostly revert with InvalidSignature. We still test the access control,
     ///      validation, and uniqueness invariants via the revert paths.
-    function _tryAddValidator(
-        address validatorAddr,
-        bytes32 publicKey,
-        string memory ingress,
-        string memory egress
-    )
+    function _tryAddValidator(address validatorAddr, bytes32 publicKey, string memory ingress, string memory egress)
         internal
         returns (bool)
     {
@@ -221,11 +209,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         bool added = _tryAddValidator(validatorAddr, publicKey, ingress, egress);
 
         if (added) {
-            assertEq(
-                validatorConfigV2.validatorCount(),
-                countBefore + 1,
-                "TEMPO-VALV2-2: Count should increment"
-            );
+            assertEq(validatorConfigV2.validatorCount(), countBefore + 1, "TEMPO-VALV2-2: Count should increment");
 
             IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(validatorAddr);
             assertEq(v.index, countBefore, "TEMPO-VALV2-3: Index should be previous count");
@@ -233,14 +217,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             assertEq(v.deactivatedAtHeight, 0, "TEMPO-VALV2-4: deactivatedAtHeight should be 0 for new validator");
 
             if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "ADD_VALIDATOR: ",
-                        vm.toString(validatorAddr),
-                        " index=",
-                        vm.toString(countBefore)
-                    )
-                );
+                _log(string.concat("ADD_VALIDATOR: ", vm.toString(validatorAddr), " index=", vm.toString(countBefore)));
             }
         }
     }
@@ -296,12 +273,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
             if (_loggingEnabled) {
                 _log(
-                    string.concat(
-                        "DEACTIVATE: ",
-                        vm.toString(validatorAddr),
-                        " at height=",
-                        vm.toString(block.number)
-                    )
+                    string.concat("DEACTIVATE: ", vm.toString(validatorAddr), " at height=", vm.toString(block.number))
                 );
             }
         } catch (bytes memory reason) {
@@ -453,21 +425,10 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             address oldOwner = _ghostOwner;
             _ghostOwner = newOwner;
 
-            assertEq(
-                validatorConfigV2.owner(),
-                newOwner,
-                "TEMPO-VALV2-8: Owner should be updated"
-            );
+            assertEq(validatorConfigV2.owner(), newOwner, "TEMPO-VALV2-8: Owner should be updated");
 
             if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TRANSFER_OWNERSHIP: ",
-                        vm.toString(oldOwner),
-                        " -> ",
-                        vm.toString(newOwner)
-                    )
-                );
+                _log(string.concat("TRANSFER_OWNERSHIP: ", vm.toString(oldOwner), " -> ", vm.toString(newOwner)));
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
@@ -506,11 +467,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
             _ghostNextDkgCeremony = epoch;
 
-            assertEq(
-                validatorConfigV2.getNextFullDkgCeremony(),
-                epoch,
-                "TEMPO-VALV2-9: DKG epoch should be set"
-            );
+            assertEq(validatorConfigV2.getNextFullDkgCeremony(), epoch, "TEMPO-VALV2-9: DKG epoch should be set");
 
             if (_loggingEnabled) {
                 _log(string.concat("SET_DKG: epoch=", vm.toString(epoch)));
@@ -560,26 +517,11 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             _ghostEgress[validatorAddr] = newEgress;
 
             IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(validatorAddr);
-            assertEq(
-                keccak256(bytes(v.ingress)),
-                keccak256(bytes(newIngress)),
-                "TEMPO-VALV2-10: Ingress should match"
-            );
-            assertEq(
-                keccak256(bytes(v.egress)),
-                keccak256(bytes(newEgress)),
-                "TEMPO-VALV2-10: Egress should match"
-            );
+            assertEq(keccak256(bytes(v.ingress)), keccak256(bytes(newIngress)), "TEMPO-VALV2-10: Ingress should match");
+            assertEq(keccak256(bytes(v.egress)), keccak256(bytes(newEgress)), "TEMPO-VALV2-10: Egress should match");
 
             if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "SET_IP: ",
-                        vm.toString(validatorAddr),
-                        " by ",
-                        asValidator ? "validator" : "owner"
-                    )
-                );
+                _log(string.concat("SET_IP: ", vm.toString(validatorAddr), " by ", asValidator ? "validator" : "owner"));
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
@@ -616,13 +558,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for transferring validator ownership (owner or validator)
     /// @dev Tests TEMPO-VALV2-11 (validator address transfer)
-    function transferValidatorOwnership(
-        uint256 validatorSeed,
-        uint256 newAddrSeed,
-        bool asValidator
-    )
-        external
-    {
+    function transferValidatorOwnership(uint256 validatorSeed, uint256 newAddrSeed, bool asValidator) external {
         (address currentAddr, bool found) = _selectActiveValidator(validatorSeed);
         if (!found) return;
 
@@ -665,14 +601,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             assertEq(v.publicKey, pubKey, "TEMPO-VALV2-11: Public key preserved after transfer");
 
             if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TRANSFER_VAL_OWNERSHIP: ",
-                        vm.toString(currentAddr),
-                        " -> ",
-                        vm.toString(newAddr)
-                    )
-                );
+                _log(string.concat("TRANSFER_VAL_OWNERSHIP: ", vm.toString(currentAddr), " -> ", vm.toString(newAddr)));
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
@@ -729,11 +658,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @notice TEMPO-VALV2-8: Owner matches ghost state
     function _invariantOwnerConsistency() internal view {
-        assertEq(
-            validatorConfigV2.owner(),
-            _ghostOwner,
-            "TEMPO-VALV2-8: Owner should match ghost state"
-        );
+        assertEq(validatorConfigV2.owner(), _ghostOwner, "TEMPO-VALV2-8: Owner should match ghost state");
     }
 
     /// @notice TEMPO-VALV2-12: All validator data matches ghost state
@@ -743,25 +668,10 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         for (uint256 i = 0; i < vals.length; i++) {
             address addr = vals[i].validatorAddress;
-            assertTrue(
-                _ghostValidatorExists[addr],
-                "TEMPO-VALV2-12: Validator should exist in ghost state"
-            );
-            assertEq(
-                vals[i].publicKey,
-                _ghostValidatorPubKey[addr],
-                "TEMPO-VALV2-12: Public key mismatch"
-            );
-            assertEq(
-                vals[i].index,
-                _ghostValidatorIndex[addr],
-                "TEMPO-VALV2-12: Index mismatch"
-            );
-            assertEq(
-                vals[i].addedAtHeight,
-                _ghostAddedAtHeight[addr],
-                "TEMPO-VALV2-12: addedAtHeight mismatch"
-            );
+            assertTrue(_ghostValidatorExists[addr], "TEMPO-VALV2-12: Validator should exist in ghost state");
+            assertEq(vals[i].publicKey, _ghostValidatorPubKey[addr], "TEMPO-VALV2-12: Public key mismatch");
+            assertEq(vals[i].index, _ghostValidatorIndex[addr], "TEMPO-VALV2-12: Index mismatch");
+            assertEq(vals[i].addedAtHeight, _ghostAddedAtHeight[addr], "TEMPO-VALV2-12: addedAtHeight mismatch");
             assertEq(
                 vals[i].deactivatedAtHeight,
                 _ghostDeactivatedAtHeight[addr],
@@ -787,10 +697,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             assertTrue(vals[i].publicKey != bytes32(0), "TEMPO-VALV2-7: Public key must not be zero");
 
             for (uint256 j = i + 1; j < vals.length; j++) {
-                assertTrue(
-                    vals[i].publicKey != vals[j].publicKey,
-                    "TEMPO-VALV2-7: Public keys must be unique"
-                );
+                assertTrue(vals[i].publicKey != vals[j].publicKey, "TEMPO-VALV2-7: Public keys must be unique");
             }
         }
     }
@@ -811,17 +718,11 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 expectedActive++;
             }
         }
-        assertEq(
-            active.length,
-            expectedActive,
-            "TEMPO-VALV2-13: Active count should match filtered count"
-        );
+        assertEq(active.length, expectedActive, "TEMPO-VALV2-13: Active count should match filtered count");
 
         for (uint256 i = 0; i < active.length; i++) {
             assertEq(
-                active[i].deactivatedAtHeight,
-                0,
-                "TEMPO-VALV2-13: Active validators must have deactivatedAtHeight == 0"
+                active[i].deactivatedAtHeight, 0, "TEMPO-VALV2-13: Active validators must have deactivatedAtHeight == 0"
             );
         }
     }
