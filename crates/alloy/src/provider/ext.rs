@@ -10,6 +10,10 @@ pub trait TempoProviderBuilderExt {
     /// Returns a provider builder with the recommended Tempo fillers and the random 2D nonce filler.
     ///
     /// See [`Random2DNonceFiller`] for more information on random 2D nonces.
+    #[deprecated(
+        since = "1.1.0",
+        note = "Use `with_expiring_nonces()` instead. Random 2D nonces create permanent state per transaction. See TIP-1009."
+    )]
     fn with_random_2d_nonces(
         self,
     ) -> ProviderBuilder<
@@ -26,6 +30,7 @@ impl TempoProviderBuilderExt
         TempoNetwork,
     >
 {
+    #[allow(deprecated)]
     fn with_random_2d_nonces(
         self,
     ) -> ProviderBuilder<
@@ -47,6 +52,7 @@ mod tests {
     };
 
     #[test]
+    #[allow(deprecated)]
     fn test_with_random_nonces() {
         let _: ProviderBuilder<_, JoinFill<Identity, TempoFillers<Random2DNonceFiller>>, _> =
             ProviderBuilder::new_with_network::<TempoNetwork>().with_random_2d_nonces();

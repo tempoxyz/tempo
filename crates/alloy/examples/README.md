@@ -33,3 +33,9 @@ cargo run --example <example_name> -p tempo-alloy
 | `mint_tokens` | Mint stablecoins to a recipient address |
 | `burn_tokens` | Burn stablecoins from your own balance |
 | `mint_fee_liquidity` | Add liquidity to a fee pool to enable fee payments with your token |
+
+## Nonce Management
+
+Transaction-sending examples use [expiring nonces](https://docs.tempo.xyz/protocol/tips/tip-1009) (TIP-1009) via `.with_expiring_nonces()`. This is the recommended approach for most applications — it requires no nonce tracking, supports parallel submission, and creates zero permanent state.
+
+For ordered transaction sequences (e.g., multisig workflows), use [2D nonces](https://docs.tempo.xyz/protocol/transactions) with a fixed `nonce_key`.

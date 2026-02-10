@@ -14,9 +14,14 @@ use tempo_primitives::{
 /// A [`TxFiller`] that populates the [`TempoTransaction`](`tempo_primitives::TempoTransaction`) transaction with a random `nonce_key`, and `nonce` set to `0`.
 ///
 /// This filler can be used to avoid nonce gaps by having a random 2D nonce key that doesn't conflict with any other transactions.
+#[deprecated(
+    since = "1.1.0",
+    note = "Use `ExpiringNonceFiller` instead. Random 2D nonces create permanent state per transaction. See TIP-1009."
+)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Random2DNonceFiller;
 
+#[allow(deprecated)]
 impl Random2DNonceFiller {
     /// Returns `true` if either the nonce or nonce key is already filled.
     fn is_filled(tx: &TempoTransactionRequest) -> bool {
@@ -24,6 +29,7 @@ impl Random2DNonceFiller {
     }
 }
 
+#[allow(deprecated)]
 impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for Random2DNonceFiller {
     type Fillable = ();
 
@@ -203,6 +209,26 @@ mod tests {
             .try_into_request()?;
         assert_eq!(filled_request.nonce_key, Some(U256::ONE));
         assert!(filled_request.nonce().is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_expiring_nonce_filler() -> eyre::Result<()> {
+        use crate::fillers::ExpiringNonceFiller;
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+        let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+            .filler(ExpiringNonceFiller::default())
+            .connect_mocked_client(Asserter::default());
+
+        let filled = provider
+            .fill(TempoTransactionRequest::default())
+            .await?
+            .try_into_request()?;
+        assert_eq!(filled.nonce_key, Some(TEMPO_EXPIRING_NONCE_KEY));
+        assert_eq!(filled.nonce(), Some(0));
+        assert!(filled.valid_before.is_some());
 
         Ok(())
     }
