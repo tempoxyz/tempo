@@ -56,14 +56,14 @@ contract BaseTest is Test {
     TIP20 public token2;
     bool isTempo;
 
+    uint64 internal constant _FOUNDRY_CHAIN_ID = 31337;
+
     error MissingPrecompile(string name, address addr);
     error CallShouldHaveReverted();
 
     function setUp() public virtual {
         // Is this tempo chain?
-        isTempo = _TIP403REGISTRY.code.length + _TIP20FACTORY.code.length + _PATH_USD.code.length
-                + _STABLECOIN_DEX.code.length + _NONCE.code.length + _ACCOUNT_KEYCHAIN.code.length
-            > 0;
+        isTempo = block.chainid != _FOUNDRY_CHAIN_ID;
 
         console.log("Tests running with isTempo =", isTempo);
 
