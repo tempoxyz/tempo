@@ -663,7 +663,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         amount = bound(amount, 1, 100_000);
         _ensureFunds(actor, TIP20(validatorToken), amount);
 
-        uint256 actorBalBefore = TIP20(validatorToken).balanceOf(actor);
+        uint256 actorValidatorBalBefore = TIP20(validatorToken).balanceOf(actor);
+        uint256 actorUserBalBefore = TIP20(userToken).balanceOf(actor);
 
         vm.startPrank(actor);
         try amm.mint(userToken, validatorToken, amount, actor) returns (uint256 liquidity) {
@@ -673,11 +674,16 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 ) {
                     _totalMintBurnCycles++;
 
-                    uint256 actorBalAfter = TIP20(validatorToken).balanceOf(actor);
-                    // TEMPO-AMM17: Mint/burn cycle should not profit the actor
+                    uint256 actorValidatorBalAfter = TIP20(validatorToken).balanceOf(actor);
+                    uint256 actorUserBalAfter = TIP20(userToken).balanceOf(actor);
+                    // TEMPO-AMM17: Mint/burn cycle should not profit the actor in either token
                     assertTrue(
-                        actorBalAfter <= actorBalBefore,
-                        "TEMPO-AMM17: Actor should not profit from mint/burn cycle"
+                        actorValidatorBalAfter <= actorValidatorBalBefore,
+                        "TEMPO-AMM17: Actor should not profit in validator token from mint/burn cycle"
+                    );
+                    assertTrue(
+                        actorUserBalAfter <= actorUserBalBefore,
+                        "TEMPO-AMM17: Actor should not profit in user token from mint/burn cycle"
                     );
                 } catch (bytes memory reason) {
                     _assertKnownError(reason);
