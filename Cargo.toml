@@ -186,6 +186,7 @@ alloy-rpc-types-eth = { version = "1.6.1" }
 alloy-serde = "1.6.1"
 alloy-signer = "1.6.1"
 alloy-signer-local = "1.6.1"
+coins-bip32 = "0.12"
 alloy-sol-types = "1.5.4"
 alloy-transport = "1.6.1"
 
