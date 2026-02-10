@@ -96,7 +96,11 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function deactivateValidator(address validatorAddress) external onlyInitialized onlyOwnerOrValidator(validatorAddress) {
+    function deactivateValidator(address validatorAddress)
+        external
+        onlyInitialized
+        onlyOwnerOrValidator(validatorAddress)
+    {
         uint256 idx = addressToIndex[validatorAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
