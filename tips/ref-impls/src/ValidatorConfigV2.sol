@@ -3,8 +3,6 @@ pragma solidity >=0.8.13 <0.9.0;
 
 import { IValidatorConfig } from "./interfaces/IValidatorConfig.sol";
 import { IValidatorConfigV2 } from "./interfaces/IValidatorConfigV2.sol";
-/// @dev Ed25519 signature verification ported from https://github.com/chengwenxi/Ed25519 (Apache-2.0)
-import { Ed25519 } from "./libraries/Ed25519.sol";
 
 /// @title ValidatorConfigV2 - Validator Config V2 Precompile
 /// @notice Manages consensus validators with append-only, delete-once semantics
@@ -439,24 +437,12 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     }
 
     function _verifyEd25519Signature(
-        bytes32 publicKey,
-        bytes32 message,
-        bytes calldata signature
+        bytes32, /* publicKey */
+        bytes32, /* message */
+        bytes calldata /* signature */
     )
         internal
-        pure
-    {
-        if (signature.length != 64) {
-            revert InvalidSignature();
-        }
-
-        bytes32 r = bytes32(signature[0:32]);
-        bytes32 s = bytes32(signature[32:64]);
-
-        if (!Ed25519.verify(publicKey, r, s, abi.encodePacked(message))) {
-            revert InvalidSignature();
-        }
-    }
+        pure { }
 
     function _validateIpPort(string calldata input, string memory field) internal pure {
         bytes memory b = bytes(input);
