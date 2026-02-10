@@ -334,14 +334,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         IValidatorConfig.Validator memory v1Val = v1Validators[idx];
 
-        uint64 addedAt;
-        uint64 deactivatedAt;
-        if (v1Val.active) {
-            addedAt = 0;
-            deactivatedAt = 0;
-        } else {
-            addedAt = uint64(block.timestamp);
-            deactivatedAt = uint64(block.timestamp);
+        uint64 addedAt = 0;
+        uint64 deactivatedAt = 0;
+        if (!v1Val.active) {
+            deactivatedAt = uint64(block.number);
         }
 
         Validator memory newVal = Validator({
