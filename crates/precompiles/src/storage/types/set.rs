@@ -719,7 +719,10 @@ mod tests {
                 handler.insert(U256::from(i))?;
             }
 
-            assert_eq!(handler.read_range(1, 4)?, vec![U256::from(1), U256::from(2), U256::from(3)]);
+            assert_eq!(
+                handler.read_range(1, 4)?,
+                vec![U256::from(1), U256::from(2), U256::from(3)]
+            );
             // end > len clamps
             assert_eq!(handler.read_range(0, 100)?.len(), 5);
             // start > end returns empty
@@ -738,7 +741,11 @@ mod tests {
 
             // Write to grow (1 → 3)
             handler.insert(U256::from(1))?;
-            handler.write(Set::from(vec![U256::from(10), U256::from(20), U256::from(30)]))?;
+            handler.write(Set::from(vec![
+                U256::from(10),
+                U256::from(20),
+                U256::from(30),
+            ]))?;
             assert_eq!(handler.len()?, 3);
             assert!(!handler.contains(&U256::from(1))?);
             assert!(handler.contains(&U256::from(10))?);
