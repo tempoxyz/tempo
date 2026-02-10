@@ -176,7 +176,10 @@ contract TIP403Registry is ITIP403Registry {
         uint64 senderPolicyId,
         uint64 recipientPolicyId,
         uint64 mintRecipientPolicyId
-    ) external returns (uint64 newPolicyId) {
+    )
+        external
+        returns (uint64 newPolicyId)
+    {
         _validateSimplePolicy(senderPolicyId);
         _validateSimplePolicy(recipientPolicyId);
         _validateSimplePolicy(mintRecipientPolicyId);
@@ -270,7 +273,11 @@ contract TIP403Registry is ITIP403Registry {
         require(data.policyType != PolicyType.COMPOUND, PolicyNotSimple());
     }
 
-    function _isAuthorizedSimple(uint64 policyId, address user, PolicyData memory data)
+    function _isAuthorizedSimple(
+        uint64 policyId,
+        address user,
+        PolicyData memory data
+    )
         internal
         view
         returns (bool)

@@ -103,7 +103,11 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         }
     }
 
-    function createCompoundPolicy(uint256 senderSeed, uint256 recipientSeed, uint256 mintSeed)
+    function createCompoundPolicy(
+        uint256 senderSeed,
+        uint256 recipientSeed,
+        uint256 mintSeed
+    )
         external
     {
         if (_simplePolicies.length < 3) return;
@@ -395,7 +399,10 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         assertEq(recipientAuth, mintAuth, "TEMPO-1015-4: Recipient != Mint for simple");
     }
 
-    function checkCompoundIsAuthorizedEquivalence(uint256 policySeed, uint256 accountSeed)
+    function checkCompoundIsAuthorizedEquivalence(
+        uint256 policySeed,
+        uint256 accountSeed
+    )
         external
         view
     {
@@ -501,7 +508,11 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         try token.setRewardRecipient(actor) { } catch { }
     }
 
-    function mintToAuthorizedRecipient(uint256 tokenSeed, uint256 recipientSeed, uint256 amount)
+    function mintToAuthorizedRecipient(
+        uint256 tokenSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
         public
     {
         if (_compoundTokens.length == 0) return;
@@ -563,7 +574,9 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         uint256 senderSeed,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         if (_compoundTokens.length == 0) return;
 
         TIP20 token = _compoundTokens[tokenSeed % _compoundTokens.length];
@@ -595,7 +608,11 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     }
 
     /// @notice burnBlocked uses senderPolicyId to check if address is blocked
-    function burnBlockedWithCompoundPolicy(uint256 tokenSeed, uint256 targetSeed, uint256 amount)
+    function burnBlockedWithCompoundPolicy(
+        uint256 tokenSeed,
+        uint256 targetSeed,
+        uint256 amount
+    )
         external
     {
         if (_compoundTokens.length == 0) return;
@@ -639,7 +656,9 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         uint256 tokenSeed,
         uint256 senderSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         if (_compoundTokens.length == 0) return;
 
         TIP20 token = _compoundTokens[tokenSeed % _compoundTokens.length];
@@ -858,7 +877,9 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         uint256 tokenSeed,
         uint256 makerSeed,
         uint256 cancellerSeed
-    ) external {
+    )
+        external
+    {
         if (_compoundTokens.length == 0) return;
 
         TIP20 token = _compoundTokens[tokenSeed % _compoundTokens.length];

@@ -751,7 +751,9 @@ contract TIP1015Test is BaseTest {
         bool senderInWhitelist,
         bool recipientInWhitelist,
         uint256 amount
-    ) public {
+    )
+        public
+    {
         amount = bound(amount, 1, 1_000_000);
 
         address testSender = makeAddr("fuzzSender");
@@ -806,7 +808,9 @@ contract TIP1015Test is BaseTest {
         bool inRecipientPolicy,
         bool inMintPolicy,
         uint256 amount
-    ) public {
+    )
+        public
+    {
         amount = bound(amount, 1, 1_000_000);
 
         address testMintRecipient = makeAddr("fuzzMintRecipient");
@@ -1012,7 +1016,9 @@ contract TIP1015Test is BaseTest {
         bool senderAuthorized,
         bool contractAuthorizedAsRecipient,
         uint256 amount
-    ) public {
+    )
+        public
+    {
         amount = bound(amount, 1, 1000);
 
         address testSender = makeAddr("fuzzDistributeSender");
@@ -1072,7 +1078,9 @@ contract TIP1015Test is BaseTest {
     function testFuzz_claimRewards_respectsDirectionalAuth(
         bool contractAuthorizedAsSender,
         bool recipientAuthorized
-    ) public {
+    )
+        public
+    {
         address testRecipient = makeAddr("fuzzClaimRecipient");
 
         vm.startPrank(admin);

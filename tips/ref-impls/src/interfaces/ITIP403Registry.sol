@@ -157,7 +157,9 @@ interface ITIP403Registry {
         uint64 senderPolicyId,
         uint64 recipientPolicyId,
         uint64 mintRecipientPolicyId
-    ) external returns (uint64 newPolicyId);
+    )
+        external
+        returns (uint64 newPolicyId);
 
     /// @notice TIP-1015: Checks if a user is authorized as a sender
     /// @param policyId Policy ID to check against
