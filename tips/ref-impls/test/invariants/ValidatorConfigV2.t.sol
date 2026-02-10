@@ -140,6 +140,17 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         return (address(0), false);
     }
 
+    // Storage slot constants for ValidatorConfigV2
+    // Slot 0: _owner (address) + _initialized (bool) — packed
+    // Slot 1: validatorsArray.length
+    // Slot 2: addressToIndex mapping base
+    // Slot 3: pubkeyToIndex mapping base
+    // Slot 4: nextDkgCeremony
+    uint256 private constant SLOT_VALIDATORS_ARRAY = 1;
+    uint256 private constant SLOT_ADDRESS_TO_INDEX = 2;
+    uint256 private constant SLOT_PUBKEY_TO_INDEX = 3;
+    uint256 private constant VALIDATOR_SLOT_SIZE = 5;
+
     function _assertKnownV2Error(bytes memory reason) internal pure {
         bytes4 selector = bytes4(reason);
         bool isKnown = selector == IValidatorConfigV2.Unauthorized.selector
@@ -148,7 +159,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             || selector == IValidatorConfigV2.ValidatorNotFound.selector
             || selector == IValidatorConfigV2.ValidatorAlreadyDeleted.selector
             || selector == IValidatorConfigV2.InvalidPublicKey.selector
-            || selector == IValidatorConfigV2.InvalidSignature.selector
             || selector == IValidatorConfigV2.NotInitialized.selector
             || selector == IValidatorConfigV2.AlreadyInitialized.selector
             || selector == IValidatorConfigV2.MigrationNotComplete.selector
@@ -157,13 +167,59 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         assertTrue(isKnown, string.concat("Unknown error: ", vm.toString(selector)));
     }
 
-    /// @dev Adds a validator via owner using vm.store to bypass Ed25519 sig verification.
-    ///      The real addValidator requires a valid Ed25519 signature which we cannot
-    ///      generate on-chain in the fuzzer, so we call addValidator and accept any
-    ///      InvalidSignature revert as expected. On success we update ghost state.
-    ///      NOTE: Because Ed25519 sigs cannot be computed in the fuzzer, this handler
-    ///      will mostly revert with InvalidSignature. We still test the access control,
-    ///      validation, and uniqueness invariants via the revert paths.
+    /// @dev Encodes a short string (<=31 bytes) for inline Solidity storage.
+    ///      Format: data left-aligned in upper bytes, length*2 in lowest byte.
+    function _encodeShortString(string memory s) internal pure returns (bytes32) {
+        bytes memory b = bytes(s);
+        require(b.length <= 31, "string too long for inline storage");
+        bytes32 result;
+        assembly {
+            result := mload(add(b, 32))
+        }
+        uint256 shift = (31 - b.length) * 8;
+        result = bytes32((uint256(result) >> shift) << shift);
+        result = result | bytes32(b.length * 2);
+        return result;
+    }
+
+    /// @dev Directly writes a Validator into ValidatorConfigV2 storage via vm.store,
+    ///      bypassing addValidator (and thus Ed25519 signature verification).
+    ///      Only works for inline strings (<=31 bytes).
+    function _addValidatorDirect(
+        address validatorAddr,
+        bytes32 publicKey,
+        string memory ingress,
+        string memory egress,
+        uint64 height
+    )
+        internal
+    {
+        address target = address(validatorConfigV2);
+
+        uint256 arrayLen = uint256(vm.load(target, bytes32(SLOT_VALIDATORS_ARRAY)));
+        uint64 idx = uint64(arrayLen);
+
+        bytes32 arrayBase = keccak256(abi.encode(SLOT_VALIDATORS_ARRAY));
+        uint256 elemBase = uint256(arrayBase) + arrayLen * VALIDATOR_SLOT_SIZE;
+
+        vm.store(target, bytes32(elemBase), publicKey);
+        vm.store(target, bytes32(elemBase + 1), bytes32(uint256(uint160(validatorAddr))));
+        vm.store(target, bytes32(elemBase + 2), _encodeShortString(ingress));
+        vm.store(target, bytes32(elemBase + 3), _encodeShortString(egress));
+
+        uint256 packed = uint256(idx) | (uint256(height) << 64);
+        vm.store(target, bytes32(elemBase + 4), bytes32(packed));
+
+        vm.store(target, bytes32(SLOT_VALIDATORS_ARRAY), bytes32(arrayLen + 1));
+
+        bytes32 addrSlot = keccak256(abi.encode(validatorAddr, SLOT_ADDRESS_TO_INDEX));
+        vm.store(target, addrSlot, bytes32(uint256(idx) + 1));
+
+        bytes32 pubkeySlot = keccak256(abi.encode(publicKey, SLOT_PUBKEY_TO_INDEX));
+        vm.store(target, pubkeySlot, bytes32(uint256(idx) + 1));
+    }
+
+    /// @dev Adds a validator via vm.store and updates ghost state.
     function _tryAddValidator(
         address validatorAddr,
         bytes32 publicKey,
@@ -171,40 +227,29 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         string memory egress
     )
         internal
-        returns (bool)
     {
-        bytes memory fakeSig = new bytes(64);
+        _addValidatorDirect(validatorAddr, publicKey, ingress, egress, uint64(block.number));
 
-        vm.startPrank(_ghostOwner);
-        try validatorConfigV2.addValidator(validatorAddr, publicKey, ingress, egress, fakeSig) {
-            vm.stopPrank();
-
-            uint64 idx = uint64(_ghostValidatorList.length);
-            _ghostValidatorList.push(validatorAddr);
-            _ghostValidatorExists[validatorAddr] = true;
-            _ghostValidatorPubKey[validatorAddr] = publicKey;
-            _ghostValidatorIndex[validatorAddr] = idx;
-            _ghostAddedAtHeight[validatorAddr] = uint64(block.number);
-            _ghostDeactivatedAtHeight[validatorAddr] = 0;
-            _ghostIngress[validatorAddr] = ingress;
-            _ghostEgress[validatorAddr] = egress;
-            _ghostPubKeyUsed[publicKey] = true;
-            _ghostTotalCount++;
-
-            return true;
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            _assertKnownV2Error(reason);
-            return false;
-        }
+        uint64 idx = uint64(_ghostValidatorList.length);
+        _ghostValidatorList.push(validatorAddr);
+        _ghostValidatorExists[validatorAddr] = true;
+        _ghostValidatorPubKey[validatorAddr] = publicKey;
+        _ghostValidatorIndex[validatorAddr] = idx;
+        _ghostAddedAtHeight[validatorAddr] = uint64(block.number);
+        _ghostDeactivatedAtHeight[validatorAddr] = 0;
+        _ghostIngress[validatorAddr] = ingress;
+        _ghostEgress[validatorAddr] = egress;
+        _ghostPubKeyUsed[publicKey] = true;
+        _ghostTotalCount++;
     }
 
     /*//////////////////////////////////////////////////////////////
                             FUZZ HANDLERS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Handler for adding validators
-    /// @dev Tests TEMPO-VALV2-1 (owner-only add), TEMPO-VALV2-2 (append-only count), TEMPO-VALV2-3 (index assignment)
+    /// @notice Handler for adding validators via vm.store (bypasses Ed25519 sig verification)
+    /// @dev Tests TEMPO-VALV2-2 (append-only count), TEMPO-VALV2-3 (index assignment),
+    ///      TEMPO-VALV2-4 (height tracking)
     function addValidator(uint256 validatorSeed, uint256 keySeed) external {
         address validatorAddr = _selectPotentialValidator(validatorSeed);
 
@@ -218,37 +263,34 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         uint256 countBefore = _ghostTotalCount;
 
-        bool added = _tryAddValidator(validatorAddr, publicKey, ingress, egress);
+        _tryAddValidator(validatorAddr, publicKey, ingress, egress);
 
-        if (added) {
-            assertEq(
-                validatorConfigV2.validatorCount(),
-                countBefore + 1,
-                "TEMPO-VALV2-2: Count should increment"
-            );
+        assertEq(
+            validatorConfigV2.validatorCount(),
+            countBefore + 1,
+            "TEMPO-VALV2-2: Count should increment"
+        );
 
-            IValidatorConfigV2.Validator memory v =
-                validatorConfigV2.validatorByAddress(validatorAddr);
-            assertEq(v.index, countBefore, "TEMPO-VALV2-3: Index should be previous count");
-            assertEq(
-                v.addedAtHeight, uint64(block.number), "TEMPO-VALV2-4: addedAtHeight should be set"
-            );
-            assertEq(
-                v.deactivatedAtHeight,
-                0,
-                "TEMPO-VALV2-4: deactivatedAtHeight should be 0 for new validator"
-            );
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(validatorAddr);
+        assertEq(v.index, countBefore, "TEMPO-VALV2-3: Index should be previous count");
+        assertEq(
+            v.addedAtHeight, uint64(block.number), "TEMPO-VALV2-4: addedAtHeight should be set"
+        );
+        assertEq(
+            v.deactivatedAtHeight,
+            0,
+            "TEMPO-VALV2-4: deactivatedAtHeight should be 0 for new validator"
+        );
 
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "ADD_VALIDATOR: ",
-                        vm.toString(validatorAddr),
-                        " index=",
-                        vm.toString(countBefore)
-                    )
-                );
-            }
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "ADD_VALIDATOR: ",
+                    vm.toString(validatorAddr),
+                    " index=",
+                    vm.toString(countBefore)
+                )
+            );
         }
     }
 
@@ -263,10 +305,9 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         bytes32 publicKey = _generatePublicKey(validatorSeed);
         string memory ingress = _generateIngress(validatorSeed);
         string memory egress = _generateEgress(validatorSeed);
-        bytes memory fakeSig = new bytes(64);
 
         vm.startPrank(caller);
-        try validatorConfigV2.addValidator(validatorAddr, publicKey, ingress, egress, fakeSig) {
+        try validatorConfigV2.addValidator(validatorAddr, publicKey, ingress, egress, "") {
             vm.stopPrank();
             revert("TEMPO-VALV2-1: Non-owner should not be able to add validator");
         } catch (bytes memory reason) {
@@ -377,19 +418,17 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         bytes32 publicKey = _generatePublicKey(keySeed);
         string memory ingress = _generateIngress(validatorSeed);
         string memory egress = _generateEgress(validatorSeed);
-        bytes memory fakeSig = new bytes(64);
 
         vm.startPrank(_ghostOwner);
-        try validatorConfigV2.addValidator(existingAddr, publicKey, ingress, egress, fakeSig) {
+        try validatorConfigV2.addValidator(existingAddr, publicKey, ingress, egress, "") {
             vm.stopPrank();
             revert("TEMPO-VALV2-6: Should not add duplicate address");
         } catch (bytes memory reason) {
             vm.stopPrank();
-            bytes4 selector = bytes4(reason);
-            assertTrue(
-                selector == IValidatorConfigV2.ValidatorAlreadyExists.selector
-                    || selector == IValidatorConfigV2.InvalidSignature.selector,
-                "TEMPO-VALV2-6: Should revert with ValidatorAlreadyExists or InvalidSignature"
+            assertEq(
+                bytes4(reason),
+                IValidatorConfigV2.ValidatorAlreadyExists.selector,
+                "TEMPO-VALV2-6: Should revert with ValidatorAlreadyExists"
             );
         }
     }
@@ -408,19 +447,17 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         string memory ingress = _generateIngress(validatorSeed);
         string memory egress = _generateEgress(validatorSeed);
-        bytes memory fakeSig = new bytes(64);
 
         vm.startPrank(_ghostOwner);
-        try validatorConfigV2.addValidator(newAddr, existingPubKey, ingress, egress, fakeSig) {
+        try validatorConfigV2.addValidator(newAddr, existingPubKey, ingress, egress, "") {
             vm.stopPrank();
             revert("TEMPO-VALV2-7: Should not add duplicate public key");
         } catch (bytes memory reason) {
             vm.stopPrank();
-            bytes4 selector = bytes4(reason);
-            assertTrue(
-                selector == IValidatorConfigV2.PublicKeyAlreadyExists.selector
-                    || selector == IValidatorConfigV2.InvalidSignature.selector,
-                "TEMPO-VALV2-7: Should revert with PublicKeyAlreadyExists or InvalidSignature"
+            assertEq(
+                bytes4(reason),
+                IValidatorConfigV2.PublicKeyAlreadyExists.selector,
+                "TEMPO-VALV2-7: Should revert with PublicKeyAlreadyExists"
             );
         }
     }
@@ -433,10 +470,9 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         string memory ingress = _generateIngress(validatorSeed);
         string memory egress = _generateEgress(validatorSeed);
-        bytes memory fakeSig = new bytes(64);
 
         vm.startPrank(_ghostOwner);
-        try validatorConfigV2.addValidator(validatorAddr, bytes32(0), ingress, egress, fakeSig) {
+        try validatorConfigV2.addValidator(validatorAddr, bytes32(0), ingress, egress, "") {
             vm.stopPrank();
             revert("TEMPO-VALV2-7: Should reject zero public key");
         } catch (bytes memory reason) {

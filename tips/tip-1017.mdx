@@ -45,7 +45,7 @@ V2 solves these problems with an append-only design where:
 - `addedAtHeight` and `deactivatedAtHeight` fields enable historical reconstruction
   from current state
 - Ed25519 signature verification proves key ownership at registration time
-- Both address and public key remain reserved forever (even after deletion)
+- Public keys remain reserved forever (even after deactivation); addresses are unique among current validators but can be reassigned via `transferValidatorOwnership`
 
 ### Key Design Principle
 
@@ -199,7 +199,8 @@ interface IValidatorConfigV2 {
     /// @notice Deactivates a validator (owner or existing validator)
     /// @dev Marks the validator as deactivated by setting deactivatedAtHeight to the current block height.
     ///      The validator's entry remains in storage for historical queries.
-    ///      The address and public key remain reserved and cannot be reused.
+    ///      The public key remains reserved and cannot be reused. The address remains
+    ///      reserved unless reassigned via transferValidatorOwnership.
     /// @param validatorAddress The validator address to deactivate
     function deactivateValidator(address validatorAddress) external;
 
@@ -435,7 +436,7 @@ uses bit 255, leaving bits 160-190 unused.
 | Creation tracking | None | `addedAtHeight: uint64` |
 | Mutability | Mutable via `updateValidator()` | Immutable after creation |
 | Deletion | Sets `active = false` | Sets `deactivatedAtHeight = block.number` |
-| Re-registration | Allowed after deletion | Never allowed (address/pubkey reserved forever) |
+| Re-registration | Allowed after deletion | Pubkey reserved forever; address reassignable via `transferValidatorOwnership` |
 | Key ownership | Not verified | Ed25519 signature required |
 | Historical queries | Requires historical state | Filter `getValidators()` by `addedAtHeight`/`deactivatedAtHeight` |
 | Uniqueness | Address only | Address AND public key |
