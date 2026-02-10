@@ -493,8 +493,12 @@ pub struct TempoPayloadBuilderBuilder {
     pub disable_state_cache: bool,
 }
 
-impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider, TempoEvmConfig>, TempoEvmConfig>
-    for TempoPayloadBuilderBuilder
+impl<Node>
+    PayloadBuilderBuilder<
+        Node,
+        TempoTransactionPool<Node::Provider, TempoEvmConfig>,
+        TempoEvmConfig,
+    > for TempoPayloadBuilderBuilder
 where
     Node: FullNodeTypes<Types = TempoNode>,
 {

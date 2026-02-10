@@ -810,7 +810,7 @@ mod tests {
         };
 
         let err = consensus
-            .validate_block_post_execution(&recovered, &result)
+            .validate_block_post_execution(&recovered, &result, None)
             .unwrap_err();
         assert!(
             matches!(err, ConsensusError::BodyReceiptRootDiff(_)),
