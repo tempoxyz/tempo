@@ -105,7 +105,7 @@ interface IValidatorConfigV2 {
     )
         external;
 
-    /// @notice Deactivates a validator (owner only)
+    /// @notice Deactivates a validator (owner or validator only)
     /// @dev Marks the validator as deactivated by setting deactivatedAtHeight to the current block height.
     ///      The validator's entry remains in storage for historical queries.
     ///      The public key remains reserved and cannot be reused. The address remains
