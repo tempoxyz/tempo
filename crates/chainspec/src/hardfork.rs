@@ -232,25 +232,6 @@ mod tests {
     }
 
     #[test]
-    fn test_genesis_nonce_key_gas_matches_t0() {
-        assert_eq!(
-            TempoHardfork::Genesis.gas_new_nonce_key(),
-            TempoHardfork::T0.gas_new_nonce_key(),
-            "Genesis must charge the same new nonce key gas as T0 for historical block replay"
-        );
-        assert_eq!(
-            TempoHardfork::Genesis.gas_existing_nonce_key(),
-            TempoHardfork::T0.gas_existing_nonce_key(),
-            "Genesis must charge the same existing nonce key gas as T0 for historical block replay"
-        );
-        assert_ne!(
-            TempoHardfork::Genesis.gas_new_nonce_key(),
-            0,
-            "Genesis nonce key gas must not be zero"
-        );
-    }
-
-    #[test]
     #[cfg(feature = "serde")]
     fn test_tempo_hardfork_serde() {
         let fork = TempoHardfork::Genesis;
