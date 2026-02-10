@@ -390,7 +390,7 @@ The ValidatorConfigV2 precompile replaces V1 with append-only, delete-once seman
 - **TEMPO-VALV2-3**: Sequential indices - new validators receive index equal to the count before addition.
 - **TEMPO-VALV2-4**: Height tracking - `addedAtHeight == block.number` and `deactivatedAtHeight == 0` on add; `deactivatedAtHeight == block.number` on deactivation.
 - **TEMPO-VALV2-5**: Delete-once - deactivating an already-deactivated validator reverts with `ValidatorAlreadyDeleted`.
-- **TEMPO-VALV2-6**: Address uniqueness - adding a validator with an existing address reverts with `ValidatorAlreadyExists` (addresses reserved forever).
+- **TEMPO-VALV2-6**: Address uniqueness - adding a validator with an existing address reverts with `ValidatorAlreadyExists`.
 - **TEMPO-VALV2-7**: Public key uniqueness - all public keys must be unique and non-zero. Duplicates revert with `PublicKeyAlreadyExists`; zero keys revert with `InvalidPublicKey`.
 - **TEMPO-VALV2-8**: Owner transfer - `transferOwnership` correctly updates the owner; only the current owner can call it.
 - **TEMPO-VALV2-9**: DKG ceremony - `setNextFullDkgCeremony` correctly stores the epoch; only the owner can call it.
