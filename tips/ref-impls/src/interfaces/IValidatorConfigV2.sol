@@ -213,6 +213,11 @@ interface IValidatorConfigV2 {
     /// @return True if initialized, false otherwise
     function isInitialized() external view returns (bool);
 
+    /// @notice Get the height at which the contract was initialized
+    /// @return The height at which the contract was initialized. Note that this
+    ///         value only makes sense in conjunction with isInitialized()
+    function getInitializedAtHeight() external view returns (uint64);
+
     // =========================================================================
     // Migration Functions (V1 -> V2)
     // =========================================================================
@@ -220,8 +225,8 @@ interface IValidatorConfigV2 {
     /// @notice Migrate a single validator from V1 to V2 (owner only)
     /// @dev Can be called multiple times to migrate validators one at a time.
     ///      On first call, copies owner from V1 if V2 owner is address(0).
-    ///      Active V1 validators get addedAtHeight=0 and deactivatedAtHeight=0.
-    ///      Inactive V1 validators get addedAtHeight=deactivatedAtHeight=block.timestamp at migration time.
+    ///      Active V1 validators get addedAtHeight=block.number and deactivatedAtHeight=0.
+    ///      Inactive V1 validators get addedAtHeight=deactivatedAtHeight=block.number at migration time.
     ///      Reverts if already initialized or already migrated.
     ///      Reverts if idx != validatorsArray.length.
     ///      Reverts if `V2.isInitialized()` (no migrations after V2 is initialized).
