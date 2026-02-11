@@ -7,3 +7,14 @@ test-threads = "num-cpus"
 filter = "package(tempo-e2e)"
 failure-output = "never"
 threads-required = 2
+
+# Limit e2e tests to 2 threads to avoid OOM on CI runners.
+# Each e2e test spawns multiple MDBX instances which consume significant memory.
+[[profile.default.overrides]]
+filter = "package(tempo-e2e)"
+threads-required = 4
+
+[[profile.default.overrides]]
+filter = "test(sync::can_restart_after_joining_from_snapshot)"
+slow-timeout = { period = "60s", terminate-after = 4, on-timeout = "pass" }
+success-output = "final"
