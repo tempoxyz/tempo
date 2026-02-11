@@ -184,9 +184,7 @@ where
 {
     context: TContext,
     resolver: Arc<RpcResolver>,
-    resolver_rx: mpsc::Receiver<
-        commonware_consensus::marshal::ingress::handler::Message<Block>,
-    >,
+    resolver_rx: mpsc::Receiver<commonware_consensus::marshal::ingress::handler::Message<Block>>,
     scheme_provider: SchemeProvider,
     epoch_strategy: FixedEpocher,
     marshal_actor: marshal_alias::Actor<TContext>,

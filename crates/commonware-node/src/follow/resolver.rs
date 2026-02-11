@@ -23,6 +23,7 @@ use commonware_utils::{
     channel::{mpsc, oneshot},
     vec::NonEmptyVec,
 };
+use eyre::WrapErr as _;
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::core::client::Subscription;
 use jsonrpsee::rpc_params;
@@ -32,7 +33,6 @@ use tempo_alloy::rpc::TempoHeaderResponse;
 use tempo_node::rpc::consensus::{Event, TempoConsensusApiClient};
 use tempo_primitives::TempoTxEnvelope;
 use tokio::sync::{Mutex, RwLock};
-use eyre::WrapErr as _;
 use tracing::{debug, warn, warn_span};
 
 use crate::consensus::{Digest, block::Block};
@@ -82,9 +82,10 @@ impl RpcResolver {
         {
             let guard = self.client.read().await;
             if let Some(c) = guard.as_ref()
-                && c.is_connected() {
-                    return Ok(c.clone());
-                }
+                && c.is_connected()
+            {
+                return Ok(c.clone());
+            }
         }
         self.reconnect().await
     }
@@ -92,9 +93,10 @@ impl RpcResolver {
     async fn reconnect(&self) -> eyre::Result<Arc<WsClient>> {
         let mut guard = self.client.write().await;
         if let Some(c) = guard.as_ref()
-            && c.is_connected() {
-                return Ok(c.clone());
-            }
+            && c.is_connected()
+        {
+            return Ok(c.clone());
+        }
 
         let mut attempts: u32 = 0;
         loop {
@@ -131,10 +133,7 @@ impl RpcResolver {
 
     pub(crate) async fn subscribe_events(&self) -> eyre::Result<Subscription<Event>> {
         let client = self.client().await?;
-        client
-            .subscribe_events()
-            .await
-            .wrap_err("rpc error")
+        client.subscribe_events().await.wrap_err("rpc error")
     }
 
     pub(crate) async fn fetch_finalization(
@@ -229,9 +228,7 @@ impl RpcResolver {
             }
 
             let result = match &key_clone {
-                handler::Request::Finalized { height } => {
-                    resolver.resolve_finalized(*height).await
-                }
+                handler::Request::Finalized { height } => resolver.resolve_finalized(*height).await,
                 handler::Request::Block(commitment) => resolver.resolve_block(*commitment).await,
                 other => {
                     warn_span!("follow")
@@ -259,9 +256,10 @@ impl RpcResolver {
                         })
                         .await
                         .is_ok()
-                        && let Ok(true) = response_rx.await {
-                            resolver.pending.lock().await.remove(&key_clone);
-                        }
+                        && let Ok(true) = response_rx.await
+                    {
+                        resolver.pending.lock().await.remove(&key_clone);
+                    }
                 }
                 Ok(None) => {
                     debug!(?key_clone, "data not yet available from upstream");
