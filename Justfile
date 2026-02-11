@@ -56,6 +56,28 @@ localnet accounts="1000" reset="true" profile="maxperf" features="asm-keccak" ar
                       --faucet.address 0x20c0000000000000000000000000000000000001 \
                       {{args}}
 
+[group('deps')]
+[doc('Bump all reth dependencies to a specific commit hash')]
+bump-reth commit:
+    sed -i '' 's/\(reth[a-z_-]* = { git = "https:\/\/github.com\/paradigmxyz\/reth", rev = "\)[a-f0-9]*"/\1{{commit}}"/g' Cargo.toml
+    cargo update
+
+[group('deps')]
+[doc('Bump all commonware dependencies to a specific commit hash (uses git patch)')]
+bump-cw commit:
+    #!/bin/bash
+    set -euo pipefail
+    CRATES=(commonware-broadcast commonware-codec commonware-consensus commonware-cryptography commonware-macros commonware-math commonware-p2p commonware-parallel commonware-runtime commonware-storage commonware-utils)
+    PATCH_LINES=""
+    for crate in "${CRATES[@]}"; do
+        PATCH_LINES+="${crate} = { git = \"https://github.com/commonwarexyz/monorepo\", rev = \"{{commit}}\" }\n"
+    done
+    # Remove existing [patch.crates-io] block (commented or not) if present
+    sed -i '' '/^#*\s*\[patch\.crates-io\]/,/^$/d' Cargo.toml
+    # Append new patch block
+    printf '\n[patch.crates-io]\n'"${PATCH_LINES}" >> Cargo.toml
+    cargo update
+
 mod scripts
 
 [group('dev')]
