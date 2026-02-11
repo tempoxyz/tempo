@@ -188,6 +188,12 @@ where
                 )));
             }
 
+            if let Some(expiry) = auth.expiry
+                && expiry < u64::MAX
+            {
+                transaction.set_key_expiry(Some(expiry));
+            }
+
             // KeyAuthorization is valid - skip keychain storage check (key will be authorized during execution)
             return Ok(Ok(()));
         }
@@ -2943,6 +2949,54 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "KeyAuthorization with future expiry should be accepted, got: {result:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_expiry_cached_for_pool_maintenance() -> Result<(), ProviderError>
+        {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let current_time = 1000u64;
+            let expiry = current_time + 100;
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: Some(expiry),
+                limits: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_and_timestamp(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                current_time,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            assert!(result.is_ok(), "KeyAuthorization should be accepted");
+            assert_eq!(
+                transaction.key_expiry(),
+                Some(expiry),
+                "KeyAuthorization expiry should be cached for pool maintenance"
             );
             Ok(())
         }
