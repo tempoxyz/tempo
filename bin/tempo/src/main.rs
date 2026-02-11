@@ -52,7 +52,7 @@ use tracing::{info, info_span};
 struct TempoArgs {
     /// Follow this specific RPC node for block hashes.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
-    #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
+    #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
     pub follow: Option<String>,
 
     #[command(flatten)]

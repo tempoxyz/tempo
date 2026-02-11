@@ -208,7 +208,7 @@ auto_impl = "1"
 axum = "0.8.8"
 base64 = "0.22"
 bytes = "1.11.1"
-clap = { version = "4.5.57", features = ["derive"] }
+clap = { version = "4.5.57", features = ["derive", "env"] }
 const-hex = { version = "1.17.0" }
 derive_more = { version = "2.1.1" }
 eyre = "0.6.12"

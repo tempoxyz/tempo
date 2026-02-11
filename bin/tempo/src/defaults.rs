@@ -19,7 +19,12 @@ pub(crate) struct TelemetryArgs {
     /// to VictoriaMetrics which supports both with different api paths.
     ///
     /// The URL must include credentials: `https://user:pass@metrics.example.com`
-    #[arg(long, value_name = "URL", conflicts_with = "logs_otlp")]
+    #[arg(
+        long,
+        value_name = "URL",
+        conflicts_with = "logs_otlp",
+        env = "TEMPO_TELEMETRY_URL"
+    )]
     pub(crate) telemetry_url: Option<UrlWithAuth>,
 
     /// The interval at which to push Prometheus metrics.
