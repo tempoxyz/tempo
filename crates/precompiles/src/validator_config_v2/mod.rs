@@ -1476,8 +1476,11 @@ mod tests {
             )?;
 
             // Try to initialize with incomplete migration
-            let result =
-                v2.initialize_if_migrated(owner, IValidatorConfigV2::initializeIfMigratedCall {}, 400);
+            let result = v2.initialize_if_migrated(
+                owner,
+                IValidatorConfigV2::initializeIfMigratedCall {},
+                400,
+            );
 
             assert_eq!(
                 result,
