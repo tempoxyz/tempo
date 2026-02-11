@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, net::SocketAddr, num::NonZeroU32, task::Poll, time::Duration};
+use std::{collections::BTreeMap, num::NonZeroU32, task::Poll, time::Duration};
 
 use alloy_consensus::BlockHeader as _;
 use bytes::{Buf, BufMut};
@@ -225,8 +225,8 @@ where
 
         self.metrics.reset();
 
-        self.metrics.dealers.set(state.dealers.len() as i64);
-        self.metrics.players.set(state.players.len() as i64);
+        self.metrics.dealers.set(state.dealers().len() as i64);
+        self.metrics.players.set(state.players().len() as i64);
         self.metrics.syncing_players.set(state.syncers.len() as i64);
 
         if let Some(previous) = state.epoch.previous() {
@@ -236,7 +236,20 @@ where
             })?;
         }
 
-        let all_peers = state.construct_merged_peer_set();
+        // Makes use of the on-chain validator config being append only: as long
+        // as the best available block exceeds the boundary of the parent epoch,
+        // all validators will be present and their sockete addresses be read.
+        let all_validators = read_validator_config_with_retry(
+            &self.context,
+            &self.config.execution_node,
+            Target::Best {
+                min_height: state.boundary_of_parent_epoch(&self.config.epoch_strategy),
+            },
+            &self.metrics.attempts_to_read_validator_contract,
+        )
+        .await;
+
+        let all_peers = construct_peer_set(&state, &all_validators);
         self.metrics.peers.set(all_peers.len() as i64);
         self.config
             .peer_manager
@@ -284,8 +297,8 @@ where
         info_span!("run_dkg_loop", epoch = %state.epoch).in_scope(|| {
             info!(
                 me = %self.config.me.public_key(),
-                dealers = ?state.dealers,
-                players = ?state.players,
+                dealers = ?state.dealers(),
+                players = ?state.players(),
                 syncers = ?state.syncers,
                 as_dealer = dealer_state.is_some(),
                 as_player = player_state.is_some(),
@@ -372,7 +385,7 @@ where
                                             ));
 
                                             if let Err(err) = storage
-                                                .append_state(new_state)
+                                                .set_state(new_state)
                                                 .await
                                                 .wrap_err("failed appending new state to journal")
                                             {
@@ -499,7 +512,7 @@ where
         }
         let res = SignedDealerLog::<MinSig, PrivateKey>::read_cfg(
             &mut &bytes[..],
-            &NZU32!(state.players.len() as u32),
+            &NZU32!(round.players().len() as u32),
         )
         .wrap_err("failed reading dealer log from header")
         .and_then(|log| {
@@ -703,8 +716,12 @@ where
         let all_validators = read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
-            round.epoch(),
-            &self.config.epoch_strategy,
+            Target::Block(
+                self.config
+                    .epoch_strategy
+                    .last(round.epoch())
+                    .expect("epoch strategy is valid for all epochs"),
+            ),
             &self.metrics.attempts_to_read_validator_contract,
         )
         .await;
@@ -787,13 +804,12 @@ where
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
             share,
-            dealers: pubkeys_to_addrs(onchain_outcome.players().clone(), &all_validators),
-            players: pubkeys_to_addrs(onchain_outcome.next_players, &all_validators),
-            syncers: ordered::Map::from_iter_dedup(
+            players: onchain_outcome.next_players,
+            syncers: ordered::Set::from_iter_dedup(
                 all_validators
                     .iter_pairs()
                     .filter(|(_, v)| v.active)
-                    .map(|(k, v)| (k.clone(), v.inbound)),
+                    .map(|(k, _)| k.clone()),
             ),
             is_full_dkg: onchain_outcome.is_next_full_dkg,
         }))
@@ -848,8 +864,12 @@ where
         let all_validators = read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
-            round.epoch(),
-            &self.config.epoch_strategy,
+            Target::Block(
+                self.config
+                    .epoch_strategy
+                    .last(round.epoch())
+                    .expect("epoch strategy is valid for all epochs"),
+            ),
             &self.metrics.attempts_to_read_validator_contract,
         )
         .await;
@@ -859,13 +879,12 @@ where
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
             share: None,
-            dealers: pubkeys_to_addrs(onchain_outcome.players().clone(), &all_validators),
-            players: pubkeys_to_addrs(onchain_outcome.next_players, &all_validators),
-            syncers: ordered::Map::from_iter_dedup(
+            players: onchain_outcome.next_players,
+            syncers: ordered::Set::from_iter_dedup(
                 all_validators
                     .iter_pairs()
                     .filter(|(_, v)| v.active)
-                    .map(|(k, v)| (k.clone(), v.inbound)),
+                    .map(|(k, _)| k.clone()),
             ),
             is_full_dkg: onchain_outcome.is_next_full_dkg,
         }))
@@ -1152,7 +1171,7 @@ where
             .send(OnchainDkgOutcome {
                 epoch: next_epoch,
                 output,
-                next_players: state.syncers.keys().clone(),
+                next_players: state.syncers.clone(),
                 is_next_full_dkg,
             })
             .is_err()
@@ -1171,7 +1190,7 @@ where
                 state.epoch,
                 state.output.public().clone(),
                 state.share.clone(),
-                state.dealers.keys().clone(),
+                state.dealers().clone(),
             )
             .wrap_err("could not instruct epoch manager to enter epoch")
     }
@@ -1281,13 +1300,12 @@ where
         seed: Summary::random(context),
         output: onchain_outcome.output.clone(),
         share,
-        dealers: pubkeys_to_addrs(onchain_outcome.players().clone(), &all_validators),
-        players: pubkeys_to_addrs(onchain_outcome.next_players, &all_validators),
-        syncers: ordered::Map::from_iter_dedup(
+        players: onchain_outcome.next_players,
+        syncers: ordered::Set::from_iter_dedup(
             all_validators
                 .iter_pairs()
                 .filter(|(_, v)| v.active)
-                .map(|(k, v)| (k.clone(), v.inbound)),
+                .map(|(k, _)| k.clone()),
         ),
         is_full_dkg: onchain_outcome.is_next_full_dkg,
     })
@@ -1463,32 +1481,58 @@ impl Metrics {
     }
 }
 
-/// Attempts to read the validator config from the smart contract until it becomes available.
+enum Target {
+    Best { min_height: Height },
+    Block(Height),
+}
+
+/// Attempts to read the validator config from the smart contract, retrying
+/// until the required block height is available.
+///
+/// With [`Target::Best`], reads from the best available block as long as it is
+/// at least `min_height`. With [`Target::Block`], reads from exactly the
+/// specified block height.
 async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
     context: &C,
     node: &TempoFullNode,
-    epoch: Epoch,
-    epoch_strategy: &FixedEpocher,
+    target: Target,
     metric: &Counter,
 ) -> ordered::Map<PublicKey, DecodedValidator> {
     let mut attempts = 0;
     const MIN_RETRY: Duration = Duration::from_secs(1);
     const MAX_RETRY: Duration = Duration::from_secs(30);
 
-    let last = epoch_strategy
-        .last(epoch)
-        .expect("epoch strategy is valid for all epochs");
+    let (min_height, fixed_height) = match &target {
+        Target::Best { min_height } => (*min_height, None),
+        Target::Block(height) => (*height, Some(*height)),
+    };
+
     loop {
         metric.inc();
         attempts += 1;
-        if let Ok(validators) = validators::read_from_contract_at_height(attempts, node, last).await
-        {
-            break validators;
+
+        let read_height = if let Some(h) = fixed_height {
+            Some(h)
+        } else {
+            node.provider
+                .best_block_number()
+                .ok()
+                .map(Height::new)
+                .filter(|best| *best >= min_height)
+        };
+
+        if let Some(height) = read_height {
+            if let Ok(validators) =
+                validators::read_from_contract_at_height(attempts, node, height).await
+            {
+                break validators;
+            }
         }
+
         let retry_after = MIN_RETRY.saturating_mul(attempts).min(MAX_RETRY);
         let is_syncing = node.network.is_syncing();
         let best_block = node.provider.best_block_number();
-        let target_block = last.get();
+        let target_block = min_height.get();
         let blocks_behind = best_block
             .as_ref()
             .ok()
@@ -1508,23 +1552,25 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
     }
 }
 
-fn pubkeys_to_addrs(
-    keys: ordered::Set<PublicKey>,
+fn construct_peer_set(
+    state: &State,
     validators: &ordered::Map<PublicKey, DecodedValidator>,
-) -> ordered::Map<PublicKey, SocketAddr> {
-    ordered::Map::from_iter_dedup(keys.into_iter().map(|key| {
-        (
-            key.clone(),
-            validators
-                .get_value(&key)
-                .expect(
-                    "all DKG participants must have an entry in the \
-                        unfiltered, contract validator set; if one does not, \
-                        then it was wrongly included in the ceremony or the \
-                        contract was bad",
-                )
-                .outbound,
-        )
+) -> ordered::Map<PublicKey, commonware_p2p::Address> {
+    let all_keys = state
+        .dealers()
+        .iter()
+        .chain(state.players().iter())
+        .chain(state.syncers.iter());
+
+    ordered::Map::from_iter_dedup(all_keys.map(|key| {
+        let addr = validators
+            .get_value(key)
+            .expect(
+                "all DKG participants must have an entry in the \
+                 unfiltered, contract validator set",
+            )
+            .inbound;
+        (key.clone(), commonware_p2p::Address::Symmetric(addr))
     }))
 }
 
