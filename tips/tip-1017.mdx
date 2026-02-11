@@ -743,7 +743,7 @@ The test suite must cover:
     inactive ones have `addedAtHeight == deactivatedAtHeight > 0`.
 38. **addedAtHeight set correctly**: All migrated validators have `addedAtHeight > 0` (block.height at migration time).
 39. **deactivatedAtHeight set correctly**: Active validators have `deactivatedAtHeight == 0`.
-    Inactive validators have `deactivatedAtHeight > 0` at migration time, equal to `addedAtHeight`.
+    Inactive validators have `addedAtHeight == deactivatedAtHeight > 0` at migration time.
 40. **initialize sets flag**: After `initializeIfMigrated()`, `isInitialized()` returns true
 41. **migrateValidator copies owner**: V2 `owner()` matches V1 after first `migrateValidator` call
 42. **initialize copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
