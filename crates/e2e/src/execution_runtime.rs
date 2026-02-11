@@ -334,10 +334,12 @@ impl ExecutionRuntime {
                 .unwrap();
             rt.block_on(async move {
                 while let Some(msg) = from_handle.recv().await {
-                    // create a new task manager for the new node instance
-                    let task_manager =
-                        Runtime::with_existing_handle(tokio::runtime::Handle::current())
-                            .expect("must be able to create Runtime");
+                    // Create a fresh Runtime per node launch with minimal thread pools.
+                    // Using test_with_handle() spawns pools with only 2 threads each
+                    // (vs num_cpus with with_existing_handle), preventing OOM on CI.
+                    // Must be fresh per launch — shutdown signal propagates across clones,
+                    // so a shared Runtime would break node restart tests.
+                    let task_manager = Runtime::test_with_handle(tokio::runtime::Handle::current());
                     match msg {
                         Message::AddValidator(add_validator) => {
                             let AddValidator {

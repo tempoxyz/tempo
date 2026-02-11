@@ -8,13 +8,6 @@ filter = "package(tempo-e2e)"
 failure-output = "never"
 threads-required = 2
 
-# Limit e2e test parallelism to avoid OOM on CI runners.
-# Each e2e test spawns multiple MDBX instances + full execution nodes
-# which consume significant memory (~2GB+ per test).
-[[profile.default.overrides]]
-filter = "package(tempo-e2e)"
-threads-required = 8
-
 [[profile.default.overrides]]
 filter = "test(sync::can_restart_after_joining_from_snapshot)"
 slow-timeout = { period = "60s", terminate-after = 4, on-timeout = "pass" }
