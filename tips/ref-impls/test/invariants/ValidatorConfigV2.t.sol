@@ -84,7 +84,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         _ghostAddress[0] = _setupVal1;
         _ghostPubKey[0] = SETUP_PUB_KEY_A;
-        _ghostAddedAtHeight[0] = 0;
+        _ghostAddedAtHeight[0] = uint64(block.number);
         _ghostDeactivatedAtHeight[0] = 0;
         _ghostActiveIndex[_setupVal1] = 0;
         _ghostAddressInUse[_setupVal1] = true;
@@ -92,7 +92,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         _ghostAddress[1] = _setupVal2;
         _ghostPubKey[1] = SETUP_PUB_KEY_B;
-        _ghostAddedAtHeight[1] = 0;
+        _ghostAddedAtHeight[1] = uint64(block.number);
         _ghostDeactivatedAtHeight[1] = 0;
         _ghostActiveIndex[_setupVal2] = 1;
         _ghostAddressInUse[_setupVal2] = true;
@@ -898,11 +898,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         uint256 expectedActive = 0;
         for (uint256 i = 0; i < all.length; i++) {
-            if (
-                all[i].deactivatedAtHeight == 0
-                    && !(all[i].addedAtHeight == all[i].deactivatedAtHeight
-                        && all[i].addedAtHeight != 0)
-            ) {
+            if (all[i].deactivatedAtHeight == 0) {
                 expectedActive++;
             }
         }
