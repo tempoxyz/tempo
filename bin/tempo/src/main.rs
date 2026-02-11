@@ -25,11 +25,7 @@ use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
-use reth_ethereum::{
-    chainspec::EthChainSpec as _,
-    cli::Commands,
-    evm::revm::primitives::B256,
-};
+use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_ethereum_cli::Cli;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
@@ -226,6 +222,13 @@ fn main() -> eyre::Result<()> {
             let runner = commonware_runtime::tokio::Runner::new(runtime_config);
             runner.start(async move |ctx| {
                 let ctx = ctx.with_label("follow");
+
+                let mut metrics_server = tempo_commonware_node::metrics::install(
+                    ctx.with_label("metrics"),
+                    args.consensus.metrics_address,
+                )
+                .fuse();
+
                 let follow_stack = run_follow_stack(
                     &ctx,
                     args.consensus,
@@ -245,6 +248,14 @@ fn main() -> eyre::Result<()> {
                         ret = &mut follow_stack => {
                             break ret.and_then(|()| Err(eyre::eyre!("follow stack exited unexpectedly")))
                             .wrap_err("follow stack failed");
+                        }
+
+                        ret = &mut metrics_server, if !metrics_server.is_terminated() => {
+                            let reason = match ret.wrap_err("task_panicked") {
+                                Ok(Ok(())) => "unexpected regular exit".to_string(),
+                                Ok(Err(err)) | Err(err) => format!("{err}"),
+                            };
+                            tracing::warn!(reason, "the metrics server exited");
                         }
                     )
                 }

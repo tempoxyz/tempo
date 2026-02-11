@@ -214,13 +214,13 @@ impl RpcResolver {
         Ok(Some(Block::from_execution_block(sealed)))
     }
 
-    pub async fn fetch_block_by_hash(&self, hash: alloy_primitives::B256) -> RpcResult<Option<Block>> {
+    pub async fn fetch_block_by_hash(
+        &self,
+        hash: alloy_primitives::B256,
+    ) -> RpcResult<Option<Block>> {
         let client = self.client().await?;
         let rpc_block: Option<TempoRpcBlock> = client
-            .request(
-                "eth_getBlockByHash",
-                rpc_params![hash, true],
-            )
+            .request("eth_getBlockByHash", rpc_params![hash, true])
             .await
             .map_err(|e| RpcError::Rpc(e.to_string()))?;
         let Some(rpc_block) = rpc_block else {
@@ -261,9 +261,7 @@ impl RpcResolver {
                 handler::Request::Finalized { height } => {
                     resolver.resolve_finalized(height.clone()).await
                 }
-                handler::Request::Block(commitment) => {
-                    resolver.resolve_block(*commitment).await
-                }
+                handler::Request::Block(commitment) => resolver.resolve_block(*commitment).await,
                 other => {
                     warn_span!("follow")
                         .in_scope(|| warn!(?other, "unexpected resolver request type"));
