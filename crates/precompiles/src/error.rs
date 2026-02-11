@@ -14,8 +14,8 @@ use revm::{
 };
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
-    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-    ValidatorConfigError,
+    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, TLSNotaryError,
+    UnknownFunctionSelector, ValidatorConfigError,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -65,6 +65,10 @@ pub enum TempoPrecompileError {
     /// Error from account keychain precompile
     #[error("Account keychain error: {0:?}")]
     AccountKeychainError(AccountKeychainError),
+
+    /// Error from TLS notary precompile
+    #[error("TLS notary error: {0:?}")]
+    TLSNotaryError(TLSNotaryError),
 
     #[error("Gas limit exceeded")]
     OutOfGas,
@@ -117,6 +121,7 @@ impl TempoPrecompileError {
             }
             Self::ValidatorConfigError(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
+            Self::TLSNotaryError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Err(PrecompileError::OutOfGas);
             }
@@ -179,6 +184,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::NonceError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::TLSNotaryError);
 
     registry
 }
