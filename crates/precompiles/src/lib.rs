@@ -14,6 +14,7 @@ pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
+pub mod tls_email_ownership;
 pub mod validator_config;
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -28,6 +29,7 @@ use crate::{
     tip20::{TIP20Token, is_tip20_prefix},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
+    tls_email_ownership::TLSEmailOwnership,
     validator_config::ValidatorConfig,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -48,7 +50,7 @@ use revm::{
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
     STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, TLS_EMAIL_OWNERSHIP_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -90,6 +92,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(ValidatorConfigPrecompile::create(&cfg))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
             Some(AccountKeychainPrecompile::create(&cfg))
+        } else if *address == TLS_EMAIL_OWNERSHIP_ADDRESS {
+            Some(TLSEmailOwnershipPrecompile::create(&cfg))
         } else {
             None
         }
@@ -181,6 +185,13 @@ pub struct ValidatorConfigPrecompile;
 impl ValidatorConfigPrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("ValidatorConfig", cfg, |input| { ValidatorConfig::new() })
+    }
+}
+
+pub struct TLSEmailOwnershipPrecompile;
+impl TLSEmailOwnershipPrecompile {
+    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("TLSEmailOwnership", cfg, |input| { TLSEmailOwnership::new() })
     }
 }
 

@@ -6,6 +6,7 @@ pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
+pub mod tls_email_ownership;
 pub mod validator_config;
 
 pub use account_keychain::*;
@@ -17,6 +18,7 @@ pub use tip_fee_manager::*;
 pub use tip20::*;
 pub use tip20_factory::*;
 pub use tip403_registry::*;
+pub use tls_email_ownership::*;
 pub use validator_config::*;
 
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
@@ -31,3 +33,5 @@ pub const VALIDATOR_CONFIG_ADDRESS: Address =
     address!("0xCCCCCCCC00000000000000000000000000000000");
 pub const ACCOUNT_KEYCHAIN_ADDRESS: Address =
     address!("0xAAAAAAAA00000000000000000000000000000000");
+pub const TLS_EMAIL_OWNERSHIP_ADDRESS: Address =
+    address!("0x714E000000000000000000000000000000000000");

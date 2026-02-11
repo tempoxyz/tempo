@@ -42,7 +42,7 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{ITIP20Factory, IValidatorConfig},
+    precompiles::{ITIP20Factory, ITLSEmailOwnership, IValidatorConfig},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -56,6 +56,7 @@ use tempo_precompiles::{
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
+    tls_email_ownership::TLSEmailOwnership,
     validator_config::ValidatorConfig,
 };
 
@@ -378,6 +379,9 @@ impl GenesisArgs {
 
         println!("Initializing account keychain");
         initialize_account_keychain(&mut evm)?;
+
+        println!("Initializing TLS email ownership");
+        initialize_tls_email_ownership(validator_admin, &mut evm)?;
 
         if !self.no_pairwise_liquidity {
             if let (Some(alpha), Some(beta), Some(theta)) =
@@ -836,6 +840,47 @@ fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Re
         &ctx.cfg,
         &ctx.tx,
         || AccountKeychain::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+/// Initializes the TLS email ownership precompile with an owner and a default dev Notary key.
+///
+/// The default Notary key uses the well-known Hardhat account #0 private key for local development.
+/// In production, real Notary keys would be registered by the owner.
+fn initialize_tls_email_ownership(
+    admin: Address,
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || -> eyre::Result<()> {
+            let mut tls = TLSEmailOwnership::new();
+            tls.initialize(admin)
+                .wrap_err("Failed to initialize TLS email ownership")?;
+
+            let notary_key_id = B256::from([0x01u8; 32]);
+            let notary_address = address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+            tls.set_notary_key(
+                admin,
+                ITLSEmailOwnership::setNotaryKeyCall {
+                    notaryKeyId: notary_key_id,
+                    notaryAddress: notary_address,
+                },
+            )
+            .map_err(|e| eyre!("Failed to set notary key: {e:?}"))?;
+
+            println!(
+                "  Registered dev Notary key: id={notary_key_id}, address={notary_address}"
+            );
+
+            Ok(())
+        },
     )?;
 
     Ok(())
