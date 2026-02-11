@@ -14,8 +14,10 @@ use commonware_runtime::{Clock, Metrics, Spawner, Storage, buffer::paged::CacheR
 use commonware_storage::archive::immutable;
 use eyre::WrapErr as _;
 
-use crate::config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES;
-use crate::consensus::{Digest, block::Block};
+use crate::{
+    config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
+    consensus::{Digest, block::Block},
+};
 
 /// Archive partition names - shared between consensus and follow engines.
 const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";

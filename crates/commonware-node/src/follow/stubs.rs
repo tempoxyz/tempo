@@ -4,7 +4,10 @@
 //! actually used because the follower never broadcasts blocks.
 
 use commonware_broadcast::buffered;
-use commonware_cryptography::{Signer as _, ed25519::PrivateKey, ed25519::PublicKey};
+use commonware_cryptography::{
+    Signer as _,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_math::algebra::Random as _;
 use commonware_runtime::{Clock, Metrics, Spawner};
 use rand_08::SeedableRng as _;

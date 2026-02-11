@@ -5,9 +5,7 @@
 //! block/finalization fetches, and implements [`Resolver`] for marshal's
 //! gap-repair machinery.
 
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use alloy_network::primitives::HeaderResponse as _;
 use alloy_rpc_types_eth::Block as AlloyRpcBlock;
@@ -24,10 +22,11 @@ use commonware_utils::{
     vec::NonEmptyVec,
 };
 use eyre::WrapErr as _;
-use jsonrpsee::core::client::ClientT;
-use jsonrpsee::core::client::Subscription;
-use jsonrpsee::rpc_params;
-use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
+use jsonrpsee::{
+    core::client::{ClientT, Subscription},
+    rpc_params,
+    ws_client::{WsClient, WsClientBuilder},
+};
 use reth_node_core::primitives::SealedBlock;
 use tempo_alloy::rpc::TempoHeaderResponse;
 use tempo_node::rpc::consensus::{Event, TempoConsensusApiClient};
