@@ -14,7 +14,7 @@ use quote::{format_ident, quote};
 
 use super::{
     common::{self, SynSolType, Unzip4},
-    parser::{FieldAccessors, InterfaceDef, MethodDef},
+    parser::{ConstantDef, FieldAccessors, InterfaceDef, MethodDef},
     registry::TypeRegistry,
 };
 use crate::composition::{CallSource, SolTypesPath, expand_composed_calls};
@@ -408,9 +408,10 @@ fn generate_calls_enum(enum_name: &Ident, methods: &[MethodCodegen<'_>]) -> Toke
 pub(super) fn generate_instance(
     pascal_name: &proc_macro2::Ident,
     interfaces: &[InterfaceDef],
+    constants: &[ConstantDef],
     events: Vec<ContractEventInfo>,
 ) -> syn::Result<TokenStream> {
-    let functions: Vec<ContractFunctionInfo> = interfaces
+    let mut functions: Vec<ContractFunctionInfo> = interfaces
         .iter()
         .flat_map(|def| {
             def.methods.iter().map(|m| {
@@ -436,6 +437,17 @@ pub(super) fn generate_instance(
             })
         })
         .collect();
+
+    for c in constants {
+        let sol_name = c.sol_name();
+        functions.push(ContractFunctionInfo {
+            method_name: format_ident!("{}", sol_name),
+            call_name: format_ident!("{}Call", sol_name),
+            param_names: vec![],
+            rust_types: vec![],
+            layout: CallLayout::Unit,
+        });
+    }
 
     let codegen = ContractCodegen::new(
         pascal_name.clone(),

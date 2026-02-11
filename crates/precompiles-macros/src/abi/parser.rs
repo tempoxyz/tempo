@@ -281,19 +281,23 @@ pub(super) struct ConstantDef {
     pub attrs: Vec<Attribute>,
     /// Visibility
     pub vis: Visibility,
+    /// Optional override for the on-chain getter function name (from `#[getter = "name"]`)
+    pub getter_override: Option<String>,
 }
 
 impl ConstantDef {
     /// Parse a `const` item into a ConstantDef.
     pub(super) fn from_const(item: &ItemConst) -> syn::Result<Self> {
+        let (getter_override, attrs) = Self::extract_getter(&item.attrs, &item.ident)?;
         Ok(Self {
             name: item.ident.clone(),
             ty: (*item.ty).clone(),
             expr: (*item.expr).clone(),
             is_static: false,
             is_lazy: false,
-            attrs: item.attrs.clone(),
+            attrs,
             vis: item.vis.clone(),
+            getter_override,
         })
     }
 
@@ -301,6 +305,7 @@ impl ConstantDef {
     /// Handles `LazyLock<T>` by extracting the inner type.
     pub(super) fn from_static(item: &ItemStatic) -> syn::Result<Self> {
         let (inner_ty, is_lazy) = extract_lazy_lock_inner(&item.ty);
+        let (getter_override, attrs) = Self::extract_getter(&item.attrs, &item.ident)?;
 
         Ok(Self {
             name: item.ident.clone(),
@@ -308,15 +313,47 @@ impl ConstantDef {
             expr: (*item.expr).clone(),
             is_static: true,
             is_lazy,
-            attrs: item.attrs.clone(),
+            attrs,
             vis: item.vis.clone(),
+            getter_override,
         })
     }
 
+    /// Extract and validate `#[getter = "name"]` from constant attributes.
+    fn extract_getter(
+        attrs: &[Attribute],
+        name: &Ident,
+    ) -> syn::Result<(Option<String>, Vec<Attribute>)> {
+        let getter = extract_getter_attribute(attrs)?;
+        match getter {
+            Some(None) => {
+                let attr = attrs.iter().find(|a| a.path().is_ident("getter")).unwrap();
+                Err(syn::Error::new_spanned(
+                    attr,
+                    format!(
+                        "constants already get an auto-generated getter with their name. \
+                         Use `#[getter = \"name\"]` to define an alternative getter function \
+                         to `{name}`"
+                    ),
+                ))
+            }
+            Some(Some(ident)) => {
+                let remaining = attrs
+                    .iter()
+                    .filter(|a| !a.path().is_ident("getter"))
+                    .cloned()
+                    .collect();
+                Ok((Some(ident.to_string()), remaining))
+            }
+            None => Ok((None, attrs.to_vec())),
+        }
+    }
+
     /// Returns the Solidity function name for this constant.
-    /// Constants use SCREAMING_SNAKE_CASE in Solidity too.
     pub(super) fn sol_name(&self) -> String {
-        self.name.to_string()
+        self.getter_override
+            .clone()
+            .unwrap_or_else(|| self.name.to_string())
     }
 }
 

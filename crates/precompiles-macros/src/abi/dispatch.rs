@@ -301,11 +301,11 @@ fn generate_constant_arms(constants: &[ConstantDef]) -> Vec<TokenStream> {
             let sol_name = c.sol_name();
             let variant = format_ident!("{}", sol_name);
             let call_name = format_ident!("{}Call", sol_name);
-            let rust_name = &c.name;
+            let method_name = format_ident!("{}", sol_name);
 
             quote! {
                 ConstantsCalls::#variant(_) => {
-                    metadata::<#call_name>(|| Ok(self.#rust_name()))
+                    metadata::<#call_name>(|| Ok(self.#method_name()))
                 }
             }
         })

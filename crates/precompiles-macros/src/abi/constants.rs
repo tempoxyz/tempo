@@ -71,12 +71,13 @@ pub(super) fn generate_trait(mod_name: &Ident, constants: &[ConstantDef]) -> Tok
     );
     let methods = constants.iter().map(|c| {
         let (name, ty, is_lazy) = (&c.name, &c.ty, c.is_lazy);
+        let method_name = format_ident!("{}", c.sol_name());
         let body = if is_lazy {
             quote! { *#name }
         } else {
             quote! { #name }
         };
-        quote! { fn #name(&self) -> #ty { #body } }
+        quote! { fn #method_name(&self) -> #ty { #body } }
     });
     quote! {
         #[cfg(feature = "precompile")]
