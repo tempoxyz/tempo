@@ -118,6 +118,8 @@ jemalloc-prof = [
 	"reth-node-metrics/jemalloc-prof",
 ]
 
+tracy = ["reth-node-core/tracy"]
+
 min-error-logs = ["reth-node-core/min-error-logs"]
 min-warn-logs = ["reth-node-core/min-warn-logs"]
 min-info-logs = ["reth-node-core/min-info-logs"]

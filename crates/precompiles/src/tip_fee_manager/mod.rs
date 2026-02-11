@@ -4,7 +4,7 @@ pub mod dispatch;
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip_fee_manager::amm::{Pool, compute_amount_out},
+    tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
@@ -25,6 +25,13 @@ pub struct TipFeeManager {
     pools: Mapping<B256, Pool>,
     total_supply: Mapping<B256, U256>,
     liquidity_balances: Mapping<B256, Mapping<Address, U256>>,
+
+    // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
+    // macro is refactored and has 2 independent layouts (persistent and transient).
+    // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
+    /// T2+: Tracks liquidity reserved for a pending fee swap during `collect_fee_pre_tx`.
+    /// Checked by `burn` and `rebalance_swap` to prevent withdrawals that would violate the reservation.
+    pending_fee_swap_reservation: Mapping<B256, u128>,
 }
 
 impl TipFeeManager {
@@ -123,7 +130,12 @@ impl TipFeeManager {
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         if user_token != validator_token {
-            self.check_sufficient_liquidity(user_token, validator_token, max_amount)?;
+            let pool_id = PoolKey::new(user_token, validator_token).get_id();
+            let amount_out_needed = self.check_sufficient_liquidity(pool_id, max_amount)?;
+
+            if self.storage.spec().is_t2() {
+                self.reserve_pool_liquidity(pool_id, amount_out_needed)?;
+            }
         }
 
         // Return the user's token preference
@@ -760,6 +772,29 @@ mod tests {
             let fee_manager = TipFeeManager::new();
             let remaining = fee_manager.collected_fees[validator][token.address()].read()?;
             assert_eq!(remaining, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_initialize_sets_storage_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut fee_manager = TipFeeManager::new();
+
+            // Before init, should not be initialized
+            assert!(!fee_manager.is_initialized()?);
+
+            // Initialize
+            fee_manager.initialize()?;
+
+            // After init, should be initialized
+            assert!(fee_manager.is_initialized()?);
+
+            // New handle should still see initialized state
+            let fee_manager2 = TipFeeManager::new();
+            assert!(fee_manager2.is_initialized()?);
 
             Ok(())
         })

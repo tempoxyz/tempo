@@ -105,7 +105,6 @@ mod tests {
     // - alloy integers: U8, I8, U16, I16, U32, I32, U64, I64, U128, I128, U256, I256
     // - alloy fixed bytes: FixedBytes<1>, FixedBytes<2>, ..., FixedBytes<32>
     tempo_precompiles_macros::gen_storable_tests!();
-
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(500))]
 

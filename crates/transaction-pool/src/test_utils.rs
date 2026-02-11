@@ -5,6 +5,7 @@
 
 use crate::transaction::TempoPooledTransaction;
 use alloy_consensus::{Transaction, TxEip1559};
+use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{Address, B256, Signature, TxKind, U256};
 use reth_primitives_traits::Recovered;
 use reth_provider::test_utils::MockEthProvider;
@@ -58,6 +59,8 @@ pub(crate) struct TxBuilder {
     calls: Option<Vec<Call>>,
     /// Authorization list for AA transactions.
     authorization_list: Option<Vec<TempoSignedAuthorization>>,
+    /// Access list for AA transactions.
+    access_list: AccessList,
 }
 
 impl Default for TxBuilder {
@@ -77,6 +80,7 @@ impl Default for TxBuilder {
             chain_id: 42431, // MODERATO chain_id
             calls: None,
             authorization_list: None,
+            access_list: Default::default(),
         }
     }
 }
@@ -168,6 +172,12 @@ impl TxBuilder {
         self
     }
 
+    /// Set the access list for the AA transaction.
+    pub(crate) fn access_list(mut self, access_list: AccessList) -> Self {
+        self.access_list = access_list;
+        self
+    }
+
     /// Build an AA transaction.
     pub(crate) fn build(self) -> TempoPooledTransaction {
         let calls = self.calls.unwrap_or_else(|| {
@@ -190,7 +200,7 @@ impl TxBuilder {
             fee_payer_signature: None,
             valid_after: self.valid_after,
             valid_before: self.valid_before,
-            access_list: Default::default(),
+            access_list: self.access_list,
             tempo_authorization_list: self.authorization_list.unwrap_or_default(),
             key_authorization: None,
         };

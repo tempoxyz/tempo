@@ -7,7 +7,7 @@ pub mod orderbook;
 pub use order::Order;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel, base_to_quote,
-    quote_to_base, tick_to_price,
+    quote_to_base, tick_to_price, validate_tick_spacing,
 };
 use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, StablecoinDEXEvents};
@@ -310,9 +310,24 @@ impl StablecoinDEX {
         self.book_keys.read()
     }
 
+    /// Convert relative tick to scaled price
+    pub fn tick_to_price(&self, tick: i16) -> Result<u32> {
+        if self.storage.spec().is_t2() {
+            orderbook::validate_tick_spacing(tick)?;
+        }
+
+        Ok(orderbook::tick_to_price(tick))
+    }
+
     /// Convert scaled price to relative tick
     pub fn price_to_tick(&self, price: u32) -> Result<i16> {
-        orderbook::price_to_tick(price)
+        let tick = orderbook::price_to_tick(price)?;
+
+        if self.storage.spec().is_t2() {
+            orderbook::validate_tick_spacing(tick)?;
+        }
+
+        Ok(tick)
     }
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
@@ -1381,6 +1396,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::STABLECOIN_DEX_ADDRESS;
 
     fn setup_test_tokens(
         admin: Address,
@@ -4169,6 +4185,87 @@ mod tests {
             exchange
                 .swap_exact_amount_out(bob, base_token, quote_token, 100009999, u128::MAX)
                 .expect("Swap should succeed");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_stablecoin_dex_address_returns_correct_precompile() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let exchange = StablecoinDEX::new();
+            assert_eq!(exchange.address(), STABLECOIN_DEX_ADDRESS);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_stablecoin_dex_initialize_sets_storage_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+
+            // Before init, should not be initialized
+            assert!(!exchange.is_initialized()?);
+
+            // Initialize
+            exchange.initialize()?;
+
+            // After init, should be initialized
+            assert!(exchange.is_initialized()?);
+
+            // New handle should still see initialized state
+            let exchange2 = StablecoinDEX::new();
+            assert!(exchange2.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_order_validates_maker_and_order_id() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let alice = Address::random();
+            let min_order_amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let escrow = (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, _quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, escrow)?;
+            exchange.create_pair(base_token)?;
+
+            let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
+
+            // Valid order should be retrievable
+            let order = exchange.get_order(order_id)?;
+            assert_eq!(order.maker(), alice);
+            assert!(!order.maker().is_zero());
+            assert!(order.order_id() < exchange.next_order_id()?);
+
+            // Order with zero maker (non-existent) should fail
+            let result = exchange.get_order(999);
+            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err(),
+                StablecoinDEXError::order_does_not_exist().into()
+            );
+
+            // Order ID >= next_order_id should fail (tests the < boundary)
+            let next_id = exchange.next_order_id()?;
+            let result = exchange.get_order(next_id);
+            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err(),
+                StablecoinDEXError::order_does_not_exist().into()
+            );
 
             Ok(())
         })

@@ -413,9 +413,9 @@ pub(crate) fn gen_collision_check_fn(
         checks.extend(quote! {
             {
                 let slot = #slot_const;
-                let slot_end = slot + #current_count_expr;
+                let slot_end = slot.checked_add(#current_count_expr).expect("slot range overflow");
                 let other_slot = #other_slot_const;
-                let other_slot_end = other_slot + #other_count_expr;
+                let other_slot_end = other_slot.checked_add(#other_count_expr).expect("slot range overflow");
 
                 // Determine if there's no overlap:
                 // - If starting in different slots: rely on slot range check

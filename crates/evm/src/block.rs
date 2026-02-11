@@ -186,7 +186,10 @@ where
         let Some(validator_set) = &self.validator_set else {
             return Ok(());
         };
-        let gas_per_subblock = self.shared_gas_limit / validator_set.len() as u64;
+        let gas_per_subblock = self
+            .shared_gas_limit
+            .checked_div(validator_set.len() as u64)
+            .expect("validator set must not be empty");
 
         let mut incentive_gas = 0;
         let mut seen = HashSet::new();

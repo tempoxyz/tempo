@@ -410,18 +410,6 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
             // delete uses the default implementation from the trait
         }
 
-        // Implement StorageKey for use as mapping keys
-        impl crate::storage::StorageKey for [#elem_type; #array_size] {
-            #[inline]
-            fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
-                use crate::storage::StorageKey;
-                let mut bytes = Vec::with_capacity(#array_size * <#elem_type as crate::storage::StorableType>::BYTES);
-                for elem in self.iter() {
-                    bytes.extend_from_slice(elem.as_storage_bytes().as_ref());
-                }
-                bytes
-            }
-        }
     }
 }
 
@@ -705,19 +693,6 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
             // delete uses the default implementation from the trait
         }
 
-        // Implement StorageKey for use as mapping keys
-        impl crate::storage::StorageKey for [#struct_type; #array_size] {
-            #[inline]
-            fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
-                use crate::storage::StorageKey;
-                // Iterate elements and concatenate their bytes
-                let mut bytes = Vec::with_capacity(#array_size * <#struct_type as crate::storage::StorableType>::SLOTS * 32);
-                for elem in self.iter() {
-                    bytes.extend_from_slice(elem.as_storage_bytes().as_ref());
-                }
-                bytes
-            }
-        }
     }
 }
 

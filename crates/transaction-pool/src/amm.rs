@@ -4,11 +4,12 @@ use alloy_primitives::{
     Address, U256,
     map::{AddressMap, HashMap, U256Map},
 };
+use itertools::Itertools;
 use parking_lot::RwLock;
 use reth_primitives_traits::{BlockHeader, SealedHeader};
 use reth_provider::{
-    BlockReader, ChainSpecProvider, ExecutionOutcome, ProviderError, ProviderResult, StateProvider,
-    StateProviderFactory,
+    ChainSpecProvider, ExecutionOutcome, HeaderProvider, ProviderError, ProviderResult,
+    StateProvider, StateProviderFactory,
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
@@ -34,7 +35,9 @@ impl AmmLiquidityCache {
     /// validator fee tokens of the latest blocks.
     pub fn new<Client>(client: Client) -> ProviderResult<Self>
     where
-        Client: StateProviderFactory + BlockReader + ChainSpecProvider<ChainSpec = TempoChainSpec>,
+        Client: StateProviderFactory
+            + HeaderProvider<Header: BlockHeader>
+            + ChainSpecProvider<ChainSpec = TempoChainSpec>,
     {
         let this = Self {
             inner: Default::default(),
@@ -111,6 +114,32 @@ impl AmmLiquidityCache {
         }
 
         Ok(false)
+    }
+
+    /// Clears all cached state. Used on reorg to invalidate stale entries
+    /// from orphaned blocks.
+    pub fn clear(&self) {
+        *self.inner.write() = AmmLiquidityCacheInner::default();
+    }
+
+    /// Clears all cached state and repopulates from the current canonical chain.
+    ///
+    /// This should be called on reorg to ensure stale entries from orphaned
+    /// blocks are replaced with data from the new canonical chain.
+    pub fn repopulate<Client>(&self, client: &Client) -> ProviderResult<()>
+    where
+        Client: StateProviderFactory
+            + HeaderProvider<Header: BlockHeader>
+            + ChainSpecProvider<ChainSpec = TempoChainSpec>,
+    {
+        self.clear();
+        let tip = client.best_block_number()?;
+        for header in
+            client.sealed_headers_range(tip.saturating_sub(LAST_SEEN_WINDOW as u64 + 1)..=tip)?
+        {
+            self.on_new_block(&header, client)?;
+        }
+        Ok(())
     }
 
     /// Processes a new [`ExecutionOutcome`] and caches new validator
@@ -193,14 +222,19 @@ impl AmmLiquidityCache {
         if inner.last_seen_tokens.len() > LAST_SEEN_WINDOW {
             inner.last_seen_tokens.pop_front();
         }
-        inner.unique_tokens = inner.last_seen_tokens.iter().copied().collect();
+        inner.unique_tokens = inner.last_seen_tokens.iter().copied().unique().collect();
 
         // Track the new observed validator (block producer)
         inner.last_seen_validators.push_back(beneficiary);
         if inner.last_seen_validators.len() > LAST_SEEN_WINDOW {
             inner.last_seen_validators.pop_front();
         }
-        inner.unique_validators = inner.last_seen_validators.iter().copied().collect();
+        inner.unique_validators = inner
+            .last_seen_validators
+            .iter()
+            .copied()
+            .unique()
+            .collect();
 
         Ok(())
     }
@@ -475,12 +509,17 @@ mod tests {
             Some(&Address::new([1; 20]))
         );
 
-        inner.unique_validators = inner.last_seen_validators.iter().copied().collect();
+        inner.unique_validators = inner
+            .last_seen_validators
+            .iter()
+            .copied()
+            .unique()
+            .collect();
         assert!(inner.unique_validators.contains(&new_validator));
     }
 
     #[test]
-    fn test_unique_tokens_updated_from_last_seen() {
+    fn test_unique_tokens_deduplication() {
         let mut inner = AmmLiquidityCacheInner::default();
 
         let token_a = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
@@ -488,12 +527,14 @@ mod tests {
 
         inner.last_seen_tokens.push_back(token_a);
         inner.last_seen_tokens.push_back(token_b);
-        inner.last_seen_tokens.push_back(token_a);
+        inner.last_seen_tokens.push_back(token_b);
+        inner.last_seen_tokens.push_back(token_b);
 
-        inner.unique_tokens = inner.last_seen_tokens.iter().copied().collect();
+        inner.unique_tokens = inner.last_seen_tokens.iter().copied().unique().collect();
 
-        assert!(inner.unique_tokens.contains(&token_a));
-        assert!(inner.unique_tokens.contains(&token_b));
+        assert_eq!(inner.unique_tokens.len(), 2, "duplicates must be removed");
+        assert_eq!(inner.unique_tokens[0], token_a);
+        assert_eq!(inner.unique_tokens[1], token_b);
     }
 
     // ============================================
@@ -559,6 +600,167 @@ mod tests {
         inner.slot_to_validator.insert(slot, validator);
 
         assert_eq!(inner.slot_to_validator.get(&slot), Some(&validator));
+    }
+
+    #[test]
+    fn test_clear_resets_all_state() {
+        let user_token = Address::random();
+        let validator_token = Address::random();
+        let validator = Address::random();
+
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                cache: {
+                    let mut m = HashMap::default();
+                    m.insert((user_token, validator_token), U256::from(1000));
+                    m
+                },
+                slot_to_pool: {
+                    let mut m = U256Map::default();
+                    m.insert(U256::from(1), (user_token, validator_token));
+                    m
+                },
+                last_seen_tokens: VecDeque::from(vec![validator_token]),
+                unique_tokens: vec![validator_token],
+                last_seen_validators: VecDeque::from(vec![validator]),
+                unique_validators: vec![validator],
+                validator_preferences: {
+                    let mut m = AddressMap::default();
+                    m.insert(validator, validator_token);
+                    m
+                },
+                slot_to_validator: {
+                    let mut m = U256Map::default();
+                    m.insert(U256::from(2), validator);
+                    m
+                },
+            })),
+        };
+
+        cache.clear();
+
+        let inner = cache.inner.read();
+        assert!(inner.cache.is_empty(), "cache should be empty after clear");
+        assert!(
+            inner.slot_to_pool.is_empty(),
+            "slot_to_pool should be empty after clear"
+        );
+        assert!(
+            inner.last_seen_tokens.is_empty(),
+            "last_seen_tokens should be empty after clear"
+        );
+        assert!(
+            inner.unique_tokens.is_empty(),
+            "unique_tokens should be empty after clear"
+        );
+        assert!(
+            inner.last_seen_validators.is_empty(),
+            "last_seen_validators should be empty after clear"
+        );
+        assert!(
+            inner.unique_validators.is_empty(),
+            "unique_validators should be empty after clear"
+        );
+        assert!(
+            inner.validator_preferences.is_empty(),
+            "validator_preferences should be empty after clear"
+        );
+        assert!(
+            inner.slot_to_validator.is_empty(),
+            "slot_to_validator should be empty after clear"
+        );
+    }
+
+    #[test]
+    fn test_repopulate_clears_stale_data_and_rebuilds_from_canonical_chain() {
+        use alloy_consensus::Header;
+
+        let stale_validator = Address::random();
+        let stale_token = Address::random();
+        let stale_user_token = Address::random();
+
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                cache: {
+                    let mut m = HashMap::default();
+                    m.insert((stale_user_token, stale_token), U256::from(9999));
+                    m
+                },
+                slot_to_pool: {
+                    let mut m = U256Map::default();
+                    m.insert(U256::from(42), (stale_user_token, stale_token));
+                    m
+                },
+                last_seen_tokens: VecDeque::from(vec![stale_token]),
+                unique_tokens: vec![stale_token],
+                last_seen_validators: VecDeque::from(vec![stale_validator]),
+                unique_validators: vec![stale_validator],
+                validator_preferences: {
+                    let mut m = AddressMap::default();
+                    m.insert(stale_validator, stale_token);
+                    m
+                },
+                slot_to_validator: {
+                    let mut m = U256Map::default();
+                    m.insert(U256::from(99), stale_validator);
+                    m
+                },
+            })),
+        };
+
+        {
+            let inner = cache.inner.read();
+            assert!(inner.unique_validators.contains(&stale_validator));
+            assert!(inner.unique_tokens.contains(&stale_token));
+            assert_eq!(
+                inner.cache.get(&(stale_user_token, stale_token)),
+                Some(&U256::from(9999))
+            );
+        }
+
+        let new_validator = Address::random();
+        let provider = create_mock_provider();
+        for i in 0..3u64 {
+            let header = Header {
+                number: i,
+                beneficiary: new_validator,
+                ..Default::default()
+            };
+            provider.add_header(alloy_primitives::B256::random(), header);
+        }
+
+        cache
+            .repopulate(&provider)
+            .expect("repopulate should succeed");
+
+        let inner = cache.inner.read();
+
+        assert!(
+            !inner.unique_validators.contains(&stale_validator),
+            "stale validator should be gone after repopulate"
+        );
+        assert!(
+            !inner.unique_tokens.contains(&stale_token),
+            "stale token should be gone after repopulate"
+        );
+        assert!(
+            !inner.cache.contains_key(&(stale_user_token, stale_token)),
+            "stale liquidity entry should be gone after repopulate"
+        );
+        assert!(
+            inner.slot_to_pool.is_empty(),
+            "stale slot_to_pool should be gone after repopulate"
+        );
+
+        assert!(
+            inner.unique_validators.contains(&new_validator),
+            "new canonical validator should be present after repopulate"
+        );
+        assert_eq!(
+            inner.last_seen_validators.len(),
+            3,
+            "should have 3 validators from new canonical headers"
+        );
     }
 
     #[test]

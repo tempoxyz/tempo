@@ -158,7 +158,15 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn output_tx_type(&self) -> TempoTxType {
-        if !self.calls.is_empty() || self.nonce_key.is_some() || self.fee_token.is_some() {
+        if !self.calls.is_empty()
+            || self.nonce_key.is_some()
+            || self.fee_token.is_some()
+            || !self.tempo_authorization_list.is_empty()
+            || self.key_authorization.is_some()
+            || self.key_id.is_some()
+            || self.valid_before.is_some()
+            || self.valid_after.is_some()
+        {
             TempoTxType::AA
         } else {
             match self.inner.output_tx_type() {
@@ -320,8 +328,14 @@ mod tests {
     use super::*;
     use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy};
     use alloy_eips::eip7702::SignedAuthorization;
-    use alloy_primitives::B256;
+    use alloy_primitives::{B256, Signature};
     use alloy_rpc_types_eth::{AccessListItem, Authorization, TransactionRequest};
+    use tempo_primitives::{
+        SignatureType, TempoSignature,
+        transaction::{
+            KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization, TempoSignedAuthorization,
+        },
+    };
 
     #[test_case::test_case(
         TempoTransactionRequest {
@@ -470,5 +484,77 @@ mod tests {
             .to_string();
 
         assert_eq!(actual_error, expected_error);
+    }
+
+    #[test]
+    fn output_tx_type_empty_request_is_not_aa() {
+        let req = TempoTransactionRequest::default();
+        assert_ne!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_tempo_authorization_list_is_aa() {
+        let req = TempoTransactionRequest {
+            tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
+                Authorization {
+                    chain_id: U256::ZERO,
+                    address: Address::ZERO,
+                    nonce: 0,
+                },
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
+                    U256::ZERO,
+                    U256::ZERO,
+                    false,
+                ))),
+            )],
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_key_authorization_is_aa() {
+        let req = TempoTransactionRequest {
+            key_authorization: Some(SignedKeyAuthorization {
+                authorization: KeyAuthorization {
+                    chain_id: 0,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: Address::ZERO,
+                    expiry: None,
+                    limits: None,
+                },
+                signature: PrimitiveSignature::Secp256k1(Signature::new(
+                    U256::ZERO,
+                    U256::ZERO,
+                    false,
+                )),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_key_id_is_aa() {
+        let req = TempoTransactionRequest {
+            key_id: Some(Address::ZERO),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_validity_window_is_aa() {
+        let req = TempoTransactionRequest {
+            valid_before: Some(1000),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+
+        let req = TempoTransactionRequest {
+            valid_after: Some(500),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
     }
 }

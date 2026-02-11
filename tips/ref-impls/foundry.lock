@@ -2,6 +2,9 @@
   "lib/forge-std": {
     "rev": "f61e4dd133379a4536a54ee57a808c9c00019b60"
   },
+  "lib/solady": {
+    "rev": "90db92ce173856605d24a554969f2c67cadbc7e9"
+  },
   "lib/tempo-std": {
     "branch": {
       "name": "master",

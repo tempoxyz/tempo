@@ -2,10 +2,9 @@
 set -e
 
 # Tempoup bootstrap installer
-# Downloads tempoup script and sets up PATH
+# Downloads tempoup script and installs to /usr/local/bin
 
-INSTALL_DIR="${TEMPO_DIR:-$HOME/.tempo}"
-BIN_DIR="$INSTALL_DIR/bin"
+BIN_DIR="${TEMPO_BIN_DIR:-/usr/local/bin}"
 TEMPOUP_URL="https://raw.githubusercontent.com/tempoxyz/tempo/main/tempoup/tempoup"
 
 # Color output
@@ -21,72 +20,51 @@ warn() {
     echo -e "${YELLOW}warn${NC}: $1"
 }
 
-# Detect shell and config file
-get_shell_config() {
-    local shell_name=$(basename "$SHELL")
+# Install a file to BIN_DIR, using sudo if necessary
+install_bin() {
+    local src="$1"
+    local dst="$2"
 
-    case "$shell_name" in
-        zsh)
-            if [[ -n "$ZDOTDIR" ]]; then
-                echo "$ZDOTDIR/.zshenv"
-            else
-                echo "$HOME/.zshenv"
-            fi
-            ;;
-        bash)
-            echo "$HOME/.bashrc"
-            ;;
-        fish)
-            echo "$HOME/.config/fish/config.fish"
-            ;;
-        *)
-            echo "$HOME/.profile"
-            ;;
-    esac
+    if cp "$src" "$dst" 2>/dev/null; then
+        chmod +x "$dst"
+    elif sudo cp "$src" "$dst" 2>/dev/null; then
+        sudo chmod +x "$dst"
+    else
+        echo "error: failed to install to $dst"
+        echo "       try running with sudo"
+        exit 1
+    fi
 }
 
 main() {
     echo "Installing tempoup..."
     echo ""
 
-    # Create bin directory
-    mkdir -p "$BIN_DIR"
+    # Download tempoup script to a temp file
+    local tmp_file
+    tmp_file="$(mktemp 2>/dev/null || mktemp -t tempoup)"
+    trap "rm -f '$tmp_file'" EXIT
 
-    # Download tempoup script
     info "Downloading tempoup script..."
     if command -v curl >/dev/null 2>&1; then
-        curl -# -L "$TEMPOUP_URL" -o "$BIN_DIR/tempoup"
+        curl -# -L "$TEMPOUP_URL" -o "$tmp_file"
     elif command -v wget >/dev/null 2>&1; then
-        wget --show-progress -q -O "$BIN_DIR/tempoup" "$TEMPOUP_URL"
+        wget --show-progress -q -O "$tmp_file" "$TEMPOUP_URL"
     else
-        echo "Error: Neither curl nor wget found. Please install one of them."
+        echo "error: neither curl nor wget found"
         exit 1
     fi
 
-    chmod +x "$BIN_DIR/tempoup"
+    # Install tempoup to BIN_DIR
+    install_bin "$tmp_file" "$BIN_DIR/tempoup"
     info "Tempoup installed to $BIN_DIR/tempoup"
 
-    # Add to PATH if not already present
+    # Warn if BIN_DIR is not in PATH
     if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-        SHELL_CONFIG=$(get_shell_config)
-        SHELL_NAME=$(basename "$SHELL")
-
-        info "Adding $BIN_DIR to PATH in $SHELL_CONFIG"
-
-        mkdir -p "$(dirname "$SHELL_CONFIG")"
-
-        echo "" >> "$SHELL_CONFIG"
-        echo "# Added by tempoup installer" >> "$SHELL_CONFIG"
-
-        if [[ "$SHELL_NAME" == "fish" ]]; then
-            echo "fish_add_path -a \"$BIN_DIR\"" >> "$SHELL_CONFIG"
-        else
-            echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_CONFIG"
-        fi
-
         echo ""
-        warn "Please restart your shell or run:"
-        echo "  source $SHELL_CONFIG"
+        warn "$BIN_DIR is not in your PATH"
+        echo "  Add it to your shell config:"
+        echo "    export PATH=\"$BIN_DIR:\$PATH\""
         echo ""
     fi
 
@@ -94,8 +72,7 @@ main() {
     info "Running tempoup to install tempo..."
     echo ""
 
-    export PATH="$BIN_DIR:$PATH"
-    "$BIN_DIR/tempoup"
+    TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup"
 }
 
 main

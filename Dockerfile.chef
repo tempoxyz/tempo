@@ -11,6 +11,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 
+ARG TARGETARCH
 ARG RUST_PROFILE=profiling
 ARG RUST_FEATURES="asm-keccak,jemalloc,otlp"
 ARG EXTRA_RUSTFLAGS=""
@@ -27,12 +28,13 @@ RUN apt-get update \
 
 ENV RUSTC_WRAPPER=sccache \
     SCCACHE_DIR=/sccache \
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang
 
 COPY --from=planner /app/recipe.json recipe.json
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git \
-    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH} \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
     cargo chef cook --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json

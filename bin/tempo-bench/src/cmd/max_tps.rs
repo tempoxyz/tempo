@@ -168,16 +168,20 @@ pub struct MaxTpsArgs {
     #[arg(long)]
     clear_txpool: bool,
 
-    /// Disable 2D nonces
-    #[arg(long)]
-    disable_2d_nonces: bool,
-
-    /// Use expiring nonces (TIP-1009) instead of 2D nonces.
+    /// Use 2D nonces instead of expiring nonces.
     ///
-    /// Expiring nonces use a circular buffer for replay protection, avoiding state bloat
-    /// from unbounded 2D nonce storage growth. Each transaction has a valid_before timestamp.
+    /// By default, tempo-bench uses expiring nonces (TIP-1009) which use a circular buffer
+    /// for replay protection, avoiding state bloat. Use this flag to switch to 2D nonces
+    /// which store nonce state per (address, nonce_key) pair.
     #[arg(long)]
-    expiring_nonces: bool,
+    use_2d_nonces: bool,
+
+    /// Use standard sequential nonces instead of expiring nonces.
+    ///
+    /// This disables both expiring nonces and 2D nonces, using traditional sequential
+    /// nonce management.
+    #[arg(long)]
+    use_standard_nonces: bool,
 
     /// Batch size for signing transactions when using expiring nonces.
     ///
@@ -185,8 +189,6 @@ pub struct MaxTpsArgs {
     /// in batches close to when they're sent. This controls how many transactions to
     /// generate/sign before sending. Default is 15 seconds worth of transactions at the
     /// target TPS (e.g., 75,000 at 5,000 TPS).
-    ///
-    /// Only used with --expiring-nonces.
     #[arg(long)]
     expiring_batch_secs: Option<u64>,
 }
@@ -214,31 +216,25 @@ impl MaxTpsArgs {
                 .erased()
         });
 
-        if self.expiring_nonces {
-            // Use the default 25-second expiry window (protocol max is 30s).
-            // For expiring nonces benchmarks, keep duration short (< 20s recommended)
-            // to ensure transactions don't expire before being sent.
-            let expiry_secs = ExpiringNonceFiller::DEFAULT_EXPIRY_SECS;
+        if self.use_2d_nonces {
             info!(
                 accounts = self.accounts,
-                expiry_secs, "Creating signers (with expiring nonces - TIP-1009)"
+                "Creating signers (with 2D nonces)"
             );
             let signer_provider_manager = SignerProviderManager::new(
                 self.mnemonic.resolve(),
                 self.from_mnemonic_index,
                 accounts,
                 self.target_urls.clone(),
-                Box::new(move |target_url, _cached_nonce_manager| {
-                    ProviderBuilder::default()
-                        .filler(ExpiringNonceFiller::with_expiry_secs(expiry_secs))
-                        .with_gas_estimation()
-                        .fetch_chain_id()
+                Box::new(|target_url, _cached_nonce_manager| {
+                    ProviderBuilder::new_with_network::<TempoNetwork>()
+                        .with_random_2d_nonces()
                         .connect_http(target_url)
                 }),
                 signer_provider_factory,
             );
             self.run_with_manager(signer_provider_manager).await
-        } else if self.disable_2d_nonces {
+        } else if self.use_standard_nonces {
             info!(
                 accounts = self.accounts,
                 "Creating signers (with standard nonces)"
@@ -259,18 +255,23 @@ impl MaxTpsArgs {
             );
             self.run_with_manager(signer_provider_manager).await
         } else {
+            // Default: Use expiring nonces (TIP-1009)
+            // Use the default 25-second expiry window (protocol max is 30s).
+            let expiry_secs = ExpiringNonceFiller::DEFAULT_EXPIRY_SECS;
             info!(
                 accounts = self.accounts,
-                "Creating signers (with 2D nonces)"
+                expiry_secs, "Creating signers (with expiring nonces - TIP-1009)"
             );
             let signer_provider_manager = SignerProviderManager::new(
                 self.mnemonic.resolve(),
                 self.from_mnemonic_index,
                 accounts,
                 self.target_urls.clone(),
-                Box::new(|target_url, _cached_nonce_manager| {
-                    ProviderBuilder::new_with_network::<TempoNetwork>()
-                        .with_random_2d_nonces()
+                Box::new(move |target_url, _cached_nonce_manager| {
+                    ProviderBuilder::default()
+                        .filler(ExpiringNonceFiller::with_expiry_secs(expiry_secs))
+                        .with_gas_estimation()
+                        .fetch_chain_id()
                         .connect_http(target_url)
                 }),
                 signer_provider_factory,
@@ -391,7 +392,8 @@ impl MaxTpsArgs {
         // For expiring nonces, we need to generate/sign/send in batches to avoid
         // transactions expiring before they're sent. We pipeline batch generation
         // with sending to avoid gaps that would cause empty blocks.
-        let mut pending_txs = if self.expiring_nonces {
+        let use_expiring_nonces = !self.use_2d_nonces && !self.use_standard_nonces;
+        let mut pending_txs = if use_expiring_nonces {
             let batch_secs = self.expiring_batch_secs.unwrap_or(15);
             let batch_size = self.tps * batch_secs;
             let num_batches = total_txs.div_ceil(batch_size);

@@ -78,17 +78,19 @@ contract StablecoinDEX is IStablecoinDEX {
 
     /// @notice Convert relative tick to scaled price
     function tickToPrice(int16 tick) public pure returns (uint32 price) {
+        if (tick % TICK_SPACING != 0) revert IStablecoinDEX.InvalidTick();
         return uint32(int32(PRICE_SCALE) + int32(tick));
     }
 
     /// @notice Convert scaled price to relative tick
     function priceToTick(uint32 price) public pure returns (int16 tick) {
+        tick = int16(int32(price) - int32(PRICE_SCALE));
         if (price < MIN_PRICE || price > MAX_PRICE) {
             // Calculate the tick to include in the error
-            tick = int16(int32(price) - int32(PRICE_SCALE));
             revert IStablecoinDEX.TickOutOfBounds(tick);
         }
-        return int16(int32(price) - int32(PRICE_SCALE));
+        if (tick % TICK_SPACING != 0) revert IStablecoinDEX.InvalidTick();
+        return tick;
     }
 
     /// @notice Convert base amount to quote amount at a given tick, rounding UP
@@ -124,14 +126,15 @@ contract StablecoinDEX is IStablecoinDEX {
         }
     }
 
-    /// @notice Check if an account is authorized by a token's transfer policy
+    /// @notice Check if an account is authorized for transfers by a token's transfer policy
     /// @param token The token to check the policy of
     /// @param account The account to check authorization for
-    /// @return True if both the account and this contract are authorized
+    /// @return True if account can send AND this contract can receive
     function _checkTransferPolicy(address token, address account) internal view returns (bool) {
+        // TIP-1015: Check sender authorization for account, recipient for DEX
         uint64 policyId = ITIP20(token).transferPolicyId();
-        return TIP403_REGISTRY.isAuthorized(policyId, account)
-            && TIP403_REGISTRY.isAuthorized(policyId, address(this));
+        return TIP403_REGISTRY.isAuthorizedSender(policyId, account)
+            && TIP403_REGISTRY.isAuthorizedRecipient(policyId, address(this));
     }
 
     /// @notice Generate deterministic key for ordered (base, quote) token pair
@@ -400,9 +403,9 @@ contract StablecoinDEX is IStablecoinDEX {
         Orderbook storage book = books[order.bookKey];
         address token = order.isBid ? book.quote : book.base;
 
-        // Check if maker is forbidden by the token's transfer policy
+        // TIP-1015: Check if maker is forbidden from sending by the token's transfer policy
         uint64 policyId = ITIP20(token).transferPolicyId();
-        if (TIP403_REGISTRY.isAuthorized(policyId, order.maker)) {
+        if (TIP403_REGISTRY.isAuthorizedSender(policyId, order.maker)) {
             revert IStablecoinDEX.OrderNotStale();
         }
 
@@ -636,11 +639,11 @@ contract StablecoinDEX is IStablecoinDEX {
     /// @param token The token to transfer
     /// @param amount The amount to transfer
     function _decrementBalanceOrTransferFrom(address user, address token, uint128 amount) internal {
-        // Check if user is authorized by the token's transfer policy before using internal balance
+        // TIP-1015: Check sender authorization for user, recipient for DEX
         uint64 policyId = ITIP20(token).transferPolicyId();
         if (
-            !TIP403_REGISTRY.isAuthorized(policyId, user)
-                || !TIP403_REGISTRY.isAuthorized(policyId, address(this))
+            !TIP403_REGISTRY.isAuthorizedSender(policyId, user)
+                || !TIP403_REGISTRY.isAuthorizedRecipient(policyId, address(this))
         ) {
             revert ITIP20.PolicyForbids();
         }

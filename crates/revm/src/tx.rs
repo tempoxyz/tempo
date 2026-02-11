@@ -112,8 +112,10 @@ impl TempoTxEnv {
         }
     }
 
-    /// Invokes the given closure for each top-level call in the transaction and
-    /// returns true if all calls returned true.
+    /// Returns an iterator over the top-level calls in the transaction.
+    ///
+    /// For AA transactions, iterates over `aa_calls`. For non-AA transactions,
+    /// returns a single-element iterator with the inner transaction's kind and data.
     pub fn calls(&self) -> impl Iterator<Item = (&TxKind, &[u8])> {
         if let Some(aa) = self.tempo_tx_env.as_ref() {
             Either::Left(

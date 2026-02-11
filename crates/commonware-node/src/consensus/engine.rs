@@ -19,14 +19,14 @@ use commonware_cryptography::{
     certificate::Scheme as _,
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_p2p::{Address, Blocker, Receiver, Sender};
+use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_parallel::Sequential;
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::paged::CacheRef,
     spawn_cell,
 };
 use commonware_storage::archive::immutable;
-use commonware_utils::{NZU64, ordered::Map};
+use commonware_utils::NZU64;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_08::{CryptoRng, Rng};
@@ -98,8 +98,7 @@ pub struct Builder<TBlocker, TPeerManager> {
 impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TPeerManager:
-        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>> + Sync,
+    TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
     pub fn with_execution_node(mut self, execution_node: TempoFullNode) -> Self {
         self.execution_node = Some(execution_node);
@@ -155,7 +154,7 @@ where
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
-            manager: self.peer_manager.clone(),
+            provider: self.peer_manager.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
             initial: Duration::from_secs(1),
@@ -416,7 +415,7 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>>,
+    TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
     context: ContextCell<TContext>,
 
@@ -465,8 +464,7 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager:
-        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>> + Sync,
+    TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
     #[expect(
         clippy::too_many_arguments,

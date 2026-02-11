@@ -224,6 +224,13 @@ contract AccountKeychain is IAccountKeychain {
         view
         returns (uint256)
     {
+        AuthorizedKey storage key = keys[account][keyId];
+
+        // Return zero if key doesn't exist or has been revoked
+        if (key.expiry == 0 || key.isRevoked) {
+            return 0;
+        }
+
         bytes32 limitKey = _spendingLimitKey(account, keyId);
         return spendingLimits[limitKey][token];
     }

@@ -251,6 +251,27 @@ contract AccountKeychainTest is BaseTest {
         vm.stopPrank();
     }
 
+    function test_GetRemainingLimit_ReturnsZeroForRevokedKey() public {
+        vm.startPrank(alice);
+
+        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
+        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+
+        keychain.authorizeKey(
+            aliceAccessKey,
+            IAccountKeychain.SignatureType.P256,
+            uint64(block.timestamp + 1 days),
+            true,
+            limits
+        );
+        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 1000e6);
+
+        keychain.revokeKey(aliceAccessKey);
+        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 0);
+
+        vm.stopPrank();
+    }
+
     function test_AuthorizeKey_RevertZeroKeyId() public {
         vm.startPrank(alice);
 
