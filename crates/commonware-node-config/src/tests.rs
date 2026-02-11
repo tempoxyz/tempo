@@ -33,6 +33,25 @@ fn signing_share_snapshot() {
 }
 
 #[test]
+fn signing_key_trailing_newline() {
+    let hex_with_newline = format!("{SIGNING_KEY}\n");
+    let key = SigningKey::try_from_hex(&hex_with_newline).unwrap();
+    assert_eq!(
+        key.public_key(),
+        SigningKey::try_from_hex(SIGNING_KEY).unwrap().public_key(),
+    );
+}
+
+#[test]
+fn signing_share_trailing_newline() {
+    let hex_with_newline = format!("{SIGNING_SHARE}\n");
+    assert_eq!(
+        SigningShare::try_from_hex(&hex_with_newline).unwrap(),
+        SigningShare::try_from_hex(SIGNING_SHARE).unwrap(),
+    );
+}
+
+#[test]
 fn signing_share_roundtrip() {
     let mut rng = rand_08::rngs::StdRng::seed_from_u64(42);
 

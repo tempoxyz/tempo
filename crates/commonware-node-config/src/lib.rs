@@ -27,11 +27,11 @@ impl SigningKey {
 
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SigningKeyError> {
         let hex = std::fs::read_to_string(path).map_err(SigningKeyErrorKind::Read)?;
-        Self::try_from_hex(&hex)
+        Self::try_from_hex(hex.trim())
     }
 
     pub fn try_from_hex(hex: &str) -> Result<Self, SigningKeyError> {
-        let bytes = const_hex::decode(hex).map_err(SigningKeyErrorKind::Hex)?;
+        let bytes = const_hex::decode(hex.trim()).map_err(SigningKeyErrorKind::Hex)?;
         let inner = PrivateKey::decode(&bytes[..]).map_err(SigningKeyErrorKind::Parse)?;
         Ok(Self { inner })
     }
@@ -92,11 +92,11 @@ impl SigningShare {
 
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SigningShareError> {
         let hex = std::fs::read_to_string(path).map_err(SigningShareErrorKind::Read)?;
-        Self::try_from_hex(&hex)
+        Self::try_from_hex(hex.trim())
     }
 
     pub fn try_from_hex(hex: &str) -> Result<Self, SigningShareError> {
-        let bytes = const_hex::decode(hex).map_err(SigningShareErrorKind::Hex)?;
+        let bytes = const_hex::decode(hex.trim()).map_err(SigningShareErrorKind::Hex)?;
         let inner = Share::decode(&bytes[..]).map_err(SigningShareErrorKind::Parse)?;
         Ok(Self { inner })
     }
