@@ -26,9 +26,9 @@ install_bin() {
     local dst="$2"
 
     if cp "$src" "$dst" 2>/dev/null; then
-        chmod +x "$dst"
+        chmod 755 "$dst"
     elif sudo cp "$src" "$dst" 2>/dev/null; then
-        sudo chmod +x "$dst"
+        sudo chmod 755 "$dst"
     else
         echo "error: failed to install to $dst"
         echo "       try running with sudo"
