@@ -52,12 +52,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     uint256 private _totalCompoundPoliciesCreated;
 
-    // Dirty tracking: only check policies/actors that were touched since last invariant run
-    uint64[] private _dirtyPolicies;
-    mapping(uint64 => bool) private _isPolicyDirty;
-    address[] private _dirtyActors;
-    mapping(address => bool) private _isActorDirty;
-
     // Pre-created DEX state to avoid repeated setup in cancelStaleOrder
     mapping(address => bool) private _pairCreated;
     // actor => token => approved
@@ -144,35 +138,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-                          DIRTY TRACKING
-    //////////////////////////////////////////////////////////////*/
-
-    function _markPolicyDirty(uint64 pid) internal {
-        if (!_isPolicyDirty[pid]) {
-            _isPolicyDirty[pid] = true;
-            _dirtyPolicies.push(pid);
-        }
-    }
-
-    function _markActorDirty(address actor) internal {
-        if (!_isActorDirty[actor]) {
-            _isActorDirty[actor] = true;
-            _dirtyActors.push(actor);
-        }
-    }
-
-    function _clearDirtyState() internal {
-        for (uint256 i = 0; i < _dirtyPolicies.length; i++) {
-            _isPolicyDirty[_dirtyPolicies[i]] = false;
-        }
-        delete _dirtyPolicies;
-        for (uint256 i = 0; i < _dirtyActors.length; i++) {
-            _isActorDirty[_dirtyActors[i]] = false;
-        }
-        delete _dirtyActors;
-    }
-
-    /*//////////////////////////////////////////////////////////////
                             FUZZ HANDLERS
     //////////////////////////////////////////////////////////////*/
 
@@ -190,7 +155,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         _simplePolicies.push(pid);
         _policyTypes[pid] = ptype;
-        _markPolicyDirty(pid);
 
         if (_loggingEnabled) {
             _log(
@@ -230,7 +194,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             _compoundRecipientPolicy[compoundPid] = rPid;
             _compoundMintPolicy[compoundPid] = mPid;
             _totalCompoundPoliciesCreated++;
-            _markPolicyDirty(compoundPid);
 
             (ITIP403Registry.PolicyType ptype, address policyAdmin) =
                 registry.policyData(compoundPid);
@@ -287,7 +250,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         _compoundRecipientPolicy[compoundPid] = rPid;
         _compoundMintPolicy[compoundPid] = mPid;
         _totalCompoundPoliciesCreated++;
-        _markPolicyDirty(compoundPid);
 
         if (_loggingEnabled) {
             _log(
@@ -444,19 +406,6 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             _policyAccounts[pid].push(account);
         }
 
-        _markPolicyDirty(pid);
-        _markActorDirty(account);
-        // Also mark compound policies that reference this simple policy
-        for (uint256 i = 0; i < _compoundPolicies.length; i++) {
-            uint64 cpid = _compoundPolicies[i];
-            if (
-                _compoundSenderPolicy[cpid] == pid || _compoundRecipientPolicy[cpid] == pid
-                    || _compoundMintPolicy[cpid] == pid
-            ) {
-                _markPolicyDirty(cpid);
-            }
-        }
-
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -603,6 +552,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @notice Opt an actor into rewards - critical for testing reward distribution/claim flows
     function optIntoRewards(uint256 tokenSeed, uint256 actorSeed) external {
         if (_compoundTokens.length == 0) return;
 
@@ -610,10 +560,12 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         uint64 pid = _tokenPolicy[address(token)];
         address actor = _selectActor(actorSeed);
 
+        // Need sender + recipient auth to opt in
         bool senderAuth = registry.isAuthorizedSender(pid, actor);
         bool recipientAuth = registry.isAuthorizedRecipient(pid, actor);
         if (!senderAuth || !recipientAuth) return;
 
+        // Ensure actor has balance (required for opt-in to matter)
         if (token.balanceOf(actor) == 0) {
             if (!registry.isAuthorizedMintRecipient(pid, actor)) return;
             vm.prank(admin);
@@ -687,6 +639,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         vm.stopPrank();
     }
 
+    /// @notice Transfer with compound policy uses senderPolicyId and recipientPolicyId
     function transferWithCompoundPolicy(
         uint256 tokenSeed,
         uint256 senderSeed,
@@ -704,6 +657,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         amount = bound(amount, 1, 1_000_000);
 
+        // Ensure sender has sufficient balance
         if (token.balanceOf(sender) < amount) {
             mintToAuthorizedRecipient(tokenSeed, senderSeed, amount);
         }
@@ -724,6 +678,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @notice burnBlocked uses senderPolicyId to check if address is blocked
     function burnBlockedWithCompoundPolicy(
         uint256 tokenSeed,
         uint256 targetSeed,
@@ -739,6 +694,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         amount = bound(amount, 1, 1_000_000);
 
+        // Ensure target has sufficient balance
         if (token.balanceOf(target) < amount) {
             mintToAuthorizedRecipient(tokenSeed, targetSeed, amount);
         }
@@ -747,6 +703,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         bool senderAuth = registry.isAuthorizedSender(pid, target);
 
         vm.startPrank(admin);
+        token.grantRole(_BURN_BLOCKED_ROLE, admin);
 
         if (!senderAuth) {
             uint256 supplyBefore = token.totalSupply();
@@ -765,6 +722,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     }
 
     /// @notice TEMPO-1015-7: distributeReward requires both sender AND recipient authorization
+    /// @dev Sender must be authorized to send, contract must be authorized to receive
     function distributeRewardWithCompoundPolicy(
         uint256 tokenSeed,
         uint256 senderSeed,
@@ -780,8 +738,10 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         amount = bound(amount, 1, 10_000);
 
+        // Skip if sender is not authorized to receive mints (can't get balance)
         if (!registry.isAuthorizedMintRecipient(pid, sender)) return;
 
+        // Ensure sender has sufficient balance - mint extra to avoid underflow
         uint256 senderBalance = token.balanceOf(sender);
         if (senderBalance < amount + 1000) {
             vm.startPrank(admin);
@@ -795,6 +755,8 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         senderBalance = token.balanceOf(sender);
         if (senderBalance < amount) return;
 
+        // Need at least one opted-in holder for distributeReward to work
+        // Use a different actor to opt-in (use XOR to avoid overflow)
         address optedInHolder = _selectActorExcluding(senderSeed ^ 0x1234, sender);
         if (registry.isAuthorizedMintRecipient(pid, optedInHolder)) {
             if (token.balanceOf(optedInHolder) == 0) {
@@ -803,6 +765,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                 vm.stopPrank();
             }
             if (token.balanceOf(optedInHolder) > 0) {
+                // Check if can opt in (needs sender + recipient auth for setRewardRecipient)
                 if (
                     registry.isAuthorizedSender(pid, optedInHolder)
                         && registry.isAuthorizedRecipient(pid, optedInHolder)
@@ -813,8 +776,10 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             }
         }
 
+        // Skip if no opted-in supply
         if (token.optedInSupply() == 0) return;
 
+        // Occasionally test with deauthorized sender to hit unauthorized branch (40% chance)
         uint64 senderPid = _compoundSenderPolicy[pid];
         bool shouldTestUnauthorized = (senderSeed % 5 < 2) && senderPid >= 2;
         bool wasAuthorized = false;
@@ -843,11 +808,14 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                         )
                     );
                 }
-            } catch { }
+            } catch {
+                // Can fail for other reasons (e.g., zero optedInSupply race)
+            }
         } else {
             try token.distributeReward(amount) {
                 revert("TEMPO-1015-7: distributeReward should revert for unauthorized");
             } catch (bytes memory reason) {
+                // May revert for other reasons too, only check if it's PolicyForbids
                 if (bytes4(reason) == ITIP20.PolicyForbids.selector) {
                     if (_loggingEnabled) {
                         _log(
@@ -866,12 +834,14 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             }
         }
 
+        // Restore authorization if we deauthorized for testing
         if (shouldTestUnauthorized && wasAuthorized) {
             _authorize(senderPid, sender, true);
         }
     }
 
     /// @notice TEMPO-1015-8: claimRewards uses correct directional authorization
+    /// @dev Contract must be authorized to send, claimer must be authorized to receive
     function claimRewardsWithCompoundPolicy(uint256 tokenSeed, uint256 claimerSeed) external {
         if (_compoundTokens.length == 0) return;
 
@@ -879,8 +849,11 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         uint64 pid = _tokenPolicy[address(token)];
         address claimer = _selectActor(claimerSeed);
 
+        // Skip if claimer can't receive mints
         if (!registry.isAuthorizedMintRecipient(pid, claimer)) return;
 
+        // Claimer must opt-in first and have some rewards to claim
+        // First ensure claimer has balance
         if (token.balanceOf(claimer) == 0) {
             vm.startPrank(admin);
             try token.mint(claimer, 1000) { }
@@ -892,23 +865,27 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         }
         if (token.balanceOf(claimer) == 0) return;
 
+        // Check if claimer is opted in, if not try to opt in
+        // setRewardRecipient requires sender + recipient auth
         (address rewardRecipient,,) = token.userRewardInfo(claimer);
         if (rewardRecipient == address(0)) {
             if (
                 !registry.isAuthorizedSender(pid, claimer)
                     || !registry.isAuthorizedRecipient(pid, claimer)
             ) {
-                return;
+                return; // Can't opt in due to policy
             }
             vm.prank(claimer);
             try token.setRewardRecipient(claimer) { }
             catch {
-                return;
+                return; // Can't opt in, skip
             }
         }
 
+        // Skip if no opted-in supply
         if (token.optedInSupply() == 0) return;
 
+        // Occasionally test with deauthorized claimer to hit unauthorized branch (20% chance)
         uint64 recipientPid = _compoundRecipientPolicy[pid];
         bool shouldTestUnauthorized = (claimerSeed % 5 == 0) && recipientPid >= 2;
         bool wasAuthorized = false;
@@ -933,11 +910,14 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                         )
                     );
                 }
-            } catch { }
+            } catch {
+                // Can fail for other reasons
+            }
         } else {
             try token.claimRewards() {
                 revert("TEMPO-1015-8: claimRewards should revert for unauthorized");
             } catch (bytes memory reason) {
+                // May revert for other reasons too, only check if it's PolicyForbids
                 if (bytes4(reason) == ITIP20.PolicyForbids.selector) {
                     if (_loggingEnabled) {
                         _log(
@@ -956,12 +936,14 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             }
         }
 
+        // Restore authorization if we deauthorized for testing
         if (shouldTestUnauthorized && wasAuthorized) {
             _authorize(recipientPid, claimer, true);
         }
     }
 
     /// @notice DEX cancelStaleOrder uses senderPolicyId to check if maker is blocked
+    /// @dev Only tests ask orders - for bids, DEX checks quote token (pathUSD) policy
     function cancelStaleOrderWithCompoundPolicy(
         uint256 tokenSeed,
         uint256 makerSeed,
@@ -975,12 +957,14 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         uint64 pid = token.transferPolicyId();
         (uint64 senderPid, uint64 recipientPid, uint64 mintPid) = registry.compoundPolicyData(pid);
 
+        // Skip always-reject (0) - we need modifiable policies, but always-allow (1) is fine
         if (senderPid == 0 || recipientPid == 0 || mintPid == 0) return;
 
         address maker = _selectActor(makerSeed);
         address canceller = _selectActorExcluding(cancellerSeed, maker);
-        uint128 amount = 102_000_000;
+        uint128 amount = 102_000_000; // 1.02 * MIN_ORDER_AMOUNT for tick price buffer
 
+        // Cache original policy states
         bool cachedMakerSender = registry.isAuthorizedSender(pid, maker);
         bool cachedMakerRecipient = registry.isAuthorizedRecipient(pid, maker);
         bool cachedMakerMint = registry.isAuthorizedMintRecipient(pid, maker);
@@ -988,6 +972,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         bool cachedDexRecipient = registry.isAuthorizedRecipient(pid, address(exchange));
         bool cachedMakerPathUsdMint = registry.isAuthorizedMintRecipient(_pathUsdPolicyId, maker);
 
+        // Temporarily authorize in all policies to allow order placement
         if (!cachedMakerSender) _authorize(senderPid, maker, true);
         if (!cachedMakerRecipient) _authorize(recipientPid, maker, true);
         if (!cachedMakerMint) _authorize(mintPid, maker, true);
@@ -995,16 +980,20 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         if (!cachedDexSender) _authorize(senderPid, address(exchange), true);
         if (!cachedDexRecipient) _authorize(recipientPid, address(exchange), true);
 
+        // Create pair if needed
         vm.startPrank(admin);
         if (!_pairCreated[address(token)]) {
             try exchange.createPair(address(token)) { } catch { }
             _pairCreated[address(token)] = true;
         }
         token.grantRole(_ISSUER_ROLE, admin);
+
+        // Mint tokens to maker
         token.mint(maker, amount);
         pathUSD.mint(maker, amount);
         vm.stopPrank();
 
+        // Place ask order (isBid=false) - DEX checks base token's senderPolicy for asks
         vm.startPrank(maker);
         if (!_dexApproved[maker][address(token)]) {
             token.approve(address(exchange), type(uint256).max);
@@ -1017,11 +1006,15 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         uint128 orderId = exchange.place(address(token), amount, false, int16(20));
         vm.stopPrank();
 
+        // Restore original policy states for maker only
+        // Note: We don't restore DEX authorization - leaving DEX authorized doesn't break invariants
+        // and avoids complex state tracking across shared sub-policies
         if (!cachedMakerSender) _authorize(senderPid, maker, false);
         if (!cachedMakerRecipient) _authorize(recipientPid, maker, false);
         if (!cachedMakerMint) _authorize(mintPid, maker, false);
         if (!cachedMakerPathUsdMint) _authorize(_pathUsdPolicyId, maker, false);
 
+        // Occasionally deauthorize maker to hit blocked branch (40% chance)
         bool shouldTestBlocked = (makerSeed % 5 < 2) && senderPid >= 2;
         bool wasAuthorizedForBlock = false;
 
@@ -1032,6 +1025,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             }
         }
 
+        // Now test cancelStaleOrder
         bool senderAuth = registry.isAuthorizedSender(pid, maker);
 
         vm.prank(canceller);
@@ -1049,6 +1043,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             }
         }
 
+        // Restore authorization if we deauthorized for testing
         if (shouldTestBlocked && wasAuthorizedForBlock) {
             _authorize(senderPid, maker, true);
         }
@@ -1072,77 +1067,11 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                          GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Incremental invariant check - only verifies dirty policies/actors
-    /// @dev On first run or when nothing is dirty, does a full scan (bounded by caps)
-    function invariant_globalInvariants() public {
-        if (_dirtyPolicies.length == 0 && _dirtyActors.length == 0) {
-            _invariantSimplePolicyEquivalence();
-            _invariantCompoundPoliciesCombined();
-            return;
-        }
-
-        // Incremental: check only dirty policies × dirty actors
-        // Also check dirty policies × all actors for newly created policies
-        for (uint256 i = 0; i < _dirtyPolicies.length; i++) {
-            uint64 pid = _dirtyPolicies[i];
-
-            if (_policyTypes[pid] == ITIP403Registry.PolicyType.COMPOUND) {
-                assertTrue(registry.policyExists(pid), "TEMPO-1015-3: Compound policy should exist");
-
-                (ITIP403Registry.PolicyType ptype, address policyAdmin) = registry.policyData(pid);
-                assertEq(
-                    uint8(ptype),
-                    uint8(ITIP403Registry.PolicyType.COMPOUND),
-                    "TEMPO-1015-2: Type should be COMPOUND"
-                );
-                assertEq(policyAdmin, address(0), "TEMPO-1015-2: Compound should have no admin");
-
-                uint64 senderPid = _compoundSenderPolicy[pid];
-                uint64 recipientPid = _compoundRecipientPolicy[pid];
-                uint64 mintPid = _compoundMintPolicy[pid];
-
-                for (uint256 j = 0; j < _actors.length; j++) {
-                    address account = _actors[j];
-
-                    bool actualSender = registry.isAuthorizedSender(pid, account);
-                    bool actualRecipient = registry.isAuthorizedRecipient(pid, account);
-                    bool actualMint = registry.isAuthorizedMintRecipient(pid, account);
-                    bool isAuth = registry.isAuthorized(pid, account);
-
-                    assertEq(
-                        isAuth,
-                        actualSender && actualRecipient,
-                        "TEMPO-1015-5: isAuthorized != sender && recipient"
-                    );
-
-                    bool expectedSender = registry.isAuthorized(senderPid, account);
-                    bool expectedRecipient = registry.isAuthorized(recipientPid, account);
-                    bool expectedMint = registry.isAuthorized(mintPid, account);
-
-                    assertEq(
-                        actualSender, expectedSender, "TEMPO-1015-6: Sender delegation mismatch"
-                    );
-                    assertEq(
-                        actualRecipient,
-                        expectedRecipient,
-                        "TEMPO-1015-6: Recipient delegation mismatch"
-                    );
-                    assertEq(actualMint, expectedMint, "TEMPO-1015-6: Mint delegation mismatch");
-                }
-            } else {
-                // Simple policy — check equivalence for dirty actors only
-                for (uint256 j = 0; j < _dirtyActors.length; j++) {
-                    address account = _dirtyActors[j];
-                    bool senderAuth = registry.isAuthorizedSender(pid, account);
-                    bool recipientAuth = registry.isAuthorizedRecipient(pid, account);
-                    bool mintAuth = registry.isAuthorizedMintRecipient(pid, account);
-                    assertEq(senderAuth, recipientAuth, "TEMPO-1015-4: Sender != Recipient");
-                    assertEq(recipientAuth, mintAuth, "TEMPO-1015-4: Recipient != Mint");
-                }
-            }
-        }
-
-        _clearDirtyState();
+    /// @notice Combined invariant check - single loop through compound policies
+    /// @dev Checks TEMPO-1015-2, TEMPO-1015-3, TEMPO-1015-5, TEMPO-1015-6 in one pass
+    function invariant_globalInvariants() public view {
+        _invariantSimplePolicyEquivalence();
+        _invariantCompoundPoliciesCombined();
     }
 
     /// @dev TEMPO-1015-4: Simple policy equivalence - all directional auth functions return same value
@@ -1163,13 +1092,19 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @dev Combined compound policy invariants
+    /// @dev Combined compound policy invariants - single loop checks:
+    ///      TEMPO-1015-2: Immutability (type=COMPOUND, admin=0)
+    ///      TEMPO-1015-3: Existence (policyExists returns true)
+    ///      TEMPO-1015-5: isAuthorized = sender && recipient
+    ///      TEMPO-1015-6: Delegation correctness
     function _invariantCompoundPoliciesCombined() internal view {
         for (uint256 i = 0; i < _compoundPolicies.length; i++) {
             uint64 pid = _compoundPolicies[i];
 
+            // TEMPO-1015-3: Existence
             assertTrue(registry.policyExists(pid), "TEMPO-1015-3: Compound policy should exist");
 
+            // TEMPO-1015-2: Immutability
             (ITIP403Registry.PolicyType ptype, address policyAdmin) = registry.policyData(pid);
             assertEq(
                 uint8(ptype),
@@ -1178,10 +1113,12 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             );
             assertEq(policyAdmin, address(0), "TEMPO-1015-2: Compound should have no admin");
 
+            // Get sub-policies for delegation check
             uint64 senderPid = _compoundSenderPolicy[pid];
             uint64 recipientPid = _compoundRecipientPolicy[pid];
             uint64 mintPid = _compoundMintPolicy[pid];
 
+            // Check all actors for TEMPO-1015-5 and TEMPO-1015-6
             for (uint256 j = 0; j < _actors.length; j++) {
                 address account = _actors[j];
 
@@ -1190,12 +1127,14 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                 bool actualMint = registry.isAuthorizedMintRecipient(pid, account);
                 bool isAuth = registry.isAuthorized(pid, account);
 
+                // TEMPO-1015-5: isAuthorized equivalence
                 assertEq(
                     isAuth,
                     actualSender && actualRecipient,
                     "TEMPO-1015-5: isAuthorized != sender && recipient"
                 );
 
+                // TEMPO-1015-6: Delegation correctness
                 bool expectedSender = registry.isAuthorized(senderPid, account);
                 bool expectedRecipient = registry.isAuthorized(recipientPid, account);
                 bool expectedMint = registry.isAuthorized(mintPid, account);
