@@ -413,20 +413,16 @@ This ensures historical queries always return consistent results.
 
 ## Storage Layout
 
-| Slot | Field | Description |
-|------|-------|-------------|
-| 0 (bits 0-159) | `owner` | Owner address (160 bits, left-aligned) |
-| 0 (bits 191-254) | `initializedAtHeight` | What height V2 has been initialized at (64 bits, right-aligned) |
-| 0 (bit 255) | `initialized` | Whether V2 has been initialized from V1 (1 bit) |
-| 1 | `validatorsArray.length` | Count of validators ever added |
-| keccak256(1) + i | `validatorsArray[i]` | Validator address at index i |
-| keccak256(addr, 2) | `validators[addr]` | Validator struct for address |
-| keccak256(pubkey, 3) | `pubkeyToIndex[pubkey]` | Index for public key lookup |
-| 4 | `nextDkgCeremony` | Next full DKG ceremony epoch |
+The contract stores the following state:
+- `owner`: Contract owner address
+- `initialized`: Whether V2 has been initialized from V1 (boolean)
+- `initializedAtHeight`: Block height when V2 was initialized (uint64)
+- `validatorsArray`: Append-only array of all validators (Validator[])
+- `addressToIndex`: Mapping from validator address to array index (mapping)
+- `pubkeyToIndex`: Mapping from public key to array index (mapping)
+- `nextDkgCeremony`: Next full DKG ceremony epoch (uint64)
 
-The `owner` address is right-aligned (bits 0-159) following Solidity's standard
-packing. The `initializedAtHeight` flag uses bits 191-254. The `initialized` flag
-uses bit 255, leaving bits 160-190 unused.
+Implementation details such as slot packing are left to the implementation.
 
 ## Differences from V1
 
@@ -457,8 +453,8 @@ The following invariants must always hold:
    changed by the contract owner.
 
 3. **Address update**: `transferValidatorOwnership` updates the address of an
-    existing validator without changing any other fields. This can only be called
-    by the contract owner (not the owner of the entry) and is required for
+    existing validator without changing any other fields. This can be called
+    by the contract owner or by the validator themselves and is required for
     post-migration fixes: validator contract v1 contains unusable dummy addresses
     that are not usable.
 

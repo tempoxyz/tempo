@@ -487,7 +487,16 @@ contract ValidatorConfigV2Test is BaseTest {
             validator2, PUB_KEY_1, ingress2, egress2, _getSignature(_sigAddV2())
         );
 
-        // 2. Unauthorized
+        // 2. InvalidValidatorAddress (address(0))
+        try validatorConfigV2.transferValidatorOwnership(validator1, address(0)) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(
+                err, abi.encodeWithSelector(IValidatorConfigV2.InvalidValidatorAddress.selector)
+            );
+        }
+
+        // 3. Unauthorized
         vm.prank(nonOwner);
         try validatorConfigV2.transferValidatorOwnership(validator1, validator3) {
             revert CallShouldHaveReverted();
@@ -495,7 +504,7 @@ contract ValidatorConfigV2Test is BaseTest {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.Unauthorized.selector));
         }
 
-        // 3. ValidatorAlreadyExists (target address occupied)
+        // 4. ValidatorAlreadyExists (target address occupied)
         try validatorConfigV2.transferValidatorOwnership(validator1, validator2) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
@@ -504,7 +513,7 @@ contract ValidatorConfigV2Test is BaseTest {
             );
         }
 
-        // 4. ValidatorAlreadyDeleted
+        // 5. ValidatorAlreadyDeleted
         validatorConfigV2.deactivateValidator(validator1);
         try validatorConfigV2.transferValidatorOwnership(validator1, validator3) {
             revert CallShouldHaveReverted();
@@ -699,6 +708,13 @@ contract ValidatorConfigV2Test is BaseTest {
         assertTrue(validatorConfigV2.isInitialized());
     }
 
+    function test_getInitializedAtHeight_pass() public {
+        assertEq(validatorConfigV2.getInitializedAtHeight(), 0);
+
+        _initializeV2();
+        assertEq(validatorConfigV2.getInitializedAtHeight(), uint64(block.number));
+    }
+
     /*//////////////////////////////////////////////////////////////
                      MIGRATION (V1 -> V2)
     //////////////////////////////////////////////////////////////*/
@@ -720,18 +736,18 @@ contract ValidatorConfigV2Test is BaseTest {
         // Active validator (setUp): addedAtHeight=0, deactivatedAtHeight=0
         IValidatorConfigV2.Validator memory v0 = validatorConfigV2.validatorByIndex(0);
         assertEq(v0.validatorAddress, setupVal1);
-        assertEq(v0.addedAtHeight, 0);
+        assertEq(v0.addedAtHeight, block.number);
         assertEq(v0.deactivatedAtHeight, 0);
 
         IValidatorConfigV2.Validator memory v1 = validatorConfigV2.validatorByIndex(1);
         assertEq(v1.validatorAddress, setupVal2);
-        assertEq(v1.addedAtHeight, 0);
+        assertEq(v1.addedAtHeight, block.number);
         assertEq(v1.deactivatedAtHeight, 0);
 
         // Inactive validator: addedAtHeight=0, deactivatedAtHeight=block.number
         IValidatorConfigV2.Validator memory v2 = validatorConfigV2.validatorByIndex(2);
         assertEq(v2.validatorAddress, validator1);
-        assertEq(v2.addedAtHeight, 0);
+        assertEq(v2.addedAtHeight, block.number);
         assertEq(v2.deactivatedAtHeight, uint64(block.number));
     }
 
