@@ -93,7 +93,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         );
         _verifyEd25519Signature(publicKey, message, signature);
 
-        _addValidator(validatorAddress, publicKey, ingress, egress, uint64(block.number), 0);
+        _addValidator(validatorAddress, publicKey, ingress, egress, 0);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -168,7 +168,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         oldValidator.deactivatedAtHeight = uint64(block.number);
 
-        _addValidator(validatorAddress, publicKey, ingress, egress, uint64(block.number), 0);
+        _addValidator(validatorAddress, publicKey, ingress, egress, 0);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -337,19 +337,12 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         IValidatorConfig.Validator memory v1Val = v1Validators[idx];
 
-        uint64 addedAt = uint64(block.number);
-        uint64 deactivatedAt = 0;
-        if (!v1Val.active) {
-            deactivatedAt = uint64(block.number);
-        }
-
         _addValidator(
             v1Val.validatorAddress,
             v1Val.publicKey,
             v1Val.inboundAddress,
             v1Val.outboundAddress,
-            addedAt,
-            deactivatedAt
+            v1Val.active ? 0 : uint64(block.number)
         );
     }
 
@@ -415,7 +408,6 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         bytes32 publicKey,
         string memory ingress,
         string memory egress,
-        uint64 addedAtHeight,
         uint64 deactivatedAtHeight
     )
         internal
@@ -427,7 +419,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             ingress: ingress,
             egress: egress,
             index: idx,
-            addedAtHeight: addedAtHeight,
+            addedAtHeight: uint64(block.number),
             deactivatedAtHeight: deactivatedAtHeight
         });
 
