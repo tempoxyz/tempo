@@ -138,7 +138,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Get all validators (including deleted ones) in array order
     /// @return validators Array of all validators with their information
-    function getValidators() external view returns (Validator[] memory validators);
+    function getAllValidators() external view returns (Validator[] memory validators);
 
     /// @notice Get only active validators (where deactivatedAtHeight == 0)
     /// @return validators Array of active validators
@@ -434,7 +434,7 @@ Implementation details such as slot packing are left to the implementation.
 | Deletion | Sets `active = false` | Sets `deactivatedAtHeight = block.number` |
 | Re-registration | Allowed after deletion | Pubkey reserved forever; address reassignable via `transferValidatorOwnership` |
 | Key ownership | Not verified | Ed25519 signature required |
-| Historical queries | Requires historical state | Filter `getValidators()` by `addedAtHeight`/`deactivatedAtHeight` |
+| Historical queries | Requires historical state | Filter `getAllValidators()` by `addedAtHeight`/`deactivatedAtHeight` |
 | Uniqueness | Address only | Address AND public key |
 | Precompile address | `0xCCCC...0000` | `0xCCCC...0001` |
 
@@ -581,7 +581,7 @@ precompile does NOT proxy reads to V1.
 - Populates lookup maps (`validators[validatorAddress]`, `pubkeyToIndex[pubkey]`)
 
 **`initializeIfMigrated()`**:
-- Reverts if `validatorsArray.length < V1.getValidators().length` (ensures all validators migrated)
+- Reverts if `validatorsArray.length < V1.getAllValidators().length` (ensures all validators migrated)
 - Copies `nextDkgCeremony` from V1 to V2
 - Sets `initialized = true` (bit 255 of slot 0)
 - After this call, CL reads from V2 instead of V1
@@ -605,7 +605,7 @@ interface IValidatorConfigV1 {
         string outboundAddress;
     }
 
-    function getValidators() external view returns (Validator[] memory);
+    function getAllValidators() external view returns (Validator[] memory);
     function getNextFullDkgCeremony() external view returns (uint64);
     function owner() external view returns (address);
 }
@@ -684,7 +684,7 @@ The test suite must cover:
 
 ### Query Functions
 
-6. **getValidators**: Returns all validators including deleted with correct
+6. **getAllValidators**: Returns all validators including deleted with correct
    `addedAtHeight` and `deactivatedAtHeight`
 7. **getActiveValidators**: Returns only validators with `deactivatedAtHeight == 0`
    (note: validators with `addedAtHeight == deactivatedAtHeight` are excluded)
@@ -752,7 +752,7 @@ The test suite must cover:
 44. **isInitialized returns correct value**: Returns false before initialize, true after
 45. **Writes blocked before init**: `addValidator`, `deactivateValidator`, `rotateValidator`
 46. **initialize reverts if not all migrated**: `initializeIfMigrated()` reverts if
-    `validatorsArray.length < V1.getValidators().length`
+    `validatorsArray.length < V1.getAllValidators().length`
 
 ### transferValidatorOwnership
 
