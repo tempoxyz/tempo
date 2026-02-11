@@ -404,7 +404,6 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
 
 # Start a follower node (requires a running localnet)
 def "main follower" [
-    --nodes: int = 3            # Number of validators (must match localnet)
     --profile: string = $DEFAULT_PROFILE # Cargo build profile
     --features: string = $DEFAULT_FEATURES # Cargo features
     --loud                      # Show all node logs (WARN/ERROR shown by default)
@@ -436,8 +435,9 @@ def "main follower" [
         $"./target/($profile)/tempo"
     }
 
-    # Build trusted peers from enode.identity files
+    # Auto-detect validators from localnet directory structure
     let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
+    let nodes = ($validator_dirs | length)
     let trusted_peers = ($validator_dirs | each { |d|
         let addr = ($d | path basename)
         let port = ($addr | split row ":" | get 1 | into int)
@@ -445,7 +445,6 @@ def "main follower" [
         $"enode://($identity)@127.0.0.1:($port + 1)"
     } | str join ",")
 
-    let follower_port = $nodes * 100 + 8000
     let follower_dir = $"($LOCALNET_DIR)/follower"
 
     if $reset and ($follower_dir | path exists) {
@@ -454,12 +453,12 @@ def "main follower" [
     }
     mkdir $follower_dir
 
-    let node_index = (port-to-node-index $follower_port)
-    let http_port = 8545 + $node_index
-    let ws_port = 9545 + $node_index
-    let reth_metrics_port = 9001 + $node_index
-    let el_p2p_port = $follower_port + 1
-    let authrpc_port = $follower_port + 3
+    # Use ports one below the first validator to avoid conflicts
+    let http_port = 8545 - 1
+    let ws_port = 9545 - 1
+    let reth_metrics_port = 9001 - 1
+    let el_p2p_port = 30303 - 1
+    let authrpc_port = 8551 - 1
     let log_dir = $"($LOGS_DIR)/follower"
     mkdir $log_dir
 
