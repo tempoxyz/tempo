@@ -733,7 +733,7 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.migrateValidator(2);
         assertEq(validatorConfigV2.validatorCount(), 3);
 
-        // Active validator (setUp): addedAtHeight=0, deactivatedAtHeight=0
+        // Active validator (setUp): addedAtHeight=block.number, deactivatedAtHeight=0
         IValidatorConfigV2.Validator memory v0 = validatorConfigV2.validatorByIndex(0);
         assertEq(v0.validatorAddress, setupVal1);
         assertEq(v0.addedAtHeight, block.number);
@@ -744,7 +744,7 @@ contract ValidatorConfigV2Test is BaseTest {
         assertEq(v1.addedAtHeight, block.number);
         assertEq(v1.deactivatedAtHeight, 0);
 
-        // Inactive validator: addedAtHeight=0, deactivatedAtHeight=block.number
+        // Inactive validator: addedAtHeight=block.number, deactivatedAtHeight=block.number
         IValidatorConfigV2.Validator memory v2 = validatorConfigV2.validatorByIndex(2);
         assertEq(v2.validatorAddress, validator1);
         assertEq(v2.addedAtHeight, block.number);
