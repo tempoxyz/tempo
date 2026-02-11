@@ -175,7 +175,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Get all validators (including deleted ones) in array order
     /// @return validators Array of all validators with their information
-    function getValidators() external view returns (Validator[] memory validators);
+    function getAllValidators() external view returns (Validator[] memory validators);
 
     /// @notice Get only active validators (where deactivatedAtHeight == 0)
     /// @return validators Array of active validators
