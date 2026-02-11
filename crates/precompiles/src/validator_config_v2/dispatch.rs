@@ -1,5 +1,7 @@
 use super::ValidatorConfigV2;
-use crate::{Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void, view};
+use crate::{
+    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void, view,
+};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::IValidatorConfigV2::IValidatorConfigV2Calls;
@@ -12,7 +14,10 @@ impl Precompile for ValidatorConfigV2 {
 
         // Pre-T2: behave like an empty contract (call succeeds, no execution)
         if !self.storage.spec().is_t2() {
-            return Ok(PrecompileOutput::new(self.storage.gas_used(), Default::default()));
+            return Ok(PrecompileOutput::new(
+                self.storage.gas_used(),
+                Default::default(),
+            ));
         }
 
         // Get the current block number from the EVM context via storage provider
@@ -90,9 +95,7 @@ impl Precompile for ValidatorConfigV2 {
                     mutate_void(call, msg_sender, |s, c| self.migrate_validator(s, c))
                 }
                 IValidatorConfigV2Calls::initializeIfMigrated(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.initialize_if_migrated(s, c)
-                    })
+                    mutate_void(call, msg_sender, |s, c| self.initialize_if_migrated(s, c))
                 }
             },
         )
@@ -132,7 +135,10 @@ mod tests {
             let result = vc.call(&calldata, owner)?;
 
             assert!(!result.reverted, "Pre-T2 call should not revert");
-            assert!(result.bytes.is_empty(), "Pre-T2 call should return empty bytes");
+            assert!(
+                result.bytes.is_empty(),
+                "Pre-T2 call should return empty bytes"
+            );
 
             Ok(())
         })?;
@@ -183,8 +189,8 @@ mod tests {
 
     #[test]
     fn test_add_validator_dispatch() -> eyre::Result<()> {
-        use commonware_cryptography::{Signer, ed25519::PrivateKey};
         use commonware_codec::Encode;
+        use commonware_cryptography::{Signer, ed25519::PrivateKey};
 
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let owner = Address::random();
