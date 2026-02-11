@@ -140,6 +140,11 @@ fn main() -> eyre::Result<()> {
         tempo_cmd::TempoSubcommand,
     >::parse();
 
+    if let Commands::Download(ref cmd) = cli.command {
+        let chain_id = cmd.chain_spec().map(|cs| cs.chain().id()).unwrap_or(4217);
+        info!(chain_id, url = %defaults::DEFAULT_DOWNLOAD_URL, "downloading snapshot");
+    }
+
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
     if let Commands::Node(node_cmd) = &cli.command
