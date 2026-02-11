@@ -1,7 +1,5 @@
 use super::ValidatorConfigV2;
-use crate::{
-    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void, view,
-};
+use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::IValidatorConfigV2::IValidatorConfigV2Calls;
@@ -41,11 +39,9 @@ impl Precompile for ValidatorConfigV2 {
                 IValidatorConfigV2Calls::validatorCount(call) => {
                     view(call, |_| self.validator_count())
                 }
-                IValidatorConfigV2Calls::validatorByIndex(call) => view(call, |c| {
-                    let index =
-                        u64::try_from(c.index).map_err(|_| TempoPrecompileError::array_oob())?;
-                    self.validator_by_index(index)
-                }),
+                IValidatorConfigV2Calls::validatorByIndex(call) => {
+                    view(call, |c| self.validator_by_index(c.index))
+                }
                 IValidatorConfigV2Calls::validatorByAddress(call) => {
                     view(call, |c| self.validator_by_address(c.validatorAddress))
                 }
@@ -204,10 +200,14 @@ mod tests {
             let private_key = PrivateKey::from_seed(seed);
             let public_key_obj = private_key.public_key();
 
-            // Construct message
+            // Construct message (must match precompile's construct_validator_message)
             let mut msg_data = Vec::new();
             msg_data.extend_from_slice(b"TEMPO");
             msg_data.extend_from_slice(b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR");
+            msg_data.extend_from_slice(&1u64.to_be_bytes()); // chain_id
+            msg_data.extend_from_slice(
+                tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS.as_slice(),
+            ); // contract address
             msg_data.extend_from_slice(validator_addr.as_slice());
             msg_data.extend_from_slice(b"192.168.1.1:8000");
             msg_data.extend_from_slice(b"192.168.1.1");

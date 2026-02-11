@@ -9,7 +9,7 @@ use crate::{
     storage::{Handler, Mapping},
     validator_config::{ValidatorConfig, ensure_address_is_ip_port},
 };
-use alloy::primitives::{Address, B256, keccak256};
+use alloy::primitives::{Address, B256, U256, keccak256};
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
     Verifier,
@@ -112,11 +112,19 @@ impl ValidatorConfigV2 {
         })
     }
 
-    pub fn validator_by_index(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
-        if index >= self.validator_count()? {
+    pub fn validator_by_index(&self, index: U256) -> Result<IValidatorConfigV2::Validator> {
+        // Check if index fits in u64
+        if index > U256::from(u64::MAX) {
             return Err(ValidatorConfigV2Error::validator_not_found())?;
         }
-        self.read_validator_at(index)
+
+        // Safe to convert now
+        let index_u64: u64 = index.try_into().expect("checked above");
+
+        if index_u64 >= self.validator_count()? {
+            return Err(ValidatorConfigV2Error::validator_not_found())?;
+        }
+        self.read_validator_at(index_u64)
     }
 
     pub fn validator_by_address(&self, addr: Address) -> Result<IValidatorConfigV2::Validator> {
@@ -234,37 +242,31 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
-    /// Construct message for addValidator signature verification
+    /// Construct message for validator signature verification (add or rotate)
     ///
-    /// Format: keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ADD_VALIDATOR",
+    /// Format: keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_{ADD|ROTATE}_VALIDATOR",
     ///                                     chainId, contractAddress, validatorAddress, ingress, egress))
-    ///
-    /// Note: This implementation omits chainId and contractAddress since they're not readily
-    /// available in the precompile context. In production, these should be included for
-    /// cross-chain replay protection.
-    fn construct_add_message(validator_address: Address, ingress: &str, egress: &str) -> B256 {
+    fn construct_validator_message(
+        &self,
+        is_add: bool,
+        validator_address: Address,
+        ingress: &str,
+        egress: &str,
+    ) -> B256 {
         let mut data = Vec::new();
         data.extend_from_slice(b"TEMPO");
-        data.extend_from_slice(b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR");
-        // TODO: Add chainId when available in precompile context
-        // TODO: Add contractAddress when available
-        data.extend_from_slice(validator_address.as_slice());
-        data.extend_from_slice(ingress.as_bytes());
-        data.extend_from_slice(egress.as_bytes());
+        data.extend_from_slice(if is_add {
+            b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"
+        } else {
+            b"_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"
+        });
 
-        keccak256(&data)
-    }
+        // Add chain ID
+        data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
 
-    /// Construct message for rotateValidator signature verification
-    ///
-    /// Format: keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
-    ///                                     chainId, contractAddress, validatorAddress, ingress, egress))
-    fn construct_rotate_message(validator_address: Address, ingress: &str, egress: &str) -> B256 {
-        let mut data = Vec::new();
-        data.extend_from_slice(b"TEMPO");
-        data.extend_from_slice(b"_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR");
-        // TODO: Add chainId when available in precompile context
-        // TODO: Add contractAddress when available
+        // Add contract address
+        data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+
         data.extend_from_slice(validator_address.as_slice());
         data.extend_from_slice(ingress.as_bytes());
         data.extend_from_slice(egress.as_bytes());
@@ -312,11 +314,12 @@ impl ValidatorConfigV2 {
         Self::validate_egress(&call.egress)?;
 
         // Construct message for signature verification
-        // Format: keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ADD_VALIDATOR",
-        //                                     chainId, contractAddress, validatorAddress, ingress, egress))
-        // Note: chainId and contractAddress should be included when available in the precompile context
-        let message =
-            Self::construct_add_message(call.validatorAddress, &call.ingress, &call.egress);
+        let message = self.construct_validator_message(
+            true, // is_add
+            call.validatorAddress,
+            &call.ingress,
+            &call.egress,
+        );
 
         // Verify Ed25519 signature
         Self::verify_ed25519_signature(&call.publicKey, message.as_slice(), &call.signature)?;
@@ -401,10 +404,12 @@ impl ValidatorConfigV2 {
         Self::validate_egress(&call.egress)?;
 
         // Construct message for signature verification
-        // Format: keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
-        //                                     chainId, contractAddress, validatorAddress, ingress, egress))
-        let message =
-            Self::construct_rotate_message(call.validatorAddress, &call.ingress, &call.egress);
+        let message = self.construct_validator_message(
+            false, // is_add (false = rotate)
+            call.validatorAddress,
+            &call.ingress,
+            &call.egress,
+        );
 
         // Verify Ed25519 signature
         Self::verify_ed25519_signature(&call.publicKey, message.as_slice(), &call.signature)?;
@@ -637,12 +642,21 @@ mod tests {
         let private_key = PrivateKey::from_seed(seed);
         let public_key = private_key.public_key();
 
-        // Construct the message according to the precompile spec
-        let message = if is_rotate {
-            ValidatorConfigV2::construct_rotate_message(validator_address, ingress, egress)
+        // Construct the message according to the precompile spec (matches production)
+        let mut data = Vec::new();
+        data.extend_from_slice(b"TEMPO");
+        data.extend_from_slice(if !is_rotate {
+            b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"
         } else {
-            ValidatorConfigV2::construct_add_message(validator_address, ingress, egress)
-        };
+            b"_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"
+        });
+        // Use test chain_id (1) and contract address
+        data.extend_from_slice(&1u64.to_be_bytes());
+        data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        data.extend_from_slice(validator_address.as_slice());
+        data.extend_from_slice(ingress.as_bytes());
+        data.extend_from_slice(egress.as_bytes());
+        let message = keccak256(&data);
 
         // Sign the message
         let signature = private_key.sign(&[], message.as_slice());
@@ -730,7 +744,7 @@ mod tests {
 
             assert_eq!(vc.validator_count()?, 1);
 
-            let v = vc.validator_by_index(0)?;
+            let v = vc.validator_by_index(U256::ZERO)?;
             assert_eq!(v.publicKey, pubkey);
             assert_eq!(v.validatorAddress, validator);
             assert_eq!(v.addedAtHeight, 200);
@@ -883,7 +897,7 @@ mod tests {
                 300,
             )?;
 
-            let v = vc.validator_by_index(0)?;
+            let v = vc.validator_by_index(U256::ZERO)?;
             assert_eq!(v.deactivatedAtHeight, 300);
 
             // Double deactivation fails
@@ -943,7 +957,7 @@ mod tests {
                 },
                 300,
             )?;
-            assert_eq!(vc.validator_by_index(0)?.deactivatedAtHeight, 300);
+            assert_eq!(vc.validator_by_index(U256::ZERO)?.deactivatedAtHeight, 300);
 
             // Owner can deactivate another validator
             vc.deactivate_validator(
@@ -953,7 +967,10 @@ mod tests {
                 },
                 301,
             )?;
-            assert_eq!(vc.validator_by_index(1)?.deactivatedAtHeight, 301);
+            assert_eq!(
+                vc.validator_by_index(U256::from(1))?.deactivatedAtHeight,
+                301
+            );
 
             Ok(())
         })
@@ -1010,12 +1027,12 @@ mod tests {
             assert_eq!(vc.validator_count()?, 2);
 
             // Old entry deactivated
-            let old = vc.validator_by_index(0)?;
+            let old = vc.validator_by_index(U256::ZERO)?;
             assert_eq!(old.deactivatedAtHeight, 300);
             assert_eq!(old.publicKey, old_pubkey);
 
             // New entry active with same address
-            let new = vc.validator_by_index(1)?;
+            let new = vc.validator_by_index(U256::from(1))?;
             assert_eq!(new.deactivatedAtHeight, 0);
             assert_eq!(new.publicKey, new_pubkey);
             assert_eq!(new.validatorAddress, validator);
@@ -1361,7 +1378,7 @@ mod tests {
             v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
 
             assert_eq!(v2.validator_count()?, 1);
-            let migrated = v2.validator_by_index(0)?;
+            let migrated = v2.validator_by_index(U256::ZERO)?;
             assert_eq!(migrated.validatorAddress, v1_addr);
             assert_eq!(migrated.publicKey, FixedBytes::<32>::from([0x11; 32]));
             assert_eq!(migrated.deactivatedAtHeight, 0);
