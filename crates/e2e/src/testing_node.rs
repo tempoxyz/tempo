@@ -426,11 +426,15 @@ where
             .build()
             .unwrap();
 
+        let runtime =
+            reth_ethereum::tasks::Runtime::with_existing_handle(tokio::runtime::Handle::current())
+                .expect("must be able to create Runtime");
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
             database,
             Arc::new(execution_runtime::chainspec()),
             static_file_provider,
             rocksdb,
+            runtime,
         )
         .expect("failed to create provider factory");
 

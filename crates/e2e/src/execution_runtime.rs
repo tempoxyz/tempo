@@ -33,7 +33,7 @@ use reth_ethereum::{
             events::{NetworkEvent, PeerEvent},
         },
     },
-    tasks::TaskManager,
+    tasks::Runtime,
 };
 use reth_network_peers::{NodeRecord, TrustedPeer};
 use reth_node_builder::{NodeBuilder, NodeConfig};
@@ -335,7 +335,7 @@ impl ExecutionRuntime {
             rt.block_on(async move {
                 while let Some(msg) = from_handle.recv().await {
                     // create a new task manager for the new node instance
-                    let task_manager = TaskManager::current();
+                    let task_manager = Runtime::with_existing_handle(tokio::runtime::Handle::current()).expect("must be able to create Runtime");
                     match msg {
                         Message::AddValidator(add_validator) => {
                             let AddValidator {
@@ -622,8 +622,8 @@ impl ExecutionRuntimeHandle {
 pub struct ExecutionNode {
     /// All handles to interact with the launched node instances and services.
     pub node: TempoFullNode,
-    /// The [`TaskManager`] that drives the node's services.
-    pub task_manager: TaskManager,
+    /// The [`Runtime`] that drives the node's services.
+    pub task_manager: Runtime,
     /// The exist future that resolves when the node's engine future resolves.
     pub exit_fut: NodeExitFuture,
 }
@@ -700,7 +700,7 @@ pub fn genesis() -> Genesis {
 ///    are not passed to it).
 /// 3. consensus config is not necessary
 pub async fn launch_execution_node<P: AsRef<Path>>(
-    task_manager: TaskManager,
+    task_manager: Runtime,
     chain_spec: TempoChainSpec,
     datadir: P,
     config: ExecutionNodeConfig,
@@ -743,7 +743,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     let feed_state = config.feed_state;
     let node_handle = NodeBuilder::new(node_config)
         .with_database(database)
-        .with_launch_context(task_manager.executor())
+        .with_launch_context(task_manager.clone())
         .node(tempo_node)
         .extend_rpc_modules(move |ctx| {
             if let Some(feed_state) = feed_state {

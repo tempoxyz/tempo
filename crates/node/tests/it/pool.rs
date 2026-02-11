@@ -13,7 +13,7 @@ use reth_ethereum::{
     node::builder::{NodeBuilder, NodeHandle},
     pool::TransactionPool,
     primitives::SignerRecoverable,
-    tasks::TaskManager,
+    tasks::Runtime,
 };
 use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_primitives_traits::transaction::{TxHashRef, error::InvalidTransactionError};
@@ -34,8 +34,8 @@ use tempo_primitives::{
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_pending_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let tasks = TaskManager::current();
-    let executor = tasks.executor();
+    let runtime = Runtime::with_existing_handle(tokio::runtime::Handle::current())
+        .expect("must be able to create Runtime");
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
     ))?);
@@ -49,7 +49,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
         node,
         node_exit_future: _,
     } = NodeBuilder::new(node_config.clone())
-        .testing_node(executor.clone())
+        .testing_node(runtime.clone())
         .node(TempoNode::default())
         .launch()
         .await?;
@@ -82,8 +82,8 @@ async fn submit_pending_tx() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_insufficient_funds() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let tasks = TaskManager::current();
-    let executor = tasks.executor();
+    let runtime = Runtime::with_existing_handle(tokio::runtime::Handle::current())
+        .expect("must be able to create Runtime");
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
     ))?);
@@ -97,7 +97,7 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         node,
         node_exit_future: _,
     } = NodeBuilder::new(node_config.clone())
-        .testing_node(executor.clone())
+        .testing_node(runtime.clone())
         .node(TempoNode::default())
         .launch()
         .await?;
