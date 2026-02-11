@@ -56,9 +56,98 @@ impl TIP20Factory {
         // must ensure the account is not empty, by setting some code
         self.__initialize()
     }
+}
 
-    /// Creates a token at a reserved address
-    /// Internal function used to deploy TIP20s at reserved addresses at genesis or hardforks
+impl ITIP20Factory::Interface for TIP20Factory {
+    /// Returns true if the address is a valid TIP20 token.
+    ///
+    /// Checks both:
+    /// 1. The address has the correct TIP20 prefix
+    /// 2. The address has been initialized (code deployed)
+    fn is_tip20(&self, token: Address) -> Result<bool> {
+        if !is_tip20_prefix(token) {
+            return Ok(false);
+        }
+        // Check if the token has code deployed (non-empty code hash)
+        TIP20Token::from_address_unchecked(token).is_initialized()
+    }
+
+    /// Computes the deterministic address for a token given sender and salt.
+    /// Reverts if the computed address would be in the reserved range.
+    fn get_token_address(&self, sender: Address, salt: B256) -> Result<Address> {
+        let (address, lower_bytes) = compute_tip20_address(sender, salt);
+
+        // Check if address would be in reserved range
+        if lower_bytes < RESERVED_SIZE {
+            return Err(TIP20FactoryError::address_reserved().into());
+        }
+
+        Ok(address)
+    }
+
+    /// Creates a new TIP20 token at a deterministic address.
+    fn create_token(
+        &mut self,
+        msg_sender: Address,
+        name: String,
+        symbol: String,
+        currency: String,
+        quote_token: Address,
+        admin: Address,
+        salt: B256,
+    ) -> Result<Address> {
+        trace!(%msg_sender, %name, %symbol, %currency, %quote_token, %admin, %salt, "Create token");
+
+        // Compute the deterministic address from sender and salt
+        let (token_address, lower_bytes) = compute_tip20_address(msg_sender, salt);
+
+        if self.is_tip20(token_address)? {
+            return Err(TIP20FactoryError::token_already_exists(token_address).into());
+        }
+
+        // Ensure that the quote token is a valid TIP20 that is currently deployed.
+        if !self.is_tip20(quote_token)? {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
+        // If token is USD, its quote token must also be USD
+        if currency == USD_CURRENCY
+            && TIP20Token::from_address(quote_token)?.currency()? != USD_CURRENCY
+        {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
+        // Check if address is in reserved range
+        if lower_bytes < RESERVED_SIZE {
+            return Err(TIP20FactoryError::address_reserved().into());
+        }
+
+        TIP20Token::from_address(token_address)?.initialize(
+            msg_sender,
+            &name,
+            &symbol,
+            &currency,
+            quote_token,
+            admin,
+        )?;
+
+        self.emit_event(TIP20FactoryEvent::token_created(
+            token_address,
+            name,
+            symbol,
+            currency,
+            quote_token,
+            admin,
+            salt,
+        ))?;
+
+        Ok(token_address)
+    }
+}
+
+impl TIP20Factory {
+    /// Creates a new TIP20 token at a reserved address.
+    /// Internal function used to deploy TIP20s at reserved addresses at genesis or hardforks.
     pub fn create_token_reserved_address(
         &mut self,
         address: Address,
@@ -119,91 +208,11 @@ impl TIP20Factory {
     }
 }
 
-impl ITIP20Factory::Interface for TIP20Factory {
-    fn create_token(
-        &mut self,
-        msg_sender: Address,
-        name: String,
-        symbol: String,
-        currency: String,
-        quote_token: Address,
-        admin: Address,
-        salt: B256,
-    ) -> Result<Address> {
-        trace!(%msg_sender, %name, %symbol, %currency, %quote_token, %admin, "Create token");
-
-        // Compute the deterministic address from sender and salt
-        let (token_address, lower_bytes) = compute_tip20_address(msg_sender, salt);
-
-        if self.is_tip20(token_address)? {
-            return Err(TIP20FactoryError::token_already_exists(token_address).into());
-        }
-
-        // Ensure that the quote token is a valid TIP20 that is currently deployed.
-        if !self.is_tip20(quote_token)? {
-            return Err(TIP20Error::invalid_quote_token().into());
-        }
-
-        // If token is USD, its quote token must also be USD
-        if currency == USD_CURRENCY
-            && TIP20Token::from_address(quote_token)?.currency()? != USD_CURRENCY
-        {
-            return Err(TIP20Error::invalid_quote_token().into());
-        }
-
-        // Check if address is in reserved range
-        if lower_bytes < RESERVED_SIZE {
-            return Err(TIP20FactoryError::address_reserved().into());
-        }
-
-        TIP20Token::from_address(token_address)?.initialize(
-            msg_sender,
-            &name,
-            &symbol,
-            &currency,
-            quote_token,
-            admin,
-        )?;
-
-        self.emit_event(TIP20FactoryEvent::token_created(
-            token_address,
-            name,
-            symbol,
-            currency,
-            quote_token,
-            admin,
-            salt,
-        ))?;
-
-        Ok(token_address)
-    }
-
-    fn is_tip20(&self, token: Address) -> Result<bool> {
-        if !is_tip20_prefix(token) {
-            return Ok(false);
-        }
-        // Check if the token has code deployed (non-empty code hash)
-        TIP20Token::from_address_unchecked(token).is_initialized()
-    }
-
-    fn get_token_address(&self, sender: Address, salt: B256) -> Result<Address> {
-        let (address, lower_bytes) = compute_tip20_address(sender, salt);
-
-        // Check if address would be in reserved range
-        if lower_bytes < RESERVED_SIZE {
-            return Err(TIP20FactoryError::address_reserved().into());
-        }
-
-        Ok(address)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ITIP20Factory, *};
+    use super::*;
     use crate::{
         PATH_USD_ADDRESS,
-        error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
@@ -384,7 +393,7 @@ mod tests {
                     "USD".into(),
                     path_usd.address(),
                     sender,
-                    salt1.into(),
+                    salt1,
                 ),
                 TIP20FactoryEvent::token_created(
                     token_addr_2,
@@ -393,7 +402,7 @@ mod tests {
                     "USD".into(),
                     path_usd.address(),
                     sender,
-                    salt2.into(),
+                    salt2,
                 ),
             ]);
 
