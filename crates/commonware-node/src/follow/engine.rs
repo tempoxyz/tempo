@@ -310,7 +310,7 @@ where
             self.marshal_mailbox,
             self.feed_mailbox,
             self.epoch_strategy,
-            last_finalized_height.get(),
+            last_finalized_height,
         );
 
         driver.run().await

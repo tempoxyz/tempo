@@ -36,7 +36,7 @@ pub(super) struct FollowDriver<C> {
     marshal_mailbox: marshal::Mailbox,
     feed_mailbox: feed::Mailbox,
     epocher: FixedEpocher,
-    last_seen: u64,
+    last_seen: Height,
 }
 
 impl<C: Clock> FollowDriver<C> {
@@ -47,7 +47,7 @@ impl<C: Clock> FollowDriver<C> {
         marshal_mailbox: marshal::Mailbox,
         feed_mailbox: feed::Mailbox,
         epocher: FixedEpocher,
-        last_finalized_height: u64,
+        last_finalized_height: Height,
     ) -> Self {
         Self {
             context,
@@ -94,6 +94,7 @@ impl<C: Clock> FollowDriver<C> {
 
             let height = certified
                 .height
+                .map(Height::new)
                 .ok_or_else(|| eyre::eyre!("finalized event missing height"))?;
 
             if height <= self.last_seen {
@@ -108,21 +109,21 @@ impl<C: Clock> FollowDriver<C> {
         Err(eyre::eyre!("subscription stream ended"))
     }
 
-    async fn process_boundaries(&mut self, up_to: u64) -> eyre::Result<()> {
-        for boundary_height in self.boundary_heights_between(self.last_seen, up_to) {
+    async fn process_boundaries(&mut self, up_to: Height) -> eyre::Result<()> {
+        for boundary_height in boundary_heights_between(&self.epocher, self.last_seen, up_to) {
             self.process_boundary_block(boundary_height).await?;
         }
         Ok(())
     }
 
-    async fn process_boundary_block(&mut self, height: u64) -> eyre::Result<()> {
+    async fn process_boundary_block(&mut self, height: Height) -> eyre::Result<()> {
         debug_span!("follow").in_scope(|| {
-            debug!(height, "processing epoch boundary block");
+            debug!(%height, "processing epoch boundary block");
         });
 
         let block = self
             .resolver
-            .fetch_block(height)
+            .fetch_block(height.get())
             .await
             .map_err(|e| eyre::eyre!("{e}"))?
             .ok_or_else(|| eyre::eyre!("block not found for boundary height {height}"))?;
@@ -135,11 +136,11 @@ impl<C: Clock> FollowDriver<C> {
     async fn process_finalization(
         &mut self,
         certified: &CertifiedBlock,
-        height: u64,
+        height: Height,
     ) -> eyre::Result<()> {
         debug_span!("follow").in_scope(|| {
             debug!(
-                height,
+                %height,
                 epoch = certified.epoch,
                 "forwarding finalization to marshal"
             );
@@ -147,7 +148,7 @@ impl<C: Clock> FollowDriver<C> {
 
         let block = self
             .resolver
-            .fetch_block(height)
+            .fetch_block(height.get())
             .await
             .map_err(|e| eyre::eyre!("{e}"))?
             .ok_or_else(|| eyre::eyre!("block not found for height {height}"))?;
@@ -174,7 +175,7 @@ impl<C: Clock> FollowDriver<C> {
             .map_err(|e| eyre::eyre!("failed to decode finalization: {e:?}"))
     }
 
-    fn extract_scheme(&self, block: &Block, height: u64) -> eyre::Result<()> {
+    fn extract_scheme(&self, block: &Block, height: Height) -> eyre::Result<()> {
         let extra_data = block.header().inner.extra_data.as_ref();
         if extra_data.is_empty() {
             return Err(eyre::eyre!(
@@ -195,7 +196,7 @@ impl<C: Clock> FollowDriver<C> {
         if self.scheme_provider.register(epoch, scheme) {
             info_span!("follow").in_scope(|| {
                 info!(
-                    height,
+                    %height,
                     epoch = epoch.get(),
                     "registered DKG scheme from boundary block"
                 );
@@ -204,37 +205,101 @@ impl<C: Clock> FollowDriver<C> {
 
         Ok(())
     }
+}
 
-    fn boundary_heights_between(&self, after: u64, up_to: u64) -> Vec<u64> {
-        let mut boundaries = Vec::new();
+fn boundary_heights_between(epocher: &FixedEpocher, after: Height, up_to: Height) -> Vec<Height> {
+    let mut boundaries = Vec::new();
 
-        let start = after + 1;
-        if start > up_to {
-            return boundaries;
+    let start = after.next();
+    if start > up_to {
+        return boundaries;
+    }
+
+    let Some(start_epoch_info) = epocher.containing(start) else {
+        return boundaries;
+    };
+
+    let mut epoch = start_epoch_info.epoch();
+    while let Some(boundary) = epocher.last(epoch) {
+        if boundary > up_to {
+            break;
+        } else if boundary > after {
+            boundaries.push(boundary);
         }
 
-        let Some(start_epoch_info) = self.epocher.containing(Height::new(start)) else {
-            return boundaries;
-        };
+        epoch = epoch.next();
+    }
 
-        let mut epoch = start_epoch_info.epoch();
-        loop {
-            let Some(boundary) = self.epocher.last(epoch) else {
-                break;
-            };
-            let bh = boundary.get();
+    boundaries
+}
 
-            if bh > up_to {
-                break;
-            }
+#[cfg(test)]
+mod tests {
+    use super::boundary_heights_between;
+    use commonware_consensus::types::{FixedEpocher, Height};
+    use commonware_utils::NZU64;
 
-            if bh > after {
-                boundaries.push(bh);
-            }
+    fn h(v: u64) -> Height {
+        Height::new(v)
+    }
 
-            epoch = epoch.next();
-        }
+    #[test]
+    fn no_boundaries_when_same_height() {
+        let epocher = FixedEpocher::new(NZU64!(10));
+        assert_eq!(boundary_heights_between(&epocher, h(5), h(5)), vec![]);
+    }
 
-        boundaries
+    #[test]
+    fn no_boundaries_when_after_exceeds_up_to() {
+        let epocher = FixedEpocher::new(NZU64!(10));
+        assert_eq!(boundary_heights_between(&epocher, h(15), h(5)), vec![]);
+    }
+
+    #[test]
+    fn no_boundaries_within_same_epoch() {
+        let epocher = FixedEpocher::new(NZU64!(10));
+        assert_eq!(boundary_heights_between(&epocher, h(1), h(8)), vec![]);
+    }
+
+    #[test]
+    fn single_boundary_at_epoch_end() {
+        let epocher = FixedEpocher::new(NZU64!(10));
+        assert_eq!(boundary_heights_between(&epocher, h(1), h(9)), vec![h(9)]);
+    }
+
+    #[test]
+    fn multiple_boundaries_across_epochs() {
+        let epocher = FixedEpocher::new(NZU64!(10));
+        assert_eq!(
+            boundary_heights_between(&epocher, h(1), h(29)),
+            vec![h(9), h(19), h(29)]
+        );
+    }
+
+    #[test]
+    fn boundary_excluded_when_equal_to_after() {
+        let epocher = FixedEpocher::new(NZU64!(10));
+        assert_eq!(boundary_heights_between(&epocher, h(9), h(19)), vec![h(19)]);
+    }
+
+    #[test]
+    fn starts_from_zero() {
+        let epocher = FixedEpocher::new(NZU64!(10));
+        assert_eq!(boundary_heights_between(&epocher, h(0), h(9)), vec![h(9)]);
+    }
+
+    #[test]
+    fn large_epoch_no_boundary_in_range() {
+        let epocher = FixedEpocher::new(NZU64!(100));
+        assert_eq!(boundary_heights_between(&epocher, h(10), h(50)), vec![]);
+    }
+
+    #[test]
+    fn large_epoch_boundary_in_range() {
+        let epocher = FixedEpocher::new(NZU64!(100));
+        assert_eq!(
+            boundary_heights_between(&epocher, h(10), h(99)),
+            vec![h(99)]
+        );
     }
 }
