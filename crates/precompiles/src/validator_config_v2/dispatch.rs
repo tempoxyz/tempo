@@ -88,10 +88,14 @@ impl Precompile for ValidatorConfigV2 {
                     })
                 }
                 IValidatorConfigV2Calls::migrateValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.migrate_validator(s, c))
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.migrate_validator(s, c, block_height)
+                    })
                 }
                 IValidatorConfigV2Calls::initializeIfMigrated(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.initialize_if_migrated(s, c))
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.initialize_if_migrated(s, c, block_height)
+                    })
                 }
             },
         )

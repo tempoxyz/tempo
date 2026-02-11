@@ -94,6 +94,23 @@ impl ValidatorConfigV2 {
         self.address_to_index[addr].read()
     }
 
+    /// Get active validator by address with index.
+    ///
+    /// Returns the validator's array index and data if found and active.
+    /// Returns error if validator not found or already deactivated.
+    fn get_active_validator(&self, addr: Address) -> Result<(usize, ValidatorV2)> {
+        let idx1 = self.address_index(addr)?;
+        if idx1 == 0 {
+            return Err(ValidatorConfigV2Error::validator_not_found())?;
+        }
+        let idx = (idx1 - 1) as usize;
+        let v = self.validators[idx].read()?;
+        if v.deactivated_at_height != 0 {
+            return Err(ValidatorConfigV2Error::validator_already_deleted())?;
+        }
+        Ok((idx, v))
+    }
+
     fn read_validator_at(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
         // Check bounds first
         if index >= self.validator_count()? {
@@ -197,23 +214,7 @@ impl ValidatorConfigV2 {
         egress: String,
         block_height: u64,
     ) -> Result<()> {
-        let count = self.validator_count()?;
-        let v = ValidatorV2 {
-            public_key: pubkey,
-            validator_address: addr,
-            ingress,
-            egress,
-            index: count,
-            added_at_height: block_height,
-            deactivated_at_height: 0,
-        };
-
-        // Push to Vec
-        self.validators.push(v)?;
-
-        // Update lookup indices (1-indexed)
-        self.address_to_index[addr].write(count + 1)?;
-        self.pubkey_to_index[pubkey].write(count + 1)
+        self.append_validator_raw(addr, pubkey, ingress, egress, block_height, 0)
     }
 
     fn validate_add_params(&self, addr: Address, pubkey: B256) -> Result<()> {
@@ -342,16 +343,7 @@ impl ValidatorConfigV2 {
         self.check_initialized()?;
         self.check_owner_or_validator(sender, call.validatorAddress)?;
 
-        let idx1 = self.address_index(call.validatorAddress)?;
-        if idx1 == 0 {
-            return Err(ValidatorConfigV2Error::validator_not_found())?;
-        }
-
-        let idx = (idx1 - 1) as usize;
-        let mut v = self.validators[idx].read()?;
-        if v.deactivated_at_height != 0 {
-            return Err(ValidatorConfigV2Error::validator_already_deleted())?;
-        }
+        let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
         v.deactivated_at_height = block_height;
         self.validators[idx].write(v)
     }
@@ -388,16 +380,7 @@ impl ValidatorConfigV2 {
         self.check_initialized()?;
         self.check_owner_or_validator(sender, call.validatorAddress)?;
 
-        let idx1 = self.address_index(call.validatorAddress)?;
-        if idx1 == 0 {
-            return Err(ValidatorConfigV2Error::validator_not_found())?;
-        }
-
-        let idx = (idx1 - 1) as usize;
-        let mut old = self.validators[idx].read()?;
-        if old.deactivated_at_height != 0 {
-            return Err(ValidatorConfigV2Error::validator_already_deleted())?;
-        }
+        let (idx, mut old) = self.get_active_validator(call.validatorAddress)?;
 
         self.validate_rotate_params(call.publicKey)?;
         Self::validate_ingress(&call.ingress)?;
@@ -436,16 +419,7 @@ impl ValidatorConfigV2 {
         self.check_initialized()?;
         self.check_owner_or_validator(sender, call.validatorAddress)?;
 
-        let idx1 = self.address_index(call.validatorAddress)?;
-        if idx1 == 0 {
-            return Err(ValidatorConfigV2Error::validator_not_found())?;
-        }
-
-        let idx = (idx1 - 1) as usize;
-        let mut v = self.validators[idx].read()?;
-        if v.deactivated_at_height != 0 {
-            return Err(ValidatorConfigV2Error::validator_already_deleted())?;
-        }
+        let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
 
         Self::validate_ingress(&call.ingress)?;
         Self::validate_egress(&call.egress)?;
@@ -467,18 +441,11 @@ impl ValidatorConfigV2 {
             return Err(ValidatorConfigV2Error::invalid_validator_address())?;
         }
 
-        let idx1 = self.address_index(call.currentAddress)?;
-        if idx1 == 0 {
-            return Err(ValidatorConfigV2Error::validator_not_found())?;
-        }
+        let (idx, mut v) = self.get_active_validator(call.currentAddress)?;
+        let idx1 = (idx + 1) as u64; // Convert back to 1-indexed
+
         if self.address_to_index[call.newAddress].read()? != 0 {
             return Err(ValidatorConfigV2Error::validator_already_exists())?;
-        }
-
-        let idx = (idx1 - 1) as usize;
-        let mut v = self.validators[idx].read()?;
-        if v.deactivated_at_height != 0 {
-            return Err(ValidatorConfigV2Error::validator_already_deleted())?;
         }
 
         v.validator_address = call.newAddress;
@@ -495,6 +462,7 @@ impl ValidatorConfigV2 {
         &mut self,
         sender: Address,
         call: IValidatorConfigV2::migrateValidatorCall,
+        block_height: u64,
     ) -> Result<()> {
         // Check if already initialized - migration is blocked after initialization
         if self.initialized.read()? {
@@ -531,18 +499,14 @@ impl ValidatorConfigV2 {
         // Get the V1 validator at the specified index
         let v1_val = &v1_validators[call.idx as usize];
 
-        // Note: The Solidity version sets deactivatedAtHeight to block.number for inactive validators
-        // during migration, but we use 0 for all validators during migration since we don't have
-        // historical block height information at this point.
-        let deactivated_at_height = 0;
+        let deactivated_at_height = if v1_val.active { 0 } else { block_height };
 
-        // Append the validator (will use 0 for both addedAtHeight and deactivatedAtHeight during migration)
         self.append_validator_raw(
             v1_val.validatorAddress,
             v1_val.publicKey,
             v1_val.inboundAddress.clone(),
             v1_val.outboundAddress.clone(),
-            0, // addedAtHeight - we don't have historical block height
+            block_height,
             deactivated_at_height,
         )
     }
@@ -551,6 +515,7 @@ impl ValidatorConfigV2 {
         &mut self,
         sender: Address,
         _call: IValidatorConfigV2::initializeIfMigratedCall,
+        block_height: u64,
     ) -> Result<()> {
         // Check owner first
         self.check_owner(sender)?;
@@ -574,9 +539,9 @@ impl ValidatorConfigV2 {
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;
         self.next_dkg_ceremony.write(v1_next_dkg)?;
 
-        // Mark as initialized (we don't have block height here, so use 0)
+        // Mark as initialized
         self.initialized.write(true)?;
-        self.initialized_at_height.write(0)
+        self.initialized_at_height.write(block_height)
     }
 
     /// Internal helper to append a validator with explicit height values (for migration)
@@ -1375,7 +1340,11 @@ mod tests {
             let mut v2 = ValidatorConfigV2::new();
 
             // Migrate first validator
-            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+            v2.migrate_validator(
+                owner,
+                IValidatorConfigV2::migrateValidatorCall { idx: 0 },
+                100,
+            )?;
 
             assert_eq!(v2.validator_count()?, 1);
             let migrated = v2.validator_by_index(U256::ZERO)?;
@@ -1384,7 +1353,11 @@ mod tests {
             assert_eq!(migrated.deactivatedAtHeight, 0);
 
             // Migrate second validator
-            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 })?;
+            v2.migrate_validator(
+                owner,
+                IValidatorConfigV2::migrateValidatorCall { idx: 1 },
+                100,
+            )?;
 
             assert_eq!(v2.validator_count()?, 2);
 
@@ -1392,13 +1365,16 @@ mod tests {
             // (This would fail if we had more V1 validators, but we've migrated all)
 
             // Initialize V2
-            v2.initialize_if_migrated(owner, IValidatorConfigV2::initializeIfMigratedCall {})?;
+            v2.initialize_if_migrated(owner, IValidatorConfigV2::initializeIfMigratedCall {}, 400)?;
 
             assert!(v2.is_initialized()?);
 
             // Migration should be blocked after initialization
-            let result =
-                v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 2 });
+            let result = v2.migrate_validator(
+                owner,
+                IValidatorConfigV2::migrateValidatorCall { idx: 2 },
+                100,
+            );
             assert_eq!(
                 result,
                 Err(ValidatorConfigV2Error::already_initialized().into())
@@ -1443,8 +1419,11 @@ mod tests {
 
             // Try to migrate out of order (skip idx 0, try idx 1)
             let mut v2 = ValidatorConfigV2::new();
-            let result =
-                v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 });
+            let result = v2.migrate_validator(
+                owner,
+                IValidatorConfigV2::migrateValidatorCall { idx: 1 },
+                100,
+            );
 
             assert_eq!(
                 result,
@@ -1490,11 +1469,15 @@ mod tests {
 
             // Only migrate first validator
             let mut v2 = ValidatorConfigV2::new();
-            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+            v2.migrate_validator(
+                owner,
+                IValidatorConfigV2::migrateValidatorCall { idx: 0 },
+                100,
+            )?;
 
             // Try to initialize with incomplete migration
             let result =
-                v2.initialize_if_migrated(owner, IValidatorConfigV2::initializeIfMigratedCall {});
+                v2.initialize_if_migrated(owner, IValidatorConfigV2::initializeIfMigratedCall {}, 400);
 
             assert_eq!(
                 result,
