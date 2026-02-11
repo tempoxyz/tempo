@@ -12268,6 +12268,8 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "commonware-codec",
+ "commonware-cryptography",
  "criterion 0.8.2",
  "derive_more",
  "eyre",

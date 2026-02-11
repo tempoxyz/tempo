@@ -15,11 +15,8 @@ impl Precompile for ValidatorConfigV2 {
             return Ok(PrecompileOutput::new(self.storage.gas_used(), Default::default()));
         }
 
-        // Block height is not directly available from the storage provider,
-        // so we use 0 as a placeholder. In production, block height is provided
-        // by the EVM context. For mutating calls that need block_height,
-        // we pass 0 here - the actual block height injection happens at a higher level.
-        let block_height = 0u64;
+        // Get the current block number from the EVM context via storage provider
+        let block_height = self.storage.block_number();
 
         dispatch_call(
             calldata,
@@ -27,7 +24,7 @@ impl Precompile for ValidatorConfigV2 {
             |call| match call {
                 // View functions
                 IValidatorConfigV2Calls::owner(call) => view(call, |_| self.owner()),
-                IValidatorConfigV2Calls::getValidators(call) => {
+                IValidatorConfigV2Calls::getAllValidators(call) => {
                     view(call, |_| self.get_validators())
                 }
                 IValidatorConfigV2Calls::getActiveValidators(call) => {
@@ -186,6 +183,9 @@ mod tests {
 
     #[test]
     fn test_add_validator_dispatch() -> eyre::Result<()> {
+        use commonware_cryptography::{Signer, ed25519::PrivateKey};
+        use commonware_codec::Encode;
+
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let owner = Address::random();
         let validator_addr = Address::random();
@@ -193,13 +193,35 @@ mod tests {
             let mut vc = ValidatorConfigV2::new();
             vc.initialize(owner, 100)?;
 
-            let public_key = FixedBytes::<32>::from([0x42; 32]);
+            // Generate real Ed25519 key pair
+            let seed = rand_08::random::<u64>();
+            let private_key = PrivateKey::from_seed(seed);
+            let public_key_obj = private_key.public_key();
+
+            // Construct message
+            let mut msg_data = Vec::new();
+            msg_data.extend_from_slice(b"TEMPO");
+            msg_data.extend_from_slice(b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR");
+            msg_data.extend_from_slice(validator_addr.as_slice());
+            msg_data.extend_from_slice(b"192.168.1.1:8000");
+            msg_data.extend_from_slice(b"192.168.1.1");
+            let message = alloy::primitives::keccak256(&msg_data);
+
+            // Sign the message
+            let signature = private_key.sign(&[], message.as_slice());
+
+            // Encode public key
+            let pubkey_bytes = public_key_obj.encode();
+            let mut pubkey_array = [0u8; 32];
+            pubkey_array.copy_from_slice(&pubkey_bytes);
+            let public_key = FixedBytes::<32>::from(pubkey_array);
+
             let add_call = IValidatorConfigV2::addValidatorCall {
                 validatorAddress: validator_addr,
                 publicKey: public_key,
                 ingress: "192.168.1.1:8000".to_string(),
                 egress: "192.168.1.1".to_string(),
-                signature: vec![0u8; 64].into(),
+                signature: signature.encode().to_vec().into(),
             };
             let calldata = add_call.abi_encode();
 
