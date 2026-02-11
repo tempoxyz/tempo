@@ -197,6 +197,7 @@ commonware-macros = "2026.2.0"
 commonware-math = "2026.2.0"
 commonware-p2p = "2026.2.0"
 commonware-parallel = "2026.2.0"
+commonware-resolver = "2026.2.0"
 commonware-runtime = "2026.2.0"
 commonware-storage = "2026.2.0"
 commonware-utils = "2026.2.0"
@@ -337,6 +338,7 @@ vergen-git2 = "9.1.0"
 # commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "a1b60388c0bbc9126aa9934ec6ebade6ec344552" }
 # commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "a1b60388c0bbc9126aa9934ec6ebade6ec344552" }
 # commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "a1b60388c0bbc9126aa9934ec6ebade6ec344552" }
+# commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "a1b60388c0bbc9126aa9934ec6ebade6ec344552" }
 # commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "a1b60388c0bbc9126aa9934ec6ebade6ec344552" }
 # commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "a1b60388c0bbc9126aa9934ec6ebade6ec344552" }
 # commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "a1b60388c0bbc9126aa9934ec6ebade6ec344552" }

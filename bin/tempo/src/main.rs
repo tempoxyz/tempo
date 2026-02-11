@@ -31,7 +31,7 @@ use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
+use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_faucet::{
@@ -54,6 +54,12 @@ struct TempoArgs {
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
     pub follow: Option<String>,
+
+    /// Run in follow mode, syncing consensus state from an upstream node.
+    /// The node must serve both consensus and execution RPCs.
+    /// Requires a WebSocket Endpoint (ws:// or wss://).
+    #[arg(long, value_name = "WS_URL", conflicts_with = "follow")]
+    pub follow_node: Option<String>,
 
     #[command(flatten)]
     pub telemetry: defaults::TelemetryArgs,
@@ -180,13 +186,82 @@ fn main() -> eyre::Result<()> {
                 and a handle to the execution node could be received",
         )?;
 
-        let ret = if node.config.dev.dev || args.follow.is_some() {
-            // When --follow is used (with or without a URL), skip consensus stack
+        let ret = if node.config.dev.dev {
+            // Dev mode: just wait for shutdown
             futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
                 Ok(())
             })
+        } else if let Some(ref follow_url) = args.follow_node {
+            // Follower: run follow stack
+            let follow_url = follow_url.clone();
+
+            let follow_storage = args.consensus.storage_dir.clone().unwrap_or_else(|| {
+                node.config
+                    .datadir
+                    .clone()
+                    .resolve_datadir(node.chain_spec().chain())
+                    .data_dir()
+                    .join("follow")
+            });
+
+            info_span!("follow").in_scope(|| {
+                info!(
+                    path = %follow_storage.display(),
+                    upstream = %follow_url,
+                    "starting follow engine",
+                )
+            });
+
+            let runtime_config = commonware_runtime::tokio::Config::default()
+                .with_tcp_nodelay(Some(true))
+                .with_worker_threads(args.consensus.worker_threads)
+                .with_storage_directory(follow_storage)
+                .with_catch_panics(true);
+
+            let runner = commonware_runtime::tokio::Runner::new(runtime_config);
+            runner.start(async move |ctx| {
+                let ctx = ctx.with_label("follow");
+
+                let mut metrics_server = tempo_commonware_node::metrics::install(
+                    ctx.with_label("metrics"),
+                    args.consensus.metrics_address,
+                )
+                .fuse();
+
+                let follow_stack = run_follow_stack(
+                    &ctx,
+                    args.consensus,
+                    follow_url,
+                    node,
+                    cl_feed_state_clone,
+                );
+                tokio::pin!(follow_stack);
+                loop {
+                    tokio::select!(
+                        biased;
+
+                        () = shutdown_token_clone.cancelled() => {
+                            break Ok(());
+                        }
+
+                        ret = &mut follow_stack => {
+                            break ret.and_then(|()| Err(eyre::eyre!("follow stack exited unexpectedly")))
+                            .wrap_err("follow stack failed");
+                        }
+
+                        ret = &mut metrics_server, if !metrics_server.is_terminated() => {
+                            let reason = match ret.wrap_err("task_panicked") {
+                                Ok(Ok(())) => "unexpected regular exit".to_string(),
+                                Ok(Err(err)) | Err(err) => format!("{err}"),
+                            };
+                            tracing::warn!(reason, "the metrics server exited");
+                        }
+                    )
+                }
+            })
         } else {
+            // Validator mode: run consensus stack
             let consensus_storage = args.consensus.storage_dir.clone().unwrap_or_else(|| {
                 node.config
                     .datadir
@@ -318,9 +393,6 @@ fn main() -> eyre::Result<()> {
         } = builder
             .node(TempoNode::new(&args.node_args, validator_key))
             .apply(|mut builder: WithLaunchContext<_>| {
-                // Resolve the follow URL:
-                // --follow or --follow=auto -> use chain-specific default
-                // --follow=URL -> use provided URL
                 if let Some(follow) = &args.follow {
                     let follow_url = if follow == "auto" {
                         builder
@@ -347,10 +419,10 @@ fn main() -> eyre::Result<()> {
                     ctx.modules.merge_configured(ext.into_rpc())?;
                 }
 
-                if validator_key.is_some() {
-                    ctx.modules
-                        .merge_configured(TempoConsensusRpc::new(cl_feed_state).into_rpc())?;
-                }
+                // Always register consensus RPC - needed for follow mode to sync from this node
+                // and for followers to serve finalization data to other followers
+                ctx.modules
+                    .merge_configured(TempoConsensusRpc::new(cl_feed_state).into_rpc())?;
 
                 Ok(())
             })
