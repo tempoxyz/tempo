@@ -263,8 +263,7 @@ impl TestNodeBuilder {
             });
         }
 
-        let runtime = Runtime::with_existing_handle(tokio::runtime::Handle::current())
-            .expect("must be able to create Runtime");
+        let runtime = Runtime::test_with_handle(tokio::runtime::Handle::current());
         let chain_spec = self.build_chain_spec()?;
         let validator = chain_spec.inner.genesis.coinbase;
 

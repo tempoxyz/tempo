@@ -427,8 +427,7 @@ where
             .unwrap();
 
         let runtime =
-            reth_ethereum::tasks::Runtime::with_existing_handle(tokio::runtime::Handle::current())
-                .expect("must be able to create Runtime");
+            reth_ethereum::tasks::Runtime::test_with_handle(tokio::runtime::Handle::current());
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
             database,
             Arc::new(execution_runtime::chainspec()),
