@@ -63,7 +63,7 @@ main() {
         exit 1
     fi
 
-    chmod +x "$BIN_DIR/tempoup"
+    chmod 755 "$BIN_DIR/tempoup"
     info "Tempoup installed to $BIN_DIR/tempoup"
 
     # Add to PATH if not already present
