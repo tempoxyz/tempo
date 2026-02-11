@@ -31,7 +31,7 @@ crate::sol! {
         // =====================================================================
 
         /// Get the complete set of validators (including deleted)
-        function getValidators() external view returns (Validator[] memory validators);
+        function getAllValidators() external view returns (Validator[] memory validators);
 
         /// Get only active validators (deactivatedAtHeight == 0)
         function getActiveValidators() external view returns (Validator[] memory validators);
@@ -124,6 +124,8 @@ crate::sol! {
         error InvalidValidatorAddress();
         error NotInitialized();
         error AlreadyInitialized();
+        error MigrationNotComplete();
+        error InvalidMigrationIndex();
 
         error NotIpPort(string field, string input, string backtrace);
     }
@@ -168,6 +170,14 @@ impl ValidatorConfigV2Error {
 
     pub const fn already_initialized() -> Self {
         Self::AlreadyInitialized(IValidatorConfigV2::AlreadyInitialized {})
+    }
+
+    pub const fn migration_not_complete() -> Self {
+        Self::MigrationNotComplete(IValidatorConfigV2::MigrationNotComplete {})
+    }
+
+    pub const fn invalid_migration_index() -> Self {
+        Self::InvalidMigrationIndex(IValidatorConfigV2::InvalidMigrationIndex {})
     }
 
     pub fn not_ip_port(field: String, input: String, backtrace: String) -> Self {
