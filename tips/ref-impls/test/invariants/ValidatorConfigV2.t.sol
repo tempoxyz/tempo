@@ -839,7 +839,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @notice TEMPO-VALV2-12: All validator data matches ghost state (index-keyed)
     function _invariantValidatorDataConsistency() internal view {
-        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getValidators();
+        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
         assertEq(vals.length, _ghostTotalCount, "TEMPO-VALV2-12: Array length mismatch");
 
         for (uint256 i = 0; i < vals.length; i++) {
@@ -864,7 +864,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @notice TEMPO-VALV2-3: All indices are sequential (0, 1, 2, ...)
     function _invariantIndexSequential() internal view {
-        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getValidators();
+        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
 
         for (uint256 i = 0; i < vals.length; i++) {
             assertEq(vals[i].index, i, "TEMPO-VALV2-3: Index should equal array position");
@@ -873,7 +873,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @notice TEMPO-VALV2-7: All public keys are unique and non-zero
     function _invariantPubKeyUniqueness() internal view {
-        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getValidators();
+        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
 
         for (uint256 i = 0; i < vals.length; i++) {
             assertTrue(
@@ -891,7 +891,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @notice TEMPO-VALV2-13: Active validators are a proper subset of all validators
     function _invariantActiveValidatorSubset() internal view {
-        IValidatorConfigV2.Validator[] memory all = validatorConfigV2.getValidators();
+        IValidatorConfigV2.Validator[] memory all = validatorConfigV2.getAllValidators();
         IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
 
         assertLe(active.length, all.length, "TEMPO-VALV2-13: Active count <= total count");
@@ -930,7 +930,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @dev For active validators: addedAtHeight >= 0, deactivatedAtHeight == 0
     ///      For deactivated validators: deactivatedAtHeight >= addedAtHeight
     function _invariantHeightTracking() internal view {
-        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getValidators();
+        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
 
         for (uint256 i = 0; i < vals.length; i++) {
             if (vals[i].deactivatedAtHeight != 0) {

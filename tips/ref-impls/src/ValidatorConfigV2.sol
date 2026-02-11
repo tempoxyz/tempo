@@ -234,7 +234,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     // =========================================================================
 
     /// @inheritdoc IValidatorConfigV2
-    function getValidators() external view returns (Validator[] memory) {
+    function getAllValidators() external view returns (Validator[] memory) {
         return validatorsArray;
     }
 
