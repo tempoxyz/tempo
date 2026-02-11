@@ -2,8 +2,8 @@ use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
     rpc::{
-        TempoAdminApi, TempoAdminApiServer, TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer,
-        TempoToken, TempoTokenApiServer,
+        TempoAdminApi, TempoAdminApiServer, TempoDebugApiServer, TempoDebugRpc,
+        TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer, TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
@@ -198,6 +198,11 @@ where
         let eth_config =
             EthConfigHandler::new(ctx.node.provider().clone(), ctx.node.evm_config().clone());
 
+        let debug = TempoDebugRpc::new(
+            ctx.node.evm_config().clone(),
+            ctx.node.provider().clone(),
+        );
+
         self.inner
             .launch_add_ons_with(ctx, move |container| {
                 let reth_node_builder::rpc::RpcModuleContainer {
@@ -213,6 +218,7 @@ where
                 modules.merge_configured(eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
+                modules.merge_if_module_configured(RethRpcModule::Debug, debug.into_rpc())?;
 
                 Ok(())
             })

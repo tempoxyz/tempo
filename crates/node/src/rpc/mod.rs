@@ -1,10 +1,12 @@
 pub mod admin;
 pub mod consensus;
+pub mod debug;
 pub mod error;
 pub mod eth_ext;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
+pub use debug::{TempoDebugApiServer, TempoDebugRpc};
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
