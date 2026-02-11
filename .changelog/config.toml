@@ -1,0 +1,21 @@
+# Changelogs configuration for tempo
+# https://github.com/wevm/changelogs
+
+# How to bump packages that depend on changed packages
+dependent_bump = "patch"
+
+[changelog]
+# Generate per-crate changelogs (vs single root changelog)
+format = "per-crate"
+
+# Fixed groups: all always share the same version
+# tempo binaries share version
+[[fixed]]
+members = ["tempo"]
+
+# Packages to ignore (internal/test-only crates)
+ignore = [
+    "tempo-e2e",
+    "tempo-bench",
+    "xtask",
+]
