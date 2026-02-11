@@ -215,6 +215,69 @@ jobs:
             --notes "" \
             $PRERELEASE \
             artifacts/**/*
+  smoke-test:
+    name: Release smoke test
+    needs: [get-version, build-release]
+    runs-on: ${{ matrix.platform.os }}
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - os: depot-ubuntu-latest-4
+            target: x86_64-unknown-linux-gnu
+          - os: depot-macos-15
+            target: aarch64-apple-darwin
+    steps:
+      - name: Download tempo artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tempo-${{ matrix.platform.target }}
+          path: artifact
+
+      - name: Extract and test binary
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+          TARGET: ${{ matrix.platform.target }}
+        run: |
+          ARCHIVE="tempo-${VERSION}-${TARGET}.tar.gz"
+          tar xzf "artifact/${ARCHIVE}"
+          TEMPO="./tempo-${VERSION}-${TARGET}"
+          chmod +x "$TEMPO"
+
+          echo "--- Test: tempo --version"
+          $TEMPO --version || { echo "FAIL: --version"; exit 1; }
+
+          echo "--- Test: tempo --help"
+          $TEMPO --help > /dev/null || { echo "FAIL: --help"; exit 1; }
+
+          echo "--- Test: tempo node --follow (no crash)"
+          DATADIR=$(mktemp -d)
+          LOG=$(mktemp)
+          $TEMPO node --chain moderato --follow --datadir "$DATADIR" --http --http.port 18545 >"$LOG" 2>&1 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; rm -rf "$DATADIR" "$LOG"' EXIT
+
+          for i in $(seq 1 15); do
+              if ! kill -0 "$PID" 2>/dev/null; then
+                  EC=0; wait "$PID" || EC=$?
+                  echo "--- output ---"; cat "$LOG"; echo "---"
+                  echo "FAIL: node exited after ${i}s (exit code $EC)"
+                  exit 1
+              fi
+              sleep 1
+          done
+
+          if grep -qiE "panicked|SIGSEGV|SIGABRT|thread.*panicked" "$LOG"; then
+              echo "--- output ---"; cat "$LOG"; echo "---"
+              echo "FAIL: panic detected"
+              exit 1
+          fi
+          echo "PASS"
+          echo "All release smoke tests passed!"
+
   upload-cloudflare:
     name: Upload to R2 bucket
     needs: [get-version, build-release]
