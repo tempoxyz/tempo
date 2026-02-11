@@ -195,7 +195,8 @@ mod tests {
         test_util::{TIP20Setup, setup_storage},
         tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
         tip403_registry::{
-            ITIP403Registry::{traits::*, PolicyType}, TIP403Registry,
+            ITIP403Registry::{PolicyType, traits::*},
+            TIP403Registry,
         },
     };
     use alloy::{

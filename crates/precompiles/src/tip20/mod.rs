@@ -14,7 +14,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
-    tip403_registry::{ITIP403Registry::traits::*, AuthRole, TIP403Registry},
+    tip403_registry::{AuthRole, ITIP403Registry::traits::*, TIP403Registry},
 };
 use alloy::{
     hex,

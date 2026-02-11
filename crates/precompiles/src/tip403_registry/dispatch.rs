@@ -6,7 +6,10 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
         tip403_registry::{TIP403Registry, abi::ITIP403Registry},
     };
-    use alloy::{primitives::Address, sol_types::{SolCall, SolValue}};
+    use alloy::{
+        primitives::Address,
+        sol_types::{SolCall, SolValue},
+    };
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]

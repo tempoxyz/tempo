@@ -1399,7 +1399,8 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip403_registry::{
-            ITIP403Registry::{traits::*, PolicyType}, TIP403Registry,
+            ITIP403Registry::{PolicyType, traits::*},
+            TIP403Registry,
         },
     };
 
