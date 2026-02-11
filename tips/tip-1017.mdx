@@ -620,7 +620,7 @@ interface IValidatorConfigV1 {
 - **No signatures required**: V1 validators are imported without Ed25519 signatures
   (they were already validated in V1)
 - **All validators imported**: Both active and inactive V1 validators are
-  imported; active ones have `addedAtHeight == block.height` and `deactivatedAtHeight = 0`,
+  imported; active ones have `addedAtHeight == block.height` and `deactivatedAtHeight == 0`,
   inactive ones have `addedAtHeight == deactivatedAtHeight == block.height`.
 - **Initialize validates migration**: `initializeIfMigrated()` reverts if not
   all V1 validators have been migrated
