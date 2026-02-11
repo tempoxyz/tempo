@@ -11,7 +11,10 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, keccak256};
 use commonware_codec::DecodeExt;
-use commonware_cryptography::{Verifier, ed25519::{PublicKey, Signature}};
+use commonware_cryptography::{
+    Verifier,
+    ed25519::{PublicKey, Signature},
+};
 use tracing::trace;
 
 #[derive(Debug, Storable)]
@@ -27,14 +30,12 @@ struct ValidatorV2 {
 
 /// Validator Config V2 precompile.
 ///
-/// Index-canonical storage: the `validators` mapping (keyed by u64 index) is the
-/// source of truth. `address_to_index` and `pubkey_to_index` are 1-indexed lookup
-/// pointers (0 = not found).
+/// Index-canonical storage: the `validators` vec is the source of truth.
+/// `address_to_index` and `pubkey_to_index` are 1-indexed lookup pointers (0 = not found).
 #[contract(addr = VALIDATOR_CONFIG_V2_ADDRESS)]
 pub struct ValidatorConfigV2 {
     owner: Address,
-    validator_count: u64,
-    validators: Mapping<u64, ValidatorV2>,
+    validators: Vec<ValidatorV2>,
     address_to_index: Mapping<Address, u64>,
     pubkey_to_index: Mapping<B256, u64>,
     next_dkg_ceremony: u64,
@@ -85,7 +86,7 @@ impl ValidatorConfigV2 {
     }
 
     pub fn validator_count(&self) -> Result<u64> {
-        self.validator_count.read()
+        Ok(self.validators.len()? as u64)
     }
 
     /// Lookup the 1-indexed position for an address. Returns 0 if not found.
@@ -94,7 +95,12 @@ impl ValidatorConfigV2 {
     }
 
     fn read_validator_at(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
-        let v = self.validators[index].read()?;
+        // Check bounds first
+        if index >= self.validator_count()? {
+            return Err(ValidatorConfigV2Error::validator_not_found())?;
+        }
+
+        let v = self.validators[index as usize].read()?;
         Ok(IValidatorConfigV2::Validator {
             publicKey: v.public_key,
             validatorAddress: v.validator_address,
@@ -113,10 +119,7 @@ impl ValidatorConfigV2 {
         self.read_validator_at(index)
     }
 
-    pub fn validator_by_address(
-        &self,
-        addr: Address,
-    ) -> Result<IValidatorConfigV2::Validator> {
+    pub fn validator_by_address(&self, addr: Address) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.address_index(addr)?;
         if idx1 == 0 {
             return Err(ValidatorConfigV2Error::validator_not_found())?;
@@ -196,10 +199,13 @@ impl ValidatorConfigV2 {
             added_at_height: block_height,
             deactivated_at_height: 0,
         };
-        self.validators[count].write(v)?;
+
+        // Push to Vec
+        self.validators.push(v)?;
+
+        // Update lookup indices (1-indexed)
         self.address_to_index[addr].write(count + 1)?;
-        self.pubkey_to_index[pubkey].write(count + 1)?;
-        self.validator_count.write(count + 1)
+        self.pubkey_to_index[pubkey].write(count + 1)
     }
 
     fn validate_add_params(&self, addr: Address, pubkey: B256) -> Result<()> {
@@ -236,11 +242,7 @@ impl ValidatorConfigV2 {
     /// Note: This implementation omits chainId and contractAddress since they're not readily
     /// available in the precompile context. In production, these should be included for
     /// cross-chain replay protection.
-    fn construct_add_message(
-        validator_address: Address,
-        ingress: &str,
-        egress: &str,
-    ) -> B256 {
+    fn construct_add_message(validator_address: Address, ingress: &str, egress: &str) -> B256 {
         let mut data = Vec::new();
         data.extend_from_slice(b"TEMPO");
         data.extend_from_slice(b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR");
@@ -257,11 +259,7 @@ impl ValidatorConfigV2 {
     ///
     /// Format: keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
     ///                                     chainId, contractAddress, validatorAddress, ingress, egress))
-    fn construct_rotate_message(
-        validator_address: Address,
-        ingress: &str,
-        egress: &str,
-    ) -> B256 {
+    fn construct_rotate_message(validator_address: Address, ingress: &str, egress: &str) -> B256 {
         let mut data = Vec::new();
         data.extend_from_slice(b"TEMPO");
         data.extend_from_slice(b"_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR");
@@ -317,11 +315,8 @@ impl ValidatorConfigV2 {
         // Format: keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ADD_VALIDATOR",
         //                                     chainId, contractAddress, validatorAddress, ingress, egress))
         // Note: chainId and contractAddress should be included when available in the precompile context
-        let message = Self::construct_add_message(
-            call.validatorAddress,
-            &call.ingress,
-            &call.egress,
-        );
+        let message =
+            Self::construct_add_message(call.validatorAddress, &call.ingress, &call.egress);
 
         // Verify Ed25519 signature
         Self::verify_ed25519_signature(&call.publicKey, message.as_slice(), &call.signature)?;
@@ -349,12 +344,13 @@ impl ValidatorConfigV2 {
             return Err(ValidatorConfigV2Error::validator_not_found())?;
         }
 
-        let mut v = self.validators[idx1 - 1].read()?;
+        let idx = (idx1 - 1) as usize;
+        let mut v = self.validators[idx].read()?;
         if v.deactivated_at_height != 0 {
             return Err(ValidatorConfigV2Error::validator_already_deleted())?;
         }
         v.deactivated_at_height = block_height;
-        self.validators[idx1 - 1].write(v)
+        self.validators[idx].write(v)
     }
 
     pub fn transfer_ownership(
@@ -394,7 +390,8 @@ impl ValidatorConfigV2 {
             return Err(ValidatorConfigV2Error::validator_not_found())?;
         }
 
-        let mut old = self.validators[idx1 - 1].read()?;
+        let idx = (idx1 - 1) as usize;
+        let mut old = self.validators[idx].read()?;
         if old.deactivated_at_height != 0 {
             return Err(ValidatorConfigV2Error::validator_already_deleted())?;
         }
@@ -406,18 +403,15 @@ impl ValidatorConfigV2 {
         // Construct message for signature verification
         // Format: keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
         //                                     chainId, contractAddress, validatorAddress, ingress, egress))
-        let message = Self::construct_rotate_message(
-            call.validatorAddress,
-            &call.ingress,
-            &call.egress,
-        );
+        let message =
+            Self::construct_rotate_message(call.validatorAddress, &call.ingress, &call.egress);
 
         // Verify Ed25519 signature
         Self::verify_ed25519_signature(&call.publicKey, message.as_slice(), &call.signature)?;
 
         // Deactivate old entry
         old.deactivated_at_height = block_height;
-        self.validators[idx1 - 1].write(old)?;
+        self.validators[idx].write(old)?;
 
         // Append new entry with same address
         self.append_validator(
@@ -442,7 +436,8 @@ impl ValidatorConfigV2 {
             return Err(ValidatorConfigV2Error::validator_not_found())?;
         }
 
-        let mut v = self.validators[idx1 - 1].read()?;
+        let idx = (idx1 - 1) as usize;
+        let mut v = self.validators[idx].read()?;
         if v.deactivated_at_height != 0 {
             return Err(ValidatorConfigV2Error::validator_already_deleted())?;
         }
@@ -452,7 +447,7 @@ impl ValidatorConfigV2 {
 
         v.ingress = call.ingress;
         v.egress = call.egress;
-        self.validators[idx1 - 1].write(v)
+        self.validators[idx].write(v)
     }
 
     pub fn transfer_validator_ownership(
@@ -475,13 +470,14 @@ impl ValidatorConfigV2 {
             return Err(ValidatorConfigV2Error::validator_already_exists())?;
         }
 
-        let mut v = self.validators[idx1 - 1].read()?;
+        let idx = (idx1 - 1) as usize;
+        let mut v = self.validators[idx].read()?;
         if v.deactivated_at_height != 0 {
             return Err(ValidatorConfigV2Error::validator_already_deleted())?;
         }
 
         v.validator_address = call.newAddress;
-        self.validators[idx1 - 1].write(v)?;
+        self.validators[idx].write(v)?;
         self.address_to_index[call.newAddress].write(idx1)?;
         self.address_to_index[call.currentAddress].delete()
     }
@@ -598,10 +594,13 @@ impl ValidatorConfigV2 {
             added_at_height,
             deactivated_at_height,
         };
-        self.validators[count].write(v)?;
+
+        // Push to Vec
+        self.validators.push(v)?;
+
+        // Update lookup indices (1-indexed)
         self.address_to_index[addr].write(count + 1)?;
-        self.pubkey_to_index[pubkey].write(count + 1)?;
-        self.validator_count.write(count + 1)
+        self.pubkey_to_index[pubkey].write(count + 1)
     }
 }
 
@@ -623,8 +622,8 @@ mod tests {
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
     use alloy_primitives::FixedBytes;
-    use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use commonware_codec::Encode;
+    use commonware_cryptography::{Signer, ed25519::PrivateKey};
 
     /// Generate a test Ed25519 key pair and create a valid signature
     fn make_test_keypair_and_signature(
@@ -653,7 +652,10 @@ mod tests {
         let mut pubkey_array = [0u8; 32];
         pubkey_array.copy_from_slice(&pubkey_bytes);
 
-        (FixedBytes::<32>::from(pubkey_array), signature.encode().to_vec())
+        (
+            FixedBytes::<32>::from(pubkey_array),
+            signature.encode().to_vec(),
+        )
     }
 
     fn make_add_call(
@@ -716,7 +718,13 @@ mod tests {
             );
             vc.add_validator(
                 owner,
-                make_add_call(validator, pubkey, "192.168.1.1:8000", "192.168.1.1", signature),
+                make_add_call(
+                    validator,
+                    pubkey,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    signature,
+                ),
                 200,
             )?;
 
@@ -769,7 +777,13 @@ mod tests {
 
             let result = vc.add_validator(
                 owner,
-                make_add_call(Address::random(), FixedBytes::<32>::ZERO, "192.168.1.1:8000", "192.168.1.1", vec![0u8; 64]),
+                make_add_call(
+                    Address::random(),
+                    FixedBytes::<32>::ZERO,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    vec![0u8; 64],
+                ),
                 200,
             );
             assert_eq!(
@@ -820,12 +834,8 @@ mod tests {
 
             // First validator
             let addr1 = Address::random();
-            let (pubkey, sig1) = make_test_keypair_and_signature(
-                addr1,
-                "192.168.1.1:8000",
-                "192.168.1.1",
-                false,
-            );
+            let (pubkey, sig1) =
+                make_test_keypair_and_signature(addr1, "192.168.1.1:8000", "192.168.1.1", false);
             vc.add_validator(
                 owner,
                 make_add_call(addr1, pubkey, "192.168.1.1:8000", "192.168.1.1", sig1),
@@ -834,12 +844,8 @@ mod tests {
 
             // Try to add second validator with same public key (but different signature for different address)
             let addr2 = Address::random();
-            let (_, sig2) = make_test_keypair_and_signature(
-                addr2,
-                "192.168.1.2:8000",
-                "192.168.1.2",
-                false,
-            );
+            let (_, sig2) =
+                make_test_keypair_and_signature(addr2, "192.168.1.2:8000", "192.168.1.2", false);
             let result = vc.add_validator(
                 owner,
                 make_add_call(addr2, pubkey, "192.168.1.2:8000", "192.168.1.2", sig2),
@@ -971,7 +977,13 @@ mod tests {
             );
             vc.add_validator(
                 owner,
-                make_add_call(validator, old_pubkey, "192.168.1.1:8000", "192.168.1.1", old_sig),
+                make_add_call(
+                    validator,
+                    old_pubkey,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    old_sig,
+                ),
                 200,
             )?;
 
@@ -1346,10 +1358,7 @@ mod tests {
             let mut v2 = ValidatorConfigV2::new();
 
             // Migrate first validator
-            v2.migrate_validator(
-                owner,
-                IValidatorConfigV2::migrateValidatorCall { idx: 0 },
-            )?;
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
 
             assert_eq!(v2.validator_count()?, 1);
             let migrated = v2.validator_by_index(0)?;
@@ -1358,10 +1367,7 @@ mod tests {
             assert_eq!(migrated.deactivatedAtHeight, 0);
 
             // Migrate second validator
-            v2.migrate_validator(
-                owner,
-                IValidatorConfigV2::migrateValidatorCall { idx: 1 },
-            )?;
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 })?;
 
             assert_eq!(v2.validator_count()?, 2);
 
@@ -1369,18 +1375,13 @@ mod tests {
             // (This would fail if we had more V1 validators, but we've migrated all)
 
             // Initialize V2
-            v2.initialize_if_migrated(
-                owner,
-                IValidatorConfigV2::initializeIfMigratedCall {},
-            )?;
+            v2.initialize_if_migrated(owner, IValidatorConfigV2::initializeIfMigratedCall {})?;
 
             assert!(v2.is_initialized()?);
 
             // Migration should be blocked after initialization
-            let result = v2.migrate_validator(
-                owner,
-                IValidatorConfigV2::migrateValidatorCall { idx: 2 },
-            );
+            let result =
+                v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 2 });
             assert_eq!(
                 result,
                 Err(ValidatorConfigV2Error::already_initialized().into())
@@ -1425,10 +1426,8 @@ mod tests {
 
             // Try to migrate out of order (skip idx 0, try idx 1)
             let mut v2 = ValidatorConfigV2::new();
-            let result = v2.migrate_validator(
-                owner,
-                IValidatorConfigV2::migrateValidatorCall { idx: 1 },
-            );
+            let result =
+                v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 });
 
             assert_eq!(
                 result,
@@ -1474,16 +1473,11 @@ mod tests {
 
             // Only migrate first validator
             let mut v2 = ValidatorConfigV2::new();
-            v2.migrate_validator(
-                owner,
-                IValidatorConfigV2::migrateValidatorCall { idx: 0 },
-            )?;
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
 
             // Try to initialize with incomplete migration
-            let result = v2.initialize_if_migrated(
-                owner,
-                IValidatorConfigV2::initializeIfMigratedCall {},
-            );
+            let result =
+                v2.initialize_if_migrated(owner, IValidatorConfigV2::initializeIfMigratedCall {});
 
             assert_eq!(
                 result,
