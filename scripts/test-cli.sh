@@ -54,5 +54,22 @@ if [[ $NODE_EXITED -eq 0 ]]; then
     fi
 fi
 
+# --- tempoup: verify installer works ---
+run_ok "tempoup --version" "$REPO_ROOT/tempoup/tempoup" --version
+
+echo "--- Test: tempoup -i (install latest release)"
+LATEST_VERSION=$(curl -sSL https://api.github.com/repos/tempoxyz/tempo/releases/latest | grep '"tag_name":' | head -n1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+echo "Latest release: $LATEST_VERSION"
+TEMPO_DIR=$(mktemp -d)
+export TEMPO_DIR
+"$REPO_ROOT/tempoup/tempoup" -i "$LATEST_VERSION" 2>&1 || { fail "tempoup -i $LATEST_VERSION failed"; }
+INSTALLED="$TEMPO_DIR/bin/tempo"
+if [[ -x "$INSTALLED" ]]; then
+    run_ok "installed tempo --version" "$INSTALLED" --version
+else
+    fail "tempo binary not found at $INSTALLED"
+fi
+rm -rf "$TEMPO_DIR"
+
 if [[ $FAILED -ne 0 ]]; then echo ""; echo "CLI smoke tests FAILED"; exit 1; fi
 echo ""; echo "All CLI tests passed!"
