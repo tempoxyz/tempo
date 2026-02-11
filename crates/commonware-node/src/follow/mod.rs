@@ -43,9 +43,8 @@
 //! ```
 
 mod driver;
-pub mod engine;
-pub mod resolver;
+pub(crate) mod engine;
+pub(crate) mod resolver;
 mod stubs;
 
-pub use engine::{Builder, Engine};
-pub use resolver::RpcResolver;
+pub(crate) use engine::Builder;

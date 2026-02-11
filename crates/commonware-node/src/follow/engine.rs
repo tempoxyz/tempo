@@ -40,7 +40,7 @@ use crate::{
 
 /// Builder for the follow engine.
 #[derive(Clone)]
-pub struct Builder {
+pub(crate) struct Builder {
     /// The execution node to drive.
     pub execution_node: TempoFullNode,
 
@@ -66,7 +66,10 @@ pub struct Builder {
 
 impl Builder {
     /// Initialize all components and return an [`Engine`] ready to start.
-    pub async fn try_init<TContext>(self, context: TContext) -> eyre::Result<Engine<TContext>>
+    pub(crate) async fn try_init<TContext>(
+        self,
+        context: TContext,
+    ) -> eyre::Result<Engine<TContext>>
     where
         TContext:
             Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage + Clone + Send + 'static,
@@ -173,7 +176,7 @@ impl Builder {
     }
 }
 
-pub struct Engine<TContext>
+pub(crate) struct Engine<TContext>
 where
     TContext:
         Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage + Clone + Send + 'static,
@@ -200,7 +203,7 @@ where
     TContext:
         Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage + Clone + Send + 'static,
 {
-    pub async fn start(mut self) -> eyre::Result<()> {
+    pub(crate) async fn start(mut self) -> eyre::Result<()> {
         // Start actors
         let _executor_handle = self.executor_actor.start();
         let _feed_handle = self.feed_actor.start();

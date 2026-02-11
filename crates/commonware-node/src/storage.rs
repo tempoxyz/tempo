@@ -21,7 +21,7 @@ use crate::consensus::{Digest, block::Block};
 const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
 const FINALIZED_BLOCKS: &str = "finalized-blocks";
 
-// Storage constants - must match between engines for compatibility.
+// Storage constants
 const IMMUTABLE_ITEMS_PER_SECTION: NonZeroU64 =
     NonZeroU64::new(262_144).expect("value is not zero");
 const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
@@ -29,7 +29,7 @@ const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 64KB chunks
 const FREEZER_VALUE_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
 const FREEZER_VALUE_COMPRESSION: Option<u8> = Some(3);
 
-// Marshal configuration shared between consensus and follow engines.
+// Marshal configuration
 pub(crate) const REPLAY_BUFFER: NonZeroUsize =
     NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
 pub(crate) const WRITE_BUFFER: NonZeroUsize =

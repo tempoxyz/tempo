@@ -40,7 +40,7 @@ use crate::consensus::{Digest, block::Block};
 
 /// Errors that can occur during RPC operations.
 #[derive(Debug)]
-pub enum RpcError {
+pub(crate) enum RpcError {
     NotFound(String),
     Rpc(String),
     Decode(String),
@@ -60,7 +60,7 @@ impl std::fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
-pub type RpcResult<T> = Result<T, RpcError>;
+pub(crate) type RpcResult<T> = Result<T, RpcError>;
 
 // ── RpcResolver ─────────────────────────────────────────────────────────────
 
@@ -73,7 +73,7 @@ type Message = handler::Message<Block>;
 const RECONNECT_BASE_MS: u64 = 500;
 const RECONNECT_MAX_MS: u64 = 30_000;
 
-pub struct RpcResolver {
+pub(crate) struct RpcResolver {
     url: String,
     client: RwLock<Option<Arc<WsClient>>>,
     sender: mpsc::Sender<Message>,
@@ -92,7 +92,7 @@ impl Clone for RpcResolver {
 }
 
 impl RpcResolver {
-    pub fn new(url: String, sender: mpsc::Sender<Message>) -> Self {
+    pub(crate) fn new(url: String, sender: mpsc::Sender<Message>) -> Self {
         Self {
             url,
             client: RwLock::new(None),
@@ -156,7 +156,7 @@ impl RpcResolver {
 
     // ── Public fetch helpers (used by driver) ───────────────────────────
 
-    pub async fn subscribe_events(&self) -> RpcResult<Subscription<Event>> {
+    pub(crate) async fn subscribe_events(&self) -> RpcResult<Subscription<Event>> {
         let client = self.client().await?;
         client
             .subscribe_events()
@@ -164,7 +164,7 @@ impl RpcResolver {
             .map_err(|e| RpcError::Rpc(e.to_string()))
     }
 
-    pub async fn fetch_finalization(
+    pub(crate) async fn fetch_finalization(
         &self,
         height: u64,
     ) -> RpcResult<Option<tempo_node::rpc::consensus::CertifiedBlock>> {
@@ -175,7 +175,7 @@ impl RpcResolver {
             .map_err(|e| RpcError::Rpc(e.to_string()))
     }
 
-    pub async fn fetch_latest_finalization(
+    pub(crate) async fn fetch_latest_finalization(
         &self,
     ) -> RpcResult<Option<tempo_node::rpc::consensus::CertifiedBlock>> {
         let client = self.client().await?;
@@ -185,7 +185,7 @@ impl RpcResolver {
             .map_err(|e| RpcError::Rpc(e.to_string()))
     }
 
-    pub async fn fetch_block(&self, height: u64) -> RpcResult<Option<Block>> {
+    pub(crate) async fn fetch_block(&self, height: u64) -> RpcResult<Option<Block>> {
         let client = self.client().await?;
         let rpc_block: Option<TempoRpcBlock> = client
             .request(
@@ -214,7 +214,7 @@ impl RpcResolver {
         Ok(Some(Block::from_execution_block(sealed)))
     }
 
-    pub async fn fetch_block_by_hash(
+    pub(crate) async fn fetch_block_by_hash(
         &self,
         hash: alloy_primitives::B256,
     ) -> RpcResult<Option<Block>> {

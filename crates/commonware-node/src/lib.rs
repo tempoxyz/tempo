@@ -11,7 +11,7 @@ pub(crate) mod dkg;
 pub(crate) mod epoch;
 pub(crate) mod executor;
 pub mod feed;
-pub mod follow;
+pub(crate) mod follow;
 pub mod metrics;
 pub(crate) mod storage;
 pub(crate) mod utils;

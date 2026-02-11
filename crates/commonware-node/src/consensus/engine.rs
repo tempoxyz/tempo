@@ -36,7 +36,7 @@ use crate::{
 
 use super::block::Block;
 
-// Constants for consensus engine (marshal-specific, not part of shared archive format).
+// A bunch of constants to configure commonwarexyz singletons and copied over from. alto.
 // Archive format constants are in crate::storage.
 
 /// To better support peers near tip during network instability, we multiply
