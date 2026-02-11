@@ -19,9 +19,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     // Storage
     // =========================================================================
 
-    /// @dev Slot 0: bit 255 = initialized flag, bits 0-159 = owner address
+    /// @dev Slot 0: bit 255 = initialized flag, bits 191-254 = initializedAtHeight, bits 0-159 = owner address
     address private _owner;
     bool private _initialized;
+    uint64 private _initializedAtHeight;
 
     IValidatorConfig public immutable v1 =
         IValidatorConfig(0xCccCcCCC00000000000000000000000000000000);
@@ -92,7 +93,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         );
         _verifyEd25519Signature(publicKey, message, signature);
 
-        _addValidator(validatorAddress, publicKey, ingress, egress, uint64(block.number));
+        _addValidator(validatorAddress, publicKey, ingress, egress, uint64(block.number), 0);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -167,7 +168,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         oldValidator.deactivatedAtHeight = uint64(block.number);
 
-        _addValidator(validatorAddress, publicKey, ingress, egress, uint64(block.number));
+        _addValidator(validatorAddress, publicKey, ingress, egress, uint64(block.number), 0);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -244,10 +245,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         uint256 idx = 0;
         for (uint256 i = 0; i < len; i++) {
             Validator storage v = validatorsArray[i];
-            if (
-                v.deactivatedAtHeight == 0
-                    && !(v.addedAtHeight == v.deactivatedAtHeight && v.addedAtHeight != 0)
-            ) {
+            if (v.deactivatedAtHeight == 0) {
                 validators[idx] = v;
                 idx++;
             }
@@ -306,6 +304,11 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         return _initialized;
     }
 
+    /// @inheritdoc IValidatorConfigV2
+    function getInitializedAtHeight() external view returns (uint64) {
+        return _initializedAtHeight;
+    }
+
     // =========================================================================
     // Migration Functions (V1 -> V2)
     // =========================================================================
@@ -334,25 +337,20 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         IValidatorConfig.Validator memory v1Val = v1Validators[idx];
 
-        uint64 addedAt = 0;
+        uint64 addedAt = uint64(block.number);
         uint64 deactivatedAt = 0;
         if (!v1Val.active) {
             deactivatedAt = uint64(block.number);
         }
 
-        Validator memory newVal = Validator({
-            publicKey: v1Val.publicKey,
-            validatorAddress: v1Val.validatorAddress,
-            ingress: v1Val.inboundAddress,
-            egress: v1Val.outboundAddress,
-            index: uint64(validatorsArray.length),
-            addedAtHeight: addedAt,
-            deactivatedAtHeight: deactivatedAt
-        });
-
-        validatorsArray.push(newVal);
-        addressToIndex[v1Val.validatorAddress] = idx + 1; // 1-indexed
-        pubkeyToIndex[v1Val.publicKey] = idx + 1; // 1-indexed
+        _addValidator(
+            v1Val.validatorAddress,
+            v1Val.publicKey,
+            v1Val.inboundAddress,
+            v1Val.outboundAddress,
+            addedAt,
+            deactivatedAt
+        );
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -369,6 +367,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         nextDkgCeremony = v1.getNextFullDkgCeremony();
 
         _initialized = true;
+        _initializedAtHeight = uint64(block.number);
     }
 
     // =========================================================================
@@ -414,9 +413,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     function _addValidator(
         address validatorAddress,
         bytes32 publicKey,
-        string calldata ingress,
-        string calldata egress,
-        uint64 height
+        string memory ingress,
+        string memory egress,
+        uint64 addedAtHeight,
+        uint64 deactivatedAtHeight
     )
         internal
     {
@@ -427,8 +427,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             ingress: ingress,
             egress: egress,
             index: idx,
-            addedAtHeight: height,
-            deactivatedAtHeight: 0
+            addedAtHeight: addedAtHeight,
+            deactivatedAtHeight: deactivatedAtHeight
         });
 
         validatorsArray.push(newVal);
