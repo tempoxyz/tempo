@@ -21,6 +21,15 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 contract TIP1015InvariantTest is InvariantBaseTest {
 
     /*//////////////////////////////////////////////////////////////
+                              CONSTANTS
+    //////////////////////////////////////////////////////////////*/
+
+    uint256 private constant MAX_SIMPLE_POLICIES = 6;
+    uint256 private constant MAX_COMPOUND_POLICIES = 3;
+    uint256 private constant MAX_COMPOUND_TOKENS = 3;
+    uint256 private constant NUM_ACTORS = 4;
+
+    /*//////////////////////////////////////////////////////////////
                               STATE
     //////////////////////////////////////////////////////////////*/
 
@@ -43,6 +52,11 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     uint256 private _totalCompoundPoliciesCreated;
 
+    // Pre-created DEX state to avoid repeated setup in cancelStaleOrder
+    mapping(address => bool) private _pairCreated;
+    // actor => token => approved
+    mapping(address => mapping(address => bool)) private _dexApproved;
+
     /*//////////////////////////////////////////////////////////////
                               SETUP
     //////////////////////////////////////////////////////////////*/
@@ -53,7 +67,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         targetContract(address(this));
         _setupInvariantBase();
 
-        _actors = _buildActors(10);
+        _actors = _buildActors(NUM_ACTORS);
 
         vm.startPrank(admin);
 
@@ -66,7 +80,59 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             _policyTypes[pid] = ptype;
         }
 
+        // Pre-create one compound policy so handlers don't waste calls on early returns
+        uint64 compoundPid = registry.createCompoundPolicy(
+            _simplePolicies[0], _simplePolicies[1], _simplePolicies[2]
+        );
+        _compoundPolicies.push(compoundPid);
+        _policyTypes[compoundPid] = ITIP403Registry.PolicyType.COMPOUND;
+        _compoundSenderPolicy[compoundPid] = _simplePolicies[0];
+        _compoundRecipientPolicy[compoundPid] = _simplePolicies[1];
+        _compoundMintPolicy[compoundPid] = _simplePolicies[2];
+        _totalCompoundPoliciesCreated++;
+
+        // Pre-create one compound token so token-dependent handlers are productive immediately
+        TIP20 initialToken = TIP20(
+            factory.createToken(
+                "CMPTKN",
+                "CT",
+                "USD",
+                pathUSD,
+                admin,
+                keccak256(abi.encode(compoundPid, uint256(0)))
+            )
+        );
+        initialToken.grantRole(_ISSUER_ROLE, admin);
+        initialToken.grantRole(_BURN_BLOCKED_ROLE, admin);
+        initialToken.changeTransferPolicyId(compoundPid);
+        _compoundTokens.push(initialToken);
+        _tokenPolicy[address(initialToken)] = compoundPid;
+
+        // Pre-authorize actors in simple policies and give them balances + approvals
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address actor = _actors[i];
+            // Whitelist actors in whitelist policies
+            registry.modifyPolicyWhitelist(_simplePolicies[0], actor, true);
+            registry.modifyPolicyWhitelist(_simplePolicies[2], actor, true);
+            // Mint compound token to actors
+            initialToken.mint(actor, 10_000_000);
+        }
+
+        // Pre-create DEX pair and approve actors
+        try exchange.createPair(address(initialToken)) { } catch { }
+        _pairCreated[address(initialToken)] = true;
+
         vm.stopPrank();
+
+        // Pre-approve actors for DEX on initial token and pathUSD
+        for (uint256 i = 0; i < _actors.length; i++) {
+            vm.startPrank(_actors[i]);
+            initialToken.approve(address(exchange), type(uint256).max);
+            pathUSD.approve(address(exchange), type(uint256).max);
+            vm.stopPrank();
+            _dexApproved[_actors[i]][address(initialToken)] = true;
+            _dexApproved[_actors[i]][address(pathUSD)] = true;
+        }
 
         _initLogFile(LOG_FILE, "TIP-1015 Compound Policy Invariant Test Log");
     }
@@ -76,6 +142,8 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     function createSimplePolicy(uint256 actorSeed, bool isWhitelist) external {
+        if (_simplePolicies.length >= MAX_SIMPLE_POLICIES) return;
+
         address actor = _selectActor(actorSeed);
         ITIP403Registry.PolicyType ptype = isWhitelist
             ? ITIP403Registry.PolicyType.WHITELIST
@@ -110,6 +178,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         external
     {
         if (_simplePolicies.length < 3) return;
+        if (_compoundPolicies.length >= MAX_COMPOUND_POLICIES) return;
 
         uint64 sPid = _selectSimplePolicy(senderSeed);
         uint64 rPid = _selectSimplePolicy(recipientSeed);
@@ -162,6 +231,8 @@ contract TIP1015InvariantTest is InvariantBaseTest {
     }
 
     function createCompoundWithBuiltins(uint256 seed) external {
+        if (_compoundPolicies.length >= MAX_COMPOUND_POLICIES) return;
+
         uint64 alwaysReject = 0;
         uint64 alwaysAllow = 1;
 
@@ -444,6 +515,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     function createTokenWithCompoundPolicy(uint256 policySeed) external {
         if (_compoundPolicies.length == 0) return;
+        if (_compoundTokens.length >= MAX_COMPOUND_TOKENS) return;
 
         uint64 pid = _compoundPolicies[policySeed % _compoundPolicies.length];
 
@@ -910,7 +982,10 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         // Create pair if needed
         vm.startPrank(admin);
-        try exchange.createPair(address(token)) { } catch { }
+        if (!_pairCreated[address(token)]) {
+            try exchange.createPair(address(token)) { } catch { }
+            _pairCreated[address(token)] = true;
+        }
         token.grantRole(_ISSUER_ROLE, admin);
 
         // Mint tokens to maker
@@ -918,11 +993,16 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         pathUSD.mint(maker, amount);
         vm.stopPrank();
 
-        // Place order
         // Place ask order (isBid=false) - DEX checks base token's senderPolicy for asks
         vm.startPrank(maker);
-        token.approve(address(exchange), type(uint256).max);
-        pathUSD.approve(address(exchange), type(uint256).max);
+        if (!_dexApproved[maker][address(token)]) {
+            token.approve(address(exchange), type(uint256).max);
+            _dexApproved[maker][address(token)] = true;
+        }
+        if (!_dexApproved[maker][address(pathUSD)]) {
+            pathUSD.approve(address(exchange), type(uint256).max);
+            _dexApproved[maker][address(pathUSD)] = true;
+        }
         uint128 orderId = exchange.place(address(token), amount, false, int16(20));
         vm.stopPrank();
 
