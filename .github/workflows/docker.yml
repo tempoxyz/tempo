@@ -53,7 +53,6 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value={{version}},enable=${{ github.ref_type == 'tag' }}
             type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -74,7 +73,6 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value={{version}},enable=${{ github.ref_type == 'tag' }}
             type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -95,7 +93,6 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value={{version}},enable=${{ github.ref_type == 'tag' }}
             type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -116,7 +113,6 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value={{version}},enable=${{ github.ref_type == 'tag' }}
             type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main

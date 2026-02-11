@@ -171,7 +171,7 @@ impl NonceManager {
 mod tests {
     use crate::{
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
 
     use super::*;
@@ -431,6 +431,29 @@ mod tests {
 
             let ptr = mgr.expiring_nonce_ring_ptr.read()?;
             assert_eq!(ptr, 1, "Pointer should increment to 1 after wrap");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_initialize_sets_storage_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            // Before initialization, contract should not be initialized
+            assert!(!mgr.is_initialized()?);
+
+            // Initialize
+            mgr.initialize()?;
+
+            // After initialization, contract should be initialized
+            assert!(mgr.is_initialized()?);
+
+            // Re-initializing a new handle should still see initialized state
+            let mgr2 = NonceManager::new();
+            assert!(mgr2.is_initialized()?);
 
             Ok(())
         })

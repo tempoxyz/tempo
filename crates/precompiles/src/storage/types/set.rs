@@ -589,6 +589,283 @@ mod tests {
         })
     }
 
+    #[test]
+    fn test_set_constructors_and_edge_cases() {
+        assert!(Set::<i32>::new().is_empty());
+        assert!(Set::<i32>::default().is_empty());
+        assert!(Set::from(Vec::<i32>::new()).is_empty());
+
+        let set = Set::from(vec![5, 5, 5, 5]);
+        assert_eq!(set.len(), 1);
+        assert_eq!(&set[..], &[5]);
+
+        let collected: Vec<i32> = Set::from(vec![1, 2, 3]).into_iter().collect();
+        assert_eq!(collected, vec![1, 2, 3]);
+
+        assert_eq!(Set::from(vec![1, 2, 3]), Set::from(vec![1, 2, 3]));
+        assert_ne!(Set::from(vec![1, 2, 3]), Set::from(vec![3, 2, 1]));
+    }
+
+    // -- HANDLER TESTS --------------------------------------------------------
+
+    #[test]
+    fn test_handler_empty_state() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+
+            assert!(handler.is_empty()?);
+            assert_eq!(handler.len()?, 0);
+            assert!(!handler.contains(&U256::ONE)?);
+            assert!(!handler.remove(&U256::ONE)?);
+            assert_eq!(handler.at(0)?, None);
+            assert_eq!(handler.at(100)?, None);
+            assert!(handler.read()?.is_empty());
+            assert!(handler.read_range(0, 10)?.is_empty());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_handler_insert_remove_basics() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+
+            assert!(handler.insert(U256::ONE)?);
+            assert!(!handler.insert(U256::ONE)?);
+            assert_eq!(handler.len()?, 1);
+
+            assert!(handler.remove(&U256::ONE)?);
+            assert!(handler.is_empty()?);
+            assert!(!handler.contains(&U256::ONE)?);
+
+            handler.insert(U256::from(1))?;
+            handler.insert(U256::from(2))?;
+            handler.remove(&U256::from(1))?;
+            handler.insert(U256::from(3))?;
+            assert_eq!(handler.len()?, 2);
+            assert!(handler.contains(&U256::from(2))?);
+            assert!(handler.contains(&U256::from(3))?);
+            assert!(!handler.contains(&U256::from(1))?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_handler_remove_swap_semantics() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+
+            handler.insert(U256::from(10))?;
+            handler.insert(U256::from(20))?;
+            handler.insert(U256::from(30))?;
+
+            // Remove last: no swap needed
+            assert!(handler.remove(&U256::from(30))?);
+            assert_eq!(&handler.read()?[..], &[U256::from(10), U256::from(20)]);
+
+            // Re-add and remove first: last swaps into position 0
+            handler.insert(U256::from(30))?;
+            assert!(handler.remove(&U256::from(10))?);
+            assert_eq!(&handler.read()?[..], &[U256::from(30), U256::from(20)]);
+
+            // Remove first of two
+            assert!(handler.remove(&U256::from(30))?);
+            assert_eq!(handler.len()?, 1);
+            assert!(handler.contains(&U256::from(20))?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_handler_at_and_index() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+
+            handler.insert(U256::from(10))?;
+            handler.insert(U256::from(20))?;
+            handler.insert(U256::from(30))?;
+
+            assert_eq!(handler.at(0)?, Some(U256::from(10)));
+            assert_eq!(handler.at(1)?, Some(U256::from(20)));
+            assert_eq!(handler.at(2)?, Some(U256::from(30)));
+            assert_eq!(handler.at(3)?, None);
+
+            assert_eq!(handler[0].read()?, U256::from(10));
+            assert_eq!(handler[1].read()?, U256::from(20));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_handler_read_range() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+
+            for i in 0..5 {
+                handler.insert(U256::from(i))?;
+            }
+
+            assert_eq!(
+                handler.read_range(1, 4)?,
+                vec![U256::from(1), U256::from(2), U256::from(3)]
+            );
+            // end > len clamps
+            assert_eq!(handler.read_range(0, 100)?.len(), 5);
+            // start > end returns empty
+            assert!(handler.read_range(5, 3)?.is_empty());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_handler_write() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+
+            // Write to grow (1 → 3)
+            handler.insert(U256::from(1))?;
+            handler.write(Set::from(vec![
+                U256::from(10),
+                U256::from(20),
+                U256::from(30),
+            ]))?;
+            assert_eq!(handler.len()?, 3);
+            assert!(!handler.contains(&U256::from(1))?);
+            assert!(handler.contains(&U256::from(10))?);
+
+            // Write to shrink (3 → 2)
+            handler.write(Set::from(vec![U256::from(40), U256::from(50)]))?;
+            assert_eq!(handler.len()?, 2);
+            assert!(!handler.contains(&U256::from(10))?);
+
+            // Write empty
+            handler.write(Set::new())?;
+            assert!(handler.is_empty()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_handler_delete() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+
+            for i in 1..=3 {
+                handler.insert(U256::from(i))?;
+            }
+
+            handler.delete()?;
+            assert!(handler.is_empty()?);
+            for i in 1..=3 {
+                assert!(!handler.contains(&U256::from(i))?);
+            }
+
+            // Re-insert after delete: positions were properly cleared
+            handler.insert(U256::from(2))?;
+            assert_eq!(handler.at(0)?, Some(U256::from(2)));
+            assert_eq!(handler.len()?, 1);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_handler_transient_storage_errors() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+            assert!(handler.t_read().is_err());
+            assert!(handler.t_write(Set::new()).is_err());
+            assert!(handler.t_delete().is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_handler_metadata() {
+        let address = Address::ZERO;
+        let handler = SetHandler::<U256>::new(U256::from(42), address);
+        assert_eq!(handler.base_slot(), U256::from(42));
+
+        let debug_str = format!("{handler:?}");
+        assert!(debug_str.contains("SetHandler"));
+
+        let cloned = handler.clone();
+        assert_eq!(cloned.base_slot(), handler.base_slot());
+    }
+
+    #[test]
+    fn test_handler_address_set() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<Address>::new(U256::ZERO, address);
+
+            let [a1, a2, a3] = [[1u8; 20], [2u8; 20], [3u8; 20]].map(Address::from);
+
+            for a in [a1, a2, a3] {
+                handler.insert(a)?;
+            }
+            assert_eq!(handler.len()?, 3);
+
+            handler.remove(&a2)?;
+            assert_eq!(handler.len()?, 2);
+            assert!(!handler.contains(&a2)?);
+            assert_eq!(handler.at(0)?, Some(a1));
+            assert_eq!(handler.at(1)?, Some(a3));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_handler_multiple_remove_insert_cycles() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+
+            for i in 0..5 {
+                handler.insert(U256::from(i))?;
+            }
+            for i in 0..5 {
+                assert!(handler.remove(&U256::from(i))?);
+            }
+            assert!(handler.is_empty()?);
+
+            for i in 10..15 {
+                handler.insert(U256::from(i))?;
+            }
+            assert_eq!(handler.len()?, 5);
+            for i in 10..15 {
+                assert!(handler.contains(&U256::from(i))?);
+            }
+
+            Ok(())
+        })
+    }
+
     // -- PROPERTY TESTS -------------------------------------------------------
 
     fn arb_address() -> impl Strategy<Value = Address> {
@@ -613,6 +890,47 @@ mod tests {
 
                 for i in 0..set.len() {
                     prop_assert_eq!(set.get(i).cloned(), handler.at(i)?, "Order mismatch at index {}", i);
+                }
+
+                Ok(())
+            }).unwrap();
+        }
+
+        #[test]
+        fn proptest_insert_remove_contains(
+            ops in prop::collection::vec(
+                (any::<u64>(), any::<bool>()),
+                1..50
+            )
+        ) {
+            let (mut storage, address) = setup_storage();
+
+            StorageCtx::enter(&mut storage, || -> std::result::Result<(), TestCaseError> {
+                let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+                let mut reference: Vec<U256> = Vec::new();
+
+                for (val, insert) in ops {
+                    let value = U256::from(val % 20); // keep key space small for collisions
+                    if insert {
+                        let was_new = !reference.contains(&value);
+                        let result = handler.insert(value)?;
+                        prop_assert_eq!(result, was_new);
+                        if was_new {
+                            reference.push(value);
+                        }
+                    } else {
+                        let existed = reference.contains(&value);
+                        let result = handler.remove(&value)?;
+                        prop_assert_eq!(result, existed);
+                        if existed {
+                            reference.retain(|v| v != &value);
+                        }
+                    }
+                }
+
+                prop_assert_eq!(handler.len()?, reference.len());
+                for v in &reference {
+                    prop_assert!(handler.contains(v)?);
                 }
 
                 Ok(())
