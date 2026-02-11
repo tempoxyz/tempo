@@ -1,5 +1,41 @@
+//! AA Transaction Flows
+//!
+//! - Sponsored raw tx flow (multi-party fee payer cosigning via eth_signTransaction).
+//! - WebAuthn signature negative cases.
+//! - Empty call batch rejection.
+//! - Contract creation address correctness.
+//! - Nonce bump on tx failure.
+//!
+//! Nonce Semantics
+//!
+//! - 2D nonce system behavior, pool ordering, and out-of-order arrival.
+//! - Expiring nonce flow, replay protection, validity windows, and independence from protocol nonce.
+//!
+//! EIP-7702 Authorization Lists
+//!
+//! - Multi-key-type authorization list (secp256k1 + P256 + WebAuthn delegation).
+//! - Keychain authorization in auth list is skipped (attack prevention).
+//!
+//! Keychain / Access Keys
+//!
+//! - Access key usage with key authorization and chain ID scoping.
+//! - Keychain negative cases and RPC validation.
+//! - Spending limits, expiry, enforcement, and revocation/spending-limit TOCTOU cases.
+//!
+//! RPC Matrices
+//!
+//! - eth_sendRawTransaction matrix: key type x fee payer x access key.
+//! - eth_sendTransaction matrix: key type (P256/WebAuthn) x fee payer x access key x batch calls; secp256k1 x fee payer.
+//! - eth_fillTransaction matrix: nonceKey + validBefore + validAfter + feeToken + fee payer.
+//! - eth_estimateGas matrix.
+//! - E2E fill → sign → send matrix across nonce modes, key types, and pre-bumped protocol nonces.
+//!
+//! Network
+//!
+//! - Transaction propagation across 2D nonce channels.
 use alloy::{
     consensus::{BlockHeader, Transaction},
+    hex,
     network::{EthereumWallet, ReceiptResponse},
     primitives::{Address, B256, Bytes, Signature, U256, keccak256},
     providers::{Provider, ProviderBuilder},
@@ -40,6 +76,10 @@ use tempo_primitives::{
 use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::transaction::tt_signature::normalize_p256_s;
+
+#[macro_use]
+#[path = "test_macros.rs"]
+mod test_macros;
 
 /// Duration to wait for pool maintenance task to process blocks
 const POOL_MAINTENANCE_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
@@ -111,7 +151,7 @@ async fn verify_tx_in_block_via_rpc(
     println!("\nVerifying transaction via eth_getTransactionByHash...");
     println!("Transaction hash: {}", B256::from(tx_hash));
 
-    // Use raw RPC call to fetch transaction since Alloy doesn't support custom tx type 0x5
+    // Use raw RPC call to fetch transaction since Alloy doesn't support custom tx type 0x76
     let raw_tx: Option<serde_json::Value> = provider
         .raw_request("eth_getTransactionByHash".into(), [tx_hash])
         .await?;
@@ -169,6 +209,15 @@ async fn verify_tx_in_block_via_rpc(
                 expected_aa.tx().calls.len(),
                 "Number of calls should match"
             );
+        }
+
+        if let Some(fee_token) = expected_aa.tx().fee_token {
+            let rpc_fee_token = tx_obj
+                .get("feeToken")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| eyre::eyre!("feeToken missing in response"))?
+                .parse::<Address>()?;
+            assert_eq!(rpc_fee_token, fee_token, "feeToken should match");
         }
 
         println!(
@@ -291,168 +340,19 @@ fn compute_authorization_signature_hash(auth: &alloy_eips::eip7702::Authorizatio
     alloy::primitives::keccak256(&sig_buf)
 }
 
-/// Helper function to create a signed Secp256k1 authorization
-fn create_secp256k1_authorization<T>(
+/// Helper to build an Authorization struct and compute its signature hash.
+/// Callers provide the actual signing logic.
+fn build_authorization(
     chain_id: u64,
     delegate_address: Address,
-    signer: &T,
-) -> eyre::Result<(
-    tempo_primitives::transaction::TempoSignedAuthorization,
-    Address,
-)>
-where
-    T: SignerSync + alloy::signers::Signer,
-{
-    use alloy_eips::eip7702::Authorization;
-    use tempo_primitives::transaction::TempoSignedAuthorization;
-
-    let authority_addr = signer.address();
-
-    let auth = Authorization {
+) -> (alloy_eips::eip7702::Authorization, B256) {
+    let auth = alloy_eips::eip7702::Authorization {
         chain_id: alloy_primitives::U256::from(chain_id),
         address: delegate_address,
         nonce: 0,
     };
-
     let sig_hash = compute_authorization_signature_hash(&auth);
-    let signature = signer.sign_hash_sync(&sig_hash)?;
-    let aa_sig = tempo_primitives::transaction::tt_signature::TempoSignature::Primitive(
-        tempo_primitives::transaction::tt_signature::PrimitiveSignature::Secp256k1(signature),
-    );
-    let signed_auth = TempoSignedAuthorization::new_unchecked(auth, aa_sig);
-
-    Ok((signed_auth, authority_addr))
-}
-
-/// Helper function to create a signed P256 authorization
-fn create_p256_authorization(
-    chain_id: u64,
-    delegate_address: Address,
-) -> eyre::Result<(
-    tempo_primitives::transaction::TempoSignedAuthorization,
-    Address,
-    p256::ecdsa::SigningKey,
-)> {
-    use alloy_eips::eip7702::Authorization;
-    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
-    use sha2::{Digest, Sha256};
-    use tempo_primitives::transaction::{
-        TempoSignedAuthorization,
-        tt_signature::{P256SignatureWithPreHash, TempoSignature},
-    };
-
-    let signing_key = SigningKey::random(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-
-    // Extract P256 public key coordinates
-    let encoded_point = verifying_key.to_encoded_point(false);
-    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_ref());
-    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_ref());
-
-    // Derive P256 address
-    let authority_addr =
-        tempo_primitives::transaction::tt_signature::derive_p256_address(&pub_key_x, &pub_key_y);
-
-    let auth = Authorization {
-        chain_id: alloy_primitives::U256::from(chain_id),
-        address: delegate_address,
-        nonce: 0,
-    };
-
-    let sig_hash = compute_authorization_signature_hash(&auth);
-
-    // Sign with P256 (using pre-hash)
-    let pre_hashed = Sha256::digest(sig_hash);
-    let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
-    let sig_bytes = signature.to_bytes();
-
-    let aa_sig = TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
-        r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: normalize_p256_s(&sig_bytes[32..64]),
-        pub_key_x,
-        pub_key_y,
-        pre_hash: true,
-    }));
-    let signed_auth = TempoSignedAuthorization::new_unchecked(auth, aa_sig);
-
-    Ok((signed_auth, authority_addr, signing_key))
-}
-
-/// Helper function to create a signed WebAuthn authorization
-fn create_webauthn_authorization(
-    chain_id: u64,
-    delegate_address: Address,
-) -> eyre::Result<(
-    tempo_primitives::transaction::TempoSignedAuthorization,
-    Address,
-    p256::ecdsa::SigningKey,
-)> {
-    use alloy_eips::eip7702::Authorization;
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
-    use sha2::{Digest, Sha256};
-    use tempo_primitives::transaction::{
-        TempoSignedAuthorization,
-        tt_signature::{TempoSignature, WebAuthnSignature},
-    };
-
-    let signing_key = SigningKey::random(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-
-    // Extract WebAuthn public key coordinates
-    let encoded_point = verifying_key.to_encoded_point(false);
-    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_ref());
-    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_ref());
-
-    // Derive WebAuthn address (same derivation as P256)
-    let authority_addr =
-        tempo_primitives::transaction::tt_signature::derive_p256_address(&pub_key_x, &pub_key_y);
-
-    let auth = Authorization {
-        chain_id: alloy_primitives::U256::from(chain_id),
-        address: delegate_address,
-        nonce: 0,
-    };
-
-    let sig_hash = compute_authorization_signature_hash(&auth);
-
-    // Create WebAuthn signature
-    let mut authenticator_data = vec![0u8; 37];
-    authenticator_data[0..32].copy_from_slice(&[0xBB; 32]); // rpIdHash
-    authenticator_data[32] = 0x01; // UP flag set
-    authenticator_data[33..37].copy_from_slice(&[0, 0, 0, 0]); // signCount
-
-    let challenge_b64url = URL_SAFE_NO_PAD.encode(sig_hash.as_slice());
-    let client_data_json = format!(
-        r#"{{"type":"webauthn.get","challenge":"{challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
-    );
-
-    // Compute WebAuthn message hash
-    let client_data_hash = Sha256::digest(client_data_json.as_bytes());
-    let mut final_hasher = Sha256::new();
-    final_hasher.update(&authenticator_data);
-    final_hasher.update(client_data_hash);
-    let message_hash = final_hasher.finalize();
-
-    // Sign with P256
-    let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&message_hash)?;
-    let sig_bytes = signature.to_bytes();
-
-    // Construct WebAuthn data
-    let mut webauthn_data = Vec::new();
-    webauthn_data.extend_from_slice(&authenticator_data);
-    webauthn_data.extend_from_slice(client_data_json.as_bytes());
-
-    let aa_sig = TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
-        webauthn_data: Bytes::from(webauthn_data),
-        r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: normalize_p256_s(&sig_bytes[32..64]),
-        pub_key_x,
-        pub_key_y,
-    }));
-    let signed_auth = TempoSignedAuthorization::new_unchecked(auth, aa_sig);
-
-    Ok((signed_auth, authority_addr, signing_key))
+    (auth, sig_hash)
 }
 
 /// Helper function to verify EIP-7702 delegation code
@@ -619,6 +519,28 @@ async fn submit_and_mine_aa_tx(
     Ok(tx_hash)
 }
 
+/// Low-level P256 prehash signing. Returns a `PrimitiveSignature::P256`.
+fn sign_p256_primitive(
+    sig_hash: B256,
+    signing_key: &p256::ecdsa::SigningKey,
+    pub_key_x: B256,
+    pub_key_y: B256,
+) -> eyre::Result<PrimitiveSignature> {
+    use sha2::{Digest, Sha256};
+
+    let pre_hashed = Sha256::digest(sig_hash);
+    let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
+    let sig_bytes = p256_signature.to_bytes();
+
+    Ok(PrimitiveSignature::P256(P256SignatureWithPreHash {
+        r: B256::from_slice(&sig_bytes[0..32]),
+        s: normalize_p256_s(&sig_bytes[32..64]),
+        pub_key_x,
+        pub_key_y,
+        pre_hash: true,
+    }))
+}
+
 /// Helper to sign AA transaction with P256 access key (wrapped in Keychain signature)
 fn sign_aa_tx_with_p256_access_key(
     tx: &TempoTransaction,
@@ -627,27 +549,86 @@ fn sign_aa_tx_with_p256_access_key(
     access_pub_key_y: &B256,
     root_key_addr: Address,
 ) -> eyre::Result<TempoSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-    use tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash;
+    let inner = sign_p256_primitive(
+        tx.signature_hash(),
+        access_key_signing_key,
+        *access_pub_key_x,
+        *access_pub_key_y,
+    )?;
+    Ok(TempoSignature::Keychain(
+        tempo_primitives::transaction::KeychainSignature::new(root_key_addr, inner),
+    ))
+}
 
+/// Helper to sign AA transaction with secp256k1 access key (wrapped in Keychain signature)
+fn sign_aa_tx_with_secp256k1_access_key(
+    tx: &TempoTransaction,
+    access_key_signer: &impl SignerSync,
+    root_key_addr: Address,
+) -> eyre::Result<TempoSignature> {
     let sig_hash = tx.signature_hash();
-    let pre_hashed = Sha256::digest(sig_hash);
-    let p256_signature: p256::ecdsa::Signature =
-        access_key_signing_key.sign_prehash(&pre_hashed)?;
-    let sig_bytes = p256_signature.to_bytes();
-
-    let inner_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
-        r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: normalize_p256_s(&sig_bytes[32..64]),
-        pub_key_x: *access_pub_key_x,
-        pub_key_y: *access_pub_key_y,
-        pre_hash: true,
-    });
+    let signature = access_key_signer.sign_hash_sync(&sig_hash)?;
+    let inner_signature = PrimitiveSignature::Secp256k1(signature);
 
     Ok(TempoSignature::Keychain(
         tempo_primitives::transaction::KeychainSignature::new(root_key_addr, inner_signature),
     ))
+}
+
+/// Low-level WebAuthn signing. Returns a `PrimitiveSignature::WebAuthn`.
+fn sign_webauthn_primitive(
+    sig_hash: B256,
+    signing_key: &p256::ecdsa::SigningKey,
+    pub_key_x: B256,
+    pub_key_y: B256,
+    origin: &str,
+) -> eyre::Result<PrimitiveSignature> {
+    use sha2::{Digest, Sha256};
+
+    let (authenticator_data, client_data_json) = create_webauthn_data(sig_hash, origin);
+
+    let client_data_hash = Sha256::digest(client_data_json.as_bytes());
+    let mut final_hasher = Sha256::new();
+    final_hasher.update(&authenticator_data);
+    final_hasher.update(client_data_hash);
+    let message_hash = final_hasher.finalize();
+
+    let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&message_hash)?;
+    let sig_bytes = signature.to_bytes();
+
+    let mut webauthn_data = Vec::new();
+    webauthn_data.extend_from_slice(&authenticator_data);
+    webauthn_data.extend_from_slice(client_data_json.as_bytes());
+
+    Ok(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+        webauthn_data: Bytes::from(webauthn_data),
+        r: B256::from_slice(&sig_bytes[0..32]),
+        s: normalize_p256_s(&sig_bytes[32..64]),
+        pub_key_x,
+        pub_key_y,
+    }))
+}
+
+/// Helper to sign AA transaction with WebAuthn access key (wrapped in Keychain signature)
+fn sign_aa_tx_with_webauthn_access_key(
+    tx: &TempoTransaction,
+    signing_key: &p256::ecdsa::SigningKey,
+    pub_key_x: B256,
+    pub_key_y: B256,
+    origin: &str,
+    root_key_addr: Address,
+) -> eyre::Result<TempoSignature> {
+    let inner = sign_webauthn_primitive(
+        tx.signature_hash(),
+        signing_key,
+        pub_key_x,
+        pub_key_y,
+        origin,
+    )?;
+    Ok(TempoSignature::Keychain(KeychainSignature::new(
+        root_key_addr,
+        inner,
+    )))
 }
 
 // ===== Call Creation Helper Functions =====
@@ -690,6 +671,26 @@ fn create_mock_p256_sig(pub_key_x: B256, pub_key_y: B256) -> TempoSignature {
     ))
 }
 
+/// Helper to create a mock secp256k1 signature for key authorization
+fn create_mock_secp256k1_sig() -> TempoSignature {
+    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
+        U256::ZERO,
+        U256::ZERO,
+        false,
+    )))
+}
+
+/// Helper to create a mock WebAuthn signature for key authorization
+fn create_mock_webauthn_sig(pub_key_x: B256, pub_key_y: B256) -> TempoSignature {
+    TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+        webauthn_data: Bytes::new(),
+        r: B256::ZERO,
+        s: B256::ZERO,
+        pub_key_x,
+        pub_key_y,
+    }))
+}
+
 /// Helper to create default token spending limits (100 tokens of DEFAULT_FEE_TOKEN)
 fn create_default_token_limit() -> Vec<tempo_primitives::transaction::TokenLimit> {
     use tempo_primitives::transaction::TokenLimit;
@@ -728,6 +729,27 @@ fn create_basic_aa_tx(
     }
 }
 
+/// Helper to create an expiring nonce transaction (nonce_key = TEMPO_EXPIRING_NONCE_KEY, nonce = 0)
+fn create_expiring_nonce_tx(
+    chain_id: u64,
+    valid_before: u64,
+    recipient: Address,
+) -> TempoTransaction {
+    let mut tx = create_basic_aa_tx(
+        chain_id,
+        0,
+        vec![Call {
+            to: recipient.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        2_000_000,
+    );
+    tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
+    tx.valid_before = Some(valid_before);
+    tx
+}
+
 // ===== Signature Helper Functions =====
 
 /// Helper to sign AA transaction with secp256k1 key
@@ -749,24 +771,8 @@ fn sign_aa_tx_p256(
     pub_key_x: B256,
     pub_key_y: B256,
 ) -> eyre::Result<TempoSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-    use tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash;
-
-    let sig_hash = tx.signature_hash();
-    let pre_hashed = Sha256::digest(sig_hash);
-    let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
-    let sig_bytes = p256_signature.to_bytes();
-
-    Ok(TempoSignature::Primitive(PrimitiveSignature::P256(
-        P256SignatureWithPreHash {
-            r: B256::from_slice(&sig_bytes[0..32]),
-            s: normalize_p256_s(&sig_bytes[32..64]),
-            pub_key_x,
-            pub_key_y,
-            pre_hash: true,
-        },
-    )))
+    let inner = sign_p256_primitive(tx.signature_hash(), signing_key, pub_key_x, pub_key_y)?;
+    Ok(TempoSignature::Primitive(inner))
 }
 
 /// Helper to create WebAuthn authenticator data and client data JSON
@@ -795,128 +801,34 @@ fn sign_aa_tx_webauthn(
     pub_key_y: B256,
     origin: &str,
 ) -> eyre::Result<TempoSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-
-    let sig_hash = tx.signature_hash();
-    let (authenticator_data, client_data_json) = create_webauthn_data(sig_hash, origin);
-
-    // Compute message hash per WebAuthn spec
-    let client_data_hash = Sha256::digest(client_data_json.as_bytes());
-    let mut final_hasher = Sha256::new();
-    final_hasher.update(&authenticator_data);
-    final_hasher.update(client_data_hash);
-    let message_hash = final_hasher.finalize();
-
-    // Sign
-    let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&message_hash)?;
-    let sig_bytes = signature.to_bytes();
-
-    // Construct WebAuthn data
-    let mut webauthn_data = Vec::new();
-    webauthn_data.extend_from_slice(&authenticator_data);
-    webauthn_data.extend_from_slice(client_data_json.as_bytes());
-
-    Ok(TempoSignature::Primitive(PrimitiveSignature::WebAuthn(
-        WebAuthnSignature {
-            webauthn_data: Bytes::from(webauthn_data),
-            r: B256::from_slice(&sig_bytes[0..32]),
-            s: normalize_p256_s(&sig_bytes[32..64]),
-            pub_key_x,
-            pub_key_y,
-        },
-    )))
+    let inner = sign_webauthn_primitive(
+        tx.signature_hash(),
+        signing_key,
+        pub_key_x,
+        pub_key_y,
+        origin,
+    )?;
+    Ok(TempoSignature::Primitive(inner))
 }
 
-// ===== Transaction Encoding Helper Functions =====
+// ===== Assertion Helper Functions =====
 
-/// Helper to encode an AA transaction
-fn encode_aa_tx(tx: TempoTransaction, signature: TempoSignature) -> Vec<u8> {
-    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-    envelope.encoded_2718()
-}
-
-// ===== Token Helper Functions =====
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
-
-    // Verify alice has zero native balance
-    let alice_eth_balance = provider.get_account_info(alice_addr).await?.balance;
-    assert_eq!(
-        alice_eth_balance,
-        U256::ZERO,
-        "Test accounts should have zero ETH balance"
-    );
-
-    println!("Alice address: {alice_addr}");
-    println!("Alice ETH balance: {alice_eth_balance} (expected: 0)");
-
-    // Create recipient address
-    let recipient = Address::random();
-
-    // Get alice's current nonce (protocol nonce, key 0)
-    let nonce = provider.get_transaction_count(alice_addr).await?;
-    println!("Alice nonce: {nonce}");
-
-    // Create AA transaction with secp256k1 signature and protocol nonce
-    let chain_id = provider.get_chain_id().await?;
-    let tx = create_basic_aa_tx(
-        chain_id,
-        nonce,
-        vec![Call {
-            to: recipient.into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
-        2_000_000,
-    );
-
-    println!("Created AA transaction with secp256k1 signature");
-
-    // Sign and encode the transaction
-    let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
-    let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
-    let encoded = envelope.encoded_2718();
-
-    println!(
-        "Encoded AA transaction: {} bytes (type: 0x{:02x})",
-        encoded.len(),
-        encoded[0]
-    );
-
-    // Test encoding/decoding roundtrip
-    let decoded = TempoTxEnvelope::decode_2718(&mut encoded.as_slice())?;
-    assert!(
-        matches!(decoded, TempoTxEnvelope::AA(_)),
-        "Should decode as AA transaction"
-    );
-    println!("✓ Encoding/decoding roundtrip successful");
-
-    // Inject transaction and mine block
-    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
-    let payload = setup.node.advance_block().await?;
-
-    println!(
-        "✓ AA transaction mined in block {}",
-        payload.block().inner.number
-    );
-
-    // Verify transaction can be fetched via eth_getTransactionByHash and is correct
-    verify_tx_in_block_via_rpc(&provider, &encoded, &envelope).await?;
-
-    // Verify alice's nonce incremented (protocol nonce)
-    // This proves the transaction was successfully mined and executed
-    let alice_nonce_after = provider.get_transaction_count(alice_addr).await?;
-    assert_eq!(
-        alice_nonce_after,
-        nonce + 1,
-        "Protocol nonce should increment"
-    );
-
+/// Helper to fetch a transaction receipt and assert its status.
+/// Use `expected_success = true` to assert status == "0x1", `false` for "0x0".
+async fn assert_receipt_status(
+    provider: &impl Provider,
+    tx_hash: B256,
+    expected_success: bool,
+) -> eyre::Result<()> {
+    let raw: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+    let receipt = raw.ok_or_else(|| eyre::eyre!("Transaction receipt not found for {tx_hash}"))?;
+    let status = receipt["status"]
+        .as_str()
+        .ok_or_else(|| eyre::eyre!("Receipt missing status field"))?;
+    let expected = if expected_success { "0x1" } else { "0x0" };
+    assert_eq!(status, expected, "Receipt status mismatch for {tx_hash}");
     Ok(())
 }
 
@@ -985,7 +897,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
         }],
         2_000_000,
     );
-    tx_parallel.nonce_key = U256::from(1); // Parallel nonce - should be rejected
+    tx_parallel.nonce_key = U256::from(1);
 
     // Sign and encode transaction
     let aa_signature_parallel = sign_aa_tx_secp256k1(&tx_parallel, &alice_signer)?;
@@ -1024,6 +936,106 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
     println!("✓ Protocol nonce (key=0): {nonce} → {protocol_nonce_after}");
 
     println!("✓ User nonce (key=1) was tracked independently in 2D nonce pool");
+
+    // Step 4: Verify implicit nonceKey behavior (no explicit nonce_key set)
+    println!("\n4. Testing implicit nonceKey assignment");
+
+    let implicit_recipient = Address::random();
+
+    async fn send_implicit_tx(
+        setup: &mut SingleNodeSetup,
+        signer: &impl SignerSync,
+        chain_id: u64,
+        recipient: Address,
+        nonce: u64,
+    ) -> eyre::Result<B256> {
+        let tx = create_basic_aa_tx(
+            chain_id,
+            nonce,
+            vec![Call {
+                to: recipient.into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            2_000_000,
+        );
+        let signature = sign_aa_tx_secp256k1(&tx, signer)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+        let tx_hash = *envelope.tx_hash();
+        setup
+            .node
+            .rpc
+            .inject_tx(envelope.encoded_2718().into())
+            .await?;
+        Ok(tx_hash)
+    }
+
+    let implicit_hashes = [
+        send_implicit_tx(
+            &mut setup,
+            &alice_signer,
+            chain_id,
+            implicit_recipient,
+            protocol_nonce_after,
+        )
+        .await?,
+        send_implicit_tx(
+            &mut setup,
+            &alice_signer,
+            chain_id,
+            implicit_recipient,
+            protocol_nonce_after + 1,
+        )
+        .await?,
+        send_implicit_tx(
+            &mut setup,
+            &alice_signer,
+            chain_id,
+            implicit_recipient,
+            protocol_nonce_after + 2,
+        )
+        .await?,
+    ];
+
+    setup.node.advance_block().await?;
+
+    let implicit_txs: Vec<serde_json::Value> =
+        futures::future::try_join_all(implicit_hashes.iter().map(|hash| async {
+            let tx: Option<serde_json::Value> = provider
+                .raw_request("eth_getTransactionByHash".into(), [*hash])
+                .await?;
+            tx.ok_or_else(|| eyre::eyre!("Implicit transaction not found"))
+        }))
+        .await?;
+
+    let mut nonce_keys: Vec<U256> = implicit_txs
+        .iter()
+        .map(|tx| {
+            if let Some(value) = tx.get("nonceKey") {
+                if value.is_null() {
+                    return Ok(U256::ZERO);
+                }
+                if let Some(value) = value.as_str() {
+                    return U256::from_str_radix(value.trim_start_matches("0x"), 16)
+                        .map_err(|err| eyre::eyre!("Invalid nonceKey: {err}"));
+                }
+                return Err(eyre::eyre!("nonceKey should be string or null"));
+            }
+            Ok(U256::ZERO)
+        })
+        .collect::<eyre::Result<Vec<_>>>()?;
+
+    nonce_keys.sort();
+
+    assert!(
+        nonce_keys.first().copied().unwrap_or_default() == U256::ZERO,
+        "Implicit txs should include a zero nonceKey"
+    );
+    assert!(
+        nonce_keys.iter().all(|key| *key == U256::ZERO),
+        "Implicit txs should keep nonceKey at 0"
+    );
+    println!("✓ Implicit nonceKey behavior verified (no auto-assignment)");
 
     Ok(())
 }
@@ -1664,114 +1676,6 @@ async fn test_aa_2d_nonce_out_of_order_arrival() -> eyre::Result<()> {
 }
 
 #[tokio::test]
-async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let transfer_amount = U256::from(10u64) * U256::from(10).pow(U256::from(6)); // 10 tokens (6 decimals)
-    let (
-        mut setup,
-        provider,
-        signing_key,
-        pub_key_x,
-        pub_key_y,
-        signer_addr,
-        _funder_signer,
-        _funder_addr,
-        chain_id,
-        fee_token,
-    ) = setup_test_with_p256_funded_account(transfer_amount).await?;
-
-    println!("WebAuthn signer address: {signer_addr}");
-    println!("Public key X: {pub_key_x}");
-    println!("Public key Y: {pub_key_y}");
-
-    // Create recipient address for the actual test
-    let recipient = Address::random();
-
-    // Create AA transaction with WebAuthn signature
-    let mut tx = create_basic_aa_tx(
-        chain_id,
-        0, // First transaction
-        vec![Call {
-            to: recipient.into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
-        2_000_000, // Higher gas limit for WebAuthn verification
-    );
-    // Use the correct fee token that was used for funding
-    tx.fee_token = Some(fee_token);
-
-    println!("Created AA transaction for WebAuthn signature");
-
-    // Sign with WebAuthn
-    let aa_signature = sign_aa_tx_webauthn(
-        &tx,
-        &signing_key,
-        pub_key_x,
-        pub_key_y,
-        "https://example.com",
-    )?;
-    println!("Created WebAuthn signature");
-
-    // Encode the transaction
-    let encoded = encode_aa_tx(tx.clone(), aa_signature.clone());
-
-    // Recreate envelope for verification
-    let signed_tx = AASigned::new_unhashed(tx, aa_signature);
-    let envelope: TempoTxEnvelope = signed_tx.into();
-
-    println!(
-        "Encoded AA transaction with WebAuthn: {} bytes (type: 0x{:02x})",
-        encoded.len(),
-        encoded[0]
-    );
-
-    // Test encoding/decoding roundtrip
-    let decoded = TempoTxEnvelope::decode_2718(&mut encoded.as_slice())?;
-    assert!(
-        matches!(decoded, TempoTxEnvelope::AA(_)),
-        "Should decode as AA transaction"
-    );
-
-    if let TempoTxEnvelope::AA(decoded_tx) = &decoded {
-        // Verify the signature can be recovered
-        let recovered_signer = decoded_tx
-            .signature()
-            .recover_signer(&decoded_tx.signature_hash())
-            .expect("Should recover signer from WebAuthn signature");
-
-        assert_eq!(
-            recovered_signer, signer_addr,
-            "Recovered signer should match expected WebAuthn address"
-        );
-        println!("✓ WebAuthn signature recovery successful");
-    }
-
-    println!("✓ Encoding/decoding roundtrip successful");
-
-    // Inject transaction and mine block
-    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
-    let payload = setup.node.advance_block().await?;
-
-    println!(
-        "✓ AA transaction with WebAuthn signature mined in block {}",
-        payload.block().inner.number
-    );
-
-    // Verify transaction can be fetched via eth_getTransactionByHash and is correct
-    verify_tx_in_block_via_rpc(&provider, &encoded, &envelope).await?;
-
-    // Verify the block contains transactions
-    assert!(
-        !payload.block().body().transactions.is_empty(),
-        "Block should contain the WebAuthn transaction"
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
@@ -2130,293 +2034,37 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_aa_p256_call_batching() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let initial_funding_amount = U256::from(20u64) * U256::from(10).pow(U256::from(6)); // 20 tokens with 6 decimals (TIP20 decimals)
-    let (
-        mut setup,
-        provider,
-        signing_key,
-        pub_key_x,
-        pub_key_y,
-        signer_addr,
-        _funder_signer,
-        _funder_addr,
-        chain_id,
-        fee_token,
-    ) = setup_test_with_p256_funded_account(initial_funding_amount).await?;
-
-    println!("\n=== Testing P256 Call Batching ===\n");
-    println!("P256 signer address: {signer_addr}");
-    println!("Fee token: {fee_token}");
-
-    // Create multiple recipient addresses for batch transfers
-    let num_recipients = 5;
-    let mut recipients = Vec::new();
-    for i in 0..num_recipients {
-        recipients.push((Address::random(), i + 1)); // Each gets different amount
-    }
-
-    println!("\nPreparing batch transfer to {num_recipients} recipients:");
-    for (i, (addr, multiplier)) in recipients.iter().enumerate() {
-        println!(
-            "  Recipient {}: {} (amount: {} tokens)",
-            i + 1,
-            addr,
-            multiplier
-        );
-    }
-
-    // Create batch calls - transfer different amounts to each recipient
-    let transfer_base_amount = U256::from(1u64) * U256::from(10).pow(U256::from(6)); // 1 token base (6 decimals)
-    let mut calls = Vec::new();
-
-    for (recipient, multiplier) in &recipients {
-        let amount = transfer_base_amount * U256::from(*multiplier);
-        let calldata = transferCall {
-            to: *recipient,
-            amount,
-        }
-        .abi_encode();
-
-        calls.push(Call {
-            to: fee_token.into(),
-            value: U256::ZERO,
-            input: calldata.into(),
-        });
-    }
-
-    println!(
-        "\nCreating AA transaction with {} batched calls",
-        calls.len()
-    );
-
-    // Create AA transaction with batched calls and P256 signature
-    // Use the fee token we funded with
-    let batch_tx = TempoTransaction {
-        chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 2_000_000, // Higher gas limit for multiple calls
-        calls,
-        nonce_key: U256::ZERO,
-        nonce: 0, // First transaction from P256 signer
-        fee_token: Some(fee_token),
-        fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
-        key_authorization: None,
-        tempo_authorization_list: vec![],
-    };
-
-    // Sign with P256
-    let batch_sig_hash = batch_tx.signature_hash();
-    println!("Batch transaction signature hash: {batch_sig_hash}");
-
-    let aa_batch_signature = sign_aa_tx_p256(&batch_tx, &signing_key, pub_key_x, pub_key_y)?;
-    println!("✓ Created P256 signature for batch transaction");
-
-    // Verify signature recovery works
-    let recovered_signer = aa_batch_signature
-        .recover_signer(&batch_sig_hash)
-        .expect("Should recover signer from P256 signature");
-    assert_eq!(
-        recovered_signer, signer_addr,
-        "Recovered signer should match P256 address"
-    );
-    println!("✓ P256 signature recovery successful");
-
-    // Encode the batch transaction
-    let encoded_batch = encode_aa_tx(batch_tx.clone(), aa_batch_signature.clone());
-
-    // Recreate envelope for verification
-    let signed_batch_tx = AASigned::new_unhashed(batch_tx, aa_batch_signature);
-    let batch_envelope: TempoTxEnvelope = signed_batch_tx.into();
-
-    println!(
-        "Encoded batch transaction: {} bytes (type: 0x{:02x})",
-        encoded_batch.len(),
-        encoded_batch[0]
-    );
-
-    // Get initial balances of all recipients (should be 0)
-    let mut initial_balances = Vec::new();
-
-    println!("\nChecking initial recipient balances:");
-    for (i, (recipient, _)) in recipients.iter().enumerate() {
-        let balance = ITIP20::new(fee_token, &provider)
-            .balanceOf(*recipient)
-            .call()
-            .await?;
-        initial_balances.push(balance);
-        assert_eq!(
-            balance,
-            U256::ZERO,
-            "Recipient {} should have 0 initial balance",
-            i + 1
-        );
-        println!("  Recipient {}: {} tokens", i + 1, balance);
-    }
-
-    // Inject and mine the batch transaction
-    println!("\nExecuting batch transaction...");
-    setup
-        .node
-        .rpc
-        .inject_tx(encoded_batch.clone().into())
-        .await?;
-    let batch_payload = setup.node.advance_block().await?;
-
-    println!(
-        "✓ Batch transaction mined in block {}",
-        batch_payload.block().inner.number
-    );
-
-    // Verify transaction can be fetched via eth_getTransactionByHash and is correct
-    verify_tx_in_block_via_rpc(&provider, &encoded_batch, &batch_envelope).await?;
-
-    // Verify the block contains the transaction
-    assert!(
-        !batch_payload.block().body().transactions.is_empty(),
-        "Block should contain the batch transaction"
-    );
-
-    // Find the AA transaction in the block (skip any system transactions)
-    let aa_tx = batch_payload
-        .block()
-        .body()
-        .transactions
-        .iter()
-        .find_map(|tx| tx.as_aa())
-        .expect("Block should contain an AA transaction");
-
-    assert_eq!(
-        aa_tx.tx().calls.len(),
-        num_recipients,
-        "Transaction should have {num_recipients} calls"
-    );
-    println!(
-        "✓ Block contains AA transaction with {} calls",
-        aa_tx.tx().calls.len()
-    );
-
-    // Verify it used P256 signature
-    match aa_tx.signature() {
-        TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
-            pre_hash,
-            ..
-        })) => {
-            assert!(*pre_hash, "Should have pre_hash flag set");
-            println!("✓ Transaction used P256 signature with pre-hash");
-        }
-        _ => panic!("Transaction should have P256 signature"),
-    }
-
-    // Verify all recipients received their tokens
-    println!("\nVerifying recipient balances after batch transfer:");
-    for (i, ((recipient, multiplier), initial_balance)) in
-        recipients.iter().zip(initial_balances.iter()).enumerate()
-    {
-        let expected_amount = transfer_base_amount * U256::from(*multiplier);
-        let final_balance = ITIP20::new(fee_token, &provider)
-            .balanceOf(*recipient)
-            .call()
-            .await?;
-
-        assert_eq!(
-            final_balance,
-            expected_amount,
-            "Recipient {} should have received {} tokens",
-            i + 1,
-            expected_amount
-        );
-
-        println!(
-            "  Recipient {}: {} → {} tokens (expected: {})",
-            i + 1,
-            initial_balance,
-            final_balance,
-            expected_amount
-        );
-    }
-
-    // Verify the P256 signer's balance decreased by the total transferred amount
-    let total_transferred = (1..=num_recipients as u64)
-        .map(|i| transfer_base_amount * U256::from(i))
-        .fold(U256::ZERO, |acc, x| acc + x);
-
-    let signer_final_balance = ITIP20::new(fee_token, &provider)
-        .balanceOf(signer_addr)
-        .call()
-        .await?;
-    let expected_signer_balance = initial_funding_amount - total_transferred;
-
-    // Account for gas fees paid
-    assert!(
-        signer_final_balance < expected_signer_balance,
-        "Signer balance should be less than initial minus transferred (due to gas fees)"
-    );
-
-    println!(
-        "\n✓ P256 signer balance: {signer_final_balance} tokens (transferred: {total_transferred}, plus gas fees)"
-    );
-
-    Ok(())
-}
-
 #[tokio::test(flavor = "multi_thread")]
-async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
+async fn test_aa_sponsored_raw_tx_sync_secp256k1() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Setup test node
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-
     let http_url = setup.node.rpc_url();
-
-    // Fee payer is the funded TEST_MNEMONIC account
-    let fee_payer_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
-    let fee_payer_addr = fee_payer_signer.address();
-
-    // User is a fresh random account with no balance
-    let user_signer = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = user_signer.address();
-
-    // Create provider without wallet (we'll sign manually)
     let provider = ProviderBuilder::new().connect_http(http_url.clone());
 
     let chain_id = provider.get_chain_id().await?;
 
-    println!("\n=== Testing AA Fee Payer Transaction ===\n");
-    println!("Fee payer address: {fee_payer_addr}");
-    println!("User address: {user_addr} (unfunded)");
+    let fee_payer_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let fee_payer_addr = fee_payer_signer.address();
 
-    // Verify user has ZERO balance (check AlphaUSD since that's what fees are paid in)
-    let user_token_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let user_signer = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = user_signer.address();
+
+    let user_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(user_addr)
         .call()
         .await?;
-    assert_eq!(
-        user_token_balance,
-        U256::ZERO,
-        "User should have zero balance"
-    );
-    println!("User token balance: {user_token_balance} (expected: 0)");
+    assert_eq!(user_balance, U256::ZERO, "User should be unfunded");
 
-    // Get fee payer's balance before transaction (check AlphaUSD since that's what fees are paid in)
     let fee_payer_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(fee_payer_addr)
         .call()
         .await?;
-    println!("Fee payer balance before: {fee_payer_balance_before} tokens");
 
-    // Create AA transaction with fee payer signature placeholder
     let recipient = Address::random();
     let mut tx = create_basic_aa_tx(
         chain_id,
-        0, // First transaction for user
+        0,
         vec![Call {
             to: recipient.into(),
             value: U256::ZERO,
@@ -2424,99 +2072,1149 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
         }],
         2_000_000,
     );
-    tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false)); // Placeholder
+    tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
 
-    println!("Created AA transaction with fee payer placeholder");
-
-    // Step 1: User signs the transaction
     let user_sig_hash = tx.signature_hash();
     let user_signature = user_signer.sign_hash_sync(&user_sig_hash)?;
-    println!("✓ User signed transaction");
 
-    // Verify user signature is valid
-    assert_eq!(
-        user_signature
-            .recover_address_from_prehash(&user_sig_hash)
-            .unwrap(),
-        user_addr,
-        "User signature should recover to user address"
-    );
+    sign_fee_payer(&mut tx, user_addr, &fee_payer_signer)?;
 
-    // Step 2: Fee payer signs the fee payer signature hash
-    let fee_payer_sig_hash = tx.fee_payer_signature_hash(user_addr);
-    let fee_payer_signature = fee_payer_signer.sign_hash_sync(&fee_payer_sig_hash)?;
-    println!("✓ Fee payer signed fee payer hash");
-
-    // Verify fee payer signature is valid
-    assert_eq!(
-        fee_payer_signature
-            .recover_address_from_prehash(&fee_payer_sig_hash)
-            .unwrap(),
-        fee_payer_addr,
-        "Fee payer signature should recover to fee payer address"
-    );
-
-    // Step 3: Update transaction with real fee payer signature
-    tx.fee_payer_signature = Some(fee_payer_signature);
-
-    // Create signed transaction with user's signature
     let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(user_signature));
-    let encoded = encode_aa_tx(tx.clone(), aa_signature.clone());
+    let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+    let encoded = envelope.encoded_2718();
+    let tx_hash = *envelope.tx_hash();
 
-    // Recreate envelope for verification
-    let signed_tx = AASigned::new_unhashed(tx, aa_signature);
-    let envelope: TempoTxEnvelope = signed_tx.into();
+    let sync_provider = ProviderBuilder::new().connect_http(http_url.clone());
+    let encoded_for_sync = encoded.clone();
+    let mut sync_handle = tokio::spawn(async move {
+        sync_provider
+            .raw_request("eth_sendRawTransactionSync".into(), [encoded_for_sync])
+            .await
+    });
 
-    println!(
-        "Encoded AA transaction: {} bytes (type: 0x{:02x})",
-        encoded.len(),
-        encoded[0]
-    );
+    let raw_result: serde_json::Value =
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                tokio::select! {
+                    res = &mut sync_handle => {
+                        let res = res.map_err(|err| eyre::eyre!("Sync task failed: {err}"))?;
+                        return res.map_err(|err| eyre::eyre!("Sync request failed: {err}"));
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                        setup
+                            .node
+                            .advance_block()
+                            .await
+                            .map_err(|err| eyre::eyre!("Advance block failed: {err}"))?;
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| eyre::eyre!("eth_sendRawTransactionSync timed out"))??;
 
-    // Inject transaction and mine block
-    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
-    let payload = setup.node.advance_block().await?;
+    if let Some(tx_hash_str) = raw_result.as_str() {
+        let returned_hash = tx_hash_str.parse::<B256>()?;
+        assert_eq!(returned_hash, tx_hash, "RPC should return tx hash");
+    } else {
+        let receipt_obj = raw_result
+            .as_object()
+            .ok_or_else(|| eyre::eyre!("Sync response should be hash or receipt"))?;
+        let status_ok = receipt_obj
+            .get("status")
+            .and_then(|value| value.as_str())
+            .map(|value| value == "0x1")
+            .unwrap_or(false);
+        assert!(status_ok, "Receipt should indicate success");
+        let returned_hash = receipt_obj
+            .get("transactionHash")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| eyre::eyre!("Receipt missing transactionHash"))?
+            .parse::<B256>()?;
+        assert_eq!(returned_hash, tx_hash, "Receipt tx hash mismatch");
+    }
 
-    println!(
-        "✓ AA fee payer transaction mined in block {}",
-        payload.block().inner.number
-    );
-
-    // Verify transaction can be fetched via eth_getTransactionByHash and is correct
-    verify_tx_in_block_via_rpc(&provider, &encoded, &envelope).await?;
-
-    // Verify the transaction was successful
-    assert!(
-        !payload.block().body().transactions.is_empty(),
-        "Block should contain the fee payer transaction"
-    );
-
-    // Verify user still has ZERO balance (fee payer paid)
-    let user_token_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
-        .balanceOf(user_addr)
-        .call()
+    let receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
         .await?;
-    assert_eq!(
-        user_token_balance_after,
-        U256::ZERO,
-        "User should still have zero balance"
-    );
+    assert!(receipt.is_some(), "Transaction should be mined");
 
-    // Verify fee payer's balance decreased (check AlphaUSD since that's what fees are paid in)
     let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(fee_payer_addr)
         .call()
         .await?;
-
-    println!("Fee payer balance after: {fee_payer_balance_after} tokens");
-
     assert!(
         fee_payer_balance_after < fee_payer_balance_before,
-        "Fee payer balance should have decreased"
+        "Fee payer should cover gas"
     );
 
-    let gas_cost = fee_payer_balance_before - fee_payer_balance_after;
-    println!("Gas cost paid by fee payer: {gas_cost} tokens");
+    Ok(())
+}
+
+// ===== Explicit eth_sendRawTransaction Matrix Tests =====
+// Covers key type (secp256k1/p256/webauthn) x fee payer on/off x access key on/off.
+
+/// Key type for matrix tests
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum KeyType {
+    Secp256k1,
+    P256,
+    WebAuthn,
+}
+
+#[derive(Debug, Clone)]
+struct RawSendTestCase {
+    name: String,
+    key_type: KeyType,
+    fee_payer: bool,
+    access_key: bool,
+}
+
+fn key_type_label(key_type: KeyType) -> &'static str {
+    match key_type {
+        KeyType::Secp256k1 => "secp256k1",
+        KeyType::P256 => "p256",
+        KeyType::WebAuthn => "webauthn",
+    }
+}
+
+fn nonce_mode_label(nonce_mode: &NonceMode) -> &'static str {
+    match nonce_mode {
+        NonceMode::Protocol => "protocol",
+        NonceMode::TwoD(_) => "2d",
+        NonceMode::Expiring => "expiring",
+        NonceMode::ExpiringAtBoundary => "expiring_at_boundary",
+        NonceMode::ExpiringExceedsBoundary => "expiring_exceeds_boundary",
+    }
+}
+
+fn build_case_name(prefix: &str, base: &str, parts: &[&str]) -> String {
+    let mut name = String::with_capacity(prefix.len() + base.len() + parts.len() * 8 + 2);
+    name.push_str(prefix);
+    name.push_str("::");
+    name.push_str(base);
+    for part in parts {
+        name.push('_');
+        name.push_str(part);
+    }
+    name
+}
+
+fn build_raw_name(key_type: KeyType, flags: &[&str]) -> String {
+    build_case_name("send_raw", key_type_label(key_type), flags)
+}
+
+#[derive(Debug, Clone)]
+struct SendTestCase {
+    name: String,
+    key_type: KeyType,
+    fee_payer: bool,
+    access_key: bool,
+    batch_calls: bool,
+    funding_amount: Option<U256>,
+    transfer_amount: Option<U256>,
+}
+
+fn build_send_name(key_type: KeyType, flags: &[&str], opts: &[&str]) -> String {
+    let mut parts = Vec::with_capacity(flags.len() + opts.len());
+    parts.extend_from_slice(flags);
+    parts.extend_from_slice(opts);
+    build_case_name("send", key_type_label(key_type), &parts)
+}
+
+fn build_fill_name(nonce_mode: &NonceMode, key_type: KeyType, parts: &[&str]) -> String {
+    let base = format!(
+        "{}_{}",
+        nonce_mode_label(nonce_mode),
+        key_type_label(key_type)
+    );
+    build_case_name("fill", &base, parts)
+}
+
+type SignTxFn = Box<dyn Fn(&TempoTransaction) -> eyre::Result<TempoSignature> + Send>;
+
+struct AccessKeyContext<P, S> {
+    setup: SingleNodeSetup,
+    provider: P,
+    chain_id: u64,
+    root_signer: S,
+    root_addr: Address,
+    key_auth: SignedKeyAuthorization,
+    sign: SignTxFn,
+}
+
+struct NonAccessContext<P, S> {
+    setup: SingleNodeSetup,
+    provider: P,
+    chain_id: u64,
+    signer_addr: Address,
+    funder_signer: S,
+    funder_addr: Address,
+    sign: SignTxFn,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FeePayerContext {
+    addr: Address,
+    balance_before: U256,
+}
+
+async fn configure_fee_payer_context(
+    provider: &impl Provider,
+    tx: &mut TempoTransaction,
+    fee_payer_enabled: bool,
+    signer_addr: Address,
+    fee_payer_signer: &(impl SignerSync + ?Sized),
+    fee_payer_addr: Address,
+    self_payer_addr: Address,
+) -> eyre::Result<FeePayerContext> {
+    if fee_payer_enabled {
+        let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+            .balanceOf(fee_payer_addr)
+            .call()
+            .await?;
+        sign_fee_payer(tx, signer_addr, fee_payer_signer)?;
+
+        Ok(FeePayerContext {
+            addr: fee_payer_addr,
+            balance_before,
+        })
+    } else {
+        let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+            .balanceOf(self_payer_addr)
+            .call()
+            .await?;
+        Ok(FeePayerContext {
+            addr: self_payer_addr,
+            balance_before,
+        })
+    }
+}
+
+async fn send_raw_aa_and_assert_mined(
+    setup: &mut SingleNodeSetup,
+    provider: &impl Provider,
+    envelope: &TempoTxEnvelope,
+    signer_addr: Address,
+) -> eyre::Result<()> {
+    let encoded = envelope.encoded_2718();
+    let tx_hash = *envelope.tx_hash();
+
+    let decoded = TempoTxEnvelope::decode_2718(&mut encoded.as_slice())?;
+    assert!(
+        matches!(decoded, TempoTxEnvelope::AA(_)),
+        "Should decode as AA transaction"
+    );
+    if let TempoTxEnvelope::AA(ref decoded_aa) = decoded {
+        let recovered = decoded_aa
+            .signature()
+            .recover_signer(&decoded_aa.signature_hash())
+            .expect("Should recover signer");
+        assert_eq!(recovered, signer_addr, "Recovered signer should match");
+    }
+
+    let raw_result: B256 = provider
+        .raw_request("eth_sendRawTransaction".into(), [encoded.clone()])
+        .await?;
+    assert_eq!(raw_result, tx_hash, "RPC should return tx hash");
+
+    setup.node.advance_block().await?;
+    assert_receipt_status(provider, tx_hash, true).await?;
+
+    verify_tx_in_block_via_rpc(provider, &encoded, envelope).await?;
+
+    Ok(())
+}
+
+async fn inject_and_assert_mined(
+    setup: &mut SingleNodeSetup,
+    provider: &impl Provider,
+    encoded: Vec<u8>,
+    tx_hash: B256,
+) -> eyre::Result<()> {
+    setup.node.rpc.inject_tx(encoded.into()).await?;
+    setup.node.advance_block().await?;
+    assert_receipt_status(provider, tx_hash, true).await?;
+
+    Ok(())
+}
+
+async fn assert_fee_token_balance(
+    provider: &impl Provider,
+    who: Address,
+    expected: U256,
+    msg: &str,
+) -> eyre::Result<()> {
+    let bal = ITIP20::new(DEFAULT_FEE_TOKEN, provider)
+        .balanceOf(who)
+        .call()
+        .await?;
+    assert_eq!(bal, expected, "{msg}");
+    Ok(())
+}
+
+async fn assert_batch_recipient_balances(
+    provider: &impl Provider,
+    token: Address,
+    recipient_1: Address,
+    recipient_2: Address,
+    transfer_amount: U256,
+) -> eyre::Result<()> {
+    let bal_1 = ITIP20::new(token, provider)
+        .balanceOf(recipient_1)
+        .call()
+        .await?;
+    assert_eq!(
+        bal_1, transfer_amount,
+        "Recipient 1 should receive transfer_amount"
+    );
+    let bal_2 = ITIP20::new(token, provider)
+        .balanceOf(recipient_2)
+        .call()
+        .await?;
+    assert_eq!(
+        bal_2, transfer_amount,
+        "Recipient 2 should receive transfer_amount"
+    );
+    Ok(())
+}
+
+fn sign_fee_payer(
+    tx: &mut TempoTransaction,
+    signer_addr: Address,
+    fee_payer: &(impl SignerSync + ?Sized),
+) -> eyre::Result<()> {
+    tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
+    let fee_payer_sig_hash = tx.fee_payer_signature_hash(signer_addr);
+    let fee_payer_signature = fee_payer.sign_hash_sync(&fee_payer_sig_hash)?;
+    tx.fee_payer_signature = Some(fee_payer_signature);
+
+    Ok(())
+}
+
+async fn assert_fee_payer_spent(
+    provider: &impl Provider,
+    fee_payer: FeePayerContext,
+) -> eyre::Result<()> {
+    let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(fee_payer.addr)
+        .call()
+        .await?;
+    assert!(
+        fee_payer_balance_after < fee_payer.balance_before,
+        "Fee payer should cover gas"
+    );
+
+    Ok(())
+}
+
+async fn run_raw_send_test_case(test_case: &RawSendTestCase) -> eyre::Result<()> {
+    println!("\n=== Raw send test: {} ===\n", test_case.name);
+
+    match test_case.key_type {
+        KeyType::Secp256k1 => {
+            run_raw_send_test_case_with_key(
+                test_case,
+                || async {
+                    let setup = TestNodeBuilder::new().build_with_node_access().await?;
+                    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+                    let chain_id = provider.get_chain_id().await?;
+
+                    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+                    let root_addr = root_signer.address();
+
+                    let access_signer = alloy::signers::local::PrivateKeySigner::random();
+                    let access_addr = access_signer.address();
+                    let key_auth = create_key_authorization(
+                        &root_signer,
+                        access_addr,
+                        create_mock_secp256k1_sig(),
+                        chain_id,
+                        None,
+                        Some(create_default_token_limit()),
+                    )?;
+
+                    let sign = Box::new(move |tx: &TempoTransaction| {
+                        sign_aa_tx_with_secp256k1_access_key(tx, &access_signer, root_addr)
+                    });
+
+                    Ok(AccessKeyContext {
+                        setup,
+                        provider,
+                        chain_id,
+                        root_signer,
+                        root_addr,
+                        key_auth,
+                        sign,
+                    })
+                },
+                || async {
+                    let setup = TestNodeBuilder::new().build_with_node_access().await?;
+                    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+                    let chain_id = provider.get_chain_id().await?;
+
+                    let funder_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+                    let funder_addr = funder_signer.address();
+
+                    let user_signer = alloy::signers::local::PrivateKeySigner::random();
+                    let user_addr = user_signer.address();
+
+                    let sign = Box::new(move |tx: &TempoTransaction| {
+                        sign_aa_tx_secp256k1(tx, &user_signer)
+                    });
+
+                    Ok(NonAccessContext {
+                        setup,
+                        provider,
+                        chain_id,
+                        signer_addr: user_addr,
+                        funder_signer,
+                        funder_addr,
+                        sign,
+                    })
+                },
+            )
+            .await
+        }
+        KeyType::P256 => {
+            run_raw_send_test_case_with_key(
+                test_case,
+                || async {
+                    let (setup, provider, root_signer, root_addr) =
+                        setup_test_with_funded_account().await?;
+                    let chain_id = provider.get_chain_id().await?;
+
+                    let (access_signing_key, access_pub_x, access_pub_y, access_key_addr) =
+                        generate_p256_access_key();
+                    let key_auth = create_key_authorization(
+                        &root_signer,
+                        access_key_addr,
+                        create_mock_p256_sig(access_pub_x, access_pub_y),
+                        chain_id,
+                        None,
+                        Some(create_default_token_limit()),
+                    )?;
+
+                    let sign = Box::new(move |tx: &TempoTransaction| {
+                        sign_aa_tx_with_p256_access_key(
+                            tx,
+                            &access_signing_key,
+                            &access_pub_x,
+                            &access_pub_y,
+                            root_addr,
+                        )
+                    });
+
+                    Ok(AccessKeyContext {
+                        setup,
+                        provider,
+                        chain_id,
+                        root_signer,
+                        root_addr,
+                        key_auth,
+                        sign,
+                    })
+                },
+                || async {
+                    let funding_amount = U256::from(1_000_000_000_000_000_000u128);
+                    let (
+                        setup,
+                        provider,
+                        signing_key,
+                        pub_key_x,
+                        pub_key_y,
+                        signer_addr,
+                        funder_signer,
+                        funder_addr,
+                        chain_id,
+                        _fee_token,
+                    ) = setup_test_with_p256_funded_account(funding_amount).await?;
+
+                    let sign = Box::new(move |tx: &TempoTransaction| {
+                        sign_aa_tx_p256(tx, &signing_key, pub_key_x, pub_key_y)
+                    });
+
+                    Ok(NonAccessContext {
+                        setup,
+                        provider,
+                        chain_id,
+                        signer_addr,
+                        funder_signer,
+                        funder_addr,
+                        sign,
+                    })
+                },
+            )
+            .await
+        }
+        KeyType::WebAuthn => {
+            run_raw_send_test_case_with_key(
+                test_case,
+                || async {
+                    let (setup, provider, root_signer, root_addr) =
+                        setup_test_with_funded_account().await?;
+                    let chain_id = provider.get_chain_id().await?;
+
+                    let (access_signing_key, access_pub_x, access_pub_y, access_key_addr) =
+                        generate_p256_access_key();
+                    let key_auth = create_key_authorization(
+                        &root_signer,
+                        access_key_addr,
+                        create_mock_webauthn_sig(access_pub_x, access_pub_y),
+                        chain_id,
+                        None,
+                        Some(create_default_token_limit()),
+                    )?;
+
+                    let sign = Box::new(move |tx: &TempoTransaction| {
+                        sign_aa_tx_with_webauthn_access_key(
+                            tx,
+                            &access_signing_key,
+                            access_pub_x,
+                            access_pub_y,
+                            "https://example.com",
+                            root_addr,
+                        )
+                    });
+
+                    Ok(AccessKeyContext {
+                        setup,
+                        provider,
+                        chain_id,
+                        root_signer,
+                        root_addr,
+                        key_auth,
+                        sign,
+                    })
+                },
+                || async {
+                    let funding_amount = U256::from(1_000_000_000_000_000_000u128);
+                    let (
+                        setup,
+                        provider,
+                        signing_key,
+                        pub_key_x,
+                        pub_key_y,
+                        signer_addr,
+                        funder_signer,
+                        funder_addr,
+                        chain_id,
+                        _fee_token,
+                    ) = setup_test_with_p256_funded_account(funding_amount).await?;
+
+                    let sign = Box::new(move |tx: &TempoTransaction| {
+                        sign_aa_tx_webauthn(
+                            tx,
+                            &signing_key,
+                            pub_key_x,
+                            pub_key_y,
+                            "https://example.com",
+                        )
+                    });
+
+                    Ok(NonAccessContext {
+                        setup,
+                        provider,
+                        chain_id,
+                        signer_addr,
+                        funder_signer,
+                        funder_addr,
+                        sign,
+                    })
+                },
+            )
+            .await
+        }
+    }
+}
+
+fn resolve_send_amounts(test_case: &SendTestCase) -> eyre::Result<(U256, U256)> {
+    let base_funding = U256::from(1_000_000_000_000_000_000u128);
+    let funding_amount = test_case.funding_amount.unwrap_or(base_funding);
+    let transfer_amount = test_case
+        .transfer_amount
+        .unwrap_or(U256::from(1u64) * U256::from(10).pow(U256::from(6)));
+
+    Ok((funding_amount.max(base_funding), transfer_amount))
+}
+
+fn create_send_calls(
+    recipient_1: Address,
+    recipient_2: Option<Address>,
+    fee_token: Address,
+    batch_calls: bool,
+    transfer_amount: U256,
+) -> Vec<Call> {
+    if batch_calls {
+        let recipient_2 = recipient_2.expect("batch calls require two recipients");
+        vec![
+            Call {
+                to: fee_token.into(),
+                value: U256::ZERO,
+                input: transferCall {
+                    to: recipient_1,
+                    amount: transfer_amount,
+                }
+                .abi_encode()
+                .into(),
+            },
+            Call {
+                to: fee_token.into(),
+                value: U256::ZERO,
+                input: transferCall {
+                    to: recipient_2,
+                    amount: transfer_amount,
+                }
+                .abi_encode()
+                .into(),
+            },
+        ]
+    } else {
+        vec![Call {
+            to: recipient_1.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }]
+    }
+}
+
+async fn run_send_transaction_test_case(test_case: &SendTestCase) -> eyre::Result<()> {
+    println!("\n=== Send transaction test: {} ===\n", test_case.name);
+
+    if test_case.key_type == KeyType::Secp256k1 && test_case.access_key {
+        return Err(eyre::eyre!(
+            "secp256k1 access key not supported in send matrix"
+        ));
+    }
+    if test_case.key_type == KeyType::Secp256k1 && test_case.batch_calls {
+        return Err(eyre::eyre!(
+            "secp256k1 batch calls not supported in send matrix"
+        ));
+    }
+
+    let (funding_amount, transfer_amount) = resolve_send_amounts(test_case)?;
+
+    if test_case.access_key {
+        let (mut setup, provider, root_signer, root_addr) =
+            setup_test_with_funded_account().await?;
+        let chain_id = provider.get_chain_id().await?;
+        let (access_signing_key, access_pub_key_x, access_pub_key_y, access_key_addr) =
+            generate_p256_access_key();
+
+        let access_signature = match test_case.key_type {
+            KeyType::P256 => create_mock_p256_sig(access_pub_key_x, access_pub_key_y),
+            KeyType::WebAuthn => create_mock_webauthn_sig(access_pub_key_x, access_pub_key_y),
+            KeyType::Secp256k1 => unreachable!("guarded above"),
+        };
+
+        let key_auth = create_key_authorization(
+            &root_signer,
+            access_key_addr,
+            access_signature,
+            chain_id,
+            None,
+            Some(create_default_token_limit()),
+        )?;
+
+        let recipient_1 = Address::random();
+        let recipient_2 = if test_case.batch_calls {
+            Some(Address::random())
+        } else {
+            None
+        };
+
+        let mut tx = create_basic_aa_tx(
+            chain_id,
+            provider.get_transaction_count(root_addr).await?,
+            create_send_calls(
+                recipient_1,
+                recipient_2,
+                DEFAULT_FEE_TOKEN,
+                test_case.batch_calls,
+                transfer_amount,
+            ),
+            2_000_000,
+        );
+        tx.key_authorization = Some(key_auth);
+
+        let fee_payer_ctx = configure_fee_payer_context(
+            &provider,
+            &mut tx,
+            test_case.fee_payer,
+            root_addr,
+            &root_signer,
+            root_addr,
+            root_addr,
+        )
+        .await?;
+
+        let signature = match test_case.key_type {
+            KeyType::P256 => sign_aa_tx_with_p256_access_key(
+                &tx,
+                &access_signing_key,
+                &access_pub_key_x,
+                &access_pub_key_y,
+                root_addr,
+            )?,
+            KeyType::WebAuthn => sign_aa_tx_with_webauthn_access_key(
+                &tx,
+                &access_signing_key,
+                access_pub_key_x,
+                access_pub_key_y,
+                "https://example.com",
+                root_addr,
+            )?,
+            KeyType::Secp256k1 => unreachable!("guarded above"),
+        };
+
+        let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+        let encoded = envelope.encoded_2718();
+        let tx_hash = *envelope.tx_hash();
+
+        inject_and_assert_mined(&mut setup, &provider, encoded, tx_hash).await?;
+        assert_fee_payer_spent(&provider, fee_payer_ctx).await?;
+
+        if test_case.batch_calls {
+            assert_batch_recipient_balances(
+                &provider,
+                DEFAULT_FEE_TOKEN,
+                recipient_1,
+                recipient_2.expect("batch_calls requires recipient_2"),
+                transfer_amount,
+            )
+            .await?;
+        }
+
+        return Ok(());
+    }
+
+    match test_case.key_type {
+        KeyType::Secp256k1 => {
+            let (mut setup, provider, signer, signer_addr) =
+                setup_test_with_funded_account().await?;
+            let chain_id = provider.get_chain_id().await?;
+            let recipient = Address::random();
+            let nonce = provider.get_transaction_count(signer_addr).await?;
+
+            let mut tx = create_basic_aa_tx(
+                chain_id,
+                nonce,
+                create_send_calls(recipient, None, DEFAULT_FEE_TOKEN, false, transfer_amount),
+                2_000_000,
+            );
+            if test_case.fee_payer {
+                sign_fee_payer(&mut tx, signer_addr, &signer)?;
+            }
+
+            let signature = sign_aa_tx_secp256k1(&tx, &signer)?;
+            let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+            let encoded = envelope.encoded_2718();
+            let tx_hash = *envelope.tx_hash();
+
+            inject_and_assert_mined(&mut setup, &provider, encoded, tx_hash).await?;
+
+            Ok(())
+        }
+        KeyType::P256 | KeyType::WebAuthn => {
+            let (
+                mut setup,
+                provider,
+                signing_key,
+                pub_key_x,
+                pub_key_y,
+                signer_addr,
+                fee_payer_signer,
+                fee_payer_addr,
+                chain_id,
+                fee_token,
+            ) = setup_test_with_p256_funded_account(funding_amount).await?;
+
+            let recipient_1 = Address::random();
+            let recipient_2 = if test_case.batch_calls {
+                Some(Address::random())
+            } else {
+                None
+            };
+
+            let mut tx = create_basic_aa_tx(
+                chain_id,
+                0,
+                create_send_calls(
+                    recipient_1,
+                    recipient_2,
+                    fee_token,
+                    test_case.batch_calls,
+                    transfer_amount,
+                ),
+                2_000_000,
+            );
+            tx.fee_token = Some(fee_token);
+
+            let fee_payer_ctx = configure_fee_payer_context(
+                &provider,
+                &mut tx,
+                test_case.fee_payer,
+                signer_addr,
+                &fee_payer_signer,
+                fee_payer_addr,
+                signer_addr,
+            )
+            .await?;
+
+            let signature = match test_case.key_type {
+                KeyType::P256 => sign_aa_tx_p256(&tx, &signing_key, pub_key_x, pub_key_y)?,
+                KeyType::WebAuthn => sign_aa_tx_webauthn(
+                    &tx,
+                    &signing_key,
+                    pub_key_x,
+                    pub_key_y,
+                    "https://example.com",
+                )?,
+                KeyType::Secp256k1 => unreachable!("handled above"),
+            };
+
+            let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+            let encoded = envelope.encoded_2718();
+            let tx_hash = *envelope.tx_hash();
+
+            inject_and_assert_mined(&mut setup, &provider, encoded, tx_hash).await?;
+            assert_fee_payer_spent(&provider, fee_payer_ctx).await?;
+
+            if test_case.batch_calls {
+                assert_batch_recipient_balances(
+                    &provider,
+                    fee_token,
+                    recipient_1,
+                    recipient_2.expect("batch_calls requires recipient_2"),
+                    transfer_amount,
+                )
+                .await?;
+            }
+
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+// Covers key type (secp256k1/p256/webauthn) x fee payer; P256/WebAuthn also cover access key and batch calls.
+async fn test_eth_send_transaction_matrix() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let transfer_amount = U256::from(1u64) * U256::from(10).pow(U256::from(6));
+    let webauthn_transfer_amount = U256::from(5u64) * U256::from(10).pow(U256::from(6));
+
+    let test_matrix = [
+        send_case!(Secp256k1),
+        send_case!(Secp256k1, fee_payer),
+        send_case!(P256, fee_payer),
+        send_case!(P256, fee_payer, access_key),
+        send_case!(P256),
+        send_case!(
+            P256,
+            batch_calls;
+            funding_amount = transfer_amount * U256::from(10u64),
+            transfer_amount = transfer_amount
+        ),
+        send_case!(P256, access_key),
+        send_case!(
+            WebAuthn,
+            batch_calls;
+            funding_amount = webauthn_transfer_amount * U256::from(2u64),
+            transfer_amount = webauthn_transfer_amount
+        ),
+        send_case!(WebAuthn, fee_payer),
+        send_case!(WebAuthn, access_key),
+    ];
+
+    println!("\n=== eth_sendTransaction matrix ===\n");
+    println!("Running {} sendTransaction cases...\n", test_matrix.len());
+
+    for (index, test_case) in test_matrix.iter().enumerate() {
+        println!("[{}/{}] {}", index + 1, test_matrix.len(), test_case.name);
+        run_send_transaction_test_case(test_case).await?;
+    }
+
+    println!("\n✓ All {} sendTransaction cases passed", test_matrix.len());
+    Ok(())
+}
+
+async fn run_raw_send_test_case_with_key<
+    AccessSetupFn,
+    AccessSetupFut,
+    NonAccessSetupFn,
+    NonAccessSetupFut,
+    PAccess,
+    PNonAccess,
+    SAccess,
+    SNonAccess,
+>(
+    test_case: &RawSendTestCase,
+    access_setup: AccessSetupFn,
+    non_access_setup: NonAccessSetupFn,
+) -> eyre::Result<()>
+where
+    AccessSetupFn: FnOnce() -> AccessSetupFut,
+    AccessSetupFut: std::future::Future<Output = eyre::Result<AccessKeyContext<PAccess, SAccess>>>,
+    NonAccessSetupFn: FnOnce() -> NonAccessSetupFut,
+    NonAccessSetupFut:
+        std::future::Future<Output = eyre::Result<NonAccessContext<PNonAccess, SNonAccess>>>,
+    PAccess: Provider,
+    PNonAccess: Provider,
+    SAccess: SignerSync,
+    SNonAccess: SignerSync,
+{
+    if test_case.access_key {
+        let mut context = access_setup().await?;
+        let recipient = Address::random();
+
+        let fee_payer_signer = if test_case.fee_payer {
+            let signer = alloy::signers::local::PrivateKeySigner::random();
+            let addr = signer.address();
+            fund_address_with_fee_tokens(
+                &mut context.setup,
+                &context.provider,
+                &context.root_signer,
+                context.root_addr,
+                addr,
+                U256::from(1_000_000_000_000_000_000u128),
+                context.chain_id,
+            )
+            .await?;
+            Some(signer)
+        } else {
+            None
+        };
+
+        let mut tx = create_basic_aa_tx(
+            context.chain_id,
+            context
+                .provider
+                .get_transaction_count(context.root_addr)
+                .await?,
+            vec![Call {
+                to: recipient.into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            2_000_000,
+        );
+        tx.key_authorization = Some(context.key_auth);
+
+        let (fp_signer_ref, fp_addr) = match &fee_payer_signer {
+            Some(s) => (s as &dyn SignerSync, s.address()),
+            None => (&context.root_signer as &dyn SignerSync, context.root_addr),
+        };
+        let fee_payer_context = configure_fee_payer_context(
+            &context.provider,
+            &mut tx,
+            test_case.fee_payer,
+            context.root_addr,
+            fp_signer_ref,
+            fp_addr,
+            context.root_addr,
+        )
+        .await?;
+
+        let signature = (context.sign)(&tx)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+
+        send_raw_aa_and_assert_mined(
+            &mut context.setup,
+            &context.provider,
+            &envelope,
+            context.root_addr,
+        )
+        .await?;
+        assert_fee_payer_spent(&context.provider, fee_payer_context).await?;
+
+        return Ok(());
+    }
+
+    let mut context = non_access_setup().await?;
+    let signer_unfunded = test_case.key_type == KeyType::Secp256k1 && test_case.fee_payer;
+    if test_case.key_type == KeyType::Secp256k1 && !test_case.fee_payer {
+        fund_address_with_fee_tokens(
+            &mut context.setup,
+            &context.provider,
+            &context.funder_signer,
+            context.funder_addr,
+            context.signer_addr,
+            U256::from(1_000_000_000_000_000_000u128),
+            context.chain_id,
+        )
+        .await?;
+    }
+
+    if signer_unfunded {
+        assert_fee_token_balance(
+            &context.provider,
+            context.signer_addr,
+            U256::ZERO,
+            "Unfunded signer should have zero balance",
+        )
+        .await?;
+    }
+
+    let recipient = Address::random();
+    let signer_nonce = context
+        .provider
+        .get_transaction_count(context.signer_addr)
+        .await?;
+    let mut tx = create_basic_aa_tx(
+        context.chain_id,
+        signer_nonce,
+        vec![Call {
+            to: recipient.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        2_000_000,
+    );
+
+    let fee_payer_context = configure_fee_payer_context(
+        &context.provider,
+        &mut tx,
+        test_case.fee_payer,
+        context.signer_addr,
+        &context.funder_signer,
+        context.funder_addr,
+        context.signer_addr,
+    )
+    .await?;
+
+    let signature = (context.sign)(&tx)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+
+    send_raw_aa_and_assert_mined(
+        &mut context.setup,
+        &context.provider,
+        &envelope,
+        context.signer_addr,
+    )
+    .await?;
+    assert_fee_payer_spent(&context.provider, fee_payer_context).await?;
+
+    if signer_unfunded {
+        assert_fee_token_balance(
+            &context.provider,
+            context.signer_addr,
+            U256::ZERO,
+            "Unfunded signer should still have zero balance after fee-payer tx",
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_send_raw_transaction_matrix() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let test_matrix = [
+        raw_case!(Secp256k1),
+        raw_case!(Secp256k1, fee_payer),
+        raw_case!(Secp256k1, access_key),
+        raw_case!(Secp256k1, fee_payer, access_key),
+        raw_case!(P256),
+        raw_case!(P256, fee_payer),
+        raw_case!(P256, access_key),
+        raw_case!(P256, fee_payer, access_key),
+        raw_case!(WebAuthn),
+        raw_case!(WebAuthn, fee_payer),
+        raw_case!(WebAuthn, access_key),
+        raw_case!(WebAuthn, fee_payer, access_key),
+    ];
+
+    println!("\n=== Explicit eth_sendRawTransaction matrix ===\n");
+    println!("Running {} raw send cases...\n", test_matrix.len());
+
+    for (index, test_case) in test_matrix.iter().enumerate() {
+        println!("[{}/{}] {}", index + 1, test_matrix.len(), test_case.name);
+        run_raw_send_test_case(test_case).await?;
+    }
+
+    println!("\n✓ All {} raw send cases passed", test_matrix.len());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_sign_transaction_multi_party_fee_payer_cosign() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let http_url = setup.node.rpc_url();
+    let provider = ProviderBuilder::new().connect_http(http_url.clone());
+
+    let fee_payer_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let fee_payer_addr = fee_payer_signer.address();
+
+    let user_signer = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = user_signer.address();
+
+    let user_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(user_addr)
+        .call()
+        .await?;
+    assert_eq!(user_balance, U256::ZERO, "User should be unfunded");
+
+    let fee_payer_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(fee_payer_addr)
+        .call()
+        .await?;
+
+    let chain_id = provider.get_chain_id().await?;
+    let mut tx = create_basic_aa_tx(
+        chain_id,
+        0,
+        vec![Call {
+            to: Address::random().into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        2_000_000,
+    );
+    tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
+
+    let user_signature = sign_aa_tx_secp256k1(&tx, &user_signer)?;
+    let sign_only_envelope: TempoTxEnvelope = tx.into_signed(user_signature).into();
+    let sign_only_encoded = sign_only_envelope.encoded_2718();
+
+    let decoded = TempoTxEnvelope::decode_2718(&mut sign_only_encoded.as_slice())?;
+    let (mut decoded_tx, decoded_sig) = match decoded {
+        TempoTxEnvelope::AA(aa_tx) => (aa_tx.tx().clone(), aa_tx.signature().clone()),
+        _ => return Err(eyre::eyre!("Expected AA transaction")),
+    };
+
+    let fee_payer_sig_hash = decoded_tx.fee_payer_signature_hash(user_addr);
+    let fee_payer_signature = fee_payer_signer.sign_hash_sync(&fee_payer_sig_hash)?;
+    decoded_tx.fee_payer_signature = Some(fee_payer_signature);
+
+    let final_envelope: TempoTxEnvelope = decoded_tx.into_signed(decoded_sig).into();
+    let encoded = final_envelope.encoded_2718();
+    let tx_hash = *final_envelope.tx_hash();
+
+    let raw_result: B256 = provider
+        .raw_request("eth_sendRawTransaction".into(), [encoded.clone()])
+        .await?;
+    assert_eq!(raw_result, tx_hash, "RPC should return tx hash");
+
+    setup.node.advance_block().await?;
+
+    let receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+    assert!(receipt.is_some(), "Transaction should be mined");
+
+    let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(fee_payer_addr)
+        .call()
+        .await?;
+    assert!(
+        fee_payer_balance_after < fee_payer_balance_before,
+        "Fee payer should cover gas"
+    );
 
     Ok(())
 }
@@ -2553,9 +3251,7 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
     println!("Created AA transaction with empty call batch");
 
     // Sign the transaction with secp256k1
-    let sig_hash = tx.signature_hash();
-    let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
+    let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
     let signed_tx = AASigned::new_unhashed(tx, aa_signature);
 
     // Convert to envelope and encode
@@ -2603,113 +3299,16 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
-    // Keep setup alive for the duration of the test
-    let _ = &_setup;
-
-    println!("\n=== Testing eth_estimateGas with keyType and keyData ===\n");
-    println!("Test address: {signer_addr}");
-
-    let recipient = Address::random();
-
-    // Helper to create a base transaction request
-    let base_tx_request = || TempoTransactionRequest {
-        inner: TransactionRequest {
-            from: Some(signer_addr),
-            ..Default::default()
-        },
-        calls: vec![Call {
-            to: TxKind::Call(recipient),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
-        ..Default::default()
-    };
-
-    // Test 1: Estimate gas WITHOUT keyType (baseline - uses secp256k1)
-    println!("Test 1: Estimating gas WITHOUT keyType (baseline)");
-    let baseline_gas: String = provider
-        .raw_request(
-            "eth_estimateGas".into(),
-            [serde_json::to_value(base_tx_request())?],
-        )
-        .await?;
-    let baseline_gas_u64 = u64::from_str_radix(baseline_gas.trim_start_matches("0x"), 16)?;
-    println!("  Baseline gas: {baseline_gas_u64}");
-
-    // Test 2: Estimate gas WITH keyType="p256"
-    println!("\nTest 2: Estimating gas WITH keyType='p256'");
-    let tx_request_p256 = TempoTransactionRequest {
-        key_type: Some(SignatureType::P256),
-        ..base_tx_request()
-    };
-
-    let p256_gas: String = provider
-        .raw_request(
-            "eth_estimateGas".into(),
-            [serde_json::to_value(&tx_request_p256)?],
-        )
-        .await?;
-    let p256_gas_u64 = u64::from_str_radix(p256_gas.trim_start_matches("0x"), 16)?;
-    println!("  P256 gas: {p256_gas_u64}");
-    // P256 should add approximately 5,000 gas (allow tolerance for gas estimation buffer variance)
-    let p256_diff = (p256_gas_u64 as i64 - baseline_gas_u64 as i64).unsigned_abs();
-    assert!(
-        (4_800..=5_200).contains(&p256_diff),
-        "P256 should add ~5,000 gas: actual diff {p256_diff} (expected 5,000 ±200)",
-    );
-    println!("  ✓ P256 adds {p256_diff} gas (expected ~5,000)");
-
-    // Test 3: Estimate gas WITH keyType="webauthn" and keyData
-    println!("\nTest 3: Estimating gas WITH keyType='webauthn' and keyData");
-
-    // Specify WebAuthn data size (excluding 128 bytes for public keys)
-    // Encoded as hex: 116 = 0x74 (1 byte) or 0x0074 (2 bytes)
-    let webauthn_size = 116u16;
-    let key_data = Bytes::from(webauthn_size.to_be_bytes().to_vec());
-    println!("  Requesting WebAuthn data size: {webauthn_size} bytes (keyData: {key_data})",);
-
-    let tx_request_webauthn = TempoTransactionRequest {
-        key_type: Some(SignatureType::WebAuthn),
-        key_data: Some(key_data),
-        ..base_tx_request()
-    };
-
-    let webauthn_gas: String = provider
-        .raw_request(
-            "eth_estimateGas".into(),
-            [serde_json::to_value(&tx_request_webauthn)?],
-        )
-        .await?;
-    let webauthn_gas_u64 = u64::from_str_radix(webauthn_gas.trim_start_matches("0x"), 16)?;
-    println!("  WebAuthn gas: {webauthn_gas_u64}");
-
-    // WebAuthn should add 5,000 + calldata gas
-    assert!(
-        webauthn_gas_u64 > p256_gas_u64,
-        "WebAuthn should cost more than P256"
-    );
-    println!("  ✓ WebAuthn adds signature verification + calldata gas");
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
+async fn test_aa_estimate_gas_matrix() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, signer, signer_addr) = setup_test_with_funded_account().await?;
-    // Keep setup alive for the duration of the test
-    let _ = &_setup;
 
-    println!("\n=== Testing eth_estimateGas with isKeychain and keyAuthorization ===\n");
+    println!("\n=== eth_estimateGas matrix: key type × keychain × key auth ===\n");
     println!("Test address: {signer_addr}");
 
     let recipient = Address::random();
 
-    // Helper to create a base transaction request
     let base_tx_request = || TempoTransactionRequest {
         inner: TransactionRequest {
             from: Some(signer_addr),
@@ -2723,173 +3322,181 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         ..Default::default()
     };
 
-    // Test 1: Baseline gas (secp256k1, primitive signature)
-    println!("Test 1: Baseline gas (secp256k1, primitive signature)");
-    let baseline_gas: String = provider
-        .raw_request(
-            "eth_estimateGas".into(),
-            [serde_json::to_value(base_tx_request())?],
-        )
-        .await?;
-    let baseline_gas_u64 = u64::from_str_radix(baseline_gas.trim_start_matches("0x"), 16)?;
-    println!("  Baseline gas: {baseline_gas_u64}");
+    async fn estimate_gas(
+        provider: &impl Provider,
+        request: &TempoTransactionRequest,
+    ) -> eyre::Result<u64> {
+        let hex: String = provider
+            .raw_request("eth_estimateGas".into(), [serde_json::to_value(request)?])
+            .await?;
+        Ok(u64::from_str_radix(hex.trim_start_matches("0x"), 16)?)
+    }
 
-    // Test 2: Keychain signature (secp256k1 inner) - should add 3,000 gas
-    // For keychain signatures, we need to use same-tx auth+use pattern:
-    // provide both key_id AND key_authorization with the same key_id
-    println!("\nTest 2: Keychain signature (secp256k1 inner)");
-    let key_auth_secp_for_keychain =
-        create_signed_key_authorization(&signer, SignatureType::Secp256k1, 0);
-    let key_id_secp = key_auth_secp_for_keychain.key_id;
-    let tx_keychain = TempoTransactionRequest {
-        key_id: Some(key_id_secp), // Use the same key_id as in key_authorization
-        key_authorization: Some(key_auth_secp_for_keychain),
-        ..base_tx_request()
-    };
+    #[derive(Clone)]
+    enum GasCaseKind {
+        KeyType {
+            key_type: SignatureType,
+            key_data: Option<Bytes>,
+        },
+        Keychain {
+            key_type: Option<SignatureType>,
+            num_limits: usize,
+        },
+        KeyAuth {
+            key_type: SignatureType,
+            num_limits: usize,
+        },
+    }
 
-    let keychain_gas: String = provider
-        .raw_request(
-            "eth_estimateGas".into(),
-            [serde_json::to_value(&tx_keychain)?],
-        )
-        .await?;
-    let keychain_gas_u64 = u64::from_str_radix(keychain_gas.trim_start_matches("0x"), 16)?;
-    println!("  Keychain gas: {keychain_gas_u64}");
+    enum ExpectedGasDiff {
+        Range(std::ops::RangeInclusive<u64>),
+        GreaterThan(&'static str),
+    }
 
-    // Keychain with same-tx auth adds ~285,926 gas which includes:
-    // - 3,000 for keychain validation
-    // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
-    // - storage costs for key authorization precompile
-    let keychain_diff = keychain_gas_u64 as i64 - baseline_gas_u64 as i64;
-    assert!(
-        (285_000..=287_000).contains(&keychain_diff.unsigned_abs()),
-        "Keychain + KeyAuth should add ~285,926 gas: actual diff {keychain_diff}"
-    );
-    println!("  ✓ Keychain + KeyAuth adds {keychain_diff} gas (expected ~285,926)");
+    struct GasCase {
+        name: &'static str,
+        kind: GasCaseKind,
+        expected: ExpectedGasDiff,
+    }
 
-    // Test 3: Keychain signature with P256 inner
-    println!("\nTest 3: Keychain signature (P256 inner)");
-    let key_auth_p256_for_keychain =
-        create_signed_key_authorization(&signer, SignatureType::P256, 0);
-    let key_id_p256 = key_auth_p256_for_keychain.key_id;
-    let tx_keychain_p256 = TempoTransactionRequest {
-        key_type: Some(SignatureType::P256),
-        key_id: Some(key_id_p256), // Use the same key_id as in key_authorization
-        key_authorization: Some(key_auth_p256_for_keychain),
-        ..base_tx_request()
-    };
+    let cases = [
+        // +5,000 gas for P256 signature verification
+        GasCase {
+            name: "p256",
+            kind: GasCaseKind::KeyType {
+                key_type: SignatureType::P256,
+                key_data: None,
+            },
+            expected: ExpectedGasDiff::Range(4_800..=5_200),
+        },
+        // 5,000 (P256 verification) + calldata gas for WebAuthn envelope
+        GasCase {
+            name: "webauthn",
+            kind: GasCaseKind::KeyType {
+                key_type: SignatureType::WebAuthn,
+                // WebAuthn data size excluding 128 bytes for public keys
+                key_data: Some(Bytes::from(116u16.to_be_bytes().to_vec())),
+            },
+            expected: ExpectedGasDiff::GreaterThan("p256"),
+        },
+        // ~285,926: 3,000 keychain validation + ~30,000 KeyAuthorization (27,000 base +
+        // 3,000 ecrecover) + storage costs for key authorization precompile
+        GasCase {
+            name: "keychain_secp256k1",
+            kind: GasCaseKind::Keychain {
+                key_type: None,
+                num_limits: 0,
+            },
+            expected: ExpectedGasDiff::Range(285_000..=287_000),
+        },
+        // ~290,966: keychain_secp256k1 costs + 5,000 P256 signature verification
+        GasCase {
+            name: "keychain_p256",
+            kind: GasCaseKind::Keychain {
+                key_type: Some(SignatureType::P256),
+                num_limits: 0,
+            },
+            expected: ExpectedGasDiff::Range(290_000..=292_000),
+        },
+        // ~282,903: ~30,000 KeyAuthorization (27,000 base + 3,000 ecrecover) + storage costs
+        GasCase {
+            name: "key_auth_secp256k1",
+            kind: GasCaseKind::KeyAuth {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 0,
+            },
+            expected: ExpectedGasDiff::Range(282_000..=284_000),
+        },
+        // Same range as secp256k1: the authorization signature is always secp256k1
+        // from the root key; key_type only describes which key is being authorized.
+        GasCase {
+            name: "key_auth_p256",
+            kind: GasCaseKind::KeyAuth {
+                key_type: SignatureType::P256,
+                num_limits: 0,
+            },
+            expected: ExpectedGasDiff::Range(282_000..=284_000),
+        },
+        // ~349,426: key_auth_secp256k1 costs + 3 × 22,000 for spending limits
+        GasCase {
+            name: "key_auth_secp256k1_3_limits",
+            kind: GasCaseKind::KeyAuth {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 3,
+            },
+            expected: ExpectedGasDiff::Range(349_000..=351_000),
+        },
+    ];
 
-    let keychain_p256_gas: String = provider
-        .raw_request(
-            "eth_estimateGas".into(),
-            [serde_json::to_value(&tx_keychain_p256)?],
-        )
-        .await?;
-    let keychain_p256_gas_u64 =
-        u64::from_str_radix(keychain_p256_gas.trim_start_matches("0x"), 16)?;
-    println!("  Keychain P256 gas: {keychain_p256_gas_u64}");
+    let baseline_gas = estimate_gas(&provider, &base_tx_request()).await?;
+    println!("Baseline gas (secp256k1): {baseline_gas}");
 
-    // Keychain P256 with same-tx auth adds ~290,966 gas which includes:
-    // - 3,000 for keychain validation
-    // - 5,000 for P256 signature verification
-    // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
-    // - storage costs for key authorization precompile
-    let keychain_p256_diff = keychain_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
-    assert!(
-        (290_000..=292_000).contains(&keychain_p256_diff.unsigned_abs()),
-        "Keychain P256 + KeyAuth should add ~290,966 gas: actual diff {keychain_p256_diff}"
-    );
-    println!("  ✓ Keychain P256 + KeyAuth adds {keychain_p256_diff} gas (expected ~290,966)");
+    let mut results: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
 
-    // Test 4: KeyAuthorization with secp256k1 (no limits)
-    println!("\nTest 4: KeyAuthorization (secp256k1, no limits)");
-    let key_auth_secp = create_signed_key_authorization(&signer, SignatureType::Secp256k1, 0);
-    let tx_key_auth = TempoTransactionRequest {
-        key_authorization: Some(key_auth_secp),
-        ..base_tx_request()
-    };
+    for (i, case) in cases.iter().enumerate() {
+        println!("\n[{}/{}] {}", i + 1, cases.len(), case.name);
 
-    let key_auth_gas: String = provider
-        .raw_request(
-            "eth_estimateGas".into(),
-            [serde_json::to_value(&tx_key_auth)?],
-        )
-        .await?;
-    let key_auth_gas_u64 = u64::from_str_radix(key_auth_gas.trim_start_matches("0x"), 16)?;
-    println!("  KeyAuth gas: {key_auth_gas_u64}");
+        let mut request = base_tx_request();
+        match &case.kind {
+            GasCaseKind::KeyType { key_type, key_data } => {
+                request.key_type = Some(*key_type);
+                request.key_data = key_data.clone();
+            }
+            // Same-tx auth+use pattern: provide both key_id AND key_authorization
+            // with the same key_id so the keychain is provisioned and used in one tx.
+            GasCaseKind::Keychain {
+                key_type,
+                num_limits,
+            } => {
+                let auth = create_signed_key_authorization(
+                    &signer,
+                    key_type.unwrap_or(SignatureType::Secp256k1),
+                    *num_limits,
+                );
+                request.key_id = Some(auth.key_id);
+                request.key_authorization = Some(auth);
+                if let Some(kt) = key_type {
+                    request.key_type = Some(*kt);
+                }
+            }
+            GasCaseKind::KeyAuth {
+                key_type,
+                num_limits,
+            } => {
+                let auth = create_signed_key_authorization(&signer, *key_type, *num_limits);
+                request.key_authorization = Some(auth);
+            }
+        }
 
-    // KeyAuth secp256k1 adds ~282,903 gas which includes:
-    // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
-    // - storage costs for key authorization precompile
-    let key_auth_diff = key_auth_gas_u64 as i64 - baseline_gas_u64 as i64;
-    assert!(
-        (282_000..=284_000).contains(&key_auth_diff.unsigned_abs()),
-        "KeyAuth secp256k1 should add ~282,903 gas: actual diff {key_auth_diff}"
-    );
-    println!("  ✓ KeyAuth secp256k1 adds {key_auth_diff} gas (expected ~282,903)");
+        let gas = estimate_gas(&provider, &request).await?;
+        println!("  gas: {gas}");
 
-    // Test 5: KeyAuthorization with P256 key type (no limits)
-    // Note: The key authorization signature is secp256k1 (signed by root key).
-    // The key_type field specifies what type of key is being authorized (P256),
-    // but the gas cost depends on the signature type, not the key being authorized.
-    println!("\nTest 5: KeyAuthorization (P256 key type, no limits)");
-    let key_auth_p256 = create_signed_key_authorization(&signer, SignatureType::P256, 0);
-    let tx_key_auth_p256 = TempoTransactionRequest {
-        key_authorization: Some(key_auth_p256),
-        ..base_tx_request()
-    };
+        match &case.expected {
+            ExpectedGasDiff::Range(range) => {
+                let diff = (gas as i64 - baseline_gas as i64).unsigned_abs();
+                assert!(
+                    range.contains(&diff),
+                    "[{}] expected diff in {:?}, got {diff}",
+                    case.name,
+                    range,
+                );
+                println!("  ✓ diff {diff} in {range:?}");
+            }
+            ExpectedGasDiff::GreaterThan(ref_name) => {
+                let ref_gas = results[ref_name];
+                assert!(
+                    gas > ref_gas,
+                    "[{}] expected gas {gas} > {ref_name} gas {ref_gas}",
+                    case.name,
+                );
+                println!("  ✓ gas {gas} > {ref_name} gas {ref_gas}");
+            }
+        }
 
-    let key_auth_p256_gas: String = provider
-        .raw_request(
-            "eth_estimateGas".into(),
-            [serde_json::to_value(&tx_key_auth_p256)?],
-        )
-        .await?;
-    let key_auth_p256_gas_u64 =
-        u64::from_str_radix(key_auth_p256_gas.trim_start_matches("0x"), 16)?;
-    println!("  KeyAuth P256 key type gas: {key_auth_p256_gas_u64}");
+        results.insert(case.name, gas);
+    }
 
-    // KeyAuth with P256 key type has same gas as secp256k1 (~282,903) because
-    // the authorization signature itself is always secp256k1 from the root key
-    let key_auth_p256_diff = key_auth_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
-    assert!(
-        (282_000..=284_000).contains(&key_auth_p256_diff.unsigned_abs()),
-        "KeyAuth P256 key type should add ~282,903 gas (same as secp256k1): actual diff {key_auth_p256_diff}"
-    );
-    println!(
-        "  ✓ KeyAuth P256 key type adds {key_auth_p256_diff} gas (same as secp256k1, ~282,903)"
-    );
-
-    // Test 6: KeyAuthorization with spending limits
-    println!("\nTest 6: KeyAuthorization (secp256k1, 3 spending limits)");
-    let key_auth_limits = create_signed_key_authorization(&signer, SignatureType::Secp256k1, 3);
-    let tx_key_auth_limits = TempoTransactionRequest {
-        key_authorization: Some(key_auth_limits),
-        ..base_tx_request()
-    };
-
-    let key_auth_limits_gas: String = provider
-        .raw_request(
-            "eth_estimateGas".into(),
-            [serde_json::to_value(&tx_key_auth_limits)?],
-        )
-        .await?;
-    let key_auth_limits_gas_u64 =
-        u64::from_str_radix(key_auth_limits_gas.trim_start_matches("0x"), 16)?;
-    println!("  KeyAuth with 3 limits gas: {key_auth_limits_gas_u64}");
-
-    // KeyAuth secp256k1 with 3 limits adds ~349,426 gas which includes:
-    // - ~30,000 for KeyAuthorization base (27,000 base + 3,000 ecrecover)
-    // - 3 * 22,000 = 66,000 for spending limits
-    // - storage costs for key authorization precompile
-    let key_auth_limits_diff = key_auth_limits_gas_u64 as i64 - baseline_gas_u64 as i64;
-    assert!(
-        (349_000..=351_000).contains(&key_auth_limits_diff.unsigned_abs()),
-        "KeyAuth with 3 limits should add ~349,426 gas: actual diff {key_auth_limits_diff}"
-    );
-    println!("  ✓ KeyAuth with 3 limits adds {key_auth_limits_diff} gas (expected ~349,426)");
-
-    println!("\n✓ All gas estimation tests passed!");
+    println!("\n✓ All gas estimation cases passed");
     Ok(())
 }
 
@@ -2912,36 +3519,60 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
     let delegate_address = ACCOUNT_KEYCHAIN_ADDRESS;
     println!("Delegate address: {delegate_address}");
 
-    // ========================================================================
-    // Authority 1: Secp256k1 signature
-    // ========================================================================
+    use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
+    use tempo_primitives::transaction::TempoSignedAuthorization;
+
+    fn sign_p256_authorization(
+        sig_hash: B256,
+        auth: alloy_eips::eip7702::Authorization,
+        signing_key: &P256SigningKey,
+        pub_key_x: B256,
+        pub_key_y: B256,
+    ) -> eyre::Result<TempoSignedAuthorization> {
+        let inner = sign_p256_primitive(sig_hash, signing_key, pub_key_x, pub_key_y)?;
+        let aa_sig = TempoSignature::Primitive(inner);
+        Ok(TempoSignedAuthorization::new_unchecked(auth, aa_sig))
+    }
+
+    fn generate_p256_key() -> (P256SigningKey, B256, B256, Address) {
+        let signing_key = P256SigningKey::random(&mut OsRng);
+        let encoded_point = signing_key.verifying_key().to_encoded_point(false);
+        let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_ref());
+        let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
+        let addr = tempo_primitives::transaction::tt_signature::derive_p256_address(
+            &pub_key_x, &pub_key_y,
+        );
+        (signing_key, pub_key_x, pub_key_y, addr)
+    }
+
+    // Authority 1: Secp256k1
     println!("\n--- Authority 1: Secp256k1 ---");
-
     let auth1_signer = alloy::signers::local::PrivateKeySigner::random();
-    let (auth1_signed, auth1_addr) =
-        create_secp256k1_authorization(chain_id, delegate_address, &auth1_signer)?;
+    let auth1_addr = auth1_signer.address();
+    let (auth1, sig_hash1) = build_authorization(chain_id, delegate_address);
+    let sig1 = auth1_signer.sign_hash_sync(&sig_hash1)?;
+    let auth1_signed = TempoSignedAuthorization::new_unchecked(
+        auth1,
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(sig1)),
+    );
     println!("Authority 1 address: {auth1_addr}");
-    println!("  ✓ Created Secp256k1 authorization");
 
-    // ========================================================================
-    // Authority 2: P256 signature
-    // ========================================================================
+    // Authority 2: P256
     println!("\n--- Authority 2: P256 ---");
-
-    let (auth2_signed, auth2_addr, _auth2_signing_key) =
-        create_p256_authorization(chain_id, delegate_address)?;
+    let (auth2_key, pub2_x, pub2_y, auth2_addr) = generate_p256_key();
+    let (auth2, sig_hash2) = build_authorization(chain_id, delegate_address);
+    let auth2_signed = sign_p256_authorization(sig_hash2, auth2, &auth2_key, pub2_x, pub2_y)?;
     println!("Authority 2 address: {auth2_addr}");
-    println!("  ✓ Created P256 authorization");
 
-    // ========================================================================
-    // Authority 3: WebAuthn signature
-    // ========================================================================
+    // Authority 3: WebAuthn
     println!("\n--- Authority 3: WebAuthn ---");
-
-    let (auth3_signed, auth3_addr, _auth3_signing_key) =
-        create_webauthn_authorization(chain_id, delegate_address)?;
+    let (auth3_key, pub3_x, pub3_y, auth3_addr) = generate_p256_key();
+    let (auth3, sig_hash3) = build_authorization(chain_id, delegate_address);
+    let inner =
+        sign_webauthn_primitive(sig_hash3, &auth3_key, pub3_x, pub3_y, "https://example.com")?;
+    let auth3_signed =
+        TempoSignedAuthorization::new_unchecked(auth3, TempoSignature::Primitive(inner));
     println!("Authority 3 address: {auth3_addr}");
-    println!("  ✓ Created WebAuthn authorization");
 
     // ========================================================================
     // Verify BEFORE state: All authority accounts should have no code
@@ -3277,9 +3908,7 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
     println!("Created AA transaction with secp256k1 signature");
 
     // Sign the transaction with secp256k1
-    let sig_hash = tx.signature_hash();
-    let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
+    let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
     let signed_tx = AASigned::new_unhashed(tx, aa_signature);
 
     // Convert to envelope and encode
@@ -3319,10 +3948,7 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_access_key() -> eyre::Result<()> {
     use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
-    use sha2::{Digest, Sha256};
-    use tempo_primitives::transaction::{
-        KeyAuthorization, TokenLimit, tt_signature::P256SignatureWithPreHash,
-    };
+    use tempo_primitives::transaction::TokenLimit;
 
     reth_tracing::init_test_tracing();
 
@@ -3393,29 +4019,15 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     println!("  - Key ID (address): {access_key_addr}");
 
     // Root key signs the key authorization data to authorize the access key
-    // Compute the authorization message hash using the helper function
-    // Message format: keccak256(rlp([chain_id, key_type, key_id, expiry, limits]))
-    let auth_message_hash = KeyAuthorization {
+    let mock_sig = create_mock_p256_sig(access_pub_key_x, access_pub_key_y);
+    let key_authorization = create_key_authorization(
+        &root_key_signer,
+        access_key_addr,
+        mock_sig,
         chain_id,
-        key_type: tempo_primitives::transaction::SignatureType::P256,
-        key_id: access_key_addr,
-        expiry: None, // Never expires
-        limits: Some(spending_limits.clone()),
-    }
-    .signature_hash();
-
-    // Root key signs the authorization message
-    let root_auth_signature = root_key_signer.sign_hash_sync(&auth_message_hash)?;
-
-    // Create the key authorization with root key signature
-    let key_authorization = KeyAuthorization {
-        chain_id,
-        key_type: tempo_primitives::transaction::SignatureType::P256, // Type of key being authorized
-        key_id: access_key_addr, // Address derived from P256 public key
-        expiry: None,            // Never expires
-        limits: Some(spending_limits),
-    }
-    .into_signed(PrimitiveSignature::Secp256k1(root_auth_signature));
+        None,
+        Some(spending_limits),
+    )?;
 
     println!("✓ Key authorization created (never expires)");
     println!("✓ Key authorization signed by root key");
@@ -3463,34 +4075,17 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     println!("✓ Key authorization set correctly");
 
     // Sign the transaction with the ACCESS KEY (P256)
-    // In a real scenario, this would be the user's access key signing the transaction
     let sig_hash = tx.signature_hash();
     println!("\nSigning transaction with access key (P256)...");
     println!("  Transaction signature hash: {sig_hash}");
 
-    // Pre-hash for P256 signature
-    let pre_hashed = Sha256::digest(sig_hash);
-
-    // Sign with the access key
-    let p256_signature: p256::ecdsa::Signature =
-        access_key_signing_key.sign_prehash(&pre_hashed)?;
-    let sig_bytes = p256_signature.to_bytes();
-
-    // Create P256 primitive signature for the inner signature
-    let inner_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
-        r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: normalize_p256_s(&sig_bytes[32..64]),
-        pub_key_x: access_pub_key_x,
-        pub_key_y: access_pub_key_y,
-        pre_hash: true,
-    });
-
-    // Wrap it in a Keychain signature with the root key address
-    let aa_signature =
-        TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
-            root_key_addr, // The root account this transaction is for
-            inner_signature,
-        ));
+    let aa_signature = sign_aa_tx_with_p256_access_key(
+        &tx,
+        &access_key_signing_key,
+        &access_pub_key_x,
+        &access_pub_key_y,
+        root_key_addr,
+    )?;
 
     println!("✓ Transaction signed with access key P256 signature (wrapped in Keychain)");
 
@@ -3802,34 +4397,19 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         enforceLimits: true,
         limits: vec![],
     };
-    let tx = TempoTransaction {
+    let mut tx = create_basic_aa_tx(
         chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 2_000_000,
-        calls: vec![Call {
+        nonce,
+        vec![Call {
             to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
             value: U256::ZERO,
             input: authorize_call.abi_encode().into(),
         }],
-        nonce_key: U256::ZERO,
-        nonce,
-        fee_token: None,
-        fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
-        key_authorization: None,
-        tempo_authorization_list: vec![],
-    };
-    let sig_hash = tx.signature_hash();
-    let signature = root_signer.sign_hash_sync(&sig_hash)?;
-    let _tx_hash = submit_and_mine_aa_tx(
-        &mut setup,
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    )
-    .await?;
+        2_000_000,
+    );
+    tx.fee_token = None;
+    let signature = sign_aa_tx_secp256k1(&tx, &root_signer)?;
+    let _tx_hash = submit_and_mine_aa_tx(&mut setup, tx, signature).await?;
     nonce += 1; // Increment after successful submission
     println!("✓ Zero public key rejected\n");
 
@@ -3859,65 +4439,39 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     )?;
 
     // First authorization should succeed
-    let tx1 = TempoTransaction {
+    let mut tx1 = create_basic_aa_tx(
         chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 2_000_000,
-        calls: vec![Call {
+        nonce,
+        vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: U256::ZERO,
-        nonce,
-        fee_token: None,
-        fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
-        key_authorization: Some(key_auth.clone()),
-        tempo_authorization_list: vec![],
-    };
-    let sig_hash = tx1.signature_hash();
-    let signature = root_signer.sign_hash_sync(&sig_hash)?;
-    let _tx_hash = submit_and_mine_aa_tx(
-        &mut setup,
-        tx1,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    )
-    .await?;
+        2_000_000,
+    );
+    tx1.fee_token = None;
+    tx1.key_authorization = Some(key_auth.clone());
+    let signature = sign_aa_tx_secp256k1(&tx1, &root_signer)?;
+    let _tx_hash = submit_and_mine_aa_tx(&mut setup, tx1, signature).await?;
     nonce += 1;
     println!("  ✓ First authorization succeeded");
 
     // Second authorization with same key should fail
     // The transaction will be mined but should revert during execution
-    let tx2 = TempoTransaction {
+    let mut tx2 = create_basic_aa_tx(
         chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 2_000_000,
-        calls: vec![Call {
+        nonce,
+        vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: U256::ZERO,
-        nonce,
-        fee_token: None,
-        fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
-        key_authorization: Some(key_auth),
-        tempo_authorization_list: vec![],
-    };
-    let sig_hash2 = tx2.signature_hash();
-    let signature2 = root_signer.sign_hash_sync(&sig_hash2)?;
-    let signed_tx2 = AASigned::new_unhashed(
-        tx2,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature2)),
+        2_000_000,
     );
+    tx2.fee_token = None;
+    tx2.key_authorization = Some(key_auth);
+    let signature2 = sign_aa_tx_secp256k1(&tx2, &root_signer)?;
+    let signed_tx2 = AASigned::new_unhashed(tx2, signature2);
     let envelope2: TempoTxEnvelope = signed_tx2.into();
     let mut encoded2 = Vec::new();
     envelope2.encode_2718(&mut encoded2);
@@ -3983,34 +4537,20 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     )?;
 
     // Authorize access_key_1 with root key (should succeed)
-    let tx3 = TempoTransaction {
+    let mut tx3 = create_basic_aa_tx(
         chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 2_000_000,
-        calls: vec![Call {
+        nonce,
+        vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: U256::ZERO,
-        nonce,
-        fee_token: None,
-        fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
-        key_authorization: Some(key_auth_1),
-        tempo_authorization_list: vec![],
-    };
-    let sig_hash = tx3.signature_hash();
-    let signature = root_signer.sign_hash_sync(&sig_hash)?;
-    let _tx_hash = submit_and_mine_aa_tx(
-        &mut setup,
-        tx3,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    )
-    .await?;
+        2_000_000,
+    );
+    tx3.fee_token = None;
+    tx3.key_authorization = Some(key_auth_1);
+    let signature = sign_aa_tx_secp256k1(&tx3, &root_signer)?;
+    let _tx_hash = submit_and_mine_aa_tx(&mut setup, tx3, signature).await?;
     nonce += 1;
 
     // Try to authorize second key using first access key (should fail)
@@ -4032,26 +4572,18 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         None,         // Never expires
         Some(vec![]), // No spending allowed
     )?;
-    let tx4 = TempoTransaction {
+    let mut tx4 = create_basic_aa_tx(
         chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 2_000_000,
-        calls: vec![Call {
+        nonce,
+        vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: U256::ZERO,
-        nonce,
-        fee_token: None,
-        fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
-        valid_after: None,
-        access_list: Default::default(),
-        key_authorization: Some(key_auth_2),
-        tempo_authorization_list: vec![],
-    };
+        2_000_000,
+    );
+    tx4.fee_token = None;
+    tx4.key_authorization = Some(key_auth_2);
     // Sign with access_key_1 (not root_key) - this should fail validation
     let signature =
         sign_aa_tx_with_p256_access_key(&tx4, &access_key_1, &pub_x_1, &pub_y_1, root_addr)?;
@@ -5912,27 +6444,7 @@ async fn test_aa_expiring_nonce_basic_flow() -> eyre::Result<()> {
     let valid_before = current_timestamp + 20; // 20 seconds in future
     println!("Setting valid_before to: {valid_before}");
 
-    let tx = TempoTransaction {
-        chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 2_000_000,
-        calls: vec![Call {
-            to: recipient.into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
-        nonce_key: TEMPO_EXPIRING_NONCE_KEY, // Use expiring nonce key (uint256.max)
-        nonce: 0,                            // Must be 0 for expiring nonce
-        fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(valid_before),
-        ..Default::default()
-    };
-
-    println!("Created expiring nonce transaction");
-    println!("  nonce_key: uint256.max (expiring nonce mode)");
-    println!("  nonce: 0");
-    println!("  valid_before: {valid_before}");
+    let tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
 
     // Sign and encode the transaction
     let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
@@ -5951,19 +6463,7 @@ async fn test_aa_expiring_nonce_basic_flow() -> eyre::Result<()> {
         payload.block().inner.number
     );
 
-    // Verify transaction was included - use raw RPC for Tempo tx type
-    let raw_receipt: Option<serde_json::Value> = provider
-        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-        .await?;
-
-    assert!(raw_receipt.is_some(), "Transaction receipt should exist");
-    let receipt = raw_receipt.unwrap();
-    let status = receipt["status"]
-        .as_str()
-        .map(|s| s == "0x1")
-        .unwrap_or(false);
-    assert!(status, "Transaction should succeed");
-
+    assert_receipt_status(&provider, tx_hash, true).await?;
     println!("✓ Expiring nonce transaction executed successfully");
 
     // Verify alice's protocol nonce did NOT increment (expiring nonce doesn't use protocol nonce)
@@ -6004,24 +6504,8 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     // Create expiring nonce transaction
     let valid_before = current_timestamp + 25;
 
-    let tx = TempoTransaction {
-        chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 2_000_000,
-        calls: vec![Call {
-            to: recipient.into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
-        nonce_key: TEMPO_EXPIRING_NONCE_KEY,
-        nonce: 0,
-        fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(valid_before),
-        ..Default::default()
-    };
+    let tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
 
-    // Sign and encode
     let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
     let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
     let tx_hash = *envelope.tx_hash();
@@ -6033,16 +6517,7 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     setup.node.rpc.inject_tx(encoded.clone().into()).await?;
     setup.node.advance_block().await?;
 
-    // Use raw RPC for Tempo tx type
-    let raw_receipt: Option<serde_json::Value> = provider
-        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-        .await?;
-    assert!(raw_receipt.is_some(), "First transaction should be mined");
-    let status = raw_receipt.unwrap()["status"]
-        .as_str()
-        .map(|s| s == "0x1")
-        .unwrap_or(false);
-    assert!(status, "First transaction should succeed");
+    assert_receipt_status(&provider, tx_hash, true).await?;
     println!("✓ First submission succeeded");
 
     // Second submission with SAME encoded tx (same hash) should fail
@@ -6092,23 +6567,7 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
         let recipient = Address::random();
         let valid_before = current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS;
 
-        let tx = TempoTransaction {
-            chain_id,
-            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-            gas_limit: 2_000_000,
-            calls: vec![Call {
-                to: recipient.into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
-            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
-            nonce: 0,
-            fee_token: Some(DEFAULT_FEE_TOKEN),
-            valid_before: Some(valid_before),
-            ..Default::default()
-        };
-
+        let tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
         let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
         let tx_hash = *envelope.tx_hash();
@@ -6120,19 +6579,7 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
             .await?;
         setup.node.advance_block().await?;
 
-        // Use raw RPC for Tempo tx type
-        let raw_receipt: Option<serde_json::Value> = provider
-            .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-            .await?;
-        let status = raw_receipt
-            .as_ref()
-            .and_then(|r| r["status"].as_str())
-            .map(|s| s == "0x1")
-            .unwrap_or(false);
-        assert!(
-            raw_receipt.is_some() && status,
-            "Transaction with valid_before at max window should succeed"
-        );
+        assert_receipt_status(&provider, tx_hash, true).await?;
         println!("✓ valid_before = now + 30s accepted");
     }
 
@@ -6150,27 +6597,9 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
         let recipient = Address::random();
         let valid_before = current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS + 1; // 31 seconds
 
-        let tx = TempoTransaction {
-            chain_id,
-            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-            gas_limit: 2_000_000,
-            calls: vec![Call {
-                to: recipient.into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
-            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
-            nonce: 0,
-            fee_token: Some(DEFAULT_FEE_TOKEN),
-            valid_before: Some(valid_before),
-            ..Default::default()
-        };
-
+        let tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
         let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
-
-        // This should be rejected at pool level with ExpiringNonceValidBeforeTooFar error
         let inject_result = setup
             .node
             .rpc
@@ -6202,23 +6631,7 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
         let recipient = Address::random();
         let valid_before = current_timestamp.saturating_sub(1); // 1 second in past
 
-        let tx = TempoTransaction {
-            chain_id,
-            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-            gas_limit: 2_000_000,
-            calls: vec![Call {
-                to: recipient.into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
-            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
-            nonce: 0,
-            fee_token: Some(DEFAULT_FEE_TOKEN),
-            valid_before: Some(valid_before),
-            ..Default::default()
-        };
-
+        let tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
         let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
         let tx_hash = *envelope.tx_hash();
@@ -6233,20 +6646,19 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
             println!("✓ valid_before in past rejected at pool level");
         } else {
             setup.node.advance_block().await?;
-            // Use raw RPC for Tempo tx type
-            let raw_receipt: Option<serde_json::Value> = provider
+            let raw: Option<serde_json::Value> = provider
                 .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
                 .await?;
-            let status = raw_receipt
+            let succeeded = raw
                 .as_ref()
                 .and_then(|r| r["status"].as_str())
                 .map(|s| s == "0x1")
                 .unwrap_or(false);
-            if raw_receipt.is_none() || !status {
-                println!("✓ valid_before in past rejected at execution level");
-            } else {
-                panic!("Transaction with valid_before in the past should be rejected");
-            }
+            assert!(
+                !succeeded,
+                "Transaction with valid_before in the past should be rejected"
+            );
+            println!("✓ valid_before in past rejected at execution level");
         }
     }
 
@@ -6282,23 +6694,7 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
     let current_timestamp = block.header.timestamp();
     let valid_before = current_timestamp + 25;
 
-    let expiring_tx = TempoTransaction {
-        chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 2_000_000,
-        calls: vec![Call {
-            to: Address::random().into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
-        nonce_key: TEMPO_EXPIRING_NONCE_KEY,
-        nonce: 0,
-        fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(valid_before),
-        ..Default::default()
-    };
-
+    let expiring_tx = create_expiring_nonce_tx(chain_id, valid_before, Address::random());
     let aa_signature = sign_aa_tx_secp256k1(&expiring_tx, &alice_signer)?;
     let envelope: TempoTxEnvelope = expiring_tx.into_signed(aa_signature).into();
     let expiring_tx_hash = *envelope.tx_hash();
@@ -6310,16 +6706,7 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
         .await?;
     setup.node.advance_block().await?;
 
-    // Verify expiring tx succeeded
-    let raw_receipt: Option<serde_json::Value> = provider
-        .raw_request("eth_getTransactionReceipt".into(), [expiring_tx_hash])
-        .await?;
-    assert!(raw_receipt.is_some(), "Expiring nonce tx should be mined");
-    let status = raw_receipt.unwrap()["status"]
-        .as_str()
-        .map(|s| s == "0x1")
-        .unwrap_or(false);
-    assert!(status, "Expiring nonce tx should succeed");
+    assert_receipt_status(&provider, expiring_tx_hash, true).await?;
     println!("✓ Expiring nonce transaction succeeded");
 
     // Verify protocol nonce is still 0
@@ -6332,23 +6719,16 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
 
     // Step 2: Now submit a protocol nonce transaction (nonce_key = 0)
     println!("\nStep 2: Submit protocol nonce transaction...");
-    let protocol_tx = TempoTransaction {
+    let protocol_tx = create_basic_aa_tx(
         chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 2_000_000,
-        calls: vec![Call {
+        0,
+        vec![Call {
             to: Address::random().into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: U256::ZERO, // Protocol nonce
-        nonce: 0,              // First protocol tx
-        fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(u64::MAX),
-        ..Default::default()
-    };
-
+        2_000_000,
+    );
     let aa_signature = sign_aa_tx_secp256k1(&protocol_tx, &alice_signer)?;
     let envelope: TempoTxEnvelope = protocol_tx.into_signed(aa_signature).into();
     let protocol_tx_hash = *envelope.tx_hash();
@@ -6360,16 +6740,7 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
         .await?;
     setup.node.advance_block().await?;
 
-    // Verify protocol tx succeeded
-    let raw_receipt: Option<serde_json::Value> = provider
-        .raw_request("eth_getTransactionReceipt".into(), [protocol_tx_hash])
-        .await?;
-    assert!(raw_receipt.is_some(), "Protocol nonce tx should be mined");
-    let status = raw_receipt.unwrap()["status"]
-        .as_str()
-        .map(|s| s == "0x1")
-        .unwrap_or(false);
-    assert!(status, "Protocol nonce tx should succeed");
+    assert_receipt_status(&provider, protocol_tx_hash, true).await?;
     println!("✓ Protocol nonce transaction succeeded");
 
     // Verify protocol nonce incremented
@@ -6621,200 +6992,404 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Test eth_fillTransaction RPC method for Tempo transactions
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_fill_transaction() -> eyre::Result<()> {
+// Covers eth_fillTransaction field filling for nonceKey, validBefore, validAfter, feeToken, and fee payer signature hash recovery.
+async fn test_eth_fill_transaction_matrix() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    println!("\n=== Testing eth_fillTransaction ===\n");
+    let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
 
-    let (mut setup, provider, _alice_signer, alice_addr) = setup_test_with_funded_account().await?;
-
-    for _ in 0..3 {
-        setup.node.advance_block().await?;
-    }
+    let fee_payer_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
 
     let block = provider
         .get_block_by_number(Default::default())
         .await?
         .unwrap();
     let current_timestamp = block.header.timestamp();
-    let valid_before = current_timestamp + 20;
-    let valid_after = current_timestamp - 10;
 
-    let recipient = Address::random();
+    let test_matrix = [
+        fill_case!(Protocol, Secp256k1, omit_nonce_key),
+        fill_case!(TwoD(42), Secp256k1),
+        fill_case!(Expiring, Secp256k1; valid_before_offset = 20),
+        fill_case!(
+            Expiring,
+            Secp256k1;
+            valid_before_offset = 20,
+            valid_after_offset = -10
+        ),
+        fill_case!(
+            Expiring,
+            Secp256k1;
+            valid_before_offset = 20,
+            explicit_nonce = 12
+        ),
+        fill_case!(Protocol, Secp256k1; fee_token = DEFAULT_FEE_TOKEN),
+        fill_case!(
+            Protocol,
+            Secp256k1,
+            fee_payer;
+            fee_token = DEFAULT_FEE_TOKEN
+        ),
+    ];
 
-    let request = serde_json::json!({
-        "from": alice_addr,
-        "type": "0x76",
-        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
-        "validBefore": format!("0x{valid_before:x}"),
-        "validAfter": format!("0x{valid_after:x}"),
-        "nonceKey": format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
-        "keyType": "secp256k1"
-    });
+    println!("\n=== eth_fillTransaction matrix ===\n");
+    println!("Running {} fillTransaction cases...\n", test_matrix.len());
 
-    println!("Request: {}", serde_json::to_string_pretty(&request)?);
+    for (index, test_case) in test_matrix.iter().enumerate() {
+        println!("[{}/{}] {}", index + 1, test_matrix.len(), test_case.name);
+        let (filled_tx, request_context) =
+            fill_transaction_from_case(&provider, test_case, signer_addr, current_timestamp)
+                .await?;
+        assert_fill_request_expectations(&filled_tx, &request_context, test_case)?;
 
-    let result: serde_json::Value = provider
-        .raw_request("eth_fillTransaction".into(), [request])
-        .await?;
+        if test_case.fee_payer {
+            let fee_payer_sig_hash = filled_tx.fee_payer_signature_hash(signer_addr);
+            let fee_payer_signature = fee_payer_signer.sign_hash_sync(&fee_payer_sig_hash)?;
+            assert_eq!(
+                fee_payer_signature.recover_address_from_prehash(&fee_payer_sig_hash)?,
+                fee_payer_signer.address(),
+                "feePayerSignature hash should be deterministic"
+            );
+        }
+    }
 
-    println!("Response: {}", serde_json::to_string_pretty(&result)?);
-
-    let tx = result
-        .get("tx")
-        .expect("response should contain 'tx' field");
-
-    assert!(tx.get("nonce").is_some(), "tx should have nonce filled");
-    assert!(tx.get("gas").is_some(), "tx should have gas filled");
-    assert!(
-        tx.get("maxFeePerGas").is_some(),
-        "tx should have maxFeePerGas filled"
-    );
-    assert_eq!(
-        tx.get("validBefore").and_then(|v| v.as_str()),
-        Some(format!("0x{valid_before:x}").as_str()),
-        "validBefore should be preserved"
-    );
-    assert_eq!(
-        tx.get("validAfter").and_then(|v| v.as_str()),
-        Some(format!("0x{valid_after:x}").as_str()),
-        "validAfter should be preserved"
-    );
-
-    println!("✓ eth_fillTransaction returned valid filled transaction");
-
+    println!("\n✓ All {} fillTransaction cases passed", test_matrix.len());
     Ok(())
 }
 
-/// Regression test for fill_transaction with 2D nonce when protocol nonce > 2D nonce.
-///
-/// Verifies that eth_fillTransaction correctly uses the 2D nonce from the nonce manager
-/// storage, not the protocol nonce from the account basic info.
-///
-/// Setup: An account sends 5 transactions to get protocol nonce = 5, then calls
-/// eth_fillTransaction with a new nonce key (2D nonce = 0). The filled transaction
-/// should have nonce = 0 (2D nonce), not nonce = 5 (protocol nonce).
-#[tokio::test(flavor = "multi_thread")]
-async fn test_eth_fill_transaction_2d_nonce_with_high_protocol_nonce() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    println!("\n=== Testing eth_fillTransaction with 2D nonce (protocol nonce > 2D nonce) ===\n");
-
-    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
-    let chain_id = provider.get_chain_id().await?;
-
-    // First, send several transactions to bump the protocol nonce
-    // This simulates the scenario where an account has been active (high protocol nonce)
-    // but is now using a new 2D nonce key (low 2D nonce)
-    println!("Sending transactions to bump protocol nonce...");
-    let recipient = Address::random();
-
-    for i in 0..5 {
-        let tx = TempoTransaction {
-            chain_id,
-            nonce: i,
-            gas_limit: 300_000,
-            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128 + 1_000_000,
-            max_priority_fee_per_gas: 1_000_000,
-            fee_token: Some(DEFAULT_FEE_TOKEN),
-            calls: vec![Call {
-                to: recipient.into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
-            ..Default::default()
-        };
-
-        let sig_hash = tx.signature_hash();
-        let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-        let signed = AASigned::new_unhashed(
-            tx,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-        );
-        let envelope: TempoTxEnvelope = signed.into();
-        let encoded = envelope.encoded_2718();
-
-        let tx_hash = setup.node.rpc.inject_tx(encoded.into()).await?;
-        setup.node.advance_block().await?;
-        tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
-        println!(
-            "  Transaction {} confirmed (hash: {:?}), nonce now: {}",
-            i,
-            tx_hash,
-            i + 1
-        );
-    }
-
-    // Verify protocol nonce is now 5
-    let protocol_nonce = provider.get_transaction_count(alice_addr).await?;
-    println!("Protocol nonce after transactions: {protocol_nonce}");
-    assert_eq!(protocol_nonce, 5, "Protocol nonce should be 5");
-
-    // Now call fill_transaction with a 2D nonce key
-    // The 2D nonce for this key is 0 (never used), but protocol nonce is 5
-    let nonce_key = U256::from(12345); // Arbitrary nonce key that hasn't been used
-
-    for _ in 0..3 {
-        setup.node.advance_block().await?;
-    }
-
-    let block = provider
-        .get_block_by_number(Default::default())
-        .await?
-        .unwrap();
-    let current_timestamp = block.header.timestamp();
-    let valid_before = current_timestamp + 60;
-    let valid_after = current_timestamp - 10;
-
-    let request = serde_json::json!({
-        "from": alice_addr,
-        "type": "0x76",
-        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
-        "validBefore": format!("0x{valid_before:x}"),
-        "validAfter": format!("0x{valid_after:x}"),
-        "nonceKey": format!("{nonce_key:#x}"),
-        "keyType": "secp256k1"
-    });
-
-    let response: serde_json::Value = provider
-        .raw_request("eth_fillTransaction".into(), [request])
-        .await?;
-
-    let tx = response
+/// Helper to parse a filled transaction response into a TempoTransaction
+fn parse_filled_tx(filled: &serde_json::Value) -> eyre::Result<TempoTransaction> {
+    let tx = filled
         .get("tx")
-        .expect("response should contain 'tx' field");
+        .ok_or_else(|| eyre::eyre!("Missing 'tx' field in response"))?;
 
-    let filled_nonce = tx
+    let chain_id = tx
+        .get("chainId")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .ok_or_else(|| eyre::eyre!("Missing 'chainId' in filled tx"))?;
+
+    let nonce = tx
         .get("nonce")
         .and_then(|v| v.as_str())
-        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(999));
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .unwrap_or(0);
+
+    let gas_limit = tx
+        .get("gas")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .ok_or_else(|| eyre::eyre!("Missing 'gas' in filled tx"))?;
+
+    let max_fee_per_gas = tx
+        .get("maxFeePerGas")
+        .and_then(|v| v.as_str())
+        .map(|s| u128::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .ok_or_else(|| eyre::eyre!("Missing 'maxFeePerGas' in filled tx"))?;
+
+    let max_priority_fee_per_gas = tx
+        .get("maxPriorityFeePerGas")
+        .and_then(|v| v.as_str())
+        .map(|s| u128::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .ok_or_else(|| eyre::eyre!("Missing 'maxPriorityFeePerGas' in filled tx"))?;
+
+    let nonce_key = tx
+        .get("nonceKey")
+        .and_then(|v| v.as_str())
+        .map(|s| U256::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .unwrap_or(U256::ZERO);
+
+    let valid_before = tx
+        .get("validBefore")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?;
+
+    let valid_after = tx
+        .get("validAfter")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?;
+
+    let fee_token = tx
+        .get("feeToken")
+        .and_then(|v| v.as_str())
+        .map(|s| s.parse::<Address>())
+        .transpose()?;
+
+    let calls = tx
+        .get("calls")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|call| {
+                    let to = call
+                        .get("to")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.parse::<Address>())
+                        .transpose()?
+                        .map(TxKind::Call)
+                        .unwrap_or(TxKind::Create);
+                    let value = call
+                        .get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| U256::from_str_radix(s.trim_start_matches("0x"), 16))
+                        .transpose()?
+                        .unwrap_or(U256::ZERO);
+                    let input = call
+                        .get("data")
+                        .or_else(|| call.get("input"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| {
+                            let hex_str = s.trim_start_matches("0x");
+                            if hex_str.is_empty() {
+                                Ok(Bytes::new())
+                            } else {
+                                hex::decode(hex_str).map(Bytes::from)
+                            }
+                        })
+                        .transpose()?
+                        .unwrap_or_default();
+                    Ok(tempo_primitives::transaction::tempo_transaction::Call { to, value, input })
+                })
+                .collect::<eyre::Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(TempoTransaction {
+        chain_id,
+        nonce,
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        nonce_key,
+        valid_before,
+        valid_after,
+        fee_token,
+        calls,
+        ..Default::default()
+    })
+}
+
+/// Nonce mode for E2E test matrix
+#[derive(Debug, Clone, Copy)]
+enum NonceMode {
+    Protocol,
+    TwoD(u64),
+    Expiring,
+    ExpiringAtBoundary,
+    ExpiringExceedsBoundary,
+}
+
+/// Expected outcome for E2E test
+#[derive(Debug, Clone, Copy)]
+enum ExpectedOutcome {
+    Success,
+    Rejection,
+}
+
+/// Test case definition for fill tests and E2E matrix
+struct FillTestCase {
+    name: String,
+    nonce_mode: NonceMode,
+    key_type: KeyType,
+    include_nonce_key: bool,
+    fee_token: Option<Address>,
+    fee_payer: bool,
+    valid_before_offset: Option<i64>,
+    valid_after_offset: Option<i64>,
+    explicit_nonce: Option<u64>,
+    pre_bump_nonce: Option<u64>,
+    expected: ExpectedOutcome,
+}
+
+struct FillRequestContext {
+    request: TempoTransactionRequest,
+    expected_nonce: Option<u64>,
+    expected_nonce_key: U256,
+    expected_valid_before: Option<u64>,
+    expected_valid_after: Option<u64>,
+}
+
+fn key_type_to_signature_type(key_type: KeyType) -> SignatureType {
+    match key_type {
+        KeyType::Secp256k1 => SignatureType::Secp256k1,
+        KeyType::P256 => SignatureType::P256,
+        KeyType::WebAuthn => SignatureType::WebAuthn,
+    }
+}
+
+fn resolve_timestamp_offset(current_timestamp: u64, offset: i64) -> u64 {
+    if offset.is_negative() {
+        current_timestamp.saturating_sub(offset.unsigned_abs())
+    } else {
+        current_timestamp + offset as u64
+    }
+}
+
+fn build_fill_request_context(
+    test_case: &FillTestCase,
+    signer_addr: Address,
+    recipient: Address,
+    current_timestamp: u64,
+) -> FillRequestContext {
+    let valid_before_offset = test_case
+        .valid_before_offset
+        .map(|offset| resolve_timestamp_offset(current_timestamp, offset));
+    let valid_after_offset = test_case
+        .valid_after_offset
+        .map(|offset| resolve_timestamp_offset(current_timestamp, offset));
+
+    let valid_before = valid_before_offset.or_else(|| match test_case.nonce_mode {
+        NonceMode::Expiring => Some(current_timestamp + 20),
+        NonceMode::ExpiringAtBoundary => {
+            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS)
+        }
+        NonceMode::ExpiringExceedsBoundary => {
+            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS + 1)
+        }
+        _ => None,
+    });
+
+    let nonce_key_value = match test_case.nonce_mode {
+        NonceMode::Protocol => U256::ZERO,
+        NonceMode::TwoD(key) => U256::from(key),
+        NonceMode::Expiring
+        | NonceMode::ExpiringAtBoundary
+        | NonceMode::ExpiringExceedsBoundary => TEMPO_EXPIRING_NONCE_KEY,
+    };
+    let nonce_key = if test_case.include_nonce_key {
+        Some(nonce_key_value)
+    } else {
+        None
+    };
+    let expected_nonce_key = if test_case.include_nonce_key {
+        nonce_key_value
+    } else {
+        U256::ZERO
+    };
+
+    let fee_payer_signature = if test_case.fee_payer {
+        Some(Signature::new(U256::ONE, U256::ONE, false))
+    } else {
+        None
+    };
+
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(signer_addr),
+            nonce: test_case.explicit_nonce,
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Call(recipient),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        key_type: Some(key_type_to_signature_type(test_case.key_type)),
+        key_data: None,
+        fee_token: test_case.fee_token,
+        fee_payer_signature,
+        valid_before,
+        valid_after: valid_after_offset,
+        nonce_key,
+        ..Default::default()
+    };
+
+    FillRequestContext {
+        request,
+        expected_nonce: test_case.explicit_nonce,
+        expected_nonce_key,
+        expected_valid_before: valid_before,
+        expected_valid_after: valid_after_offset,
+    }
+}
+
+async fn fill_transaction_from_case(
+    provider: &impl Provider,
+    test_case: &FillTestCase,
+    signer_addr: Address,
+    current_timestamp: u64,
+) -> eyre::Result<(TempoTransaction, FillRequestContext)> {
+    let recipient = Address::random();
+    let request_context =
+        build_fill_request_context(test_case, signer_addr, recipient, current_timestamp);
+
+    let filled: serde_json::Value = provider
+        .raw_request(
+            "eth_fillTransaction".into(),
+            [serde_json::to_value(&request_context.request)?],
+        )
+        .await?;
+
+    let tx = parse_filled_tx(&filled)?;
+
+    Ok((tx, request_context))
+}
+
+fn assert_fill_request_expectations(
+    tx: &TempoTransaction,
+    request_context: &FillRequestContext,
+    test_case: &FillTestCase,
+) -> eyre::Result<()> {
+    assert_eq!(
+        tx.nonce_key, request_context.expected_nonce_key,
+        "nonceKey should match"
+    );
+    assert_eq!(
+        tx.valid_before, request_context.expected_valid_before,
+        "validBefore should match"
+    );
+    assert_eq!(
+        tx.valid_after, request_context.expected_valid_after,
+        "validAfter should match"
+    );
+
+    if let Some(expected_nonce) = request_context.expected_nonce {
+        assert_eq!(tx.nonce, expected_nonce, "nonce should be preserved");
+    }
+
+    if let Some(fee_token) = test_case.fee_token {
+        assert_eq!(
+            tx.fee_token,
+            Some(fee_token),
+            "feeToken should be preserved"
+        );
+    } else {
+        assert_eq!(tx.fee_token, None, "feeToken should remain empty");
+    }
 
     assert_eq!(
-        filled_nonce,
-        Some(0),
-        "Nonce should be 0 (2D nonce), not 5 (protocol nonce)"
+        tx.fee_payer_signature, None,
+        "feePayerSignature should remain empty"
     );
-    assert!(tx.get("gas").is_some(), "tx should have gas filled");
 
     Ok(())
 }
 
-/// Regression test for fill_transaction with expiring nonce when nonce=0 is explicitly provided.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_eth_fill_transaction_expiring_nonce_with_explicit_nonce_zero() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let (mut setup, provider, _alice_signer, alice_addr) = setup_test_with_funded_account().await?;
-    let chain_id = provider.get_chain_id().await?;
+/// Send `count` no-op transactions to bump the protocol nonce.
+async fn bump_protocol_nonce(
+    setup: &mut SingleNodeSetup,
+    provider: &impl Provider,
+    signer: &impl SignerSync,
+    signer_addr: Address,
+    count: u64,
+) -> eyre::Result<()> {
     let recipient = Address::random();
+    let chain_id = provider.get_chain_id().await?;
+    let start_nonce = provider.get_transaction_count(signer_addr).await?;
 
-    // Bump protocol nonce so it differs from expiring nonce (which must be 0)
-    for i in 0..3 {
+    for i in 0..count {
         let tx = TempoTransaction {
             chain_id,
-            nonce: i,
+            nonce: start_nonce + i,
             gas_limit: 300_000,
             max_fee_per_gas: TEMPO_T1_BASE_FEE as u128 + 1_000_000,
             max_priority_fee_per_gas: 1_000_000,
@@ -6828,13 +7403,12 @@ async fn test_eth_fill_transaction_expiring_nonce_with_explicit_nonce_zero() -> 
         };
 
         let sig_hash = tx.signature_hash();
-        let signature = _alice_signer.sign_hash_sync(&sig_hash)?;
+        let signature = signer.sign_hash_sync(&sig_hash)?;
         let signed = AASigned::new_unhashed(
             tx,
             TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
         );
         let envelope: TempoTxEnvelope = signed.into();
-
         setup
             .node
             .rpc
@@ -6844,65 +7418,37 @@ async fn test_eth_fill_transaction_expiring_nonce_with_explicit_nonce_zero() -> 
         tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
     }
 
-    let protocol_nonce = provider.get_transaction_count(alice_addr).await?;
-    assert_eq!(protocol_nonce, 3, "Protocol nonce should be 3");
-
-    // Advance a few blocks to get a valid timestamp
-    for _ in 0..3 {
-        setup.node.advance_block().await?;
-    }
-
-    let block = provider
-        .get_block_by_number(Default::default())
-        .await?
-        .unwrap();
-    let valid_before = block.header.timestamp() + 25;
-
-    // Key: explicitly provide nonce=0 with expiring nonce key
-    let request = serde_json::json!({
-        "from": alice_addr,
-        "nonce": "0x0",
-        "type": "0x76",
-        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
-        "validBefore": format!("0x{valid_before:x}"),
-        "nonceKey": format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
-        "keyType": "secp256k1"
-    });
-
-    let response: serde_json::Value = provider
-        .raw_request("eth_fillTransaction".into(), [request])
-        .await?;
-
-    let tx = response
-        .get("tx")
-        .expect("response should contain 'tx' field");
-    let filled_nonce = tx
-        .get("nonce")
-        .and_then(|v| v.as_str())
-        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(999));
-
+    let final_nonce = provider.get_transaction_count(signer_addr).await?;
     assert_eq!(
-        filled_nonce,
-        Some(0),
-        "Nonce should remain 0 for expiring nonce"
+        final_nonce,
+        start_nonce + count,
+        "Protocol nonce should have bumped"
     );
-    assert!(tx.get("gas").is_some(), "tx should have gas filled");
-
     Ok(())
 }
 
-/// Verifies that `eth_fillTransaction` returns sufficient gas for expiring nonce transactions.
-///
-/// When `nonce=0` is explicitly provided with an expiring nonce key, the gas estimation
-/// must include `EXPIRING_NONCE_GAS` (13,000 gas) for the ring buffer operations.
-/// This test creates a transaction using the gas returned by `eth_fillTransaction`
-/// and verifies it can be successfully executed.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_eth_fill_transaction_expiring_nonce_gas_is_sufficient() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
+/// Run a single E2E test case from the matrix
+async fn run_fill_sign_send_test(test_case: &FillTestCase) -> eyre::Result<()> {
+    println!("\n=== E2E Test: {} ===\n", test_case.name);
+    println!("  nonce_mode: {:?}", test_case.nonce_mode);
+    println!("  key_type: {:?}", test_case.key_type);
 
+    let uses_p256 = matches!(test_case.key_type, KeyType::P256 | KeyType::WebAuthn);
+
+    if uses_p256 {
+        run_fill_sign_send_test_p256(test_case).await
+    } else {
+        run_fill_sign_send_test_secp256k1(test_case).await
+    }
+}
+
+/// Run test with secp256k1 key
+async fn run_fill_sign_send_test_secp256k1(test_case: &FillTestCase) -> eyre::Result<()> {
     let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
-    let chain_id = provider.get_chain_id().await?;
+
+    if let Some(count) = test_case.pre_bump_nonce {
+        bump_protocol_nonce(&mut setup, &provider, &alice_signer, alice_addr, count).await?;
+    }
 
     for _ in 0..3 {
         setup.node.advance_block().await?;
@@ -6912,70 +7458,160 @@ async fn test_eth_fill_transaction_expiring_nonce_gas_is_sufficient() -> eyre::R
         .get_block_by_number(Default::default())
         .await?
         .unwrap();
-    let valid_before = block.header.timestamp() + 25;
+    let current_timestamp = block.header.timestamp();
+    let initial_protocol_nonce = provider.get_transaction_count(alice_addr).await?;
 
-    // Request with explicit nonce=0 and expiring nonce key
-    let approve_calldata = "0x095ea7b300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000064";
-    let request = serde_json::json!({
-        "from": alice_addr,
-        "nonce": "0x0",
-        "type": "0x76",
-        "calls": [{"to": DEFAULT_FEE_TOKEN, "value": "0x", "data": approve_calldata}],
-        "validBefore": format!("0x{valid_before:x}"),
-        "nonceKey": format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
-    });
+    let (mut tx, request_context) =
+        fill_transaction_from_case(&provider, test_case, alice_addr, current_timestamp).await?;
+    tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+    if request_context.expected_valid_before.is_none() {
+        tx.valid_before = Some(u64::MAX);
+    }
 
-    let response: serde_json::Value = provider
-        .raw_request("eth_fillTransaction".into(), [request])
-        .await?;
+    let signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let tx_hash = *envelope.tx_hash();
 
-    let tx_json = response
-        .get("tx")
-        .expect("response should contain 'tx' field");
+    let send_result = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await;
 
-    let filled_gas_str = tx_json
-        .get("gas")
-        .and_then(|v| v.as_str())
-        .expect("tx should have gas filled");
-    let filled_gas = u64::from_str_radix(filled_gas_str.trim_start_matches("0x"), 16)?;
+    match test_case.expected {
+        ExpectedOutcome::Success => {
+            let _ = send_result?;
+            setup.node.advance_block().await?;
 
-    // Create and execute a transaction using the filled gas value
-    let tx = TempoTransaction {
+            let raw_receipt: Option<serde_json::Value> = provider
+                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+                .await?;
+            assert!(raw_receipt.is_some(), "Transaction should be mined");
+            let status = raw_receipt.unwrap()["status"]
+                .as_str()
+                .map(|s| s == "0x1")
+                .unwrap_or(false);
+            assert!(status, "Transaction should succeed");
+
+            let final_protocol_nonce = provider.get_transaction_count(alice_addr).await?;
+            let should_increment = matches!(test_case.nonce_mode, NonceMode::Protocol);
+            if should_increment {
+                assert_eq!(final_protocol_nonce, initial_protocol_nonce + 1);
+            } else {
+                assert_eq!(final_protocol_nonce, initial_protocol_nonce);
+            }
+        }
+        ExpectedOutcome::Rejection => {
+            assert!(send_result.is_err(), "Transaction should be rejected");
+        }
+    }
+
+    println!("✓ Test passed: {}", test_case.name);
+    Ok(())
+}
+
+/// Run test with P256 or WebAuthn key
+async fn run_fill_sign_send_test_p256(test_case: &FillTestCase) -> eyre::Result<()> {
+    let funding_amount = U256::from(1_000_000_000_000_000_000u128);
+    let (
+        mut setup,
+        provider,
+        signing_key,
+        pub_key_x,
+        pub_key_y,
+        signer_addr,
+        _funder_signer,
+        _funder_addr,
         chain_id,
-        nonce: 0,
-        nonce_key: TEMPO_EXPIRING_NONCE_KEY,
-        gas_limit: filled_gas,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_priority_fee_per_gas: 0,
-        fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(valid_before),
-        calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN.into(),
-            value: U256::ZERO,
-            input: approve_calldata.parse()?,
-        }],
-        ..Default::default()
+        _fee_token,
+    ) = setup_test_with_p256_funded_account(funding_amount).await?;
+
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+
+    let (mut tx, _request_context) =
+        fill_transaction_from_case(&provider, test_case, signer_addr, current_timestamp).await?;
+    tx.chain_id = chain_id;
+    tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+
+    let signature = match test_case.key_type {
+        KeyType::P256 => sign_aa_tx_p256(&tx, &signing_key, pub_key_x, pub_key_y)?,
+        KeyType::WebAuthn => sign_aa_tx_webauthn(
+            &tx,
+            &signing_key,
+            pub_key_x,
+            pub_key_y,
+            "https://example.com",
+        )?,
+        KeyType::Secp256k1 => unreachable!(),
     };
 
-    let sig_hash = tx.signature_hash();
-    let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-    let signed = AASigned::new_unhashed(
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    );
-    let envelope: TempoTxEnvelope = signed.into();
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let tx_hash = *envelope.tx_hash();
 
-    setup
-        .node
-        .rpc
-        .inject_tx(envelope.encoded_2718().into())
-        .await?;
-    let payload = setup.node.advance_block().await?;
+    let send_result = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await;
 
-    assert!(
-        payload.block().body().transactions().count() > 0,
-        "Block should contain the transaction"
-    );
+    match test_case.expected {
+        ExpectedOutcome::Success => {
+            let _ = send_result?;
+            setup.node.advance_block().await?;
 
+            let raw_receipt: Option<serde_json::Value> = provider
+                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+                .await?;
+            assert!(raw_receipt.is_some(), "Transaction should be mined");
+            let status = raw_receipt.unwrap()["status"]
+                .as_str()
+                .map(|s| s == "0x1")
+                .unwrap_or(false);
+            assert!(status, "Transaction should succeed");
+        }
+        ExpectedOutcome::Rejection => {
+            assert!(send_result.is_err(), "Transaction should be rejected");
+        }
+    }
+
+    println!("✓ Test passed: {}", test_case.name);
+    Ok(())
+}
+
+/// E2E matrix: fill -> sign -> send across nonce modes and key types.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_fill_sign_send_matrix() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let test_matrix = [
+        fill_case!(Protocol, Secp256k1),
+        fill_case!(TwoD(42), Secp256k1),
+        fill_case!(Expiring, Secp256k1),
+        fill_case!(Expiring, P256),
+        fill_case!(Expiring, WebAuthn),
+        fill_case!(ExpiringAtBoundary, Secp256k1),
+        fill_case!(ExpiringAtBoundary, P256),
+        fill_case!(ExpiringAtBoundary, WebAuthn),
+        fill_case!(ExpiringExceedsBoundary, Secp256k1, reject),
+        fill_case!(ExpiringExceedsBoundary, P256, reject),
+        fill_case!(ExpiringExceedsBoundary, WebAuthn, reject),
+        fill_case!(TwoD(12345), Secp256k1; pre_bump_nonce = 5),
+        fill_case!(Expiring, Secp256k1; explicit_nonce = 0, pre_bump_nonce = 3),
+        fill_case!(Expiring, Secp256k1; explicit_nonce = 0),
+    ];
+
+    println!("\n=== E2E Test Matrix: fill -> sign -> send ===\n");
+    println!("Running {} test cases...\n", test_matrix.len());
+
+    for (i, test_case) in test_matrix.iter().enumerate() {
+        println!("[{}/{}] {}", i + 1, test_matrix.len(), test_case.name);
+        run_fill_sign_send_test(test_case).await?;
+    }
+
+    println!("\n✓ All {} test cases passed", test_matrix.len());
     Ok(())
 }

@@ -32,6 +32,7 @@ target "_common" {
   args = {
     CHEF_IMAGE = "chef"
     RUST_PROFILE = "profiling"
+    RUST_FEATURES = "asm-keccak,jemalloc,otlp"
     VERGEN_GIT_SHA = "${VERGEN_GIT_SHA}"
     VERGEN_GIT_SHA_SHORT = "${VERGEN_GIT_SHA_SHORT}"
   }

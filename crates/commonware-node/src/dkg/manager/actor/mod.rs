@@ -20,7 +20,7 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_p2p::{
-    Address, Receiver, Recipients, Sender,
+    AddressableManager, Receiver, Recipients, Sender,
     utils::mux::{self, MuxHandle},
 };
 use commonware_parallel::Sequential;
@@ -107,7 +107,7 @@ impl Read for Message {
 pub(crate) struct Actor<TContext, TPeerManager>
 where
     TContext: Clock + commonware_runtime::Metrics + commonware_runtime::Storage,
-    TPeerManager: commonware_p2p::Manager,
+    TPeerManager: AddressableManager,
 {
     /// The actor configuration passed in when constructing the actor.
     config: super::Config<TPeerManager>,
@@ -127,8 +127,7 @@ impl<TContext, TPeerManager> Actor<TContext, TPeerManager>
 where
     TContext:
         Clock + CryptoRngCore + commonware_runtime::Metrics + Spawner + commonware_runtime::Storage,
-    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey, Peers = ordered::Map<PublicKey, Address>>
-        + Sync,
+    TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
     pub(super) async fn new(
         config: super::Config<TPeerManager>,
@@ -241,7 +240,7 @@ where
         self.metrics.peers.set(all_peers.len() as i64);
         self.config
             .peer_manager
-            .update(state.epoch.get(), all_peers)
+            .track(state.epoch.get(), all_peers)
             .await;
 
         self.enter_epoch(&state)
