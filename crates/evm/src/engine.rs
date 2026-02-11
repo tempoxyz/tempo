@@ -2,6 +2,7 @@ use crate::TempoEvmConfig;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::Address;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use alloy_evm::block::ExecutableTxParts;
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
     FromRecoveredTx, RecoveredTx, ToTxEnv,
@@ -82,6 +83,15 @@ impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
 impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
     fn to_tx_env(&self) -> TempoTxEnv {
         TempoTxEnv::from_recovered_tx(self.tx(), *self.signer())
+    }
+}
+
+impl ExecutableTxParts<TempoTxEnv, TempoTxEnvelope> for RecoveredInBlock {
+    type Recovered = Self;
+
+    fn into_parts(self) -> (TempoTxEnv, Self) {
+        let tx_env = self.to_tx_env();
+        (tx_env, self)
     }
 }
 

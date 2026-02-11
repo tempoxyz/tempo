@@ -598,7 +598,7 @@ impl ExecutionRuntimeHandle {
         &self,
         name: &str,
         config: ExecutionNodeConfig,
-        database: Arc<DatabaseEnv>,
+        database: DatabaseEnv,
     ) -> eyre::Result<ExecutionNode> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
@@ -704,7 +704,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     chain_spec: TempoChainSpec,
     datadir: P,
     config: ExecutionNodeConfig,
-    database: Arc<DatabaseEnv>,
+    database: DatabaseEnv,
 ) -> eyre::Result<ExecutionNode> {
     println!("launching node at {}", datadir.as_ref().display());
     let node_config = NodeConfig::new(Arc::new(chain_spec))
@@ -775,7 +775,7 @@ enum Message {
     SpawnNode {
         name: String,
         config: ExecutionNodeConfig,
-        database: Arc<DatabaseEnv>,
+        database: DatabaseEnv,
         response: tokio::sync::oneshot::Sender<ExecutionNode>,
     },
     RunAsync(BoxFuture<'static, ()>),
