@@ -1,7 +1,15 @@
 //! TIP Fee Manager ABI definitions.
+//!
+//! This module defines two separate interfaces that together form the TIP Fee Manager:
+//! - `IFeeManager`: Fee management functions (user/validator token preferences, fee distribution)
+//! - `IFeeAMM`: AMM functions (pool management, liquidity operations, swaps)
+//!
+//! The `TipFeeManager` contract uses `#[contract(abi = [IFeeManager, IFeeAMM], dispatch)]`
+//! to compose both modules into a unified `Calls` enum for precompile routing.
 
 use tempo_precompiles_macros::abi;
 
+/// Fee Manager interface for managing gas fee collection and distribution.
 #[abi(no_reexport)]
 #[rustfmt::skip]
 #[allow(non_snake_case)]
@@ -45,6 +53,7 @@ pub mod IFeeManager {
     }
 }
 
+/// TIP Fee AMM interface for stablecoin pool management and swaps.
 #[abi(no_reexport)]
 #[rustfmt::skip]
 #[allow(non_snake_case)]
@@ -105,3 +114,11 @@ pub mod IFeeAMM {
         RebalanceSwap { #[indexed] user_token: Address, #[indexed] validator_token: Address, #[indexed] swapper: Address, amount_in: U256, amount_out: U256 },
     }
 }
+
+// Re-export error types with aliases for compatibility
+pub use IFeeAMM::Error as FeeAMMError;
+pub use IFeeManager::Error as FeeManagerError;
+
+// Re-export event types with aliases
+pub use IFeeAMM::Event as FeeAMMEvent;
+pub use IFeeManager::Event as FeeManagerEvent;

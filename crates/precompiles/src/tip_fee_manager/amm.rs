@@ -1,4 +1,4 @@
-pub use crate::tip_fee_manager::{MIN_LIQUIDITY, Pool};
+pub use crate::tip_fee_manager::abi::IFeeAMM::{MIN_LIQUIDITY, Pool};
 
 use crate::{
     error::{Result, TempoPrecompileError},
@@ -514,6 +514,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip_fee_manager::abi::IFeeAMM::Interface as _,
     };
 
     /// Integer square root using the Babylonian method
