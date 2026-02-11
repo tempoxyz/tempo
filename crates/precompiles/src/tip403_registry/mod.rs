@@ -140,13 +140,16 @@ impl TIP403Registry {
         &self,
         call: ITIP403Registry::policyDataCall,
     ) -> Result<ITIP403Registry::policyDataReturn> {
-        // Check if policy exists before returning data
-        if !self.policy_exists(ITIP403Registry::policyExistsCall {
-            policyId: call.policyId,
-        })? {
+        // Check if policy exists before reading the data (spec: pre-T2)
+        if !self.storage.spec().is_t2()
+            && !self.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: call.policyId,
+            })?
+        {
             return Err(TIP403RegistryError::policy_not_found().into());
         }
 
+        // Get policy data and verify that the policy id exists (spec: +T2)
         let data = self.get_policy_data(call.policyId)?;
 
         Ok(ITIP403Registry::policyDataReturn {
@@ -526,6 +529,7 @@ impl TIP403Registry {
     fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
         let data = self.policy_records[policy_id].base.read()?;
 
+        // Verify that the policy id exists (spec: +T2).
         // Skip the counter read (extra SLOAD) when policy data is non-default.
         if self.storage.spec().is_t2()
             && data.is_default()
