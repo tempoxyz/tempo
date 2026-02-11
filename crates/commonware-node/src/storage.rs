@@ -69,28 +69,24 @@ where
         context,
         immutable::Config {
             metadata_partition: format!(
-                "{}-{}-metadata",
-                partition_prefix, FINALIZATIONS_BY_HEIGHT
+                "{partition_prefix}-{FINALIZATIONS_BY_HEIGHT}-metadata"
             ),
             freezer_table_partition: format!(
-                "{}-{}-freezer-table",
-                partition_prefix, FINALIZATIONS_BY_HEIGHT
+                "{partition_prefix}-{FINALIZATIONS_BY_HEIGHT}-freezer-table"
             ),
             freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
             freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
             freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
             freezer_key_partition: format!(
-                "{}-{}-freezer-key",
-                partition_prefix, FINALIZATIONS_BY_HEIGHT
+                "{partition_prefix}-{FINALIZATIONS_BY_HEIGHT}-freezer-key"
             ),
             freezer_key_page_cache: page_cache.clone(),
             freezer_value_partition: format!(
-                "{}-{}-freezer-value",
-                partition_prefix, FINALIZATIONS_BY_HEIGHT
+                "{partition_prefix}-{FINALIZATIONS_BY_HEIGHT}-freezer-value"
             ),
             freezer_value_target_size: FREEZER_VALUE_TARGET_SIZE,
             freezer_value_compression: FREEZER_VALUE_COMPRESSION,
-            ordinal_partition: format!("{}-{}-ordinal", partition_prefix, FINALIZATIONS_BY_HEIGHT),
+            ordinal_partition: format!("{partition_prefix}-{FINALIZATIONS_BY_HEIGHT}-ordinal"),
             items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
             codec_config: Scheme::<PublicKey, MinSig>::certificate_codec_config_unbounded(),
             replay_buffer: REPLAY_BUFFER,
@@ -115,23 +111,21 @@ where
     immutable::Archive::init(
         context,
         immutable::Config {
-            metadata_partition: format!("{}-{}-metadata", partition_prefix, FINALIZED_BLOCKS),
+            metadata_partition: format!("{partition_prefix}-{FINALIZED_BLOCKS}-metadata"),
             freezer_table_partition: format!(
-                "{}-{}-freezer-table",
-                partition_prefix, FINALIZED_BLOCKS
+                "{partition_prefix}-{FINALIZED_BLOCKS}-freezer-table"
             ),
             freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
             freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
             freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-            freezer_key_partition: format!("{}-{}-freezer-key", partition_prefix, FINALIZED_BLOCKS),
+            freezer_key_partition: format!("{partition_prefix}-{FINALIZED_BLOCKS}-freezer-key"),
             freezer_key_page_cache: page_cache.clone(),
             freezer_value_partition: format!(
-                "{}-{}-freezer-value",
-                partition_prefix, FINALIZED_BLOCKS
+                "{partition_prefix}-{FINALIZED_BLOCKS}-freezer-value"
             ),
             freezer_value_target_size: FREEZER_VALUE_TARGET_SIZE,
             freezer_value_compression: FREEZER_VALUE_COMPRESSION,
-            ordinal_partition: format!("{}-{}-ordinal", partition_prefix, FINALIZED_BLOCKS),
+            ordinal_partition: format!("{partition_prefix}-{FINALIZED_BLOCKS}-ordinal"),
             items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
             codec_config: (),
             replay_buffer: REPLAY_BUFFER,

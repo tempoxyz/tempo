@@ -32,35 +32,10 @@ use tempo_alloy::rpc::TempoHeaderResponse;
 use tempo_node::rpc::consensus::{Event, TempoConsensusApiClient};
 use tempo_primitives::TempoTxEnvelope;
 use tokio::sync::{Mutex, RwLock};
+use eyre::WrapErr as _;
 use tracing::{debug, warn, warn_span};
 
 use crate::consensus::{Digest, block::Block};
-
-// ── Error type ──────────────────────────────────────────────────────────────
-
-/// Errors that can occur during RPC operations.
-#[derive(Debug)]
-pub(crate) enum RpcError {
-    NotFound(String),
-    Rpc(String),
-    Decode(String),
-    Validation(String),
-}
-
-impl std::fmt::Display for RpcError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound(s) => write!(f, "not found: {s}"),
-            Self::Rpc(s) => write!(f, "RPC error: {s}"),
-            Self::Decode(s) => write!(f, "decode error: {s}"),
-            Self::Validation(s) => write!(f, "validation error: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for RpcError {}
-
-pub(crate) type RpcResult<T> = Result<T, RpcError>;
 
 // ── RpcResolver ─────────────────────────────────────────────────────────────
 
@@ -103,25 +78,23 @@ impl RpcResolver {
 
     // ── Connection management ───────────────────────────────────────────
 
-    async fn client(&self) -> RpcResult<Arc<WsClient>> {
+    async fn client(&self) -> eyre::Result<Arc<WsClient>> {
         {
             let guard = self.client.read().await;
-            if let Some(c) = guard.as_ref() {
-                if c.is_connected() {
+            if let Some(c) = guard.as_ref()
+                && c.is_connected() {
                     return Ok(c.clone());
                 }
-            }
         }
         self.reconnect().await
     }
 
-    async fn reconnect(&self) -> RpcResult<Arc<WsClient>> {
+    async fn reconnect(&self) -> eyre::Result<Arc<WsClient>> {
         let mut guard = self.client.write().await;
-        if let Some(c) = guard.as_ref() {
-            if c.is_connected() {
+        if let Some(c) = guard.as_ref()
+            && c.is_connected() {
                 return Ok(c.clone());
             }
-        }
 
         let mut attempts: u32 = 0;
         loop {
@@ -156,36 +129,36 @@ impl RpcResolver {
 
     // ── Public fetch helpers (used by driver) ───────────────────────────
 
-    pub(crate) async fn subscribe_events(&self) -> RpcResult<Subscription<Event>> {
+    pub(crate) async fn subscribe_events(&self) -> eyre::Result<Subscription<Event>> {
         let client = self.client().await?;
         client
             .subscribe_events()
             .await
-            .map_err(|e| RpcError::Rpc(e.to_string()))
+            .wrap_err("rpc error")
     }
 
     pub(crate) async fn fetch_finalization(
         &self,
         height: u64,
-    ) -> RpcResult<Option<tempo_node::rpc::consensus::CertifiedBlock>> {
+    ) -> eyre::Result<Option<tempo_node::rpc::consensus::CertifiedBlock>> {
         let client = self.client().await?;
         client
             .get_finalization(tempo_node::rpc::consensus::Query::Height(height))
             .await
-            .map_err(|e| RpcError::Rpc(e.to_string()))
+            .wrap_err("rpc error")
     }
 
     pub(crate) async fn fetch_latest_finalization(
         &self,
-    ) -> RpcResult<Option<tempo_node::rpc::consensus::CertifiedBlock>> {
+    ) -> eyre::Result<Option<tempo_node::rpc::consensus::CertifiedBlock>> {
         let client = self.client().await?;
         client
             .get_finalization(tempo_node::rpc::consensus::Query::Latest)
             .await
-            .map_err(|e| RpcError::Rpc(e.to_string()))
+            .wrap_err("rpc error")
     }
 
-    pub(crate) async fn fetch_block(&self, height: u64) -> RpcResult<Option<Block>> {
+    pub(crate) async fn fetch_block(&self, height: u64) -> eyre::Result<Option<Block>> {
         let client = self.client().await?;
         let rpc_block: Option<TempoRpcBlock> = client
             .request(
@@ -193,7 +166,7 @@ impl RpcResolver {
                 rpc_params![format!("0x{:x}", height), true],
             )
             .await
-            .map_err(|e| RpcError::Rpc(e.to_string()))?;
+            .wrap_err("rpc error")?;
         let Some(rpc_block) = rpc_block else {
             return Ok(None);
         };
@@ -205,24 +178,23 @@ impl RpcResolver {
                 tx.into_inner()
             });
         let sealed = SealedBlock::seal_slow(consensus_block);
-        if sealed.hash() != block_hash {
-            return Err(RpcError::Validation(format!(
-                "block hash mismatch at height {height}: expected {block_hash}, got {}",
-                sealed.hash()
-            )));
-        }
+        eyre::ensure!(
+            sealed.hash() == block_hash,
+            "block hash mismatch at height {height}: expected {block_hash}, got {}",
+            sealed.hash()
+        );
         Ok(Some(Block::from_execution_block(sealed)))
     }
 
     pub(crate) async fn fetch_block_by_hash(
         &self,
         hash: alloy_primitives::B256,
-    ) -> RpcResult<Option<Block>> {
+    ) -> eyre::Result<Option<Block>> {
         let client = self.client().await?;
         let rpc_block: Option<TempoRpcBlock> = client
             .request("eth_getBlockByHash", rpc_params![hash, true])
             .await
-            .map_err(|e| RpcError::Rpc(e.to_string()))?;
+            .wrap_err("rpc error")?;
         let Some(rpc_block) = rpc_block else {
             return Ok(None);
         };
@@ -234,12 +206,11 @@ impl RpcResolver {
                 tx.into_inner()
             });
         let sealed = SealedBlock::seal_slow(consensus_block);
-        if sealed.hash() != block_hash {
-            return Err(RpcError::Validation(format!(
-                "block hash mismatch: expected {block_hash}, got {}",
-                sealed.hash()
-            )));
-        }
+        eyre::ensure!(
+            sealed.hash() == block_hash,
+            "block hash mismatch: expected {block_hash}, got {}",
+            sealed.hash()
+        );
         Ok(Some(Block::from_execution_block(sealed)))
     }
 
@@ -247,7 +218,7 @@ impl RpcResolver {
 
     fn spawn_fetch(&self, key: Request) {
         let resolver = self.clone();
-        let key_clone = key.clone();
+        let key_clone = key;
 
         tokio::spawn(async move {
             {
@@ -259,7 +230,7 @@ impl RpcResolver {
 
             let result = match &key_clone {
                 handler::Request::Finalized { height } => {
-                    resolver.resolve_finalized(height.clone()).await
+                    resolver.resolve_finalized(*height).await
                 }
                 handler::Request::Block(commitment) => resolver.resolve_block(*commitment).await,
                 other => {
@@ -288,11 +259,9 @@ impl RpcResolver {
                         })
                         .await
                         .is_ok()
-                    {
-                        if let Ok(true) = response_rx.await {
+                        && let Ok(true) = response_rx.await {
                             resolver.pending.lock().await.remove(&key_clone);
                         }
-                    }
                 }
                 Ok(None) => {
                     debug!(?key_clone, "data not yet available from upstream");
@@ -309,18 +278,15 @@ impl RpcResolver {
         height: commonware_consensus::types::Height,
     ) -> eyre::Result<Option<Bytes>> {
         let h = height.get();
-        let certified = match self.fetch_finalization(h).await {
-            Ok(Some(c)) => c,
-            Ok(None) => return Ok(None),
-            Err(e) => return Err(eyre::eyre!("{e}")),
+        let Some(certified) = self.fetch_finalization(h).await? else {
+            return Ok(None);
         };
-        let block = match self.fetch_block(h).await {
-            Ok(Some(b)) => b,
-            Ok(None) => return Err(eyre::eyre!("block {h} not found but finalization exists")),
-            Err(e) => return Err(eyre::eyre!("{e}")),
-        };
+        let block = self
+            .fetch_block(h)
+            .await?
+            .ok_or_else(|| eyre::eyre!("block {h} not found but finalization exists"))?;
         let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)
-            .map_err(|e| eyre::eyre!("failed to decode certificate hex: {e}"))?;
+            .wrap_err("failed to decode certificate hex")?;
         let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
             Finalization::read(&mut &cert_bytes[..])
                 .map_err(|e| eyre::eyre!("failed to decode finalization: {e:?}"))?;
@@ -328,10 +294,8 @@ impl RpcResolver {
     }
 
     async fn resolve_block(&self, commitment: Digest) -> eyre::Result<Option<Bytes>> {
-        let block = match self.fetch_block_by_hash(commitment.0).await {
-            Ok(Some(b)) => b,
-            Ok(None) => return Ok(None),
-            Err(e) => return Err(eyre::eyre!("{e}")),
+        let Some(block) = self.fetch_block_by_hash(commitment.0).await? else {
+            return Ok(None);
         };
         Ok(Some(block.encode()))
     }
