@@ -33,7 +33,9 @@ use super::{driver, resolver::RpcResolver, stubs};
 use crate::{
     alias::marshal as marshal_alias,
     config::NAMESPACE,
+    consensus::block::Block,
     epoch::SchemeProvider,
+    executor, feed,
     feed::FeedStateHandle,
     storage::{self, REPLAY_BUFFER, WRITE_BUFFER},
 };
@@ -95,7 +97,6 @@ impl Builder {
         let epoch_strategy = self.epoch_strategy.clone();
 
         // Initialize marshal (use type alias to satisfy type inference)
-        #[allow(unused_variables)]
         let (marshal_actor, marshal_mailbox, last_finalized_height): (
             marshal_alias::Actor<TContext>,
             marshal_alias::Mailbox,
@@ -135,9 +136,9 @@ impl Builder {
         let resolver = Arc::new(rpc_resolver);
 
         // Initialize executor (handles forwarding blocks to EL and FCU heartbeats)
-        let (executor_actor, executor_mailbox) = crate::executor::init(
+        let (executor_actor, executor_mailbox) = executor::init(
             context.with_label("executor"),
-            crate::executor::Config {
+            executor::Config {
                 execution_node: self.execution_node,
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
@@ -147,7 +148,7 @@ impl Builder {
         .wrap_err("failed to initialize executor")?;
 
         // Initialize feed actor
-        let (feed_actor, feed_mailbox) = crate::feed::init(
+        let (feed_actor, feed_mailbox) = feed::init(
             context.with_label("feed"),
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
@@ -184,17 +185,17 @@ where
     context: TContext,
     resolver: Arc<RpcResolver>,
     resolver_rx: mpsc::Receiver<
-        commonware_consensus::marshal::ingress::handler::Message<crate::consensus::block::Block>,
+        commonware_consensus::marshal::ingress::handler::Message<Block>,
     >,
     scheme_provider: SchemeProvider,
     epoch_strategy: FixedEpocher,
     marshal_actor: marshal_alias::Actor<TContext>,
     marshal_mailbox: marshal_alias::Mailbox,
-    executor_actor: crate::executor::Actor<TContext>,
-    executor_mailbox: crate::executor::Mailbox,
-    feed_actor: crate::feed::Actor<TContext>,
-    feed_mailbox: crate::feed::Mailbox,
-    null_broadcast: buffered::Mailbox<PublicKey, crate::consensus::block::Block>,
+    executor_actor: executor::Actor<TContext>,
+    executor_mailbox: executor::Mailbox,
+    feed_actor: feed::Actor<TContext>,
+    feed_mailbox: feed::Mailbox,
+    null_broadcast: buffered::Mailbox<PublicKey, Block>,
     last_finalized_height: Height,
 }
 
