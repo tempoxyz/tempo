@@ -12116,6 +12116,7 @@ dependencies = [
  "revm",
  "tempo-chainspec",
  "tempo-consensus",
+ "tempo-contracts",
  "tempo-payload-types",
  "tempo-primitives",
  "tempo-revm",

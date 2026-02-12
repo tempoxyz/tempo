@@ -106,8 +106,7 @@ mod tests {
         assert_eq!(pending_env.timestamp_millis_part, timestamp_millis_part);
         assert!(pending_env.subblock_fee_recipients.is_empty());
         assert_eq!(
-            pending_env.inner.suggested_fee_recipient,
-            TIP_FEE_MANAGER_ADDRESS,
+            pending_env.inner.suggested_fee_recipient, TIP_FEE_MANAGER_ADDRESS,
             "pending env uses TIP_FEE_MANAGER_ADDRESS so RPC resolves default fee token"
         );
     }
