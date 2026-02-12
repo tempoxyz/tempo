@@ -1,0 +1,142 @@
+name: TIP
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - 'tips/*.md'
+      - '!tips/README.md'
+
+concurrency:
+  group: tip-${{ github.event.pull_request.number }}
+
+jobs:
+  tip:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Fetch main branch
+        run: git fetch origin main
+
+      - name: Process drafts
+        run: |
+          shopt -s nullglob nocaseglob
+
+          # Collect drafts (draft-*.md or tip-xxxx/yyyy/zzzz.md)
+          drafts=( tips/draft-*.md tips/[Tt][Ii][Pp]-[xyzXYZ]*.md )
+
+          # Nothing to do
+          if [ ${#drafts[@]} -eq 0 ]; then
+            echo "No drafts found"
+            exit 0
+          fi
+
+          # Only one TIP per PR
+          if [ ${#drafts[@]} -gt 1 ]; then
+            gh pr comment "$PR" --body "Only one TIP per PR. Found: ${drafts[*]}"
+            exit 1
+          fi
+
+          draft="${drafts[0]}"
+          echo "Processing: $draft"
+
+          # Validate title
+          if ! err=$(./tips/scripts/validate.sh "$draft"); then
+            gh pr comment "$PR" --body "Invalid: $err"
+            exit 1
+          fi
+
+          # Check for existing number in frontmatter
+          existing=$(grep -oE '^id: TIP-[0-9]+' "$draft" | grep -oE '[0-9]+' || true)
+
+          if [ -n "$existing" ]; then
+            num="$existing"
+            echo "Using existing number: TIP-$num"
+
+            # Verify it's available
+            if ! err=$(./tips/scripts/check-unique.sh "tips/tip-$num.md" "$PR"); then
+              gh pr comment "$PR" --body "$err"
+              exit 1
+            fi
+          else
+            num=$(./tips/scripts/next-number.sh)
+            echo "Assigned new number: TIP-$num"
+          fi
+
+          target="tips/tip-$num.md"
+
+          # Rename to target
+          git mv "$draft" "$target"
+
+          # Update or insert id field
+          if grep -q '^id:' "$target"; then
+            perl -i -pe "s/^id: .*/id: TIP-$num/" "$target"
+          else
+            perl -i -pe "s/^---$/---\nid: TIP-$num/ if \$. == 1" "$target"
+          fi
+
+          # Update heading
+          perl -i -pe "s/^# TIP-[XYZxyz]{4}:/# TIP-$num:/" "$target"
+          perl -i -pe "s/^# TIP-XXXX:/# TIP-$num:/" "$target"
+
+          # Commit if changes
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes (already assigned)"
+          else
+            git commit -m "assign TIP-$num"
+            git push
+            gh pr comment "$PR" --body "Assigned TIP-$num."
+          fi
+
+      - name: Validate numbered TIPs
+        run: |
+          tips=$(
+            git diff --name-only origin/main \
+              | grep -iE '^tips/tip-[0-9]+\.md$' \
+              || true
+          )
+
+          for tip in $tips; do
+            echo "Validating: $tip"
+
+            # Normalize uppercase to lowercase
+            lower=$(echo "$tip" | tr '[:upper:]' '[:lower:]')
+
+            if [ "$tip" != "$lower" ]; then
+              git mv "$tip" "$lower"
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git commit -am "normalize $tip to lowercase"
+              git push
+              tip="$lower"
+            fi
+
+            # Validate title
+            if ! err=$(./tips/scripts/validate.sh "$tip"); then
+              gh pr comment "$PR" --body "Invalid: $err"
+              exit 1
+            fi
+
+            # Check uniqueness
+            if ! err=$(./tips/scripts/check-unique.sh "$tip" "$PR"); then
+              gh pr comment "$PR" --body "$err"
+              exit 1
+            fi
+
+            echo "OK: $tip"
+          done
