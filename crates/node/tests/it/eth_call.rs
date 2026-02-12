@@ -350,6 +350,116 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Regression test: eth_estimateGas fails when the latest block's beneficiary
+/// (validator) has a fee token that differs from the user's fee token, and there's no direct
+/// AMM pool between them. The user has liquidity with the default fee token (PathUSD), so
+/// the call should succeed, but it fails because evm_env uses the block header's beneficiary
+/// to resolve the validator token instead of the default.
+///
+/// Uses a dynamic validator to switch block producers mid-test. In phase 1, blocks are
+/// produced by the genesis coinbase while the test wallet sets a custom validator token.
+/// In phase 2, the test wallet becomes the block producer, reproducing the bug scenario.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()> {
+    use std::sync::{Arc, Mutex};
+
+    reth_tracing::init_test_tracing();
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet_address = wallet.address();
+
+    let dynamic_validator = Arc::new(Mutex::new(Address::ZERO));
+
+    let setup = TestNodeBuilder::new()
+        .with_dynamic_validator(dynamic_validator.clone())
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
+
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    let fee_manager =
+        IFeeManager::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+
+    let validator_custom_token = setup_test_token(provider.clone(), wallet_address).await?;
+    let user_fee_token = setup_test_token(provider.clone(), wallet_address).await?;
+
+    user_fee_token
+        .mint(wallet_address, U256::from(u128::MAX))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_amm
+        .mint(
+            *user_fee_token.address(),
+            PATH_USD_ADDRESS,
+            U256::from(u32::MAX),
+            wallet_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_amm
+        .mint(
+            *validator_custom_token.address(),
+            PATH_USD_ADDRESS,
+            U256::from(u32::MAX),
+            wallet_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_manager
+        .setUserToken(*user_fee_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_manager
+        .setValidatorToken(*validator_custom_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let on_chain_validator_token = fee_manager.validatorTokens(wallet_address).call().await?;
+    assert_eq!(on_chain_validator_token, *validator_custom_token.address());
+
+    *dynamic_validator.lock().unwrap() = wallet_address;
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let block = provider
+        .get_block(BlockId::latest())
+        .await?
+        .expect("Could not get latest block");
+    assert_eq!(block.header.beneficiary, wallet_address);
+
+    let recipient = Address::random();
+    let calldata = user_fee_token
+        .transfer(recipient, U256::ONE)
+        .calldata()
+        .clone();
+    let tx = TransactionRequest::default()
+        .from(wallet_address)
+        .to(*user_fee_token.address())
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .input(TransactionInput::new(calldata));
+
+    let gas = provider.estimate_gas(tx.clone()).await?;
+    assert!(gas > 0);
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();

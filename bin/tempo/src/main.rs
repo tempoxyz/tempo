@@ -318,6 +318,13 @@ fn main() -> eyre::Result<()> {
         } = builder
             .node(TempoNode::new(&args.node_args, validator_key))
             .apply(|mut builder: WithLaunchContext<_>| {
+                // Enable discv5 peer discovery
+                builder
+                    .config_mut()
+                    .network
+                    .discovery
+                    .enable_discv5_discovery = true;
+
                 // Resolve the follow URL:
                 // --follow or --follow=auto -> use chain-specific default
                 // --follow=URL -> use provided URL

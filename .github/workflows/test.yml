@@ -142,6 +142,24 @@ jobs:
             coverage/precompiles-bin/
           retention-days: 1
 
+  cli:
+    name: CLI smoke tests
+    runs-on: depot-ubuntu-latest-4
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - name: Build tempo
+        run: cargo build --bin tempo
+      - name: Run CLI tests
+        run: ./scripts/test-cli.sh
+
   msrv:
     name: MSRV
     runs-on: depot-ubuntu-latest-4
@@ -170,6 +188,7 @@ jobs:
     needs:
       - check-precompiles
       - test
+      - cli
       - msrv
       - genesis
     timeout-minutes: 30
