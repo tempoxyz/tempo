@@ -280,6 +280,12 @@ abstract contract InvariantChecker is HandlerBase {
         // K3: KeyAuthorization chain_id must be 0 (any) or match current
         assertEq(ghost_keyWrongChainAllowed, 0, "K3: Wrong chain key auth unexpectedly allowed");
 
+        // K7: Revoked keys must not be usable
+        assertEq(ghost_keyRevokedAllowed, 0, "K7: Revoked key unexpectedly allowed");
+
+        // K8: Expired keys must not be usable
+        assertEq(ghost_keyExpiredAllowed, 0, "K8: Expired key unexpectedly allowed");
+
         // K12: Keys with zero spending limit cannot spend anything
         assertEq(ghost_keyZeroLimitAllowed, 0, "K12: Zero-limit key unexpectedly allowed to spend");
     }

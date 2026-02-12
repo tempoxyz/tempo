@@ -196,9 +196,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         assertEq(ghost_createWithValueAllowed, 0, "C4: CREATE with value unexpectedly allowed");
         assertEq(ghost_createOversizedAllowed, 0, "C8: Oversized initcode unexpectedly allowed");
 
-        // Key authorization rules (K1, K3)
+        // Key authorization rules (K1, K3, K7, K8)
         assertEq(ghost_keyWrongSignerAllowed, 0, "K1: Wrong signer key auth unexpectedly allowed");
         assertEq(ghost_keyWrongChainAllowed, 0, "K3: Wrong chain key auth unexpectedly allowed");
+        assertEq(ghost_keyRevokedAllowed, 0, "K7: Revoked key unexpectedly allowed");
+        assertEq(ghost_keyExpiredAllowed, 0, "K8: Expired key unexpectedly allowed");
 
         // Transaction type rules (TX7)
         assertEq(
@@ -937,8 +939,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            // Revoked key was allowed - this is a K7/K8 violation!
-            ghost_keyWrongSignerAllowed++;
+            // Revoked key was allowed - this is a K7 violation!
+            ghost_keyRevokedAllowed++;
             ghost_protocolNonce[ctx.owner]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
@@ -950,7 +952,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     }
 
     /// @notice Handler: Attempt to use an expired key - should be rejected
-    /// @dev Tests K7 - expired keys must not be usable
+    /// @dev Tests K8 - expired keys must not be usable
     function handler_useExpiredKey(
         uint256 actorSeed,
         uint256 keySeed,
@@ -1001,8 +1003,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            // Expired key was allowed - this is a K7 violation!
-            ghost_keyWrongSignerAllowed++;
+            // Expired key was allowed - this is a K8 violation!
+            ghost_keyExpiredAllowed++;
             ghost_protocolNonce[ctx.owner]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
