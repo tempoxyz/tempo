@@ -202,7 +202,7 @@ interface IValidatorConfigV2 {
     /// @notice Get validator information by index in the validators array
     /// @param index The index in the validators array
     /// @return The validator struct at the given index
-    function validatorByIndex(uint256 index) external view returns (Validator memory);
+    function validatorByIndex(uint64 index) external view returns (Validator memory);
 
     /// @notice Get validator information by address
     /// @param validatorAddress The validator address to look up

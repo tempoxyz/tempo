@@ -18,9 +18,6 @@ impl Precompile for ValidatorConfigV2 {
             ));
         }
 
-        // Get the current block number from the EVM context via storage provider
-        let block_height = self.storage.block_number();
-
         dispatch_call(
             calldata,
             IValidatorConfigV2Calls::abi_decode,
@@ -57,19 +54,13 @@ impl Precompile for ValidatorConfigV2 {
 
                 // Mutate functions
                 IValidatorConfigV2Calls::addValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.add_validator(s, c, block_height)
-                    })
+                    mutate_void(call, msg_sender, |s, c| self.add_validator(s, c))
                 }
                 IValidatorConfigV2Calls::deactivateValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.deactivate_validator(s, c, block_height)
-                    })
+                    mutate_void(call, msg_sender, |s, c| self.deactivate_validator(s, c))
                 }
                 IValidatorConfigV2Calls::rotateValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.rotate_validator(s, c, block_height)
-                    })
+                    mutate_void(call, msg_sender, |s, c| self.rotate_validator(s, c))
                 }
                 IValidatorConfigV2Calls::setIpAddresses(call) => {
                     mutate_void(call, msg_sender, |s, c| self.set_ip_addresses(s, c))
@@ -88,14 +79,10 @@ impl Precompile for ValidatorConfigV2 {
                     })
                 }
                 IValidatorConfigV2Calls::migrateValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.migrate_validator(s, c, block_height)
-                    })
+                    mutate_void(call, msg_sender, |s, c| self.migrate_validator(s, c))
                 }
                 IValidatorConfigV2Calls::initializeIfMigrated(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.initialize_if_migrated(s, c, block_height)
-                    })
+                    mutate_void(call, msg_sender, |s, _| self.initialize_if_migrated(s))
                 }
             },
         )
@@ -127,7 +114,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner, 100)?;
+            vc.initialize(owner)?;
 
             // Any call should succeed with empty bytes
             let owner_call = IValidatorConfigV2::ownerCall {};
@@ -147,7 +134,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner, 100)?;
+            vc.initialize(owner)?;
 
             let calldata = IValidatorConfigV2::ownerCall {}.abi_encode();
             let result = vc.call(&calldata, owner)?;
@@ -173,7 +160,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner, 100)?;
+            vc.initialize(owner)?;
 
             // owner() should work in T2
             let calldata = IValidatorConfigV2::ownerCall {}.abi_encode();
@@ -197,7 +184,7 @@ mod tests {
         let validator_addr = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner, 100)?;
+            vc.initialize(owner)?;
 
             // Generate real Ed25519 key pair
             let seed = rand_08::random::<u64>();
@@ -255,7 +242,7 @@ mod tests {
         let validator_addr = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner, 100)?;
+            vc.initialize(owner)?;
 
             let add_call = IValidatorConfigV2::addValidatorCall {
                 validatorAddress: validator_addr,
@@ -282,7 +269,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner, 100)?;
+            vc.initialize(owner)?;
 
             let result = vc.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
             assert!(result.reverted);
