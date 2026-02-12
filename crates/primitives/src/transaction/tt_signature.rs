@@ -257,7 +257,7 @@ impl PrimitiveSignature {
                 // Prepare message hash for verification
                 let message_hash = if p256_sig.pre_hash {
                     // Some P256 implementations (like Web Crypto) require pre-hashing
-                    B256::from_slice(&Sha256::digest(sig_hash.as_slice()))
+                    B256::from_slice(Sha256::digest(sig_hash).as_ref())
                 } else {
                     *sig_hash
                 };
@@ -834,8 +834,8 @@ mod tests {
         let signing_key = P256SigningKey::random(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
         let encoded_point = verifying_key.to_encoded_point(false);
-        let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_slice());
-        let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_slice());
+        let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_ref());
+        let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
         (signing_key, pub_key_x, pub_key_y)
     }
 
@@ -1108,7 +1108,7 @@ mod tests {
         final_hasher.update(client_data_hash);
         let expected_hash = final_hasher.finalize();
 
-        assert_eq!(message_hash.as_slice(), expected_hash.as_slice());
+        assert_eq!(message_hash.as_slice(), &expected_hash[..]);
     }
 
     #[test]
@@ -1421,7 +1421,7 @@ mod tests {
 
         // For pre_hash=true, signature is over sha256(sig_hash)
         let sig_hash = B256::from([0xBB; 32]);
-        let prehashed = B256::from_slice(&Sha256::digest(sig_hash.as_slice()));
+        let prehashed = B256::from_slice(Sha256::digest(sig_hash).as_ref());
         let (r, s) = sign_p256_normalized(&signing_key, &prehashed);
 
         let p256_sig =
@@ -1550,5 +1550,102 @@ mod tests {
                 "Attack variant {i} should be rejected: {attack_json}"
             );
         }
+    }
+
+    #[test]
+    fn test_keychain_signature_eq_same() {
+        let sig = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let addr = Address::repeat_byte(0x01);
+        let a = KeychainSignature::new(addr, sig.clone());
+        let b = KeychainSignature::new(addr, sig);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_keychain_signature_eq_different_address() {
+        let sig = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let a = KeychainSignature::new(Address::repeat_byte(0x01), sig.clone());
+        let b = KeychainSignature::new(Address::repeat_byte(0x02), sig);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_keychain_signature_eq_different_signature() {
+        let addr = Address::repeat_byte(0x01);
+        let sig_a = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let sig_b = PrimitiveSignature::P256(P256SignatureWithPreHash {
+            r: B256::from([1u8; 32]),
+            s: B256::from([2u8; 32]),
+            pub_key_x: B256::from([3u8; 32]),
+            pub_key_y: B256::from([4u8; 32]),
+            pre_hash: false,
+        });
+        let a = KeychainSignature::new(addr, sig_a);
+        let b = KeychainSignature::new(addr, sig_b);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_keychain_signature_hash_differs_for_different_sigs() {
+        use std::{
+            collections::hash_map::DefaultHasher,
+            hash::{Hash, Hasher},
+        };
+
+        let sig = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let a = KeychainSignature::new(Address::repeat_byte(0x01), sig.clone());
+        let b = KeychainSignature::new(Address::repeat_byte(0x02), sig.clone());
+        let c = KeychainSignature::new(Address::repeat_byte(0x01), sig);
+
+        let hash = |k: &KeychainSignature| {
+            let mut h = DefaultHasher::new();
+            k.hash(&mut h);
+            h.finish()
+        };
+
+        assert_ne!(
+            hash(&a),
+            hash(&b),
+            "different address should produce different hash"
+        );
+        assert_eq!(hash(&a), hash(&c), "same fields should produce same hash");
+    }
+
+    #[test]
+    fn test_primitive_signature_from_bytes_one_byte() {
+        let result = PrimitiveSignature::from_bytes(&[0x01]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too short"));
+    }
+
+    #[test]
+    fn test_tempo_signature_keychain_too_short_for_address() {
+        let mut data = vec![SIGNATURE_TYPE_KEYCHAIN];
+        data.extend_from_slice(&[0u8; 19]);
+        let result = TempoSignature::from_bytes(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too short"));
+    }
+
+    #[test]
+    fn test_tempo_signature_keychain_exactly_20_bytes_inner_empty() {
+        let mut data = vec![SIGNATURE_TYPE_KEYCHAIN];
+        data.extend_from_slice(&[0u8; 20]);
+        let result = TempoSignature::from_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_keychain_returns_false_for_primitive() {
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        assert!(!sig.is_keychain());
+    }
+
+    #[test]
+    fn test_is_keychain_returns_true_for_keychain() {
+        let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let sig = TempoSignature::Keychain(KeychainSignature::new(Address::ZERO, inner));
+        assert!(sig.is_keychain());
     }
 }

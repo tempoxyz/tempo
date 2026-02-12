@@ -26,7 +26,10 @@ tempo-faucet.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
-alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"] }
+alloy-provider = { workspace = true, features = [
+	"reqwest",
+	"reqwest-rustls-tls",
+] }
 alloy-rpc-types-eth.workspace = true
 alloy-sol-types.workspace = true
 commonware-codec.workspace = true
@@ -36,7 +39,7 @@ commonware-math.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 futures = { workspace = true, features = ["executor"] }
-rand.workspace = true
+rand_08.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempo-alloy.workspace = true
@@ -45,6 +48,7 @@ tempo-dkg-onchain-artifacts.workspace = true
 reth-cli-commands.workspace = true
 reth-cli-runner.workspace = true
 reth-cli-util.workspace = true
+rustls.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
 reth-ethereum-cli.workspace = true
 reth-node-builder.workspace = true
@@ -69,58 +73,68 @@ asm-keccak = [
 	"alloy-primitives/asm-keccak",
 	"tempo-alloy/asm-keccak",
 	"tempo-node/asm-keccak",
-	"reth-ethereum-cli/asm-keccak"
+	"reth-ethereum-cli/asm-keccak",
 ]
 
 otlp = [
 	"reth-ethereum-cli/otlp",
 	"reth-ethereum-cli/otlp-logs",
 	"reth-ethereum/otlp",
-	"tempo-node/otlp"
+	"tempo-node/otlp",
 ]
 
 pyroscope = ["dep:pyroscope", "dep:pyroscope_pprofrs"]
 js-tracer = [
 	"reth-node-builder/js-tracer",
 	"reth-ethereum/js-tracer",
-	"tempo-node/js-tracer"
+	"tempo-node/js-tracer",
 ]
 
 jemalloc = [
 	"reth-cli-util/jemalloc",
 	"reth-ethereum-cli/jemalloc",
 	"reth-ethereum/jemalloc",
-	"tempo-node/jemalloc"
+	"tempo-node/jemalloc",
 ]
 jemalloc-prof = [
 	"reth-cli-util/jemalloc",
 	"reth-cli-util/jemalloc-prof",
 	"reth-ethereum-cli/jemalloc-prof",
 	"tempo-node/jemalloc-prof",
-	"reth-ethereum/jemalloc-prof"
+	"reth-ethereum/jemalloc-prof",
+]
+
+tracy = [
+	"reth-ethereum-cli/tracy",
+	"tempo-node/tracy",
+]
+tracy-allocator = [
+	"reth-cli-util/tracy-allocator",
+	"reth-ethereum-cli/tracy-allocator",
+	"tracy",
 ]
 
 min-error-logs = [
 	"tracing/release_max_level_error",
 	"reth-ethereum-cli/min-error-logs",
-	"tempo-node/min-error-logs"
+	"tempo-node/min-error-logs",
 ]
 min-warn-logs = [
 	"tracing/release_max_level_warn",
 	"reth-ethereum-cli/min-warn-logs",
-	"tempo-node/min-warn-logs"
+	"tempo-node/min-warn-logs",
 ]
 min-info-logs = [
 	"tracing/release_max_level_info",
 	"reth-ethereum-cli/min-info-logs",
-	"tempo-node/min-info-logs"
+	"tempo-node/min-info-logs",
 ]
 min-debug-logs = [
 	"tracing/release_max_level_debug",
 	"reth-ethereum-cli/min-debug-logs",
-	"tempo-node/min-debug-logs"
+	"tempo-node/min-debug-logs",
 ]
 min-trace-logs = [
 	"reth-ethereum-cli/min-trace-logs",
-	"tempo-node/min-trace-logs"
+	"tempo-node/min-trace-logs",
 ]

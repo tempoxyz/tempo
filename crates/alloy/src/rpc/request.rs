@@ -192,8 +192,7 @@ impl TempoTransactionRequest {
         }
 
         Ok(TempoTransaction {
-            // TODO: use tempo mainnet chainid once assigned
-            chain_id: self.inner.chain_id.unwrap_or(1),
+            chain_id: self.inner.chain_id.unwrap_or(4217),
             nonce,
             fee_payer_signature: self.fee_payer_signature,
             valid_before: self.valid_before,
@@ -206,7 +205,7 @@ impl TempoTransactionRequest {
             calls,
             tempo_authorization_list: self.tempo_authorization_list,
             nonce_key: self.nonce_key.unwrap_or_default(),
-            key_authorization: None,
+            key_authorization: self.key_authorization,
         })
     }
 }
@@ -556,5 +555,40 @@ mod tests {
 
         let request: TempoTransactionRequest = tx.into();
         assert_eq!(request.fee_payer_signature, Some(sig));
+    }
+
+    #[test]
+    fn test_build_aa_preserves_key_authorization() {
+        use tempo_primitives::transaction::{
+            KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization,
+        };
+
+        let key_auth = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 4217,
+                key_type: SignatureType::Secp256k1,
+                key_id: address!("0x1111111111111111111111111111111111111111"),
+                expiry: None,
+                limits: None,
+            },
+            signature: PrimitiveSignature::default(),
+        };
+
+        let mut request = TempoTransactionRequest {
+            key_authorization: Some(key_auth.clone()),
+            ..Default::default()
+        };
+        request.inner.nonce = Some(0);
+        request.inner.gas = Some(21000);
+        request.inner.max_fee_per_gas = Some(1000000000);
+        request.inner.max_priority_fee_per_gas = Some(1000000);
+        request.inner.to = Some(address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D").into());
+
+        let tx = request.build_aa().expect("should build transaction");
+        assert_eq!(
+            tx.key_authorization,
+            Some(key_auth),
+            "build_aa must preserve key_authorization from the request"
+        );
     }
 }

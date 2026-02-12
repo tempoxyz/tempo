@@ -386,6 +386,10 @@ where
         unreachable!("'beneficiary' not implemented in read-only context yet")
     }
 
+    fn block_number(&self) -> u64 {
+        unreachable!("'block_number' not implemented in read-only context yet")
+    }
+
     fn tload(&mut self, _: Address, _: U256) -> TempoResult<U256> {
         unreachable!("'tload' not implemented in read-only context yet")
     }

@@ -370,10 +370,8 @@ mod tests {
             let signing_key = SigningKey::random(&mut OsRng);
             let verifying_key = signing_key.verifying_key();
             let encoded_point = verifying_key.to_encoded_point(false);
-            let pub_key_x =
-                alloy_primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
-            let pub_key_y =
-                alloy_primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+            let pub_key_x = alloy_primitives::B256::from_slice(encoded_point.x().unwrap().as_ref());
+            let pub_key_y = alloy_primitives::B256::from_slice(encoded_point.y().unwrap().as_ref());
             let address = derive_p256_address(&pub_key_x, &pub_key_y);
 
             Self {
@@ -856,10 +854,7 @@ mod tests {
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
         let slot = StorageCtx::enter(&mut provider, || {
-            TIP20Token::from_address(PATH_USD_ADDRESS)?
-                .balances
-                .at(caller)
-                .read()
+            TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
         })?;
         drop(provider);
 
@@ -875,10 +870,7 @@ mod tests {
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
         let slot = StorageCtx::enter(&mut provider, || {
-            TIP20Token::from_address(PATH_USD_ADDRESS)?
-                .balances
-                .at(caller)
-                .read()
+            TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
         })?;
         drop(provider);
 
@@ -907,10 +899,7 @@ mod tests {
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
         let slot = StorageCtx::enter(&mut provider, || {
-            TIP20Token::from_address(PATH_USD_ADDRESS)?
-                .balances
-                .at(caller)
-                .read()
+            TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
         })?;
         drop(provider);
 

@@ -1,5 +1,7 @@
 name: Test
 
+permissions: {}
+
 on:
   push:
     branches: [main]
@@ -20,20 +22,26 @@ jobs:
   check-precompiles:
     name: Check precompiles changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       coverage: ${{ steps.check.outputs.coverage }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Check for precompiles changes
         id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           # Only run coverage on pull_request events when precompiles/contracts changed
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "coverage=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping coverage: not a pull_request event (event: ${{ github.event_name }})"
-          elif git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/ref-impls/)'; then
+            echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
+          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/ref-impls/)'; then
             echo "coverage=true" >> "$GITHUB_OUTPUT"
             echo "Running coverage: precompiles/contracts changed"
           else
@@ -45,8 +53,12 @@ jobs:
     name: Genesis generation
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
@@ -73,16 +85,20 @@ jobs:
     needs: check-precompiles
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: ${{ needs.check-precompiles.outputs.coverage == 'true' && 'llvm-tools-preview' || '' }}
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - uses: taiki-e/install-action@2e9d707ef49c9b094d45955b60c7e5c0dfedeb14 # v2.66.5
+      - uses: taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28 # v2.67.19
         with:
-          tool: nextest@0.9.123-b.2
+          tool: nextest@0.9.124
       # Build and run tests WITH coverage (only when precompiles changed)
       - name: Build and compile tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
@@ -126,12 +142,34 @@ jobs:
             coverage/precompiles-bin/
           retention-days: 1
 
+  cli:
+    name: CLI smoke tests
+    runs-on: depot-ubuntu-latest-4
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - name: Build tempo
+        run: cargo build --bin tempo
+      - name: Run CLI tests
+        run: ./scripts/test-cli.sh
+
   msrv:
     name: MSRV
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.91" # MSRV
@@ -146,9 +184,11 @@ jobs:
     name: test success
     runs-on: ubuntu-latest
     if: always()
+    permissions: {}
     needs:
       - check-precompiles
       - test
+      - cli
       - msrv
       - genesis
     timeout-minutes: 30

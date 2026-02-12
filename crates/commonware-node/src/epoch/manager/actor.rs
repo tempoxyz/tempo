@@ -66,7 +66,7 @@ use commonware_utils::{Acknowledgement as _, vec::NonEmptyVec};
 use eyre::{ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
-use rand::{CryptoRng, Rng};
+use rand_08::{CryptoRng, Rng};
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
@@ -79,7 +79,7 @@ use super::ingress::{Content, Message};
 const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 
-pub(crate) struct Actor<TBlocker, TContext> {
+pub(crate) struct Actor<TContext, TBlocker> {
     active_epochs: BTreeMap<Epoch, Handle<()>>,
     config: super::Config<TBlocker>,
     context: ContextCell<TContext>,
@@ -88,7 +88,7 @@ pub(crate) struct Actor<TBlocker, TContext> {
     metrics: Metrics,
 }
 
-impl<TBlocker, TContext> Actor<TBlocker, TContext>
+impl<TContext, TBlocker> Actor<TContext, TBlocker>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     // TODO(janis): are all of these bounds necessary?

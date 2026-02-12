@@ -493,4 +493,93 @@ mod tests {
             "T0: expected PrecompileError for invalid calldata, got {result:?}"
         );
     }
+
+    #[test]
+    fn test_input_cost_returns_non_zero_for_input() {
+        // Empty input should cost 0
+        assert_eq!(input_cost(0), 0);
+
+        // 1 byte should cost INPUT_PER_WORD_COST (rounds up to 1 word)
+        assert_eq!(input_cost(1), INPUT_PER_WORD_COST);
+
+        // 32 bytes (1 word) should cost INPUT_PER_WORD_COST
+        assert_eq!(input_cost(32), INPUT_PER_WORD_COST);
+
+        // 33 bytes (2 words) should cost 2 * INPUT_PER_WORD_COST
+        assert_eq!(input_cost(33), INPUT_PER_WORD_COST * 2);
+    }
+
+    #[test]
+    fn test_extend_tempo_precompiles_registers_precompiles() {
+        use revm::handler::EthPrecompiles;
+
+        let cfg = CfgEnv::<TempoHardfork>::default();
+        let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
+
+        extend_tempo_precompiles(&mut precompiles, &cfg);
+
+        // TIP20Factory should be registered
+        let factory_precompile = precompiles.get(&TIP20_FACTORY_ADDRESS);
+        assert!(
+            factory_precompile.is_some(),
+            "TIP20Factory should be registered"
+        );
+
+        // TIP403Registry should be registered
+        let registry_precompile = precompiles.get(&TIP403_REGISTRY_ADDRESS);
+        assert!(
+            registry_precompile.is_some(),
+            "TIP403Registry should be registered"
+        );
+
+        // TipFeeManager should be registered
+        let fee_manager_precompile = precompiles.get(&TIP_FEE_MANAGER_ADDRESS);
+        assert!(
+            fee_manager_precompile.is_some(),
+            "TipFeeManager should be registered"
+        );
+
+        // StablecoinDEX should be registered
+        let dex_precompile = precompiles.get(&STABLECOIN_DEX_ADDRESS);
+        assert!(
+            dex_precompile.is_some(),
+            "StablecoinDEX should be registered"
+        );
+
+        // NonceManager should be registered
+        let nonce_precompile = precompiles.get(&NONCE_PRECOMPILE_ADDRESS);
+        assert!(
+            nonce_precompile.is_some(),
+            "NonceManager should be registered"
+        );
+
+        // ValidatorConfig should be registered
+        let validator_precompile = precompiles.get(&VALIDATOR_CONFIG_ADDRESS);
+        assert!(
+            validator_precompile.is_some(),
+            "ValidatorConfig should be registered"
+        );
+
+        // AccountKeychain should be registered
+        let keychain_precompile = precompiles.get(&ACCOUNT_KEYCHAIN_ADDRESS);
+        assert!(
+            keychain_precompile.is_some(),
+            "AccountKeychain should be registered"
+        );
+
+        // TIP20 tokens with prefix should be registered
+        let tip20_precompile = precompiles.get(&PATH_USD_ADDRESS);
+        assert!(
+            tip20_precompile.is_some(),
+            "TIP20 tokens should be registered"
+        );
+
+        // Random address without TIP20 prefix should NOT be registered
+        let random_address = Address::random();
+        let random_precompile = precompiles.get(&random_address);
+        assert!(
+            random_precompile.is_none(),
+            "Random address should not be a precompile"
+        );
+    }
 }

@@ -88,7 +88,10 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         bytes memory signedTx,
         bool isCreate,
         uint256 createNonce
-    ) internal returns (bool success) {
+    )
+        internal
+        returns (bool success)
+    {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
@@ -118,7 +121,10 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
     /// @notice Increment 2D nonce via direct storage manipulation
     /// @dev Simulates protocol behavior for 2D nonces since vm.executeTransaction
     ///      doesn't support Tempo transactions
-    function _incrementNonceViaStorage(address account, uint256 nonceKey)
+    function _incrementNonceViaStorage(
+        address account,
+        uint256 nonceKey
+    )
         internal
         returns (uint64 newNonce)
     {

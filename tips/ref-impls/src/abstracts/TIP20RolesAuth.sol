@@ -36,7 +36,10 @@ abstract contract TIP20RolesAuth is ITIP20RolesAuth {
         emit RoleMembershipUpdated(role, msg.sender, msg.sender, false);
     }
 
-    function setRoleAdmin(bytes32 role, bytes32 adminRole)
+    function setRoleAdmin(
+        bytes32 role,
+        bytes32 adminRole
+    )
         external
         virtual
         onlyRole(roleAdmin[role])

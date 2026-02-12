@@ -799,6 +799,10 @@ impl TIP20Token {
             return Ok(());
         }
 
+        if self.storage.spec().is_t2() {
+            AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
+        }
+
         // Update rewards for the recipient and get their reward recipient
         let to_reward_recipient = self.update_rewards(to)?;
 
@@ -846,7 +850,7 @@ pub(crate) mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, setup_storage},
     };
-    use rand::{Rng, distributions::Alphanumeric, thread_rng};
+    use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
 
     #[test]
     fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {
@@ -1850,7 +1854,7 @@ pub(crate) mod tests {
             assert_eq!(token.transfer_policy_id()?, 1);
 
             // Test random invalid policy IDs should fail
-            let mut rng = rand::thread_rng();
+            let mut rng = rand_08::thread_rng();
             for _ in 0..20 {
                 let invalid_policy_id = rng.gen_range(2..u64::MAX);
                 let result = token.change_transfer_policy_id(

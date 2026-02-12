@@ -752,6 +752,85 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_body_against_header_bad_tx_root() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+
+        let chain_id = ANDANTINO.chain().id();
+        let user_tx = create_tx(chain_id);
+        let body = BlockBody {
+            transactions: vec![user_tx],
+            withdrawals: Some(Default::default()),
+            ..Default::default()
+        };
+
+        let result = consensus.validate_body_against_header(&body, &sealed);
+        assert!(
+            matches!(result, Err(ConsensusError::BodyTransactionRootDiff(_))),
+            "Expected BodyTransactionRootDiff error, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_block_post_execution_bad_receipts() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let chain_id = ANDANTINO.chain().id();
+
+        let system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
+        let user_tx = create_tx(chain_id);
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![user_tx, system_tx]);
+        let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO, Address::ZERO]);
+
+        let receipt = TempoReceipt {
+            tx_type: tempo_primitives::TempoTxType::Legacy,
+            success: true,
+            cumulative_gas_used: 0,
+            logs: vec![],
+        };
+        let result = BlockExecutionResult {
+            receipts: vec![receipt],
+            requests: Default::default(),
+            gas_used: 0,
+            blob_gas_used: 0,
+        };
+
+        let err = consensus
+            .validate_block_post_execution(&recovered, &result)
+            .unwrap_err();
+        assert!(
+            matches!(err, ConsensusError::BodyReceiptRootDiff(_)),
+            "Expected BodyReceiptRootDiff error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_header_timestamp_exactly_at_boundary() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let boundary_timestamp = current_timestamp() + ALLOWED_FUTURE_BLOCK_TIME_SECONDS;
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(boundary_timestamp)
+            .timestamp_millis_part(0)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+
+        let result = consensus.validate_header(&sealed);
+        assert!(
+            result.is_ok(),
+            "Timestamp exactly at boundary should be accepted, got: {result:?}"
+        );
+    }
+
+    #[test]
     fn test_validate_block_pre_execution_system_tx_out_of_order() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
         let chain_id = ANDANTINO.chain().id();

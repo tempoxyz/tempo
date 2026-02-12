@@ -1,6 +1,6 @@
 name: Release
-# Adapted from Reth's release workflow
-# https://github.com/paradigmxyz/reth/blob/main/.github/workflows/release.yml
+
+permissions: {}
 
 on:
   push:
@@ -34,14 +34,18 @@ jobs:
   get-version:
     name: Get Version
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - name: Get version from tag
         id: get_version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "version=$INPUT_TAG" >> $GITHUB_OUTPUT
           else
             echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
@@ -50,8 +54,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: get-version
     if: ${{ github.event.inputs.dry_run != 'true' }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Verify crate version matches tag
         # Check that the Cargo version starts with the tag,
@@ -65,7 +73,10 @@ jobs:
   build-release:
     name: Build Release Binaries
     needs: get-version
+    environment: release
     runs-on: ${{ matrix.platform.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -86,7 +97,9 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -140,13 +153,25 @@ jobs:
         run: |
           shasum -a 256 "${{ steps.prepare.outputs.archive_path }}" > "${{ steps.prepare.outputs.archive_name }}.sha256"
 
+      - name: GPG sign archive
+        shell: bash
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
+          echo -n "$GPG_SIGNING_KEY" | base64 --decode | gpg --batch --import
+          printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "${{ steps.prepare.outputs.archive_path }}"
+
       - name: Upload artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary.name }}-${{ matrix.platform.target }}
           path: |
             ${{ steps.prepare.outputs.archive_path }}
             ${{ steps.prepare.outputs.archive_name }}.sha256
+            ${{ steps.prepare.outputs.archive_name }}.asc
           if-no-files-found: error
 
   create-release:
@@ -156,16 +181,18 @@ jobs:
     runs-on: depot-ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       # This is necessary for generating the changelog.
       # It has to come before "Download Artifacts" or else it deletes the artifacts.
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Download artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
 
@@ -193,14 +220,18 @@ jobs:
     needs: [get-version, build-release]
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: depot-ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Download artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
 
