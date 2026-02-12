@@ -18,9 +18,6 @@ impl Precompile for ValidatorConfigV2 {
             ));
         }
 
-        // Get the current block number from the EVM context via storage provider
-        let block_height = self.storage.block_number();
-
         dispatch_call(
             calldata,
             IValidatorConfigV2Calls::abi_decode,
@@ -57,19 +54,13 @@ impl Precompile for ValidatorConfigV2 {
 
                 // Mutate functions
                 IValidatorConfigV2Calls::addValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.add_validator(s, c, block_height)
-                    })
+                    mutate_void(call, msg_sender, |s, c| self.add_validator(s, c))
                 }
                 IValidatorConfigV2Calls::deactivateValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.deactivate_validator(s, c, block_height)
-                    })
+                    mutate_void(call, msg_sender, |s, c| self.deactivate_validator(s, c))
                 }
                 IValidatorConfigV2Calls::rotateValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.rotate_validator(s, c, block_height)
-                    })
+                    mutate_void(call, msg_sender, |s, c| self.rotate_validator(s, c))
                 }
                 IValidatorConfigV2Calls::setIpAddresses(call) => {
                     mutate_void(call, msg_sender, |s, c| self.set_ip_addresses(s, c))
@@ -88,14 +79,10 @@ impl Precompile for ValidatorConfigV2 {
                     })
                 }
                 IValidatorConfigV2Calls::migrateValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.migrate_validator(s, c, block_height)
-                    })
+                    mutate_void(call, msg_sender, |s, c| self.migrate_validator(s, c))
                 }
                 IValidatorConfigV2Calls::initializeIfMigrated(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
-                        self.initialize_if_migrated(s, c, block_height)
-                    })
+                    mutate_void(call, msg_sender, |s, _| self.initialize_if_migrated(s))
                 }
             },
         )
