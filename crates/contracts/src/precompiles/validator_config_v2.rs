@@ -121,6 +121,7 @@ crate::sol! {
         error ValidatorAlreadyDeleted();
         error InvalidPublicKey();
         error InvalidSignature();
+        error InvalidSignatureFormat();
         error InvalidValidatorAddress();
         error NotInitialized();
         error AlreadyInitialized();
@@ -158,6 +159,10 @@ impl ValidatorConfigV2Error {
 
     pub const fn invalid_signature() -> Self {
         Self::InvalidSignature(IValidatorConfigV2::InvalidSignature {})
+    }
+
+    pub const fn invalid_signature_format() -> Self {
+        Self::InvalidSignatureFormat(IValidatorConfigV2::InvalidSignatureFormat {})
     }
 
     pub const fn invalid_validator_address() -> Self {

@@ -307,7 +307,7 @@ impl ValidatorConfigV2 {
         let public_key = PublicKey::decode(pubkey.as_slice())
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
         let sig = Signature::decode(signature)
-            .map_err(|_| ValidatorConfigV2Error::invalid_signature())?;
+            .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
 
         // Verify signature with namespace
         if !public_key.verify(namespace, message.as_slice(), &sig) {
