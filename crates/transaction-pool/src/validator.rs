@@ -562,8 +562,8 @@ where
     /// Validates that a transaction's max_fee_per_gas is at least the minimum base fee
     /// for the current hardfork.
     ///
-    /// - T0: 10 gwei minimum
-    /// - T1+: 20 gwei minimum
+    /// - T0: 10 billion attodollars minimum
+    /// - T1+: 20 billion attodollars minimum
     fn ensure_min_base_fee(
         &self,
         transaction: &TempoPooledTransaction,
