@@ -747,7 +747,7 @@ where
                 match player_state.finalize(logs, &Sequential) {
                     Ok((new_output, new_share)) => {
                         info!("local DKG ceremony was a success");
-                        (new_output, Some(new_share))
+                        (new_output, state::ShareState::Plaintext(Some(new_share)))
                     }
                     Err(error) => {
                         warn!(
@@ -761,7 +761,7 @@ where
                 match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
-                        (output, None)
+                        (output, state::ShareState::Plaintext(None))
                     }
                     Err(error) => {
                         warn!(
@@ -787,7 +787,7 @@ where
                 other nodes are blocking us it might be time to delete this node \
                 and spin up a new identity",
             );
-            share.take();
+            share = state::ShareState::Plaintext(None);
         }
 
         // Because we use cached data we, need to check for DKG success here:
@@ -878,7 +878,7 @@ where
             epoch: onchain_outcome.epoch,
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
-            share: None,
+            share: state::ShareState::Plaintext(None),
             players: onchain_outcome.next_players,
             syncers: ordered::Set::from_iter_dedup(
                 all_validators
@@ -1125,7 +1125,7 @@ where
                 match player_state.finalize(logs, &Sequential) {
                     Ok((new_output, share)) => {
                         info!("DKG ceremony was a success");
-                        (new_output, Some(share))
+                        (new_output, state::ShareState::Plaintext(Some(share)))
                     }
                     Err(error) => {
                         warn!(
@@ -1139,7 +1139,7 @@ where
                 match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("DKG ceremony was a success");
-                        (output, None)
+                        (output, state::ShareState::Plaintext(None))
                     }
                     Err(error) => {
                         warn!(
@@ -1189,7 +1189,7 @@ where
             .enter(
                 state.epoch,
                 state.output.public().clone(),
-                state.share.clone(),
+                state.share.clone().into_inner(),
                 state.dealers().clone(),
             )
             .wrap_err("could not instruct epoch manager to enter epoch")
@@ -1271,7 +1271,7 @@ where
             format!("failed reading validator config from block height `{newest_height}`")
         })?;
 
-    let share = 'verify_initial_share: {
+    let share = state::ShareState::Plaintext('verify_initial_share: {
         let Some(share) = share else {
             break 'verify_initial_share None;
         };
@@ -1290,7 +1290,7 @@ where
             break 'verify_initial_share None;
         }
         Some(share)
-    };
+    });
 
     info!(%newest_height, "setting sync floor");
     marshal.set_floor(newest_height).await;

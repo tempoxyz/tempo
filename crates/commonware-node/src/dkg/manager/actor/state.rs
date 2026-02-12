@@ -311,7 +311,7 @@ where
         epoch: Epoch,
         digest: Digest,
         output: Output<MinSig, PublicKey>,
-        share: Option<Share>,
+        share: ShareState,
     ) {
         self.cache
             .entry(epoch)
@@ -324,7 +324,7 @@ where
         &self,
         epoch: &Epoch,
         digest: &Digest,
-    ) -> Option<&(Output<MinSig, PublicKey>, Option<Share>)> {
+    ) -> Option<&(Output<MinSig, PublicKey>, ShareState)> {
         self.cache
             .get(epoch)
             .and_then(|events| events.dkg_outcomes.get(digest))
@@ -346,7 +346,6 @@ where
         fields(
             me = %me.public_key(),
             epoch = %round.epoch,
-            share = share.as_ref().map_or("<unset>", |_| "<set>"),
         )
         err,
     )]
@@ -354,7 +353,7 @@ where
         &mut self,
         me: PrivateKey,
         round: Round,
-        share: Option<Share>,
+        share: ShareState,
         seed: Summary,
     ) -> eyre::Result<Option<Dealer>> {
         if round.dealers.position(&me.public_key()).is_none() {
@@ -364,16 +363,18 @@ where
         let share = if round.is_full_dkg() {
             info!("running full DKG ceremony as dealer (new polynomial)");
             None
-        } else if share.is_none() {
-            warn!(
-                "we are a dealer in this round, but we do not have a share, \
-                which means we likely lost it; will not instantiate a dealer \
-                instance and hope to get a new share in the next round if we \
-                are a player"
-            );
-            return Ok(None);
         } else {
-            share
+            let inner = share.into_inner();
+            if inner.is_none() {
+                warn!(
+                    "we are a dealer in this round, but we do not have a share, \
+                    which means we likely lost it; will not instantiate a dealer \
+                    instance and hope to get a new share in the next round if we \
+                    are a player"
+                );
+                return Ok(None);
+            }
+            inner
         };
 
         let (mut dealer, pub_msg, priv_msgs) = dkg::Dealer::start::<N3f1>(
@@ -656,13 +657,67 @@ where
     Ok(())
 }
 
+/// Wrapper around a DKG share that tracks how it is stored at rest.
+///
+/// The `Option<Share>` is inside the enum so that a future encrypted variant
+/// can hide whether a share is present at all.
+///
+/// Currently only plaintext storage is supported, but additional variants
+/// (e.g. encrypted-at-rest) can be added in the future.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ShareState {
+    Plaintext(Option<Share>),
+}
+
+impl ShareState {
+    pub(super) fn into_inner(self) -> Option<Share> {
+        match self {
+            Self::Plaintext(share) => share,
+        }
+    }
+}
+
+impl EncodeSize for ShareState {
+    fn encode_size(&self) -> usize {
+        match self {
+            Self::Plaintext(share) => 1 + share.encode_size(),
+        }
+    }
+}
+
+impl Write for ShareState {
+    fn write(&self, buf: &mut impl bytes::BufMut) {
+        match self {
+            Self::Plaintext(share) => {
+                0u8.write(buf);
+                share.write(buf);
+            }
+        }
+    }
+}
+
+impl Read for ShareState {
+    type Cfg = ();
+
+    fn read_cfg(
+        buf: &mut impl bytes::Buf,
+        _cfg: &Self::Cfg,
+    ) -> Result<Self, commonware_codec::Error> {
+        let tag = u8::read(buf)?;
+        match tag {
+            0 => Ok(Self::Plaintext(ReadExt::read(buf)?)),
+            other => Err(commonware_codec::Error::InvalidEnum(other)),
+        }
+    }
+}
+
 /// The outcome of a DKG ceremony.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct State {
     pub(super) epoch: Epoch,
     pub(super) seed: Summary,
     pub(super) output: Output<MinSig, PublicKey>,
-    pub(super) share: Option<Share>,
+    pub(super) share: ShareState,
     pub(super) players: ordered::Set<PublicKey>,
     pub(super) syncers: ordered::Set<PublicKey>,
     pub(super) is_full_dkg: bool,
@@ -805,7 +860,7 @@ impl From<LegacyState> for State {
             epoch: legacy.epoch,
             seed: legacy.seed,
             output: legacy.output,
-            share: legacy.share,
+            share: ShareState::Plaintext(legacy.share),
             players: legacy.players.keys().clone(),
             syncers: legacy.syncers.keys().clone(),
             is_full_dkg: legacy.is_full_dkg,
@@ -833,7 +888,7 @@ struct Events {
     finalized: BTreeMap<Height, FinalizedBlockInfo>,
 
     notarized_blocks: HashMap<Digest, ReducedBlock>,
-    dkg_outcomes: HashMap<Digest, (Output<MinSig, PublicKey>, Option<Share>)>,
+    dkg_outcomes: HashMap<Digest, (Output<MinSig, PublicKey>, ShareState)>,
 }
 
 impl Events {
@@ -1318,7 +1373,7 @@ mod tests {
             epoch: Epoch::new(epoch),
             seed: Summary::random(rng),
             output,
-            share: None,
+            share: ShareState::Plaintext(None),
             players: pubkeys.clone(),
             syncers: pubkeys,
             is_full_dkg: false,
@@ -1584,5 +1639,35 @@ mod tests {
                 "journal state must not be written into already-populated metadata"
             );
         });
+    }
+
+    #[track_caller]
+    fn assert_roundtrip(original: &ShareState) {
+        use commonware_codec::Encode as _;
+        let encoded = original.encode();
+        let decoded = ShareState::read_cfg(&mut encoded.as_ref(), &()).unwrap();
+        assert_eq!(original, &decoded);
+    }
+
+    #[test]
+    fn share_state_roundtrip_plaintext_none() {
+        assert_roundtrip(&ShareState::Plaintext(None));
+    }
+
+    #[test]
+    fn share_state_roundtrip_plaintext_some() {
+        use rand_08::SeedableRng as _;
+        let mut rng = rand_08::rngs::StdRng::seed_from_u64(42);
+
+        let keys = std::iter::repeat_with(|| PrivateKey::random(&mut rng))
+            .take(3)
+            .collect::<Vec<_>>();
+        let pubkeys = ordered::Set::try_from_iter(keys.iter().map(|k| k.public_key())).unwrap();
+
+        let (_output, shares) =
+            dkg::deal::<MinSig, _, N3f1>(&mut rng, Mode::NonZeroCounter, pubkeys).unwrap();
+
+        let share = shares.into_iter().next().unwrap().1;
+        assert_roundtrip(&ShareState::Plaintext(Some(share)));
     }
 }
