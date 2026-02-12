@@ -211,6 +211,7 @@ bytes = "1.11.1"
 clap = { version = "4.5.57", features = ["derive"] }
 const-hex = { version = "1.17.0" }
 derive_more = { version = "2.1.1" }
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc", "fast"] }
 eyre = "0.6.12"
 futures = "0.3.31"
 governor = "0.10.4"

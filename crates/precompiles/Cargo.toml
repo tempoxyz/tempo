@@ -19,6 +19,7 @@ alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-evm.workspace = true
 revm.workspace = true
 
+ed25519-dalek.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 derive_more.workspace = true
