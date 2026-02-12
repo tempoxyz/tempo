@@ -497,13 +497,20 @@ impl ValidatorConfigV2 {
         self.require_new_address(v1_val.validatorAddress)?;
         self.require_new_pubkey(v1_val.publicKey)?;
 
+        // V1 outboundAddress is ip:port, V2 egress is plain IP — strip the port
+        let egress = v1_val
+            .outboundAddress
+            .parse::<std::net::SocketAddr>()
+            .map(|sa| sa.ip().to_string())
+            .unwrap_or(v1_val.outboundAddress);
+
         let deactivated_at_height = if v1_val.active { 0 } else { block_height };
 
         self.append_validator_raw(
             v1_val.validatorAddress,
             v1_val.publicKey,
             v1_val.inboundAddress,
-            v1_val.outboundAddress,
+            egress,
             block_height,
             deactivated_at_height,
         )
@@ -1342,6 +1349,60 @@ mod tests {
                 result,
                 Err(ValidatorConfigV2Error::already_initialized().into())
             );
+
+            Ok(())
+        })
+    }
+
+    /// V1 stores outboundAddress as ip:port, but V2 egress is plain IP.
+    /// Migration must strip the port so migrated data satisfies V2 validation.
+    #[test]
+    fn test_migration_strips_port_from_v1_outbound_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let v1_addr = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // V1 validator with outboundAddress = ip:port
+            let mut v1 = v1();
+            v1.initialize(owner)?;
+            v1.add_validator(
+                owner,
+                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: v1_addr,
+                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            // Migrate to V2
+            let mut v2 = ValidatorConfigV2::new();
+            v2.storage.set_block_number(100);
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+            v2.storage.set_block_number(400);
+            v2.initialize_if_migrated(owner)?;
+
+            // Egress should be plain IP (port stripped from V1's "192.168.1.1:9000")
+            let migrated = v2.validator_by_index(0)?;
+            assert_eq!(
+                migrated.egress, "192.168.1.1",
+                "migration should strip port from V1 outboundAddress"
+            );
+
+            // Ingress preserved as-is (both V1 and V2 use ip:port)
+            assert_eq!(migrated.ingress, "192.168.1.1:8000");
+
+            // setIpAddresses should accept the migrated egress value
+            v2.set_ip_addresses(
+                owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    validatorAddress: v1_addr,
+                    ingress: "192.168.1.1:8000".to_string(),
+                    egress: migrated.egress,
+                },
+            )?;
 
             Ok(())
         })
