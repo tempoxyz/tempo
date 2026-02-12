@@ -16,7 +16,7 @@ crates/eyre/ @SuperFluffy
 crates/faucet/ @klkvr @mattsse
 crates/node/ @0xKitsune @klkvr @mattsse
 crates/payload/ @0xKitsune @klkvr @mattsse
-crates/precompiles/ @0xKitsune @fgimenez @klkvr @mattsse @legion2002 @howydev
+crates/precompiles/ @0xrusowsky @0xKitsune @fgimenez @klkvr @mattsse @legion2002 @howydev
 crates/precompiles-macros/ @0xrusowsky @mattsse
 crates/primitives/ @klkvr @mattsse
 crates/revm/ @klkvr @mattsse @rakita @0xKitsune
