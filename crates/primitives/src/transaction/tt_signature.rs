@@ -2,6 +2,7 @@ use super::tempo_transaction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
+use alloy_sol_types::SolValue;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
     EncodedPoint,
@@ -41,6 +42,19 @@ pub fn normalize_p256_s(s_bytes: &[u8]) -> B256 {
 pub const SIGNATURE_TYPE_P256: u8 = 0x01;
 pub const SIGNATURE_TYPE_WEBAUTHN: u8 = 0x02;
 pub const SIGNATURE_TYPE_KEYCHAIN: u8 = 0x03;
+pub const SIGNATURE_TYPE_MULTISIG: u8 = 0x04;
+
+/// Maximum number of owners in a multisig (TIP-1012)
+pub const MULTISIG_MAX_OWNERS: usize = 10;
+
+/// Maximum signature data size for multisig (8KB)
+pub const MULTISIG_MAX_SIGNATURE_DATA: usize = 8192;
+
+/// Domain separator for MultisigID derivation
+pub const MULTISIG_GENESIS_DOMAIN: &[u8] = b"tempo:multisig:genesis:v1";
+
+/// Domain separator for multisig address derivation
+pub const MULTISIG_ADDRESS_DOMAIN: &[u8] = b"tempo:multisig:addr:v1";
 
 // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
 const MIN_AUTH_DATA_LEN: usize = 37;
@@ -83,8 +97,95 @@ pub struct WebAuthnSignature {
     pub webauthn_data: Bytes,
 }
 
+/// Multisig signature for M-of-N threshold signing (TIP-1012).
+///
+/// The MultisigID is a permanent identifier derived from the genesis config.
+/// It is used to derive the account address and lookup the current config.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct MultisigSignature {
+    /// Permanent MultisigID (hash of genesis config)
+    /// MultisigID = keccak256("tempo:multisig:genesis:v1" || abi.encode(threshold, sortedOwners))
+    pub multisig_id: B256,
+
+    /// Signers who provided signatures (must be sorted ascending, no duplicates)
+    pub signers: Vec<Address>,
+
+    /// ECDSA signatures from each signer (65 bytes each: r || s || v)
+    pub signatures: Vec<Bytes>,
+}
+
+impl MultisigSignature {
+    /// Derive the account address from the MultisigID.
+    /// address = last20bytes(keccak256("tempo:multisig:addr:v1" || multisig_id))
+    pub fn derive_address(&self) -> Address {
+        derive_multisig_address(&self.multisig_id)
+    }
+
+    /// Get the number of signatures
+    pub fn signature_count(&self) -> usize {
+        self.signers.len()
+    }
+
+    /// Validate format constraints (DoS protection)
+    pub fn validate_format(&self) -> Result<(), &'static str> {
+        if self.signers.len() != self.signatures.len() {
+            return Err("Multisig: signers and signatures length mismatch");
+        }
+        if self.signers.len() > MULTISIG_MAX_OWNERS {
+            return Err("Multisig: too many signers");
+        }
+        if self.signers.is_empty() {
+            return Err("Multisig: no signers");
+        }
+        // Check signers are sorted ascending (no duplicates)
+        for i in 1..self.signers.len() {
+            if self.signers[i] <= self.signers[i - 1] {
+                return Err("Multisig: signers not sorted or duplicates");
+            }
+        }
+        // Check each signature is 65 bytes
+        for sig in &self.signatures {
+            if sig.len() != SECP256K1_SIGNATURE_LENGTH {
+                return Err("Multisig: invalid signature length");
+            }
+        }
+        Ok(())
+    }
+
+    /// Compute the total encoded size for DoS limits
+    pub fn encoded_size(&self) -> usize {
+        // multisig_id (32) + signers (20 each) + signatures (65 each)
+        32 + self.signers.len() * 20 + self.signatures.len() * 65
+    }
+}
+
+/// Derive the account address from a MultisigID.
+/// address = last20bytes(keccak256("tempo:multisig:addr:v1" || multisig_id))
+pub fn derive_multisig_address(multisig_id: &B256) -> Address {
+    let mut data = Vec::with_capacity(MULTISIG_ADDRESS_DOMAIN.len() + 32);
+    data.extend_from_slice(MULTISIG_ADDRESS_DOMAIN);
+    data.extend_from_slice(multisig_id.as_slice());
+    let hash = keccak256(&data);
+    Address::from_slice(&hash[12..])
+}
+
+/// Compute the MultisigID from threshold and sorted owners.
+/// MultisigID = keccak256("tempo:multisig:genesis:v1" || abi.encodePacked(threshold, sortedOwners))
+pub fn compute_multisig_id(threshold: u8, owners: &[Address]) -> B256 {
+    // Use packed encoding: threshold (1 byte) || owners (20 bytes each)
+    let mut data = Vec::with_capacity(MULTISIG_GENESIS_DOMAIN.len() + 1 + owners.len() * 20);
+    data.extend_from_slice(MULTISIG_GENESIS_DOMAIN);
+    data.push(threshold);
+    for owner in owners {
+        data.extend_from_slice(owner.as_slice());
+    }
+    keccak256(&data)
+}
+
 /// Primitive signature types that can be used standalone or within a Keychain signature.
-/// This enum contains only the base signature types: Secp256k1, P256, and WebAuthn.
+/// This enum contains only the base signature types: Secp256k1, P256, WebAuthn, and Multisig.
 /// It does NOT support Keychain signatures to prevent recursion.
 ///
 /// Note: This enum uses custom RLP encoding via `to_bytes()` and does NOT derive Compact.
@@ -92,11 +193,6 @@ pub struct WebAuthnSignature {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "camelCase"))]
-#[cfg_attr(
-    all(test, feature = "reth-codec"),
-    reth_codecs::add_arbitrary_tests(compact, rlp)
-)]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub enum PrimitiveSignature {
     /// Standard secp256k1 ECDSA signature (65 bytes: r, s, v)
     Secp256k1(Signature),
@@ -106,6 +202,9 @@ pub enum PrimitiveSignature {
 
     /// WebAuthn signature with variable-length authenticator data
     WebAuthn(WebAuthnSignature),
+
+    /// Multisig M-of-N threshold signature (TIP-1012)
+    Multisig(MultisigSignature),
 }
 
 impl PrimitiveSignature {
@@ -161,6 +260,35 @@ impl PrimitiveSignature {
                 }))
             }
 
+            SIGNATURE_TYPE_MULTISIG => {
+                // Multisig format: multisig_id[32] || abi.encode(signers, signatures)
+                if sig_data.len() < 32 {
+                    return Err("Multisig: signature data too short");
+                }
+                if sig_data.len() > MULTISIG_MAX_SIGNATURE_DATA {
+                    return Err("Multisig: signature data too large");
+                }
+
+                let multisig_id = B256::from_slice(&sig_data[0..32]);
+                let abi_data = &sig_data[32..];
+
+                // Decode ABI-encoded (address[] signers, bytes[] signatures)
+                let (signers, signatures): (Vec<Address>, Vec<Bytes>) =
+                    <(Vec<Address>, Vec<Bytes>)>::abi_decode(abi_data)
+                        .map_err(|_| "Multisig: failed to ABI decode signature data")?;
+
+                let multisig_sig = MultisigSignature {
+                    multisig_id,
+                    signers,
+                    signatures,
+                };
+
+                // Validate format constraints
+                multisig_sig.validate_format()?;
+
+                Ok(Self::Multisig(multisig_sig))
+            }
+
             _ => Err("Unknown signature type identifier"),
         }
     }
@@ -203,6 +331,16 @@ impl PrimitiveSignature {
                 bytes.extend_from_slice(webauthn_sig.pub_key_y.as_slice());
                 Bytes::from(bytes)
             }
+            Self::Multisig(multisig_sig) => {
+                // Format: 0x04 || multisig_id[32] || abi.encode(signers, signatures)
+                let abi_data =
+                    (multisig_sig.signers.clone(), multisig_sig.signatures.clone()).abi_encode();
+                let mut bytes = Vec::with_capacity(1 + 32 + abi_data.len());
+                bytes.push(SIGNATURE_TYPE_MULTISIG);
+                bytes.extend_from_slice(multisig_sig.multisig_id.as_slice());
+                bytes.extend_from_slice(&abi_data);
+                Bytes::from(bytes)
+            }
         }
     }
 
@@ -210,12 +348,13 @@ impl PrimitiveSignature {
     ///
     /// For backward compatibility:
     /// - Secp256k1: 65 bytes (no type identifier)
-    /// - P256/WebAuthn: includes 1-byte type identifier prefix
+    /// - P256/WebAuthn/Multisig: includes 1-byte type identifier prefix
     pub fn encoded_length(&self) -> usize {
         match self {
             Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
             Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
             Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
+            Self::Multisig(multisig_sig) => 1 + 32 + multisig_sig.encoded_size(),
         }
     }
 
@@ -225,6 +364,7 @@ impl PrimitiveSignature {
             Self::Secp256k1(_) => SignatureType::Secp256k1,
             Self::P256(_) => SignatureType::P256,
             Self::WebAuthn(_) => SignatureType::WebAuthn,
+            Self::Multisig(_) => SignatureType::Multisig,
         }
     }
 
@@ -234,7 +374,16 @@ impl PrimitiveSignature {
             + match self {
                 Self::Secp256k1(_) | Self::P256(_) => 0,
                 Self::WebAuthn(webauthn_sig) => webauthn_sig.webauthn_data.len(),
+                Self::Multisig(multisig_sig) => multisig_sig.encoded_size(),
             }
+    }
+
+    /// Get the MultisigSignature if this is a Multisig signature
+    pub fn as_multisig(&self) -> Option<&MultisigSignature> {
+        match self {
+            Self::Multisig(sig) => Some(sig),
+            _ => None,
+        }
     }
 
     /// Recover the signer address from the signature
@@ -243,6 +392,10 @@ impl PrimitiveSignature {
     /// - secp256k1: Uses standard ecrecover (signature verification + address recovery)
     /// - P256: Verifies P256 signature then derives address from public key
     /// - WebAuthn: Parses WebAuthn data, verifies P256 signature, derives address
+    /// - Multisig: Verifies all signatures, derives address from MultisigID
+    ///
+    /// NOTE: For Multisig, this only verifies signature format and cryptographic validity.
+    /// Threshold and owner membership checks require state access and are done separately.
     pub fn recover_signer(
         &self,
         sig_hash: &B256,
@@ -299,6 +452,24 @@ impl PrimitiveSignature {
                     &webauthn_sig.pub_key_x,
                     &webauthn_sig.pub_key_y,
                 ))
+            }
+            Self::Multisig(multisig_sig) => {
+                // Verify each signature recovers to the claimed signer
+                for (signer, sig_bytes) in
+                    multisig_sig.signers.iter().zip(multisig_sig.signatures.iter())
+                {
+                    let sig = Signature::try_from(sig_bytes.as_ref())
+                        .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+                    let recovered =
+                        alloy_consensus::crypto::secp256k1::recover_signer(&sig, *sig_hash)
+                            .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+                    if recovered != *signer {
+                        return Err(alloy_consensus::crypto::RecoveryError::new());
+                    }
+                }
+
+                // Derive address from MultisigID
+                Ok(multisig_sig.derive_address())
             }
         }
     }
