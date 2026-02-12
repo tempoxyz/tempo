@@ -74,15 +74,15 @@ impl ValidatorConfigV2 {
     // =========================================================================
 
     pub fn owner(&self) -> Result<Address> {
-        Ok(self.config.read()?.owner)
-    }
-
-    pub fn is_initialized(&self) -> Result<bool> {
-        Ok(self.config.read()?.is_initialized())
+        self.config.owner.read()
     }
 
     pub fn get_initialized_at_height(&self) -> Result<u64> {
-        Ok(self.config.read()?.init_at_height)
+        self.config.init_at_height.read()
+    }
+
+    pub fn is_initialized(&self) -> Result<bool> {
+        self.config.read().map(|c| c.is_initialized())
     }
 
     /// Requires the contract to be initialized. Returns the config.
