@@ -46,7 +46,7 @@ crate::sol! {
         function validatorCount() external view returns (uint64);
 
         /// Get validator by index
-        function validatorByIndex(uint256 index) external view returns (Validator memory);
+        function validatorByIndex(uint64 index) external view returns (Validator memory);
 
         /// Get validator by address
         function validatorByAddress(address validatorAddress) external view returns (Validator memory);

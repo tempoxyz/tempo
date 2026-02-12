@@ -332,6 +332,18 @@ pub fn ensure_address_is_ip_port(input: &str) -> core::result::Result<(), IpWith
     Ok(())
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("input was not a valid IP address")]
+pub struct IpParseError {
+    #[from]
+    source: std::net::AddrParseError,
+}
+
+pub fn ensure_address_is_ip(input: &str) -> core::result::Result<(), IpParseError> {
+    input.parse::<std::net::IpAddr>()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
