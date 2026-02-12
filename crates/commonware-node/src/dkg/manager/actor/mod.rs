@@ -1502,48 +1502,41 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
     const MIN_RETRY: Duration = Duration::from_secs(1);
     const MAX_RETRY: Duration = Duration::from_secs(30);
 
-    let (min_height, fixed_height) = match &target {
-        Target::Best { min_height } => (*min_height, None),
-        Target::Block(height) => (*height, Some(*height)),
-    };
-
-    loop {
+    'read_contract: loop {
         metric.inc();
         attempts += 1;
 
-        let read_height = if let Some(h) = fixed_height {
-            Some(h)
-        } else {
-            node.provider
+        let target_height = match target {
+            Target::Block(height) => height,
+            Target::Best { min_height } => node
+                .provider
                 .best_block_number()
                 .ok()
                 .map(Height::new)
-                .filter(|best| *best >= min_height)
+                .filter(|best| best >= &min_height)
+                .unwrap_or(min_height),
         };
 
-        if let Some(height) = read_height {
-            if let Ok(validators) =
-                validators::read_from_contract_at_height(attempts, node, height).await
-            {
-                break validators;
-            }
+        if let Ok(validators) =
+            validators::read_from_contract_at_height(attempts, node, target_height).await
+        {
+            break 'read_contract validators;
         }
 
         let retry_after = MIN_RETRY.saturating_mul(attempts).min(MAX_RETRY);
         let is_syncing = node.network.is_syncing();
         let best_block = node.provider.best_block_number();
-        let target_block = min_height.get();
         let blocks_behind = best_block
             .as_ref()
             .ok()
-            .map(|best| target_block.saturating_sub(*best));
+            .map(|best| target_height.get().saturating_sub(*best));
         tracing::warn_span!("read_validator_config_with_retry").in_scope(|| {
             warn!(
                 attempts,
                 retry_after = %tempo_telemetry_util::display_duration(retry_after),
                 is_syncing,
                 best_block = %tempo_telemetry_util::display_result(&best_block),
-                target_block,
+                %target_height,
                 blocks_behind = %tempo_telemetry_util::display_option(&blocks_behind),
                 "reading validator config from contract failed; will retry",
             );

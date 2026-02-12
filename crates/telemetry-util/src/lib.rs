@@ -1,5 +1,7 @@
 //! Utilities to make working with tracing and telemetry easier.
 
+use std::borrow::Cow;
+
 /// Formats a [`std::time::Duration`] using the [`std::fmt::Display`].
 ///
 /// # Example
@@ -167,7 +169,8 @@ impl<T: std::fmt::Display, E: std::error::Error> std::fmt::Display for DisplayRe
     }
 }
 
-/// Formats an [`Option`] using [`std::fmt::Display`], showing either the value or `<not set>`.
+/// Formats an [`Option`] using [`std::fmt::Display`], showing either the value
+/// or `<not set>`.
 ///
 /// On `Some`, displays the value using its [`std::fmt::Display`] implementation.
 /// On `None`, displays `<not set>` to indicate the value is absent.
