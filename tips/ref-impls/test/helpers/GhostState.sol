@@ -49,6 +49,7 @@ abstract contract GhostState {
     uint256 public ghost_eip7702CreateWithAuthAllowed; // TX7 - CREATE with auth list unexpectedly allowed
     uint256 public ghost_timeBoundValidAfterAllowed; // T1 - validAfter not enforced
     uint256 public ghost_timeBoundValidBeforeAllowed; // T2 - validBefore not enforced
+    uint256 public ghost_timeBoundZeroWidthAllowed; // T5 - validBefore == validAfter unexpectedly allowed
 
     // ============ Fee Collection Tracking (F1-F12) ============
 
