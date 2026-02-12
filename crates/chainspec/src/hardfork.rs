@@ -86,13 +86,14 @@ impl TempoHardfork {
         }
     }
 
-    /// Returns the per-transaction gas limit cap, or None if uncapped.
-    /// - Pre-T1: None (no per-tx cap)
+    /// Returns the per-transaction gas limit cap.
+    /// - Pre-T1: u64::MAX (no effective cap, but must be `Some` to prevent revm from
+    ///   falling back to EIP-7825)
     /// - T1+: 30M gas (allows maximum-sized contract deployments under TIP-1000 state creation)
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
         match self {
             Self::T1 | Self::T2 => Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
-            Self::T0 | Self::Genesis => None,
+            Self::T0 | Self::Genesis => Some(u64::MAX),
         }
     }
 
