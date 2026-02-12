@@ -156,9 +156,9 @@ update_tempoup() {
     # Replace current script with new version
     info "Updating from $TEMPOUP_INSTALLER_VERSION to $remote_version..."
     if cp "$tmp_file" "$TEMPOUP_BIN_PATH" 2>/dev/null; then
-        chmod +x "$TEMPOUP_BIN_PATH"
+        chmod 755 "$TEMPOUP_BIN_PATH"
     elif sudo cp "$tmp_file" "$TEMPOUP_BIN_PATH" 2>/dev/null; then
-        sudo chmod +x "$TEMPOUP_BIN_PATH"
+        sudo chmod 755 "$TEMPOUP_BIN_PATH"
     else
         error "Failed to update tempoup at $TEMPOUP_BIN_PATH. Try running with sudo."
     fi
@@ -421,9 +421,9 @@ main() {
     # Install binary
     info "Installing to $BIN_DIR/$BINARY_NAME..."
     if cp "$BINARY_PATH" "$BIN_DIR/$BINARY_NAME" 2>/dev/null; then
-        chmod +x "$BIN_DIR/$BINARY_NAME"
+        chmod 755 "$BIN_DIR/$BINARY_NAME"
     elif sudo cp "$BINARY_PATH" "$BIN_DIR/$BINARY_NAME" 2>/dev/null; then
-        sudo chmod +x "$BIN_DIR/$BINARY_NAME"
+        sudo chmod 755 "$BIN_DIR/$BINARY_NAME"
     else
         error "Failed to install to $BIN_DIR. Try running with sudo."
     fi

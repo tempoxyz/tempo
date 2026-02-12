@@ -164,6 +164,8 @@ pub(crate) struct TestNodeBuilder {
     node_count: usize,
     is_dev: bool,
     external_rpc: Option<Url>,
+    custom_validator: Option<Address>,
+    dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
 }
 
 impl TestNodeBuilder {
@@ -175,6 +177,8 @@ impl TestNodeBuilder {
             node_count: 1,
             is_dev: true,
             external_rpc: None,
+            custom_validator: None,
+            dynamic_validator: None,
         }
     }
 
@@ -199,6 +203,15 @@ impl TestNodeBuilder {
     /// Use external RPC instead of local node
     pub(crate) fn with_external_rpc(mut self, url: Url) -> Self {
         self.external_rpc = Some(url);
+        self
+    }
+
+    /// Set a dynamic validator that can be changed at runtime
+    pub(crate) fn with_dynamic_validator(
+        mut self,
+        validator: Arc<std::sync::Mutex<Address>>,
+    ) -> Self {
+        self.dynamic_validator = Some(validator);
         self
     }
 
@@ -275,7 +288,10 @@ impl TestNodeBuilder {
 
         let tasks = TaskManager::current();
         let chain_spec = self.build_chain_spec()?;
-        let validator = chain_spec.inner.genesis.coinbase;
+        let static_validator = self
+            .custom_validator
+            .unwrap_or(chain_spec.inner.genesis.coinbase);
+        let dynamic_validator = self.dynamic_validator.clone();
 
         let mut node_config = NodeConfig::new(Arc::new(chain_spec))
             .with_unused_ports()
@@ -294,6 +310,10 @@ impl TestNodeBuilder {
             .node(TempoNode::default())
             .launch_with_debug_capabilities()
             .map_debug_payload_attributes(move |mut attributes| {
+                let validator = dynamic_validator
+                    .as_ref()
+                    .map(|v| *v.lock().unwrap())
+                    .unwrap_or(static_validator);
                 attributes.suggested_fee_recipient = validator;
                 attributes
             })

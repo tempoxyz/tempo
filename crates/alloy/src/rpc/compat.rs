@@ -292,7 +292,15 @@ impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
         self,
         signer: impl TxSigner<Signature> + Send,
     ) -> Result<TempoTxEnvelope, SignTxRequestError> {
-        SignableTxRequest::<TempoTxEnvelope>::try_build_and_sign(self.inner, signer).await
+        if self.output_tx_type() == TempoTxType::AA {
+            let mut tx = self
+                .build_aa()
+                .map_err(|_| SignTxRequestError::InvalidTransactionRequest)?;
+            let signature = signer.sign_transaction(&mut tx).await?;
+            Ok(tx.into_signed(signature.into()).into())
+        } else {
+            SignableTxRequest::<TempoTxEnvelope>::try_build_and_sign(self.inner, signer).await
+        }
     }
 }
 
@@ -398,5 +406,56 @@ mod tests {
 
         // Default is 800 bytes
         assert_eq!(webauthn_sig.webauthn_data.len(), 800);
+    }
+
+    #[tokio::test]
+    async fn test_signable_tx_request_preserves_tempo_fields() {
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::Call;
+
+        let signer = PrivateKeySigner::random();
+
+        let call = Call {
+            to: alloy_primitives::TxKind::Call(address!(
+                "0x1111111111111111111111111111111111111111"
+            )),
+            value: alloy_primitives::U256::from(1),
+            input: Bytes::from(vec![0xaa]),
+        };
+
+        let fee_token = address!("0x20c0000000000000000000000000000000000000");
+        let nonce_key = alloy_primitives::U256::from(42);
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            calls: vec![call.clone()],
+            fee_token: Some(fee_token),
+            nonce_key: Some(nonce_key),
+            ..Default::default()
+        };
+
+        let envelope = SignableTxRequest::<TempoTxEnvelope>::try_build_and_sign(req, &signer)
+            .await
+            .expect("should build and sign");
+
+        match &envelope {
+            TempoTxEnvelope::AA(signed) => {
+                let tx = signed.tx();
+                assert_eq!(tx.fee_token, Some(fee_token), "fee_token must be preserved");
+                assert_eq!(tx.nonce_key, nonce_key, "nonce_key must be preserved");
+                assert_eq!(tx.calls, vec![call], "calls must be preserved");
+            }
+            other => panic!(
+                "Expected AA envelope for request with Tempo fields, got {:?}",
+                other.tx_type()
+            ),
+        }
     }
 }
