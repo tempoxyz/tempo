@@ -114,7 +114,7 @@ impl ValidatorConfigV2 {
     }
 
     /// Requires initialized + caller is owner. Returns the config.
-    fn require_owner(&self, caller: Address) -> Result<Config> {
+    fn require_initialized_owner(&self, caller: Address) -> Result<Config> {
         let config = self.require_initialized()?;
         if !config.is_owner(caller) {
             return Err(ValidatorConfigV2Error::unauthorized())?;
@@ -123,7 +123,7 @@ impl ValidatorConfigV2 {
     }
 
     /// Requires initialized + caller is owner or the validator itself. Returns the config.
-    fn require_owner_or_validator(&self, caller: Address, validator: Address) -> Result<Config> {
+    fn require_initialized_owner_or_validator(&self, caller: Address, validator: Address) -> Result<Config> {
         let config = self.require_initialized()?;
         if caller != validator && !config.is_owner(caller) {
             return Err(ValidatorConfigV2Error::unauthorized())?;
@@ -326,7 +326,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::addValidatorCall,
     ) -> Result<()> {
-        self.require_owner(sender)?;
+        self.require_initialized_owner(sender)?;
         self.require_new_pubkey(call.publicKey)?;
         self.require_new_address(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
@@ -356,7 +356,9 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::deactivateValidatorCall,
     ) -> Result<()> {
-        self.require_owner_or_validator(sender, call.validatorAddress)?;
+        if sender != call.validatorAddress && !self.config.is_owner(sender)? {
+            return Err(ValidatorConfigV2Error::unauthorized())?;
+        }
         let block_height = self.storage.block_number();
 
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
@@ -369,7 +371,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::transferOwnershipCall,
     ) -> Result<()> {
-        let mut config = self.require_owner(sender)?;
+        let mut config = self.require_initialized_owner(sender)?;
         config.owner = call.newOwner;
         self.config.write(config)
     }
@@ -379,7 +381,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::setNextFullDkgCeremonyCall,
     ) -> Result<()> {
-        self.require_owner(sender)?;
+        self.require_initialized_owner(sender)?;
         self.next_dkg_ceremony.write(call.epoch)
     }
 
@@ -392,7 +394,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::rotateValidatorCall,
     ) -> Result<()> {
-        self.require_owner_or_validator(sender, call.validatorAddress)?;
+        self.require_initialized_owner_or_validator(sender, call.validatorAddress)?;
         self.require_new_pubkey(call.publicKey)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
@@ -428,7 +430,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::setIpAddressesCall,
     ) -> Result<()> {
-        self.require_owner_or_validator(sender, call.validatorAddress)?;
+        self.require_initialized_owner_or_validator(sender, call.validatorAddress)?;
 
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
@@ -443,7 +445,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::transferValidatorOwnershipCall,
     ) -> Result<()> {
-        self.require_owner_or_validator(sender, call.currentAddress)?;
+        self.require_initialized_owner_or_validator(sender, call.currentAddress)?;
         self.require_new_address(call.newAddress)?;
 
         let (idx, mut v) = self.get_active_validator(call.currentAddress)?;
