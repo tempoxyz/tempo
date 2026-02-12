@@ -39,9 +39,7 @@ pub trait PrecompileStorageProvider {
     fn beneficiary(&self) -> Address;
 
     /// Returns the current block number.
-    fn block_number(&self) -> u64 {
-        0
-    }
+    fn block_number(&self) -> u64;
 
     /// Sets the bytecode at the given address.
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()>;
