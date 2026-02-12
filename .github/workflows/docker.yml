@@ -174,7 +174,14 @@ jobs:
           set -euo pipefail
           curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
             -H "Content-Type: application/json" \
-            -d '{"repository":"${{ github.repository }}","event":"registry_package","data":{"tag":"sha-${{ steps.shortsha.outputs.shortsha }}"}}'
+            -d '{
+              "repository": "${{ github.repository }}",
+              "event": "registry_package",
+              "data": {
+                "tag": "sha-${{ steps.shortsha.outputs.shortsha }}",
+                "sha": "${{ github.sha }}"
+              }
+            }'
 
       - name: Publish event (nightly tag)
         if: ${{ github.event_name == 'schedule' || github.event.inputs.nightly == 'true' }}
@@ -183,4 +190,11 @@ jobs:
           set -euo pipefail
           curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
             -H "Content-Type: application/json" \
-            -d '{"repository":"${{ github.repository }}","event":"registry_package","data":{"tag":"nightly"}}'
+            -d '{
+              "repository": "${{ github.repository }}",
+              "event": "registry_package",
+              "data": {
+                "tag": "nightly",
+                "sha": "${{ github.sha }}"
+              }
+            }'
