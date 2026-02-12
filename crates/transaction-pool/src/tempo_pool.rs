@@ -9,12 +9,13 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash,
-    map::{AddressMap, HashMap},
+    map::{AddressMap, AddressSet, HashMap},
 };
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
-use reth_primitives_traits::Block;
+use reth_evm::ConfigureEvm;
+use reth_primitives_traits::BlockTy;
 use reth_provider::{ChangedAccount, StateProviderFactory};
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
@@ -32,10 +33,10 @@ use std::{sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 
 /// Tempo transaction pool that routes based on nonce_key
-pub struct TempoTransactionPool<Client> {
+pub struct TempoTransactionPool<Client, Evm> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
-        TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
+        TransactionValidationTaskExecutor<TempoTransactionValidator<Client, Evm>>,
         CoinbaseTipOrdering<TempoPooledTransaction>,
         InMemoryBlobStore,
     >,
@@ -43,10 +44,10 @@ pub struct TempoTransactionPool<Client> {
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
-impl<Client> TempoTransactionPool<Client> {
+impl<Client, Evm> TempoTransactionPool<Client, Evm> {
     pub fn new(
         protocol_pool: Pool<
-            TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
+            TransactionValidationTaskExecutor<TempoTransactionValidator<Client, Evm>>,
             CoinbaseTipOrdering<TempoPooledTransaction>,
             InMemoryBlobStore,
         >,
@@ -58,9 +59,10 @@ impl<Client> TempoTransactionPool<Client> {
         }
     }
 }
-impl<Client> TempoTransactionPool<Client>
+impl<Client, Evm> TempoTransactionPool<Client, Evm>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+    Evm: ConfigureEvm + 'static,
 {
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
     pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
@@ -513,7 +515,7 @@ where
 }
 
 // Manual Clone implementation
-impl<Client> Clone for TempoTransactionPool<Client> {
+impl<Client, Evm> Clone for TempoTransactionPool<Client, Evm> {
     fn clone(&self) -> Self {
         Self {
             protocol_pool: self.protocol_pool.clone(),
@@ -523,7 +525,7 @@ impl<Client> Clone for TempoTransactionPool<Client> {
 }
 
 // Manual Debug implementation
-impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
+impl<Client, Evm> std::fmt::Debug for TempoTransactionPool<Client, Evm> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TempoTransactionPool")
             .field("protocol_pool", &"Pool<...>")
@@ -534,13 +536,14 @@ impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
 }
 
 // Implement the TransactionPool trait
-impl<Client> TransactionPool for TempoTransactionPool<Client>
+impl<Client, Evm> TransactionPool for TempoTransactionPool<Client, Evm>
 where
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec = TempoChainSpec>
         + Send
         + Sync
         + 'static,
+    Evm: ConfigureEvm + 'static,
     TempoPooledTransaction: reth_transaction_pool::EthPoolTransaction,
 {
     type Transaction = TempoPooledTransaction;
@@ -600,6 +603,27 @@ where
             .await;
 
         self.add_validated_transactions(origin, validated)
+    }
+
+    async fn add_transactions_with_origins(
+        &self,
+        transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction)> + Send,
+    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
+        let transactions: Vec<_> = transactions.into_iter().collect();
+        if transactions.is_empty() {
+            return Vec::new();
+        }
+        let validated = self
+            .protocol_pool
+            .validator()
+            .validate_transactions(transactions.iter().map(|(o, t)| (*o, t.clone())))
+            .await;
+
+        let mut results = Vec::with_capacity(validated.len());
+        for ((origin, _), outcome) in transactions.into_iter().zip(validated) {
+            results.push(self.add_validated_transaction(origin, outcome));
+        }
+        results
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -842,6 +866,15 @@ where
         txs
     }
 
+    fn prune_transactions(
+        &self,
+        hashes: Vec<TxHash>,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
+        txs.extend(self.protocol_pool.prune_transactions(hashes));
+        txs
+    }
+
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
         self.protocol_pool.retain_unknown(announcement);
         let aa_pool = self.aa_2d_pool.read();
@@ -971,7 +1004,7 @@ where
         txs
     }
 
-    fn unique_senders(&self) -> std::collections::HashSet<Address> {
+    fn unique_senders(&self) -> AddressSet {
         let mut senders = self.protocol_pool.unique_senders();
         senders.extend(self.aa_2d_pool.read().senders_iter().copied());
         senders
@@ -1044,18 +1077,18 @@ where
     }
 }
 
-impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
+impl<Client, Evm> TransactionPoolExt for TempoTransactionPool<Client, Evm>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+    Evm: ConfigureEvm + 'static,
 {
+    type Block = BlockTy<Evm::Primitives>;
+
     fn set_block_info(&self, info: BlockInfo) {
         self.protocol_pool.set_block_info(info)
     }
 
-    fn on_canonical_state_change<B>(&self, update: CanonicalStateUpdate<'_, B>)
-    where
-        B: Block,
-    {
+    fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
         self.protocol_pool.on_canonical_state_change(update)
     }
 

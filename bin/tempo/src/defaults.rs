@@ -9,6 +9,8 @@ use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
 
+pub(crate) const MINIMAL_PRUNE_DISTANCE: u64 = 64_000;
+
 /// Default OTLP logs filter level for telemetry.
 const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
 

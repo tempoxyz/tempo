@@ -70,7 +70,7 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
-    pool: TempoTransactionPool<Provider>,
+    pool: TempoTransactionPool<Provider, TempoEvmConfig>,
     provider: Provider,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
@@ -92,7 +92,7 @@ pub struct TempoPayloadBuilder<Provider> {
 
 impl<Provider> TempoPayloadBuilder<Provider> {
     pub fn new(
-        pool: TempoTransactionPool<Provider>,
+        pool: TempoTransactionPool<Provider, TempoEvmConfig>,
         provider: Provider,
         evm_config: TempoEvmConfig,
         state_provider_metrics: bool,
