@@ -133,7 +133,7 @@ The FeeManager extends FeeAMM and handles fee token preferences and distribution
 
 ### Fee Collection Invariants
 
-- **TEMPO-FEE5**: Collected fees should not exceed AMM token balance for any token.
+- **TEMPO-FEE5**: Combined solvency - for each token, total pool reserves + collected fees ≤ AMM token balance.
 - **TEMPO-FEE6**: Fee swap rate M is correctly applied - fee output should always be <= fee input.
 
 ## TIP-1000: State Creation Cost (Gas Pricing)
