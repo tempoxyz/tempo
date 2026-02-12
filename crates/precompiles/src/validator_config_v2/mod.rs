@@ -492,6 +492,11 @@ impl ValidatorConfigV2 {
             return Err(ValidatorConfigV2Error::validator_not_found())?;
         }
         let v1_val = v1.validators(v1.validators_array(call.idx)?)?;
+
+        // Defense-in-depth: reject corrupt V1 data rather than silently overwriting lookups
+        self.require_new_address(v1_val.validatorAddress)?;
+        self.require_new_pubkey(v1_val.publicKey)?;
+
         let deactivated_at_height = if v1_val.active { 0 } else { block_height };
 
         self.append_validator_raw(
