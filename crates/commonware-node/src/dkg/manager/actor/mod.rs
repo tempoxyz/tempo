@@ -1562,7 +1562,7 @@ fn construct_peer_set(
                 "all DKG participants must have an entry in the \
                  unfiltered, contract validator set",
             )
-            .inbound;
+            .outbound;
         (key.clone(), commonware_p2p::Address::Symmetric(addr))
     }))
 }
