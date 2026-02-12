@@ -88,8 +88,7 @@ impl TempoHardfork {
 
     /// Returns the per-transaction gas limit cap.
     /// - Pre-T1: u64::MAX (no effective cap, but must be `Some` to prevent revm from
-    ///   falling back to EIP-7825's 2^24 default since all Tempo hardforks map to
-    ///   `SpecId::OSAKA`)
+    ///   falling back to EIP-7825)
     /// - T1+: 30M gas (allows maximum-sized contract deployments under TIP-1000 state creation)
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
         match self {
