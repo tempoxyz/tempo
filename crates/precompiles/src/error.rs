@@ -159,7 +159,8 @@ pub fn add_errors_to_registry<T: SolInterface>(
     let converter = Arc::new(converter);
     for selector in T::selectors() {
         let converter = Arc::clone(&converter);
-        registry.insert(
+
+        let old_selector = registry.insert(
             selector.into(),
             Box::new(move |data: &[u8]| {
                 T::abi_decode(data)
@@ -170,6 +171,7 @@ pub fn add_errors_to_registry<T: SolInterface>(
                     })
             }),
         );
+        debug_assert!(old_selector.is_none(), "Duplicate selector {selector:x?}");
     }
 }
 
@@ -352,5 +354,16 @@ mod tests {
             TempoPrecompileError::TIP20(_) => {}
             other => panic!("Expected TIP20 error, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::error::error_decoder_registry;
+
+    // Test that initializes the error decoder registry and fails if there are any duplicates.
+    #[test]
+    fn test_error_decoder_registry_init() {
+        error_decoder_registry();
     }
 }
