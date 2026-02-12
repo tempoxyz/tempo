@@ -242,6 +242,9 @@ pub enum TempoPoolTransactionError {
     )]
     Keychain(&'static str),
 
+    #[error("Fee payer signature recovery failed")]
+    InvalidFeePayerSignature,
+
     #[error(
         "Native transfers are not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
     )]
@@ -396,6 +399,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::ExpiringNonceNonceNotZero
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
+            | Self::InvalidFeePayerSignature
             | Self::NoCalls
             | Self::CreateCallWithAuthorizationList
             | Self::CreateCallNotFirst
@@ -776,6 +780,7 @@ mod tests {
                 },
                 false,
             ),
+            (TempoPoolTransactionError::InvalidFeePayerSignature, true),
             (TempoPoolTransactionError::NonZeroValue, true),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
