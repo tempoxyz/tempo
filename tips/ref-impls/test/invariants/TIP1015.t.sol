@@ -156,18 +156,16 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         _simplePolicies.push(pid);
         _policyTypes[pid] = ptype;
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "CREATE_SIMPLE_POLICY: ",
-                    _getActorIndex(actor),
-                    " created policy ",
-                    vm.toString(pid),
-                    " type=",
-                    isWhitelist ? "WHITELIST" : "BLACKLIST"
-                )
-            );
-        }
+        _logHandler(
+            "CREATE_SIMPLE_POLICY",
+            string.concat(
+                _getActorIndex(actor),
+                " created policy ",
+                vm.toString(pid),
+                " type=",
+                isWhitelist ? "WHITELIST" : "BLACKLIST"
+            )
+        );
     }
 
     function createCompoundPolicy(
@@ -210,22 +208,22 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             assertEq(storedR, rPid, "Recipient policy mismatch");
             assertEq(storedM, mPid, "MintRecipient policy mismatch");
 
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_COMPOUND_POLICY: compound=",
-                        vm.toString(compoundPid),
-                        " sender=",
-                        vm.toString(sPid),
-                        " recipient=",
-                        vm.toString(rPid),
-                        " mint=",
-                        vm.toString(mPid)
-                    )
-                );
-            }
+            _logHandler(
+                "CREATE_COMPOUND_POLICY",
+                string.concat(
+                    "compound=",
+                    vm.toString(compoundPid),
+                    " sender=",
+                    vm.toString(sPid),
+                    " recipient=",
+                    vm.toString(rPid),
+                    " mint=",
+                    vm.toString(mPid)
+                )
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
+            _logRevert("CREATE_COMPOUND_POLICY", reason);
             _assertKnownRegistryRevert(reason);
         }
     }
@@ -251,20 +249,19 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         _compoundMintPolicy[compoundPid] = mPid;
         _totalCompoundPoliciesCreated++;
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "CREATE_COMPOUND_WITH_BUILTINS: compound=",
-                    vm.toString(compoundPid),
-                    " sender=",
-                    vm.toString(sPid),
-                    " recipient=",
-                    vm.toString(rPid),
-                    " mint=",
-                    vm.toString(mPid)
-                )
-            );
-        }
+        _logHandler(
+            "CREATE_COMPOUND_BUILTINS",
+            string.concat(
+                "compound=",
+                vm.toString(compoundPid),
+                " sender=",
+                vm.toString(sPid),
+                " recipient=",
+                vm.toString(rPid),
+                " mint=",
+                vm.toString(mPid)
+            )
+        );
     }
 
     function tryCreateCompoundWithCompound(uint256 seed) external {
@@ -311,17 +308,16 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             errorSelector, ITIP403Registry.PolicyNotSimple.selector, "TEMPO-1015-1: Wrong error"
         );
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_CREATE_COMPOUND_WITH_COMPOUND: position=",
-                    vm.toString(position),
-                    " compoundRef=",
-                    vm.toString(compoundRef),
-                    " (correctly reverted)"
-                )
-            );
-        }
+        _logHandler(
+            "TRY_COMPOUND_WITH_COMPOUND",
+            string.concat(
+                "position=",
+                vm.toString(position),
+                " compoundRef=",
+                vm.toString(compoundRef),
+                " (correctly reverted)"
+            )
+        );
     }
 
     function tryCreateCompoundWithNonExistent(uint256 seed) external {
@@ -369,17 +365,16 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             "TEMPO-1015-3: Wrong error selector"
         );
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_CREATE_COMPOUND_WITH_NONEXISTENT: position=",
-                    vm.toString(position),
-                    " nonExistent=",
-                    vm.toString(nonExistent),
-                    " (correctly reverted)"
-                )
-            );
-        }
+        _logHandler(
+            "TRY_COMPOUND_NON_EXISTENT",
+            string.concat(
+                "position=",
+                vm.toString(position),
+                " nonExistent=",
+                vm.toString(nonExistent),
+                " (correctly reverted)"
+            )
+        );
     }
 
     function modifySimplePolicy(uint256 policySeed, uint256 accountSeed, bool add) external {
@@ -406,18 +401,17 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             _policyAccounts[pid].push(account);
         }
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "MODIFY_SIMPLE_POLICY: policy=",
-                    vm.toString(pid),
-                    " account=",
-                    _getActorIndex(account),
-                    " add=",
-                    add ? "true" : "false"
-                )
-            );
-        }
+        _logHandler(
+            "MODIFY_SIMPLE_POLICY",
+            string.concat(
+                "policy=",
+                vm.toString(pid),
+                " account=",
+                _getActorIndex(account),
+                " add=",
+                add ? "true" : "false"
+            )
+        );
     }
 
     function tryModifyCompoundPolicy(uint256 policySeed, uint256 accountSeed) external {
@@ -446,13 +440,10 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             blacklistReverted, "TEMPO-1015-2: modifyPolicyBlacklist should revert for compound"
         );
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_MODIFY_COMPOUND_POLICY: policy=", vm.toString(pid), " (correctly reverted)"
-                )
-            );
-        }
+        _logHandler(
+            "TRY_MODIFY_COMPOUND",
+            string.concat("policy=", vm.toString(pid), " (correctly reverted)")
+        );
     }
 
     function checkSimplePolicyEquivalence(uint256 policySeed, uint256 accountSeed) external view {
@@ -540,16 +531,10 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         _compoundTokens.push(token);
         _tokenPolicy[address(token)] = pid;
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "CREATE_TOKEN_WITH_COMPOUND: token=",
-                    vm.toString(address(token)),
-                    " policy=",
-                    vm.toString(pid)
-                )
-            );
-        }
+        _logHandler(
+            "TRANSFER_COMPOUND",
+            string.concat("token=", vm.toString(address(token)), " policy=", vm.toString(pid))
+        );
     }
 
     /// @notice Opt an actor into rewards - critical for testing reward distribution/claim flows
@@ -600,17 +585,16 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
         if (authorized) {
             token.mint(recipient, amount);
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "MINT: recipient=",
-                        _getActorIndex(recipient),
-                        " amount=",
-                        vm.toString(amount),
-                        " (authorized)"
-                    )
-                );
-            }
+            _logHandler(
+                "MINT",
+                string.concat(
+                    "recipient=",
+                    _getActorIndex(recipient),
+                    " amount=",
+                    vm.toString(amount),
+                    " (authorized)"
+                )
+            );
         } else {
             bool reverted;
             bytes4 errorSelector;
@@ -620,20 +604,16 @@ contract TIP1015InvariantTest is InvariantBaseTest {
                 reverted = true;
                 errorSelector = bytes4(reason);
             }
+            _logHandler(
+                "MINT",
+                string.concat(
+                    "recipient=", _getActorIndex(recipient), " (unauthorized, correctly reverted)"
+                )
+            );
             assertTrue(reverted, "Mint should revert for unauthorized recipient");
             assertEq(
                 errorSelector, ITIP20.PolicyForbids.selector, "Wrong error for unauthorized mint"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "MINT: recipient=",
-                        _getActorIndex(recipient),
-                        " (unauthorized, correctly reverted)"
-                    )
-                );
-            }
         }
 
         vm.stopPrank();
@@ -797,17 +777,16 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         vm.prank(sender);
         if (senderAuth && contractRecipientAuth) {
             try token.distributeReward(amount) {
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "DISTRIBUTE_REWARD: sender=",
-                            _getActorIndex(sender),
-                            " amount=",
-                            vm.toString(amount),
-                            " (authorized)"
-                        )
-                    );
-                }
+                _logHandler(
+                    "DISTRIBUTE_REWARD",
+                    string.concat(
+                        "sender=",
+                        _getActorIndex(sender),
+                        " amount=",
+                        vm.toString(amount),
+                        " (authorized)"
+                    )
+                );
             } catch {
                 // Can fail for other reasons (e.g., zero optedInSupply race)
             }
@@ -817,19 +796,18 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             } catch (bytes memory reason) {
                 // May revert for other reasons too, only check if it's PolicyForbids
                 if (bytes4(reason) == ITIP20.PolicyForbids.selector) {
-                    if (_loggingEnabled) {
-                        _log(
-                            string.concat(
-                                "DISTRIBUTE_REWARD: sender=",
-                                _getActorIndex(sender),
-                                " senderAuth=",
-                                senderAuth ? "true" : "false",
-                                " contractRecipientAuth=",
-                                contractRecipientAuth ? "true" : "false",
-                                " (correctly reverted)"
-                            )
-                        );
-                    }
+                    _logHandler(
+                        "DISTRIBUTE_REWARD",
+                        string.concat(
+                            "sender=",
+                            _getActorIndex(sender),
+                            " senderAuth=",
+                            senderAuth ? "true" : "false",
+                            " contractRecipientAuth=",
+                            contractRecipientAuth ? "true" : "false",
+                            " (correctly reverted)"
+                        )
+                    );
                 }
             }
         }
@@ -903,13 +881,10 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         vm.prank(claimer);
         if (contractSenderAuth && claimerRecipientAuth) {
             try token.claimRewards() {
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "CLAIM_REWARDS: claimer=", _getActorIndex(claimer), " (authorized)"
-                        )
-                    );
-                }
+                _logHandler(
+                    "CLAIM_REWARDS",
+                    string.concat("claimer=", _getActorIndex(claimer), " (authorized)")
+                );
             } catch {
                 // Can fail for other reasons
             }
@@ -919,19 +894,18 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             } catch (bytes memory reason) {
                 // May revert for other reasons too, only check if it's PolicyForbids
                 if (bytes4(reason) == ITIP20.PolicyForbids.selector) {
-                    if (_loggingEnabled) {
-                        _log(
-                            string.concat(
-                                "CLAIM_REWARDS: claimer=",
-                                _getActorIndex(claimer),
-                                " contractSenderAuth=",
-                                contractSenderAuth ? "true" : "false",
-                                " claimerRecipientAuth=",
-                                claimerRecipientAuth ? "true" : "false",
-                                " (correctly reverted)"
-                            )
-                        );
-                    }
+                    _logHandler(
+                        "CLAIM_REWARDS",
+                        string.concat(
+                            "claimer=",
+                            _getActorIndex(claimer),
+                            " contractSenderAuth=",
+                            contractSenderAuth ? "true" : "false",
+                            " claimerRecipientAuth=",
+                            claimerRecipientAuth ? "true" : "false",
+                            " (correctly reverted)"
+                        )
+                    );
                 }
             }
         }
@@ -1031,10 +1005,21 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         vm.prank(canceller);
         if (!senderAuth) {
             exchange.cancelStaleOrder(orderId);
+            _logHandler(
+                "CANCEL_STALE_ORDER",
+                string.concat(
+                    "maker=",
+                    _getActorIndex(maker),
+                    " canceller=",
+                    _getActorIndex(canceller),
+                    " (maker blocked, cancelled)"
+                )
+            );
         } else {
             try exchange.cancelStaleOrder(orderId) {
                 revert("cancelStaleOrder should revert for authorized maker");
             } catch (bytes memory reason) {
+                _logRevert("CANCEL_STALE_ORDER", reason);
                 assertEq(
                     bytes4(reason),
                     IStablecoinDEX.OrderNotStale.selector,
@@ -1061,6 +1046,16 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             registry.modifyPolicyBlacklist(policyId, account, !authorize);
         }
         vm.stopPrank();
+    }
+
+    function afterInvariant() public {
+        string[] memory lines = new string[](3);
+        lines[0] = string.concat("Simple policies: ", vm.toString(_simplePolicies.length));
+        lines[1] = string.concat(
+            "Compound policies created: ", vm.toString(_totalCompoundPoliciesCreated)
+        );
+        lines[2] = string.concat("Compound tokens: ", vm.toString(_compoundTokens.length));
+        _logSummary("TIP1015 Final Summary", lines);
     }
 
     /*//////////////////////////////////////////////////////////////

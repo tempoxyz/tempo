@@ -113,15 +113,35 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _assertOrderCreated(orderId, actor, amount, tick, isBid);
 
         // Log the action
-        if (_loggingEnabled) {
-            _logPlaceOrder(actor, orderId, amount, TIP20(token).symbol(), tick, isBid);
-        }
+        _logHandler(
+            isBid ? "PLACE_BID" : "PLACE_ASK",
+            string.concat(
+                _getActorIndex(actor),
+                " order #",
+                vm.toString(orderId),
+                " ",
+                vm.toString(amount),
+                " ",
+                TIP20(token).symbol(),
+                " tick=",
+                vm.toString(tick)
+            )
+        );
 
         if (cancel) {
             _cancelAndVerifyRefund(
                 orderId, actor, token, amount, tick, isBid, actorBalanceBeforePlace
             );
-            if (_loggingEnabled) _logCancelOrder(actor, orderId, isBid, TIP20(token).symbol());
+            _logHandler(
+                isBid ? "CANCEL_BID" : "CANCEL_ASK",
+                string.concat(
+                    _getActorIndex(actor),
+                    " order #",
+                    vm.toString(orderId),
+                    " ",
+                    TIP20(token).symbol()
+                )
+            );
         } else {
             _placedOrders[actor].push(orderId);
 
@@ -241,6 +261,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 orderId, order.maker, base, order.remaining, order.tick, order.isBid, 0
             );
         } catch (bytes memory reason) {
+            _logRevert("CANCEL_ORDER", reason);
             _assertKnownOrderError(reason);
         }
     }
@@ -263,17 +284,12 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         exchange.withdraw(token, amount);
         vm.stopPrank();
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    _getActorIndex(actor),
-                    " withdrew ",
-                    vm.toString(amount),
-                    " ",
-                    TIP20(token).symbol()
-                )
-            );
-        }
+        _logHandler(
+            "WITHDRAW",
+            string.concat(
+                _getActorIndex(actor), " ", vm.toString(amount), " ", TIP20(token).symbol()
+            )
+        );
     }
 
     /// @dev Helper to cancel order and verify refund (TEMPO-DEX3)
@@ -459,9 +475,22 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _placedOrders[actor].push(orderId);
 
         // Log the action
-        if (_loggingEnabled) {
-            _logFlipOrder(actor, orderId, amount, token.symbol(), tick, flipTick, isBid);
-        }
+        _logHandler(
+            isBid ? "PLACE_FLIP_BID" : "PLACE_FLIP_ASK",
+            string.concat(
+                _getActorIndex(actor),
+                " order #",
+                vm.toString(orderId),
+                " ",
+                vm.toString(amount),
+                " ",
+                token.symbol(),
+                " tick=",
+                vm.toString(tick),
+                " flipTick=",
+                vm.toString(flipTick)
+            )
+        );
 
         vm.stopPrank();
         if (_loggingEnabled) _logBalances();
@@ -665,10 +694,11 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                     }
 
                     // Log successful stale order cancellation
-                    _log(
+                    _logHandler(
+                        "CANCEL_STALE_ORDER",
                         string.concat(
                             _getActorIndex(canceller),
-                            " cancelled stale order #",
+                            " order #",
                             vm.toString(orderId),
                             " of blacklisted ",
                             _getActorIndex(blacklistedActor)
@@ -676,6 +706,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                     );
                 }
             } catch (bytes memory reason) {
+                _logRevert("CANCEL_STALE_ORDER", reason);
                 _assertKnownOrderError(reason);
             }
         }
@@ -741,6 +772,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 }
                 vm.stopPrank();
             } catch (bytes memory reason) {
+                _logRevert("AFTER_CANCEL", reason);
                 _assertKnownOrderError(reason);
             }
         }
@@ -764,28 +796,25 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
 
         // Log dust remaining in DEX
-        if (_loggingEnabled) {
-            string memory dustLog = string.concat(
-                "Dust remaining: pathUSD=", vm.toString(pathUSD.balanceOf(address(exchange)))
+        string memory dustDetail =
+            string.concat("pathUSD=", vm.toString(pathUSD.balanceOf(address(exchange))));
+        for (uint256 j = 0; j < _tokens.length; j++) {
+            dustDetail = string.concat(
+                dustDetail,
+                ", ",
+                _tokens[j].symbol(),
+                "=",
+                vm.toString(_tokens[j].balanceOf(address(exchange)))
             );
-            for (uint256 j = 0; j < _tokens.length; j++) {
-                dustLog = string.concat(
-                    dustLog,
-                    ", ",
-                    _tokens[j].symbol(),
-                    "=",
-                    vm.toString(_tokens[j].balanceOf(address(exchange)))
-                );
-            }
-            dustLog = string.concat(
-                dustLog,
-                " | Total=",
-                vm.toString(pathUSD.balanceOf(address(exchange)) + totalBalance),
-                ", Swaps=",
-                vm.toString(_maxDust)
-            );
-            _log(dustLog);
         }
+
+        string[] memory lines = new string[](3);
+        lines[0] = string.concat("Dust remaining: ", dustDetail);
+        lines[1] = string.concat(
+            "Total dust: ", vm.toString(pathUSD.balanceOf(address(exchange)) + totalBalance)
+        );
+        lines[2] = string.concat("Max dust (swaps): ", vm.toString(_maxDust));
+        _logSummary("StablecoinDEX Final Summary", lines);
 
         assertGe(
             _maxDust,
@@ -998,10 +1027,11 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             }
 
             // Log successful swap
-            _log(
+            _logHandler(
+                "SWAP_EXACT_IN",
                 string.concat(
                     _getActorIndex(swapper),
-                    " swapExactAmountIn: ",
+                    " ",
                     vm.toString(amount),
                     " ",
                     TIP20(before.tokenIn).symbol(),
@@ -1012,6 +1042,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 )
             );
         } catch (bytes memory reason) {
+            _logRevert("SWAP_EXACT_IN", reason);
             _assertKnownSwapError(reason);
         }
     }
@@ -1075,10 +1106,11 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             }
 
             // Log successful swap
-            _log(
+            _logHandler(
+                "SWAP_EXACT_OUT",
                 string.concat(
                     _getActorIndex(swapper),
-                    " swapExactAmountOut: ",
+                    " ",
                     vm.toString(amountIn),
                     " ",
                     TIP20(before.tokenIn).symbol(),
@@ -1089,6 +1121,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 )
             );
         } catch (bytes memory reason) {
+            _logRevert("SWAP_EXACT_OUT", reason);
             _assertKnownSwapError(reason);
         }
     }

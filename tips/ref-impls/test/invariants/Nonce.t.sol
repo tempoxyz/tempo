@@ -199,20 +199,18 @@ contract NonceInvariantTest is InvariantBaseTest {
         uint64 actualAfter = nonce.getNonce(actor, nonceKey);
         assertEq(actualAfter, newNonce, "TEMPO-NON3: Stored nonce should match returned value");
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "INCREMENT: ",
-                    _getActorIndex(actor),
-                    " key=",
-                    vm.toString(nonceKey),
-                    " ",
-                    vm.toString(expectedBefore),
-                    " -> ",
-                    vm.toString(newNonce)
-                )
-            );
-        }
+        _logHandler(
+            "INCREMENT",
+            string.concat(
+                _getActorIndex(actor),
+                " key=",
+                vm.toString(nonceKey),
+                " ",
+                vm.toString(expectedBefore),
+                " -> ",
+                vm.toString(newNonce)
+            )
+        );
     }
 
     /// @notice Handler for reading nonces
@@ -248,11 +246,9 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         _totalProtocolNonceRejections++;
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat("TRY_PROTOCOL_NONCE: ", _getActorIndex(actor), " correctly rejected")
-            );
-        }
+        _logHandler(
+            "TRY_PROTOCOL_NONCE", string.concat(_getActorIndex(actor), " correctly rejected")
+        );
     }
 
     /// @notice Handler for verifying account independence
@@ -282,18 +278,16 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         _totalAccountIndependenceChecks++;
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "ACCOUNT_INDEPENDENCE: ",
-                    _getActorIndex(actor1),
-                    " incremented, ",
-                    _getActorIndex(actor2),
-                    " unchanged at ",
-                    vm.toString(nonce2After)
-                )
-            );
-        }
+        _logHandler(
+            "ACCOUNT_INDEPENDENCE",
+            string.concat(
+                _getActorIndex(actor1),
+                " incremented, ",
+                _getActorIndex(actor2),
+                " unchanged at ",
+                vm.toString(nonce2After)
+            )
+        );
     }
 
     /// @notice Handler for verifying key independence
@@ -317,20 +311,18 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         _totalKeyIndependenceChecks++;
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "KEY_INDEPENDENCE: ",
-                    _getActorIndex(actor),
-                    " key=",
-                    vm.toString(key1),
-                    " incremented, key=",
-                    vm.toString(key2),
-                    " unchanged at ",
-                    vm.toString(nonce2After)
-                )
-            );
-        }
+        _logHandler(
+            "KEY_INDEPENDENCE",
+            string.concat(
+                _getActorIndex(actor),
+                " key=",
+                vm.toString(key1),
+                " incremented, key=",
+                vm.toString(key2),
+                " unchanged at ",
+                vm.toString(nonce2After)
+            )
+        );
     }
 
     /// @notice Handler for testing max nonce key
@@ -355,16 +347,10 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         _totalLargeKeyTests++;
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "LARGE_KEY: ",
-                    _getActorIndex(actor),
-                    " key=MAX_UINT256-1 nonce=",
-                    vm.toString(newNonce)
-                )
-            );
-        }
+        _logHandler(
+            "LARGE_KEY",
+            string.concat(_getActorIndex(actor), " key=MAX_UINT256-1 nonce=", vm.toString(newNonce))
+        );
     }
 
     /// @notice Handler for multiple sequential increments
@@ -395,22 +381,20 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         _totalMultipleIncrements++;
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "MULTI_INCREMENT: ",
-                    _getActorIndex(actor),
-                    " key=",
-                    vm.toString(nonceKey),
-                    " count=",
-                    vm.toString(count),
-                    " ",
-                    vm.toString(startNonce),
-                    " -> ",
-                    vm.toString(endNonce)
-                )
-            );
-        }
+        _logHandler(
+            "MULTI_INCREMENT",
+            string.concat(
+                _getActorIndex(actor),
+                " key=",
+                vm.toString(nonceKey),
+                " count=",
+                vm.toString(count),
+                " ",
+                vm.toString(startNonce),
+                " -> ",
+                vm.toString(endNonce)
+            )
+        );
     }
 
     /// @notice Handler for testing nonce overflow at u64::MAX
@@ -443,17 +427,15 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         _totalOverflowTests++;
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "NONCE_OVERFLOW: ",
-                    _getActorIndex(actor),
-                    " key=",
-                    vm.toString(nonceKey),
-                    " at u64::MAX - increment correctly reverted"
-                )
-            );
-        }
+        _logHandler(
+            "NONCE_OVERFLOW",
+            string.concat(
+                _getActorIndex(actor),
+                " key=",
+                vm.toString(nonceKey),
+                " at u64::MAX - increment correctly reverted"
+            )
+        );
     }
 
     /// @notice Handler for testing invalid nonce key (key 0) increment rejection
@@ -470,13 +452,10 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         _totalInvalidKeyRejections++;
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "INVALID_KEY_INCREMENT: ", _getActorIndex(actor), " key=0 correctly reverted"
-                )
-            );
-        }
+        _logHandler(
+            "INVALID_KEY_INCREMENT",
+            string.concat(_getActorIndex(actor), " key=0 correctly reverted")
+        );
     }
 
     /// @notice Handler for testing reserved TEMPO_EXPIRING_NONCE_KEY readability
@@ -497,16 +476,12 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         _totalReservedKeyTests++;
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "RESERVED_EXPIRING_KEY: ",
-                    _getActorIndex(actor),
-                    " key=MAX_UINT256 readable, value=",
-                    vm.toString(result)
-                )
-            );
-        }
+        _logHandler(
+            "RESERVED_EXPIRING_KEY",
+            string.concat(
+                _getActorIndex(actor), " key=MAX_UINT256 readable, value=", vm.toString(result)
+            )
+        );
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -543,51 +518,38 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Logs final state summary after invariant run
     function afterInvariant() public {
-        if (!_loggingEnabled) return;
-
-        _log("");
-        _log("--------------------------------------------------------------------------------");
-        _log("                              Final State Summary");
-        _log("--------------------------------------------------------------------------------");
-        _log(string.concat("Total increments: ", vm.toString(_totalIncrements)));
-        _log(string.concat("Total reads: ", vm.toString(_totalReads)));
-        _log(
-            string.concat(
-                "Protocol nonce rejections (NON4): ", vm.toString(_totalProtocolNonceRejections)
-            )
+        string[] memory lines = new string[](10);
+        lines[0] = string.concat("Total increments: ", vm.toString(_totalIncrements));
+        lines[1] = string.concat("Total reads: ", vm.toString(_totalReads));
+        lines[2] = string.concat(
+            "Protocol nonce rejections (NON4): ", vm.toString(_totalProtocolNonceRejections)
         );
-        _log(
-            string.concat(
-                "Account independence checks (NON5): ", vm.toString(_totalAccountIndependenceChecks)
-            )
+        lines[3] = string.concat(
+            "Account independence checks (NON5): ", vm.toString(_totalAccountIndependenceChecks)
         );
-        _log(
-            string.concat(
-                "Key independence checks (NON6): ", vm.toString(_totalKeyIndependenceChecks)
-            )
+        lines[4] = string.concat(
+            "Key independence checks (NON6): ", vm.toString(_totalKeyIndependenceChecks)
         );
-        _log(string.concat("Large key tests (NON7): ", vm.toString(_totalLargeKeyTests)));
-        _log(
-            string.concat(
-                "Multiple increment operations (NON8): ", vm.toString(_totalMultipleIncrements)
-            )
+        lines[5] = string.concat("Large key tests (NON7): ", vm.toString(_totalLargeKeyTests));
+        lines[6] = string.concat(
+            "Multiple increment operations (NON8): ", vm.toString(_totalMultipleIncrements)
         );
-        _log(string.concat("Overflow tests (NON9): ", vm.toString(_totalOverflowTests)));
-        _log(
-            string.concat(
-                "Invalid key rejections (NON10): ", vm.toString(_totalInvalidKeyRejections)
-            )
+        lines[7] = string.concat("Overflow tests (NON9): ", vm.toString(_totalOverflowTests));
+        lines[8] = string.concat(
+            "Invalid key rejections (NON10): ", vm.toString(_totalInvalidKeyRejections)
         );
-        _log(string.concat("Reserved key tests (NON11): ", vm.toString(_totalReservedKeyTests)));
-        _log("--------------------------------------------------------------------------------");
+        lines[9] =
+            string.concat("Reserved key tests (NON11): ", vm.toString(_totalReservedKeyTests));
+        _logSummary("Nonce Final Summary", lines);
 
         // Count total unique nonce keys tracked
-        uint256 totalTrackedKeys = 0;
-        for (uint256 a = 0; a < _actors.length; a++) {
-            totalTrackedKeys += _accountNonceKeys[_actors[a]].length;
+        if (_loggingEnabled) {
+            uint256 totalTrackedKeys = 0;
+            for (uint256 a = 0; a < _actors.length; a++) {
+                totalTrackedKeys += _accountNonceKeys[_actors[a]].length;
+            }
+            _log(string.concat("Total tracked nonce keys: ", vm.toString(totalTrackedKeys)));
         }
-        _log(string.concat("Total tracked nonce keys: ", vm.toString(totalTrackedKeys)));
-        _log("--------------------------------------------------------------------------------");
     }
 
 }
