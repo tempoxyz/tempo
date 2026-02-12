@@ -6,11 +6,11 @@ scripts/ @0xKitsune
 xtask/ @0xKitsune @Zygimantass @SuperFluffy 
 crates/alloy/ @klkvr @onbjerg @mattsse
 crates/chainspec/ @0xKitsune @klkvr @mattsse
-crates/commonware-node/ @joshieDo @SuperFluffy
-crates/commonware-node-config/ @joshieDo @SuperFluffy
-crates/consensus/ @joshieDo @SuperFluffy
+crates/commonware-node/ @joshieDo @SuperFluffy @hamdiallam
+crates/commonware-node-config/ @joshieDo @SuperFluffy @hamdiallam
+crates/consensus/ @joshieDo @SuperFluffy @hamdiallam
 crates/contracts/ @0xKitsune @fgimenez @klkvr @mattsse @legion2002 @howydev
-crates/e2e/ @joshieDo @SuperFluffy
+crates/e2e/ @joshieDo @SuperFluffy @hamdiallam
 crates/evm/ @0xKitsune @klkvr @mattsse
 crates/eyre/ @SuperFluffy
 crates/faucet/ @klkvr @mattsse
