@@ -1,7 +1,5 @@
 //! Utilities to make working with tracing and telemetry easier.
 
-use std::borrow::Cow;
-
 /// Formats a [`std::time::Duration`] using the [`std::fmt::Display`].
 ///
 /// # Example
