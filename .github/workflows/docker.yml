@@ -167,3 +167,18 @@ jobs:
           for tags in "${images[@]}"; do
             echo "$tags" | xargs -n1 cosign sign --yes --recursive
           done
+
+      - name: Publish event
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+          -H "Content-Type: application/json" \
+          -d '{
+            "repository": "${{ github.repository }}",
+            "event": "registry_package",
+            "data": {
+              "tag": "sha-${{ steps.shortsha.outputs.shortsha }}"
+            }
+          }'

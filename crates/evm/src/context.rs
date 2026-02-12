@@ -51,8 +51,16 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
     fn build_pending_env(parent: &crate::SealedHeader<tempo_primitives::TempoHeader>) -> Self {
         // Use parent's values directly since pending block building is disabled for Tempo
         // (PendingBlockKind::None) - blocks require consensus data that RPC doesn't have.
+        let mut inner = NextBlockEnvAttributes::build_pending_env(parent);
+
+        // Use Address::ZERO as fee recipient so the EVM resolves the default fee token
+        // (PathUSD) for RPC simulation calls (eth_call, eth_estimateGas). Without this,
+        // the actual block producer's fee token is used, which may have no AMM pool with
+        // the user's fee token, causing spurious "insufficient liquidity" errors.
+        inner.suggested_fee_recipient = alloy_primitives::Address::ZERO;
+
         Self {
-            inner: NextBlockEnvAttributes::build_pending_env(parent),
+            inner,
             general_gas_limit: parent.general_gas_limit,
             shared_gas_limit: parent.shared_gas_limit,
             timestamp_millis_part: parent.timestamp_millis_part,
@@ -95,5 +103,10 @@ mod tests {
         assert_eq!(pending_env.shared_gas_limit, shared_gas_limit);
         assert_eq!(pending_env.timestamp_millis_part, timestamp_millis_part);
         assert!(pending_env.subblock_fee_recipients.is_empty());
+        assert_eq!(
+            pending_env.inner.suggested_fee_recipient,
+            Address::ZERO,
+            "pending env uses Address::ZERO so RPC resolves default fee token"
+        );
     }
 }
