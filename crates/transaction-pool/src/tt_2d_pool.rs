@@ -5464,7 +5464,7 @@ mod tests {
             },
             max_txs_per_sender: 1,
         };
-        let mut pool = AA2dPool::new(config);
+        let mut pool = AA2dPool::new(config, Arc::new(ExpiryTracker::new()));
         let sender = Address::random();
 
         let tx0 = TxBuilder::aa(sender)
