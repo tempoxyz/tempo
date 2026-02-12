@@ -128,7 +128,8 @@ crate::sol! {
         error MigrationNotComplete();
         error InvalidMigrationIndex();
 
-        error NotIpPort(string field, string input, string backtrace);
+        error NotIp(string input, string backtrace);
+        error NotIpPort(string input, string backtrace);
     }
 }
 
@@ -185,11 +186,11 @@ impl ValidatorConfigV2Error {
         Self::InvalidMigrationIndex(IValidatorConfigV2::InvalidMigrationIndex {})
     }
 
-    pub fn not_ip_port(field: String, input: String, backtrace: String) -> Self {
-        Self::NotIpPort(IValidatorConfigV2::NotIpPort {
-            field,
-            input,
-            backtrace,
-        })
+    pub fn not_ip(input: String, backtrace: String) -> Self {
+        Self::NotIp(IValidatorConfigV2::NotIp { input, backtrace })
+    }
+
+    pub fn not_ip_port(input: String, backtrace: String) -> Self {
+        Self::NotIpPort(IValidatorConfigV2::NotIpPort { input, backtrace })
     }
 }

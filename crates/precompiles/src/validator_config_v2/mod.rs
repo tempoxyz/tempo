@@ -123,7 +123,11 @@ impl ValidatorConfigV2 {
     }
 
     /// Requires initialized + caller is owner or the validator itself. Returns the config.
-    fn require_initialized_owner_or_validator(&self, caller: Address, validator: Address) -> Result<Config> {
+    fn require_initialized_owner_or_validator(
+        &self,
+        caller: Address,
+        validator: Address,
+    ) -> Result<Config> {
         let config = self.require_initialized()?;
         if caller != validator && !config.is_owner(caller) {
             return Err(ValidatorConfigV2Error::unauthorized())?;
@@ -220,24 +224,20 @@ impl ValidatorConfigV2 {
         self.next_dkg_ceremony.read()
     }
 
-    /// Validate an address field, mapping the parse error into a `NotIpPort` revert.
-    fn validate_addr_field<E: core::fmt::Debug>(
-        field: &str,
-        input: &str,
-        f: impl FnOnce(&str) -> core::result::Result<(), E>,
-    ) -> Result<()> {
-        f(input).map_err(|err| {
+    fn validate_endpoints(ingress: &str, egress: &str) -> Result<()> {
+        ensure_address_is_ip_port(ingress).map_err(|err| {
             TempoPrecompileError::from(ValidatorConfigV2Error::not_ip_port(
-                field.to_string(),
-                input.to_string(),
+                ingress.to_string(),
+                format!("{err:?}"),
+            ))
+        })?;
+
+        ensure_address_is_ip(egress).map_err(|err| {
+            TempoPrecompileError::from(ValidatorConfigV2Error::not_ip(
+                egress.to_string(),
                 format!("{err:?}"),
             ))
         })
-    }
-
-    fn validate_endpoints(ingress: &str, egress: &str) -> Result<()> {
-        Self::validate_addr_field("ingress", ingress, ensure_address_is_ip_port)?;
-        Self::validate_addr_field("egress", egress, ensure_address_is_ip)
     }
 
     /// Append a new validator entry and update lookup indices.
@@ -356,7 +356,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::deactivateValidatorCall,
     ) -> Result<()> {
-        if sender != call.validatorAddress && !self.config.is_owner(sender)? {
+        if sender != call.validatorAddress && !self.config.read()?.is_owner(sender) {
             return Err(ValidatorConfigV2Error::unauthorized())?;
         }
         let block_height = self.storage.block_number();
