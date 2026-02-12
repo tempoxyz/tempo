@@ -17,6 +17,25 @@ use commonware_cryptography::{
 };
 use tracing::trace;
 
+/// Validator operation type for signature verification
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidatorOperation {
+    /// Adding a new validator
+    Add,
+    /// Rotating an existing validator's keys
+    Rotate,
+}
+
+impl ValidatorOperation {
+    /// Get the namespace/domain separator for this operation
+    fn namespace(&self) -> &'static [u8] {
+        match self {
+            Self::Add => b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR",
+            Self::Rotate => b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
+        }
+    }
+}
+
 #[derive(Debug, Storable)]
 struct ValidatorV2 {
     public_key: B256,
@@ -255,47 +274,43 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
-    /// Construct message for validator signature verification (add or rotate)
+    /// Verify validator signature for add or rotate operations
+    ///
+    /// Constructs the message according to the validator config v2 specification
+    /// and verifies the Ed25519 signature using the appropriate namespace.
     ///
     /// **FORMAT**:
-    /// `keccak256(abi.encodePacked("TEMPO", DOMAIN, chainId, contractAddr, validatorAddr, ingress, egress))`
-    fn construct_validator_message(
+    /// - Namespace: `b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"` or `b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"`
+    /// - Message: `keccak256(abi.encodePacked(chainId, contractAddr, validatorAddr, ingress, egress))`
+    fn verify_validator_signature(
         &self,
-        is_add: bool,
+        operation: ValidatorOperation,
+        pubkey: &B256,
+        signature: &[u8],
         validator_address: Address,
         ingress: &str,
         egress: &str,
-    ) -> B256 {
+    ) -> Result<()> {
+        // Get namespace from operation type
+        let namespace = operation.namespace();
+
+        // Construct message data WITHOUT "TEMPO" prefix
         let mut data = Vec::new();
-        data.extend_from_slice(b"TEMPO");
-        data.extend_from_slice(if is_add {
-            b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"
-        } else {
-            b"_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"
-        });
         data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
         data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
         data.extend_from_slice(validator_address.as_slice());
         data.extend_from_slice(ingress.as_bytes());
         data.extend_from_slice(egress.as_bytes());
+        let message = keccak256(&data);
 
-        keccak256(&data)
-    }
-
-    /// Verify Ed25519 signature
-    ///
-    /// Verifies that the signature is valid for the given public key and message.
-    ///
-    /// The signature verification uses the commonware-cryptography Ed25519 implementation.
-    fn verify_ed25519_signature(pubkey: &B256, message: &[u8], signature: &[u8]) -> Result<()> {
-        // Decode the public key and the signature
+        // Decode public key and signature
         let public_key = PublicKey::decode(pubkey.as_slice())
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
         let sig = Signature::decode(signature)
             .map_err(|_| ValidatorConfigV2Error::invalid_signature())?;
 
-        // Verify the signature (namespace is empty for this use case)
-        if !public_key.verify(&[], message, &sig) {
+        // Verify signature with namespace
+        if !public_key.verify(namespace, message.as_slice(), &sig) {
             return Err(ValidatorConfigV2Error::invalid_signature())?;
         }
 
@@ -316,16 +331,15 @@ impl ValidatorConfigV2 {
         self.require_new_address(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
-        // Construct message for signature verification
-        let message = self.construct_validator_message(
-            true, // is_add
+        // Verify Ed25519 signature
+        self.verify_validator_signature(
+            ValidatorOperation::Add,
+            &call.publicKey,
+            &call.signature,
             call.validatorAddress,
             &call.ingress,
             &call.egress,
-        );
-
-        // Verify Ed25519 signature
-        Self::verify_ed25519_signature(&call.publicKey, message.as_slice(), &call.signature)?;
+        )?;
 
         let block_height = self.storage.block_number();
         self.append_validator(
@@ -382,16 +396,15 @@ impl ValidatorConfigV2 {
         self.require_new_pubkey(call.publicKey)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
-        // Construct message for signature verification
-        let message = self.construct_validator_message(
-            false, // is_add (false = rotate)
+        // Verify Ed25519 signature
+        self.verify_validator_signature(
+            ValidatorOperation::Rotate,
+            &call.publicKey,
+            &call.signature,
             call.validatorAddress,
             &call.ingress,
             &call.egress,
-        );
-
-        // Verify Ed25519 signature
-        Self::verify_ed25519_signature(&call.publicKey, message.as_slice(), &call.signature)?;
+        )?;
 
         let block_height = self.storage.block_number();
         let (idx, mut old) = self.get_active_validator(call.validatorAddress)?;
@@ -583,22 +596,18 @@ mod tests {
         validator_address: Address,
         ingress: &str,
         egress: &str,
-        is_rotate: bool,
+        operation: ValidatorOperation,
     ) -> (FixedBytes<32>, Vec<u8>) {
         // Generate a random private key for testing
         let seed = rand_08::random::<u64>();
         let private_key = PrivateKey::from_seed(seed);
         let public_key = private_key.public_key();
 
-        // Construct the message according to the precompile spec (matches production)
+        // Get namespace from operation
+        let namespace = operation.namespace();
+
+        // Build message WITHOUT "TEMPO" prefix
         let mut data = Vec::new();
-        data.extend_from_slice(b"TEMPO");
-        data.extend_from_slice(if !is_rotate {
-            b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"
-        } else {
-            b"_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"
-        });
-        // Use test chain_id (1) and contract address
         data.extend_from_slice(&1u64.to_be_bytes());
         data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
         data.extend_from_slice(validator_address.as_slice());
@@ -606,8 +615,8 @@ mod tests {
         data.extend_from_slice(egress.as_bytes());
         let message = keccak256(&data);
 
-        // Sign the message
-        let signature = private_key.sign(&[], message.as_slice());
+        // Sign with namespace
+        let signature = private_key.sign(namespace, message.as_slice());
 
         // Encode public key to bytes
         let pubkey_bytes = public_key.encode();
@@ -642,7 +651,8 @@ mod tests {
         ingress: &str,
         egress: &str,
     ) -> IValidatorConfigV2::addValidatorCall {
-        let (pubkey, signature) = make_test_keypair_and_signature(addr, ingress, egress, false);
+        let (pubkey, signature) =
+            make_test_keypair_and_signature(addr, ingress, egress, ValidatorOperation::Add);
         make_add_call(addr, pubkey, ingress, egress, signature)
     }
 
@@ -677,7 +687,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                false,
+                ValidatorOperation::Add,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -795,8 +805,12 @@ mod tests {
 
             // First validator
             let addr1 = Address::random();
-            let (pubkey, sig1) =
-                make_test_keypair_and_signature(addr1, "192.168.1.1:8000", "192.168.1.1", false);
+            let (pubkey, sig1) = make_test_keypair_and_signature(
+                addr1,
+                "192.168.1.1:8000",
+                "192.168.1.1",
+                ValidatorOperation::Add,
+            );
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
@@ -805,8 +819,12 @@ mod tests {
 
             // Try to add second validator with same public key (but different signature for different address)
             let addr2 = Address::random();
-            let (_, sig2) =
-                make_test_keypair_and_signature(addr2, "192.168.1.2:8000", "192.168.1.2", false);
+            let (_, sig2) = make_test_keypair_and_signature(
+                addr2,
+                "192.168.1.2:8000",
+                "192.168.1.2",
+                ValidatorOperation::Add,
+            );
             vc.storage.set_block_number(201);
             let result = vc.add_validator(
                 owner,
@@ -932,7 +950,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                false,
+                ValidatorOperation::Add,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -951,7 +969,7 @@ mod tests {
                 validator,
                 "10.0.0.1:8000",
                 "10.0.0.1",
-                true, // rotate flag
+                ValidatorOperation::Rotate,
             );
             vc.storage.set_block_number(300);
             vc.rotate_validator(
@@ -1121,7 +1139,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                false,
+                ValidatorOperation::Add,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1258,7 +1276,7 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1:9000",
-                false,
+                ValidatorOperation::Add,
             );
 
             // IP:port for egress should fail (egress validation happens before signature)

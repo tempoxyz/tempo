@@ -191,21 +191,22 @@ mod tests {
             let private_key = PrivateKey::from_seed(seed);
             let public_key_obj = private_key.public_key();
 
-            // Construct message (must match precompile's construct_validator_message)
+            // Build namespace
+            let namespace = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
+
+            // Build message (remove lines with "TEMPO" prefix)
             let mut msg_data = Vec::new();
-            msg_data.extend_from_slice(b"TEMPO");
-            msg_data.extend_from_slice(b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR");
-            msg_data.extend_from_slice(&1u64.to_be_bytes()); // chain_id
+            msg_data.extend_from_slice(&1u64.to_be_bytes());
             msg_data.extend_from_slice(
                 tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS.as_slice(),
-            ); // contract address
+            );
             msg_data.extend_from_slice(validator_addr.as_slice());
             msg_data.extend_from_slice(b"192.168.1.1:8000");
             msg_data.extend_from_slice(b"192.168.1.1");
             let message = alloy::primitives::keccak256(&msg_data);
 
-            // Sign the message
-            let signature = private_key.sign(&[], message.as_slice());
+            // Sign with namespace
+            let signature = private_key.sign(namespace, message.as_slice());
 
             // Encode public key
             let pubkey_bytes = public_key_obj.encode();
