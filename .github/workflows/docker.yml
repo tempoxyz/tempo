@@ -179,6 +179,6 @@ jobs:
             "repository": "${{ github.repository }}",
             "event": "registry_package",
             "data": {
-              "tag": "${{ steps.shortsha.outputs.shortsha }}"
+              "tag": "sha-${{ steps.shortsha.outputs.shortsha }}"
             }
           }'
