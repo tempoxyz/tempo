@@ -6,8 +6,9 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     error::{Result, TempoPrecompileError},
+    ip_validation::{ensure_address_is_ip, ensure_address_is_ip_port},
     storage::{Handler, Mapping},
-    validator_config::{ValidatorConfig, ensure_address_is_ip, ensure_address_is_ip_port},
+    validator_config::ValidatorConfig,
 };
 use alloy::primitives::{Address, B256, keccak256};
 use commonware_codec::DecodeExt;

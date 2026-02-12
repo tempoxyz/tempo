@@ -7,6 +7,8 @@ pub use error::{IntoPrecompileResult, Result};
 
 pub mod storage;
 
+pub(crate) mod ip_validation;
+
 pub mod account_keychain;
 pub mod nonce;
 pub mod stablecoin_dex;
