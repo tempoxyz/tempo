@@ -252,13 +252,22 @@ impl ValidatorConfigV2 {
         self.append_validator_raw(addr, pubkey, ingress, egress, block_height, 0)
     }
 
-    /// Validates that the address is non-zero and not already registered.
+    /// Validates that the address is non-zero and not already registered as active.
+    /// Allows reusing addresses of deactivated validators.
     fn require_new_address(&self, addr: Address) -> Result<()> {
         if addr.is_zero() {
             return Err(ValidatorConfigV2Error::invalid_validator_address())?;
         }
-        if self.address_to_index[addr].read()? != 0 {
-            return Err(ValidatorConfigV2Error::validator_already_exists())?;
+        let idx1 = self.address_to_index[addr].read()?;
+        if idx1 != 0 {
+            // Address exists, check if it's still active
+            if self.validators[(idx1 - 1) as usize]
+                .deactivated_at_height
+                .read()?
+                == 0
+            {
+                return Err(ValidatorConfigV2Error::validator_already_exists())?;
+            }
         }
         Ok(())
     }
@@ -1520,6 +1529,94 @@ mod tests {
                 result,
                 Err(ValidatorConfigV2Error::migration_not_complete().into())
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_add_validator_reuses_deactivated_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator_addr = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            // Add first validator
+            let (pubkey1, sig1) = make_test_keypair_and_signature(
+                validator_addr,
+                "192.168.1.1:8000",
+                "192.168.1.1",
+                ValidatorOperation::Add,
+            );
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_add_call(
+                    validator_addr,
+                    pubkey1,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    sig1,
+                ),
+            )?;
+
+            // Deactivate it
+            vc.storage.set_block_number(300);
+            vc.deactivate_validator(
+                owner,
+                IValidatorConfigV2::deactivateValidatorCall {
+                    validatorAddress: validator_addr,
+                },
+            )?;
+
+            // Now add new validator with SAME address but different pubkey - should succeed
+            let (pubkey2, sig2) = make_test_keypair_and_signature(
+                validator_addr,
+                "192.168.1.2:8000",
+                "192.168.1.2",
+                ValidatorOperation::Add,
+            );
+            vc.storage.set_block_number(400);
+            vc.add_validator(
+                owner,
+                make_add_call(
+                    validator_addr,
+                    pubkey2,
+                    "192.168.1.2:8000",
+                    "192.168.1.2",
+                    sig2,
+                ),
+            )?;
+
+            // Should have 2 validators
+            assert_eq!(vc.validator_count()?, 2);
+
+            // First one is deactivated
+            let v1 = vc.validator_by_index(0)?;
+            assert_eq!(v1.validatorAddress, validator_addr);
+            assert_eq!(v1.publicKey, pubkey1);
+            assert_eq!(v1.deactivatedAtHeight, 300);
+
+            // Second one is active with same address
+            let v2 = vc.validator_by_index(1)?;
+            assert_eq!(v2.validatorAddress, validator_addr);
+            assert_eq!(v2.publicKey, pubkey2);
+            assert_eq!(v2.deactivatedAtHeight, 0);
+
+            // Lookup by address returns the NEW active validator
+            let by_addr = vc.validator_by_address(validator_addr)?;
+            assert_eq!(by_addr.publicKey, pubkey2);
+            assert_eq!(by_addr.deactivatedAtHeight, 0);
+
+            // Lookup by old pubkey returns old deactivated validator
+            let by_old_pk = vc.validator_by_public_key(pubkey1)?;
+            assert_eq!(by_old_pk.deactivatedAtHeight, 300);
+
+            // Lookup by new pubkey returns new active validator
+            let by_new_pk = vc.validator_by_public_key(pubkey2)?;
+            assert_eq!(by_new_pk.deactivatedAtHeight, 0);
 
             Ok(())
         })
