@@ -85,7 +85,8 @@ contract TIP403Registry is ITIP403Registry {
     }
 
     function setPolicyAdmin(uint64 policyId, address admin) external {
-        require(policyRecords[policyId].base.admin == msg.sender, Unauthorized());
+        PolicyData memory data = _getPolicyData(policyId);
+        require(data.admin == msg.sender, Unauthorized());
 
         policyRecords[policyId].base.admin = admin;
 
@@ -97,7 +98,7 @@ contract TIP403Registry is ITIP403Registry {
     //////////////////////////////////////////////////////////////*/
 
     function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external {
-        PolicyData memory data = policyRecords[policyId].base;
+        PolicyData memory data = _getPolicyData(policyId);
 
         require(data.admin == msg.sender, Unauthorized());
         require(data.policyType == PolicyType.WHITELIST, IncompatiblePolicyType());
@@ -108,7 +109,7 @@ contract TIP403Registry is ITIP403Registry {
     }
 
     function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external {
-        PolicyData memory data = policyRecords[policyId].base;
+        PolicyData memory data = _getPolicyData(policyId);
 
         require(data.admin == msg.sender, Unauthorized());
         require(data.policyType == PolicyType.BLACKLIST, IncompatiblePolicyType());
@@ -140,7 +141,7 @@ contract TIP403Registry is ITIP403Registry {
             return policyId == 1;
         }
 
-        PolicyData memory data = policyRecords[policyId].base;
+        PolicyData memory data = _getPolicyData(policyId);
 
         // TIP-1015: For compound policies, check both sender and recipient
         // Short-circuit: skip recipient check if sender fails
@@ -162,9 +163,7 @@ contract TIP403Registry is ITIP403Registry {
         view
         returns (PolicyType policyType, address admin)
     {
-        require(policyExists(policyId), PolicyNotFound());
-
-        PolicyData memory data = policyRecords[policyId].base;
+        PolicyData memory data = _getPolicyData(policyId);
         return (data.policyType, data.admin);
     }
 
@@ -205,7 +204,7 @@ contract TIP403Registry is ITIP403Registry {
             return policyId == 1;
         }
 
-        PolicyData memory data = policyRecords[policyId].base;
+        PolicyData memory data = _getPolicyData(policyId);
 
         if (data.policyType == PolicyType.COMPOUND) {
             return isAuthorized(policyRecords[policyId].compound.senderPolicyId, user);
@@ -219,7 +218,7 @@ contract TIP403Registry is ITIP403Registry {
             return policyId == 1;
         }
 
-        PolicyData memory data = policyRecords[policyId].base;
+        PolicyData memory data = _getPolicyData(policyId);
 
         if (data.policyType == PolicyType.COMPOUND) {
             return isAuthorized(policyRecords[policyId].compound.recipientPolicyId, user);
@@ -233,7 +232,7 @@ contract TIP403Registry is ITIP403Registry {
             return policyId == 1;
         }
 
-        PolicyData memory data = policyRecords[policyId].base;
+        PolicyData memory data = _getPolicyData(policyId);
 
         if (data.policyType == PolicyType.COMPOUND) {
             return isAuthorized(policyRecords[policyId].compound.mintRecipientPolicyId, user);
@@ -247,29 +246,33 @@ contract TIP403Registry is ITIP403Registry {
         view
         returns (uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId)
     {
-        if (policyRecords[policyId].base.policyType != PolicyType.COMPOUND) {
-            if (policyExists(policyId)) {
-                revert IncompatiblePolicyType();
-            }
-            revert PolicyNotFound();
-        }
+        PolicyData memory data = _getPolicyData(policyId);
+        require(data.policyType == PolicyType.COMPOUND, IncompatiblePolicyType());
 
-        CompoundPolicyData memory data = policyRecords[policyId].compound;
-        return (data.senderPolicyId, data.recipientPolicyId, data.mintRecipientPolicyId);
+        CompoundPolicyData memory compound = policyRecords[policyId].compound;
+        return (compound.senderPolicyId, compound.recipientPolicyId, compound.mintRecipientPolicyId);
     }
 
     /*//////////////////////////////////////////////////////////////
                       TIP-1015: INTERNAL HELPERS
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev Returns policy data for a given policy ID, reverting if the policy does not exist.
+    function _getPolicyData(uint64 policyId) internal view returns (PolicyData memory data) {
+        data = policyRecords[policyId].base;
+
+        // Skip the counter read (extra SLOAD) when policy data is non-default.
+        if (data.policyType == PolicyType.WHITELIST && data.admin == address(0)) {
+            require(policyId < policyIdCounter, PolicyNotFound());
+        }
+    }
+
     function _validateSimplePolicy(uint64 policyId) internal view {
         if (policyId < 2) {
             return;
         }
 
-        require(policyId < policyIdCounter, PolicyNotFound());
-
-        PolicyData memory data = policyRecords[policyId].base;
+        PolicyData memory data = _getPolicyData(policyId);
         require(data.policyType != PolicyType.COMPOUND, PolicyNotSimple());
     }
 

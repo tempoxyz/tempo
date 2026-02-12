@@ -106,6 +106,11 @@ impl PolicyData {
     fn is_compound(&self) -> bool {
         self.policy_type == PolicyType::COMPOUND as u8
     }
+
+    /// Returns `true` if the policy data is the default (uninitialized) value.
+    fn is_default(&self) -> bool {
+        self.policy_type == 0 && self.admin == Address::ZERO
+    }
 }
 
 impl TIP403Registry {
@@ -135,13 +140,16 @@ impl TIP403Registry {
         &self,
         call: ITIP403Registry::policyDataCall,
     ) -> Result<ITIP403Registry::policyDataReturn> {
-        // Check if policy exists before returning data
-        if !self.policy_exists(ITIP403Registry::policyExistsCall {
-            policyId: call.policyId,
-        })? {
+        // Check if policy exists before reading the data (spec: pre-T2)
+        if !self.storage.spec().is_t2()
+            && !self.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: call.policyId,
+            })?
+        {
             return Err(TIP403RegistryError::policy_not_found().into());
         }
 
+        // Get policy data and verify that the policy id exists (spec: +T2)
         let data = self.get_policy_data(call.policyId)?;
 
         Ok(ITIP403Registry::policyDataReturn {
@@ -515,8 +523,22 @@ impl TIP403Registry {
     }
 
     // Internal helper functions
+
+    /// Returns policy data for the given policy ID.
+    /// Errors with `PolicyNotFound` for invalid policy ids.
     fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
-        self.policy_records[policy_id].base.read()
+        let data = self.policy_records[policy_id].base.read()?;
+
+        // Verify that the policy id exists (spec: +T2).
+        // Skip the counter read (extra SLOAD) when policy data is non-default.
+        if self.storage.spec().is_t2()
+            && data.is_default()
+            && policy_id >= self.policy_id_counter()?
+        {
+            return Err(TIP403RegistryError::policy_not_found().into());
+        }
+
+        Ok(data)
     }
 
     fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
@@ -2023,6 +2045,39 @@ mod tests {
                 policyId: counter + 1,
             })?);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_nonexistent_policy_behavior() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let user = Address::random();
+        let nonexistent_id = 999;
+
+        // Pre-T2: silently returns default data / false
+        StorageCtx::enter(&mut storage, || -> Result<()> {
+            let registry = TIP403Registry::new();
+            let data = registry.get_policy_data(nonexistent_id)?;
+            assert!(data.is_default());
+            assert!(!registry.is_authorized_as(nonexistent_id, user, AuthRole::Transfer)?);
+            Ok(())
+        })?;
+
+        // T2: reverts with `PolicyNotFound`
+        let mut storage = storage.with_spec(TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+            assert_eq!(
+                registry.get_policy_data(nonexistent_id).unwrap_err(),
+                TIP403RegistryError::policy_not_found().into()
+            );
+            assert_eq!(
+                registry
+                    .is_authorized_as(nonexistent_id, user, AuthRole::Transfer)
+                    .unwrap_err(),
+                TIP403RegistryError::policy_not_found().into()
+            );
             Ok(())
         })
     }
