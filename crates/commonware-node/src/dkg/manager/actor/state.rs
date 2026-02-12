@@ -729,7 +729,7 @@ impl Read for State {
             seed: ReadExt::read(buf)?,
             output: Read::read_cfg(buf, cfg)?,
             share: ReadExt::read(buf)?,
-            players: Read::read_cfg(buf, &(range_cfg.clone(), ()))?,
+            players: Read::read_cfg(buf, &(range_cfg, ()))?,
             syncers: Read::read_cfg(buf, &(range_cfg, ()))?,
             is_full_dkg: ReadExt::read(buf)?,
         })
