@@ -188,6 +188,12 @@ where
                 )));
             }
 
+            if let Some(expiry) = auth.expiry
+                && expiry < u64::MAX
+            {
+                transaction.set_key_expiry(Some(expiry));
+            }
+
             // KeyAuthorization is valid - skip keychain storage check (key will be authorized during execution)
             return Ok(Ok(()));
         }
@@ -590,9 +596,9 @@ where
 
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
-            return TransactionValidationOutcome::Error(
-                *transaction.hash(),
-                InvalidTransactionError::TxTypeNotSupported.into(),
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
             );
         }
 
@@ -688,8 +694,13 @@ where
 
         let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
             Ok(fee_payer) => fee_payer,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            Err(_err) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(
+                        TempoPoolTransactionError::InvalidFeePayerSignature,
+                    ),
+                );
             }
         };
 
@@ -1023,8 +1034,8 @@ where
 mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
-    use alloy_consensus::{Block, Header, Transaction};
-    use alloy_primitives::{Address, B256, TxKind, U256, address, uint};
+    use alloy_consensus::{Block, Header, Signed, Transaction, TxLegacy};
+    use alloy_primitives::{Address, B256, Signature, TxKind, U256, address, uint};
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_transaction_pool::{
@@ -1037,7 +1048,16 @@ mod tests {
         tip20::{TIP20Token, slots as tip20_slots},
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
-    use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{
+            TempoTransaction,
+            envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        },
+    };
     use tempo_revm::TempoStateAccess;
 
     /// Arbitrary validity window (in seconds) used for expiring-nonce transactions in tests.
@@ -1161,6 +1181,87 @@ mod tests {
                 ));
             }
             _ => panic!("Expected Invalid outcome with NonZeroValue error, got: {outcome:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_system_tx_rejected_as_invalid() {
+        let tx = TxLegacy {
+            chain_id: Some(MODERATO.chain_id()),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 0,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Default::default(),
+        };
+        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        let transaction = TempoPooledTransaction::new(
+            reth_primitives_traits::Recovered::new_unchecked(envelope, Address::ZERO),
+        );
+        let validator = setup_validator(&transaction, 0);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, err) => {
+                assert!(matches!(
+                    err,
+                    InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::TxTypeNotSupported
+                    )
+                ));
+            }
+            _ => panic!("Expected Invalid outcome with TxTypeNotSupported error, got: {outcome:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_invalid_fee_payer_signature_rejected() {
+        let calls: Vec<Call> = vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Default::default(),
+        }];
+
+        let tx = TempoTransaction {
+            chain_id: MODERATO.chain_id(),
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
+            gas_limit: 1_000_000,
+            calls,
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            fee_token: Some(PATH_USD_ADDRESS),
+            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            ..Default::default()
+        };
+
+        let signed = AASigned::new_unhashed(
+            tx,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        );
+        let transaction = TempoPooledTransaction::new(
+            TempoTxEnvelope::from(signed).try_into_recovered().unwrap(),
+        );
+        let validator = setup_validator(&transaction, 0);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::InvalidFeePayerSignature)
+                ));
+            }
+            _ => panic!(
+                "Expected Invalid outcome with InvalidFeePayerSignature error, got: {outcome:?}"
+            ),
         }
     }
 
@@ -2943,6 +3044,54 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "KeyAuthorization with future expiry should be accepted, got: {result:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_expiry_cached_for_pool_maintenance() -> Result<(), ProviderError>
+        {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let current_time = 1000u64;
+            let expiry = current_time + 100;
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: Some(expiry),
+                limits: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_and_timestamp(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                current_time,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            assert!(result.is_ok(), "KeyAuthorization should be accepted");
+            assert_eq!(
+                transaction.key_expiry(),
+                Some(expiry),
+                "KeyAuthorization expiry should be cached for pool maintenance"
             );
             Ok(())
         }
