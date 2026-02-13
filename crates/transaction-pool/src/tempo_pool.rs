@@ -29,13 +29,14 @@ use reth_transaction_pool::{
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+
 use tempo_primitives::Block;
 
 /// Tempo transaction pool that routes based on nonce_key
-pub struct TempoTransactionPool<Client, Evm> {
+pub struct TempoTransactionPool<Client> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
-        TransactionValidationTaskExecutor<TempoTransactionValidator<Client, Evm>>,
+        TransactionValidationTaskExecutor<TempoTransactionValidator<Client, TempoEvmConfig>>,
         CoinbaseTipOrdering<TempoPooledTransaction>,
         InMemoryBlobStore,
     >,
@@ -43,10 +44,10 @@ pub struct TempoTransactionPool<Client, Evm> {
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
-impl<Client, Evm> TempoTransactionPool<Client, Evm> {
+impl<Client> TempoTransactionPool<Client> {
     pub fn new(
         protocol_pool: Pool<
-            TransactionValidationTaskExecutor<TempoTransactionValidator<Client, Evm>>,
+            TransactionValidationTaskExecutor<TempoTransactionValidator<Client, TempoEvmConfig>>,
             CoinbaseTipOrdering<TempoPooledTransaction>,
             InMemoryBlobStore,
         >,
@@ -58,10 +59,9 @@ impl<Client, Evm> TempoTransactionPool<Client, Evm> {
         }
     }
 }
-impl<Client, Evm> TempoTransactionPool<Client, Evm>
+impl<Client> TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
-    Evm: ConfigureEvm + 'static,
 {
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
     pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
@@ -514,7 +514,7 @@ where
 }
 
 // Manual Clone implementation
-impl<Client, Evm> Clone for TempoTransactionPool<Client, Evm> {
+impl<Client> Clone for TempoTransactionPool<Client> {
     fn clone(&self) -> Self {
         Self {
             protocol_pool: self.protocol_pool.clone(),
@@ -524,7 +524,7 @@ impl<Client, Evm> Clone for TempoTransactionPool<Client, Evm> {
 }
 
 // Manual Debug implementation
-impl<Client, Evm> std::fmt::Debug for TempoTransactionPool<Client, Evm> {
+impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TempoTransactionPool")
             .field("protocol_pool", &"Pool<...>")
@@ -535,14 +535,13 @@ impl<Client, Evm> std::fmt::Debug for TempoTransactionPool<Client, Evm> {
 }
 
 // Implement the TransactionPool trait
-impl<Client, Evm> TransactionPool for TempoTransactionPool<Client, Evm>
+impl<Client> TransactionPool for TempoTransactionPool<Client>
 where
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec = TempoChainSpec>
         + Send
         + Sync
         + 'static,
-    Evm: ConfigureEvm + 'static,
     TempoPooledTransaction: reth_transaction_pool::EthPoolTransaction,
 {
     type Transaction = TempoPooledTransaction;
@@ -1076,10 +1075,9 @@ where
     }
 }
 
-impl<Client, Evm> TransactionPoolExt for TempoTransactionPool<Client, Evm>
+impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
-    Evm: ConfigureEvm + 'static,
 {
     type Block = Block;
 

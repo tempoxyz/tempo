@@ -12,6 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-evm.workspace = true
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
 tempo-evm.workspace = true
