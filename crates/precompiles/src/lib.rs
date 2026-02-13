@@ -13,6 +13,7 @@ pub mod runtime;
 pub use runtime::*;
 
 pub mod contracts;
+pub use contracts::{AbiManifest, all_abi_manifests};
 
 // Precompile interface and address re-exports (always available from contracts)
 pub use contracts::{

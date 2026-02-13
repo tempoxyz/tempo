@@ -9,3 +9,9 @@ mod scripts
 [group('dev')]
 tempo-dev-up: scripts::tempo-dev-up
 tempo-dev-down: scripts::tempo-dev-down
+
+[group('dev')]
+[doc('Check ABI compatibility between Rust precompiles and Solidity interfaces')]
+check-abi:
+    cd tips/ref-impls && forge build --sizes
+    cargo run -p tempo-xtask -- check-abi

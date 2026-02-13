@@ -2,7 +2,7 @@
 use std::net::SocketAddr;
 
 use crate::{
-    generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
+    check_abi::CheckAbi, generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
     generate_localnet::GenerateLocalnet, get_dkg_outcome::GetDkgOutcome,
 };
 
@@ -11,6 +11,7 @@ use clap::Parser as _;
 use commonware_codec::DecodeExt;
 use eyre::Context;
 
+mod check_abi;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
@@ -32,6 +33,7 @@ async fn main() -> eyre::Result<()> {
             .await
             .wrap_err("failed to generate localnet configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
+        Action::CheckAbi(args) => args.run().wrap_err("ABI compatibility check failed"),
     }
 }
 
@@ -52,6 +54,7 @@ enum Action {
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
     GenerateAddPeer(GenerateAddPeer),
+    CheckAbi(CheckAbi),
 }
 
 #[derive(Debug, clap::Args)]

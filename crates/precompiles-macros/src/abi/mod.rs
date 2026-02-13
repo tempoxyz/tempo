@@ -89,7 +89,9 @@ use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 use syn::ItemMod;
 
-use parser::{ConstantDef, InterfaceDef, SolStructDef, SolidityModule, UnitEnumDef};
+use parser::{
+    ConstantDef, FieldAccessors, InterfaceDef, SolStructDef, SolidityModule, UnitEnumDef,
+};
 use registry::TypeRegistry;
 
 /// Generate the prelude and traits submodules containing re-exports.
@@ -293,6 +295,90 @@ fn generate_getter_metadata(_mod_name: &Ident, interfaces: &[InterfaceDef]) -> T
     }
 }
 
+/// Collect all canonical function signatures from interfaces and constants.
+fn collect_function_signatures(
+    module: &SolidityModule,
+    registry: &TypeRegistry,
+) -> syn::Result<Vec<String>> {
+    let mut sigs = Vec::new();
+    for iface in &module.interfaces {
+        for m in &iface.methods {
+            let sig = registry.compute_signature(&m.sol_name, &m.field_raw_types())?;
+            sigs.push(sig);
+        }
+    }
+    for c in &module.constants {
+        sigs.push(format!("{}()", c.sol_name()));
+    }
+    Ok(sigs)
+}
+
+/// Collect all canonical error signatures.
+fn collect_error_signatures(
+    module: &SolidityModule,
+    registry: &TypeRegistry,
+) -> syn::Result<Vec<String>> {
+    let Some(ref error_enum) = module.error else {
+        return Ok(Vec::new());
+    };
+    error_enum
+        .variants
+        .iter()
+        .map(|v| registry.compute_signature_from_fields(&v.name.to_string(), &v.fields))
+        .collect()
+}
+
+/// Collect all canonical event signatures.
+fn collect_event_signatures(
+    module: &SolidityModule,
+    registry: &TypeRegistry,
+) -> syn::Result<Vec<String>> {
+    let Some(ref event_enum) = module.event else {
+        return Ok(Vec::new());
+    };
+    event_enum
+        .variants
+        .iter()
+        .map(|v| registry.compute_signature_from_fields(&v.name.to_string(), &v.fields))
+        .collect()
+}
+
+/// Generate the `ABI_MANIFEST` constant for this module.
+///
+/// The constant uses an inline struct definition to avoid cross-crate path dependencies.
+/// `tempo_precompiles::contracts::AbiManifest` is layout-identical.
+///
+/// Checker-specific overrides (Solidity name, inheritance) are applied in the
+/// `manifest!` macro in `contracts/mod.rs`, not here.
+fn generate_abi_surface(
+    mod_name: &Ident,
+    module: &SolidityModule,
+    registry: &TypeRegistry,
+) -> syn::Result<TokenStream> {
+    let solidity_name = mod_name.to_string();
+
+    let fn_sigs = collect_function_signatures(module, registry)?;
+    let err_sigs = collect_error_signatures(module, registry)?;
+    let evt_sigs = collect_event_signatures(module, registry)?;
+
+    Ok(quote! {
+        #[derive(Debug)]
+        pub struct AbiManifest {
+            pub solidity_name: &'static str,
+            pub functions: &'static [&'static str],
+            pub errors: &'static [&'static str],
+            pub events: &'static [&'static str],
+        }
+
+        pub const ABI_MANIFEST: AbiManifest = AbiManifest {
+            solidity_name: #solidity_name,
+            functions: &[#(#fn_sigs),*],
+            errors: &[#(#err_sigs),*],
+            events: &[#(#evt_sigs),*],
+        };
+    })
+}
+
 /// Main expansion entry point for `#[abi]` attribute macro.
 pub(crate) fn expand(item: ItemMod) -> syn::Result<TokenStream> {
     let module = SolidityModule::parse(item)?;
@@ -417,6 +503,9 @@ pub(crate) fn expand(item: ItemMod) -> syn::Result<TokenStream> {
         module.event.is_some(),
     );
 
+    // Generate ABI_SURFACE constant for check-abi verification
+    let abi_surface = generate_abi_surface(mod_name, &module, &registry)?;
+
     Ok(quote! {
         #[allow(non_camel_case_types, non_snake_case, clippy::pub_underscore_fields, clippy::style, clippy::empty_structs_with_brackets, clippy::too_many_arguments)]
         #vis mod #mod_name {
@@ -449,6 +538,8 @@ pub(crate) fn expand(item: ItemMod) -> syn::Result<TokenStream> {
             #(#other_items)*
 
             #submodules
+
+            #abi_surface
         }
     })
 }
