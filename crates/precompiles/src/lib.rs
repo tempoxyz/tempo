@@ -2,6 +2,9 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+use alloy_contract as _;
+use alloy_sol_types as _;
+
 pub mod dispatch;
 pub mod error;
 pub use error::{IntoPrecompileResult, Result};
