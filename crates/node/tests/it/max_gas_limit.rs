@@ -38,52 +38,55 @@ fn build_tx(
         .into()
 }
 
-/// Post-T1: a transaction at the Osaka limit (16M) should succeed.
+/// Post-T1: tx at the Osaka limit (16M) should be accepted by the pool and
+/// included in a block.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_at_osaka_limit_succeeds() -> eyre::Result<()> {
+async fn test_post_t1_tx_at_osaka_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).index(0)?.build()?;
-    let http_url = setup.node.rpc_url();
-    let provider = ProviderBuilder::new().connect_http(http_url);
+    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, MAX_TX_GAS_LIMIT_OSAKA);
-    setup.node.rpc.inject_tx(raw_tx).await?;
+    let _ = provider.send_raw_transaction(&raw_tx).await?;
     let payload = setup.node.advance_block().await?;
 
-    let block = payload.block();
-    let all_txs: Vec<_> = block.body().transactions().cloned().collect();
-    let user_txs: Vec<_> = all_txs.into_iter().filter(|tx| tx.gas_limit() > 0).collect();
+    let all_txs: Vec<_> = payload.block().body().transactions().cloned().collect();
+    let user_txs: Vec<_> = all_txs
+        .into_iter()
+        .filter(|tx| tx.gas_limit() > 0)
+        .collect();
     assert_eq!(user_txs.len(), 1, "tx at 16M should be included");
 
     Ok(())
 }
 
-/// Post-T1: a transaction between the Osaka limit (16M) and the Tempo cap (30M)
-/// should succeed — TIP-1010 raises the per-tx cap to 30M.
+/// Post-T1: tx between the Osaka limit (16M) and Tempo's T1 cap (30M) should
+/// be accepted by the pool and included in a block.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_between_osaka_and_tempo_cap_succeeds() -> eyre::Result<()> {
+async fn test_post_t1_tx_above_osaka_below_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).index(0)?.build()?;
-    let http_url = setup.node.rpc_url();
-    let provider = ProviderBuilder::new().connect_http(http_url);
+    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
-    // 20M gas — above Osaka's 16M, below Tempo's 30M cap
-    let gas_limit = 20_000_000;
-    let raw_tx = build_tx(&signer, chain_id, 0, gas_limit);
-    setup.node.rpc.inject_tx(raw_tx).await?;
+    let raw_tx = build_tx(&signer, chain_id, 0, 20_000_000);
+    let _ = provider.send_raw_transaction(&raw_tx).await?;
     let payload = setup.node.advance_block().await?;
 
-    let block = payload.block();
-    let all_txs: Vec<_> = block.body().transactions().cloned().collect();
-    let user_txs: Vec<_> = all_txs.into_iter().filter(|tx| tx.gas_limit() > 0).collect();
+    let all_txs: Vec<_> = payload.block().body().transactions().cloned().collect();
+    let user_txs: Vec<_> = all_txs
+        .into_iter()
+        .filter(|tx| tx.gas_limit() > 0)
+        .collect();
     assert_eq!(
         user_txs.len(),
         1,
@@ -93,25 +96,28 @@ async fn test_post_t1_tx_between_osaka_and_tempo_cap_succeeds() -> eyre::Result<
     Ok(())
 }
 
-/// Post-T1: a transaction at exactly the Tempo T1 cap (30M) should succeed.
+/// Post-T1: tx at exactly the Tempo T1 cap (30M) should be accepted by the
+/// pool and included in a block.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_at_tempo_cap_succeeds() -> eyre::Result<()> {
+async fn test_post_t1_tx_at_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).index(0)?.build()?;
-    let http_url = setup.node.rpc_url();
-    let provider = ProviderBuilder::new().connect_http(http_url);
+    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, TEMPO_T1_TX_GAS_LIMIT_CAP);
-    setup.node.rpc.inject_tx(raw_tx).await?;
+    let _ = provider.send_raw_transaction(&raw_tx).await?;
     let payload = setup.node.advance_block().await?;
 
-    let block = payload.block();
-    let all_txs: Vec<_> = block.body().transactions().cloned().collect();
-    let user_txs: Vec<_> = all_txs.into_iter().filter(|tx| tx.gas_limit() > 0).collect();
+    let all_txs: Vec<_> = payload.block().body().transactions().cloned().collect();
+    let user_txs: Vec<_> = all_txs
+        .into_iter()
+        .filter(|tx| tx.gas_limit() > 0)
+        .collect();
     assert_eq!(
         user_txs.len(),
         1,
@@ -121,21 +127,19 @@ async fn test_post_t1_tx_at_tempo_cap_succeeds() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Post-T1: a transaction exceeding Tempo's 30M cap should be rejected.
+/// Post-T1: tx exceeding Tempo's 30M cap should be rejected by the pool.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_exceeding_tempo_cap_rejected() -> eyre::Result<()> {
+async fn test_post_t1_tx_exceeding_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
-    let http_url = setup.http_url;
-
-    let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
-    let provider = ProviderBuilder::new().wallet(wallet.clone()).connect_http(http_url);
+    let setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
-    let over_cap = TEMPO_T1_TX_GAS_LIMIT_CAP + 1;
-    let raw_tx = build_tx(&wallet, chain_id, 0, over_cap);
-
+    let raw_tx = build_tx(&signer, chain_id, 0, TEMPO_T1_TX_GAS_LIMIT_CAP + 1);
     let result = provider.send_raw_transaction(&raw_tx).await;
     assert!(
         result.is_err(),
@@ -145,13 +149,12 @@ async fn test_post_t1_tx_exceeding_tempo_cap_rejected() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Pre-T1 (T0 only): a transaction with gas_limit above 30M should succeed
-/// because there is no per-tx gas cap before T1.
+/// Pre-T1 (T0 only): tx with gas_limit above 30M should be accepted by the
+/// pool and included in a block because there is no per-tx gas cap before T1.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_pre_t1_tx_above_30m_succeeds() -> eyre::Result<()> {
+async fn test_pre_t1_tx_above_30m() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Create a genesis without T1 activated
     let genesis_str = include_str!("../assets/test-genesis.json");
     let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
     genesis["config"].as_object_mut().unwrap().remove("t1Time");
@@ -163,19 +166,21 @@ async fn test_pre_t1_tx_above_30m_succeeds() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).index(0)?.build()?;
-    let http_url = setup.node.rpc_url();
-    let provider = ProviderBuilder::new().connect_http(http_url);
+    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
-    let gas_limit = 50_000_000;
-    let raw_tx = build_tx(&signer, chain_id, 0, gas_limit);
-    setup.node.rpc.inject_tx(raw_tx).await?;
+    let raw_tx = build_tx(&signer, chain_id, 0, 50_000_000);
+    let _ = provider.send_raw_transaction(&raw_tx).await?;
     let payload = setup.node.advance_block().await?;
 
-    let block = payload.block();
-    let all_txs: Vec<_> = block.body().transactions().cloned().collect();
-    let user_txs: Vec<_> = all_txs.into_iter().filter(|tx| tx.gas_limit() > 0).collect();
+    let all_txs: Vec<_> = payload.block().body().transactions().cloned().collect();
+    let user_txs: Vec<_> = all_txs
+        .into_iter()
+        .filter(|tx| tx.gas_limit() > 0)
+        .collect();
     assert_eq!(
         user_txs.len(),
         1,
