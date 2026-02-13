@@ -705,11 +705,14 @@ impl StablecoinDEX {
         self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, false)?;
 
         if order.is_flip() {
-            // Create a new flip order with flipped side and swapped ticks
-            // Bid becomes Ask, Ask becomes Bid
-            // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
-            // Uses internal balance only, does not transfer from wallet
-            let _ = self.place_flip(
+            // Create a new flip order with flipped side and swapped ticks.
+            // Bid becomes Ask, Ask becomes Bid.
+            // The current tick becomes the new flip_tick, and flip_tick becomes the new tick.
+            // Uses internal balance only, does not transfer from wallet.
+            //
+            // Business logic errors are ignored so that flip failure does not block the swap.
+            // System errors (OOG, DB errors, panics) propagate because state may be inconsistent.
+            if let Err(e) = self.place_flip(
                 order.maker(),
                 orderbook.base,
                 order.amount(),
@@ -717,7 +720,10 @@ impl StablecoinDEX {
                 order.flip_tick(),
                 order.tick(),
                 true,
-            );
+            ) && e.is_system_error()
+            {
+                return Err(e);
+            }
         }
 
         // Delete the filled order
@@ -4266,6 +4272,62 @@ mod tests {
                 result.unwrap_err(),
                 StablecoinDEXError::order_does_not_exist().into()
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_flip_order_fill_reverts_on_system_error() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+            let flip_tick = 200i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
+            exchange.create_pair(base_token)?;
+
+            let book_key = compute_book_key(base_token, quote_token);
+
+            // Place a flip bid order: when filled, it should flip to an ask at flip_tick
+            exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
+
+            let alice_quote_before = exchange.balance_of(alice, quote_token)?;
+
+            // Poison the flip target tick so commit_order_to_book overflows on checked_add
+            let poisoned_level = TickLevel::with_values(0, 0, u128::MAX);
+            exchange.books[book_key]
+                .tick_level_handler_mut(flip_tick, false)
+                .write(poisoned_level)?;
+
+            // Fund bob to fill the order
+            exchange.set_balance(bob, base_token, amount)?;
+
+            // The swap must revert because place_flip hits a Panic(UnderOverflow)
+            let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
+            assert!(
+                result.is_err(),
+                "Swap should revert when flip placement hits a system error"
+            );
+            assert!(
+                result.unwrap_err().is_system_error(),
+                "Error must be classified as a system error",
+            );
+
+            // Maker balance must be unchanged — no funds lost
+            let alice_quote_after = exchange.balance_of(alice, quote_token)?;
+            assert_eq!(alice_quote_before, alice_quote_after);
 
             Ok(())
         })

@@ -37,10 +37,10 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) views_until_leader_skip: ViewDelta,
 }
 
-pub(crate) fn init<TBlocker, TContext>(
+pub(crate) fn init<TContext, TBlocker>(
     context: TContext,
     config: Config<TBlocker>,
-) -> (Actor<TBlocker, TContext>, Mailbox)
+) -> (Actor<TContext, TBlocker>, Mailbox)
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     TContext:

@@ -73,6 +73,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.internals.block_env().beneficiary()
     }
 
+    fn block_number(&self) -> u64 {
+        self.internals.block_env().number().to::<u64>()
+    }
+
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         self.deduct_gas(self.gas_params.code_deposit_cost(code.len()))?;

@@ -90,6 +90,25 @@ impl From<JournalLoadErasedError> for TempoPrecompileError {
 pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
 
 impl TempoPrecompileError {
+    /// Returns true if this error represents a system-level failure that must be propagated
+    /// rather than swallowed, because state may be inconsistent.
+    pub fn is_system_error(&self) -> bool {
+        match self {
+            Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) => true,
+            Self::StablecoinDEX(_)
+            | Self::TIP20(_)
+            | Self::NonceError(_)
+            | Self::TIP20Factory(_)
+            | Self::RolesAuthError(_)
+            | Self::TIPFeeAMMError(_)
+            | Self::FeeManagerError(_)
+            | Self::TIP403RegistryError(_)
+            | Self::ValidatorConfigError(_)
+            | Self::AccountKeychainError(_)
+            | Self::UnknownFunctionSelector(_) => false,
+        }
+    }
+
     pub fn under_overflow() -> Self {
         Self::Panic(PanicKind::UnderOverflow)
     }
