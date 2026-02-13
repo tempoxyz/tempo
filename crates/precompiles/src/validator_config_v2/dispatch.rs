@@ -22,7 +22,6 @@ impl Precompile for ValidatorConfigV2 {
             calldata,
             IValidatorConfigV2Calls::abi_decode,
             |call| match call {
-                // View functions
                 IValidatorConfigV2Calls::owner(call) => view(call, |_| self.owner()),
                 IValidatorConfigV2Calls::getAllValidators(call) => {
                     view(call, |_| self.get_validators())
@@ -52,7 +51,6 @@ impl Precompile for ValidatorConfigV2 {
                     view(call, |_| self.is_initialized())
                 }
 
-                // Mutate functions
                 IValidatorConfigV2Calls::addValidator(call) => {
                     mutate_void(call, msg_sender, |s, c| self.add_validator(s, c))
                 }

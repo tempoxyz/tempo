@@ -114,24 +114,23 @@ crate::sol! {
         // Errors
         // =====================================================================
 
-        error Unauthorized();
-        error ValidatorAlreadyExists();
-        error PublicKeyAlreadyExists();
-        error ValidatorNotFound();
-        error ValidatorAlreadyDeleted();
+        error AlreadyInitialized();
+        error EgressAlreadyExists(string egress);
+        error IngressAlreadyExists(string ingress);
+        error InvalidMigrationIndex();
         error InvalidPublicKey();
         error InvalidSignature();
         error InvalidSignatureFormat();
         error InvalidValidatorAddress();
-        error NotInitialized();
-        error AlreadyInitialized();
         error MigrationNotComplete();
-        error InvalidMigrationIndex();
-
+        error NotInitialized();
         error NotIp(string input, string backtrace);
         error NotIpPort(string input, string backtrace);
-        error IngressAlreadyExists(string ingress);
-        error EgressAlreadyExists(string egress);
+        error PublicKeyAlreadyExists();
+        error Unauthorized();
+        error ValidatorAlreadyDeleted();
+        error ValidatorAlreadyExists();
+        error ValidatorNotFound();
     }
 }
 

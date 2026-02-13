@@ -10,24 +10,9 @@ pub(crate) struct IpWithPortParseError {
     source: std::net::AddrParseError,
 }
 
-/// Validates that the input string is a valid IP address (v4 or v6) with a port.
-///
-/// # Errors
-///
-/// Returns `IpWithPortParseError` if the input is not a valid `<ip>:<port>` format.
-///
-/// # Examples
-///
-/// ```ignore
-/// assert!(ensure_address_is_ip_port("192.168.1.1:8000").is_ok());
-/// assert!(ensure_address_is_ip_port("[::1]:8000").is_ok());
-/// assert!(ensure_address_is_ip_port("hostname:8000").is_err());
-/// assert!(ensure_address_is_ip_port("192.168.1.1").is_err());
-/// ```
 pub(crate) fn ensure_address_is_ip_port(
     input: &str,
 ) -> core::result::Result<(), IpWithPortParseError> {
-    // Only accept IP addresses (v4 or v6) with port
     input.parse::<std::net::SocketAddr>()?;
     Ok(())
 }
@@ -39,20 +24,6 @@ pub(crate) struct IpParseError {
     source: std::net::AddrParseError,
 }
 
-/// Validates that the input string is a valid IP address (v4 or v6).
-///
-/// # Errors
-///
-/// Returns `IpParseError` if the input is not a valid IP address.
-///
-/// # Examples
-///
-/// ```ignore
-/// assert!(ensure_address_is_ip("192.168.1.1").is_ok());
-/// assert!(ensure_address_is_ip("::1").is_ok());
-/// assert!(ensure_address_is_ip("hostname").is_err());
-/// assert!(ensure_address_is_ip("192.168.1.1:8000").is_err());
-/// ```
 pub(crate) fn ensure_address_is_ip(input: &str) -> core::result::Result<(), IpParseError> {
     input.parse::<std::net::IpAddr>()?;
     Ok(())
