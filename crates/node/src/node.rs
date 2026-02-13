@@ -37,7 +37,7 @@ use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemo
 use std::{default::Default, sync::Arc};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
-use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
+use tempo_evm::TempoEvmConfig;
 use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
@@ -341,7 +341,7 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = TempoEvmConfig::new(ctx.chain_spec(), TempoEvmFactory::default());
+        let evm_config = TempoEvmConfig::new(ctx.chain_spec());
         Ok(evm_config)
     }
 }
