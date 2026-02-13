@@ -21,14 +21,11 @@ use tracing::trace;
 /// Validator operation type for signature verification
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValidatorOperation {
-    /// Adding a new validator
     Add,
-    /// Rotating an existing validator's keys
     Rotate,
 }
 
 impl ValidatorOperation {
-    /// Get the namespace/domain separator for this operation
     fn namespace(&self) -> &'static [u8] {
         match self {
             Self::Add => b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR",
@@ -107,7 +104,6 @@ impl ValidatorConfigV2 {
         self.config.read().map(|c| c.is_initialized())
     }
 
-    /// Requires the contract to be initialized. Returns the config.
     fn require_initialized(&self) -> Result<Config> {
         let config = self.config.read()?;
         if !config.is_initialized() {
@@ -116,7 +112,6 @@ impl ValidatorConfigV2 {
         Ok(config)
     }
 
-    /// Requires initialized + caller is owner. Returns the config.
     fn require_initialized_owner(&self, caller: Address) -> Result<Config> {
         let config = self.require_initialized()?;
         if !config.is_owner(caller) {
@@ -125,7 +120,6 @@ impl ValidatorConfigV2 {
         Ok(config)
     }
 
-    /// Requires initialized + caller is owner or the validator itself. Returns the config.
     fn require_initialized_owner_or_validator(
         &self,
         caller: Address,
@@ -261,7 +255,6 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
-    /// Append a new validator entry and update lookup indices.
     fn append_validator(
         &mut self,
         addr: Address,
@@ -285,12 +278,10 @@ impl ValidatorConfigV2 {
 
         self.validators.push(v)?;
 
-        // Update lookup indices (1-indexed)
         self.address_to_index[addr].write(count + 1)?;
         self.pubkey_to_index[pubkey].write(count + 1)
     }
 
-    /// Validates that the address is non-zero and not already registered as active.
     /// Allows reusing addresses of deactivated validators.
     fn require_new_address(&self, addr: Address) -> Result<()> {
         if addr.is_zero() {
@@ -298,7 +289,6 @@ impl ValidatorConfigV2 {
         }
         let idx1 = self.address_to_index[addr].read()?;
         if idx1 != 0 {
-            // Address exists, check if it's still active
             if self.validators[(idx1 - 1) as usize]
                 .deactivated_at_height
                 .read()?
@@ -310,7 +300,6 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
-    /// Validates that the public key is non-zero and not already registered.
     fn require_new_pubkey(&self, pubkey: B256) -> Result<()> {
         if pubkey.is_zero() {
             return Err(ValidatorConfigV2Error::invalid_public_key())?;
@@ -338,7 +327,6 @@ impl ValidatorConfigV2 {
         ingress: &str,
         egress: &str,
     ) -> Result<()> {
-        // Get namespace from operation type
         let namespace = operation.namespace();
 
         // Construct message data WITHOUT "TEMPO" prefix
@@ -350,13 +338,11 @@ impl ValidatorConfigV2 {
         data.extend_from_slice(egress.as_bytes());
         let message = keccak256(&data);
 
-        // Decode public key and signature
         let public_key = PublicKey::decode(pubkey.as_slice())
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
         let sig = Signature::decode(signature)
             .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
 
-        // Verify signature with namespace
         if !public_key.verify(namespace, message.as_slice(), &sig) {
             return Err(ValidatorConfigV2Error::invalid_signature())?;
         }
@@ -379,7 +365,6 @@ impl ValidatorConfigV2 {
         Self::validate_endpoints(&call.ingress, &call.egress)?;
         self.require_unique_ips(&call.ingress, &call.egress)?;
 
-        // Verify Ed25519 signature
         self.verify_validator_signature(
             ValidatorOperation::Add,
             &call.publicKey,
@@ -391,7 +376,6 @@ impl ValidatorConfigV2 {
 
         let block_height = self.storage.block_number();
 
-        // Track IPs before moving strings
         self.active_ingress[keccak256(call.ingress.as_bytes())].write(true)?;
         self.active_egress[keccak256(call.egress.as_bytes())].write(true)?;
 
@@ -458,7 +442,6 @@ impl ValidatorConfigV2 {
         self.require_new_pubkey(call.publicKey)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
-        // Verify Ed25519 signature
         self.verify_validator_signature(
             ValidatorOperation::Rotate,
             &call.publicKey,
@@ -471,7 +454,6 @@ impl ValidatorConfigV2 {
         let block_height = self.storage.block_number();
         let (idx, mut old) = self.get_active_validator(call.validatorAddress)?;
 
-        // Calculate all hashes upfront
         let old_ingress_hash = keccak256(old.ingress.as_bytes());
         let old_egress_hash = keccak256(old.egress.as_bytes());
         let new_ingress_hash = keccak256(call.ingress.as_bytes());
@@ -498,11 +480,9 @@ impl ValidatorConfigV2 {
             self.active_egress[new_egress_hash].write(true)?;
         }
 
-        // Deactivate old entry
         old.deactivated_at_height = block_height;
         self.validators[idx].write(old)?;
 
-        // Append new entry with same address
         self.append_validator(
             call.validatorAddress,
             call.publicKey,
@@ -527,21 +507,17 @@ impl ValidatorConfigV2 {
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
-        // Calculate all hashes upfront
         let old_ingress_hash = keccak256(v.ingress.as_bytes());
         let old_egress_hash = keccak256(v.egress.as_bytes());
         let new_ingress_hash = keccak256(call.ingress.as_bytes());
         let new_egress_hash = keccak256(call.egress.as_bytes());
 
-        // Check what changed
         let ingress_changed = v.ingress != call.ingress;
         let egress_changed = v.egress != call.egress;
 
-        // Only update ingress tracking if changed
         if ingress_changed {
             self.active_ingress[old_ingress_hash].delete()?;
 
-            // Check uniqueness
             if self.active_ingress[new_ingress_hash].read()? {
                 return Err(ValidatorConfigV2Error::ingress_already_exists(
                     call.ingress.clone(),
@@ -549,11 +525,9 @@ impl ValidatorConfigV2 {
             }
         }
 
-        // Only update egress tracking if changed
         if egress_changed {
             self.active_egress[old_egress_hash].delete()?;
 
-            // Check uniqueness
             if self.active_egress[new_egress_hash].read()? {
                 return Err(ValidatorConfigV2Error::egress_already_exists(
                     call.egress.clone(),
@@ -561,12 +535,10 @@ impl ValidatorConfigV2 {
             }
         }
 
-        // Update validator
         v.ingress = call.ingress.clone();
         v.egress = call.egress.clone();
         self.validators[idx].write(v)?;
 
-        // Add new IPs to tracking (only if changed)
         if ingress_changed {
             self.active_ingress[new_ingress_hash].write(true)?;
         }
@@ -610,7 +582,6 @@ impl ValidatorConfigV2 {
             return Err(ValidatorConfigV2Error::already_initialized())?;
         }
 
-        // On first migration, copy owner from V1 if V2 owner is not set
         if config.owner.is_zero() {
             config.owner = v1().owner()?;
             self.config.write(Config {
@@ -633,24 +604,20 @@ impl ValidatorConfigV2 {
         self.require_migration_owner(sender)?;
         let block_height = self.storage.block_number();
 
-        // Ensure validators are migrated in order (idx must equal current count)
         let current_count = self.validator_count()?;
         if call.idx != current_count {
             return Err(ValidatorConfigV2Error::invalid_migration_index())?;
         }
 
-        // Read a single V1 validator by index
         let v1 = v1();
         if call.idx >= v1.validator_count()? {
             return Err(ValidatorConfigV2Error::validator_not_found())?;
         }
         let v1_val = v1.validators(v1.validators_array(call.idx)?)?;
 
-        // Defense-in-depth: reject corrupt V1 data rather than silently overwriting lookups
         self.require_new_address(v1_val.validatorAddress)?;
         self.require_new_pubkey(v1_val.publicKey)?;
 
-        // V1 outboundAddress is ip:port, V2 egress is plain IP — strip the port
         let egress = v1_val
             .outboundAddress
             .parse::<std::net::SocketAddr>()
@@ -661,7 +628,6 @@ impl ValidatorConfigV2 {
 
         let deactivated_at_height = if v1_val.active { 0 } else { block_height };
 
-        // Compute hashes before moving strings
         let ingress_hash = keccak256(v1_val.inboundAddress.as_bytes());
         let egress_hash = keccak256(egress.as_bytes());
 
@@ -674,7 +640,6 @@ impl ValidatorConfigV2 {
             deactivated_at_height,
         )?;
 
-        // Track IPs for active validators only
         if deactivated_at_height == 0 {
             self.active_ingress[ingress_hash].write(true)?;
             self.active_egress[egress_hash].write(true)?;
@@ -688,16 +653,13 @@ impl ValidatorConfigV2 {
         let block_height = self.storage.block_number();
         let v1 = v1();
 
-        // Verify migration is complete (compare counts, not full reads)
         if self.validator_count()? < v1.validator_count()? {
             return Err(ValidatorConfigV2Error::migration_not_complete())?;
         }
 
-        // Copy nextDkgCeremony from V1
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;
         self.next_dkg_ceremony.write(v1_next_dkg)?;
 
-        // Mark as initialized
         config.init_at_height = block_height.max(1);
         self.config.write(config)
     }
