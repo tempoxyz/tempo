@@ -6,7 +6,7 @@ test-threads = "num-cpus"
 [[profile.ci.overrides]]
 filter = "package(tempo-e2e)"
 failure-output = "never"
-threads-required = 4
+threads-required = 2
 
 [[profile.ci.overrides]]
 filter = "test(sync::can_restart_after_joining_from_snapshot)"
