@@ -575,5 +575,4 @@ mod tests {
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);
     }
-
 }

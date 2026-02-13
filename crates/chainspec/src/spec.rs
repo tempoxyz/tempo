@@ -605,5 +605,4 @@ mod tests {
             "timestamp_millis_part should be timestamp % 1000"
         );
     }
-
 }

@@ -591,5 +591,4 @@ mod tests {
             "build_aa must preserve key_authorization from the request"
         );
     }
-
 }
