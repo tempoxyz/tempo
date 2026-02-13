@@ -52,7 +52,7 @@ use tempo_precompiles::{
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeAMM::traits::*, IFeeManager::traits::*, TipFeeManager},
-    tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
+    tip20::{ISSUER_ROLE, ITIP20::traits::*, TIP20Token},
     tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
     tip403_registry::TIP403Registry,
     validator_config::{Interface as _, ValidatorConfig},
@@ -624,13 +624,7 @@ fn create_path_usd_token(
             // Mint to all recipients
             for recipient in recipients.iter().progress() {
                 token
-                    .mint(
-                        admin,
-                        ITIP20::mintCall {
-                            to: *recipient,
-                            amount: U256::from(amount_per_recipient),
-                        },
-                    )
+                    .mint(admin, *recipient, U256::from(amount_per_recipient))
                     .expect("Could not mint pathUSD");
             }
 
@@ -700,33 +694,16 @@ fn create_and_mint_token(
                 TIP20Token::from_address(token_address).expect("Could not create token instance");
             token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-            let result = token.set_supply_cap(
-                admin,
-                ITIP20::setSupplyCapCall {
-                    newSupplyCap: U256::from(u128::MAX),
-                },
-            );
+            let result = token.set_supply_cap(admin, U256::from(u128::MAX));
             assert!(result.is_ok());
 
             token
-                .mint(
-                    admin,
-                    ITIP20::mintCall {
-                        to: admin,
-                        amount: mint_amount,
-                    },
-                )
+                .mint(admin, admin, mint_amount)
                 .expect("Token minting failed");
 
             for address in recipients.iter().progress() {
                 token
-                    .mint(
-                        admin,
-                        ITIP20::mintCall {
-                            to: *address,
-                            amount: U256::from(u64::MAX),
-                        },
-                    )
+                    .mint(admin, *address, U256::from(u64::MAX))
                     .expect("Could not mint fee token");
             }
 

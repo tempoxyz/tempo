@@ -5,8 +5,9 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
-use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
-use tempo_precompiles::DEFAULT_FEE_TOKEN;
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN, tip_fee_manager::IFeeManager::setUserTokenCall, tip20::ITIP20,
+};
 use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use crate::utils::setup_test_token;
@@ -34,11 +35,10 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     let payment_token_addr = *payment_token.address();
 
     // Get validator token address (default fee token from genesis)
-    use tempo_contracts::precompiles::ITIPFeeAMM;
-    use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
+    use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::IFeeAMM};
     let validator_token_addr = DEFAULT_FEE_TOKEN;
 
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let validator_token = ITIP20::new(validator_token_addr, provider.clone());
 
     let liquidity_amount = U256::from(10_000_000);
@@ -106,7 +106,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     let pool = fee_amm.pools(pool_id).call().await?;
     println!(
         "Pool reserves - user_token: {}, validator_token: {}",
-        pool.reserveUserToken, pool.reserveValidatorToken
+        pool.reserve_user_token, pool.reserve_validator_token
     );
 
     // Mint payment tokens for transaction fees (while still using USDC for fees)

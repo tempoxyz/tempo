@@ -13,12 +13,12 @@ use alloy_eips::BlockId;
 use alloy_rpc_types_eth::TransactionInput;
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{
-    IFeeManager,
-    ITIP20::{self, transferCall},
-    ITIPFeeAMM, UnknownFunctionSelector,
+use tempo_contracts::precompiles::UnknownFunctionSelector;
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    tip_fee_manager::{IFeeAMM, IFeeManager},
+    tip20::{ITIP20, TIP20Token},
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::TIP20Token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_call() -> eyre::Result<()> {
@@ -53,7 +53,7 @@ async fn test_eth_call() -> eyre::Result<()> {
         .input(TransactionInput::new(calldata));
 
     let res = provider.call(tx).await?;
-    let success = transferCall::abi_decode_returns(&res)?;
+    let success = ITIP20::transferCall::abi_decode_returns(&res)?;
     assert!(success);
 
     Ok(())
@@ -93,12 +93,12 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
         .input(TransactionInput::new(calldata));
 
     let res = provider.call(tx.clone()).await?;
-    let success = transferCall::abi_decode_returns(&res)?;
+    let success = ITIP20::transferCall::abi_decode_returns(&res)?;
     assert!(success);
 
     let trace_res = provider.trace_call(&tx).state_diff().await?;
 
-    let success = transferCall::abi_decode_returns(&trace_res.output)?;
+    let success = ITIP20::transferCall::abi_decode_returns(&trace_res.output)?;
     assert!(success);
 
     let state_diff = trace_res.state_diff.expect("Could not get state diff");
@@ -282,7 +282,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     // Supply liquidity to enable fee token swapping
     let validator_token_address = PATH_USD_ADDRESS;
 
-    let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Provide liquidity for the fee token pair
     let liquidity_amount = U256::from(u32::MAX);
@@ -380,7 +380,7 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
 
     let fee_manager =
         IFeeManager::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     let validator_custom_token = setup_test_token(provider.clone(), wallet_address).await?;
     let user_fee_token = setup_test_token(provider.clone(), wallet_address).await?;

@@ -5,8 +5,11 @@ use alloy::{
     sol_types::SolEvent,
 };
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{ITIP20, ITIP20Factory};
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::is_tip20_prefix};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    tip20::{ITIP20, is_tip20_prefix},
+    tip20_factory::ITIP20Factory,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_create_token() -> eyre::Result<()> {

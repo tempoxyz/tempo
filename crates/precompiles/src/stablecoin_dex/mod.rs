@@ -21,7 +21,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_dex::orderbook::compute_book_key,
     storage::{Handler, Mapping},
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20::{ITIP20::traits::*, TIP20Token, is_tip20_prefix, validate_usd_currency},
     tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
     tip403_registry::{AuthRole, TIP403Registry},
 };
@@ -95,13 +95,7 @@ impl StablecoinDEX {
 
     /// Transfer tokens, accounting for pathUSD
     fn transfer(&mut self, token: Address, to: Address, amount: u128) -> Result<()> {
-        TIP20Token::from_address(token)?.transfer(
-            self.address,
-            ITIP20::transferCall {
-                to,
-                amount: U256::from(amount),
-            },
-        )?;
+        TIP20Token::from_address(token)?.transfer(self.address, to, U256::from(amount))?;
         Ok(())
     }
 
@@ -109,11 +103,9 @@ impl StablecoinDEX {
     fn transfer_from(&mut self, token: Address, from: Address, amount: u128) -> Result<()> {
         TIP20Token::from_address(token)?.transfer_from(
             self.address,
-            ITIP20::transferFromCall {
-                from,
-                to: self.address,
-                amount: U256::from(amount),
-            },
+            from,
+            self.address,
+            U256::from(amount),
         )?;
         Ok(())
     }
@@ -1363,7 +1355,6 @@ impl StablecoinDEX {
 mod tests {
     use alloy::primitives::IntoLogData;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::TIP20Error;
 
     use super::*;
     use crate::{
@@ -1371,6 +1362,7 @@ mod tests {
         stablecoin_dex::{STABLECOIN_DEX_ADDRESS, orderbook},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip20::TIP20Error,
         tip403_registry::{
             ITIP403Registry::{PolicyType, traits::*},
             TIP403Registry,
@@ -1719,14 +1711,11 @@ mod tests {
 
             // Verify balance was reduced by the escrow amount
             let quote_tip20 = TIP20Token::from_address(quote_token)?;
-            let remaining_balance =
-                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?;
+            let remaining_balance = quote_tip20.balance_of(alice)?;
             assert_eq!(remaining_balance, U256::ZERO);
 
             // Verify exchange received the tokens
-            let exchange_balance = quote_tip20.balance_of(ITIP20::balanceOfCall {
-                account: exchange.address,
-            })?;
+            let exchange_balance = quote_tip20.balance_of(exchange.address)?;
             assert_eq!(exchange_balance, U256::from(expected_escrow));
 
             Ok(())
@@ -1779,14 +1768,11 @@ mod tests {
 
             // Verify balance was reduced by the escrow amount
             let base_tip20 = TIP20Token::from_address(base_token)?;
-            let remaining_balance =
-                base_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?;
+            let remaining_balance = base_tip20.balance_of(alice)?;
             assert_eq!(remaining_balance, U256::ZERO); // All tokens should be escrowed
 
             // Verify exchange received the base tokens
-            let exchange_balance = base_tip20.balance_of(ITIP20::balanceOfCall {
-                account: exchange.address,
-            })?;
+            let exchange_balance = base_tip20.balance_of(exchange.address)?;
             assert_eq!(exchange_balance, U256::from(min_order_amount));
 
             Ok(())
@@ -1851,14 +1837,8 @@ mod tests {
 
             // Transfer tokens to exchange first
             let mut base = TIP20Token::from_address(base_token)?;
-            base.transfer(
-                user,
-                ITIP20::transferCall {
-                    to: exchange.address,
-                    amount: U256::from(MIN_ORDER_AMOUNT),
-                },
-            )
-            .expect("Base token transfer failed");
+            base.transfer(user, exchange.address, U256::from(MIN_ORDER_AMOUNT))
+                .expect("Base token transfer failed");
 
             // Place a flip order which should also create the pair
             exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10)?;
@@ -1929,14 +1909,11 @@ mod tests {
 
             // Verify balance was reduced by the escrow amount
             let quote_tip20 = TIP20Token::from_address(quote_token)?;
-            let remaining_balance =
-                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?;
+            let remaining_balance = quote_tip20.balance_of(alice)?;
             assert_eq!(remaining_balance, U256::ZERO);
 
             // Verify exchange received the tokens
-            let exchange_balance = quote_tip20.balance_of(ITIP20::balanceOfCall {
-                account: exchange.address,
-            })?;
+            let exchange_balance = quote_tip20.balance_of(exchange.address)?;
             assert_eq!(exchange_balance, U256::from(expected_escrow));
 
             Ok(())
@@ -1983,16 +1960,8 @@ mod tests {
 
             // Verify wallet balances changed correctly
             let quote_tip20 = TIP20Token::from_address(quote_token)?;
-            assert_eq!(
-                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?,
-                expected_escrow
-            );
-            assert_eq!(
-                quote_tip20.balance_of(ITIP20::balanceOfCall {
-                    account: exchange.address
-                })?,
-                0
-            );
+            assert_eq!(quote_tip20.balance_of(alice)?, expected_escrow);
+            assert_eq!(quote_tip20.balance_of(exchange.address)?, 0);
 
             Ok(())
         })
@@ -2214,7 +2183,7 @@ mod tests {
                 .expect("Swap should succeed");
 
             let base_tip20 = TIP20Token::from_address(base_token)?;
-            let bob_base_balance = base_tip20.balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let bob_base_balance = base_tip20.balance_of(bob)?;
             assert_eq!(bob_base_balance, U256::from(amount_out));
 
             let alice_quote_exchange_balance = exchange.balance_of(alice, quote_token)?;
@@ -2261,8 +2230,7 @@ mod tests {
                 .expect("Swap should succeed");
 
             let quote_tip20 = TIP20Token::from_address(quote_token)?;
-            let bob_quote_balance =
-                quote_tip20.balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let bob_quote_balance = quote_tip20.balance_of(bob)?;
             assert_eq!(bob_quote_balance, U256::from(amount_out));
 
             let alice_base_exchange_balance = exchange.balance_of(alice, base_token)?;
@@ -2705,8 +2673,8 @@ mod tests {
             exchange.place(alice, eurc.address(), min_order_amount * 5, false, 0)?;
 
             // Check bob's balances before swap
-            let bob_usdc_before = usdc.balance_of(ITIP20::balanceOfCall { account: bob })?;
-            let bob_eurc_before = eurc.balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let bob_usdc_before = usdc.balance_of(bob)?;
+            let bob_eurc_before = eurc.balance_of(bob)?;
 
             // Execute multi-hop swap: USDC -> pathUSD -> EURC
             let amount_in = min_order_amount;
@@ -2719,8 +2687,8 @@ mod tests {
             )?;
 
             // Check bob's balances after swap
-            let bob_usdc_after = usdc.balance_of(ITIP20::balanceOfCall { account: bob })?;
-            let bob_eurc_after = eurc.balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let bob_usdc_after = usdc.balance_of(bob)?;
+            let bob_eurc_after = eurc.balance_of(bob)?;
 
             // Verify bob spent USDC and received EURC
             assert_eq!(
@@ -2735,8 +2703,7 @@ mod tests {
             );
 
             // Verify bob has ZERO pathUSD (intermediate token should be transitory)
-            let bob_path_usd_wallet =
-                path_usd.balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let bob_path_usd_wallet = path_usd.balance_of(bob)?;
             assert_eq!(
                 bob_path_usd_wallet,
                 U256::ZERO,
@@ -2797,8 +2764,8 @@ mod tests {
             exchange.place(alice, eurc.address(), min_order_amount * 5, false, 0)?;
 
             // Check bob's balances before swap
-            let bob_usdc_before = usdc.balance_of(ITIP20::balanceOfCall { account: bob })?;
-            let bob_eurc_before = eurc.balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let bob_usdc_before = usdc.balance_of(bob)?;
+            let bob_eurc_before = eurc.balance_of(bob)?;
 
             // Execute multi-hop swap: USDC -> pathUSD -> EURC (exact output)
             let amount_out = 90u128;
@@ -2811,8 +2778,8 @@ mod tests {
             )?;
 
             // Check bob's balances after swap
-            let bob_usdc_after = usdc.balance_of(ITIP20::balanceOfCall { account: bob })?;
-            let bob_eurc_after = eurc.balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let bob_usdc_after = usdc.balance_of(bob)?;
+            let bob_eurc_after = eurc.balance_of(bob)?;
 
             // Verify bob spent USDC and received exact EURC
             assert_eq!(
@@ -2827,8 +2794,7 @@ mod tests {
             );
 
             // Verify bob has ZERO pathUSD (intermediate token should be transitory)
-            let bob_path_usd_wallet =
-                path_usd.balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let bob_path_usd_wallet = path_usd.balance_of(bob)?;
             assert_eq!(
                 bob_path_usd_wallet,
                 U256::ZERO,
@@ -2976,8 +2942,7 @@ mod tests {
             )?;
 
             // Verify Bob got exactly the quote amount requested
-            let bob_quote_balance = TIP20Token::from_address(quote_token)?
-                .balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let bob_quote_balance = TIP20Token::from_address(quote_token)?.balance_of(bob)?;
             assert_eq!(bob_quote_balance, U256::from(amount_out_quote));
 
             Ok(())
@@ -3472,14 +3437,8 @@ mod tests {
 
             // Transfer tokens to exchange first
             let mut base = TIP20Token::from_address(base_token)?;
-            base.transfer(
-                user,
-                ITIP20::transferCall {
-                    to: exchange.address,
-                    amount: U256::from(MIN_ORDER_AMOUNT),
-                },
-            )
-            .expect("Base token transfer failed");
+            base.transfer(user, exchange.address, U256::from(MIN_ORDER_AMOUNT))
+                .expect("Base token transfer failed");
 
             // Place an order which should also create the pair
             exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0)?;
@@ -3710,12 +3669,7 @@ mod tests {
             // Setup quote token (pathUSD) with the blacklist policy
             let mut quote = TIP20Setup::path_usd(admin).with_issuer(admin).apply()?;
 
-            quote.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
+            quote.change_transfer_policy_id(admin, policy_id)?;
 
             // Setup base token with the blacklist policy
             let mut base = TIP20Setup::create("BASE", "BASE", admin)
@@ -3723,12 +3677,7 @@ mod tests {
                 .apply()?;
             let base_address = base.address();
 
-            base.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
+            base.change_transfer_policy_id(admin, policy_id)?;
 
             exchange.create_pair(base_address)?;
 
@@ -3781,12 +3730,7 @@ mod tests {
                 .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
                 .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
                 .apply()?;
-            base.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
+            base.change_transfer_policy_id(admin, policy_id)?;
 
             exchange.create_pair(base.address())?;
             let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
@@ -3822,12 +3766,7 @@ mod tests {
                 .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
                 .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
                 .apply()?;
-            base.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
+            base.change_transfer_policy_id(admin, policy_id)?;
 
             exchange.create_pair(base.address())?;
             let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
@@ -3863,12 +3802,7 @@ mod tests {
 
             // Get the base token and apply blacklist policy
             let mut base = TIP20Token::from_address(base_addr)?;
-            base.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
+            base.change_transfer_policy_id(admin, policy_id)?;
 
             // Blacklist alice in the base token
             registry.modify_policy_blacklist(admin, policy_id, alice, true)?;
@@ -3915,12 +3849,7 @@ mod tests {
 
             // Get the quote token and apply blacklist policy
             let mut quote = TIP20Token::from_address(quote_addr)?;
-            quote.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
+            quote.change_transfer_policy_id(admin, policy_id)?;
 
             // Blacklist alice in the quote token
             registry.modify_policy_blacklist(admin, policy_id, alice, true)?;
@@ -3971,12 +3900,7 @@ mod tests {
 
             // Apply compound policy to quote token (the non-escrow token for asks)
             let mut quote = TIP20Token::from_address(quote_addr)?;
-            quote.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: compound_id,
-                },
-            )?;
+            quote.change_transfer_policy_id(admin, compound_id)?;
 
             exchange.create_pair(base_addr)?;
 
@@ -4021,15 +3945,13 @@ mod tests {
             let order_amount = 100000000u128;
 
             let tip20_quote_token = TIP20Token::from_address(quote_token)?;
-            let alice_initial_balance =
-                tip20_quote_token.balance_of(ITIP20::balanceOfCall { account: alice })?;
+            let alice_initial_balance = tip20_quote_token.balance_of(alice)?;
 
             exchange
                 .place(alice, base_token, order_amount, true, tick)
                 .expect("Order should succeed");
 
-            let alice_balance_after_place =
-                tip20_quote_token.balance_of(ITIP20::balanceOfCall { account: alice })?;
+            let alice_balance_after_place = tip20_quote_token.balance_of(alice)?;
             let escrowed = alice_initial_balance - alice_balance_after_place;
             assert_eq!(escrowed, U256::from(100010000u128));
 

@@ -658,7 +658,7 @@ mod tests {
         let contract = Address::repeat_byte(0x42);
 
         let input_bytes = ITIP20::setSupplyCapCall {
-            newSupplyCap: U256::from(100),
+            new_supply_cap: U256::from(100),
         }
         .abi_encode();
 

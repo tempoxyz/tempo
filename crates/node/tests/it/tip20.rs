@@ -6,8 +6,12 @@ use alloy::{
 };
 use futures::future::try_join_all;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, TIP20Error};
-use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    tip_fee_manager::{IFeeAMM, IFeeManager},
+    tip20::{IRolesAuth, ITIP20, PAUSE_ROLE, TIP20Error},
+    tip403_registry::ITIP403Registry,
+};
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
@@ -419,7 +423,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
         .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
         .next()
         .expect("PolicyCreated event should be emitted")
-        .policyId;
+        .policy_id;
 
     // Update the token policy to the blacklist
     token
@@ -545,7 +549,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
         .next()
         .expect("PolicyCreated event should be emitted")
-        .policyId;
+        .policy_id;
 
     // Update the token policy to the whitelist
     token
@@ -779,9 +783,6 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 /// and subsequent transactions fail at fee collection.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
-    use tempo_contracts::precompiles::{IFeeManager, IRolesAuth, ITIPFeeAMM};
-    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::PAUSE_ROLE};
-
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
@@ -822,7 +823,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
         .await?;
 
     // Add liquidity to the AMM pool so the token can be used for fees
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, admin_provider.clone());
+    let fee_amm = IFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, admin_provider.clone());
     fee_amm
         .mint(*token.address(), PATH_USD_ADDRESS, U256::from(1e18), admin)
         .gas(gas)

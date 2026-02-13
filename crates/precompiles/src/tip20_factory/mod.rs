@@ -10,7 +10,7 @@ use crate::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::Result,
     storage::ContractStorage,
-    tip20::{TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
+    tip20::{ITIP20::traits::*, TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
 };
 use alloy::{
     primitives::{Address, B256, keccak256},

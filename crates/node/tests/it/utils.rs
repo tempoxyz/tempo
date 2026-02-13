@@ -24,20 +24,19 @@ use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
 use std::{sync::Arc, time::Duration};
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_contracts::precompiles::{
-    IRolesAuth,
-    ITIP20::{self, ITIP20Instance},
-    ITIP20Factory,
-};
 use tempo_node::node::TempoNode;
 use tempo_payload_types::{TempoPayloadAttributes, TempoPayloadBuilderAttributes};
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    tip20::{IRolesAuth, ISSUER_ROLE, ITIP20},
+    tip20_factory::ITIP20Factory,
+};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
 pub(crate) async fn setup_test_token<P>(
     provider: P,
     caller: Address,
-) -> eyre::Result<ITIP20Instance<impl Clone + Provider>>
+) -> eyre::Result<ITIP20::ITIP20Instance<impl Clone + Provider>>
 where
     P: Provider + Clone,
 {

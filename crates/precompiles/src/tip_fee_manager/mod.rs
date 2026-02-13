@@ -11,10 +11,10 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
     tip_fee_manager::{
-        abi::IFeeManager::traits::*,
+        IFeeManager::traits::*,
         amm::{PoolKey, compute_amount_out},
     },
-    tip20::{ITIP20, TIP20Token, validate_usd_currency},
+    tip20::{ITIP20::traits::*, TIP20Token, validate_usd_currency},
     tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
 };
 use alloy::primitives::{Address, B256, U256};
@@ -97,13 +97,7 @@ impl IFeeManager::Interface for TipFeeManager {
 
         // Transfer fees to validator
         let mut tip20_token = TIP20Token::from_address(token)?;
-        tip20_token.transfer(
-            self.address,
-            ITIP20::transferCall {
-                to: validator,
-                amount,
-            },
-        )?;
+        tip20_token.transfer(self.address, validator, amount)?;
 
         // Emit FeesDistributed event
         self.emit_event(FeeManagerEvent::fees_distributed(validator, token, amount))
@@ -211,14 +205,14 @@ impl TipFeeManager {
 
 #[cfg(test)]
 mod tests {
-    use tempo_contracts::precompiles::TIP20Error;
+    use crate::tip20::TIP20Error;
 
     use super::*;
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip20::{ITIP20, TIP20Token},
+        tip20::TIP20Token,
     };
 
     #[test]
@@ -365,7 +359,7 @@ mod tests {
             assert_eq!(tracked_amount, actual_used);
 
             // Verify user got the refund
-            let balance = token.balance_of(ITIP20::balanceOfCall { account: user })?;
+            let balance = token.balance_of(user)?;
             assert_eq!(balance, refund_amount);
 
             Ok(())
@@ -527,7 +521,7 @@ mod tests {
 
             // User balance: started with 10000, paid 1000 in pre_tx, got 200 refund = 9200
             let tip20_token = TIP20Token::from_address(user_token.address())?;
-            let user_balance = tip20_token.balance_of(ITIP20::balanceOfCall { account: user })?;
+            let user_balance = tip20_token.balance_of(user)?;
             assert_eq!(user_balance, U256::from(10000) - max_amount + refund_amount);
 
             Ok(())
@@ -606,7 +600,7 @@ mod tests {
 
             // Validator balance should still be zero
             let tip20_token = TIP20Token::from_address(token.address())?;
-            let balance = tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
+            let balance = tip20_token.balance_of(validator)?;
             assert_eq!(balance, U256::ZERO);
 
             Ok(())
@@ -639,8 +633,7 @@ mod tests {
 
             // Check validator balance before
             let tip20_token = TIP20Token::from_address(token.address())?;
-            let balance_before =
-                tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
+            let balance_before = tip20_token.balance_of(validator)?;
             assert_eq!(balance_before, U256::ZERO);
 
             // Distribute fees
@@ -648,8 +641,7 @@ mod tests {
 
             // Verify validator received the fees
             let tip20_token = TIP20Token::from_address(token.address())?;
-            let balance_after =
-                tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
+            let balance_after = tip20_token.balance_of(validator)?;
             assert_eq!(balance_after, fee_amount);
 
             // Verify collected fees cleared

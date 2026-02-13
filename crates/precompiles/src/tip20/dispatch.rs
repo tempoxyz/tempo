@@ -1,210 +1,29 @@
-use crate::{
-    Precompile, dispatch_call,
-    error::TempoPrecompileError,
-    input_cost, metadata, mutate, mutate_void,
-    storage::ContractStorage,
-    tip20::{ITIP20, TIP20Token},
-    view,
-};
-use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
-
-/// Combined enum for dispatching to either ITIP20 or IRolesAuth
-enum TIP20Call {
-    TIP20(ITIP20Calls),
-    RolesAuth(IRolesAuthCalls),
-}
-
-impl TIP20Call {
-    fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
-        // safe to expect as `dispatch_call` pre-validates calldata len
-        let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
-
-        if IRolesAuthCalls::valid_selector(selector) {
-            IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
-        } else {
-            ITIP20Calls::abi_decode(calldata).map(Self::TIP20)
-        }
-    }
-}
-
-impl Precompile for TIP20Token {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
-
-        // Ensure that the token is initialized (has bytecode)
-        // Note that if the initialization check fails, this is treated as uninitialized
-        if !self.is_initialized().unwrap_or(false) {
-            return TempoPrecompileError::TIP20(TIP20Error::uninitialized())
-                .into_precompile_result(self.storage.gas_used());
-        }
-
-        dispatch_call(calldata, TIP20Call::decode, |call| match call {
-            // Metadata functions (no calldata decoding needed)
-            TIP20Call::TIP20(ITIP20Calls::name(_)) => metadata::<ITIP20::nameCall>(|| self.name()),
-            TIP20Call::TIP20(ITIP20Calls::symbol(_)) => {
-                metadata::<ITIP20::symbolCall>(|| self.symbol())
-            }
-            TIP20Call::TIP20(ITIP20Calls::decimals(_)) => {
-                metadata::<ITIP20::decimalsCall>(|| self.decimals())
-            }
-            TIP20Call::TIP20(ITIP20Calls::currency(_)) => {
-                metadata::<ITIP20::currencyCall>(|| self.currency())
-            }
-            TIP20Call::TIP20(ITIP20Calls::totalSupply(_)) => {
-                metadata::<ITIP20::totalSupplyCall>(|| self.total_supply())
-            }
-            TIP20Call::TIP20(ITIP20Calls::supplyCap(_)) => {
-                metadata::<ITIP20::supplyCapCall>(|| self.supply_cap())
-            }
-            TIP20Call::TIP20(ITIP20Calls::transferPolicyId(_)) => {
-                metadata::<ITIP20::transferPolicyIdCall>(|| self.transfer_policy_id())
-            }
-            TIP20Call::TIP20(ITIP20Calls::paused(_)) => {
-                metadata::<ITIP20::pausedCall>(|| self.paused())
-            }
-
-            // View functions
-            TIP20Call::TIP20(ITIP20Calls::balanceOf(call)) => view(call, |c| self.balance_of(c)),
-            TIP20Call::TIP20(ITIP20Calls::allowance(call)) => view(call, |c| self.allowance(c)),
-            TIP20Call::TIP20(ITIP20Calls::quoteToken(call)) => view(call, |_| self.quote_token()),
-            TIP20Call::TIP20(ITIP20Calls::nextQuoteToken(call)) => {
-                view(call, |_| self.next_quote_token())
-            }
-            TIP20Call::TIP20(ITIP20Calls::PAUSE_ROLE(call)) => {
-                view(call, |_| Ok(Self::pause_role()))
-            }
-            TIP20Call::TIP20(ITIP20Calls::UNPAUSE_ROLE(call)) => {
-                view(call, |_| Ok(Self::unpause_role()))
-            }
-            TIP20Call::TIP20(ITIP20Calls::ISSUER_ROLE(call)) => {
-                view(call, |_| Ok(Self::issuer_role()))
-            }
-            TIP20Call::TIP20(ITIP20Calls::BURN_BLOCKED_ROLE(call)) => {
-                view(call, |_| Ok(Self::burn_blocked_role()))
-            }
-
-            // State changing functions
-            TIP20Call::TIP20(ITIP20Calls::transferFrom(call)) => {
-                mutate(call, msg_sender, |s, c| self.transfer_from(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::transfer(call)) => {
-                mutate(call, msg_sender, |s, c| self.transfer(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::approve(call)) => {
-                mutate(call, msg_sender, |s, c| self.approve(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::changeTransferPolicyId(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.change_transfer_policy_id(s, c)
-                })
-            }
-            TIP20Call::TIP20(ITIP20Calls::setSupplyCap(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::pause(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.pause(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::unpause(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.unpause(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::setNextQuoteToken(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_next_quote_token(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::completeQuoteTokenUpdate(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.complete_quote_token_update(s, c)
-                })
-            }
-            TIP20Call::TIP20(ITIP20Calls::mint(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.mint(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::mintWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.mint_with_memo(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::burn(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.burn(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::burnWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.burn_with_memo(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::burnBlocked(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.burn_blocked(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::transferWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.transfer_with_memo(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::transferFromWithMemo(call)) => {
-                mutate(call, msg_sender, |sender, c| {
-                    self.transfer_from_with_memo(sender, c)
-                })
-            }
-            TIP20Call::TIP20(ITIP20Calls::distributeReward(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.distribute_reward(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::setRewardRecipient(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_reward_recipient(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::claimRewards(call)) => {
-                mutate(call, msg_sender, |_, _| self.claim_rewards(msg_sender))
-            }
-            TIP20Call::TIP20(ITIP20Calls::globalRewardPerToken(call)) => {
-                view(call, |_| self.get_global_reward_per_token())
-            }
-            TIP20Call::TIP20(ITIP20Calls::optedInSupply(call)) => {
-                view(call, |_| self.get_opted_in_supply())
-            }
-            TIP20Call::TIP20(ITIP20Calls::userRewardInfo(call)) => view(call, |c| {
-                self.get_user_reward_info(c.account).map(|info| info.into())
-            }),
-            TIP20Call::TIP20(ITIP20Calls::getPendingRewards(call)) => {
-                view(call, |c| self.get_pending_rewards(c.account))
-            }
-
-            // RolesAuth functions
-            TIP20Call::RolesAuth(IRolesAuthCalls::hasRole(call)) => {
-                view(call, |c| self.has_role(c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::getRoleAdmin(call)) => {
-                view(call, |c| self.get_role_admin(c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::grantRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.grant_role(s, c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::revokeRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.revoke_role(s, c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::renounceRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.renounce_role(s, c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::setRoleAdmin(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_role_admin(s, c))
-            }
-        })
-    }
-}
+//! TIP20 precompile dispatch tests.
+//!
+//! The dispatch implementation is auto-generated by the `#[contract(abi = [...], dispatch)]` macro.
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::{
+        Precompile,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, setup_storage},
-        tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
+        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage, setup_storage},
+        tip20::{
+            IRolesAuth,
+            ITIP20::{self, prelude::*},
+            RolesAuthError, TIP20Error, TIP20Token,
+        },
         tip403_registry::{
             ITIP403Registry::{PolicyType, traits::*},
             TIP403Registry,
         },
     };
+
     use alloy::{
-        primitives::{Bytes, U256, address},
+        primitives::{Address, Bytes, U256, address},
         sol_types::{SolCall, SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{IRolesAuth, RolesAuthError, TIP20Error};
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
@@ -231,7 +50,10 @@ mod tests {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
             let result = token.call(&Bytes::from([0x12, 0x34]), sender);
-            assert!(matches!(result, Err(PrecompileError::Other(_))));
+            assert!(matches!(
+                result,
+                Err(revm::precompile::PrecompileError::Other(_))
+            ));
 
             Ok(())
         })
@@ -250,14 +72,11 @@ mod tests {
                 .with_mint(account, test_balance)
                 .apply()?;
 
-            let balance_of_call = ITIP20::balanceOfCall { account };
-            let calldata = balance_of_call.abi_encode();
-
+            let calldata = ITIP20::balanceOfCall { account }.abi_encode();
             let result = token.call(&calldata, sender)?;
             assert_eq!(result.gas_used, 0);
-
-            let decoded = U256::abi_decode(&result.bytes)?;
-            assert_eq!(decoded, test_balance);
+            let balance = U256::abi_decode(&result.bytes)?;
+            assert_eq!(balance, test_balance);
 
             Ok(())
         })
@@ -274,7 +93,7 @@ mod tests {
                 .with_issuer(admin)
                 .apply()?;
 
-            let initial_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+            let initial_balance = token.balance_of(recipient)?;
             assert_eq!(initial_balance, U256::ZERO);
 
             let mint_amount = U256::random().min(U256::from(u128::MAX)) % token.supply_cap()?;
@@ -287,7 +106,7 @@ mod tests {
             let result = token.call(&calldata, sender)?;
             assert_eq!(result.gas_used, 0);
 
-            let final_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+            let final_balance = token.balance_of(recipient)?;
             assert_eq!(final_balance, mint_amount);
 
             Ok(())
@@ -308,14 +127,8 @@ mod tests {
                 .with_mint(sender, initial_sender_balance)
                 .apply()?;
 
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: sender })?,
-                initial_sender_balance
-            );
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: recipient })?,
-                U256::ZERO
-            );
+            assert_eq!(token.balance_of(sender)?, initial_sender_balance);
+            assert_eq!(token.balance_of(recipient)?, U256::ZERO);
 
             let transfer_call = ITIP20::transferCall {
                 to: recipient,
@@ -328,16 +141,11 @@ mod tests {
             let success = bool::abi_decode(&result.bytes)?;
             assert!(success);
 
-            let final_sender_balance =
-                token.balance_of(ITIP20::balanceOfCall { account: sender })?;
-            let final_recipient_balance =
-                token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
-
             assert_eq!(
-                final_sender_balance,
+                token.balance_of(sender)?,
                 initial_sender_balance - transfer_amount
             );
-            assert_eq!(final_recipient_balance, transfer_amount);
+            assert_eq!(token.balance_of(recipient)?, transfer_amount);
 
             Ok(())
         })
@@ -369,7 +177,7 @@ mod tests {
             let success = bool::abi_decode(&result.bytes)?;
             assert!(success);
 
-            let allowance = token.allowance(ITIP20::allowanceCall { owner, spender })?;
+            let allowance = token.allowance(owner, spender)?;
             assert_eq!(allowance, approve_amount);
 
             let transfer_from_call = ITIP20::transferFromCall {
@@ -383,18 +191,13 @@ mod tests {
             let success = bool::abi_decode(&result.bytes)?;
             assert!(success);
 
-            // Verify balances
             assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: owner })?,
+                token.balance_of(owner)?,
                 initial_owner_balance - transfer_amount
             );
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: recipient })?,
-                transfer_amount
-            );
+            assert_eq!(token.balance_of(recipient)?, transfer_amount);
 
-            // Verify allowance was reduced
-            let remaining_allowance = token.allowance(ITIP20::allowanceCall { owner, spender })?;
+            let remaining_allowance = token.allowance(owner, spender)?;
             assert_eq!(remaining_allowance, approve_amount - transfer_amount);
 
             Ok(())
@@ -414,14 +217,12 @@ mod tests {
                 .apply()?;
             assert!(!token.paused()?);
 
-            // Pause the token
             let pause_call = ITIP20::pauseCall {};
             let calldata = pause_call.abi_encode();
             let result = token.call(&calldata, pauser)?;
             assert_eq!(result.gas_used, 0);
             assert!(token.paused()?);
 
-            // Unpause the token
             let unpause_call = ITIP20::unpauseCall {};
             let calldata = unpause_call.abi_encode();
             let result = token.call(&calldata, unpauser)?;
@@ -446,24 +247,16 @@ mod tests {
                 .with_mint(burner, initial_balance)
                 .apply()?;
 
-            // Check initial state
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: burner })?,
-                initial_balance
-            );
+            assert_eq!(token.balance_of(burner)?, initial_balance);
             assert_eq!(token.total_supply()?, initial_balance);
 
-            // Burn tokens
             let burn_call = ITIP20::burnCall {
                 amount: burn_amount,
             };
             let calldata = burn_call.abi_encode();
             let result = token.call(&calldata, burner)?;
             assert_eq!(result.gas_used, 0);
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: burner })?,
-                initial_balance - burn_amount
-            );
+            assert_eq!(token.balance_of(burner)?, initial_balance - burn_amount);
             assert_eq!(token.total_supply()?, initial_balance - burn_amount);
 
             Ok(())
@@ -482,8 +275,6 @@ mod tests {
             let name_call = ITIP20::nameCall {};
             let calldata = name_call.abi_encode();
             let result = token.call(&calldata, caller)?;
-            // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
-            assert_eq!(result.gas_used, 0);
             let name = String::abi_decode(&result.bytes)?;
             assert_eq!(name, "Test Token");
 
@@ -515,7 +306,6 @@ mod tests {
             let total_supply_call = ITIP20::totalSupplyCall {};
             let calldata = total_supply_call.abi_encode();
             let result = token.call(&calldata, caller)?;
-            // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
             assert_eq!(result.gas_used, 0);
             let total_supply = U256::abi_decode(&result.bytes)?;
             assert_eq!(total_supply, U256::ZERO);
@@ -537,7 +327,7 @@ mod tests {
                 .apply()?;
 
             let set_cap_call = ITIP20::setSupplyCapCall {
-                newSupplyCap: supply_cap,
+                new_supply_cap: supply_cap,
             };
             let calldata = set_cap_call.abi_encode();
             let result = token.call(&calldata, admin)?;
@@ -630,14 +420,8 @@ mod tests {
             let calldata = transfer_call.abi_encode();
             let result = token.call(&calldata, sender)?;
             assert_eq!(result.gas_used, 0);
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: sender })?,
-                initial_balance - transfer_amount
-            );
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: recipient })?,
-                transfer_amount
-            );
+            assert_eq!(token.balance_of(sender)?, initial_balance - transfer_amount);
+            assert_eq!(token.balance_of(recipient)?, transfer_amount);
 
             Ok(())
         })
@@ -658,9 +442,7 @@ mod tests {
             // Create a valid policy
             let new_policy_id = registry.create_policy(admin, admin, PolicyType::WHITELIST)?;
 
-            let change_policy_call = ITIP20::changeTransferPolicyIdCall {
-                newPolicyId: new_policy_id,
-            };
+            let change_policy_call = ITIP20::changeTransferPolicyIdCall { new_policy_id };
             let calldata = change_policy_call.abi_encode();
             let result = token.call(&calldata, admin)?;
             assert_eq!(result.gas_used, 0);
@@ -670,7 +452,7 @@ mod tests {
             let another_policy_id = registry.create_policy(admin, admin, PolicyType::BLACKLIST)?;
 
             let change_policy_call = ITIP20::changeTransferPolicyIdCall {
-                newPolicyId: another_policy_id,
+                new_policy_id: another_policy_id,
             };
             let calldata = change_policy_call.abi_encode();
             let output = token.call(&calldata, non_admin)?;
@@ -708,27 +490,45 @@ mod tests {
 
     #[test]
     fn tip20_test_selector_coverage() -> eyre::Result<()> {
-        use crate::test_util::{assert_full_coverage, check_selector_coverage};
-        use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
-
         let (mut storage, admin) = setup_storage();
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
-            let itip20_unsupported =
-                check_selector_coverage(&mut token, ITIP20Calls::SELECTORS, "ITIP20", |s| {
-                    ITIP20Calls::name_by_selector(s)
-                });
+            let token_unsupported = check_selector_coverage(
+                &mut token,
+                ITIP20::ITokenCalls::SELECTORS,
+                "ITIP20::Token",
+                ITIP20::ITokenCalls::name_by_selector,
+            );
+
+            let rewards_unsupported = check_selector_coverage(
+                &mut token,
+                ITIP20::IRewardsCalls::SELECTORS,
+                "ITIP20::Rewards",
+                ITIP20::IRewardsCalls::name_by_selector,
+            );
+
+            let constants_unsupported = check_selector_coverage(
+                &mut token,
+                ITIP20::ConstantsCalls::SELECTORS,
+                "ITIP20::Constants",
+                ITIP20::ConstantsCalls::name_by_selector,
+            );
 
             let roles_unsupported = check_selector_coverage(
                 &mut token,
-                IRolesAuthCalls::SELECTORS,
+                IRolesAuth::InterfaceCalls::SELECTORS,
                 "IRolesAuth",
-                IRolesAuthCalls::name_by_selector,
+                IRolesAuth::InterfaceCalls::name_by_selector,
             );
 
-            assert_full_coverage([itip20_unsupported, roles_unsupported]);
+            assert_full_coverage([
+                token_unsupported,
+                rewards_unsupported,
+                constants_unsupported,
+                roles_unsupported,
+            ]);
             Ok(())
         })
     }

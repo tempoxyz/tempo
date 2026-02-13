@@ -8,7 +8,7 @@ use crate::{
     nonce::INonce::Error as NonceError,
     stablecoin_dex::IStablecoinDEX::Error as StablecoinDEXError,
     tip_fee_manager::{IFeeAMM, IFeeManager},
-    tip20::TIP20Error,
+    tip20::{RolesAuthError, TIP20Error},
     tip20_factory::TIP20FactoryError,
     tip403_registry::ITIP403Registry::Error as TIP403RegistryError,
     validator_config::IValidatorConfig::Error as ValidatorConfigError,
@@ -21,7 +21,7 @@ use revm::{
     context::journaled_state::JournalLoadErasedError,
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
 };
-use tempo_contracts::precompiles::{RolesAuthError, UnknownFunctionSelector};
+use tempo_contracts::precompiles::UnknownFunctionSelector;
 
 /// Top-level error type for all Tempo precompile operations
 #[derive(

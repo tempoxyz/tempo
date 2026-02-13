@@ -16,7 +16,7 @@ use tempo_precompiles::{
     stablecoin_dex::IStablecoinDEX,
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix},
+    tip20::{ITIP20, ITIP20::traits::*, TIP20Token, is_tip20_prefix},
     tip403_registry::{AuthRole, TIP403Registry},
 };
 use tempo_primitives::TempoTxEnvelope;

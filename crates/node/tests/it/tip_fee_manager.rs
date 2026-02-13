@@ -13,11 +13,11 @@ use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
 use alloy_primitives::{Address, Signature, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_alloy::rpc::TempoTransactionReceipt;
-use tempo_contracts::precompiles::{
-    IFeeManager, ITIP20,
-    ITIPFeeAMM::{self},
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    tip_fee_manager::{IFeeAMM, IFeeManager},
+    tip20::ITIP20,
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
@@ -62,7 +62,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     let validator_balance_before = validator_token.balanceOf(validator).call().await?;
 
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Track collected fees before this transaction
     let collected_fees_before = fee_manager
@@ -241,7 +241,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
     let user_address = provider.default_signer_address();
 
     let user_token = setup_test_token(provider.clone(), user_address).await?;
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     let fees = provider.estimate_eip1559_fees().await?;
 

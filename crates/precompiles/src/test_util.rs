@@ -2,10 +2,12 @@
 
 #[cfg(any(test, feature = "test-utils"))]
 use crate::error::TempoPrecompileError;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::tip20::TIP20Error;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-    tip20::{self, ITIP20, TIP20Token},
+    tip20::{self, ITIP20::traits::*, TIP20Token},
     tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
 };
 use alloy::{
@@ -13,8 +15,6 @@ use alloy::{
     sol_types::SolError,
 };
 use revm::precompile::PrecompileError;
-#[cfg(any(test, feature = "test-utils"))]
-use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
 
 /// Checks that all selectors in an interface have dispatch handlers.
@@ -330,17 +330,17 @@ impl TIP20Setup {
             let admin = self.admin.unwrap_or_else(|| {
                 get_tip20_admin(token.address()).expect("unable to get token admin")
             });
-            token.mint(admin, ITIP20::mintCall { to, amount })?;
+            token.mint(admin, to, amount)?;
         }
 
         // Apply approvals
         for (owner, spender, amount) in self.approvals {
-            token.approve(owner, ITIP20::approveCall { spender, amount })?;
+            token.approve(owner, spender, amount)?;
         }
 
         // Apply reward opt-ins
         for user in self.reward_opt_ins {
-            token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
+            token.set_reward_recipient(user, user)?;
         }
 
         // Distribute rewards
@@ -348,7 +348,7 @@ impl TIP20Setup {
             let admin = self.admin.unwrap_or_else(|| {
                 get_tip20_admin(token.address()).expect("unable to get token admin")
             });
-            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount })?;
+            token.distribute_reward(admin, amount)?;
         }
 
         if self.clear_events {

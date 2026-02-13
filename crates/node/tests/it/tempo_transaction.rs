@@ -51,9 +51,8 @@ use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN,
     account_keychain::IAccountKeychain::revokeKeyCall,
     tip20::ITIP20::{self, transferCall},
 };
@@ -635,7 +634,7 @@ fn sign_aa_tx_with_webauthn_access_key(
 /// Helper to create a TIP20 transfer call
 fn create_transfer_call(to: Address, amount: U256) -> Call {
     use alloy::sol_types::SolCall;
-    use tempo_contracts::precompiles::ITIP20::transferCall;
+    use tempo_precompiles::tip20::ITIP20::transferCall;
 
     Call {
         to: DEFAULT_FEE_TOKEN.into(),
@@ -4619,8 +4618,10 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
 #[tokio::test]
 async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Result<()> {
     use alloy::sol_types::SolCall;
-    use tempo_contracts::precompiles::ITIP20::{balanceOfCall, transferCall};
-    use tempo_precompiles::account_keychain::IAccountKeychain::updateSpendingLimitCall;
+    use tempo_precompiles::{
+        account_keychain::IAccountKeychain::updateSpendingLimitCall,
+        tip20::ITIP20::{balanceOfCall, transferCall},
+    };
     use tempo_primitives::transaction::TokenLimit;
 
     reth_tracing::init_test_tracing();
@@ -6334,10 +6335,10 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     submit_and_mine_aa_tx(&mut setup, revoke_tx, revoke_sig).await?;
 
     // Verify the key is actually revoked by querying the keychain
-    use tempo_contracts::precompiles::account_keychain::IAccountKeychain::IAccountKeychainInstance;
+    use tempo_precompiles::account_keychain::IAccountKeychain::IAccountKeychainInstance;
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     let key_info = keychain.getKey(root_addr, access_key_addr).call().await?;
-    assert!(key_info.isRevoked, "Key should be marked as revoked");
+    assert!(key_info.is_revoked, "Key should be marked as revoked");
     println!("Access key revoked");
 
     // The evict_revoked_keychain_txs maintenance task has a 1-second startup delay,

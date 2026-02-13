@@ -2,10 +2,10 @@ use alloy::{
     primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder,
     sol_types::SolError,
 };
-use tempo_contracts::precompiles::ITIP20::{self, ITIP20Instance};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS,
     stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT},
+    tip20::ITIP20::{self, ITIP20Instance},
 };
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};

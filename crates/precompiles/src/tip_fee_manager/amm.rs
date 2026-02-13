@@ -7,7 +7,7 @@ use crate::{
         IFeeAMM::{self, prelude::*},
         TipFeeManager,
     },
-    tip20::{ITIP20, TIP20Token, validate_usd_currency},
+    tip20::{ITIP20::traits::*, TIP20Token, validate_usd_currency},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -303,20 +303,13 @@ impl IFeeAMM::Interface for TipFeeManager {
         self.pools[pool_id].write(pool)?;
 
         // Transfer tokens to user
-        let _ = TIP20Token::from_address(user_token)?.transfer(
-            self.address,
-            ITIP20::transferCall {
-                to,
-                amount: amount_user_token,
-            },
-        )?;
+        let _ =
+            TIP20Token::from_address(user_token)?.transfer(self.address, to, amount_user_token)?;
 
         let _ = TIP20Token::from_address(validator_token)?.transfer(
             self.address,
-            ITIP20::transferCall {
-                to,
-                amount: amount_validator_token,
-            },
+            to,
+            amount_validator_token,
         )?;
 
         // Emit Burn event
@@ -391,13 +384,7 @@ impl IFeeAMM::Interface for TipFeeManager {
             amount_in,
         )?;
 
-        TIP20Token::from_address(user_token)?.transfer(
-            self.address,
-            ITIP20::transferCall {
-                to,
-                amount: amount_out,
-            },
-        )?;
+        TIP20Token::from_address(user_token)?.transfer(self.address, to, amount_out)?;
 
         self.emit_event(FeeAMMEvent::rebalance_swap(
             user_token,
@@ -491,16 +478,14 @@ impl TipFeeManager {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::Address;
-    use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::TIP20Error;
-
     use super::*;
     use crate::{
+        TempoHardfork,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip_fee_manager::abi::IFeeAMM::Interface as _,
+        tip_fee_manager::abi::IFeeAMM::traits::*,
+        tip20::TIP20Error,
     };
 
     /// Integer square root using the Babylonian method
