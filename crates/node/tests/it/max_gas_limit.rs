@@ -4,7 +4,7 @@
 //! Post-T1 (TIP-1010): per-tx gas limit cap is 30M (`TEMPO_T1_TX_GAS_LIMIT_CAP`).
 
 use alloy::{
-    consensus::{SignableTransaction, Transaction, TxEip1559, TxEnvelope},
+    consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     primitives::Address,
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
