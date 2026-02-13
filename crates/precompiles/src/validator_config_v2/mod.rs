@@ -10,7 +10,7 @@ use crate::{
     storage::{Handler, Mapping},
     validator_config::ValidatorConfig,
 };
-use alloy::primitives::{Address, B256, keccak256};
+use alloy::primitives::{Address, B256, Keccak256, keccak256};
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
     Verifier,
@@ -18,21 +18,10 @@ use commonware_cryptography::{
 };
 use tracing::trace;
 
-/// Validator operation type for signature verification
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ValidatorOperation {
-    Add,
-    Rotate,
-}
-
-impl ValidatorOperation {
-    fn namespace(&self) -> &'static [u8] {
-        match self {
-            Self::Add => b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR",
-            Self::Rotate => b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
-        }
-    }
-}
+/// Signature namespace for `addValidator` operations.
+pub const VALIDATOR_NS_ADD: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
+/// Signature namespace for `rotateValidator` operations.
+pub const VALIDATOR_NS_ROTATE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR";
 
 #[derive(Debug, Storable)]
 struct ValidatorV2 {
@@ -243,7 +232,7 @@ impl ValidatorConfigV2 {
         })
     }
 
-    fn require_unique_ips(&self, ingress: &str, egress: &str) -> Result<(B256, B256)> {
+    fn require_unique_active_ips(&self, ingress: &str, egress: &str) -> Result<(B256, B256)> {
         let ingress_hash = keccak256(ingress.as_bytes());
         if self.active_ingress[ingress_hash].read()? {
             Err(ValidatorConfigV2Error::ingress_already_exists(
@@ -335,7 +324,7 @@ impl ValidatorConfigV2 {
                 .read()?
                 == 0
         {
-            Err(ValidatorConfigV2Error::validator_already_exists())?
+            Err(ValidatorConfigV2Error::address_already_has_validator())?
         }
         Ok(())
     }
@@ -356,26 +345,24 @@ impl ValidatorConfigV2 {
     /// and verifies the Ed25519 signature using the appropriate namespace.
     ///
     /// **FORMAT**:
-    /// - Namespace: `b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"` or `b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"`
+    /// - Namespace: [`VALIDATOR_NS_ADD`] or [`VALIDATOR_NS_ROTATE`]
     /// - Message: `keccak256(abi.encodePacked(chainId, contractAddr, validatorAddr, ingress, egress))`
     fn verify_validator_signature(
         &self,
-        operation: ValidatorOperation,
+        namespace: &[u8],
         pubkey: &B256,
         signature: &[u8],
         validator_address: Address,
         ingress: &str,
         egress: &str,
     ) -> Result<()> {
-        let namespace = operation.namespace();
-
-        let mut data = Vec::new();
-        data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
-        data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        data.extend_from_slice(validator_address.as_slice());
-        data.extend_from_slice(ingress.as_bytes());
-        data.extend_from_slice(egress.as_bytes());
-        let message = keccak256(&data);
+        let mut hasher = Keccak256::new();
+        hasher.update(self.storage.chain_id().to_be_bytes());
+        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        hasher.update(validator_address.as_slice());
+        hasher.update(ingress.as_bytes());
+        hasher.update(egress.as_bytes());
+        let message = hasher.finalize();
 
         let public_key = PublicKey::decode(pubkey.as_slice())
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
@@ -404,7 +391,7 @@ impl ValidatorConfigV2 {
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
         self.verify_validator_signature(
-            ValidatorOperation::Add,
+            VALIDATOR_NS_ADD,
             &call.publicKey,
             &call.signature,
             call.validatorAddress,
@@ -414,7 +401,8 @@ impl ValidatorConfigV2 {
 
         let block_height = self.storage.block_number();
 
-        let (ingress_hash, egress_hash) = self.require_unique_ips(&call.ingress, &call.egress)?;
+        let (ingress_hash, egress_hash) =
+            self.require_unique_active_ips(&call.ingress, &call.egress)?;
         self.active_ingress[ingress_hash].write(true)?;
         self.active_egress[egress_hash].write(true)?;
 
@@ -482,7 +470,7 @@ impl ValidatorConfigV2 {
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
         self.verify_validator_signature(
-            ValidatorOperation::Rotate,
+            VALIDATOR_NS_ROTATE,
             &call.publicKey,
             &call.signature,
             call.validatorAddress,
@@ -608,7 +596,7 @@ impl ValidatorConfigV2 {
             .unwrap_or(v1_val.outboundAddress);
 
         let (ingress_hash, egress_hash) =
-            self.require_unique_ips(&v1_val.inboundAddress, &egress)?;
+            self.require_unique_active_ips(&v1_val.inboundAddress, &egress)?;
 
         let deactivated_at_height = if v1_val.active { 0 } else { block_height };
 
@@ -633,6 +621,8 @@ impl ValidatorConfigV2 {
         let mut config = self.require_migration_owner(sender)?;
         let v1 = v1();
 
+        // NOTE: this count comparison is sufficient because `add_validator` and
+        // `rotate_validator` are blocked until the contract is initialized.
         if self.validator_count()? < v1.validator_count()? {
             Err(ValidatorConfigV2Error::migration_not_complete())?
         }
@@ -667,15 +657,12 @@ mod tests {
         validator_address: Address,
         ingress: &str,
         egress: &str,
-        operation: ValidatorOperation,
+        namespace: &[u8],
     ) -> (FixedBytes<32>, Vec<u8>) {
         // Generate a random private key for testing
         let seed = rand_08::random::<u64>();
         let private_key = PrivateKey::from_seed(seed);
         let public_key = private_key.public_key();
-
-        // Get namespace from operation
-        let namespace = operation.namespace();
 
         // Build message WITHOUT "TEMPO" prefix
         let mut data = Vec::new();
@@ -723,7 +710,7 @@ mod tests {
         egress: &str,
     ) -> IValidatorConfigV2::addValidatorCall {
         let (pubkey, signature) =
-            make_test_keypair_and_signature(addr, ingress, egress, ValidatorOperation::Add);
+            make_test_keypair_and_signature(addr, ingress, egress, VALIDATOR_NS_ADD);
         make_add_call(addr, pubkey, ingress, egress, signature)
     }
 
@@ -757,7 +744,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                ValidatorOperation::Add,
+                VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -858,7 +845,7 @@ mod tests {
             );
             assert_eq!(
                 result,
-                Err(ValidatorConfigV2Error::validator_already_exists().into())
+                Err(ValidatorConfigV2Error::address_already_has_validator().into())
             );
 
             Ok(())
@@ -879,7 +866,7 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                ValidatorOperation::Add,
+                VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -893,7 +880,7 @@ mod tests {
                 addr2,
                 "192.168.1.2:8000",
                 "192.168.1.2",
-                ValidatorOperation::Add,
+                VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(201);
             let result = vc.add_validator(
@@ -1020,7 +1007,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                ValidatorOperation::Add,
+                VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1039,7 +1026,7 @@ mod tests {
                 validator,
                 "10.0.0.1:8000",
                 "10.0.0.1",
-                ValidatorOperation::Rotate,
+                VALIDATOR_NS_ROTATE,
             );
             vc.storage.set_block_number(300);
             vc.rotate_validator(
@@ -1209,7 +1196,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                ValidatorOperation::Add,
+                VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1342,7 +1329,7 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1:9000",
-                ValidatorOperation::Add,
+                VALIDATOR_NS_ADD,
             );
 
             // IP:port for egress should fail (egress validation happens before signature)
@@ -1606,7 +1593,7 @@ mod tests {
                 validator_addr,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                ValidatorOperation::Add,
+                VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1634,7 +1621,7 @@ mod tests {
                 validator_addr,
                 "192.168.1.2:8000",
                 "192.168.1.2",
-                ValidatorOperation::Add,
+                VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(400);
             vc.add_validator(
@@ -1874,7 +1861,7 @@ mod tests {
                 v1,
                 "192.168.2.1:8000",
                 "192.168.2.1",
-                ValidatorOperation::Rotate,
+                VALIDATOR_NS_ROTATE,
             );
 
             vc.storage.set_block_number(300);

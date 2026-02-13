@@ -1,4 +1,4 @@
-use super::ValidatorConfigV2;
+use super::*;
 use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
@@ -189,9 +189,6 @@ mod tests {
             let private_key = PrivateKey::from_seed(seed);
             let public_key_obj = private_key.public_key();
 
-            // Build namespace
-            let namespace = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
-
             // Build message (remove lines with "TEMPO" prefix)
             let mut msg_data = Vec::new();
             msg_data.extend_from_slice(&1u64.to_be_bytes());
@@ -204,7 +201,7 @@ mod tests {
             let message = alloy::primitives::keccak256(&msg_data);
 
             // Sign with namespace
-            let signature = private_key.sign(namespace, message.as_slice());
+            let signature = private_key.sign(VALIDATOR_NS_ADD, message.as_slice());
 
             // Encode public key
             let pubkey_bytes = public_key_obj.encode();
