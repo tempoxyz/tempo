@@ -249,4 +249,107 @@ mod tests {
         let deserialized: TempoHardfork = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, fork);
     }
+
+    use crate::spec::*;
+
+    #[test]
+    fn test_base_fee_values() {
+        assert_eq!(TempoHardfork::Genesis.base_fee(), TEMPO_T0_BASE_FEE);
+        assert_eq!(TempoHardfork::T0.base_fee(), TEMPO_T0_BASE_FEE);
+        assert_eq!(TempoHardfork::T1.base_fee(), TEMPO_T1_BASE_FEE);
+        assert_eq!(TempoHardfork::T2.base_fee(), TEMPO_T1_BASE_FEE);
+        // Ensure T0 and T1 base fees are distinct
+        assert_ne!(TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE);
+    }
+
+    #[test]
+    fn test_general_gas_limit() {
+        assert_eq!(TempoHardfork::Genesis.general_gas_limit(), None);
+        assert_eq!(TempoHardfork::T0.general_gas_limit(), None);
+        assert_eq!(
+            TempoHardfork::T1.general_gas_limit(),
+            Some(TEMPO_T1_GENERAL_GAS_LIMIT)
+        );
+        assert_eq!(
+            TempoHardfork::T2.general_gas_limit(),
+            Some(TEMPO_T1_GENERAL_GAS_LIMIT)
+        );
+        assert_ne!(TEMPO_T1_GENERAL_GAS_LIMIT, 0);
+        assert_ne!(TEMPO_T1_GENERAL_GAS_LIMIT, 1);
+    }
+
+    #[test]
+    fn test_tx_gas_limit_cap() {
+        assert_eq!(TempoHardfork::Genesis.tx_gas_limit_cap(), Some(u64::MAX));
+        assert_eq!(TempoHardfork::T0.tx_gas_limit_cap(), Some(u64::MAX));
+        assert_eq!(
+            TempoHardfork::T1.tx_gas_limit_cap(),
+            Some(TEMPO_T1_TX_GAS_LIMIT_CAP)
+        );
+        assert_eq!(
+            TempoHardfork::T2.tx_gas_limit_cap(),
+            Some(TEMPO_T1_TX_GAS_LIMIT_CAP)
+        );
+        assert_ne!(TEMPO_T1_TX_GAS_LIMIT_CAP, 0);
+        assert_ne!(TEMPO_T1_TX_GAS_LIMIT_CAP, 1);
+    }
+
+    #[test]
+    fn test_gas_existing_nonce_key() {
+        assert_eq!(
+            TempoHardfork::Genesis.gas_existing_nonce_key(),
+            TEMPO_T1_EXISTING_NONCE_KEY_GAS
+        );
+        assert_eq!(
+            TempoHardfork::T0.gas_existing_nonce_key(),
+            TEMPO_T1_EXISTING_NONCE_KEY_GAS
+        );
+        assert_eq!(
+            TempoHardfork::T1.gas_existing_nonce_key(),
+            TEMPO_T1_EXISTING_NONCE_KEY_GAS
+        );
+        assert_eq!(
+            TempoHardfork::T2.gas_existing_nonce_key(),
+            TEMPO_T2_EXISTING_NONCE_KEY_GAS
+        );
+        // T2 gas should differ from T1
+        assert_ne!(
+            TEMPO_T1_EXISTING_NONCE_KEY_GAS,
+            TEMPO_T2_EXISTING_NONCE_KEY_GAS
+        );
+        assert_ne!(TEMPO_T1_EXISTING_NONCE_KEY_GAS, 0);
+        assert_ne!(TEMPO_T1_EXISTING_NONCE_KEY_GAS, 1);
+    }
+
+    #[test]
+    fn test_gas_new_nonce_key() {
+        assert_eq!(
+            TempoHardfork::Genesis.gas_new_nonce_key(),
+            TEMPO_T1_NEW_NONCE_KEY_GAS
+        );
+        assert_eq!(
+            TempoHardfork::T0.gas_new_nonce_key(),
+            TEMPO_T1_NEW_NONCE_KEY_GAS
+        );
+        assert_eq!(
+            TempoHardfork::T1.gas_new_nonce_key(),
+            TEMPO_T1_NEW_NONCE_KEY_GAS
+        );
+        assert_eq!(
+            TempoHardfork::T2.gas_new_nonce_key(),
+            TEMPO_T2_NEW_NONCE_KEY_GAS
+        );
+        assert_ne!(TEMPO_T1_NEW_NONCE_KEY_GAS, TEMPO_T2_NEW_NONCE_KEY_GAS);
+        assert_ne!(TEMPO_T1_NEW_NONCE_KEY_GAS, 0);
+        assert_ne!(TEMPO_T1_NEW_NONCE_KEY_GAS, 1);
+    }
+
+    #[test]
+    fn test_hardfork_to_spec_id() {
+        use alloy_evm::revm::primitives::hardfork::SpecId;
+        assert_eq!(SpecId::from(TempoHardfork::Genesis), SpecId::OSAKA);
+        assert_eq!(SpecId::from(TempoHardfork::T0), SpecId::OSAKA);
+        assert_eq!(SpecId::from(TempoHardfork::T1), SpecId::OSAKA);
+        assert_eq!(SpecId::from(TempoHardfork::T2), SpecId::OSAKA);
+    }
 }

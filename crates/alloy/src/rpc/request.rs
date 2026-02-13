@@ -591,4 +591,18 @@ mod tests {
             "build_aa must preserve key_authorization from the request"
         );
     }
+
+    #[test]
+    fn test_as_ref_returns_inner() {
+        let mut req = TempoTransactionRequest::default();
+        req.inner.nonce = Some(42);
+        assert_eq!(req.as_ref().nonce, Some(42));
+    }
+
+    #[test]
+    fn test_as_mut_modifies_inner() {
+        let mut req = TempoTransactionRequest::default();
+        req.as_mut().nonce = Some(99);
+        assert_eq!(req.inner.nonce, Some(99));
+    }
 }

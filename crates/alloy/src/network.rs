@@ -557,4 +557,69 @@ mod tests {
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);
     }
+
+    #[test]
+    fn test_setters_apply() {
+        let mut req = TempoTransactionRequest::default();
+
+        // set_input / input
+        TransactionBuilder::<TempoNetwork>::set_input(&mut req, Bytes::from(vec![0xab]));
+        assert_eq!(
+            TransactionBuilder::<TempoNetwork>::input(&req),
+            Some(&Bytes::from(vec![0xab]))
+        );
+
+        // set_from / from
+        req.set_from(Address::repeat_byte(0x01));
+        assert_eq!(
+            TransactionBuilder::<TempoNetwork>::from(&req),
+            Some(Address::repeat_byte(0x01))
+        );
+
+        // set_kind / kind
+        req.set_kind(TxKind::Create);
+        assert_eq!(req.kind(), Some(TxKind::Create));
+    }
+
+    #[test]
+    fn test_from_getter_none_and_some() {
+        let req = TempoTransactionRequest::default();
+        assert_eq!(TransactionBuilder::<TempoNetwork>::from(&req), None);
+
+        let mut req2 = TempoTransactionRequest::default();
+        req2.set_from(Address::repeat_byte(0xAA));
+        assert_eq!(
+            TransactionBuilder::<TempoNetwork>::from(&req2),
+            Some(Address::repeat_byte(0xAA))
+        );
+    }
+
+    #[test]
+    fn output_tx_type_nonce_key_is_aa() {
+        let req = TempoTransactionRequest {
+            nonce_key: Some(U256::from(1)),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_fee_token_is_aa() {
+        let req = TempoTransactionRequest {
+            fee_token: Some(Address::repeat_byte(0x01)),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn test_into_wallet_returns_correct_address() {
+        let signer = PrivateKeySigner::random();
+        let expected_addr = signer.address();
+        let wallet: EthereumWallet = IntoWallet::<TempoNetwork>::into_wallet(signer);
+        assert_eq!(
+            NetworkWallet::<TempoNetwork>::default_signer_address(&wallet),
+            expected_addr
+        );
+    }
 }

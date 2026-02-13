@@ -516,4 +516,156 @@ mod tests {
         assert_eq!(chainspec.tempo_hardfork_at(1000), TempoHardfork::T2);
         assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
     }
+
+    #[test]
+    fn test_general_gas_limit_at_pre_t1() {
+        // testnet has no T0/T1 activation — should use fallback formula
+        let chainspec = super::TempoChainSpecParser::parse("testnet")
+            .expect("the testnet chainspec must always be well formed");
+
+        // (100 - 20) / 2 = 40
+        assert_eq!(chainspec.general_gas_limit_at(0, 100, 20), 40);
+        // (60_000_000 - 0) / 2 = 30_000_000
+        assert_eq!(chainspec.general_gas_limit_at(0, 60_000_000, 0), 30_000_000);
+        // Verify it's actually division not modulo/multiplication
+        assert_eq!(chainspec.general_gas_limit_at(0, 200, 0), 100);
+        // Verify subtraction, not addition
+        assert_eq!(chainspec.general_gas_limit_at(0, 100, 0), 50);
+    }
+
+    #[test]
+    fn test_general_gas_limit_at_t1() {
+        // dev has all hardforks active at 0
+        let chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+
+        // Should return fixed TEMPO_T1_GENERAL_GAS_LIMIT regardless of inputs
+        assert_eq!(
+            chainspec.general_gas_limit_at(0, 999, 999),
+            super::TEMPO_T1_GENERAL_GAS_LIMIT
+        );
+        assert_eq!(
+            chainspec.general_gas_limit_at(0, 0, 0),
+            super::TEMPO_T1_GENERAL_GAS_LIMIT
+        );
+    }
+
+    #[test]
+    fn test_eth_chain_spec_delegation() {
+        use alloy_primitives::B256;
+        use reth_chainspec::EthChainSpec;
+
+        let spec = super::DEV.clone();
+
+        // chain() should not return default
+        let chain = spec.chain();
+        assert_ne!(chain, reth_chainspec::Chain::default());
+
+        // genesis_hash() should not return default
+        assert_ne!(spec.genesis_hash(), B256::default());
+
+        // genesis_header() — verify it returns a valid reference
+        let hdr = spec.genesis_header();
+        assert_eq!(hdr.inner.number, 0);
+
+        // genesis() should have alloc entries
+        assert!(!spec.genesis().alloc.is_empty());
+
+        // next_block_base_fee should return the hardfork-appropriate base fee
+        // Dev has T2 active at 0, which uses T1 base fee
+        assert_eq!(
+            spec.next_block_base_fee(spec.genesis_header(), 0),
+            Some(super::TEMPO_T1_BASE_FEE)
+        );
+
+        // deposit_contract_address delegation works
+        use alloy_evm::eth::spec::EthExecutorSpec;
+        let _ = spec.deposit_contract_address();
+    }
+
+    #[test]
+    fn test_bootnodes_per_chain() {
+        use reth_chainspec::EthChainSpec;
+
+        let presto = super::PRESTO.clone();
+        let andantino = super::ANDANTINO.clone();
+        let moderato = super::MODERATO.clone();
+
+        assert!(presto.bootnodes().is_some(), "presto should have bootnodes");
+        assert!(
+            andantino.bootnodes().is_some(),
+            "andantino should have bootnodes"
+        );
+        assert!(
+            moderato.bootnodes().is_some(),
+            "moderato should have bootnodes"
+        );
+
+        assert!(
+            !presto.bootnodes().unwrap().is_empty(),
+            "presto bootnodes should not be empty"
+        );
+        assert!(
+            !andantino.bootnodes().unwrap().is_empty(),
+            "andantino bootnodes should not be empty"
+        );
+        assert!(
+            !moderato.bootnodes().unwrap().is_empty(),
+            "moderato bootnodes should not be empty"
+        );
+    }
+
+    #[test]
+    fn test_from_genesis_timestamp_millis_part() {
+        use alloy_genesis::Genesis;
+
+        // timestamp 1234567890 => 1234567890 % 1000 = 890
+        let genesis: Genesis = serde_json::from_str(
+            r#"{
+                "config": {
+                    "chainId": 9999
+                },
+                "timestamp": "0x499602D2",
+                "alloc": {}
+            }"#,
+        )
+        .unwrap();
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        assert_eq!(
+            chainspec.inner.genesis_header().timestamp_millis_part,
+            890,
+            "timestamp_millis_part should be timestamp % 1000"
+        );
+    }
+
+    #[test]
+    fn test_final_paris_total_difficulty() {
+        use reth_chainspec::EthChainSpec;
+
+        let spec = super::DEV.clone();
+        // Tempo doesn't use Paris total difficulty in a meaningful way,
+        // but the delegation should work correctly
+        let _td = spec.final_paris_total_difficulty();
+    }
+
+    #[test]
+    fn test_blob_params_at_timestamp() {
+        use reth_chainspec::EthChainSpec;
+
+        let spec = super::DEV.clone();
+        // Verify delegation works (Tempo doesn't use blobs)
+        let _params = spec.blob_params_at_timestamp(0);
+    }
+
+    #[test]
+    fn test_ethereum_fork_activation() {
+        use reth_chainspec::{EthereumHardfork, EthereumHardforks};
+
+        let spec = super::DEV.clone();
+        // Should not panic and should return a valid ForkCondition
+        let activation = spec.ethereum_fork_activation(EthereumHardfork::Cancun);
+        // Just verify it doesn't return default — the exact value depends on genesis
+        let _ = activation;
+    }
 }

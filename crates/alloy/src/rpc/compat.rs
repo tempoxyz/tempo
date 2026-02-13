@@ -458,4 +458,174 @@ mod tests {
             ),
         }
     }
+
+    #[test]
+    fn test_mock_secp256k1_signature() {
+        let sig = create_mock_primitive_signature(&SignatureType::Secp256k1, None);
+        assert!(
+            matches!(sig, PrimitiveSignature::Secp256k1(_)),
+            "Expected Secp256k1 variant"
+        );
+    }
+
+    #[test]
+    fn test_mock_p256_signature() {
+        let sig = create_mock_primitive_signature(&SignatureType::P256, None);
+        assert!(
+            matches!(sig, PrimitiveSignature::P256(_)),
+            "Expected P256 variant"
+        );
+    }
+
+    #[test]
+    fn test_mock_keychain_wrapping() {
+        use tempo_primitives::transaction::tt_signature::TempoSignature;
+
+        let caller = Address::repeat_byte(0x01);
+        let sig = create_mock_tempo_signature(
+            &SignatureType::Secp256k1,
+            None,
+            Some(Address::ZERO),
+            caller,
+        );
+        assert!(
+            matches!(sig, TempoSignature::Keychain(_)),
+            "Expected Keychain variant when key_id is Some"
+        );
+    }
+
+    #[test]
+    fn test_mock_primitive_wrapping() {
+        use tempo_primitives::transaction::tt_signature::TempoSignature;
+
+        let caller = Address::repeat_byte(0x01);
+        let sig = create_mock_tempo_signature(&SignatureType::Secp256k1, None, None, caller);
+        assert!(
+            matches!(sig, TempoSignature::Primitive(_)),
+            "Expected Primitive variant when key_id is None"
+        );
+    }
+
+    #[test]
+    fn test_webauthn_1byte_key_data() {
+        let sig = create_mock_primitive_signature(
+            &SignatureType::WebAuthn,
+            Some(Bytes::from(vec![200u8])),
+        );
+        let PrimitiveSignature::WebAuthn(ws) = sig else {
+            panic!("Expected WebAuthn signature");
+        };
+        assert_eq!(ws.webauthn_data.len(), 200);
+    }
+
+    #[test]
+    fn test_webauthn_2byte_key_data() {
+        let sig = create_mock_primitive_signature(
+            &SignatureType::WebAuthn,
+            Some(Bytes::from(500u16.to_be_bytes().to_vec())),
+        );
+        let PrimitiveSignature::WebAuthn(ws) = sig else {
+            panic!("Expected WebAuthn signature");
+        };
+        assert_eq!(ws.webauthn_data.len(), 500);
+    }
+
+    #[test]
+    fn test_try_into_tx_env_with_only_tempo_authorization_list() {
+        use alloy_primitives::U256;
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0x1111111111111111111111111111111111111111")),
+                to: Some(TxKind::Call(address!(
+                    "0x2222222222222222222222222222222222222222"
+                ))),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                ..Default::default()
+            },
+            tempo_authorization_list: vec![
+                tempo_primitives::transaction::TempoSignedAuthorization::new_unchecked(
+                    alloy_eips::eip7702::Authorization {
+                        chain_id: U256::ZERO,
+                        address: Address::ZERO,
+                        nonce: 0,
+                    },
+                    tempo_primitives::TempoSignature::default(),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let evm_env =
+            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+        assert!(
+            tx_env.tempo_tx_env.is_some(),
+            "tempo_tx_env should be Some when tempo_authorization_list is non-empty"
+        );
+    }
+
+    #[test]
+    fn test_try_into_tx_env_with_only_key_id() {
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0x1111111111111111111111111111111111111111")),
+                to: Some(TxKind::Call(address!(
+                    "0x2222222222222222222222222222222222222222"
+                ))),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                ..Default::default()
+            },
+            key_id: Some(address!("0x3333333333333333333333333333333333333333")),
+            ..Default::default()
+        };
+
+        let evm_env =
+            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+        assert!(
+            tx_env.tempo_tx_env.is_some(),
+            "tempo_tx_env should be Some when key_id is set"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_signable_non_aa_path() {
+        use alloy_signer_local::PrivateKeySigner;
+
+        let signer = PrivateKeySigner::random();
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(address!(
+                    "0x1111111111111111111111111111111111111111"
+                ))),
+                nonce: Some(0),
+                gas: Some(21_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // This should go through the non-AA (else) branch
+        assert_ne!(req.output_tx_type(), TempoTxType::AA);
+
+        let envelope = SignableTxRequest::<TempoTxEnvelope>::try_build_and_sign(req, &signer)
+            .await
+            .expect("should build and sign non-AA tx");
+
+        assert!(
+            matches!(envelope, TempoTxEnvelope::Eip1559(_)),
+            "Expected EIP-1559 envelope for non-AA request"
+        );
+    }
 }
