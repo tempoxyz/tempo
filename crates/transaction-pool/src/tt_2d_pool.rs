@@ -1123,9 +1123,9 @@ impl AA2dPool {
 
     /// Processes state updates and updates internal state accordingly.
     #[expect(clippy::type_complexity)]
-    pub(crate) fn on_state_updates(
+    pub(crate) fn on_state_updates<S: std::hash::BuildHasher>(
         &mut self,
-        state: &HashMap<Address, BundleAccount>,
+        state: &std::collections::HashMap<Address, BundleAccount, S>,
     ) -> (
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
@@ -4634,7 +4634,7 @@ mod tests {
         assert_eq!(pending, 3);
         assert_eq!(queued, 0);
 
-        let mut state = HashMap::default();
+        let mut state: HashMap<Address, BundleAccount> = HashMap::default();
         let sender_account = BundleAccount::new(
             None,
             Some(AccountInfo {
@@ -4696,7 +4696,7 @@ mod tests {
         assert_eq!(pending, 2);
         assert_eq!(queued, 1);
 
-        let mut state = HashMap::default();
+        let mut state: HashMap<Address, BundleAccount> = HashMap::default();
         let sender_account = BundleAccount::new(
             None,
             Some(AccountInfo {

@@ -153,7 +153,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: tempoxyz/tempo-foundry
-          ref: tempo
+          ref: ab378fe33c35f6c2842e1b2d2a207d9217c40a93
           path: tempo-foundry
           persist-credentials: false
 
