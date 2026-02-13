@@ -1,13 +1,13 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_evm::{
-    Database, Evm,
+    Database, Evm, RecoveredTx,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx, OnStateHook,
+        ExecutableTx, OnStateHook, TxResult,
     },
     eth::{
-        EthBlockExecutor,
+        EthBlockExecutor, EthTxResult,
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
@@ -22,7 +22,8 @@ use reth_revm::{Inspector, State, context::result::ResultAndState};
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::TempoChainSpec;
 use tempo_primitives::{
-    SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
+    SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
+    subblock::PartialValidatorKey,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 use tracing::trace;
@@ -52,24 +53,47 @@ impl ReceiptBuilder for TempoReceiptBuilder {
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
 
-    fn build_receipt<E: Evm>(
-        &self,
-        ctx: ReceiptBuilderCtx<'_, Self::Transaction, E>,
-    ) -> Self::Receipt {
+    fn build_receipt<E: Evm>(&self, ctx: ReceiptBuilderCtx<'_, TempoTxType, E>) -> Self::Receipt {
         let ReceiptBuilderCtx {
-            tx,
+            tx_type,
             result,
             cumulative_gas_used,
             ..
         } = ctx;
         TempoReceipt {
-            tx_type: tx.tx_type(),
+            tx_type,
             // Success flag was added in `EIP-658: Embedding transaction status code in
             // receipts`.
             success: result.is_success(),
             cumulative_gas_used,
             logs: result.into_logs(),
         }
+    }
+}
+
+/// The result of executing a Tempo transaction.
+///
+/// This is an extension of [`EthTxResult`] with context necessary for committing a Tempo transaction.
+#[derive(Debug)]
+pub(crate) struct TempoTxResult<H> {
+    /// Inner transaction execution result.
+    inner: EthTxResult<H, TempoTxType>,
+    /// Next section of the block.
+    next_section: BlockSection,
+    /// Whether the transaction is a payment transaction.
+    is_payment: bool,
+    /// Full transaction that is being committed.
+    ///
+    /// This is only populated for subblock transactions for which we need to store
+    /// the full transaction encoding for later validation of subblock hash.
+    tx: Option<TempoTxEnvelope>,
+}
+
+impl<H> TxResult for TempoTxResult<H> {
+    type HaltReason = H;
+
+    fn result(&self) -> &ResultAndState<Self::HaltReason> {
+        self.inner.result()
     }
 }
 
@@ -333,6 +357,7 @@ where
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
     type Evm = TempoEvm<&'a mut State<DB>, I>;
+    type Result = TempoTxResult<TempoHaltReason>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
         self.inner.apply_pre_execution_changes()
@@ -345,10 +370,12 @@ where
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
-    ) -> Result<ResultAndState<TempoHaltReason>, BlockExecutionError> {
+    ) -> Result<Self::Result, BlockExecutionError> {
+        let (tx_env, recovered) = tx.into_parts();
+
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if let Some(validator) = tx.tx().subblock_proposer() {
+        if let Some(validator) = recovered.tx().subblock_proposer() {
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
@@ -356,21 +383,33 @@ where
 
             self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
         }
-        let result = self.inner.execute_transaction_without_commit(tx);
+        let result = self
+            .inner
+            .execute_transaction_without_commit((tx_env, &recovered));
 
         self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
 
-        result
+        let inner = result?;
+
+        let next_section = self.validate_tx(recovered.tx(), inner.result.result.gas_used())?;
+        Ok(TempoTxResult {
+            inner,
+            next_section,
+            is_payment: recovered.tx().is_payment(),
+            tx: matches!(next_section, BlockSection::SubBlock { .. })
+                .then(|| recovered.tx().clone()),
+        })
     }
 
-    fn commit_transaction(
-        &mut self,
-        output: ResultAndState<TempoHaltReason>,
-        tx: impl ExecutableTx<Self>,
-    ) -> Result<u64, BlockExecutionError> {
-        let next_section = self.validate_tx(tx.tx(), output.result.gas_used())?;
+    fn commit_transaction(&mut self, output: Self::Result) -> Result<u64, BlockExecutionError> {
+        let TempoTxResult {
+            inner,
+            next_section,
+            is_payment,
+            tx,
+        } = output;
 
-        let gas_used = self.inner.commit_transaction(output, &tx)?;
+        let gas_used = self.inner.commit_transaction(inner)?;
 
         // TODO: remove once revm supports emitting logs for reverted transactions
         //
@@ -393,12 +432,11 @@ where
             }
             BlockSection::NonShared => {
                 self.non_shared_gas_left -= gas_used;
-                if !tx.tx().is_payment() {
+                if !is_payment {
                     self.non_payment_gas_left -= gas_used;
                 }
             }
             BlockSection::SubBlock { proposer } => {
-                // record subblock transactions to verify later
                 let last_subblock = if let Some(last) = self
                     .seen_subblocks
                     .last_mut()
@@ -410,7 +448,9 @@ where
                     self.seen_subblocks.last_mut().unwrap()
                 };
 
-                last_subblock.1.push(tx.tx().clone());
+                last_subblock
+                    .1
+                    .push(tx.expect("always Some for subblock transactions"));
             }
             BlockSection::GasIncentive => {
                 self.incentive_gas_used += gas_used;
@@ -426,7 +466,6 @@ where
     fn finish(
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
-        // Check that we ended in the System section with all end-of-block system txs seen
         if self.section
             != (BlockSection::System {
                 seen_subblocks_signatures: true,
@@ -488,7 +527,7 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
     use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut};
     use alloy_rlp::Encodable;
@@ -538,7 +577,7 @@ mod tests {
         let cumulative_gas_used = 21000;
 
         let receipt = builder.build_receipt(ReceiptBuilderCtx {
-            tx: &tx,
+            tx_type: tx.tx_type(),
             evm: &evm,
             result,
             state: &Default::default(),
@@ -1033,21 +1072,28 @@ mod tests {
         // Apply pre-execution changes first
         executor.apply_pre_execution_changes().unwrap();
 
-        // Create execution result
-        let output = ResultAndState {
-            result: revm::context::result::ExecutionResult::Success {
-                reason: revm::context::result::SuccessReason::Return,
-                gas_used: 21000,
-                gas_refunded: 0,
-                logs: vec![],
-                output: revm::context::result::Output::Call(Bytes::new()),
+        let tx = create_legacy_tx();
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas_used: 21000,
+                        gas_refunded: 0,
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
             },
-            state: Default::default(),
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
         };
 
-        let tx = create_legacy_tx();
-        let recovered_tx = Recovered::new_unchecked(tx, Address::ZERO);
-        let gas_used = executor.commit_transaction(output, &recovered_tx).unwrap();
+        let gas_used = executor.commit_transaction(output).unwrap();
 
         assert_eq!(gas_used, 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);

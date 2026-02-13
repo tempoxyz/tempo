@@ -21,11 +21,21 @@ use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 use tempo_primitives::TempoHeader;
 
-/// T0 base fee: 10 gwei (1×10^10 wei)
+/// T0 base fee: 10 billion attodollars (1×10^10)
+///
+/// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
+/// Basefee is denominated in attodollars.
 pub const TEMPO_T0_BASE_FEE: u64 = 10_000_000_000;
 
-/// T1 base fee: 20 gwei (2×10^10 wei)
-/// At this base fee, a standard TIP-20 transfer (~50,000 gas) costs ~0.1 cent
+/// T1 base fee: 20 billion attodollars (2×10^10)
+///
+/// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
+/// Basefee is denominated in attodollars.
+///
+/// At this basefee, a standard TIP-20 transfer (~50,000 gas) costs:
+/// - Gas: 50,000 × 20 billion attodollars/gas = 1 quadrillion attodollars
+/// - Tokens: 1 quadrillion attodollars / 10^12 = 1,000 microdollars
+/// - Economic: 1,000 microdollars = 0.001 USD = 0.1 cents
 pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
 
 /// TIP-1010 general (non-payment) gas limit: 30 million gas per block.
@@ -216,6 +226,11 @@ impl TempoChainSpec {
     pub fn with_default_follow_url(mut self, url: &'static str) -> Self {
         self.default_follow_url = Some(url);
         self
+    }
+
+    /// Returns the mainnet chainspec.
+    pub fn mainnet() -> Self {
+        PRESTO.as_ref().clone()
     }
 }
 
