@@ -1038,8 +1038,9 @@ where
 mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
-    use alloy_consensus::{Block, Header, Transaction};
+    use alloy_consensus::{Block, Header, Signed, Transaction, TxLegacy};
     use alloy_primitives::{Address, B256, TxKind, U256, address, uint};
+    use alloy_signer::Signature;
     use reth_evm_ethereum::EthEvmConfig;
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
