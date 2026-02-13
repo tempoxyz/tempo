@@ -606,7 +606,7 @@ where
 
     async fn add_transactions_with_origins(
         &self,
-        transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction)> + Send,
+        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
         let transactions: Vec<_> = transactions.into_iter().collect();
         if transactions.is_empty() {
