@@ -221,8 +221,6 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-
-
 /// Unified module macro for generating Solidity-compatible types.
 ///
 /// This macro processes an entire module containing Solidity ABI type definitions,
