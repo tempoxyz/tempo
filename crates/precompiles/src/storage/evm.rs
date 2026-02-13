@@ -65,6 +65,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.internals.chain_id()
     }
 
+    fn block_number(&self) -> u64 {
+        self.internals.block_env().number().saturating_to::<u64>()
+    }
+
     fn timestamp(&self) -> U256 {
         self.internals.block_timestamp()
     }

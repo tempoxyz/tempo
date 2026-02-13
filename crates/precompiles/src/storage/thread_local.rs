@@ -115,6 +115,10 @@ impl StorageCtx {
         Self::with_storage(|s| s.chain_id())
     }
 
+    pub fn block_number(&self) -> u64 {
+        Self::with_storage(|s| s.block_number())
+    }
+
     pub fn timestamp(&self) -> U256 {
         Self::with_storage(|s| s.timestamp())
     }
@@ -250,6 +254,11 @@ impl StorageCtx {
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     pub fn set_timestamp(&mut self, timestamp: U256) {
         self.as_hashmap().set_timestamp(timestamp)
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn set_block_number(&mut self, block_number: u64) {
+        self.as_hashmap().set_block_number(block_number)
     }
 
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`

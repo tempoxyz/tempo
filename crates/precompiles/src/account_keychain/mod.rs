@@ -891,7 +891,9 @@ mod tests {
             keychain.set_transaction_key(access_key)?;
 
             // Increase approval by 30, which deducts from the limit
-            let tx_key = keychain.spending_limit_tx_key(eoa)?.expect("expected tx key");
+            let tx_key = keychain
+                .spending_limit_tx_key(eoa)?
+                .expect("expected tx key");
             keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(30), tx_key)?;
 
             let limit_after = keychain.get_remaining_limit(getRemainingLimitCall {
@@ -902,7 +904,9 @@ mod tests {
             assert_eq!(limit_after, U256::from(70));
 
             // Decrease approval to 20, does not affect limit
-            let tx_key = keychain.spending_limit_tx_key(eoa)?.expect("expected tx key");
+            let tx_key = keychain
+                .spending_limit_tx_key(eoa)?
+                .expect("expected tx key");
             keychain.authorize_approve(eoa, token, U256::from(30), U256::from(20), tx_key)?;
 
             let limit_unchanged = keychain.get_remaining_limit(getRemainingLimitCall {
@@ -913,7 +917,9 @@ mod tests {
             assert_eq!(limit_unchanged, U256::from(70));
 
             // Increase from 20 to 50, reducing the limit by 30
-            let tx_key = keychain.spending_limit_tx_key(eoa)?.expect("expected tx key");
+            let tx_key = keychain
+                .spending_limit_tx_key(eoa)?
+                .expect("expected tx key");
             keychain.authorize_approve(eoa, token, U256::from(20), U256::from(50), tx_key)?;
 
             let limit_after_increase = keychain.get_remaining_limit(getRemainingLimitCall {
@@ -935,7 +941,9 @@ mod tests {
             assert_eq!(limit_after_contract, U256::from(40)); // unchanged
 
             // Assert that exceeding remaining limit fails
-            let tx_key = keychain.spending_limit_tx_key(eoa)?.expect("expected tx key");
+            let tx_key = keychain
+                .spending_limit_tx_key(eoa)?
+                .expect("expected tx key");
             let exceed_result =
                 keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(50), tx_key);
             assert!(matches!(

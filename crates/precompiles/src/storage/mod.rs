@@ -32,6 +32,9 @@ pub trait PrecompileStorageProvider {
     /// Returns the chain ID.
     fn chain_id(&self) -> u64;
 
+    /// Returns the current block number.
+    fn block_number(&self) -> u64;
+
     /// Returns the current block timestamp.
     fn timestamp(&self) -> U256;
 
