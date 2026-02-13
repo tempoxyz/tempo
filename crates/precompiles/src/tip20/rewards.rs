@@ -350,10 +350,12 @@ mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip403_registry::TIP403Registry,
+        tip403_registry::{
+            ITIP403Registry::{traits::*, PolicyType}, TIP403Registry,
+        },
     };
     use alloy::primitives::{Address, U256};
-    use tempo_contracts::precompiles::{ITIP403Registry, TIP20Error};
+    use tempo_contracts::precompiles::TIP20Error;
 
     #[test]
     fn test_set_reward_recipient() -> eyre::Result<()> {
@@ -647,22 +649,9 @@ mod tests {
             let mut registry = TIP403Registry::new();
             registry.initialize()?;
 
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let policy_id = registry.create_policy(admin, admin, PolicyType::BLACKLIST)?;
 
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+            registry.modify_policy_blacklist(admin, policy_id, alice, true)?;
 
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 

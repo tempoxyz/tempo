@@ -3,7 +3,11 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use crate::{tip20::TIP20Error, tip20_factory::TIP20FactoryError};
+use crate::{
+    tip20::TIP20Error,
+    tip20_factory::TIP20FactoryError,
+    tip403_registry::ITIP403Registry::Error as TIP403RegistryError,
+};
 use alloy::{
     primitives::{Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
@@ -14,7 +18,7 @@ use revm::{
 };
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
-    TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
+    TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
 };
 
 /// Top-level error type for all Tempo precompile operations

@@ -14,7 +14,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
-    tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
+    tip403_registry::{ITIP403Registry::traits::*, AuthRole, TIP403Registry},
 };
 use alloy::{
     hex,
@@ -182,9 +182,7 @@ impl TIP20Token {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         // Validate that the policy exists
-        if !TIP403Registry::new().policy_exists(ITIP403Registry::policyExistsCall {
-            policyId: call.newPolicyId,
-        })? {
+        if !TIP403Registry::new().policy_exists(call.newPolicyId)? {
             return Err(TIP20Error::invalid_transfer_policy_id().into());
         }
 
@@ -849,6 +847,7 @@ pub(crate) mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, setup_storage},
+        tip403_registry::ITIP403Registry::PolicyType,
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
 
@@ -1871,17 +1870,12 @@ pub(crate) mod tests {
             // Create some valid policies
             let mut valid_policy_ids = Vec::new();
             for i in 0..10 {
-                let policy_id = registry.create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: if i % 2 == 0 {
-                            ITIP403Registry::PolicyType::WHITELIST
-                        } else {
-                            ITIP403Registry::PolicyType::BLACKLIST
-                        },
-                    },
-                )?;
+                let policy_type = if i % 2 == 0 {
+                    PolicyType::WHITELIST
+                } else {
+                    PolicyType::BLACKLIST
+                };
+                let policy_id = registry.create_policy(admin, admin, policy_type)?;
                 valid_policy_ids.push(policy_id);
             }
 
@@ -1919,13 +1913,7 @@ pub(crate) mod tests {
                 let mut registry = TIP403Registry::new();
                 registry.initialize()?;
 
-                let policy_id = registry.create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    },
-                )?;
+                let policy_id = registry.create_policy(admin, admin, PolicyType::WHITELIST)?;
 
                 // Assign token to use this policy
                 let mut token = token;
@@ -1937,44 +1925,16 @@ pub(crate) mod tests {
                 )?;
 
                 // Sender not whitelisted, recipient whitelisted
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: policy_id,
-                        account: recipient,
-                        allowed: true,
-                    },
-                )?;
+                registry.modify_policy_whitelist(admin, policy_id, recipient, true)?;
                 assert!(!token.is_transfer_authorized(sender, recipient)?);
 
                 // Sender whitelisted, recipient not whitelisted
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: policy_id,
-                        account: sender,
-                        allowed: true,
-                    },
-                )?;
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: policy_id,
-                        account: recipient,
-                        allowed: false,
-                    },
-                )?;
+                registry.modify_policy_whitelist(admin, policy_id, sender, true)?;
+                registry.modify_policy_whitelist(admin, policy_id, recipient, false)?;
                 assert!(!token.is_transfer_authorized(sender, recipient)?);
 
                 // Both whitelisted
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: policy_id,
-                        account: recipient,
-                        allowed: true,
-                    },
-                )?;
+                registry.modify_policy_whitelist(admin, policy_id, recipient, true)?;
                 assert!(token.is_transfer_authorized(sender, recipient)?);
 
                 Ok::<_, TempoPrecompileError>(())
