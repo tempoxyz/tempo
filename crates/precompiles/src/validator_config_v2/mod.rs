@@ -250,7 +250,7 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
-    fn rotate_ips(
+    fn update_active_ips(
         &mut self,
         old_ingress: &str,
         old_egress: &str,
@@ -359,7 +359,6 @@ impl ValidatorConfigV2 {
     ) -> Result<()> {
         let namespace = operation.namespace();
 
-        // Construct message data WITHOUT "TEMPO" prefix
         let mut data = Vec::new();
         data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
         data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
@@ -484,7 +483,7 @@ impl ValidatorConfigV2 {
         let block_height = self.storage.block_number();
         let (idx, mut old) = self.get_active_validator(call.validatorAddress)?;
 
-        self.rotate_ips(&old.ingress, &old.egress, &call.ingress, &call.egress)?;
+        self.update_active_ips(&old.ingress, &old.egress, &call.ingress, &call.egress)?;
 
         old.deactivated_at_height = block_height;
         self.validators[idx].write(old)?;
@@ -513,7 +512,7 @@ impl ValidatorConfigV2 {
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
-        self.rotate_ips(&v.ingress, &v.egress, &call.ingress, &call.egress)?;
+        self.update_active_ips(&v.ingress, &v.egress, &call.ingress, &call.egress)?;
 
         v.ingress = call.ingress;
         v.egress = call.egress;
