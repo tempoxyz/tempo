@@ -232,7 +232,7 @@ impl ValidatorConfigV2 {
         })
     }
 
-    fn require_unique_ips(&self, ingress: &str, egress: &str) -> Result<()> {
+    fn require_unique_ips(&self, ingress: &str, egress: &str) -> Result<(B256, B256)> {
         let ingress_hash = keccak256(ingress.as_bytes());
         if self.active_ingress[ingress_hash].read()? {
             Err(ValidatorConfigV2Error::ingress_already_exists(
@@ -247,7 +247,7 @@ impl ValidatorConfigV2 {
             ))?
         }
 
-        Ok(())
+        Ok((ingress_hash, egress_hash))
     }
 
     fn update_active_ips(
@@ -391,7 +391,6 @@ impl ValidatorConfigV2 {
         self.require_new_pubkey(call.publicKey)?;
         self.require_new_address(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
-        self.require_unique_ips(&call.ingress, &call.egress)?;
 
         self.verify_validator_signature(
             ValidatorOperation::Add,
@@ -404,8 +403,9 @@ impl ValidatorConfigV2 {
 
         let block_height = self.storage.block_number();
 
-        self.active_ingress[keccak256(call.ingress.as_bytes())].write(true)?;
-        self.active_egress[keccak256(call.egress.as_bytes())].write(true)?;
+        let (ingress_hash, egress_hash) = self.require_unique_ips(&call.ingress, &call.egress)?;
+        self.active_ingress[ingress_hash].write(true)?;
+        self.active_egress[egress_hash].write(true)?;
 
         self.append_validator(
             call.validatorAddress,
@@ -595,12 +595,10 @@ impl ValidatorConfigV2 {
             .map(|sa| sa.ip().to_string())
             .unwrap_or(v1_val.outboundAddress);
 
-        self.require_unique_ips(&v1_val.inboundAddress, &egress)?;
+        let (ingress_hash, egress_hash) =
+            self.require_unique_ips(&v1_val.inboundAddress, &egress)?;
 
         let deactivated_at_height = if v1_val.active { 0 } else { block_height };
-
-        let ingress_hash = keccak256(v1_val.inboundAddress.as_bytes());
-        let egress_hash = keccak256(egress.as_bytes());
 
         self.append_validator(
             v1_val.validatorAddress,
