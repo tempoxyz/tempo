@@ -4,7 +4,7 @@ use alloy_primitives::Address;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
-    FromRecoveredTx, RecoveredTx, ToTxEnv,
+    FromRecoveredTx, RecoveredTx, ToTxEnv, block::ExecutableTxParts,
 };
 use reth_primitives_traits::{SealedBlock, SignedTransaction};
 use std::sync::Arc;
@@ -85,6 +85,14 @@ impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
     }
 }
 
+impl ExecutableTxParts<TempoTxEnv, TempoTxEnvelope> for RecoveredInBlock {
+    type Recovered = Self;
+
+    fn into_parts(self) -> (TempoTxEnv, Self::Recovered) {
+        (self.to_tx_env(), self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,7 +167,7 @@ mod tests {
     #[test]
     fn test_tx_iterator_for_payload() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let tx1 = create_legacy_tx();
         let tx2 = create_legacy_tx();
@@ -192,7 +200,7 @@ mod tests {
     #[test]
     fn test_context_for_payload() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
         let block = create_test_block(vec![system_tx]);
@@ -218,7 +226,7 @@ mod tests {
     #[test]
     fn test_evm_env_for_payload() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
         let block = create_test_block(vec![system_tx]);
