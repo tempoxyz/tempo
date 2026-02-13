@@ -2,7 +2,7 @@ use crate::TempoEvmConfig;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_evm::block::ExecutableTxParts;
 use alloy_primitives::Address;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::prelude::*;
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
     FromRecoveredTx, RecoveredTx, ToTxEnv, block::ExecutableTxParts,
@@ -41,9 +41,10 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
-        let transactions = (0..payload.block.body().transactions.len())
+        let transactions: Vec<_> = (0..payload.block.body().transactions.len())
             .into_par_iter()
-            .map(move |i| (block.clone(), i));
+            .map(move |i| (block.clone(), i))
+            .collect();
 
         Ok((transactions, RecoveredInBlock::new))
     }
@@ -100,7 +101,7 @@ mod tests {
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
     use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
-    use rayon::iter::ParallelIterator;
+    use rayon::prelude::*;
     use reth_chainspec::EthChainSpec;
     use reth_evm::ConfigureEngineEvm;
     use tempo_chainspec::{TempoChainSpec, spec::ANDANTINO};
