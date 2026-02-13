@@ -3,8 +3,9 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use crate::{
+use crate::runtime::{
     account_keychain::IAccountKeychain::Error as AccountKeychainError,
+    dispatch::UnknownFunctionSelector,
     nonce::INonce::Error as NonceError,
     stablecoin_dex::IStablecoinDEX::Error as StablecoinDEXError,
     tip_fee_manager::{IFeeAMM, IFeeManager},
@@ -21,7 +22,6 @@ use revm::{
     context::journaled_state::JournalLoadErasedError,
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
 };
-use tempo_contracts::precompiles::UnknownFunctionSelector;
 
 /// Top-level error type for all Tempo precompile operations
 #[derive(

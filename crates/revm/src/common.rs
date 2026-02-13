@@ -9,13 +9,12 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IFeeManager, STABLECOIN_DEX_ADDRESS};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
     stablecoin_dex::IStablecoinDEX,
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
-    tip_fee_manager::TipFeeManager,
+    tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ITIP20, ITIP20::traits::*, TIP20Token, is_tip20_prefix},
     tip403_registry::{AuthRole, TIP403Registry},
 };

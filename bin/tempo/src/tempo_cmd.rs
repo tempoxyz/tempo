@@ -21,8 +21,8 @@ use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_commonware_node_config::SigningKey;
-use tempo_contracts::precompiles::{IValidatorConfig, VALIDATOR_CONFIG_ADDRESS};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_precompiles::{IValidatorConfig, VALIDATOR_CONFIG_ADDRESS};
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
@@ -268,18 +268,18 @@ impl ValidatorsInfo {
 
         let mut validator_entries = Vec::with_capacity(decoded_validators.len());
         for validator in decoded_validators.into_iter() {
-            let pubkey_bytes = validator.publicKey.0;
-            let key = PublicKey::decode(&mut &validator.publicKey.0[..])
+            let pubkey_bytes = validator.public_key.0;
+            let key = PublicKey::decode(&mut &validator.public_key.0[..])
                 .wrap_err("failed decoding on-chain ed25519 key")?;
 
             let in_committee = dkg_outcome.players().position(&key).is_some();
 
             if self.with_historic || (validator.active || in_committee) {
                 validator_entries.push(ValidatorEntry {
-                    onchain_address: validator.validatorAddress,
+                    onchain_address: validator.validator_address,
                     public_key: alloy_primitives::hex::encode(pubkey_bytes),
-                    inbound_address: validator.inboundAddress,
-                    outbound_address: validator.outboundAddress,
+                    inbound_address: validator.inbound_address,
+                    outbound_address: validator.outbound_address,
                     active: validator.active,
                     is_dkg_dealer: dkg_outcome.players().position(&key).is_some(),
                     is_dkg_player: dkg_outcome.next_players().position(&key).is_some(),

@@ -66,7 +66,7 @@ pub(super) fn generate_struct(
 
     // Emit cfg-gated Storable derive if the struct originally had it
     let storable_attr = if def.has_storable {
-        quote! { #[cfg_attr(feature = "precompile", derive(tempo_precompiles_macros::Storable))] }
+        quote! { #[cfg_attr(feature = "precompiles", derive(tempo_precompiles_macros::Storable))] }
     } else {
         quote! {}
     };

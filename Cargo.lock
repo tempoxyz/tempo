@@ -11888,12 +11888,12 @@ dependencies = [
  "tempo-commonware-node",
  "tempo-commonware-node-config",
  "tempo-consensus",
- "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-eyre",
  "tempo-faucet",
  "tempo-node",
+ "tempo-precompiles",
  "tokio",
  "tokio-util",
  "tracing",
@@ -11924,8 +11924,8 @@ dependencies = [
  "reth-rpc-convert",
  "reth-rpc-eth-types",
  "serde",
- "tempo-contracts",
  "tempo-evm",
+ "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
  "test-case",
@@ -11954,7 +11954,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-alloy",
- "tempo-contracts",
  "tempo-precompiles",
  "tokio",
  "tokio-util",
@@ -12062,17 +12061,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tempo-contracts"
-version = "1.1.4"
-dependencies = [
- "alloy-contract",
- "alloy-primitives 1.5.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "alloy-provider",
- "alloy-sol-types",
- "tokio",
-]
-
-[[package]]
 name = "tempo-dkg-onchain-artifacts"
 version = "1.1.4"
 dependencies = [
@@ -12153,8 +12141,8 @@ dependencies = [
  "revm",
  "tempo-chainspec",
  "tempo-consensus",
- "tempo-contracts",
  "tempo-payload-types",
+ "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
  "thiserror 2.0.18",
@@ -12229,7 +12217,6 @@ dependencies = [
  "tempo-alloy",
  "tempo-chainspec",
  "tempo-consensus",
- "tempo-contracts",
  "tempo-e2e",
  "tempo-evm",
  "tempo-payload-builder",
@@ -12300,6 +12287,7 @@ dependencies = [
  "alloy-contract",
  "alloy-evm",
  "alloy-primitives 1.5.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "alloy-provider",
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
@@ -12313,10 +12301,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-chainspec",
- "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles-macros",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
@@ -12390,7 +12378,6 @@ dependencies = [
  "revm",
  "sha2 0.10.9",
  "tempo-chainspec",
- "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles",
  "tempo-primitives",
@@ -12458,7 +12445,6 @@ dependencies = [
  "reth-transaction-pool",
  "revm",
  "tempo-chainspec",
- "tempo-contracts",
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
@@ -12493,7 +12479,6 @@ dependencies = [
  "serde_json",
  "tempo-chainspec",
  "tempo-commonware-node-config",
- "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-precompiles",

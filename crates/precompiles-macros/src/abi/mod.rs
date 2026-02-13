@@ -133,7 +133,7 @@ fn generate_submodules(
         quote! {}
     } else {
         quote! {
-            #[cfg(feature = "precompile")]
+            #[cfg(feature = "precompiles")]
             pub use super::{#(#trait_names),*};
         }
     };
@@ -155,7 +155,7 @@ fn generate_submodules(
         quote! {}
     } else {
         quote! {
-            #[cfg(feature = "precompile")]
+            #[cfg(feature = "precompiles")]
             #(#traits_mod_reexports)*
         }
     };
@@ -197,13 +197,13 @@ fn generate_submodules(
 
     // {ModName}Constants re-export is gated by cfg
     let iconstants_reexport = quote! {
-        #[cfg(feature = "precompile")]
+        #[cfg(feature = "precompiles")]
         pub use super::#iconstants_name;
     };
 
     // Traits module is gated by cfg
     let traits_mod = quote! {
-        #[cfg(feature = "precompile")]
+        #[cfg(feature = "precompiles")]
         /// Traits module for cross-calling other precompiles.
         ///
         /// Import interface traits and constants:
@@ -279,7 +279,7 @@ fn generate_getter_metadata(_mod_name: &Ident, interfaces: &[InterfaceDef]) -> T
         .collect();
 
     quote! {
-        #[cfg(feature = "precompile")]
+        #[cfg(feature = "precompiles")]
         #[doc(hidden)]
         #[allow(unused_macros)]
         macro_rules! __abi_getter_fields {
@@ -288,7 +288,7 @@ fn generate_getter_metadata(_mod_name: &Ident, interfaces: &[InterfaceDef]) -> T
             };
         }
 
-        #[cfg(feature = "precompile")]
+        #[cfg(feature = "precompiles")]
         #[doc(hidden)]
         pub(crate) use __abi_getter_fields;
     }
@@ -339,7 +339,7 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
     let getters_trait = interface::generate_getters_trait(&module.interfaces);
 
     // Generate Interface traits and their Calls enums
-    // Traits are wrapped in #[cfg(feature = "precompile")] by generate_interface
+    // Traits are wrapped in #[cfg(feature = "precompiles")] by generate_interface
     let interface_impls = module
         .interfaces
         .iter()
@@ -361,7 +361,7 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
 
     // Generate the Dispatch trait for routing calls to methods
     // This requires revm types and dispatch helpers from tempo_precompiles
-    // Gated by #[cfg(all(feature = "precompile", feature = "dispatch"))] in the generated code
+    // Gated by #[cfg(all(feature = "precompiles", feature = "dispatch"))] in the generated code
     let dispatch_trait =
         dispatch::generate_dispatch_trait(mod_name, &module.interfaces, &module.constants);
 

@@ -8,10 +8,10 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256},
     sol_types::{SolCall, SolError, SolEvent, SolInterface, SolValue},
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::LazyLock};
 use tempo_precompiles_macros::abi;
 
-#[cfg(feature = "precompile")]
+#[cfg(feature = "precompiles")]
 type Result<T> = core::result::Result<T, ()>;
 
 #[abi]
@@ -165,7 +165,7 @@ fn test_error_enum_selectors() {
 }
 
 // Trait implementation is gated because e2e::Interface requires precompile feature
-#[cfg(feature = "precompile")]
+#[cfg(feature = "precompiles")]
 mod test_token_impl {
     use super::*;
 
@@ -270,7 +270,7 @@ fn test_interface_call_structs() {
 }
 
 #[test]
-#[cfg(feature = "precompile")]
+#[cfg(feature = "precompiles")]
 fn test_full_module_integration() {
     use e2e::{Calls, Event, Interface, TokenInfo, balanceOfCall, transferCall};
     use test_token_impl::TestToken;
@@ -341,10 +341,6 @@ fn test_full_module_integration() {
     let event = Event::transfer(user1, user2, transfer_amount);
     assert!(matches!(event, Event::Transfer(_)));
 }
-
-// =============================================================================
-// Dummy Types Tests
-// =============================================================================
 
 #[abi]
 mod interface_only {
@@ -442,59 +438,6 @@ fn test_real_error_with_dummy_calls() {
     assert!(error_and_event_only::Calls::SELECTORS.is_empty());
 }
 
-// =============================================================================
-// Auto Re-export Tests
-// =============================================================================
-
-#[abi]
-pub mod reexport_test {
-    use super::*;
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct TestStruct {
-        pub value: U256,
-    }
-
-    pub enum TestStatus {
-        Active,
-        Inactive,
-    }
-}
-
-#[test]
-fn test_auto_reexport_types() {
-    // Types should be accessible directly (via `pub use self::reexport_test::*`)
-    let _ = TestStruct { value: U256::ZERO };
-    let _ = TestStatus::Active;
-}
-
-#[test]
-fn test_interface_alias_module() {
-    // Interface alias module should exist: reexport_test -> IReexportTest
-    let _ = IReexportTest::TestStruct { value: U256::ZERO };
-    let _ = IReexportTest::TestStatus::Active;
-}
-
-#[abi(no_reexport)]
-pub mod no_reexport_test {
-    use super::*;
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct NoReexportStruct {
-        pub value: U256,
-    }
-}
-
-#[test]
-fn test_no_reexport_requires_qualified_access() {
-    // With no_reexport, types require qualified access
-    let _ = no_reexport_test::NoReexportStruct { value: U256::ZERO };
-    // Note: NoReexportStruct and INoReexportTest would NOT be in scope
-}
-
-// Test constants support
-use std::sync::LazyLock;
-
 #[abi]
 mod constants_only {
     use super::*;
@@ -531,7 +474,7 @@ fn test_constants_only_module() {
     ));
 
     // Verify Constants trait exists with the expected methods (trait is gated by precompile feature)
-    #[cfg(feature = "precompile")]
+    #[cfg(feature = "precompiles")]
     fn _assert_iconstants<T: constants_only::ConstantsOnlyConstants>() {}
 }
 
@@ -569,8 +512,8 @@ fn test_constants_with_interface() {
     ));
 
     // Verify Constants and IRoles traits exist with the expected methods (traits are gated by precompile feature)
-    #[cfg(feature = "precompile")]
+    #[cfg(feature = "precompiles")]
     fn _assert_iconstants<T: constants_with_interface::ConstantsWithInterfaceConstants>() {}
-    #[cfg(feature = "precompile")]
+    #[cfg(feature = "precompiles")]
     fn _assert_iroles<T: constants_with_interface::IRoles>() {}
 }

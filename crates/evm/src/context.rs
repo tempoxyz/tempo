@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use alloy_evm::eth::EthBlockExecutionCtx;
 use alloy_primitives::{Address, B256};
 use reth_evm::NextBlockEnvAttributes;
-use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
+use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 use tempo_primitives::subblock::PartialValidatorKey;
 
 /// Execution context for Tempo block.

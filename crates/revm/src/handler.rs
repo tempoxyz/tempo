@@ -1669,8 +1669,7 @@ mod tests {
         primitives::hardfork::SpecId,
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
-    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+    use tempo_precompiles::{DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
     use tempo_primitives::transaction::{
         Call, TempoSignature,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},

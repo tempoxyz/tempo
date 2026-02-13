@@ -63,7 +63,7 @@ pub(super) fn generate_dispatch_trait(
         /// - `mutate_void` - For mutable methods returning `()`
         /// - `metadata` - For non-mutable methods without parameters
         /// - `revm::precompile::PrecompileResult` - The return type
-        #[cfg(feature = "precompile")]
+        #[cfg(feature = "precompiles")]
         pub trait Dispatch #bounds {
             /// Dispatch a decoded call to the appropriate trait method.
             ///
@@ -93,7 +93,7 @@ pub(super) fn generate_dispatch_trait(
         ///
         /// This function wraps `dispatch_call` with the `Calls::abi_decode` decoder
         /// and routes to the `Dispatch::dispatch` method.
-        #[cfg(feature = "precompile")]
+        #[cfg(feature = "precompiles")]
         pub fn precompile_call<T: Dispatch>(
             this: &mut T,
             calldata: &[u8],
@@ -222,10 +222,10 @@ fn generate_dispatch_call(trait_name: &Ident, method: &MethodDef) -> TokenStream
         quote! {
             {
                 use ::alloy::sol_types::SolCall as _;
-                if crate::StorageCtx.spec() < #hardfork {
+                if crate::storage::StorageCtx.spec() < #hardfork {
                     return crate::dispatch::unknown_selector(
                         #call_name::SELECTOR,
-                        crate::StorageCtx.gas_used(),
+                        crate::storage::StorageCtx.gas_used(),
                     );
                 }
                 #inner_dispatch

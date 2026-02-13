@@ -59,7 +59,7 @@ pub(super) fn generate_unit_enum(def: &UnitEnumDef) -> TokenStream {
 
     // Emit cfg-gated Storable derive if the enum originally had it
     let storable_attr = if def.has_storable {
-        quote! { #[cfg_attr(feature = "precompile", derive(tempo_precompiles_macros::Storable))] }
+        quote! { #[cfg_attr(feature = "precompiles", derive(tempo_precompiles_macros::Storable))] }
     } else {
         quote! {}
     };

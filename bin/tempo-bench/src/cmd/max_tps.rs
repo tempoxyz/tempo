@@ -55,11 +55,11 @@ use std::{
     time::Duration,
 };
 use tempo_precompiles::{
-    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    DEFAULT_FEE_TOKEN, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     stablecoin_dex::{
         IStablecoinDEX::IStablecoinDEXInstance, MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING,
     },
-    tip_fee_manager::{DEFAULT_FEE_TOKEN, IFeeManager::IFeeManagerInstance},
+    tip_fee_manager::IFeeManager::IFeeManagerInstance,
     tip20::{
         ISSUER_ROLE,
         ITIP20::{self, ITIP20Instance},

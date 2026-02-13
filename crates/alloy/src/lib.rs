@@ -17,4 +17,7 @@ pub mod fillers;
 pub use tempo_primitives as primitives;
 
 #[doc(inline)]
-pub use tempo_contracts as contracts;
+pub use tempo_precompiles::contracts;
+
+#[doc(inline)]
+pub use tempo_precompiles as precompiles;

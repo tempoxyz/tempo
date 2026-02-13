@@ -6,7 +6,7 @@ use alloy::{
     primitives::{U256, address, keccak256},
     providers::ProviderBuilder,
 };
-use tempo_alloy::{TempoNetwork, contracts::precompiles::ITIP20};
+use tempo_alloy::{TempoNetwork, precompiles::ITIP20};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

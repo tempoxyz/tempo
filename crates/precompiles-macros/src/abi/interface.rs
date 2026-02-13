@@ -41,7 +41,7 @@ impl<'a> MethodCodegen<'a> {
 
 /// Generate code for a single interface trait.
 ///
-/// Returns the transformed trait (gated by `#[cfg(feature = "precompile")]`),
+/// Returns the transformed trait (gated by `#[cfg(feature = "precompiles")]`),
 /// method call structs, and the `{TraitName}Calls` enum.
 pub(super) fn generate_interface(
     def: &InterfaceDef,
@@ -65,7 +65,7 @@ pub(super) fn generate_interface(
 
     // Wrap trait in cfg gate so it's only generated when precompile feature is enabled
     Ok(quote! {
-        #[cfg(feature = "precompile")]
+        #[cfg(feature = "precompiles")]
         #transformed_trait
         #(#method_impls)*
         #calls_enum
@@ -262,7 +262,7 @@ pub(super) fn generate_getters_trait(interfaces: &[InterfaceDef]) -> TokenStream
     }
 
     quote! {
-        #[cfg(feature = "precompile")]
+        #[cfg(feature = "precompiles")]
         #[doc(hidden)]
         pub trait __Getters {
             #(#getter_methods)*

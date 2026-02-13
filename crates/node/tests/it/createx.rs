@@ -5,7 +5,7 @@ use alloy::{
     signers::local::MnemonicBuilder,
 };
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::{CREATEX_ADDRESS, CreateX};
+use tempo_precompiles::contracts::{CREATEX_ADDRESS, CreateX};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_createx() -> eyre::Result<()> {
@@ -55,7 +55,7 @@ async fn test_createx() -> eyre::Result<()> {
     let hash_after = alloy::primitives::keccak256(&code_after);
     assert_eq!(
         hash_after,
-        tempo_contracts::contracts::CREATEX_BYTECODE_HASH,
+        tempo_precompiles::contracts::CREATEX_BYTECODE_HASH,
         "CreateX bytecode should be fixed"
     );
 

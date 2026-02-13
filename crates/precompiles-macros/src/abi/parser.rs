@@ -777,7 +777,7 @@ impl FieldAccessors for MethodDef {
 /// Extract #[derive(...)] attributes from other attributes.
 ///
 /// Also filters out `Storable` from derive attributes, returning whether it was present.
-/// This allows the code generator to emit `#[cfg_attr(feature = "precompile", derive(...))]`
+/// This allows the code generator to emit `#[cfg_attr(feature = "precompiles", derive(...))]`
 /// for `Storable` instead of unconditionally deriving it.
 fn extract_derive_attrs(attrs: &[Attribute]) -> (Vec<Attribute>, Vec<Attribute>, bool) {
     let mut derives = Vec::new();

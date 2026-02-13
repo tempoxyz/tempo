@@ -21,10 +21,12 @@ use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::TEMPO_T1_BASE_FEE};
-use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    tip20::is_tip20_prefix,
+    account_keychain::IAccountKeychain,
+    tip_fee_manager::IFeeManager,
+    tip20::{ITIP20, is_tip20_prefix},
+    tip403_registry::ITIP403Registry,
 };
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
@@ -124,20 +126,20 @@ impl TempoPoolUpdates {
                 {
                     updates
                         .blacklist_additions
-                        .push((event.policyId, event.account));
+                        .push((event.policy_id, event.account));
                 } else if let Ok(event) = ITIP403Registry::WhitelistUpdated::decode_log(log)
                     && !event.allowed
                 {
                     updates
                         .whitelist_removals
-                        .push((event.policyId, event.account));
+                        .push((event.policy_id, event.account));
                 }
             }
             // Fee token pause events
             else if is_tip20_prefix(log.address)
                 && let Ok(event) = ITIP20::PauseStateUpdate::decode_log(log)
             {
-                updates.pause_events.push((log.address, event.isPaused));
+                updates.pause_events.push((log.address, event.is_paused));
             }
         }
 

@@ -8,7 +8,7 @@ use alloy::{
 };
 use tempo_alloy::{
     TempoNetwork,
-    contracts::precompiles::{ITIPFeeAMM, TIP_FEE_MANAGER_ADDRESS},
+    precompiles::{IFeeAMM, TIP_FEE_MANAGER_ADDRESS},
 };
 
 #[tokio::main]
@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // AlphaUSD
     let validator_token = address!("0x20c0000000000000000000000000000000000001");
 
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, &provider);
+    let fee_amm = IFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, &provider);
 
     let recipient = address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
 

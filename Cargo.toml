@@ -26,7 +26,6 @@ members = [
   "crates/precompiles",
   "crates/precompiles-macros",
   "crates/primitives",
-  "crates/contracts",
   "crates/telemetry-util",
   "crates/transaction-pool",
   "crates/revm",
@@ -52,7 +51,7 @@ unused-must-use = "warn"
 redundant-lifetimes = "warn"
 unnameable-types = "warn"
 # Generated macro code references features that only exist in consuming crates
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("precompile"))'] }
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("precompiles"))'] }
 
 [workspace.lints.rustdoc]
 all = "warn"
@@ -116,7 +115,6 @@ tempo-precompiles-macros = { path = "crates/precompiles-macros" }
 tempo-primitives = { path = "crates/primitives", default-features = false, features = [
   "reth",
 ] }
-tempo-contracts = { path = "crates/contracts", default-features = false }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 

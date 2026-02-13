@@ -62,7 +62,7 @@ fn generate_definitions(constants: &[ConstantDef]) -> TokenStream {
 
 /// Generate the {ModName}Constants trait with default implementations.
 ///
-/// The trait is gated by `#[cfg(feature = "precompile")]` so it's only generated
+/// The trait is gated by `#[cfg(feature = "precompiles")]` so it's only generated
 /// when the precompile feature is enabled.
 pub(super) fn generate_trait(mod_name: &Ident, constants: &[ConstantDef]) -> TokenStream {
     let trait_name = format_ident!(
@@ -80,7 +80,7 @@ pub(super) fn generate_trait(mod_name: &Ident, constants: &[ConstantDef]) -> Tok
         quote! { fn #method_name(&self) -> #ty { #body } }
     });
     quote! {
-        #[cfg(feature = "precompile")]
+        #[cfg(feature = "precompiles")]
         pub trait #trait_name {
             #(#methods)*
         }

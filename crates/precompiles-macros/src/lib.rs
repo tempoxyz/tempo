@@ -565,7 +565,7 @@ fn generate_getter_impls(
     });
 
     let emit_method_tokens = quote! {
-        #[cfg(feature = "precompile")]
+        #[cfg(feature = "precompiles")]
         macro_rules! #emit_method_ident {
             #(#method_arms)*
         }
@@ -585,7 +585,7 @@ fn generate_getter_impls(
         );
 
         output.push(quote! {
-            #[cfg(feature = "precompile")]
+            #[cfg(feature = "precompiles")]
             const _: () = {
                 macro_rules! #emit_impl_ident {
                     ([]) => {};

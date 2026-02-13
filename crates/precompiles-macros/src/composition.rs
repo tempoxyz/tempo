@@ -429,11 +429,11 @@ fn generate_multi_module_dispatch(
     quote! {
         // Implement each module's Dispatch for the struct
         #(
-            #[cfg(feature = "precompile")]
+            #[cfg(feature = "precompiles")]
             impl #abi_mods::Dispatch for #struct_name {}
         )*
 
-        #[cfg(feature = "precompile")]
+        #[cfg(feature = "precompiles")]
         impl crate::dispatch::Precompile for #struct_name {
             fn call(
                 &mut self,

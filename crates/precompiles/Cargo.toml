@@ -12,19 +12,20 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-contracts.workspace = true
-tempo-chainspec.workspace = true
+# Always required (lightweight ABI types)
 tempo-precompiles-macros.workspace = true
-alloy = { workspace = true, features = ["sol-types", "consensus"] }
+alloy = { workspace = true, features = ["sol-types", "consensus", "json"] }
 alloy-sol-types.workspace = true
-alloy-contract.workspace = true
-alloy-evm.workspace = true
-revm.workspace = true
+alloy-contract = { workspace = true, optional = true }
 
-tracing.workspace = true
-thiserror.workspace = true
-derive_more.workspace = true
-scoped-tls = "1.0"
+# Optional: only needed for precompile runtime
+tempo-chainspec = { workspace = true, optional = true }
+alloy-evm = { workspace = true, optional = true }
+revm = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+derive_more = { workspace = true, optional = true }
+scoped-tls = { version = "1.0", optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -37,12 +38,23 @@ proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempo-evm.workspace = true
+alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [features]
-default = ["rpc", "precompile"]
-test-utils = ["alloy/getrandom"]
-rpc = ["tempo-contracts/rpc"]
-precompile = ["rpc"]
+default = ["rpc", "precompiles"]
+test-utils = ["alloy/getrandom", "precompiles"]
+rpc = ["alloy/contract", "dep:alloy-contract"]
+precompiles = [
+    "rpc",
+    "dep:tempo-chainspec",
+    "dep:alloy-evm",
+    "dep:revm",
+    "dep:tracing",
+    "dep:thiserror",
+    "dep:derive_more",
+    "dep:scoped-tls",
+]
 
 [[test]]
 name = "storage"
