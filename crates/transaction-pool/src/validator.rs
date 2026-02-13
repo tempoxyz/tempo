@@ -410,15 +410,15 @@ where
         if spec.is_t1() {
             // Expiring nonce transactions
             if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-                init_and_floor_gas.initial_gas += EXPIRING_NONCE_GAS;
+                init_and_floor_gas.initial_total_gas += EXPIRING_NONCE_GAS;
             } else if tx.nonce == 0 {
                 // TIP-1000: Storage pricing updates for launch
                 // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
-                init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+                init_and_floor_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
             } else if !tx.nonce_key.is_zero() {
                 // Existing 2D nonce key (nonce > 0): cold SLOAD + warm SSTORE reset
                 // TIP-1000 Invariant 3: existing state updates charge 5,000 gas
-                init_and_floor_gas.initial_gas += spec.gas_existing_nonce_key();
+                init_and_floor_gas.initial_total_gas += spec.gas_existing_nonce_key();
             }
             // In CREATE tx with 2d nonce, check if account.nonce is 0, if so, add 250,000 gas.
             // This covers caller creation of account.
@@ -432,27 +432,27 @@ where
                     .unwrap_or_default()
                     == 0
             {
-                init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+                init_and_floor_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
             }
         } else if !tx.nonce_key.is_zero() {
             // Pre-T1: Add 2D nonce gas if nonce_key is non-zero
             if tx.nonce == 0 {
                 // New key - cold SLOAD + SSTORE set (0 -> non-zero)
-                init_and_floor_gas.initial_gas += spec.gas_new_nonce_key();
+                init_and_floor_gas.initial_total_gas += spec.gas_new_nonce_key();
             } else {
                 // Existing key - cold SLOAD + warm SSTORE reset
-                init_and_floor_gas.initial_gas += spec.gas_existing_nonce_key();
+                init_and_floor_gas.initial_total_gas += spec.gas_existing_nonce_key();
             }
         }
 
         let gas_limit = tx.gas_limit;
 
         // Check if gas limit is sufficient for initial gas
-        if gas_limit < init_and_floor_gas.initial_gas {
+        if gas_limit < init_and_floor_gas.initial_total_gas {
             return Err(
                 TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost {
                     gas_limit,
-                    intrinsic_gas: init_and_floor_gas.initial_gas,
+                    intrinsic_gas: init_and_floor_gas.initial_total_gas,
                 },
             );
         }
@@ -934,7 +934,7 @@ pub fn ensure_intrinsic_gas_tempo_tx(
     // no need for v1 fork check as gas_params would be zero
     for auth in tx.authorization_list().unwrap_or_default() {
         if auth.nonce == 0 {
-            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+            gas.initial_total_gas += gas_params.tx_tip1000_auth_account_creation_cost();
         }
     }
 
@@ -944,14 +944,14 @@ pub fn ensure_intrinsic_gas_tempo_tx(
     // - Regular/2D nonce with nonce == 0: new_account_cost (250k) for potential account creation
     if spec.is_t1() && tx.nonce() == 0 {
         if tx.nonce_key() == Some(TEMPO_EXPIRING_NONCE_KEY) {
-            gas.initial_gas += EXPIRING_NONCE_GAS;
+            gas.initial_total_gas += EXPIRING_NONCE_GAS;
         } else {
-            gas.initial_gas += gas_params.get(GasId::new_account_cost());
+            gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
         }
     }
 
     let gas_limit = tx.gas_limit();
-    if gas_limit < gas.initial_gas || gas_limit < gas.floor_gas {
+    if gas_limit < gas.initial_total_gas || gas_limit < gas.floor_gas {
         Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
     } else {
         Ok(())
@@ -4450,9 +4450,9 @@ mod tests {
                 .unwrap_or_default() as u64,
         );
         if spec.is_t1() && tx_probe.nonce() == 0 {
-            gas.initial_gas += gas_params.get(GasId::new_account_cost());
+            gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
         }
-        let intrinsic = std::cmp::max(gas.initial_gas, gas.floor_gas);
+        let intrinsic = std::cmp::max(gas.initial_total_gas, gas.floor_gas);
 
         let tx_exact = TxBuilder::eip1559(Address::random())
             .gas_limit(intrinsic)

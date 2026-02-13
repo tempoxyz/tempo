@@ -1435,10 +1435,10 @@ mod tests {
             let gas = result.unwrap();
             // Verify floor_gas > initial_gas for this calldata (EIP-7623 scenario)
             assert!(
-                gas.floor_gas > gas.initial_gas,
+                gas.floor_gas > gas.initial_total_gas,
                 "Expected floor_gas ({}) > initial_gas ({}) for large calldata",
                 gas.floor_gas,
-                gas.initial_gas
+                gas.initial_total_gas
             );
         }
 
@@ -1456,7 +1456,7 @@ mod tests {
 
             let gas = result.unwrap();
             assert!(
-                gas.initial_gas >= 21_000,
+                gas.initial_total_gas >= 21_000,
                 "Initial gas should be at least 21k base"
             );
         }
