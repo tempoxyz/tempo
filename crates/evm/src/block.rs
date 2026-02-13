@@ -1,5 +1,5 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
-use alloy_consensus::{Transaction, TransactionEnvelope, transaction::TxHashRef};
+use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
