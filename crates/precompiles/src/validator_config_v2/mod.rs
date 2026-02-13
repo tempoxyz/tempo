@@ -107,7 +107,7 @@ impl ValidatorConfigV2 {
     fn require_initialized(&self) -> Result<Config> {
         let config = self.config.read()?;
         if !config.is_initialized() {
-            return Err(ValidatorConfigV2Error::not_initialized())?;
+            Err(ValidatorConfigV2Error::not_initialized())?
         }
         Ok(config)
     }
@@ -115,7 +115,7 @@ impl ValidatorConfigV2 {
     fn require_initialized_owner(&self, caller: Address) -> Result<Config> {
         let config = self.require_initialized()?;
         if !config.is_owner(caller) {
-            return Err(ValidatorConfigV2Error::unauthorized())?;
+            Err(ValidatorConfigV2Error::unauthorized())?
         }
         Ok(config)
     }
@@ -127,7 +127,7 @@ impl ValidatorConfigV2 {
     ) -> Result<Config> {
         let config = self.require_initialized()?;
         if caller != validator && !config.is_owner(caller) {
-            return Err(ValidatorConfigV2Error::unauthorized())?;
+            Err(ValidatorConfigV2Error::unauthorized())?
         }
         Ok(config)
     }
@@ -136,24 +136,19 @@ impl ValidatorConfigV2 {
         Ok(self.validators.len()? as u64)
     }
 
-    /// Lookup the 1-indexed position for an address. Returns 0 if not found.
-    fn address_index(&self, addr: Address) -> Result<u64> {
-        self.address_to_index[addr].read()
-    }
-
     /// Get active validator by address with index.
     ///
     /// Returns the validator's array index and data if found and active.
     /// Returns error if validator not found or already deactivated.
     fn get_active_validator(&self, addr: Address) -> Result<(usize, ValidatorV2)> {
-        let idx1 = self.address_index(addr)?;
+        let idx1 = self.address_to_index[addr].read()?;
         if idx1 == 0 {
-            return Err(ValidatorConfigV2Error::validator_not_found())?;
+            Err(ValidatorConfigV2Error::validator_not_found())?
         }
         let idx = (idx1 - 1) as usize;
         let v = self.validators[idx].read()?;
         if v.deactivated_at_height != 0 {
-            return Err(ValidatorConfigV2Error::validator_already_deleted())?;
+            Err(ValidatorConfigV2Error::validator_already_deleted())?
         }
         Ok((idx, v))
     }
@@ -175,15 +170,15 @@ impl ValidatorConfigV2 {
 
     pub fn validator_by_index(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
         if index >= self.validator_count()? {
-            return Err(ValidatorConfigV2Error::validator_not_found())?;
+            Err(ValidatorConfigV2Error::validator_not_found())?
         }
         self.read_validator_at(index)
     }
 
     pub fn validator_by_address(&self, addr: Address) -> Result<IValidatorConfigV2::Validator> {
-        let idx1 = self.address_index(addr)?;
+        let idx1 = self.address_to_index[addr].read()?;
         if idx1 == 0 {
-            return Err(ValidatorConfigV2Error::validator_not_found())?;
+            Err(ValidatorConfigV2Error::validator_not_found())?
         }
         self.read_validator_at(idx1 - 1)
     }
@@ -191,7 +186,7 @@ impl ValidatorConfigV2 {
     pub fn validator_by_public_key(&self, pubkey: B256) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.pubkey_to_index[pubkey].read()?;
         if idx1 == 0 {
-            return Err(ValidatorConfigV2Error::validator_not_found())?;
+            Err(ValidatorConfigV2Error::validator_not_found())?
         }
         self.read_validator_at(idx1 - 1)
     }
@@ -240,16 +235,51 @@ impl ValidatorConfigV2 {
     fn require_unique_ips(&self, ingress: &str, egress: &str) -> Result<()> {
         let ingress_hash = keccak256(ingress.as_bytes());
         if self.active_ingress[ingress_hash].read()? {
-            return Err(ValidatorConfigV2Error::ingress_already_exists(
+            Err(ValidatorConfigV2Error::ingress_already_exists(
                 ingress.to_string(),
-            ))?;
+            ))?
         }
 
         let egress_hash = keccak256(egress.as_bytes());
         if self.active_egress[egress_hash].read()? {
-            return Err(ValidatorConfigV2Error::egress_already_exists(
+            Err(ValidatorConfigV2Error::egress_already_exists(
                 egress.to_string(),
-            ))?;
+            ))?
+        }
+
+        Ok(())
+    }
+
+    fn rotate_ips(
+        &mut self,
+        old_ingress: &str,
+        old_egress: &str,
+        new_ingress: &str,
+        new_egress: &str,
+    ) -> Result<()> {
+        let old_ingress_hash = keccak256(old_ingress.as_bytes());
+        let old_egress_hash = keccak256(old_egress.as_bytes());
+        let new_ingress_hash = keccak256(new_ingress.as_bytes());
+        let new_egress_hash = keccak256(new_egress.as_bytes());
+
+        if old_ingress != new_ingress {
+            if self.active_ingress[new_ingress_hash].read()? {
+                Err(ValidatorConfigV2Error::ingress_already_exists(
+                    new_ingress.to_string(),
+                ))?
+            }
+            self.active_ingress[old_ingress_hash].delete()?;
+            self.active_ingress[new_ingress_hash].write(true)?;
+        }
+
+        if old_egress != new_egress {
+            if self.active_egress[new_egress_hash].read()? {
+                Err(ValidatorConfigV2Error::egress_already_exists(
+                    new_egress.to_string(),
+                ))?
+            }
+            self.active_egress[old_egress_hash].delete()?;
+            self.active_egress[new_egress_hash].write(true)?;
         }
 
         Ok(())
@@ -285,7 +315,7 @@ impl ValidatorConfigV2 {
     /// Allows reusing addresses of deactivated validators.
     fn require_new_address(&self, addr: Address) -> Result<()> {
         if addr.is_zero() {
-            return Err(ValidatorConfigV2Error::invalid_validator_address())?;
+            Err(ValidatorConfigV2Error::invalid_validator_address())?
         }
         let idx1 = self.address_to_index[addr].read()?;
         if idx1 != 0 {
@@ -294,7 +324,7 @@ impl ValidatorConfigV2 {
                 .read()?
                 == 0
             {
-                return Err(ValidatorConfigV2Error::validator_already_exists())?;
+                Err(ValidatorConfigV2Error::validator_already_exists())?
             }
         }
         Ok(())
@@ -302,10 +332,10 @@ impl ValidatorConfigV2 {
 
     fn require_new_pubkey(&self, pubkey: B256) -> Result<()> {
         if pubkey.is_zero() {
-            return Err(ValidatorConfigV2Error::invalid_public_key())?;
+            Err(ValidatorConfigV2Error::invalid_public_key())?
         }
         if self.pubkey_to_index[pubkey].read()? != 0 {
-            return Err(ValidatorConfigV2Error::public_key_already_exists())?;
+            Err(ValidatorConfigV2Error::public_key_already_exists())?
         }
         Ok(())
     }
@@ -344,7 +374,7 @@ impl ValidatorConfigV2 {
             .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
 
         if !public_key.verify(namespace, message.as_slice(), &sig) {
-            return Err(ValidatorConfigV2Error::invalid_signature())?;
+            Err(ValidatorConfigV2Error::invalid_signature())?
         }
 
         Ok(())
@@ -395,7 +425,7 @@ impl ValidatorConfigV2 {
         call: IValidatorConfigV2::deactivateValidatorCall,
     ) -> Result<()> {
         if sender != call.validatorAddress && !self.config.read()?.is_owner(sender) {
-            return Err(ValidatorConfigV2Error::unauthorized())?;
+            Err(ValidatorConfigV2Error::unauthorized())?
         }
         let block_height = self.storage.block_number();
 
@@ -454,31 +484,7 @@ impl ValidatorConfigV2 {
         let block_height = self.storage.block_number();
         let (idx, mut old) = self.get_active_validator(call.validatorAddress)?;
 
-        let old_ingress_hash = keccak256(old.ingress.as_bytes());
-        let old_egress_hash = keccak256(old.egress.as_bytes());
-        let new_ingress_hash = keccak256(call.ingress.as_bytes());
-        let new_egress_hash = keccak256(call.egress.as_bytes());
-
-        if old.ingress != call.ingress {
-            if self.active_ingress[new_ingress_hash].read()? {
-                return Err(ValidatorConfigV2Error::ingress_already_exists(
-                    call.ingress.clone(),
-                ))?;
-            }
-
-            self.active_ingress[old_ingress_hash].delete()?;
-            self.active_ingress[new_ingress_hash].write(true)?;
-        }
-
-        if old.egress != call.egress {
-            if self.active_egress[new_egress_hash].read()? {
-                return Err(ValidatorConfigV2Error::egress_already_exists(
-                    call.egress.clone(),
-                ))?;
-            }
-            self.active_egress[old_egress_hash].delete()?;
-            self.active_egress[new_egress_hash].write(true)?;
-        }
+        self.rotate_ips(&old.ingress, &old.egress, &call.ingress, &call.egress)?;
 
         old.deactivated_at_height = block_height;
         self.validators[idx].write(old)?;
@@ -501,50 +507,17 @@ impl ValidatorConfigV2 {
         call: IValidatorConfigV2::setIpAddressesCall,
     ) -> Result<()> {
         if sender != call.validatorAddress && !self.config.read()?.is_owner(sender) {
-            return Err(ValidatorConfigV2Error::unauthorized())?;
+            Err(ValidatorConfigV2Error::unauthorized())?
         }
 
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
-        let old_ingress_hash = keccak256(v.ingress.as_bytes());
-        let old_egress_hash = keccak256(v.egress.as_bytes());
-        let new_ingress_hash = keccak256(call.ingress.as_bytes());
-        let new_egress_hash = keccak256(call.egress.as_bytes());
+        self.rotate_ips(&v.ingress, &v.egress, &call.ingress, &call.egress)?;
 
-        let ingress_changed = v.ingress != call.ingress;
-        let egress_changed = v.egress != call.egress;
-
-        if ingress_changed {
-            self.active_ingress[old_ingress_hash].delete()?;
-
-            if self.active_ingress[new_ingress_hash].read()? {
-                return Err(ValidatorConfigV2Error::ingress_already_exists(
-                    call.ingress.clone(),
-                ))?;
-            }
-        }
-
-        if egress_changed {
-            self.active_egress[old_egress_hash].delete()?;
-
-            if self.active_egress[new_egress_hash].read()? {
-                return Err(ValidatorConfigV2Error::egress_already_exists(
-                    call.egress.clone(),
-                ))?;
-            }
-        }
-
-        v.ingress = call.ingress.clone();
-        v.egress = call.egress.clone();
+        v.ingress = call.ingress;
+        v.egress = call.egress;
         self.validators[idx].write(v)?;
-
-        if ingress_changed {
-            self.active_ingress[new_ingress_hash].write(true)?;
-        }
-        if egress_changed {
-            self.active_egress[new_egress_hash].write(true)?;
-        }
 
         Ok(())
     }
@@ -579,7 +552,7 @@ impl ValidatorConfigV2 {
     fn require_migration_owner(&mut self, caller: Address) -> Result<Config> {
         let mut config = self.config.read()?;
         if config.is_initialized() {
-            return Err(ValidatorConfigV2Error::already_initialized())?;
+            Err(ValidatorConfigV2Error::already_initialized())?
         }
 
         if config.owner.is_zero() {
@@ -591,7 +564,7 @@ impl ValidatorConfigV2 {
         }
 
         if !config.is_owner(caller) {
-            return Err(ValidatorConfigV2Error::unauthorized())?;
+            Err(ValidatorConfigV2Error::unauthorized())?
         }
         Ok(config)
     }
@@ -606,12 +579,12 @@ impl ValidatorConfigV2 {
 
         let current_count = self.validator_count()?;
         if call.idx != current_count {
-            return Err(ValidatorConfigV2Error::invalid_migration_index())?;
+            Err(ValidatorConfigV2Error::invalid_migration_index())?
         }
 
         let v1 = v1();
         if call.idx >= v1.validator_count()? {
-            return Err(ValidatorConfigV2Error::validator_not_found())?;
+            Err(ValidatorConfigV2Error::validator_not_found())?
         }
         let v1_val = v1.validators(v1.validators_array(call.idx)?)?;
 
@@ -654,7 +627,7 @@ impl ValidatorConfigV2 {
         let v1 = v1();
 
         if self.validator_count()? < v1.validator_count()? {
-            return Err(ValidatorConfigV2Error::migration_not_complete())?;
+            Err(ValidatorConfigV2Error::migration_not_complete())?
         }
 
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;
