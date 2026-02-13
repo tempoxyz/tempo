@@ -1,5 +1,5 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
-use alloy_consensus::{Transaction, TransactionEnvelope, transaction::TxHashRef};
+use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
@@ -53,10 +53,7 @@ impl ReceiptBuilder for TempoReceiptBuilder {
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
 
-    fn build_receipt<E: Evm>(
-        &self,
-        ctx: ReceiptBuilderCtx<'_, <Self::Transaction as TransactionEnvelope>::TxType, E>,
-    ) -> Self::Receipt {
+    fn build_receipt<E: Evm>(&self, ctx: ReceiptBuilderCtx<'_, TempoTxType, E>) -> Self::Receipt {
         let ReceiptBuilderCtx {
             tx_type,
             result,
@@ -75,10 +72,21 @@ impl ReceiptBuilder for TempoReceiptBuilder {
 }
 
 /// The result of executing a Tempo transaction.
+///
+/// This is an extension of [`EthTxResult`] with context necessary for commiting a Tempo transaction.
 #[derive(Debug)]
 pub(crate) struct TempoTxResult<H> {
+    /// Inner transaction execution result.
     inner: EthTxResult<H, TempoTxType>,
-    tx: TempoTxEnvelope,
+    /// Next section of the block.
+    next_section: BlockSection,
+    /// Whether the transaction is a payment transaction.
+    is_payment: bool,
+    /// Full transaction that is being committed.
+    ///
+    /// This is only populated for subblock transactions for which we need to store
+    /// the full transaction encoding for later validation of subblock hash.
+    tx: Option<TempoTxEnvelope>,
 }
 
 impl<H> TxResult for TempoTxResult<H> {
@@ -364,10 +372,9 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
-        let tx_ref = recovered.tx().clone();
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
-        if let Some(validator) = tx_ref.subblock_proposer() {
+        if let Some(validator) = recovered.tx().subblock_proposer() {
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
@@ -377,17 +384,29 @@ where
         }
         let result = self
             .inner
-            .execute_transaction_without_commit((tx_env, recovered));
+            .execute_transaction_without_commit((tx_env, &recovered));
 
         self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
 
-        result.map(|inner| TempoTxResult { inner, tx: tx_ref })
+        let inner = result?;
+
+        let next_section = self.validate_tx(recovered.tx(), inner.result.result.gas_used())?;
+        Ok(TempoTxResult {
+            inner,
+            next_section,
+            is_payment: recovered.tx().is_payment(),
+            tx: matches!(next_section, BlockSection::SubBlock { .. })
+                .then(|| recovered.tx().clone()),
+        })
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> Result<u64, BlockExecutionError> {
-        let TempoTxResult { inner, tx } = output;
-
-        let next_section = self.validate_tx(&tx, inner.result.result.gas_used())?;
+        let TempoTxResult {
+            inner,
+            next_section,
+            is_payment,
+            tx,
+        } = output;
 
         let gas_used = self.inner.commit_transaction(inner)?;
 
@@ -412,7 +431,7 @@ where
             }
             BlockSection::NonShared => {
                 self.non_shared_gas_left -= gas_used;
-                if !tx.is_payment() {
+                if !is_payment {
                     self.non_payment_gas_left -= gas_used;
                 }
             }
@@ -428,7 +447,9 @@ where
                     self.seen_subblocks.last_mut().unwrap()
                 };
 
-                last_subblock.1.push(tx);
+                last_subblock
+                    .1
+                    .push(tx.expect("always Some for subblock transactions"));
             }
             BlockSection::GasIncentive => {
                 self.incentive_gas_used += gas_used;
@@ -1066,7 +1087,9 @@ mod tests {
                 blob_gas_used: 0,
                 tx_type: tx.tx_type(),
             },
-            tx,
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
         };
 
         let gas_used = executor.commit_transaction(output).unwrap();
