@@ -130,6 +130,8 @@ crate::sol! {
 
         error NotIp(string input, string backtrace);
         error NotIpPort(string input, string backtrace);
+        error IngressAlreadyExists(string ingress);
+        error EgressAlreadyExists(string egress);
     }
 }
 
@@ -192,5 +194,13 @@ impl ValidatorConfigV2Error {
 
     pub fn not_ip_port(input: String, backtrace: String) -> Self {
         Self::NotIpPort(IValidatorConfigV2::NotIpPort { input, backtrace })
+    }
+
+    pub fn ingress_already_exists(ingress: String) -> Self {
+        Self::IngressAlreadyExists(IValidatorConfigV2::IngressAlreadyExists { ingress })
+    }
+
+    pub fn egress_already_exists(egress: String) -> Self {
+        Self::EgressAlreadyExists(IValidatorConfigV2::EgressAlreadyExists { egress })
     }
 }
