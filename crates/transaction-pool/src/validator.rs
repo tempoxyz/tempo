@@ -6,7 +6,6 @@ use alloy_consensus::Transaction;
 
 use alloy_primitives::U256;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
-use reth_evm::ConfigureEvm;
 use reth_primitives_traits::{
     GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
@@ -73,7 +72,7 @@ pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 120;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
-pub struct TempoTransactionValidator<Client, Evm> {
+pub struct TempoTransactionValidator<Client> {
     /// Inner validator that performs default Ethereum tx validation.
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction, TempoEvmConfig>,
     /// Maximum allowed `valid_after` offset for AA txs.
@@ -84,10 +83,9 @@ pub struct TempoTransactionValidator<Client, Evm> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
 }
 
-impl<Client, Evm> TempoTransactionValidator<Client, Evm>
+impl<Client> TempoTransactionValidator<Client>
 where
     Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
-    Evm: ConfigureEvm,
 {
     pub fn new(
         inner: EthTransactionValidator<Client, TempoPooledTransaction, TempoEvmConfig>,
@@ -960,10 +958,9 @@ pub fn ensure_intrinsic_gas_tempo_tx(
     }
 }
 
-impl<Client, Evm> TransactionValidator for TempoTransactionValidator<Client, Evm>
+impl<Client> TransactionValidator for TempoTransactionValidator<Client>
 where
     Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
-    Evm: ConfigureEvm,
 {
     type Transaction = TempoPooledTransaction;
     type Block = Block;

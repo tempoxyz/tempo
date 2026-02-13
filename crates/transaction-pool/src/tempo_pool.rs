@@ -30,13 +30,14 @@ use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 
+
 use tempo_primitives::Block;
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
-        TransactionValidationTaskExecutor<TempoTransactionValidator<Client, TempoEvmConfig>>,
+        TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
         CoinbaseTipOrdering<TempoPooledTransaction>,
         InMemoryBlobStore,
     >,
@@ -47,7 +48,7 @@ pub struct TempoTransactionPool<Client> {
 impl<Client> TempoTransactionPool<Client> {
     pub fn new(
         protocol_pool: Pool<
-            TransactionValidationTaskExecutor<TempoTransactionValidator<Client, TempoEvmConfig>>,
+            TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
             CoinbaseTipOrdering<TempoPooledTransaction>,
             InMemoryBlobStore,
         >,
