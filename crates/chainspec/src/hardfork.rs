@@ -72,7 +72,7 @@ impl TempoHardfork {
     /// - Pre-T1: 10 billion attodollars per gas
     /// - T1+: 20 billion attodollars per gas (targets ~0.1 cent per TIP-20 transfer)
     ///
-    /// Economic conversion: basefee × gas_used / 10^12 = cost in microdollars (TIP-20 tokens)
+    /// Economic conversion: ceil(basefee × gas_used / 10^12) = cost in microdollars (TIP-20 tokens)
     pub const fn base_fee(&self) -> u64 {
         match self {
             Self::T1 | Self::T2 => crate::spec::TEMPO_T1_BASE_FEE,
