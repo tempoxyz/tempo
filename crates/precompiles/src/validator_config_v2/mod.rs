@@ -71,10 +71,18 @@ pub struct ValidatorConfigV2 {
 }
 
 impl ValidatorConfigV2 {
-    /// Initializes the precompile (must always be called) and sets its owner.
+    /// Bootstraps storage layout and sets the contract owner. Must be called exactly once.
     ///
-    /// IMPORTANT: when initialized with `needs_migration`, the config initialization flag
-    /// won't be activated until `fn initialized_if_migrated` is called by the owner.
+    /// **`needs_migration = false`** — the contract is fully operational immediately:
+    /// `is_init` is set to `true` and all mutating functions (`add_validator`,
+    /// `rotate_validator`, etc.) are unlocked.
+    ///
+    /// **`needs_migration = true`** — the contract enters a migration-only mode:
+    /// `is_init` remains `false`, which blocks every mutating function except
+    /// `migrate_validator` and `set_ip_addresses` (owner-only during migration).
+    /// Once all V1 validators have been migrated, the owner must call
+    /// [`initialize_if_migrated`](Self::initialize_if_migrated) to flip `is_init`
+    /// and unlock normal operations.
     pub fn initialize(&mut self, owner: Address, needs_migration: bool) -> Result<()> {
         trace!(address=%self.address, %owner, "Initializing validator config v2 precompile");
         self.__initialize()?;
@@ -2146,7 +2154,13 @@ mod tests {
             let addr2 = Address::random();
             let result = vc.add_validator(
                 owner,
-                make_add_call(addr2, pubkey, "192.168.2.1:8000", "192.168.2.1", vec![0u8; 64]),
+                make_add_call(
+                    addr2,
+                    pubkey,
+                    "192.168.2.1:8000",
+                    "192.168.2.1",
+                    vec![0u8; 64],
+                ),
             );
             assert_eq!(
                 result,
