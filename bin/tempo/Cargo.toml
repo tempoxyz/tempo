@@ -31,7 +31,7 @@ alloy-provider = { workspace = true, features = [
 	"reqwest-rustls-tls",
 ] }
 alloy-rpc-types-eth.workspace = true
-alloy-sol-types.workspace = true
+alloy-sol-types = { workspace = true, features = ["std"] }
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
