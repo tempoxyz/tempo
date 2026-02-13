@@ -7,6 +7,7 @@ publish = false
 
 [workspace]
 members = [
+  "bin/storage-stats",
   "bin/tempo",
   "bin/tempo-bench",
   "bin/tempo-sidecar",
