@@ -33,7 +33,7 @@ use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
 use tempo_consensus::TempoConsensus;
-use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
+use tempo_evm::TempoEvmConfig;
 use tempo_faucet::{
     args::FaucetArgs,
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
@@ -270,12 +270,8 @@ fn main() -> eyre::Result<()> {
         ret
     });
 
-    let components = |spec: Arc<TempoChainSpec>| {
-        (
-            TempoEvmConfig::new(spec.clone(), TempoEvmFactory::default()),
-            TempoConsensus::new(spec),
-        )
-    };
+    let components =
+        |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         let faucet_args = args.faucet_args.clone();
