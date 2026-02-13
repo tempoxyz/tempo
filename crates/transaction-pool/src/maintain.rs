@@ -479,7 +479,7 @@ where
                 let tip_timestamp = tip.tip().header().timestamp();
 
                 // T1 transition: one-time cleanup of underpriced transactions.
-                // When T1 activates, transactions with max_fee_per_gas < 20 gwei become
+                // When T1 activates, transactions with max_fee_per_gas < 20 billion attodollars become
                 // never-includable and should be evicted. This check runs once per node lifetime.
                 // TODO: Remove this after T1 is activated on mainnet.
                 if !state.t1_transition_cleanup_done {
@@ -491,7 +491,7 @@ where
                                 target: "txpool",
                                 count = evicted,
                                 tip_timestamp,
-                                "T1 transition: evicted underpriced transactions (max_fee_per_gas < 20 gwei)"
+                                "T1 transition: evicted underpriced transactions (max_fee_per_gas < 20 billion attodollars)"
                             );
                         }
                         state.t1_transition_cleanup_done = true;
@@ -736,7 +736,7 @@ where
 /// Removes transactions with max_fee_per_gas below the T1 base fee from the pool.
 ///
 /// This is a one-time cleanup performed when the T0 → T1 hardfork transition is detected.
-/// After T1 activation, transactions with max_fee_per_gas < 20 gwei are never includable
+/// After T1 activation, transactions with max_fee_per_gas < 20 billion attodollars are never includable
 /// and should be evicted from the pool.
 ///
 /// # Note

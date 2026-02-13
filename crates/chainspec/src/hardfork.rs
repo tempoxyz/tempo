@@ -66,9 +66,13 @@ impl TempoHardfork {
         *self >= Self::T2
     }
 
-    /// Returns the base fee for this hardfork.
-    /// - Pre-T1: 10 gwei
-    /// - T1+: 20 gwei (targets ~0.1 cent per TIP-20 transfer)
+    /// Returns the base fee for this hardfork in attodollars.
+    ///
+    /// Attodollars are the atomic gas accounting units at 10^-18 USD precision. Individual attodollars are not representable onchain (since TIP-20 tokens only have 6 decimals), but the unit is used for gas accounting.
+    /// - Pre-T1: 10 billion attodollars per gas
+    /// - T1+: 20 billion attodollars per gas (targets ~0.1 cent per TIP-20 transfer)
+    ///
+    /// Economic conversion: ceil(basefee × gas_used / 10^12) = cost in microdollars (TIP-20 tokens)
     pub const fn base_fee(&self) -> u64 {
         match self {
             Self::T1 | Self::T2 => crate::spec::TEMPO_T1_BASE_FEE,
@@ -86,13 +90,14 @@ impl TempoHardfork {
         }
     }
 
-    /// Returns the per-transaction gas limit cap, or None if uncapped.
-    /// - Pre-T1: None (no per-tx cap)
+    /// Returns the per-transaction gas limit cap.
+    /// - Pre-T1: u64::MAX (no effective cap, but must be `Some` to prevent revm from
+    ///   falling back to EIP-7825)
     /// - T1+: 30M gas (allows maximum-sized contract deployments under TIP-1000 state creation)
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
         match self {
             Self::T1 | Self::T2 => Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
-            Self::T0 | Self::Genesis => None,
+            Self::T0 | Self::Genesis => Some(u64::MAX),
         }
     }
 
