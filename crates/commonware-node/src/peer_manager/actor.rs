@@ -274,7 +274,7 @@ where
 
             info!(
                 epoch = %onchain_outcome.epoch,
-                peers = peers.len(),
+                ?peers,
                 "tracking peers for new epoch from boundary block",
             );
 
