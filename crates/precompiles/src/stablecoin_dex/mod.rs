@@ -270,7 +270,7 @@ impl StablecoinDEX {
         // Find and validate the trade route (book keys + direction for each hop)
         let route = self.find_trade_path(token_in, token_out)?;
 
-        // Work backwards from output to calculate input needed - intermediate amounts are TRANSITORY
+        // Work backwards from output to calculate input needed - intermediate amounts are TRANSIENT
         let mut amount = amount_out;
         for (book_key, base_for_quote) in route.iter().rev() {
             amount = self.fill_orders_exact_out(*book_key, *base_for_quote, amount, sender)?;

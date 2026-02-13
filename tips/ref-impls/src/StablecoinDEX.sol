@@ -138,7 +138,7 @@ contract StablecoinDEX is IStablecoinDEX {
     }
 
     /// @notice Generate deterministic key for ordered (base, quote) token pair
-    /// @return key pair key
+    /// @return key The deterministic pair key
     /// @dev The first argument MUST be the base token and the second the quote token.
     function pairKey(address base, address quote) public pure returns (bytes32 key) {
         key = keccak256(abi.encodePacked(base, quote));
@@ -492,8 +492,8 @@ contract StablecoinDEX is IStablecoinDEX {
     /// @param base Base token in pair
     /// @param tick Price tick
     /// @param isBid boolean to indicate bid/ask
-    /// @return head First order ID tick
-    /// @return tail Last order ID tick
+    /// @return head First order ID at this tick
+    /// @return tail Last order ID at this tick
     /// @return totalLiquidity Total liquidity at tick
     function getTickLevel(
         address base,
@@ -675,7 +675,7 @@ contract StablecoinDEX is IStablecoinDEX {
     {
         (bytes32[] memory route, bool[] memory directions) = findTradePath(tokenIn, tokenOut);
 
-        // Work backwards from output to calculate input needed - intermediate amounts are TRANSITORY
+        // Work backwards from output to calculate input needed - intermediate amounts are TRANSIENT
         uint128 amount = amountOut;
         for (uint256 i = route.length; i > 0; i--) {
             bytes32 key = route[i - 1];
@@ -738,7 +738,7 @@ contract StablecoinDEX is IStablecoinDEX {
     {
         (bytes32[] memory route, bool[] memory directions) = findTradePath(tokenIn, tokenOut);
 
-        // Work forwards from input to calculate output - intermediate amounts are TRANSITORY
+        // Work forwards from input to calculate output - intermediate amounts are TRANSIENT
         uint128 amount = amountIn;
         for (uint256 i = 0; i < route.length; i++) {
             bytes32 key = route[i];
@@ -1221,7 +1221,7 @@ contract StablecoinDEX is IStablecoinDEX {
                         MULTI-HOP ROUTING
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Find trade path between two tokens using LCA (Lowest Common Ancestor) algorithm
+    /// @notice Find trade path by walking the quoteToken tree and locating the first common ancestor
     /// @param tokenIn Input token address
     /// @param tokenOut Output token address
     /// @return route Array of (bookKey, baseForQuote) tuples representing the trade path
