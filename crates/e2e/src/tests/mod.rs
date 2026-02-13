@@ -8,6 +8,7 @@ mod consensus_rpc;
 mod dkg;
 mod linkage;
 mod metrics;
+mod pool;
 mod restart;
 mod subblocks;
 mod sync;
