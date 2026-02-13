@@ -55,17 +55,13 @@ pub struct TempoEvmConfig {
 
 impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
-    pub fn new(chain_spec: Arc<TempoChainSpec>, evm_factory: TempoEvmFactory) -> Self {
-        let inner = EthEvmConfig::new_with_evm_factory(chain_spec.clone(), evm_factory);
+    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+        let inner =
+            EthEvmConfig::new_with_evm_factory(chain_spec.clone(), TempoEvmFactory::default());
         Self {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
         }
-    }
-
-    /// Create a new [`TempoEvmConfig`] with the given chain spec and default EVM factory.
-    pub fn new_with_default_factory(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self::new(chain_spec, TempoEvmFactory::default())
     }
 
     /// Returns the chain spec
@@ -76,6 +72,11 @@ impl TempoEvmConfig {
     /// Returns the inner EVM config
     pub const fn inner(&self) -> &EthEvmConfig<TempoChainSpec, TempoEvmFactory> {
         &self.inner
+    }
+
+    /// Returns the mainnet EVM config.
+    pub fn mainnet() -> Self {
+        Self::new(Arc::new(TempoChainSpec::mainnet()))
     }
 }
 
@@ -260,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_evm_config_can_query_tempo_hardforks() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
         let activation = evm_config
             .chain_spec()
             .tempo_fork_activation(TempoHardfork::Genesis);
@@ -269,7 +270,7 @@ mod tests {
 
     #[test]
     fn test_evm_env() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -310,7 +311,7 @@ mod tests {
 
         // DEV chainspec has T1 activated at timestamp 0
         let chainspec = DEV.clone();
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -340,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_next_evm_env() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         let parent = TempoHeader {
             inner: alloy_consensus::Header {
@@ -393,7 +394,7 @@ mod tests {
     #[test]
     fn test_context_for_block() {
         let chainspec = test_chainspec();
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         // Create subblock metadata
         let validator_key = B256::repeat_byte(0x01);
@@ -466,7 +467,7 @@ mod tests {
 
     #[test]
     fn test_context_for_block_no_subblock_metadata() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         // Create a block without subblock metadata system tx
         let regular_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -515,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_context_for_next_block() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         let parent_header = TempoHeader {
             inner: alloy_consensus::Header {

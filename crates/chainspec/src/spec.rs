@@ -227,6 +227,11 @@ impl TempoChainSpec {
         self.default_follow_url = Some(url);
         self
     }
+
+    /// Returns the mainnet chainspec.
+    pub fn mainnet() -> Self {
+        PRESTO.as_ref().clone()
+    }
 }
 
 // Required by reth's e2e-test-utils for integration tests.
