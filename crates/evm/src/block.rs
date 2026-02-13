@@ -73,7 +73,7 @@ impl ReceiptBuilder for TempoReceiptBuilder {
 
 /// The result of executing a Tempo transaction.
 ///
-/// This is an extension of [`EthTxResult`] with context necessary for commiting a Tempo transaction.
+/// This is an extension of [`EthTxResult`] with context necessary for committing a Tempo transaction.
 #[derive(Debug)]
 pub(crate) struct TempoTxResult<H> {
     /// Inner transaction execution result.
