@@ -75,6 +75,8 @@ pub struct ValidatorConfigV2 {
     address_to_index: Mapping<Address, u64>,
     pubkey_to_index: Mapping<B256, u64>,
     next_dkg_ceremony: u64,
+    active_ingress: Mapping<B256, bool>,
+    active_egress: Mapping<B256, bool>,
 }
 
 impl ValidatorConfigV2 {
@@ -241,6 +243,24 @@ impl ValidatorConfigV2 {
         })
     }
 
+    fn require_unique_ips(&self, ingress: &str, egress: &str) -> Result<()> {
+        let ingress_hash = keccak256(ingress.as_bytes());
+        if self.active_ingress[ingress_hash].read()? {
+            return Err(ValidatorConfigV2Error::ingress_already_exists(
+                ingress.to_string(),
+            ))?;
+        }
+
+        let egress_hash = keccak256(egress.as_bytes());
+        if self.active_egress[egress_hash].read()? {
+            return Err(ValidatorConfigV2Error::egress_already_exists(
+                egress.to_string(),
+            ))?;
+        }
+
+        Ok(())
+    }
+
     /// Append a new validator entry and update lookup indices.
     fn append_validator(
         &mut self,
@@ -248,9 +268,26 @@ impl ValidatorConfigV2 {
         pubkey: B256,
         ingress: String,
         egress: String,
-        block_height: u64,
+        added_at_height: u64,
+        deactivated_at_height: u64,
     ) -> Result<()> {
-        self.append_validator_raw(addr, pubkey, ingress, egress, block_height, 0)
+        let count = self.validator_count()?;
+
+        let v = ValidatorV2 {
+            public_key: pubkey,
+            validator_address: addr,
+            ingress,
+            egress,
+            index: count,
+            added_at_height,
+            deactivated_at_height,
+        };
+
+        self.validators.push(v)?;
+
+        // Update lookup indices (1-indexed)
+        self.address_to_index[addr].write(count + 1)?;
+        self.pubkey_to_index[pubkey].write(count + 1)
     }
 
     /// Validates that the address is non-zero and not already registered as active.
@@ -340,6 +377,7 @@ impl ValidatorConfigV2 {
         self.require_new_pubkey(call.publicKey)?;
         self.require_new_address(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
+        self.require_unique_ips(&call.ingress, &call.egress)?;
 
         // Verify Ed25519 signature
         self.verify_validator_signature(
@@ -352,12 +390,18 @@ impl ValidatorConfigV2 {
         )?;
 
         let block_height = self.storage.block_number();
+
+        // Track IPs before moving strings
+        self.active_ingress[keccak256(call.ingress.as_bytes())].write(true)?;
+        self.active_egress[keccak256(call.egress.as_bytes())].write(true)?;
+
         self.append_validator(
             call.validatorAddress,
             call.publicKey,
             call.ingress,
             call.egress,
             block_height,
+            0,
         )
     }
 
@@ -372,6 +416,12 @@ impl ValidatorConfigV2 {
         let block_height = self.storage.block_number();
 
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
+
+        let ingress_hash = keccak256(v.ingress.as_bytes());
+        let egress_hash = keccak256(v.egress.as_bytes());
+        self.active_ingress[ingress_hash].delete()?;
+        self.active_egress[egress_hash].delete()?;
+
         v.deactivated_at_height = block_height;
         self.validators[idx].write(v)
     }
@@ -421,6 +471,33 @@ impl ValidatorConfigV2 {
         let block_height = self.storage.block_number();
         let (idx, mut old) = self.get_active_validator(call.validatorAddress)?;
 
+        // Calculate all hashes upfront
+        let old_ingress_hash = keccak256(old.ingress.as_bytes());
+        let old_egress_hash = keccak256(old.egress.as_bytes());
+        let new_ingress_hash = keccak256(call.ingress.as_bytes());
+        let new_egress_hash = keccak256(call.egress.as_bytes());
+
+        if old.ingress != call.ingress {
+            if self.active_ingress[new_ingress_hash].read()? {
+                return Err(ValidatorConfigV2Error::ingress_already_exists(
+                    call.ingress.clone(),
+                ))?;
+            }
+
+            self.active_ingress[old_ingress_hash].delete()?;
+            self.active_ingress[new_ingress_hash].write(true)?;
+        }
+
+        if old.egress != call.egress {
+            if self.active_egress[new_egress_hash].read()? {
+                return Err(ValidatorConfigV2Error::egress_already_exists(
+                    call.egress.clone(),
+                ))?;
+            }
+            self.active_egress[old_egress_hash].delete()?;
+            self.active_egress[new_egress_hash].write(true)?;
+        }
+
         // Deactivate old entry
         old.deactivated_at_height = block_height;
         self.validators[idx].write(old)?;
@@ -432,7 +509,10 @@ impl ValidatorConfigV2 {
             call.ingress,
             call.egress,
             block_height,
-        )
+            0,
+        )?;
+
+        Ok(())
     }
 
     pub fn set_ip_addresses(
@@ -440,14 +520,61 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::setIpAddressesCall,
     ) -> Result<()> {
-        self.require_initialized_owner_or_validator(sender, call.validatorAddress)?;
+        if sender != call.validatorAddress && !self.config.read()?.is_owner(sender) {
+            return Err(ValidatorConfigV2Error::unauthorized())?;
+        }
 
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
-        v.ingress = call.ingress;
-        v.egress = call.egress;
-        self.validators[idx].write(v)
+        // Calculate all hashes upfront
+        let old_ingress_hash = keccak256(v.ingress.as_bytes());
+        let old_egress_hash = keccak256(v.egress.as_bytes());
+        let new_ingress_hash = keccak256(call.ingress.as_bytes());
+        let new_egress_hash = keccak256(call.egress.as_bytes());
+
+        // Check what changed
+        let ingress_changed = v.ingress != call.ingress;
+        let egress_changed = v.egress != call.egress;
+
+        // Only update ingress tracking if changed
+        if ingress_changed {
+            self.active_ingress[old_ingress_hash].delete()?;
+
+            // Check uniqueness
+            if self.active_ingress[new_ingress_hash].read()? {
+                return Err(ValidatorConfigV2Error::ingress_already_exists(
+                    call.ingress.clone(),
+                ))?;
+            }
+        }
+
+        // Only update egress tracking if changed
+        if egress_changed {
+            self.active_egress[old_egress_hash].delete()?;
+
+            // Check uniqueness
+            if self.active_egress[new_egress_hash].read()? {
+                return Err(ValidatorConfigV2Error::egress_already_exists(
+                    call.egress.clone(),
+                ))?;
+            }
+        }
+
+        // Update validator
+        v.ingress = call.ingress.clone();
+        v.egress = call.egress.clone();
+        self.validators[idx].write(v)?;
+
+        // Add new IPs to tracking (only if changed)
+        if ingress_changed {
+            self.active_ingress[new_ingress_hash].write(true)?;
+        }
+        if egress_changed {
+            self.active_egress[new_egress_hash].write(true)?;
+        }
+
+        Ok(())
     }
 
     pub fn transfer_validator_ownership(
@@ -463,6 +590,7 @@ impl ValidatorConfigV2 {
 
         v.validator_address = call.newAddress;
         self.validators[idx].write(v)?;
+
         self.address_to_index[call.newAddress].write(idx1)?;
         self.address_to_index[call.currentAddress].delete()
     }
@@ -529,16 +657,30 @@ impl ValidatorConfigV2 {
             .map(|sa| sa.ip().to_string())
             .unwrap_or(v1_val.outboundAddress);
 
+        self.require_unique_ips(&v1_val.inboundAddress, &egress)?;
+
         let deactivated_at_height = if v1_val.active { 0 } else { block_height };
 
-        self.append_validator_raw(
+        // Compute hashes before moving strings
+        let ingress_hash = keccak256(v1_val.inboundAddress.as_bytes());
+        let egress_hash = keccak256(egress.as_bytes());
+
+        self.append_validator(
             v1_val.validatorAddress,
             v1_val.publicKey,
             v1_val.inboundAddress,
             egress,
             block_height,
             deactivated_at_height,
-        )
+        )?;
+
+        // Track IPs for active validators only
+        if deactivated_at_height == 0 {
+            self.active_ingress[ingress_hash].write(true)?;
+            self.active_egress[egress_hash].write(true)?;
+        }
+
+        Ok(())
     }
 
     pub fn initialize_if_migrated(&mut self, sender: Address) -> Result<()> {
@@ -558,35 +700,6 @@ impl ValidatorConfigV2 {
         // Mark as initialized
         config.init_at_height = block_height.max(1);
         self.config.write(config)
-    }
-
-    /// Internal helper to append a validator with explicit height values (for migration)
-    fn append_validator_raw(
-        &mut self,
-        addr: Address,
-        pubkey: B256,
-        ingress: String,
-        egress: String,
-        added_at_height: u64,
-        deactivated_at_height: u64,
-    ) -> Result<()> {
-        let count = self.validator_count()?;
-        let v = ValidatorV2 {
-            public_key: pubkey,
-            validator_address: addr,
-            ingress,
-            egress,
-            index: count,
-            added_at_height,
-            deactivated_at_height,
-        };
-
-        // Push to Vec
-        self.validators.push(v)?;
-
-        // Update lookup indices (1-indexed)
-        self.address_to_index[addr].write(count + 1)?;
-        self.pubkey_to_index[pubkey].write(count + 1)
     }
 }
 
@@ -1618,6 +1731,264 @@ mod tests {
             // Lookup by new pubkey returns new active validator
             let by_new_pk = vc.validator_by_public_key(pubkey2)?;
             assert_eq!(by_new_pk.deactivatedAtHeight, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_add_validator_rejects_duplicate_ingress() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            vc.storage.set_block_number(201);
+            let result = vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.2.1"),
+            );
+
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_add_validator_rejects_duplicate_egress() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            vc.storage.set_block_number(201);
+            let result = vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "192.168.2.1:8000", "192.168.1.1"),
+            );
+
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ip_reuse_after_deactivation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let v1 = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            vc.storage.set_block_number(300);
+            vc.deactivate_validator(
+                owner,
+                IValidatorConfigV2::deactivateValidatorCall {
+                    validatorAddress: v1,
+                },
+            )?;
+
+            // Should allow IP reuse after deactivation
+            vc.storage.set_block_number(400);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_ip_addresses_during_migration() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let v1_addr = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // Setup V1
+            let mut v1 = v1();
+            v1.initialize(owner)?;
+            v1.add_validator(
+                owner,
+                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: v1_addr,
+                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            // Migrate to V2
+            let mut v2 = ValidatorConfigV2::new();
+            v2.storage.set_block_number(100);
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+
+            // Update IPs during migration (owner can do this pre-init)
+            v2.set_ip_addresses(
+                owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    validatorAddress: v1_addr,
+                    ingress: "10.0.0.1:8000".to_string(),
+                    egress: "10.0.0.1".to_string(),
+                },
+            )?;
+
+            let validator = v2.validator_by_address(v1_addr)?;
+            assert_eq!(validator.ingress, "10.0.0.1:8000");
+            assert_eq!(validator.egress, "10.0.0.1");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_ip_addresses_migration_rejects_non_owner() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let non_owner = Address::random();
+        let v1_addr = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut v1 = v1();
+            v1.initialize(owner)?;
+            v1.add_validator(
+                owner,
+                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: v1_addr,
+                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            let mut v2 = ValidatorConfigV2::new();
+            v2.storage.set_block_number(100);
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+
+            // Non-owner cannot update during migration
+            let result = v2.set_ip_addresses(
+                non_owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    validatorAddress: v1_addr,
+                    ingress: "10.0.0.1:8000".to_string(),
+                    egress: "10.0.0.1".to_string(),
+                },
+            );
+
+            assert_eq!(result, Err(ValidatorConfigV2Error::unauthorized().into()));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_rotate_removes_and_checks_ips() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let v1 = Address::random();
+        let v2 = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v2, "192.168.2.1:8000", "192.168.2.1"),
+            )?;
+
+            // Rotate v1 to v2's IPs should fail
+            let (new_pk, sig) = make_test_keypair_and_signature(
+                v1,
+                "192.168.2.1:8000",
+                "192.168.2.1",
+                ValidatorOperation::Rotate,
+            );
+
+            vc.storage.set_block_number(300);
+            let result = vc.rotate_validator(
+                owner,
+                IValidatorConfigV2::rotateValidatorCall {
+                    validatorAddress: v1,
+                    publicKey: new_pk,
+                    ingress: "192.168.2.1:8000".to_string(),
+                    egress: "192.168.2.1".to_string(),
+                    signature: sig.into(),
+                },
+            );
+
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_migrate_rejects_duplicate_ips() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // V1 with duplicate ingress
+            let mut v1 = v1();
+            v1.initialize(owner)?;
+            v1.add_validator(
+                owner,
+                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: Address::random(),
+                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+            v1.add_validator(
+                owner,
+                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: Address::random(),
+                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.2.1:9000".to_string(),
+                },
+            )?;
+
+            // Migrate first validator succeeds
+            let mut v2 = ValidatorConfigV2::new();
+            v2.storage.set_block_number(100);
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+
+            // Second migration should fail due to duplicate ingress
+            let result =
+                v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 });
+            assert!(result.is_err());
 
             Ok(())
         })
