@@ -1924,4 +1924,236 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_add_validator_rejects_third_party() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        let third_party = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            // Third party is neither owner nor validator_owner — should be rejected
+            let result = vc.set_ip_addresses(
+                third_party,
+                IValidatorConfigV2::setIpAddressesCall {
+                    validatorAddress: validator,
+                    ingress: "10.0.0.1:8000".to_string(),
+                    egress: "10.0.0.1".to_string(),
+                },
+            );
+            assert_eq!(result, Err(ValidatorConfigV2Error::unauthorized().into()));
+
+            let result = vc.transfer_validator_ownership(
+                third_party,
+                IValidatorConfigV2::transferValidatorOwnershipCall {
+                    currentAddress: validator,
+                    newAddress: Address::random(),
+                },
+            );
+            assert_eq!(result, Err(ValidatorConfigV2Error::unauthorized().into()));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_rotate_validator_same_ips() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            // Rotate keeping the same ingress/egress — should succeed
+            let (new_pubkey, new_sig) = make_test_keypair_and_signature(
+                validator,
+                "192.168.1.1:8000",
+                "192.168.1.1",
+                VALIDATOR_NS_ROTATE,
+            );
+            vc.storage.set_block_number(300);
+            vc.rotate_validator(
+                owner,
+                IValidatorConfigV2::rotateValidatorCall {
+                    validatorAddress: validator,
+                    publicKey: new_pubkey,
+                    ingress: "192.168.1.1:8000".to_string(),
+                    egress: "192.168.1.1".to_string(),
+                    signature: new_sig.into(),
+                },
+            )?;
+
+            assert_eq!(vc.validator_count()?, 2);
+            assert_eq!(vc.validator_by_index(0)?.deactivatedAtHeight, 300);
+            assert_eq!(vc.validator_by_index(1)?.deactivatedAtHeight, 0);
+            assert_eq!(vc.validator_by_address(validator)?.publicKey, new_pubkey);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_ip_addresses_ingress_only() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            // Change ingress only, keep egress the same
+            vc.set_ip_addresses(
+                owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    validatorAddress: validator,
+                    ingress: "10.0.0.1:8000".to_string(),
+                    egress: "192.168.1.1".to_string(),
+                },
+            )?;
+
+            let v = vc.validator_by_address(validator)?;
+            assert_eq!(v.ingress, "10.0.0.1:8000");
+            assert_eq!(v.egress, "192.168.1.1");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_ip_addresses_egress_only() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            // Change egress only, keep ingress the same
+            vc.set_ip_addresses(
+                owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    validatorAddress: validator,
+                    ingress: "192.168.1.1:8000".to_string(),
+                    egress: "10.0.0.1".to_string(),
+                },
+            )?;
+
+            let v = vc.validator_by_address(validator)?;
+            assert_eq!(v.ingress, "192.168.1.1:8000");
+            assert_eq!(v.egress, "10.0.0.1");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_validator_ownership_by_validator() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        let new_address = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            // Validator transfers its own ownership (not owner)
+            vc.transfer_validator_ownership(
+                validator,
+                IValidatorConfigV2::transferValidatorOwnershipCall {
+                    currentAddress: validator,
+                    newAddress: new_address,
+                },
+            )?;
+
+            let result = vc.validator_by_address(validator);
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::validator_not_found().into())
+            );
+
+            let v = vc.validator_by_address(new_address)?;
+            assert_eq!(v.validatorAddress, new_address);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_add_validator_rejects_deleted_pubkey() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            let addr1 = Address::random();
+            let (pubkey, sig) = make_test_keypair_and_signature(
+                addr1,
+                "192.168.1.1:8000",
+                "192.168.1.1",
+                VALIDATOR_NS_ADD,
+            );
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_add_call(addr1, pubkey, "192.168.1.1:8000", "192.168.1.1", sig),
+            )?;
+
+            // Deactivate
+            vc.storage.set_block_number(300);
+            vc.deactivate_validator(
+                owner,
+                IValidatorConfigV2::deactivateValidatorCall {
+                    validatorAddress: addr1,
+                },
+            )?;
+
+            // Try to add a new validator reusing the deleted pubkey — should fail
+            let addr2 = Address::random();
+            let result = vc.add_validator(
+                owner,
+                make_add_call(addr2, pubkey, "192.168.2.1:8000", "192.168.2.1", vec![0u8; 64]),
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::public_key_already_exists().into())
+            );
+
+            Ok(())
+        })
+    }
 }
