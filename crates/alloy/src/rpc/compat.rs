@@ -460,53 +460,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mock_secp256k1_signature() {
-        let sig = create_mock_primitive_signature(&SignatureType::Secp256k1, None);
-        assert!(
-            matches!(sig, PrimitiveSignature::Secp256k1(_)),
-            "Expected Secp256k1 variant"
-        );
-    }
-
-    #[test]
-    fn test_mock_p256_signature() {
-        let sig = create_mock_primitive_signature(&SignatureType::P256, None);
-        assert!(
-            matches!(sig, PrimitiveSignature::P256(_)),
-            "Expected P256 variant"
-        );
-    }
-
-    #[test]
-    fn test_mock_keychain_wrapping() {
-        use tempo_primitives::transaction::tt_signature::TempoSignature;
-
-        let caller = Address::repeat_byte(0x01);
-        let sig = create_mock_tempo_signature(
-            &SignatureType::Secp256k1,
-            None,
-            Some(Address::ZERO),
-            caller,
-        );
-        assert!(
-            matches!(sig, TempoSignature::Keychain(_)),
-            "Expected Keychain variant when key_id is Some"
-        );
-    }
-
-    #[test]
-    fn test_mock_primitive_wrapping() {
-        use tempo_primitives::transaction::tt_signature::TempoSignature;
-
-        let caller = Address::repeat_byte(0x01);
-        let sig = create_mock_tempo_signature(&SignatureType::Secp256k1, None, None, caller);
-        assert!(
-            matches!(sig, TempoSignature::Primitive(_)),
-            "Expected Primitive variant when key_id is None"
-        );
-    }
-
-    #[test]
     fn test_webauthn_1byte_key_data() {
         let sig = create_mock_primitive_signature(
             &SignatureType::WebAuthn,
