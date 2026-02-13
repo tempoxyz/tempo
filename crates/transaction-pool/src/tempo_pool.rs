@@ -9,12 +9,11 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash,
-    map::{AddressMap, HashMap},
+    map::{AddressMap, AddressSet, HashMap},
 };
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
-use reth_primitives_traits::Block;
 use reth_provider::{ChangedAccount, StateProviderFactory};
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
@@ -30,6 +29,7 @@ use reth_transaction_pool::{
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_primitives::Block;
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -602,6 +602,26 @@ where
         self.add_validated_transactions(origin, validated)
     }
 
+    async fn add_transactions_with_origins(
+        &self,
+        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
+    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
+        if transactions.is_empty() {
+            return Vec::new();
+        }
+        let validated = self
+            .protocol_pool
+            .validator()
+            .validate_transactions(transactions.iter().map(|(o, t)| (*o, t.clone())))
+            .await;
+
+        let mut results = Vec::with_capacity(validated.len());
+        for ((origin, _), outcome) in transactions.into_iter().zip(validated) {
+            results.push(self.add_validated_transaction(origin, outcome));
+        }
+        results
+    }
+
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
         self.protocol_pool.transaction_event_listener(tx_hash)
     }
@@ -842,6 +862,15 @@ where
         txs
     }
 
+    fn prune_transactions(
+        &self,
+        hashes: Vec<TxHash>,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
+        txs.extend(self.protocol_pool.prune_transactions(hashes));
+        txs
+    }
+
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
         self.protocol_pool.retain_unknown(announcement);
         let aa_pool = self.aa_2d_pool.read();
@@ -971,7 +1000,7 @@ where
         txs
     }
 
-    fn unique_senders(&self) -> std::collections::HashSet<Address> {
+    fn unique_senders(&self) -> AddressSet {
         let mut senders = self.protocol_pool.unique_senders();
         senders.extend(self.aa_2d_pool.read().senders_iter().copied());
         senders
@@ -1048,14 +1077,13 @@ impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
+    type Block = Block;
+
     fn set_block_info(&self, info: BlockInfo) {
         self.protocol_pool.set_block_info(info)
     }
 
-    fn on_canonical_state_change<B>(&self, update: CanonicalStateUpdate<'_, B>)
-    where
-        B: Block,
-    {
+    fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
         self.protocol_pool.on_canonical_state_change(update)
     }
 
