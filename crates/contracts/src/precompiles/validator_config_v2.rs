@@ -129,7 +129,7 @@ crate::sol! {
         error PublicKeyAlreadyExists();
         error Unauthorized();
         error ValidatorAlreadyDeleted();
-        error ValidatorAlreadyExists();
+        error AddressAlreadyHasValidator();
         error ValidatorNotFound();
     }
 }
@@ -139,8 +139,8 @@ impl ValidatorConfigV2Error {
         Self::Unauthorized(IValidatorConfigV2::Unauthorized {})
     }
 
-    pub const fn validator_already_exists() -> Self {
-        Self::ValidatorAlreadyExists(IValidatorConfigV2::ValidatorAlreadyExists {})
+    pub const fn address_already_has_validator() -> Self {
+        Self::AddressAlreadyHasValidator(IValidatorConfigV2::AddressAlreadyHasValidator {})
     }
 
     pub const fn public_key_already_exists() -> Self {
