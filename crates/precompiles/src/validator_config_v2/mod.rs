@@ -318,14 +318,13 @@ impl ValidatorConfigV2 {
             Err(ValidatorConfigV2Error::invalid_validator_address())?
         }
         let idx1 = self.address_to_index[addr].read()?;
-        if idx1 != 0 {
-            if self.validators[(idx1 - 1) as usize]
+        if idx1 != 0
+            && self.validators[(idx1 - 1) as usize]
                 .deactivated_at_height
                 .read()?
                 == 0
-            {
-                Err(ValidatorConfigV2Error::validator_already_exists())?
-            }
+        {
+            Err(ValidatorConfigV2Error::validator_already_exists())?
         }
         Ok(())
     }
