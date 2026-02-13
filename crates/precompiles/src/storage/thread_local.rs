@@ -123,6 +123,10 @@ impl StorageCtx {
         Self::with_storage(|s| s.beneficiary())
     }
 
+    pub fn block_number(&self) -> u64 {
+        Self::with_storage(|s| s.block_number())
+    }
+
     pub fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()> {
         Self::try_with_storage(|s| s.set_code(address, code))
     }
@@ -255,6 +259,11 @@ impl StorageCtx {
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     pub fn set_beneficiary(&mut self, beneficiary: Address) {
         self.as_hashmap().set_beneficiary(beneficiary)
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn set_block_number(&mut self, block_number: u64) {
+        self.as_hashmap().set_block_number(block_number)
     }
 
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`

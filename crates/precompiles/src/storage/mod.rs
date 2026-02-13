@@ -38,6 +38,14 @@ pub trait PrecompileStorageProvider {
     /// Returns the current block beneficiary (coinbase).
     fn beneficiary(&self) -> Address;
 
+    /// Returns the current block number.
+    ///
+    /// NOTE: default impl returns 0; will be removed once `howy/validator-config-v2-precompile`
+    /// lands and all implementors provide a real implementation.
+    fn block_number(&self) -> u64 {
+        0
+    }
+
     /// Sets the bytecode at the given address.
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()>;
 

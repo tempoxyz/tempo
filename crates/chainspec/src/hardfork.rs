@@ -66,9 +66,13 @@ impl TempoHardfork {
         *self >= Self::T2
     }
 
-    /// Returns the base fee for this hardfork.
-    /// - Pre-T1: 10 gwei
-    /// - T1+: 20 gwei (targets ~0.1 cent per TIP-20 transfer)
+    /// Returns the base fee for this hardfork in attodollars.
+    ///
+    /// Attodollars are the atomic gas accounting units at 10^-18 USD precision. Individual attodollars are not representable onchain (since TIP-20 tokens only have 6 decimals), but the unit is used for gas accounting.
+    /// - Pre-T1: 10 billion attodollars per gas
+    /// - T1+: 20 billion attodollars per gas (targets ~0.1 cent per TIP-20 transfer)
+    ///
+    /// Economic conversion: ceil(basefee × gas_used / 10^12) = cost in microdollars (TIP-20 tokens)
     pub const fn base_fee(&self) -> u64 {
         match self {
             Self::T1 | Self::T2 => crate::spec::TEMPO_T1_BASE_FEE,
