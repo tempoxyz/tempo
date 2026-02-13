@@ -6,8 +6,21 @@ use crate::{
 use alloy::primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
 use tempo_precompiles_macros::Storable;
+use tracing::error;
 
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
+
+macro_rules! tip20_under_overflow {
+    ($token:expr, $operation:expr, $message:literal $(, $key:ident = $value:expr )* $(,)?) => {{
+        error!(
+            token = %$token,
+            operation = $operation,
+            $($key = %$value,)*
+            $message
+        );
+        TempoPrecompileError::under_overflow()
+    }};
+}
 
 impl TIP20Token {
     /// Allows an authorized user to distribute reward tokens to opted-in recipients.
@@ -26,7 +39,7 @@ impl TIP20Token {
         self.ensure_transfer_authorized(msg_sender, token_address)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        self._transfer(msg_sender, token_address, call.amount)?;
+        self._transfer(msg_sender, token_address, call.amount, "distribute_reward")?;
 
         let opted_in_supply = U256::from(self.get_opted_in_supply()?);
         if opted_in_supply.is_zero() {
@@ -37,11 +50,27 @@ impl TIP20Token {
             .amount
             .checked_mul(ACC_PRECISION)
             .and_then(|v| v.checked_div(opted_in_supply))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .ok_or_else(|| {
+                tip20_under_overflow!(
+                    self.address,
+                    "distribute_reward",
+                    "TIP20 rewards distribute_reward: delta reward per token overflow detected",
+                    account = msg_sender,
+                    amount = call.amount,
+                    opted_in_supply = opted_in_supply
+                )
+            })?;
         let current_rpt = self.get_global_reward_per_token()?;
-        let new_rpt = current_rpt
-            .checked_add(delta_rpt)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_rpt = current_rpt.checked_add(delta_rpt).ok_or_else(|| {
+            tip20_under_overflow!(
+                self.address,
+                "distribute_reward",
+                "TIP20 rewards distribute_reward: global reward per token overflow detected",
+                account = msg_sender,
+                amount = call.amount,
+                reward_per_token = current_rpt
+            )
+        })?;
         self.set_global_reward_per_token(new_rpt)?;
 
         // Emit distributed reward event for immediate payout
@@ -67,7 +96,16 @@ impl TIP20Token {
         let global_reward_per_token = self.get_global_reward_per_token()?;
         let reward_per_token_delta = global_reward_per_token
             .checked_sub(info.reward_per_token)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .ok_or_else(|| {
+                tip20_under_overflow!(
+                    self.address,
+                    "update_rewards",
+                    "TIP20 rewards update_rewards: reward-per-token underflow detected",
+                    account = holder,
+                    delegate = cached_delegate,
+                    reward_per_token = info.reward_per_token
+                )
+            })?;
 
         if reward_per_token_delta != U256::ZERO {
             if cached_delegate != Address::ZERO {
@@ -75,20 +113,50 @@ impl TIP20Token {
                 let reward = holder_balance
                     .checked_mul(reward_per_token_delta)
                     .and_then(|v| v.checked_div(ACC_PRECISION))
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                    .ok_or_else(|| {
+                        tip20_under_overflow!(
+                            self.address,
+                            "update_rewards",
+                            "TIP20 rewards update_rewards: reward computation overflow detected",
+                            account = holder,
+                            delegate = cached_delegate,
+                            amount = holder_balance,
+                            reward_per_token = reward_per_token_delta
+                        )
+                    })?;
 
                 // Add reward to delegate's balance (or holder's own balance if self-delegated)
                 if cached_delegate == holder {
                     info.reward_balance = info
                         .reward_balance
                         .checked_add(reward)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                        .ok_or_else(|| {
+                            tip20_under_overflow!(
+                                self.address,
+                                "update_rewards",
+                                "TIP20 rewards update_rewards: self reward balance overflow detected",
+                                account = holder,
+                                delegate = cached_delegate,
+                                amount = reward,
+                                reward_per_token = reward_per_token_delta
+                            )
+                        })?;
                 } else {
                     let mut delegate_info = self.user_reward_info[cached_delegate].read()?;
                     delegate_info.reward_balance = delegate_info
                         .reward_balance
                         .checked_add(reward)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                        .ok_or_else(|| {
+                            tip20_under_overflow!(
+                                self.address,
+                                "update_rewards",
+                                "TIP20 rewards update_rewards: delegated reward balance overflow detected",
+                                account = holder,
+                                delegate = cached_delegate,
+                                amount = reward,
+                                reward_per_token = reward_per_token_delta
+                            )
+                        })?;
                     self.user_reward_info[cached_delegate].write(delegate_info)?;
                 }
             }
@@ -119,23 +187,61 @@ impl TIP20Token {
 
         if from_delegate != Address::ZERO {
             if call.recipient == Address::ZERO {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                    .checked_sub(holder_balance)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?);
+                let opted_in_supply = opted_in_supply.checked_sub(holder_balance).ok_or_else(|| {
+                    tip20_under_overflow!(
+                        self.address,
+                        "set_reward_recipient",
+                        "TIP20 rewards set_reward_recipient: opted-in supply underflow detected",
+                        account = msg_sender,
+                        delegate = from_delegate,
+                        amount = holder_balance,
+                        opted_in_supply = opted_in_supply
+                    )
+                })?;
                 self.set_opted_in_supply(
                     opted_in_supply
                         .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                        .map_err(|_| {
+                            tip20_under_overflow!(
+                                self.address,
+                                "set_reward_recipient",
+                                "TIP20 rewards set_reward_recipient: opted-in supply conversion overflow detected",
+                                account = msg_sender,
+                                delegate = from_delegate,
+                                amount = holder_balance,
+                                opted_in_supply = opted_in_supply
+                            )
+                        })?,
                 )?;
             }
         } else if call.recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(holder_balance)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?);
+            let opted_in_supply = opted_in_supply.checked_add(holder_balance).ok_or_else(|| {
+                tip20_under_overflow!(
+                    self.address,
+                    "set_reward_recipient",
+                    "TIP20 rewards set_reward_recipient: opted-in supply overflow detected",
+                    account = msg_sender,
+                    delegate = call.recipient,
+                    amount = holder_balance,
+                    opted_in_supply = opted_in_supply
+                )
+            })?;
             self.set_opted_in_supply(
                 opted_in_supply
                     .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+                    .map_err(|_| {
+                        tip20_under_overflow!(
+                            self.address,
+                            "set_reward_recipient",
+                            "TIP20 rewards set_reward_recipient: opted-in supply conversion overflow detected",
+                            account = msg_sender,
+                            delegate = call.recipient,
+                            amount = holder_balance,
+                            opted_in_supply = opted_in_supply
+                        )
+                    })?,
             )?;
         }
 
@@ -169,32 +275,71 @@ impl TIP20Token {
         let max_amount = amount.min(contract_balance);
 
         let reward_recipient = info.reward_recipient;
-        info.reward_balance = amount
-            .checked_sub(max_amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        info.reward_balance = amount.checked_sub(max_amount).ok_or_else(|| {
+            tip20_under_overflow!(
+                self.address,
+                "claim_rewards",
+                "TIP20 rewards claim_rewards: reward balance underflow detected",
+                account = msg_sender,
+                delegate = reward_recipient,
+                amount = max_amount
+            )
+        })?;
         self.user_reward_info[msg_sender].write(info)?;
 
         if max_amount > U256::ZERO {
-            let new_contract_balance = contract_balance
-                .checked_sub(max_amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let new_contract_balance =
+                contract_balance.checked_sub(max_amount).ok_or_else(|| {
+                    tip20_under_overflow!(
+                        self.address,
+                        "claim_rewards",
+                        "TIP20 rewards claim_rewards: contract balance underflow detected",
+                        account = msg_sender,
+                        delegate = reward_recipient,
+                        amount = max_amount
+                    )
+                })?;
             self.set_balance(contract_address, new_contract_balance)?;
 
             let recipient_balance = self
                 .get_balance(msg_sender)?
                 .checked_add(max_amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+                .ok_or_else(|| {
+                    tip20_under_overflow!(
+                        self.address,
+                        "claim_rewards",
+                        "TIP20 rewards claim_rewards: recipient balance overflow detected",
+                        account = msg_sender,
+                        delegate = reward_recipient,
+                        amount = max_amount
+                    )
+                })?;
             self.set_balance(msg_sender, recipient_balance)?;
 
             if reward_recipient != Address::ZERO {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                    .checked_add(max_amount)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                self.set_opted_in_supply(
-                    opted_in_supply
-                        .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?,
-                )?;
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?);
+                let opted_in_supply = opted_in_supply.checked_add(max_amount).ok_or_else(|| {
+                    tip20_under_overflow!(
+                        self.address,
+                        "claim_rewards",
+                        "TIP20 rewards claim_rewards: opted-in supply overflow detected",
+                        account = msg_sender,
+                        delegate = reward_recipient,
+                        amount = max_amount,
+                        opted_in_supply = opted_in_supply
+                    )
+                })?;
+                self.set_opted_in_supply(opted_in_supply.try_into().map_err(|_| {
+                    tip20_under_overflow!(
+                        self.address,
+                        "claim_rewards",
+                        "TIP20 rewards claim_rewards: opted-in supply conversion overflow detected",
+                        account = msg_sender,
+                        delegate = reward_recipient,
+                        amount = max_amount,
+                        opted_in_supply = opted_in_supply
+                    )
+                })?)?;
             }
 
             self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
@@ -233,29 +378,68 @@ impl TIP20Token {
         from: Address,
         to: Address,
         amount: U256,
+        operation: &'static str,
     ) -> Result<()> {
         let from_delegate = self.update_rewards(from)?;
         let to_delegate = self.update_rewards(to)?;
 
         if !from_delegate.is_zero() {
             if to_delegate.is_zero() {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                    .checked_sub(amount)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?);
+                let opted_in_supply = opted_in_supply.checked_sub(amount).ok_or_else(|| {
+                    tip20_under_overflow!(
+                        self.address,
+                        operation,
+                        "TIP20 rewards handle_rewards_on_transfer: opted-in supply underflow detected",
+                        account = from,
+                        delegate = from_delegate,
+                        amount = amount,
+                        opted_in_supply = opted_in_supply
+                    )
+                })?;
                 self.set_opted_in_supply(
                     opted_in_supply
                         .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                        .map_err(|_| {
+                            tip20_under_overflow!(
+                                self.address,
+                                operation,
+                                "TIP20 rewards handle_rewards_on_transfer: opted-in supply conversion overflow detected",
+                                account = from,
+                                delegate = from_delegate,
+                                amount = amount,
+                                opted_in_supply = opted_in_supply
+                            )
+                        })?,
                 )?;
             }
         } else if !to_delegate.is_zero() {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?);
+            let opted_in_supply = opted_in_supply.checked_add(amount).ok_or_else(|| {
+                tip20_under_overflow!(
+                    self.address,
+                    operation,
+                    "TIP20 rewards handle_rewards_on_transfer: opted-in supply overflow detected",
+                    account = to,
+                    delegate = to_delegate,
+                    amount = amount,
+                    opted_in_supply = opted_in_supply
+                )
+            })?;
             self.set_opted_in_supply(
                 opted_in_supply
                     .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+                    .map_err(|_| {
+                        tip20_under_overflow!(
+                            self.address,
+                            operation,
+                            "TIP20 rewards handle_rewards_on_transfer: opted-in supply conversion overflow detected",
+                            account = to,
+                            delegate = to_delegate,
+                            amount = amount,
+                            opted_in_supply = opted_in_supply
+                        )
+                    })?,
             )?;
         }
 
@@ -267,13 +451,32 @@ impl TIP20Token {
         let to_delegate = self.update_rewards(to)?;
 
         if !to_delegate.is_zero() {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?);
+            let opted_in_supply = opted_in_supply.checked_add(amount).ok_or_else(|| {
+                tip20_under_overflow!(
+                    self.address,
+                    "handle_rewards_on_mint",
+                    "TIP20 rewards handle_rewards_on_mint: opted-in supply overflow detected",
+                    account = to,
+                    delegate = to_delegate,
+                    amount = amount,
+                    opted_in_supply = opted_in_supply
+                )
+            })?;
             self.set_opted_in_supply(
                 opted_in_supply
                     .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+                    .map_err(|_| {
+                        tip20_under_overflow!(
+                            self.address,
+                            "handle_rewards_on_mint",
+                            "TIP20 rewards handle_rewards_on_mint: opted-in supply conversion overflow detected",
+                            account = to,
+                            delegate = to_delegate,
+                            amount = amount,
+                            opted_in_supply = opted_in_supply
+                        )
+                    })?,
             )?;
         }
 
@@ -306,23 +509,56 @@ impl TIP20Token {
                 let global_reward_per_token = self.get_global_reward_per_token()?;
                 let reward_per_token_delta = global_reward_per_token
                     .checked_sub(info.reward_per_token)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                    .ok_or_else(|| {
+                        tip20_under_overflow!(
+                            self.address,
+                            "get_pending_rewards",
+                            "TIP20 rewards get_pending_rewards: reward-per-token underflow detected",
+                            account = account,
+                            delegate = info.reward_recipient,
+                            reward_per_token = info.reward_per_token
+                        )
+                    })?;
 
                 if reward_per_token_delta > U256::ZERO {
                     let accrued = holder_balance
                         .checked_mul(reward_per_token_delta)
                         .and_then(|v| v.checked_div(ACC_PRECISION))
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                    pending = pending
-                        .checked_add(accrued)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                        .ok_or_else(|| {
+                            tip20_under_overflow!(
+                                self.address,
+                                "get_pending_rewards",
+                                "TIP20 rewards get_pending_rewards: accrued reward overflow detected",
+                                account = account,
+                                delegate = info.reward_recipient,
+                                amount = holder_balance,
+                                reward_per_token = reward_per_token_delta
+                            )
+                        })?;
+                    pending = pending.checked_add(accrued).ok_or_else(|| {
+                        tip20_under_overflow!(
+                            self.address,
+                            "get_pending_rewards",
+                            "TIP20 rewards get_pending_rewards: pending reward overflow detected",
+                            account = account,
+                            delegate = info.reward_recipient,
+                            amount = accrued
+                        )
+                    })?;
                 }
             }
         }
 
-        pending
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())
+        pending.try_into().map_err(|_| {
+            tip20_under_overflow!(
+                self.address,
+                "get_pending_rewards",
+                "TIP20 rewards get_pending_rewards: pending reward conversion overflow detected",
+                account = account,
+                delegate = info.reward_recipient,
+                amount = pending
+            )
+        })
     }
 }
 
@@ -349,10 +585,13 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, capture_error_logs},
         tip403_registry::TIP403Registry,
     };
-    use alloy::primitives::{Address, U256};
+    use alloy::{
+        primitives::{Address, U256},
+        sol_types::PanicKind,
+    };
     use tempo_contracts::precompiles::{ITIP403Registry, TIP20Error};
 
     #[test]
@@ -387,6 +626,90 @@ mod tests {
             assert_eq!(info.reward_recipient, Address::ZERO);
             assert_eq!(token.get_opted_in_supply()?, 0u128);
             assert_eq!(info.reward_per_token, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_overflow_logging_set_reward_recipient_opted_in_supply() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(1))
+                .apply()?;
+
+            token.set_opted_in_supply(u128::MAX)?;
+            let (result, logs) = capture_error_logs(|| {
+                token.set_reward_recipient(
+                    alice,
+                    ITIP20::setRewardRecipientCall { recipient: alice },
+                )
+            });
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::Panic(PanicKind::UnderOverflow))
+            ));
+            assert!(
+                logs.contains("TIP20 rewards set_reward_recipient: opted-in supply"),
+                "expected contextual overflow log is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains("operation=\"set_reward_recipient\""),
+                "expected operation field is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains("token=") && logs.contains("account=") && logs.contains("delegate="),
+                "expected structured fields are missing; logs: {logs}"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_overflow_logging_distribute_reward_global_rpt_overflow() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(1000))
+                .with_mint(admin, U256::from(100))
+                .apply()?;
+
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+            token.set_global_reward_per_token(U256::MAX)?;
+
+            let (result, logs) = capture_error_logs(|| {
+                token.distribute_reward(
+                    admin,
+                    ITIP20::distributeRewardCall {
+                        amount: U256::from(100),
+                    },
+                )
+            });
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::Panic(PanicKind::UnderOverflow))
+            ));
+            assert!(
+                logs.contains("TIP20 rewards distribute_reward: global reward per token overflow"),
+                "expected distribute_reward global RPT overflow log is missing; logs: {logs}"
+            );
+            assert!(
+                logs.contains("operation=\"distribute_reward\""),
+                "expected operation field is missing; logs: {logs}"
+            );
 
             Ok(())
         })
