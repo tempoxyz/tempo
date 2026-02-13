@@ -48,12 +48,17 @@ struct ValidatorV2 {
 #[derive(Debug, Storable)]
 struct Config {
     owner: Address,
+    is_init: bool,
     init_at_height: u64,
 }
 
 impl Config {
-    fn is_initialized(&self) -> bool {
-        self.init_at_height != 0
+    fn new(owner: Address, is_init: bool, init_at_height: u64) -> Self {
+        Self {
+            owner,
+            is_init,
+            init_at_height,
+        }
     }
 
     fn is_owner(&self, addr: Address) -> bool {
@@ -77,12 +82,18 @@ pub struct ValidatorConfigV2 {
 }
 
 impl ValidatorConfigV2 {
-    pub fn initialize(&mut self, owner: Address) -> Result<()> {
+    /// Initializes the precompile (must always be called) and sets its owner.
+    ///
+    /// IMPORTANT: when initialized with `needs_migration`, the config initialization flag
+    /// won't be activated until `fn initialized_if_migrated` is called by the owner.
+    pub fn initialize(&mut self, owner: Address, needs_migration: bool) -> Result<()> {
         trace!(address=%self.address, %owner, "Initializing validator config v2 precompile");
         self.__initialize()?;
-        let config = Config {
-            owner,
-            init_at_height: self.storage.block_number().max(1),
+
+        let config = if needs_migration {
+            Config::new(owner, false, 0)
+        } else {
+            Config::new(owner, true, self.storage.block_number())
         };
 
         self.config.write(config)
@@ -101,12 +112,12 @@ impl ValidatorConfigV2 {
     }
 
     pub fn is_initialized(&self) -> Result<bool> {
-        self.config.read().map(|c| c.is_initialized())
+        self.config.is_init.read()
     }
 
     fn require_initialized(&self) -> Result<Config> {
         let config = self.config.read()?;
-        if !config.is_initialized() {
+        if !config.is_init {
             Err(ValidatorConfigV2Error::not_initialized())?
         }
         Ok(config)
@@ -549,7 +560,7 @@ impl ValidatorConfigV2 {
     /// config for reuse.
     fn require_migration_owner(&mut self, caller: Address) -> Result<Config> {
         let mut config = self.config.read()?;
-        if config.is_initialized() {
+        if config.is_init {
             Err(ValidatorConfigV2Error::already_initialized())?
         }
 
@@ -557,6 +568,7 @@ impl ValidatorConfigV2 {
             config.owner = v1().owner()?;
             self.config.write(Config {
                 owner: config.owner,
+                is_init: false,
                 init_at_height: 0,
             })?;
         }
@@ -619,7 +631,6 @@ impl ValidatorConfigV2 {
 
     pub fn initialize_if_migrated(&mut self, sender: Address) -> Result<()> {
         let mut config = self.require_migration_owner(sender)?;
-        let block_height = self.storage.block_number();
         let v1 = v1();
 
         if self.validator_count()? < v1.validator_count()? {
@@ -629,7 +640,9 @@ impl ValidatorConfigV2 {
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;
         self.next_dkg_ceremony.write(v1_next_dkg)?;
 
-        config.init_at_height = block_height.max(1);
+        // Initialize the precompile config
+        config.init_at_height = self.storage.block_number();
+        config.is_init = true;
         self.config.write(config)
     }
 }
@@ -718,12 +731,11 @@ mod tests {
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             assert_eq!(vc.owner()?, owner);
             assert!(vc.is_initialized()?);
-            // block_number is 0 in test storage, clamped to 1 as sentinel guard
-            assert_eq!(vc.get_initialized_at_height()?, 1);
+            assert_eq!(vc.get_initialized_at_height()?, 0);
             assert_eq!(vc.validator_count()?, 0);
 
             Ok(())
@@ -737,7 +749,7 @@ mod tests {
         let validator = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             let (pubkey, signature) = make_test_keypair_and_signature(
                 validator,
@@ -783,7 +795,7 @@ mod tests {
         let non_owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             let result = vc.add_validator(
                 non_owner,
@@ -801,7 +813,7 @@ mod tests {
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             let result = vc.add_validator(
                 owner,
@@ -829,7 +841,7 @@ mod tests {
         let validator = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -857,7 +869,7 @@ mod tests {
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             // First validator
             let addr1 = Address::random();
@@ -902,7 +914,7 @@ mod tests {
         let validator = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -947,7 +959,7 @@ mod tests {
         let third_party = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -999,7 +1011,7 @@ mod tests {
         let validator = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             // Add initial validator and track the old key
             let (old_pubkey, old_sig) = make_test_keypair_and_signature(
@@ -1074,7 +1086,7 @@ mod tests {
         let v2 = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1114,7 +1126,7 @@ mod tests {
         let validator = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1159,7 +1171,7 @@ mod tests {
         let new_owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             vc.transfer_ownership(
                 owner,
@@ -1189,7 +1201,7 @@ mod tests {
         let new_address = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             let (pubkey, sig) = make_test_keypair_and_signature(
                 validator,
@@ -1234,7 +1246,7 @@ mod tests {
         let validator = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1272,7 +1284,7 @@ mod tests {
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             assert_eq!(vc.get_next_full_dkg_ceremony()?, 0);
 
@@ -1299,12 +1311,8 @@ mod tests {
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.__initialize()?;
-            // Write config with owner but init_at_height=0 (not initialized)
-            vc.config.write(Config {
-                owner,
-                init_at_height: 0,
-            })?;
+            // Write config with owner but not initialized (needs migration)
+            vc.initialize(owner, true)?;
 
             let result = vc.add_validator(
                 owner,
@@ -1325,7 +1333,7 @@ mod tests {
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             let addr1 = Address::random();
             let (pubkey1, sig1) = make_test_keypair_and_signature(
@@ -1390,6 +1398,7 @@ mod tests {
 
             // Now migrate to V2
             let mut v2 = ValidatorConfigV2::new();
+            v2.initialize(owner, true)?;
 
             // Migrate first validator
             v2.storage.set_block_number(100);
@@ -1453,6 +1462,8 @@ mod tests {
 
             // Migrate to V2
             let mut v2 = ValidatorConfigV2::new();
+            v2.initialize(owner, true)?;
+
             v2.storage.set_block_number(100);
             v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
             v2.storage.set_block_number(400);
@@ -1586,7 +1597,7 @@ mod tests {
         let validator_addr = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             // Add first validator
             let (pubkey1, sig1) = make_test_keypair_and_signature(
@@ -1673,7 +1684,7 @@ mod tests {
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1698,7 +1709,7 @@ mod tests {
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1724,7 +1735,7 @@ mod tests {
         let v1 = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1844,7 +1855,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+            vc.initialize(owner, false)?;
 
             vc.storage.set_block_number(200);
             vc.add_validator(
