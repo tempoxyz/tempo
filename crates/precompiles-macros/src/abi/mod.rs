@@ -89,7 +89,6 @@ use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 use syn::ItemMod;
 
-use crate::{SolidityConfig, utils::to_pascal_case};
 use parser::{ConstantDef, InterfaceDef, SolStructDef, SolidityModule, UnitEnumDef};
 use registry::TypeRegistry;
 
@@ -295,7 +294,7 @@ fn generate_getter_metadata(_mod_name: &Ident, interfaces: &[InterfaceDef]) -> T
 }
 
 /// Main expansion entry point for `#[abi]` attribute macro.
-pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<TokenStream> {
+pub(crate) fn expand(item: ItemMod) -> syn::Result<TokenStream> {
     let module = SolidityModule::parse(item)?;
     let registry = TypeRegistry::from_module(&module)?;
 
@@ -418,34 +417,7 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
         module.event.is_some(),
     );
 
-    let reexports = if config.no_reexport {
-        quote! {}
-    } else {
-        // Compute the interface alias name (used for sibling reexports)
-        let alias_name = format!("I{}", to_pascal_case(&mod_name.to_string()));
-        let alias_ident = format_ident!("{}", alias_name);
-
-        quote! {
-            #[doc(hidden)]
-            #vis use self::#mod_name::*;
-
-            #[allow(non_snake_case)]
-            #[doc = concat!("Interface alias for [`", stringify!(#mod_name), "`].")]
-            #vis mod #alias_ident {
-                #![allow(ambiguous_glob_reexports)]
-                pub use super::#mod_name::*;
-            }
-        }
-    };
-
-    let rustfmt_skip = if config.fmt {
-        quote! {}
-    } else {
-        quote! { #[rustfmt::skip] }
-    };
-
     Ok(quote! {
-        #rustfmt_skip
         #[allow(non_camel_case_types, non_snake_case, clippy::pub_underscore_fields, clippy::style, clippy::empty_structs_with_brackets, clippy::too_many_arguments)]
         #vis mod #mod_name {
             #(#imports)*
@@ -478,8 +450,6 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
 
             #submodules
         }
-
-        #reexports
     })
 }
 

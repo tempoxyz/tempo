@@ -39,7 +39,10 @@ struct ContractConfig {
     /// `abi = abi::IFeeManager` for path-style, or `abi = [abi::IFeeManager, abi::IFeeAMM]` for multiple modules.
     abi: Option<Vec<syn::Path>>,
     /// Whether to generate `Dispatch` and `Precompile` impls (requires `abi`).
-    dispatch: bool,
+    /// - `None` → no dispatch
+    /// - `Some(None)` → bare `dispatch` (all hardforks)
+    /// - `Some(Some(path))` → `dispatch(TempoHardfork::TX)` (gated to TX+)
+    dispatch: Option<Option<syn::Path>>,
 }
 
 impl Parse for ContractConfig {
@@ -81,7 +84,14 @@ impl Parse for ContractConfig {
                     }
                 }
                 "dispatch" => {
-                    config.dispatch = true;
+                    if input.peek(syn::token::Paren) {
+                        let content;
+                        syn::parenthesized!(content in input);
+                        let hardfork: syn::Path = content.parse()?;
+                        config.dispatch = Some(Some(hardfork));
+                    } else {
+                        config.dispatch = Some(None);
+                    }
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -116,6 +126,7 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 /// - `#[contract(abi = IFeeManager)]` - Link to a custom-named ABI module instead of `abi`
 /// - `#[contract(abi = [IFeeManager, IFeeAMM], dispatch)]` - Compose multiple ABI modules (import them first) into a unified `{Name}Calls` enum
 /// - `#[contract(abi, dispatch)]` - Same as above plus `Dispatch` and `Precompile` impls (adds initialization check for dynamic precompiles)
+/// - `#[contract(abi, dispatch(TempoHardfork::T2))]` - Same as `dispatch` but the entire contract is gated behind the specified hardfork (returns `unknown_selector` for all calls before it)
 ///
 /// # Storage Layout Example
 ///
@@ -210,45 +221,7 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// Configuration parsed from `#[abi(...)]` attribute arguments.
-#[derive(Default)]
-pub(crate) struct SolidityConfig {
-    /// Disable auto re-export of module contents.
-    pub no_reexport: bool,
-    /// Allow rustfmt on generated code (by default, `#[rustfmt::skip]` is added).
-    pub fmt: bool,
-}
 
-impl Parse for SolidityConfig {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let mut config = Self::default();
-
-        while !input.is_empty() {
-            let ident: Ident = input.parse()?;
-            match ident.to_string().as_str() {
-                "no_reexport" => {
-                    config.no_reexport = true;
-                }
-                "fmt" => {
-                    config.fmt = true;
-                }
-                other => {
-                    return Err(syn::Error::new(
-                        ident.span(),
-                        format!("unknown attribute `{other}`, expected `no_reexport` or `fmt`"),
-                    ));
-                }
-            }
-
-            // Consume optional trailing comma
-            if input.peek(Token![,]) {
-                input.parse::<Token![,]>()?;
-            }
-        }
-
-        Ok(config)
-    }
-}
 
 /// Unified module macro for generating Solidity-compatible types.
 ///
@@ -256,32 +229,8 @@ impl Parse for SolidityConfig {
 /// enabling correct selector computation for functions with struct parameters
 /// and proper EIP-712 component tracking for nested structs.
 ///
-/// # Attributes
-///
-/// - `#[abi]` - Default behavior with auto re-exports and `#[rustfmt::skip]`
-/// - `#[abi(fmt)]` - Allow rustfmt on generated code (omit `#[rustfmt::skip]`)
-/// - `#[abi(no_reexport)]` - Disable auto re-export behavior
-///
 /// The `Dispatch` trait and `precompile_call` helper are automatically generated,
-/// gated by `#[cfg(feature = "precompile")]`.
-///
-/// # Auto Re-exports
-///
-/// By default, the macro generates sibling re-export items after the module:
-///
-/// ```ignore
-/// #[abi]
-/// pub mod tip20 { ... }
-///
-/// // Auto-generated:
-/// pub use self::tip20::*;
-/// #[allow(non_snake_case)]
-/// pub mod ITip20 { pub use super::tip20::*; }
-/// ```
-///
-/// The interface alias uses PascalCase naming: `tip20` → `ITip20`, `roles_auth` → `IRolesAuth`.
-///
-/// Use `#[abi(no_reexport)]` to disable this behavior.
+/// gated by `#[cfg(feature = "precompiles")]`.
 ///
 /// # Naming Conventions
 ///
@@ -392,10 +341,17 @@ impl Parse for SolidityConfig {
 /// ```
 #[proc_macro_attribute]
 pub fn abi(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let config = parse_macro_input!(attr as SolidityConfig);
+    if !attr.is_empty() {
+        return syn::Error::new_spanned(
+            proc_macro2::TokenStream::from(attr),
+            "`#[abi]` does not accept arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
     let input = parse_macro_input!(item as syn::ItemMod);
 
-    match abi::expand(input, config) {
+    match abi::expand(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
@@ -413,7 +369,7 @@ fn gen_contract_output(
 
     let abi_aliases = if let Some(abi_mods) = &config.abi {
         let is_dynamic = config.address.is_none();
-        composition::generate_abi_aliases(&ident, abi_mods, config.dispatch, is_dynamic)?
+        composition::generate_abi_aliases(&ident, abi_mods, &config.dispatch, is_dynamic)?
     } else {
         proc_macro2::TokenStream::new()
     };

@@ -115,6 +115,14 @@ pub(crate) fn expand_composed_calls(
         })
         .collect();
 
+    let min_data_lengths: Vec<_> = sources
+        .iter()
+        .map(|s| {
+            let c = &s.calls_ty;
+            quote! { <#c as #sol::SolInterface>::MIN_DATA_LENGTH }
+        })
+        .collect();
+
     let decode: Vec<_> = sources
         .iter()
         .map(|s| {
@@ -123,6 +131,32 @@ pub(crate) fn expand_composed_calls(
             quote! {
                 if <#c as #sol::SolInterface>::valid_selector(sel) {
                     return <#c as #sol::SolInterface>::abi_decode(data).map(Self::#v);
+                }
+            }
+        })
+        .collect();
+
+    let decode_raw: Vec<_> = sources
+        .iter()
+        .map(|s| {
+            let v = &s.variant;
+            let c = &s.calls_ty;
+            quote! {
+                if <#c as #sol::SolInterface>::valid_selector(sel) {
+                    return <#c as #sol::SolInterface>::abi_decode_raw(sel, data).map(Self::#v);
+                }
+            }
+        })
+        .collect();
+
+    let decode_raw_validate: Vec<_> = sources
+        .iter()
+        .map(|s| {
+            let v = &s.variant;
+            let c = &s.calls_ty;
+            quote! {
+                if <#c as #sol::SolInterface>::valid_selector(sel) {
+                    return <#c as #sol::SolInterface>::abi_decode_raw_validate(sel, data).map(Self::#v);
                 }
             }
         })
@@ -210,16 +244,25 @@ pub(crate) fn expand_composed_calls(
 
         impl #sol::SolInterface for #enum_name {
             const NAME: &'static str = stringify!(#enum_name);
-            const MIN_DATA_LENGTH: usize = 0;
+            const MIN_DATA_LENGTH: usize = {
+                let mut min: usize = usize::MAX;
+                #(
+                    if #min_data_lengths < min { min = #min_data_lengths; }
+                )*
+                min
+            };
             const COUNT: usize = #(#counts)+*;
             #[inline] fn selector(&self) -> [u8; 4] { match self { #(#sel_match),* } }
             #[inline] fn selector_at(i: usize) -> Option<[u8; 4]> { Self::SELECTORS.get(i).copied() }
             #[inline] fn valid_selector(s: [u8; 4]) -> bool { Self::valid_selector(s) }
             #[inline] fn abi_decode_raw(sel: [u8; 4], data: &[u8]) -> #sol::Result<Self> {
-                let mut buf = Vec::with_capacity(4 + data.len()); buf.extend_from_slice(&sel); buf.extend_from_slice(data);
-                Self::abi_decode(&buf)
+                #(#decode_raw)*
+                Err(#sol::Error::unknown_selector(<Self as #sol::SolInterface>::NAME, sel))
             }
-            #[inline] fn abi_decode_raw_validate(sel: [u8; 4], data: &[u8]) -> #sol::Result<Self> { Self::abi_decode_raw(sel, data) }
+            #[inline] fn abi_decode_raw_validate(sel: [u8; 4], data: &[u8]) -> #sol::Result<Self> {
+                #(#decode_raw_validate)*
+                Err(#sol::Error::unknown_selector(<Self as #sol::SolInterface>::NAME, sel))
+            }
             #[inline] fn abi_encoded_size(&self) -> usize { match self { #(#size_match),* } }
             #[inline] fn abi_encode_raw(&self, out: &mut Vec<u8>) { match self { #(#enc_match),* } }
         }
@@ -255,7 +298,7 @@ fn init_check_block(is_dynamic: bool, uninit_error_path: TokenStream) -> TokenSt
 pub(crate) fn generate_abi_aliases(
     struct_name: &Ident,
     abi_mods: &[Path],
-    dispatch: bool,
+    dispatch: &Option<Option<syn::Path>>,
     is_dynamic: bool,
 ) -> syn::Result<TokenStream> {
     if abi_mods.len() == 1 {
@@ -273,11 +316,28 @@ fn path_last_segment_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Generate the hardfork guard block for contract-level dispatch gating.
+///
+/// When present, this check runs before any selector decoding, returning
+/// `unknown_selector` for all calls if the hardfork is not yet active.
+fn dispatch_hardfork_guard(hardfork: &syn::Path) -> TokenStream {
+    quote! {
+        {
+            let sel: [u8; 4] = calldata.get(..4)
+                .and_then(|s| s.try_into().ok())
+                .unwrap_or_default();
+            if crate::storage::StorageCtx.spec() < #hardfork {
+                return crate::dispatch::unknown_selector(sel, crate::storage::StorageCtx.gas_used());
+            }
+        }
+    }
+}
+
 /// Generate aliases and impls for a single ABI module.
 fn generate_single_module_aliases(
     struct_name: &Ident,
     abi_mod: &Path,
-    dispatch: bool,
+    dispatch: &Option<Option<syn::Path>>,
     is_dynamic: bool,
 ) -> syn::Result<TokenStream> {
     let calls_alias = format_ident!("{}Calls", struct_name);
@@ -286,8 +346,12 @@ fn generate_single_module_aliases(
     let mod_name = path_last_segment_name(abi_mod);
     let iconstants_name = format_ident!("{}Constants", crate::utils::to_pascal_case(&mod_name));
 
-    let dispatch_impls = if dispatch {
+    let dispatch_impls = if let Some(dispatch_hardfork) = dispatch {
         let init_check = init_check_block(is_dynamic, quote! { #abi_mod::Uninitialized });
+        let hardfork_guard = dispatch_hardfork
+            .as_ref()
+            .map(dispatch_hardfork_guard)
+            .unwrap_or_default();
 
         quote! {
             impl #abi_mod::Dispatch for #struct_name {}
@@ -305,6 +369,8 @@ fn generate_single_module_aliases(
                         .map_err(|_| ::revm::precompile::PrecompileError::OutOfGas)?;
 
                     #init_check
+
+                    #hardfork_guard
 
                     #abi_mod::precompile_call(self, calldata, msg_sender)
                 }
@@ -347,7 +413,7 @@ fn generate_single_module_aliases(
 fn generate_multi_module_aliases(
     struct_name: &Ident,
     abi_mods: &[Path],
-    dispatch: bool,
+    dispatch: &Option<Option<syn::Path>>,
     is_dynamic: bool,
 ) -> syn::Result<TokenStream> {
     let calls_alias = format_ident!("{}Calls", struct_name);
@@ -384,12 +450,13 @@ fn generate_multi_module_aliases(
         .collect();
 
     // Generate dispatch if requested
-    let dispatch_impls = if dispatch {
+    let dispatch_impls = if let Some(dispatch_hardfork) = dispatch {
         generate_multi_module_dispatch(
             struct_name,
             abi_mods,
             &variant_names,
             &calls_alias,
+            dispatch_hardfork.as_ref(),
             is_dynamic,
         )
     } else {
@@ -411,6 +478,7 @@ fn generate_multi_module_dispatch(
     abi_mods: &[Path],
     variant_names: &[Ident],
     calls_alias: &Ident,
+    hardfork: Option<&syn::Path>,
     is_dynamic: bool,
 ) -> TokenStream {
     let dispatch_arms: Vec<TokenStream> = variant_names
@@ -425,6 +493,7 @@ fn generate_multi_module_dispatch(
 
     let first_mod = &abi_mods[0];
     let init_check = init_check_block(is_dynamic, quote! { #first_mod::Uninitialized });
+    let hardfork_guard = hardfork.map(dispatch_hardfork_guard).unwrap_or_default();
 
     quote! {
         // Implement each module's Dispatch for the struct
@@ -448,6 +517,8 @@ fn generate_multi_module_dispatch(
                     .map_err(|_| ::revm::precompile::PrecompileError::OutOfGas)?;
 
                 #init_check
+
+                #hardfork_guard
 
                 crate::dispatch::dispatch_call(calldata, #calls_alias::abi_decode, |call| {
                     match call {
