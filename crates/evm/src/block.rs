@@ -374,6 +374,7 @@ where
         let (tx_env, recovered) = tx.into_parts();
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
+        // If we are dealing with a subblock transaction, configure the fee recipient context.
         if let Some(validator) = recovered.tx().subblock_proposer() {
             let fee_recipient = *self
                 .subblock_fee_recipients
