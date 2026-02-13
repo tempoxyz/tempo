@@ -640,6 +640,8 @@ impl ValidatorConfigV2 {
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;
         self.next_dkg_ceremony.write(v1_next_dkg)?;
 
+        trace!(address=%self.address, "Initializing validator config v2 precompile after migration");
+
         // Initialize the precompile config
         config.init_at_height = self.storage.block_number();
         config.is_init = true;
