@@ -12,6 +12,7 @@ use alloy::{
 use alloy_eips::{eip2718::Encodable2718, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 use alloy_network::TxSignerSync;
 use alloy_primitives::Bytes;
+use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP};
 
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
@@ -52,15 +53,16 @@ async fn test_post_t1_tx_at_osaka_limit() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, MAX_TX_GAS_LIMIT_OSAKA);
-    let _ = provider.send_raw_transaction(&raw_tx).await?;
+    let pending = provider.send_raw_transaction(&raw_tx).await?;
+    let expected_hash = *pending.tx_hash();
     let payload = setup.node.advance_block().await?;
 
-    let all_txs: Vec<_> = payload.block().body().transactions().cloned().collect();
-    let user_txs: Vec<_> = all_txs
-        .into_iter()
-        .filter(|tx| tx.gas_limit() > 0)
-        .collect();
-    assert_eq!(user_txs.len(), 1, "tx at 16M should be included");
+    let included = payload
+        .block()
+        .body()
+        .transactions()
+        .any(|tx| *tx.tx_hash() == expected_hash);
+    assert!(included, "tx at 16M should be included in block");
 
     Ok(())
 }
@@ -79,18 +81,18 @@ async fn test_post_t1_tx_above_osaka_below_tempo_cap() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, 20_000_000);
-    let _ = provider.send_raw_transaction(&raw_tx).await?;
+    let pending = provider.send_raw_transaction(&raw_tx).await?;
+    let expected_hash = *pending.tx_hash();
     let payload = setup.node.advance_block().await?;
 
-    let all_txs: Vec<_> = payload.block().body().transactions().cloned().collect();
-    let user_txs: Vec<_> = all_txs
-        .into_iter()
-        .filter(|tx| tx.gas_limit() > 0)
-        .collect();
-    assert_eq!(
-        user_txs.len(),
-        1,
-        "tx at 20M should be included (TIP-1010 cap is 30M)"
+    let included = payload
+        .block()
+        .body()
+        .transactions()
+        .any(|tx| *tx.tx_hash() == expected_hash);
+    assert!(
+        included,
+        "tx at 20M should be included in block (TIP-1010 cap is 30M)"
     );
 
     Ok(())
@@ -110,18 +112,18 @@ async fn test_post_t1_tx_at_tempo_cap() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, TEMPO_T1_TX_GAS_LIMIT_CAP);
-    let _ = provider.send_raw_transaction(&raw_tx).await?;
+    let pending = provider.send_raw_transaction(&raw_tx).await?;
+    let expected_hash = *pending.tx_hash();
     let payload = setup.node.advance_block().await?;
 
-    let all_txs: Vec<_> = payload.block().body().transactions().cloned().collect();
-    let user_txs: Vec<_> = all_txs
-        .into_iter()
-        .filter(|tx| tx.gas_limit() > 0)
-        .collect();
-    assert_eq!(
-        user_txs.len(),
-        1,
-        "tx at Tempo's 30M cap should be included"
+    let included = payload
+        .block()
+        .body()
+        .transactions()
+        .any(|tx| *tx.tx_hash() == expected_hash);
+    assert!(
+        included,
+        "tx at Tempo's 30M cap should be included in block"
     );
 
     Ok(())
@@ -173,19 +175,16 @@ async fn test_pre_t1_tx_above_30m() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(&signer, chain_id, 0, 50_000_000);
-    let _ = provider.send_raw_transaction(&raw_tx).await?;
+    let pending = provider.send_raw_transaction(&raw_tx).await?;
+    let expected_hash = *pending.tx_hash();
     let payload = setup.node.advance_block().await?;
 
-    let all_txs: Vec<_> = payload.block().body().transactions().cloned().collect();
-    let user_txs: Vec<_> = all_txs
-        .into_iter()
-        .filter(|tx| tx.gas_limit() > 0)
-        .collect();
-    assert_eq!(
-        user_txs.len(),
-        1,
-        "pre-T1 should allow tx with gas_limit > 30M"
-    );
+    let included = payload
+        .block()
+        .body()
+        .transactions()
+        .any(|tx| *tx.tx_hash() == expected_hash);
+    assert!(included, "pre-T1 should allow tx with gas_limit > 30M");
 
     Ok(())
 }
