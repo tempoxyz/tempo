@@ -1,21 +1,25 @@
 //! Stablecoin DEX types and utilities.
+pub mod abi;
 pub mod dispatch;
 pub mod error;
 pub mod order;
 pub mod orderbook;
 
-pub use order::Order;
+pub use abi::{IStablecoinDEX, IStablecoinDEX::prelude::*};
+
+#[cfg(feature = "precompile")]
+pub use abi::IStablecoinDEX::Interface;
+
 pub use orderbook::{
-    MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel, base_to_quote,
-    quote_to_base, tick_to_price, validate_tick_spacing,
+    Orderbook, RoundingDirection, TickLevel, base_to_quote, quote_to_base, tick_to_price,
+    validate_tick_spacing,
 };
 use tempo_contracts::precompiles::PATH_USD_ADDRESS;
-pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, StablecoinDEXEvents};
 
 use crate::{
     STABLECOIN_DEX_ADDRESS,
     error::{Result, TempoPrecompileError},
-    stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
+    stablecoin_dex::orderbook::compute_book_key,
     storage::{Handler, Mapping},
     tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
     tip20_factory::{ITIP20Factory::traits::*, TIP20Factory},
@@ -24,13 +28,7 @@ use crate::{
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
 
-/// Minimum order size of $100 USD
-pub const MIN_ORDER_AMOUNT: u128 = 100_000_000;
-
-/// Allowed tick spacing for order placement
-pub const TICK_SPACING: i16 = 10;
-
-#[contract(addr = STABLECOIN_DEX_ADDRESS)]
+#[contract(addr = STABLECOIN_DEX_ADDRESS, abi = IStablecoinDEX, dispatch)]
 pub struct StablecoinDEX {
     books: Mapping<B256, Orderbook>,
     orders: Mapping<u128, Order>,
@@ -40,11 +38,6 @@ pub struct StablecoinDEX {
 }
 
 impl StablecoinDEX {
-    /// Stablecoin DEX address
-    pub fn address(&self) -> Address {
-        self.address
-    }
-
     /// Initializes the contract
     ///
     /// This ensures the [`StablecoinDEX`] isn't empty and prevents state clear.
@@ -53,51 +46,10 @@ impl StablecoinDEX {
         self.__initialize()
     }
 
-    /// Read next order ID (always at least 1)
-    fn next_order_id(&self) -> Result<u128> {
-        Ok(self.next_order_id.read()?.max(1))
-    }
-
     /// Increment next order ID
     fn increment_next_order_id(&mut self) -> Result<()> {
         let next_order_id = self.next_order_id()?;
         self.next_order_id.write(next_order_id + 1)
-    }
-
-    /// Get user's balance for a specific token
-    pub fn balance_of(&self, user: Address, token: Address) -> Result<u128> {
-        self.balances[user][token].read()
-    }
-
-    /// Get MIN_PRICE value
-    pub fn min_price(&self) -> u32 {
-        MIN_PRICE
-    }
-
-    /// Get MAX_PRICE value
-    pub fn max_price(&self) -> u32 {
-        MAX_PRICE
-    }
-
-    /// Validates that a trading pair exists or creates the pair
-    fn validate_or_create_pair(&mut self, book: &Orderbook, token: Address) -> Result<()> {
-        if book.base.is_zero() {
-            self.create_pair(token)?;
-        }
-        Ok(())
-    }
-
-    /// Fetch order from storage. If the order is currently pending or filled, this function returns
-    /// `StablecoinDEXError::OrderDoesNotExist`
-    pub fn get_order(&self, order_id: u128) -> Result<Order> {
-        let order = self.orders[order_id].read()?;
-
-        // If the order is not filled and currently active
-        if !order.maker().is_zero() && order.order_id() < self.next_order_id()? {
-            Ok(order)
-        } else {
-            Err(StablecoinDEXError::order_does_not_exist().into())
-        }
     }
 
     /// Set user's balance for a specific token
@@ -132,17 +84,13 @@ impl StablecoinDEX {
         amount_filled: u128,
         partial_fill: bool,
     ) -> Result<()> {
-        self.emit_event(StablecoinDEXEvents::OrderFilled(
-            IStablecoinDEX::OrderFilled {
-                orderId: order_id,
-                maker,
-                taker,
-                amountFilled: amount_filled,
-                partialFill: partial_fill,
-            },
-        ))?;
-
-        Ok(())
+        self.emit_event(StablecoinDEXEvent::order_filled(
+            order_id,
+            maker,
+            taker,
+            amount_filled,
+            partial_fill,
+        ))
     }
 
     /// Transfer tokens, accounting for pathUSD
@@ -191,8 +139,10 @@ impl StablecoinDEX {
             self.set_balance(user, token, 0)
         }
     }
+}
 
-    pub fn quote_swap_exact_amount_out(
+impl IStablecoinDEX::Interface for StablecoinDEX {
+    fn quote_swap_exact_amount_out(
         &self,
         token_in: Address,
         token_out: Address,
@@ -210,7 +160,7 @@ impl StablecoinDEX {
         Ok(current_amount)
     }
 
-    pub fn quote_swap_exact_amount_in(
+    fn quote_swap_exact_amount_in(
         &self,
         token_in: Address,
         token_out: Address,
@@ -228,9 +178,9 @@ impl StablecoinDEX {
         Ok(current_amount)
     }
 
-    pub fn swap_exact_amount_in(
+    fn swap_exact_amount_in(
         &mut self,
-        sender: Address,
+        msg_sender: Address,
         token_in: Address,
         token_out: Address,
         amount_in: u128,
@@ -240,13 +190,13 @@ impl StablecoinDEX {
         let route = self.find_trade_path(token_in, token_out)?;
 
         // Deduct input tokens from sender (only once, at the start)
-        self.decrement_balance_or_transfer_from(sender, token_in, amount_in)?;
+        self.decrement_balance_or_transfer_from(msg_sender, token_in, amount_in)?;
 
         // Execute swaps for each hop - intermediate balances are transitory
         let mut amount = amount_in;
         for (book_key, base_for_quote) in route {
             // Fill orders for this hop - no min check on intermediate hops
-            amount = self.fill_orders_exact_in(book_key, base_for_quote, amount, sender)?;
+            amount = self.fill_orders_exact_in(book_key, base_for_quote, amount, msg_sender)?;
         }
 
         // Check final output meets minimum requirement
@@ -254,14 +204,14 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::insufficient_output().into());
         }
 
-        self.transfer(token_out, sender, amount)?;
+        self.transfer(token_out, msg_sender, amount)?;
 
         Ok(amount)
     }
 
-    pub fn swap_exact_amount_out(
+    fn swap_exact_amount_out(
         &mut self,
-        sender: Address,
+        msg_sender: Address,
         token_in: Address,
         token_out: Address,
         amount_out: u128,
@@ -273,7 +223,7 @@ impl StablecoinDEX {
         // Work backwards from output to calculate input needed - intermediate amounts are TRANSITORY
         let mut amount = amount_out;
         for (book_key, base_for_quote) in route.iter().rev() {
-            amount = self.fill_orders_exact_out(*book_key, *base_for_quote, amount, sender)?;
+            amount = self.fill_orders_exact_out(*book_key, *base_for_quote, amount, msg_sender)?;
         }
 
         if amount > max_amount_in {
@@ -281,56 +231,15 @@ impl StablecoinDEX {
         }
 
         // Deduct input tokens ONCE at end
-        self.decrement_balance_or_transfer_from(sender, token_in, amount)?;
+        self.decrement_balance_or_transfer_from(msg_sender, token_in, amount)?;
 
         // Transfer only final output ONCE at end
-        self.transfer(token_out, sender, amount_out)?;
+        self.transfer(token_out, msg_sender, amount_out)?;
 
         Ok(amount)
     }
 
-    /// Get price level information
-    pub fn get_price_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
-        let quote = TIP20Token::from_address(base)?.quote_token()?;
-        let book_key = compute_book_key(base, quote);
-        if is_bid {
-            self.books[book_key].bids[tick].read()
-        } else {
-            self.books[book_key].asks[tick].read()
-        }
-    }
-
-    /// Get orderbook by pair key
-    pub fn books(&self, pair_key: B256) -> Result<Orderbook> {
-        self.books[pair_key].read()
-    }
-
-    /// Get all book keys
-    pub fn get_book_keys(&self) -> Result<Vec<B256>> {
-        self.book_keys.read()
-    }
-
-    /// Convert relative tick to scaled price
-    pub fn tick_to_price(&self, tick: i16) -> Result<u32> {
-        if self.storage.spec().is_t2() {
-            orderbook::validate_tick_spacing(tick)?;
-        }
-
-        Ok(orderbook::tick_to_price(tick))
-    }
-
-    /// Convert scaled price to relative tick
-    pub fn price_to_tick(&self, price: u32) -> Result<i16> {
-        let tick = orderbook::price_to_tick(price)?;
-
-        if self.storage.spec().is_t2() {
-            orderbook::validate_tick_spacing(tick)?;
-        }
-
-        Ok(tick)
-    }
-
-    pub fn create_pair(&mut self, base: Address) -> Result<B256> {
+    fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token
         if !TIP20Factory::new().is_tip20(base)? {
             return Err(StablecoinDEXError::invalid_base_token().into());
@@ -351,13 +260,7 @@ impl StablecoinDEX {
         self.book_keys.push(book_key)?;
 
         // Emit PairCreated event
-        self.emit_event(StablecoinDEXEvents::PairCreated(
-            IStablecoinDEX::PairCreated {
-                key: book_key,
-                base,
-                quote,
-            },
-        ))?;
+        self.emit_event(StablecoinDEXEvent::pair_created(book_key, base, quote))?;
 
         Ok(book_key)
     }
@@ -374,9 +277,9 @@ impl StablecoinDEX {
     ///
     /// # Returns
     /// The assigned order ID
-    pub fn place(
+    fn place(
         &mut self,
-        sender: Address,
+        msg_sender: Address,
         token: Address,
         amount: u128,
         is_bid: bool,
@@ -419,36 +322,175 @@ impl StablecoinDEX {
         // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from)
         // Direction: DEX → sender (order placer receives non-escrow token when filled)
         TIP20Token::from_address(non_escrow_token)?
-            .ensure_transfer_authorized(self.address, sender)?;
+            .ensure_transfer_authorized(self.address, msg_sender)?;
 
         // Debit from user's balance or transfer from wallet
-        self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
+        self.decrement_balance_or_transfer_from(msg_sender, escrow_token, escrow_amount)?;
 
         // Create the order
         let order_id = self.next_order_id()?;
         self.increment_next_order_id()?;
         let order = if is_bid {
-            Order::new_bid(order_id, sender, book_key, amount, tick)
+            Order::new_bid(order_id, msg_sender, book_key, amount, tick)
         } else {
-            Order::new_ask(order_id, sender, book_key, amount, tick)
+            Order::new_ask(order_id, msg_sender, book_key, amount, tick)
         };
         self.commit_order_to_book(order)?;
 
         // Emit OrderPlaced event
-        self.emit_event(StablecoinDEXEvents::OrderPlaced(
-            IStablecoinDEX::OrderPlaced {
-                orderId: order_id,
-                maker: sender,
-                token,
-                amount,
-                isBid: is_bid,
-                tick,
-                isFlipOrder: false,
-                flipTick: 0,
-            },
+        self.emit_event(StablecoinDEXEvent::order_placed(
+            order_id, msg_sender, token, amount, is_bid, tick, false, 0,
         ))?;
 
         Ok(order_id)
+    }
+
+    /// Place a flip order that auto-flips when filled
+    ///
+    /// Flip orders automatically create a new order on the opposite side when completely filled.
+    /// For bids: flip_tick must be > tick
+    /// For asks: flip_tick must be < tick
+    #[allow(clippy::too_many_arguments)]
+    fn place_flip(
+        &mut self,
+        sender: Address,
+        token: Address,
+        amount: u128,
+        is_bid: bool,
+        tick: i16,
+        flip_tick: i16,
+    ) -> Result<u128> {
+        self.place_flip_inner(sender, token, amount, is_bid, tick, flip_tick, false)
+    }
+
+    /// Cancel an order and refund tokens to maker
+    /// Only the order maker can cancel their own order
+    fn cancel(&mut self, msg_sender: Address, order_id: u128) -> Result<()> {
+        let order = self.orders[order_id].read()?;
+
+        if order.maker().is_zero() {
+            return Err(StablecoinDEXError::order_does_not_exist().into());
+        }
+
+        if order.maker() != msg_sender {
+            return Err(StablecoinDEXError::unauthorized().into());
+        }
+
+        if order.remaining() == 0 {
+            return Err(StablecoinDEXError::order_does_not_exist().into());
+        }
+
+        self.cancel_active_order(order)
+    }
+
+    /// Cancel a stale order where the maker is forbidden by TIP-403 policy
+    /// Allows anyone to clean up stale orders from blacklisted makers
+    /// TIP-1015: For T2+, checks sender authorization (maker must be able to send the escrowed token)
+    fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
+        let order = self.orders[order_id].read()?;
+
+        if order.maker().is_zero() {
+            return Err(StablecoinDEXError::order_does_not_exist().into());
+        }
+
+        let book = self.books[order.book_key()].read()?;
+        let token = if order.is_bid() {
+            book.quote
+        } else {
+            book.base
+        };
+
+        let policy_id = TIP20Token::from_address(token)?.transfer_policy_id()?;
+        // Invalid policy ids throw under_overflow. Treat as unauthorized to clear the orders.
+        match TIP403Registry::new().is_authorized_as(policy_id, order.maker(), AuthRole::sender()) {
+            Ok(true) => Err(StablecoinDEXError::order_not_stale().into()),
+            Err(e) if e != TempoPrecompileError::under_overflow() => Err(e),
+            _ => self.cancel_active_order(order),
+        }
+    }
+
+    /// Withdraw tokens from exchange balance
+    fn withdraw(&mut self, msg_sender: Address, token: Address, amount: u128) -> Result<()> {
+        let current_balance = self.balance_of(msg_sender, token)?;
+        if current_balance < amount {
+            return Err(StablecoinDEXError::insufficient_balance().into());
+        }
+        self.sub_balance(msg_sender, token, amount)?;
+        self.transfer(token, msg_sender, amount)?;
+
+        Ok(())
+    }
+
+    /// Fetch order from storage.
+    /// If the order is currently pending or filled, this function returns `StablecoinDEXError::OrderDoesNotExist`
+    fn get_order(&self, order_id: u128) -> Result<Order> {
+        let order = self.orders[order_id].read()?;
+
+        // If the order is not filled and currently active
+        if !order.maker().is_zero() && order.order_id() < self.next_order_id()? {
+            Ok(order)
+        } else {
+            Err(StablecoinDEXError::order_does_not_exist().into())
+        }
+    }
+
+    /// Read next order ID (always at least 1)
+    fn next_order_id(&self) -> Result<u128> {
+        Ok(self.next_order_id.read()?.max(1))
+    }
+
+    fn get_tick_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<(u128, u128, u128)> {
+        let level = self.get_price_level(base, tick, is_bid)?;
+        Ok((level.head, level.tail, level.total_liquidity))
+    }
+
+    fn pair_key(&self, token_a: Address, token_b: Address) -> Result<B256> {
+        Ok(compute_book_key(token_a, token_b))
+    }
+
+    fn books(&self, pair_key: B256) -> Result<IStablecoinDEX::Orderbook> {
+        self.books[pair_key].read().map(Into::into)
+    }
+
+    /// Convert relative tick to scaled price
+    fn tick_to_price(&self, tick: i16) -> Result<u32> {
+        if self.storage.spec().is_t2() {
+            orderbook::validate_tick_spacing(tick)?;
+        }
+
+        Ok(orderbook::tick_to_price(tick))
+    }
+
+    /// Convert scaled price to relative tick
+    fn price_to_tick(&self, price: u32) -> Result<i16> {
+        let tick = orderbook::price_to_tick(price)?;
+
+        if self.storage.spec().is_t2() {
+            orderbook::validate_tick_spacing(tick)?;
+        }
+
+        Ok(tick)
+    }
+}
+
+impl StablecoinDEX {
+    /// Get price level information
+    pub fn get_price_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
+        let quote = TIP20Token::from_address(base)?.quote_token()?;
+        let book_key = compute_book_key(base, quote);
+        if is_bid {
+            self.books[book_key].bids[tick].read()
+        } else {
+            self.books[book_key].asks[tick].read()
+        }
+    }
+
+    /// Validates that a trading pair exists or creates the pair
+    fn validate_or_create_pair(&mut self, book: &Orderbook, token: Address) -> Result<()> {
+        if book.base.is_zero() {
+            self.create_pair(token)?;
+        }
+        Ok(())
     }
 
     /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
@@ -498,115 +540,6 @@ impl StablecoinDEX {
             .write(level)?;
 
         self.orders[order.order_id()].write(order)
-    }
-
-    /// Place a flip order that auto-flips when filled
-    ///
-    /// Flip orders automatically create a new order on the opposite side when completely filled.
-    /// For bids: flip_tick must be > tick
-    /// For asks: flip_tick must be < tick
-    #[allow(clippy::too_many_arguments)]
-    pub fn place_flip(
-        &mut self,
-        sender: Address,
-        token: Address,
-        amount: u128,
-        is_bid: bool,
-        tick: i16,
-        flip_tick: i16,
-        internal_balance_only: bool,
-    ) -> Result<u128> {
-        let quote_token = TIP20Token::from_address(token)?.quote_token()?;
-
-        // Compute book_key from token pair
-        let book_key = compute_book_key(token, quote_token);
-
-        // Check book existence
-        let book = self.books[book_key].read()?;
-        self.validate_or_create_pair(&book, token)?;
-
-        // Validate tick and flip_tick are within bounds
-        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinDEXError::tick_out_of_bounds(tick).into());
-        }
-
-        // Enforce that the tick adheres to tick spacing
-        if tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_tick().into());
-        }
-
-        if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
-            return Err(StablecoinDEXError::tick_out_of_bounds(flip_tick).into());
-        }
-
-        // Enforce that the tick adheres to tick spacing
-        if flip_tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_flip_tick().into());
-        }
-
-        // Validate flip_tick relationship to tick based on order side
-        if (is_bid && flip_tick <= tick) || (!is_bid && flip_tick >= tick) {
-            return Err(StablecoinDEXError::invalid_flip_tick().into());
-        }
-
-        // Validate order amount meets minimum requirement
-        if amount < MIN_ORDER_AMOUNT {
-            return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
-        }
-
-        // Calculate escrow amount and token based on order side
-        let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
-            // For bids, escrow quote tokens based on price
-            let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
-                .ok_or(StablecoinDEXError::insufficient_balance())?;
-            (quote_token, quote_amount, token)
-        } else {
-            // For asks, escrow base tokens
-            (token, amount, quote_token)
-        };
-
-        // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from or below)
-        // Direction: DEX → sender (order placer receives non-escrow token when filled)
-        TIP20Token::from_address(non_escrow_token)?
-            .ensure_transfer_authorized(self.address, sender)?;
-
-        // Debit from user's balance only. This is set to true after a flip order is filled and the
-        // subsequent flip order is being placed.
-        if internal_balance_only {
-            TIP20Token::from_address(escrow_token)?
-                .ensure_transfer_authorized(sender, self.address)?;
-            let user_balance = self.balance_of(sender, escrow_token)?;
-            if user_balance < escrow_amount {
-                return Err(StablecoinDEXError::insufficient_balance().into());
-            }
-            self.sub_balance(sender, escrow_token, escrow_amount)?;
-        } else {
-            self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
-        }
-
-        // Create the flip order
-        let order_id = self.next_order_id()?;
-        self.increment_next_order_id()?;
-        let order = Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
-            .map_err(|_| StablecoinDEXError::invalid_flip_tick())?;
-
-        self.commit_order_to_book(order)?;
-
-        // Emit OrderPlaced event for flip order
-        self.emit_event(StablecoinDEXEvents::OrderPlaced(
-            IStablecoinDEX::OrderPlaced {
-                orderId: order_id,
-                maker: sender,
-                token,
-                amount,
-                isBid: is_bid,
-                tick,
-                isFlipOrder: true,
-                flipTick: flip_tick,
-            },
-        ))?;
-
-        Ok(order_id)
     }
 
     /// Partially fill an order with the specified amount.
@@ -705,14 +638,14 @@ impl StablecoinDEX {
         self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, false)?;
 
         if order.is_flip() {
-            // Create a new flip order with flipped side and swapped ticks.
-            // Bid becomes Ask, Ask becomes Bid.
-            // The current tick becomes the new flip_tick, and flip_tick becomes the new tick.
-            // Uses internal balance only, does not transfer from wallet.
+            // Create a new flip order with flipped side and swapped ticks
+            // Bid becomes Ask, Ask becomes Bid
+            // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
+            // Uses internal balance only, does not transfer from wallet
             //
             // Business logic errors are ignored so that flip failure does not block the swap.
             // System errors (OOG, DB errors, panics) propagate because state may be inconsistent.
-            if let Err(e) = self.place_flip(
+            if let Err(e) = self.place_flip_inner(
                 order.maker(),
                 orderbook.base,
                 order.amount(),
@@ -943,6 +876,106 @@ impl StablecoinDEX {
         Ok(total_amount_out)
     }
 
+    /// Place a flip order that auto-flips when filled
+    ///
+    /// Flip orders automatically create a new order on the opposite side when completely filled.
+    /// For bids: flip_tick must be > tick
+    /// For asks: flip_tick must be < tick
+    #[allow(clippy::too_many_arguments)]
+    fn place_flip_inner(
+        &mut self,
+        sender: Address,
+        token: Address,
+        amount: u128,
+        is_bid: bool,
+        tick: i16,
+        flip_tick: i16,
+        internal_balance_only: bool,
+    ) -> Result<u128> {
+        let quote_token = TIP20Token::from_address(token)?.quote_token()?;
+
+        // Compute book_key from token pair
+        let book_key = compute_book_key(token, quote_token);
+
+        // Check book existence
+        let book = self.books[book_key].read()?;
+        self.validate_or_create_pair(&book, token)?;
+
+        // Validate tick and flip_tick are within bounds
+        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
+            return Err(StablecoinDEXError::tick_out_of_bounds(tick).into());
+        }
+
+        // Enforce that the tick adheres to tick spacing
+        if tick % TICK_SPACING != 0 {
+            return Err(StablecoinDEXError::invalid_tick().into());
+        }
+
+        if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
+            return Err(StablecoinDEXError::tick_out_of_bounds(flip_tick).into());
+        }
+
+        // Enforce that the tick adheres to tick spacing
+        if flip_tick % TICK_SPACING != 0 {
+            return Err(StablecoinDEXError::invalid_flip_tick().into());
+        }
+
+        // Validate flip_tick relationship to tick based on order side
+        if (is_bid && flip_tick <= tick) || (!is_bid && flip_tick >= tick) {
+            return Err(StablecoinDEXError::invalid_flip_tick().into());
+        }
+
+        // Validate order amount meets minimum requirement
+        if amount < MIN_ORDER_AMOUNT {
+            return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
+        }
+
+        // Calculate escrow amount and token based on order side
+        let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
+            // For bids, escrow quote tokens based on price
+            let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
+                .ok_or(StablecoinDEXError::insufficient_balance())?;
+            (quote_token, quote_amount, token)
+        } else {
+            // For asks, escrow base tokens
+            (token, amount, quote_token)
+        };
+
+        // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from or below)
+        // Direction: DEX → sender (order placer receives non-escrow token when filled)
+        TIP20Token::from_address(non_escrow_token)?
+            .ensure_transfer_authorized(self.address, sender)?;
+
+        // Debit from user's balance only. This is set to true after a flip order is filled and the
+        // subsequent flip order is being placed.
+        if internal_balance_only {
+            TIP20Token::from_address(escrow_token)?
+                .ensure_transfer_authorized(sender, self.address)?;
+            let user_balance = self.balance_of(sender, escrow_token)?;
+            if user_balance < escrow_amount {
+                return Err(StablecoinDEXError::insufficient_balance().into());
+            }
+            self.sub_balance(sender, escrow_token, escrow_amount)?;
+        } else {
+            self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
+        }
+
+        // Create the flip order
+        let order_id = self.next_order_id()?;
+        self.increment_next_order_id()?;
+        let order = Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
+            .map_err(|_| StablecoinDEXError::invalid_flip_tick())?;
+
+        self.commit_order_to_book(order)?;
+
+        // Emit OrderPlaced event for flip order
+        self.emit_event(StablecoinDEXEvent::order_placed(
+            order_id, sender, token, amount, is_bid, tick, true, flip_tick,
+        ))?;
+
+        Ok(order_id)
+    }
+
     /// Helper function to get best tick from orderbook
     fn get_best_price_level(&mut self, book_key: B256, is_bid: bool) -> Result<TickLevel> {
         let orderbook = self.books[book_key].read()?;
@@ -962,26 +995,6 @@ impl StablecoinDEX {
         self.books[book_key]
             .tick_level_handler(current_tick, is_bid)
             .read()
-    }
-
-    /// Cancel an order and refund tokens to maker
-    /// Only the order maker can cancel their own order
-    pub fn cancel(&mut self, sender: Address, order_id: u128) -> Result<()> {
-        let order = self.orders[order_id].read()?;
-
-        if order.maker().is_zero() {
-            return Err(StablecoinDEXError::order_does_not_exist().into());
-        }
-
-        if order.maker() != sender {
-            return Err(StablecoinDEXError::unauthorized().into());
-        }
-
-        if order.remaining() == 0 {
-            return Err(StablecoinDEXError::order_does_not_exist().into());
-        }
-
-        self.cancel_active_order(order)
     }
 
     /// Cancel an active order (already in the orderbook)
@@ -1059,49 +1072,7 @@ impl StablecoinDEX {
         self.orders[order.order_id()].delete()?;
 
         // Emit OrderCancelled event
-        self.emit_event(StablecoinDEXEvents::OrderCancelled(
-            IStablecoinDEX::OrderCancelled {
-                orderId: order.order_id(),
-            },
-        ))
-    }
-
-    /// Cancel a stale order where the maker is forbidden by TIP-403 policy
-    /// Allows anyone to clean up stale orders from blacklisted makers
-    /// TIP-1015: For T2+, checks sender authorization (maker must be able to send the escrowed token)
-    pub fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
-        let order = self.orders[order_id].read()?;
-
-        if order.maker().is_zero() {
-            return Err(StablecoinDEXError::order_does_not_exist().into());
-        }
-
-        let book = self.books[order.book_key()].read()?;
-        let token = if order.is_bid() {
-            book.quote
-        } else {
-            book.base
-        };
-
-        let policy_id = TIP20Token::from_address(token)?.transfer_policy_id()?;
-        // Invalid policy ids throw under_overflow. Treat as unauthorized to clear the orders.
-        match TIP403Registry::new().is_authorized_as(policy_id, order.maker(), AuthRole::sender()) {
-            Ok(true) => Err(StablecoinDEXError::order_not_stale().into()),
-            Err(e) if e != TempoPrecompileError::under_overflow() => Err(e),
-            _ => self.cancel_active_order(order),
-        }
-    }
-
-    /// Withdraw tokens from exchange balance
-    pub fn withdraw(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
-        let current_balance = self.balance_of(user, token)?;
-        if current_balance < amount {
-            return Err(StablecoinDEXError::insufficient_balance().into());
-        }
-        self.sub_balance(user, token, amount)?;
-        self.transfer(token, user, amount)?;
-
-        Ok(())
+        self.emit_event(StablecoinDEXEvent::order_cancelled(order.order_id()))
     }
 
     /// Quote exact output amount without executing trades
@@ -1394,8 +1365,10 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
+    use super::*;
     use crate::{
         error::TempoPrecompileError,
+        stablecoin_dex::{STABLECOIN_DEX_ADDRESS, orderbook},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip403_registry::{
@@ -1403,9 +1376,6 @@ mod tests {
             TIP403Registry,
         },
     };
-
-    use super::*;
-    use crate::STABLECOIN_DEX_ADDRESS;
 
     fn setup_test_tokens(
         admin: Address,
@@ -1435,7 +1405,7 @@ mod tests {
         let test_ticks = [-2000i16, -1000, -100, -1, 0, 1, 100, 1000, 2000];
         for tick in test_ticks {
             let price = orderbook::tick_to_price(tick);
-            let expected_price = (orderbook::PRICE_SCALE as i32 + tick as i32) as u32;
+            let expected_price = (PRICE_SCALE as i32 + tick as i32) as u32;
             assert_eq!(price, expected_price);
         }
     }
@@ -1447,19 +1417,19 @@ mod tests {
             let exchange = StablecoinDEX::new();
 
             // Valid prices should succeed
-            assert_eq!(exchange.price_to_tick(orderbook::PRICE_SCALE)?, 0);
-            assert_eq!(exchange.price_to_tick(orderbook::MIN_PRICE)?, MIN_TICK);
-            assert_eq!(exchange.price_to_tick(orderbook::MAX_PRICE)?, MAX_TICK);
+            assert_eq!(exchange.price_to_tick(PRICE_SCALE)?, 0);
+            assert_eq!(exchange.price_to_tick(MIN_PRICE)?, MIN_TICK);
+            assert_eq!(exchange.price_to_tick(MAX_PRICE)?, MAX_TICK);
 
             // Out of bounds prices should fail
-            let result = exchange.price_to_tick(orderbook::MIN_PRICE - 1);
+            let result = exchange.price_to_tick(MIN_PRICE - 1);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
                 TempoPrecompileError::StablecoinDEX(StablecoinDEXError::TickOutOfBounds(_))
             ));
 
-            let result = exchange.price_to_tick(orderbook::MAX_PRICE + 1);
+            let result = exchange.price_to_tick(MAX_PRICE + 1);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -1533,9 +1503,8 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick) as u128;
-            let expected_quote_floor = (base_amount * price) / orderbook::PRICE_SCALE as u128;
-            let expected_quote_ceil =
-                (base_amount * price).div_ceil(orderbook::PRICE_SCALE as u128);
+            let expected_quote_floor = (base_amount * price) / PRICE_SCALE as u128;
+            let expected_quote_ceil = (base_amount * price).div_ceil(PRICE_SCALE as u128);
 
             let max_escrow = expected_quote_ceil * 2;
 
@@ -1598,7 +1567,7 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick) as u128;
-            let escrow_ceil = (base_amount * price).div_ceil(orderbook::PRICE_SCALE as u128);
+            let escrow_ceil = (base_amount * price).div_ceil(PRICE_SCALE as u128);
 
             let base = TIP20Setup::create("BASE", "BASE", admin)
                 .with_issuer(admin)
@@ -1651,8 +1620,7 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (min_order_amount * price as u128) / PRICE_SCALE as u128;
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
@@ -1679,7 +1647,7 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick);
-            let escrow_amount = (below_minimum * price as u128) / orderbook::PRICE_SCALE as u128;
+            let escrow_amount = (below_minimum * price as u128) / PRICE_SCALE as u128;
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, escrow_amount)?;
@@ -1713,8 +1681,7 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (min_order_amount * price as u128) / PRICE_SCALE as u128;
 
             // Setup tokens with enough balance for the escrow
             let (base_token, quote_token) =
@@ -1841,7 +1808,7 @@ mod tests {
             let flip_tick = 200i16;
 
             let price = orderbook::tick_to_price(tick);
-            let escrow_amount = (below_minimum * price as u128) / orderbook::PRICE_SCALE as u128;
+            let escrow_amount = (below_minimum * price as u128) / PRICE_SCALE as u128;
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, escrow_amount)?;
@@ -1852,15 +1819,8 @@ mod tests {
                 .expect("Could not create pair");
 
             // Try to place a flip order below minimum amount
-            let result = exchange.place_flip(
-                alice,
-                base_token,
-                below_minimum,
-                true,
-                tick,
-                flip_tick,
-                false,
-            );
+            let result =
+                exchange.place_flip(alice, base_token, below_minimum, true, tick, flip_tick);
             assert_eq!(
                 result,
                 Err(StablecoinDEXError::below_minimum_order_size(below_minimum).into())
@@ -1901,7 +1861,7 @@ mod tests {
             .expect("Base token transfer failed");
 
             // Place a flip order which should also create the pair
-            exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10, false)?;
+            exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10)?;
 
             let book_after = exchange.books[book_key].read()?;
             assert_eq!(book_after.base, base_token);
@@ -1911,12 +1871,7 @@ mod tests {
             assert_eq!(events.len(), 2);
             assert_eq!(
                 events[0],
-                StablecoinDEXEvents::PairCreated(IStablecoinDEX::PairCreated {
-                    key: book_key,
-                    base: base_token,
-                    quote: quote_token,
-                })
-                .into_log_data()
+                StablecoinDEXEvent::pair_created(book_key, base_token, quote_token).into_log_data()
             );
 
             Ok(())
@@ -1938,8 +1893,7 @@ mod tests {
 
             // Calculate escrow amount needed for bid
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (min_order_amount * price as u128) / PRICE_SCALE as u128;
 
             // Setup tokens with enough balance for the escrow
             let (base_token, quote_token) =
@@ -1949,15 +1903,7 @@ mod tests {
                 .expect("Could not create pair");
 
             let order_id = exchange
-                .place_flip(
-                    alice,
-                    base_token,
-                    min_order_amount,
-                    true,
-                    tick,
-                    flip_tick,
-                    false,
-                )
+                .place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)
                 .expect("Place flip bid order should succeed");
 
             assert_eq!(order_id, 1);
@@ -2009,8 +1955,7 @@ mod tests {
             let min_order_amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (min_order_amount * price as u128) / PRICE_SCALE as u128;
 
             // Setup tokens
             let (base_token, quote_token) =
@@ -2111,7 +2056,7 @@ mod tests {
                 .expect("Swap should succeed");
 
             let price = orderbook::tick_to_price(tick);
-            let expected_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_amount_in = (amount_out * price as u128) / PRICE_SCALE as u128;
             assert_eq!(amount_in, expected_amount_in);
 
             Ok(())
@@ -2148,7 +2093,7 @@ mod tests {
 
             // Calculate expected amount_out based on tick price
             let price = orderbook::tick_to_price(tick);
-            let expected_amount_out = (amount_in * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_amount_out = (amount_in * price as u128) / PRICE_SCALE as u128;
             assert_eq!(amount_out, expected_amount_out);
 
             Ok(())
@@ -2188,8 +2133,7 @@ mod tests {
 
             let price = orderbook::tick_to_price(tick);
             // Expected: ceil(amount_out * PRICE_SCALE / price)
-            let expected_amount_in =
-                (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128);
+            let expected_amount_in = (amount_out * PRICE_SCALE as u128).div_ceil(price as u128);
             assert_eq!(amount_in, expected_amount_in);
 
             Ok(())
@@ -2263,7 +2207,7 @@ mod tests {
                 .expect("Could not set balance");
 
             let price = orderbook::tick_to_price(tick);
-            let max_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
+            let max_amount_in = (amount_out * price as u128) / PRICE_SCALE as u128;
 
             let amount_in = exchange
                 .swap_exact_amount_out(bob, quote_token, base_token, amount_out, max_amount_in)
@@ -2310,7 +2254,7 @@ mod tests {
                 .expect("Could not set balance");
 
             let price = orderbook::tick_to_price(tick);
-            let min_amount_out = (amount_in * price as u128) / orderbook::PRICE_SCALE as u128;
+            let min_amount_out = (amount_in * price as u128) / PRICE_SCALE as u128;
 
             let amount_out = exchange
                 .swap_exact_amount_in(bob, base_token, quote_token, amount_in, min_amount_out)
@@ -2344,7 +2288,7 @@ mod tests {
             let flip_tick = 200i16;
 
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (amount * price as u128) / PRICE_SCALE as u128;
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
@@ -2354,7 +2298,7 @@ mod tests {
 
             // Place a flip bid order
             let flip_order_id = exchange
-                .place_flip(alice, base_token, amount, true, tick, flip_tick, false)
+                .place_flip(alice, base_token, amount, true, tick, flip_tick)
                 .expect("Place flip order should succeed");
 
             exchange
@@ -2406,12 +2350,10 @@ mod tests {
                 .expect("Could not create pair");
 
             // Verify PairCreated event was emitted
-            exchange.assert_emitted_events(vec![StablecoinDEXEvents::PairCreated(
-                IStablecoinDEX::PairCreated {
-                    key,
-                    base: base_token,
-                    quote: quote_token,
-                },
+            exchange.assert_emitted_events(vec![StablecoinDEXEvent::pair_created(
+                key,
+                base_token,
+                quote_token,
             )]);
 
             Ok(())
@@ -2981,10 +2923,8 @@ mod tests {
             let price_50 = orderbook::tick_to_price(tick_50);
             let price_100 = orderbook::tick_to_price(tick_100);
             // Taker pays quote with ceiling rounding
-            let quote_for_first =
-                (order_amount * price_50 as u128).div_ceil(orderbook::PRICE_SCALE as u128);
-            let quote_for_partial_second =
-                (999 * price_100 as u128).div_ceil(orderbook::PRICE_SCALE as u128);
+            let quote_for_first = (order_amount * price_50 as u128).div_ceil(PRICE_SCALE as u128);
+            let quote_for_partial_second = (999 * price_100 as u128).div_ceil(PRICE_SCALE as u128);
             let total_needed = quote_for_first + quote_for_partial_second;
 
             let result = exchange.swap_exact_amount_out(
@@ -3170,8 +3110,8 @@ mod tests {
             // Calculate escrow for all orders
             let bid_price_1 = orderbook::tick_to_price(bid_tick_1);
             let bid_price_2 = orderbook::tick_to_price(bid_tick_2);
-            let bid_escrow_1 = (amount * bid_price_1 as u128) / orderbook::PRICE_SCALE as u128;
-            let bid_escrow_2 = (amount * bid_price_2 as u128) / orderbook::PRICE_SCALE as u128;
+            let bid_escrow_1 = (amount * bid_price_1 as u128) / PRICE_SCALE as u128;
+            let bid_escrow_2 = (amount * bid_price_2 as u128) / PRICE_SCALE as u128;
             let total_bid_escrow = bid_escrow_1 + bid_escrow_2;
 
             let (base_token, quote_token) =
@@ -3214,7 +3154,7 @@ mod tests {
 
             // Fill all asks at tick 50 (bob buys base)
             let ask_price_1 = orderbook::tick_to_price(ask_tick_1);
-            let quote_needed = (amount * ask_price_1 as u128) / orderbook::PRICE_SCALE as u128;
+            let quote_needed = (amount * ask_price_1 as u128) / PRICE_SCALE as u128;
             exchange.set_balance(bob, quote_token, quote_needed)?;
             exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_needed, 0)?;
             // Verify best_ask_tick moved to tick 60, best_bid_tick unchanged
@@ -3243,8 +3183,8 @@ mod tests {
             // Calculate escrow for 3 bid orders (2 at tick 100, 1 at tick 90)
             let price_1 = orderbook::tick_to_price(bid_tick_1);
             let price_2 = orderbook::tick_to_price(bid_tick_2);
-            let escrow_1 = (amount * price_1 as u128) / orderbook::PRICE_SCALE as u128;
-            let escrow_2 = (amount * price_2 as u128) / orderbook::PRICE_SCALE as u128;
+            let escrow_1 = (amount * price_1 as u128) / PRICE_SCALE as u128;
+            let escrow_2 = (amount * price_2 as u128) / PRICE_SCALE as u128;
             let total_escrow = escrow_1 * 2 + escrow_2;
 
             let (base_token, quote_token) =
@@ -3382,7 +3322,6 @@ mod tests {
                 true,
                 invalid_tick,
                 invalid_flip_tick,
-                false,
             );
 
             let error = result.unwrap_err();
@@ -3401,7 +3340,6 @@ mod tests {
                 true,
                 valid_tick,
                 invalid_flip_tick,
-                false,
             );
 
             let error = result.unwrap_err();
@@ -3418,7 +3356,6 @@ mod tests {
                 true,
                 valid_tick,
                 valid_flip_tick,
-                false,
             );
             assert!(result.is_ok());
 
@@ -3469,7 +3406,7 @@ mod tests {
             let price = orderbook::tick_to_price(tick);
 
             // Calculate escrow for bid order (quote needed to buy `amount` base)
-            let bid_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let bid_escrow = (amount * price as u128) / PRICE_SCALE as u128;
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, bid_escrow)?;
@@ -3489,7 +3426,7 @@ mod tests {
             let quoted_out_bid = exchange.quote_exact_in(book_key, amount, true)?;
             let expected_quote_out = amount
                 .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                .and_then(|v| v.checked_div(PRICE_SCALE as u128))
                 .expect("calculation");
             assert_eq!(
                 quoted_out_bid, expected_quote_out,
@@ -3500,10 +3437,10 @@ mod tests {
             exchange.place(alice, base_token, amount, false, tick)?;
 
             // Test is_bid == false: quote -> base
-            let quote_in = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let quote_in = (amount * price as u128) / PRICE_SCALE as u128;
             let quoted_out_ask = exchange.quote_exact_in(book_key, quote_in, false)?;
             let expected_base_out = quote_in
-                .checked_mul(orderbook::PRICE_SCALE as u128)
+                .checked_mul(PRICE_SCALE as u128)
                 .and_then(|v| v.checked_div(price as u128))
                 .expect("calculation");
             assert_eq!(
@@ -3555,12 +3492,7 @@ mod tests {
             assert_eq!(events.len(), 2);
             assert_eq!(
                 events[0],
-                StablecoinDEXEvents::PairCreated(IStablecoinDEX::PairCreated {
-                    key: book_key,
-                    base: base_token,
-                    quote: quote_token,
-                })
-                .into_log_data()
+                StablecoinDEXEvent::pair_created(book_key, base_token, quote_token).into_log_data()
             );
 
             Ok(())
@@ -3610,8 +3542,7 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (min_order_amount * price as u128) / PRICE_SCALE as u128;
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
@@ -3663,8 +3594,7 @@ mod tests {
             let flip_tick = 200i16;
 
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (min_order_amount * price as u128) / PRICE_SCALE as u128;
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
@@ -3678,15 +3608,8 @@ mod tests {
 
             exchange.create_pair(base_token)?;
 
-            let order_id = exchange.place_flip(
-                alice,
-                base_token,
-                min_order_amount,
-                true,
-                tick,
-                flip_tick,
-                false,
-            )?;
+            let order_id =
+                exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)?;
 
             assert_eq!(order_id, 1);
 
@@ -3731,8 +3654,7 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (min_order_amount * price as u128) / PRICE_SCALE as u128;
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
@@ -3962,8 +3884,7 @@ mod tests {
             ));
 
             // Test placeFlip bid order - should also fail
-            let result =
-                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, true, 0, 100, false);
+            let result = exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, true, 0, 100);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -4015,8 +3936,7 @@ mod tests {
             ));
 
             // Test placeFlip ask order - should also fail
-            let result =
-                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0, false);
+            let result = exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -4065,8 +3985,7 @@ mod tests {
             // and the non-escrow token (quote) flows DEX → alice, this should FAIL.
             let res_ask = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0);
             // Same for flip orders
-            let res_flip =
-                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0, false);
+            let res_flip = exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0);
 
             for res in [res_ask, res_flip] {
                 assert!(
@@ -4172,7 +4091,7 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick);
-            let escrow = (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let escrow = (min_order_amount * price as u128) / PRICE_SCALE as u128;
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, escrow)?;
@@ -4222,7 +4141,7 @@ mod tests {
             let flip_tick = 200i16;
 
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (amount * price as u128) / PRICE_SCALE as u128;
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
@@ -4231,7 +4150,7 @@ mod tests {
             let book_key = compute_book_key(base_token, quote_token);
 
             // Place a flip bid order: when filled, it should flip to an ask at flip_tick
-            exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
+            exchange.place_flip(alice, base_token, amount, true, tick, flip_tick)?;
 
             let alice_quote_before = exchange.balance_of(alice, quote_token)?;
 

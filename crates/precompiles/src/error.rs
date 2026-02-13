@@ -6,6 +6,7 @@ use std::{
 use crate::{
     account_keychain::IAccountKeychain::Error as AccountKeychainError,
     nonce::INonce::Error as NonceError,
+    stablecoin_dex::IStablecoinDEX::Error as StablecoinDEXError,
     tip_fee_manager::{IFeeAMM, IFeeManager},
     tip20::TIP20Error,
     tip20_factory::TIP20FactoryError,
@@ -20,7 +21,7 @@ use revm::{
     context::journaled_state::JournalLoadErasedError,
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
 };
-use tempo_contracts::precompiles::{RolesAuthError, StablecoinDEXError, UnknownFunctionSelector};
+use tempo_contracts::precompiles::{RolesAuthError, UnknownFunctionSelector};
 
 /// Top-level error type for all Tempo precompile operations
 #[derive(
@@ -256,7 +257,6 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempo_contracts::precompiles::StablecoinDEXError;
 
     #[test]
     fn test_add_errors_to_registry_populates_registry() {
@@ -300,10 +300,10 @@ mod tests {
         );
 
         let decoded = result.unwrap();
-        assert!(matches!(
+        assert_eq!(
             decoded.error,
-            TempoPrecompileError::StablecoinDEX(StablecoinDEXError::OrderDoesNotExist(_))
-        ));
+            StablecoinDEXError::order_does_not_exist().into()
+        );
     }
 
     #[test]

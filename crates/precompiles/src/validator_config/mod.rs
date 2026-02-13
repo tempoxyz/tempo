@@ -817,33 +817,32 @@ mod tests {
             // Add validators
             validator_config.add_validator(
                 owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator1,
-                    publicKey: public_key1,
-                    inboundAddress: "192.168.1.1:8000".to_string(),
-                    active: true,
-                    outboundAddress: "192.168.1.1:9000".to_string(),
-                },
+                validator1,
+                public_key1,
+                true,
+                "192.168.1.1:8000".to_string(),
+                "192.168.1.1:9000".to_string(),
             )?;
 
             validator_config.add_validator(
                 owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator2,
-                    publicKey: public_key2,
-                    inboundAddress: "192.168.1.2:8000".to_string(),
-                    active: true,
-                    outboundAddress: "192.168.1.2:9000".to_string(),
-                },
+                validator2,
+                public_key2,
+                true,
+                "192.168.1.2:8000".to_string(),
+                "192.168.1.2:9000".to_string(),
             )?;
 
             // validators_array should return the actual addresses, not default
-            assert_eq!(validator_config.validators_array(0)?, validator1);
-            assert_eq!(validator_config.validators_array(1)?, validator2);
+            assert_eq!(validator_config.validators_array(U256::ZERO)?, validator1);
+            assert_eq!(validator_config.validators_array(U256::ONE)?, validator2);
 
             // Verify they're not default
-            assert_ne!(validator_config.validators_array(0)?, Address::ZERO);
-            assert_ne!(validator_config.validators_array(1)?, Address::ZERO);
+            assert_ne!(
+                validator_config.validators_array(U256::ZERO)?,
+                Address::ZERO
+            );
+            assert_ne!(validator_config.validators_array(U256::ONE)?, Address::ZERO);
 
             Ok(())
         })
@@ -861,10 +860,7 @@ mod tests {
             assert_eq!(validator_config.get_next_full_dkg_ceremony()?, 0);
 
             // Set to a specific value
-            validator_config.set_next_full_dkg_ceremony(
-                owner,
-                IValidatorConfig::setNextFullDkgCeremonyCall { epoch: 100 },
-            )?;
+            validator_config.set_next_full_dkg_ceremony(owner, 100)?;
 
             // Should return the set value, not 0 or 1
             let result = validator_config.get_next_full_dkg_ceremony()?;

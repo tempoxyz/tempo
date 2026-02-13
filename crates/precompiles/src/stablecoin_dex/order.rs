@@ -4,60 +4,8 @@
 //! Orders support price-time priority matching, partial fills, and flip orders that
 //! automatically place opposite-side orders when filled.
 
-use crate::stablecoin_dex::{IStablecoinDEX, error::OrderError};
+use crate::stablecoin_dex::{Order, error::OrderError};
 use alloy::primitives::{Address, B256};
-use tempo_precompiles_macros::Storable;
-
-/// Represents an order in the stablecoin DEX orderbook.
-///
-/// This struct matches the Solidity reference implementation in StablecoinDEX.sol.
-///
-/// # Order Types
-/// - **Regular orders**: Orders with `is_flip = false`
-/// - **Flip orders**: Orders with `is_flip = true` that automatically create
-///   a new order on the opposite side when fully filled
-///
-/// # Order Lifecycle
-/// 1. Order is placed via `place()` or `placeFlip()` and immediately added to the orderbook
-/// 2. Orders can be filled (fully or partially) by swaps
-/// 3. Flip orders automatically create a new order on the opposite side when fully filled
-/// 4. Orders can be cancelled, removing them from the book and refunding escrow
-///
-/// # Price-Time Priority
-/// Orders are sorted by price (tick), then by insertion time.
-/// The doubly linked list maintains insertion order - orders are added at the tail,
-/// so traversing from head to tail gives price-time priority.
-///
-/// # Onchain Storage
-/// Orders are stored onchain in doubly linked lists organized by tick.
-/// Each tick maintains a FIFO queue of orders using `prev` and `next` pointers.
-#[derive(Debug, Clone, PartialEq, Eq, Storable)]
-pub struct Order {
-    /// Unique identifier for this order
-    pub order_id: u128,
-    /// Address of the user who placed this order
-    pub maker: Address,
-    /// Orderbook key (identifies the trading pair)
-    pub book_key: B256,
-    /// Whether this is a bid (true) or ask (false) order
-    pub is_bid: bool,
-    /// Price tick
-    pub tick: i16,
-    /// Original order amount
-    pub amount: u128,
-    /// Remaining amount to be filled
-    pub remaining: u128,
-    /// Previous order ID in the doubly linked list (0 if head)
-    pub prev: u128,
-    /// Next order ID in the doubly linked list (0 if tail)
-    pub next: u128,
-    /// Whether this is a flip order
-    pub is_flip: bool,
-    /// Tick to flip to when fully filled (for flip orders, 0 for regular orders)
-    /// For bid flips: flip_tick must be > tick
-    /// For ask flips: flip_tick must be < tick
-    pub flip_tick: i16,
-}
 
 impl Order {
     /// Creates a new order with `prev` and `next` initialized to 0.
@@ -277,24 +225,6 @@ impl Order {
             is_flip: true,        // Keep as flip order
             flip_tick: self.tick, // Old tick becomes new flip_tick
         })
-    }
-}
-
-impl From<Order> for IStablecoinDEX::Order {
-    fn from(value: Order) -> Self {
-        Self {
-            orderId: value.order_id,
-            maker: value.maker,
-            bookKey: value.book_key,
-            isBid: value.is_bid,
-            tick: value.tick,
-            amount: value.amount,
-            remaining: value.remaining,
-            prev: value.prev,
-            next: value.next,
-            isFlip: value.is_flip,
-            flipTick: value.flip_tick,
-        }
     }
 }
 

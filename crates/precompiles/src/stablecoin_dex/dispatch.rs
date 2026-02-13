@@ -1,115 +1,11 @@
-//! Stablecoin DEX precompile
-//!
-//! This module provides the precompile interface for the Stablecoin DEX.
-use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
-
-use crate::{
-    Precompile, dispatch_call, input_cost, mutate, mutate_void,
-    stablecoin_dex::{StablecoinDEX, orderbook::compute_book_key},
-    view,
-};
-
-impl Precompile for StablecoinDEX {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
-
-        dispatch_call(
-            calldata,
-            IStablecoinDEXCalls::abi_decode,
-            |call| match call {
-                IStablecoinDEXCalls::place(call) => mutate(call, msg_sender, |s, c| {
-                    self.place(s, c.token, c.amount, c.isBid, c.tick)
-                }),
-                IStablecoinDEXCalls::placeFlip(call) => mutate(call, msg_sender, |s, c| {
-                    self.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
-                }),
-                IStablecoinDEXCalls::balanceOf(call) => {
-                    view(call, |c| self.balance_of(c.user, c.token))
-                }
-                IStablecoinDEXCalls::getOrder(call) => view(call, |c| {
-                    self.get_order(c.orderId).map(|order| order.into())
-                }),
-                IStablecoinDEXCalls::getTickLevel(call) => view(call, |c| {
-                    let level = self.get_price_level(c.base, c.tick, c.isBid)?;
-                    Ok((level.head, level.tail, level.total_liquidity).into())
-                }),
-                IStablecoinDEXCalls::pairKey(call) => {
-                    view(call, |c| Ok(compute_book_key(c.tokenA, c.tokenB)))
-                }
-                IStablecoinDEXCalls::books(call) => {
-                    view(call, |c| self.books(c.pairKey).map(Into::into))
-                }
-                IStablecoinDEXCalls::nextOrderId(call) => view(call, |_| self.next_order_id()),
-                IStablecoinDEXCalls::createPair(call) => {
-                    mutate(call, msg_sender, |_, c| self.create_pair(c.base))
-                }
-                IStablecoinDEXCalls::withdraw(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.withdraw(s, c.token, c.amount))
-                }
-                IStablecoinDEXCalls::cancel(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.cancel(s, c.orderId))
-                }
-                IStablecoinDEXCalls::cancelStaleOrder(call) => {
-                    mutate_void(call, msg_sender, |_, c| self.cancel_stale_order(c.orderId))
-                }
-                IStablecoinDEXCalls::swapExactAmountIn(call) => mutate(call, msg_sender, |s, c| {
-                    self.swap_exact_amount_in(s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
-                }),
-                IStablecoinDEXCalls::swapExactAmountOut(call) => {
-                    mutate(call, msg_sender, |s, c| {
-                        self.swap_exact_amount_out(
-                            s,
-                            c.tokenIn,
-                            c.tokenOut,
-                            c.amountOut,
-                            c.maxAmountIn,
-                        )
-                    })
-                }
-                IStablecoinDEXCalls::quoteSwapExactAmountIn(call) => view(call, |c| {
-                    self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
-                }),
-                IStablecoinDEXCalls::quoteSwapExactAmountOut(call) => view(call, |c| {
-                    self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
-                }),
-                IStablecoinDEXCalls::MIN_TICK(call) => {
-                    view(call, |_| Ok(crate::stablecoin_dex::MIN_TICK))
-                }
-                IStablecoinDEXCalls::MAX_TICK(call) => {
-                    view(call, |_| Ok(crate::stablecoin_dex::MAX_TICK))
-                }
-                IStablecoinDEXCalls::TICK_SPACING(call) => {
-                    view(call, |_| Ok(crate::stablecoin_dex::TICK_SPACING))
-                }
-                IStablecoinDEXCalls::PRICE_SCALE(call) => {
-                    view(call, |_| Ok(crate::stablecoin_dex::PRICE_SCALE))
-                }
-                IStablecoinDEXCalls::MIN_ORDER_AMOUNT(call) => {
-                    view(call, |_| Ok(crate::stablecoin_dex::MIN_ORDER_AMOUNT))
-                }
-                IStablecoinDEXCalls::MIN_PRICE(call) => view(call, |_| Ok(self.min_price())),
-                IStablecoinDEXCalls::MAX_PRICE(call) => view(call, |_| Ok(self.max_price())),
-                IStablecoinDEXCalls::tickToPrice(call) => {
-                    view(call, |c| self.tick_to_price(c.tick))
-                }
-                IStablecoinDEXCalls::priceToTick(call) => {
-                    view(call, |c| self.price_to_tick(c.price))
-                }
-            },
-        )
-    }
-}
+//! Stablecoin DEX precompile dispatch (auto-generated via `#[contract(..., dispatch)]`).
 
 #[cfg(test)]
 mod tests {
 
     use crate::{
         Precompile,
-        stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX},
+        stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX, traits::*},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
     };
@@ -117,7 +13,6 @@ mod tests {
         primitives::{Address, U256},
         sol_types::{SolCall, SolValue},
     };
-    use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
     fn setup_exchange_with_liquidity() -> eyre::Result<(StablecoinDEX, Address, Address, Address)> {
@@ -163,7 +58,7 @@ mod tests {
             let call = IStablecoinDEX::placeCall {
                 token,
                 amount: 100u128,
-                isBid: true,
+                is_bid: true,
                 tick: 0,
             };
             let calldata = call.abi_encode();
@@ -190,9 +85,9 @@ mod tests {
             let call = IStablecoinDEX::placeFlipCall {
                 token,
                 amount: 100u128,
-                isBid: true,
+                is_bid: true,
                 tick: 0,
-                flipTick: 10,
+                flip_tick: 10,
             };
             let calldata = call.abi_encode();
 
@@ -352,7 +247,7 @@ mod tests {
 
             let sender = Address::random();
 
-            let call = IStablecoinDEX::cancelCall { orderId: 1u128 };
+            let call = IStablecoinDEX::cancelCall { order_id: 1u128 };
             let calldata = call.abi_encode();
 
             // Should dispatch to cancel function
@@ -373,10 +268,10 @@ mod tests {
             exchange.set_balance(user, base_token, 1_000_000u128)?;
 
             let call = IStablecoinDEX::swapExactAmountInCall {
-                tokenIn: base_token,
-                tokenOut: quote_token,
-                amountIn: 100_000u128,
-                minAmountOut: 90_000u128,
+                token_in: base_token,
+                token_out: quote_token,
+                amount_in: 100_000u128,
+                min_amount_out: 90_000u128,
             };
             let calldata = call.abi_encode();
 
@@ -401,10 +296,10 @@ mod tests {
             exchange.set_balance(user, quote_token, 1_000_000u128)?;
 
             let call = IStablecoinDEX::swapExactAmountOutCall {
-                tokenIn: quote_token,
-                tokenOut: base_token,
-                amountOut: 50_000u128,
-                maxAmountIn: 60_000u128,
+                token_in: quote_token,
+                token_out: base_token,
+                amount_out: 50_000u128,
+                max_amount_in: 60_000u128,
             };
             let calldata = call.abi_encode();
 
@@ -425,9 +320,9 @@ mod tests {
             let sender = Address::random();
 
             let call = IStablecoinDEX::quoteSwapExactAmountInCall {
-                tokenIn: base_token,
-                tokenOut: quote_token,
-                amountIn: 100_000u128,
+                token_in: base_token,
+                token_out: quote_token,
+                amount_in: 100_000u128,
             };
             let calldata = call.abi_encode();
 
@@ -451,9 +346,9 @@ mod tests {
             let sender = Address::random();
 
             let call = IStablecoinDEX::quoteSwapExactAmountOutCall {
-                tokenIn: quote_token,
-                tokenOut: base_token,
-                amountOut: 50_000u128,
+                token_in: quote_token,
+                token_out: base_token,
+                amount_out: 50_000u128,
             };
             let calldata = call.abi_encode();
 
@@ -471,15 +366,22 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 
-            let unsupported = check_selector_coverage(
+            let interface_unsupported = check_selector_coverage(
                 &mut exchange,
-                IStablecoinDEXCalls::SELECTORS,
-                "IStablecoinDEX",
-                IStablecoinDEXCalls::name_by_selector,
+                IStablecoinDEX::InterfaceCalls::SELECTORS,
+                "IStablecoinDEX::Interface",
+                IStablecoinDEX::InterfaceCalls::name_by_selector,
+            );
+
+            let constants_unsupported = check_selector_coverage(
+                &mut exchange,
+                IStablecoinDEX::ConstantsCalls::SELECTORS,
+                "IStablecoinDEX::Constants",
+                IStablecoinDEX::ConstantsCalls::name_by_selector,
             );
 
             // All selectors should be supported
-            assert_full_coverage([unsupported]);
+            assert_full_coverage([interface_unsupported, constants_unsupported]);
 
             Ok(())
         })

@@ -9,12 +9,11 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
-};
+use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IFeeManager, STABLECOIN_DEX_ADDRESS};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
+    stablecoin_dex::IStablecoinDEX,
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20, TIP20Token, is_tip20_prefix},
@@ -180,13 +179,13 @@ pub trait TempoStateAccess<M = ()> {
             && (!tx.is_aa() || calls.next().is_none())
         {
             if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
-                && self.is_valid_fee_token(spec, call.tokenIn)?
+                && self.is_valid_fee_token(spec, call.token_in)?
             {
-                return Ok(call.tokenIn);
+                return Ok(call.token_in);
             } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
-                && self.is_valid_fee_token(spec, call.tokenIn)?
+                && self.is_valid_fee_token(spec, call.token_in)?
             {
-                return Ok(call.tokenIn);
+                return Ok(call.token_in);
             }
         }
 
@@ -550,10 +549,10 @@ mod tests {
 
         // Test swapExactAmountIn
         let call = IStablecoinDEX::swapExactAmountInCall {
-            tokenIn: token_in,
-            tokenOut: token_out,
-            amountIn: 1000,
-            minAmountOut: 900,
+            token_in,
+            token_out,
+            amount_in: 1000,
+            min_amount_out: 900,
         };
 
         let tx_env = TxEnv {
@@ -573,10 +572,10 @@ mod tests {
 
         // Test swapExactAmountOut
         let call = IStablecoinDEX::swapExactAmountOutCall {
-            tokenIn: token_in,
-            tokenOut: token_out,
-            amountOut: 900,
-            maxAmountIn: 1000,
+            token_in,
+            token_out,
+            amount_out: 900,
+            max_amount_in: 1000,
         };
 
         let tx_env = TxEnv {

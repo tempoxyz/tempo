@@ -2,17 +2,11 @@
 
 use crate::{
     error::Result,
-    stablecoin_dex::{IStablecoinDEX, TICK_SPACING},
+    stablecoin_dex::{IStablecoinDEX, StablecoinDEXError, prelude::*},
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
-use tempo_contracts::precompiles::StablecoinDEXError;
 use tempo_precompiles_macros::Storable;
-
-/// Constants from Solidity implementation
-pub const MIN_TICK: i16 = -2000;
-pub const MAX_TICK: i16 = 2000;
-pub const PRICE_SCALE: u32 = 100_000;
 
 /// Rounding direction for price conversions.
 ///
@@ -83,11 +77,6 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
     result.try_into().ok()
 }
 
-// PRICE_SCALE + MIN_TICK = 100_000 - 2000
-pub(crate) const MIN_PRICE: u32 = 98_000;
-// PRICE_SCALE + MAX_TICK = 100_000 + 2000
-pub(crate) const MAX_PRICE: u32 = 102_000;
-
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level
 #[derive(Debug, Storable, Default, Clone, Copy, PartialEq, Eq)]
@@ -103,11 +92,7 @@ pub struct TickLevel {
 impl TickLevel {
     /// Creates a new empty tick level
     pub fn new() -> Self {
-        Self {
-            head: 0,
-            tail: 0,
-            total_liquidity: 0,
-        }
+        Self::default()
     }
 
     /// Creates a tick level with specific values
@@ -127,16 +112,6 @@ impl TickLevel {
     /// Returns true if this tick level has orders
     pub fn has_liquidity(&self) -> bool {
         !self.is_empty()
-    }
-}
-
-impl From<TickLevel> for IStablecoinDEX::PriceLevel {
-    fn from(value: TickLevel) -> Self {
-        Self {
-            head: value.head,
-            tail: value.tail,
-            totalLiquidity: value.total_liquidity,
-        }
     }
 }
 
@@ -408,8 +383,8 @@ impl From<Orderbook> for IStablecoinDEX::Orderbook {
         Self {
             base: value.base,
             quote: value.quote,
-            bestBidTick: value.best_bid_tick,
-            bestAskTick: value.best_ask_tick,
+            best_bid_tick: value.best_bid_tick,
+            best_ask_tick: value.best_ask_tick,
         }
     }
 }
@@ -497,11 +472,10 @@ mod tests {
     fn test_price_to_tick_below_min() {
         // Price below MIN_PRICE should return an error
         let result = price_to_tick(MIN_PRICE - 1);
-        assert!(result.is_err());
-        assert!(matches!(
+        assert_eq!(
             result.unwrap_err(),
-            TempoPrecompileError::StablecoinDEX(StablecoinDEXError::TickOutOfBounds(_))
-        ));
+            StablecoinDEXError::tick_out_of_bounds(MIN_TICK - 1).into()
+        );
     }
 
     #[test]

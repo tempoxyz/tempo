@@ -89,7 +89,7 @@ fn test_fee_manager_layout() {
 #[test]
 fn test_stablecoin_dex_layout() {
     use tempo_precompiles::stablecoin_dex::{
-        order::__packing_order::*, orderbook::__packing_orderbook::*, slots,
+        IStablecoinDEX::__packing_order::*, orderbook::__packing_orderbook::*, slots,
     };
 
     let sol_path = testdata("stablecoin_dex.sol");
@@ -284,7 +284,7 @@ fn export_all_storage_constants() {
     // Stablecoin DEX
     {
         use tempo_precompiles::stablecoin_dex::{
-            order::__packing_order::*, orderbook::__packing_orderbook::*, slots,
+            IStablecoinDEX::__packing_order::*, orderbook::__packing_orderbook::*, slots,
         };
 
         let fields = layout_fields!(books, orders, balances, next_order_id, book_keys);

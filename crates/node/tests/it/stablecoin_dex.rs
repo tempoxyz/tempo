@@ -2,12 +2,10 @@ use alloy::{
     primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder,
     sol_types::SolError,
 };
-use tempo_contracts::precompiles::{
-    IStablecoinDEX,
-    ITIP20::{self, ITIP20Instance},
-};
+use tempo_contracts::precompiles::ITIP20::{self, ITIP20Instance};
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, stablecoin_dex::MIN_ORDER_AMOUNT,
+    PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT},
 };
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
@@ -97,7 +95,7 @@ async fn test_bids() -> eyre::Result<()> {
     for order_id in 1..=num_orders {
         let order = exchange.getOrder(order_id).call().await?;
         assert!(!order.maker.is_zero());
-        assert!(order.isBid);
+        assert!(order.is_bid);
         assert_eq!(order.tick, tick);
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
@@ -135,18 +133,18 @@ async fn test_bids() -> eyre::Result<()> {
     }
 
     // Assert the last order is partially filled
-    let level = exchange
+    let (head, tail, total_liquidity) = exchange
         .getTickLevel(*base.address(), tick, true)
         .call()
         .await?;
 
-    assert_eq!(level.head, num_orders);
-    assert_eq!(level.tail, num_orders);
-    assert!(level.totalLiquidity < order_amount);
+    assert_eq!(head, num_orders);
+    assert_eq!(tail, num_orders);
+    assert!(total_liquidity < order_amount);
 
     let order = exchange.getOrder(num_orders).call().await?;
     assert_eq!(order.next, 0);
-    assert_eq!(level.totalLiquidity, order.remaining);
+    assert_eq!(total_liquidity, order.remaining);
 
     // Assert exchange balance for makers
     for (account, _) in account_data.iter().take(account_data.len() - 1) {
@@ -242,7 +240,7 @@ async fn test_asks() -> eyre::Result<()> {
     for order_id in 1..=num_orders {
         let order = exchange.getOrder(order_id).call().await?;
         assert!(!order.maker.is_zero());
-        assert!(!order.isBid);
+        assert!(!order.is_bid);
         assert_eq!(order.tick, tick);
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
@@ -287,18 +285,18 @@ async fn test_asks() -> eyre::Result<()> {
     }
 
     // Assert the last order is partially filled
-    let level = exchange
+    let (head, tail, total_liquidity) = exchange
         .getTickLevel(*base.address(), tick, false)
         .call()
         .await?;
 
-    assert_eq!(level.head, num_orders);
-    assert_eq!(level.tail, num_orders);
-    assert!(level.totalLiquidity < order_amount);
+    assert_eq!(head, num_orders);
+    assert_eq!(tail, num_orders);
+    assert!(total_liquidity < order_amount);
 
     let order = exchange.getOrder(num_orders).call().await?;
     assert_eq!(order.next, 0);
-    assert_eq!(level.totalLiquidity, order.remaining);
+    assert_eq!(total_liquidity, order.remaining);
 
     // Assert exchange balance for makers
     // For ask orders, makers receive quote tokens based on price
@@ -403,7 +401,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     for order_id in 1..=num_orders {
         let order = exchange.getOrder(order_id).call().await?;
         assert!(!order.maker.is_zero());
-        assert!(order.isBid);
+        assert!(order.is_bid);
         assert_eq!(order.tick, tick);
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
