@@ -7,9 +7,10 @@
 //! [`commonware_consensus::Reporter`] to receive
 //! [`commonware_consensus::marshal::Update`] from the marshal actor.
 //!
-//! *NOTE*: Messages from the marshal actor are currently ignored (or, in the case
-//! of blocks), silently acknowledged. In the future, this actor will read peers
-//! directly from the execution layer after every finalized block.
+//! At each boundary block, the actor reads the [`OnchainDkgOutcome`] from the
+//! block header and the validator config from the execution node. It then
+//! constructs and tracks the peer set for the next epoch from dealers, players,
+//! and active validators.
 //!
 //! # Implementation details
 //!
@@ -18,8 +19,10 @@
 //! consensus layer p2p stack, and to serve as the single source of truth for
 //! peers.
 
+use commonware_consensus::types::{FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::AddressableManager;
+use commonware_runtime::{Clock, Metrics, Spawner};
 use futures::channel::mpsc;
 use tempo_node::TempoFullNode;
 
@@ -32,19 +35,23 @@ pub(crate) use ingress::Mailbox;
 pub(crate) struct Config<TOracle> {
     pub(crate) oracle: TOracle,
     pub(crate) execution_node: TempoFullNode,
+    pub(crate) epoch_strategy: FixedEpocher,
+    /// The last finalized height according to the consensus layer (marshal).
+    /// Used during start to determine the correct boundary block, since
+    /// the execution layer may be behind.
+    pub(crate) last_finalized_height: Height,
 }
 
-pub(crate) fn init<TPeerManager>(
-    Config {
-        oracle,
-        execution_node,
-    }: Config<TPeerManager>,
-) -> (Actor<TPeerManager>, Mailbox)
+pub(crate) fn init<TContext, TPeerManager>(
+    context: TContext,
+    config: Config<TPeerManager>,
+) -> (Actor<TContext, TPeerManager>, Mailbox)
 where
+    TContext: Clock + Metrics + Spawner,
     TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
     let (tx, rx) = mpsc::unbounded();
-    let actor = Actor::new(oracle, execution_node, rx);
+    let actor = Actor::new(context, config, rx);
     let mailbox = Mailbox::new(tx);
     (actor, mailbox)
 }
