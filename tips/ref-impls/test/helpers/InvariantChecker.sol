@@ -284,7 +284,7 @@ abstract contract InvariantChecker is HandlerBase {
         assertEq(ghost_keyZeroLimitAllowed, 0, "K12: Zero-limit key unexpectedly allowed to spend");
     }
 
-    // ============ Expiring Nonce Invariants (E1-E5) ============
+    // ============ Expiring Nonce Invariants (E1-E6) ============
 
     /// @notice Verify expiring nonce constraints are enforced (TIP-1009)
     /// @dev These counters should always be 0 - any non-zero value indicates a protocol bug
@@ -320,6 +320,14 @@ abstract contract InvariantChecker is HandlerBase {
             ghost_expiringNonceMissingVBAllowed,
             0,
             "E5: Missing validBefore for expiring nonce tx unexpectedly allowed"
+        );
+
+        // E6: Fee payer signature malleability - same user intent (signature_hash) must not
+        // execute more than once within the validity window, even with different fee payer sigs
+        assertEq(
+            ghost_expiringNonceSponsoredReplayAllowed,
+            0,
+            "E6: Sponsored expiring nonce replay via fee payer swap unexpectedly allowed"
         );
     }
 

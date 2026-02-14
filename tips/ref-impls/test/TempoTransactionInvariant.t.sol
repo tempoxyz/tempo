@@ -58,7 +58,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](70);
+        bytes4[] memory selectors = new bytes4[](71);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -144,9 +144,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         selectors[65] = this.handler_expiringNonceMissingValidBefore.selector;
         selectors[66] = this.handler_expiringNonceNoNonceMutation.selector;
         selectors[67] = this.handler_expiringNonceConcurrent.selector;
+        // Sponsored expiring nonce replay (E6 - fee payer signature malleability)
+        selectors[68] = this.handler_expiringNonceSponsoredReplay.selector;
         // Spending limit refund handlers (K-REFUND)
-        selectors[68] = this.handler_keySpendingRefund.selector;
-        selectors[69] = this.handler_keySpendingRefundRevokedKey.selector;
+        selectors[69] = this.handler_keySpendingRefund.selector;
+        selectors[70] = this.handler_keySpendingRefundRevokedKey.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         // Initialize previous nonce tracking for secp256k1 actors
@@ -4315,6 +4317,156 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         if (successCount == 2) {
             ghost_expiringNonceConcurrentExecuted++;
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+          SPONSORED EXPIRING NONCE REPLAY (E6 - FEE PAYER MALLEABILITY)
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Build a pair of sponsored expiring nonce txs with different fee payers
+    ///         but the SAME user signature (same signature_hash).
+    /// @dev The user signs once over the tx encoding WITHOUT a fee payer signature.
+    ///      Each fee payer variant then injects its own fee payer sig and assembles the
+    ///      final tx bytes reusing that single user signature. This mirrors the real-world
+    ///      attack: the Rust runtime's signature_hash() uses a placeholder for the fee
+    ///      payer sig, so the user signature verifies regardless of which fee payer signs.
+    function _buildSponsoredExpiringNonceTxPair(
+        uint256 senderIdx,
+        address to,
+        uint256 amount,
+        uint64 validBefore,
+        uint256 feePayerIdxA,
+        uint256 feePayerIdxB
+    )
+        internal
+        view
+        returns (bytes memory signedTxA, bytes memory signedTxB, bytes32 intentHash)
+    {
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken), value: 0, data: abi.encodeCall(ITIP20.transfer, (to, amount))
+        });
+
+        uint64 gasLimit = TxBuilder.callGas(calls[0].data, 0) + TxBuilder.GAS_LIMIT_BUFFER;
+
+        // Base tx without any fee payer signature
+        TempoTransaction memory baseTx = TempoTransactionLib.create()
+            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(EXPIRING_NONCE_KEY).withNonce(0)
+            .withValidBefore(validBefore);
+
+        // User signing hash = hash of tx encoding WITHOUT fee payer signature.
+        // This matches Rust's signature_hash() which uses a placeholder for fee payer sig.
+        bytes memory unsignedEncoding = baseTx.encode(vmRlp);
+        intentHash = keccak256(unsignedEncoding);
+
+        // User signs once over the intent hash (no fee payer sig in the hash)
+        (uint8 uV, bytes32 uR, bytes32 uS) = vm.sign(actorKeys[senderIdx], intentHash);
+        bytes memory userSig = abi.encodePacked(uR, uS, uV);
+
+        // --- Variant A: fee payer A signs ---
+        {
+            // Fee payer A signs the unsigned tx encoding (same hash the fee payer would see)
+            (uint8 fpV, bytes32 fpR, bytes32 fpS) = vm.sign(actorKeys[feePayerIdxA], intentHash);
+            bytes memory feePayerSigA = abi.encodePacked(fpR, fpS, fpV);
+
+            // Inject fee payer A's signature and assemble final tx bytes with the shared user sig
+            TempoTransaction memory txA = baseTx.withFeePayerSignature(feePayerSigA);
+            signedTxA = TxBuilder._encodeSignedTempo(vmRlp, txA, userSig);
+        }
+
+        // --- Variant B: fee payer B signs ---
+        {
+            // Fee payer B signs the same unsigned tx encoding
+            (uint8 fpV, bytes32 fpR, bytes32 fpS) = vm.sign(actorKeys[feePayerIdxB], intentHash);
+            bytes memory feePayerSigB = abi.encodePacked(fpR, fpS, fpV);
+
+            // Inject fee payer B's signature and assemble final tx bytes with the shared user sig
+            TempoTransaction memory txB = baseTx.withFeePayerSignature(feePayerSigB);
+            signedTxB = TxBuilder._encodeSignedTempo(vmRlp, txB, userSig);
+        }
+    }
+
+    /// @notice Handler E6: Sponsored expiring nonce replay via fee payer signature swap
+    /// @dev A malicious fee payer can re-sign the same user intent with different keys,
+    ///      producing a different tx_hash that bypasses replay detection. The same user
+    ///      intent (signature_hash) should never execute twice within the validity window.
+    function handler_expiringNonceSponsoredReplay(
+        uint256 actorSeed,
+        uint256 feePayerSeed1,
+        uint256 feePayerSeed2,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 feePayerIdx1 = feePayerSeed1 % actors.length;
+        uint256 feePayerIdx2 = feePayerSeed2 % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+
+        // Ensure all actors are different
+        if (senderIdx == feePayerIdx1) {
+            feePayerIdx1 = (feePayerIdx1 + 1) % actors.length;
+        }
+        if (senderIdx == feePayerIdx2) {
+            feePayerIdx2 = (feePayerIdx2 + 1) % actors.length;
+        }
+        // Fee payers must be different to produce different tx_hashes
+        if (feePayerIdx1 == feePayerIdx2) {
+            feePayerIdx2 = (feePayerIdx2 + 1) % actors.length;
+            if (feePayerIdx2 == senderIdx) {
+                feePayerIdx2 = (feePayerIdx2 + 1) % actors.length;
+            }
+        }
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        // Need at least 3 distinct actors for sender, feePayerA, feePayerB
+        if (actors.length < 3) return;
+
+        address sender = actors[senderIdx];
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+        uint256 balance = feeToken.balanceOf(sender);
+        if (balance < amount * 2) {
+            return;
+        }
+
+        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+
+        // Build both variants: same user sig, different fee payer sigs
+        (bytes memory signedTxA, bytes memory signedTxB, bytes32 intentHash) =
+            _buildSponsoredExpiringNonceTxPair(
+                senderIdx, recipient, amount, validBefore, feePayerIdx1, feePayerIdx2
+            );
+
+        // Sanity: different final tx bytes (different fee payer sigs)
+        if (keccak256(signedTxA) == keccak256(signedTxB)) return;
+
+        vm.coinbase(validator);
+        ghost_expiringNonceSponsoredReplayAttempted++;
+
+        // Execute first tx with fee payer A - should succeed
+        try vmExec.executeTransaction(signedTxA) {
+            ghost_expiringNonceIntentExecuted[intentHash] = true;
+            ghost_expiringNonceTxsExecuted++;
+            ghost_totalTxExecuted++;
+            ghost_totalCallsExecuted++;
+        } catch {
+            ghost_totalTxReverted++;
+            return;
+        }
+
+        // Execute same user intent with fee payer B - should FAIL (replay of same intent)
+        try vmExec.executeTransaction(signedTxB) {
+            // E6 VIOLATION: Same user intent executed twice with different fee payer signatures!
+            ghost_expiringNonceSponsoredReplayAllowed++;
+        } catch {
+            _handleExpectedReject(_noop);
         }
     }
 
