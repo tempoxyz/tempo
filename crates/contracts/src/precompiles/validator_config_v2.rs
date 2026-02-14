@@ -115,7 +115,6 @@ crate::sol! {
         // =====================================================================
 
         error AlreadyInitialized();
-        error EgressAlreadyExists(string egress);
         error IngressAlreadyExists(string ingress);
         error InvalidMigrationIndex();
         error InvalidPublicKey();
@@ -197,9 +196,5 @@ impl ValidatorConfigV2Error {
 
     pub fn ingress_already_exists(ingress: String) -> Self {
         Self::IngressAlreadyExists(IValidatorConfigV2::IngressAlreadyExists { ingress })
-    }
-
-    pub fn egress_already_exists(egress: String) -> Self {
-        Self::EgressAlreadyExists(IValidatorConfigV2::EgressAlreadyExists { egress })
     }
 }

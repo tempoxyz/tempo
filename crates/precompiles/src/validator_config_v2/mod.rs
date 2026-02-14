@@ -66,8 +66,7 @@ pub struct ValidatorConfigV2 {
     address_to_index: Mapping<Address, u64>,
     pubkey_to_index: Mapping<B256, u64>,
     next_dkg_ceremony: u64,
-    active_ingress: Mapping<B256, bool>,
-    active_egress: Mapping<B256, bool>,
+    active_ingress_ips: Mapping<B256, bool>,
 }
 
 impl ValidatorConfigV2 {
@@ -240,54 +239,34 @@ impl ValidatorConfigV2 {
         })
     }
 
-    fn require_unique_active_ips(&self, ingress: &str, egress: &str) -> Result<(B256, B256)> {
-        let ingress_hash = keccak256(ingress.as_bytes());
-        if self.active_ingress[ingress_hash].read()? {
+    fn ingress_ip_hash(ingress: &str) -> B256 {
+        let ingress_ip = ingress.split(':').next().unwrap_or(ingress);
+        keccak256(ingress_ip.as_bytes())
+    }
+
+    fn require_unique_ingress_ip(&self, ingress: &str) -> Result<()> {
+        let ingress_hash = Self::ingress_ip_hash(ingress);
+        if self.active_ingress_ips[ingress_hash].read()? {
             Err(ValidatorConfigV2Error::ingress_already_exists(
                 ingress.to_string(),
             ))?
         }
 
-        let egress_hash = keccak256(egress.as_bytes());
-        if self.active_egress[egress_hash].read()? {
-            Err(ValidatorConfigV2Error::egress_already_exists(
-                egress.to_string(),
-            ))?
-        }
-
-        Ok((ingress_hash, egress_hash))
+        Ok(())
     }
 
-    fn update_active_ips(
-        &mut self,
-        old_ingress: &str,
-        old_egress: &str,
-        new_ingress: &str,
-        new_egress: &str,
-    ) -> Result<()> {
-        let old_ingress_hash = keccak256(old_ingress.as_bytes());
-        let old_egress_hash = keccak256(old_egress.as_bytes());
-        let new_ingress_hash = keccak256(new_ingress.as_bytes());
-        let new_egress_hash = keccak256(new_egress.as_bytes());
+    fn update_ingress_ip_tracking(&mut self, old_ingress: &str, new_ingress: &str) -> Result<()> {
+        let old_ingress_hash = Self::ingress_ip_hash(old_ingress);
+        let new_ingress_hash = Self::ingress_ip_hash(new_ingress);
 
-        if old_ingress != new_ingress {
-            if self.active_ingress[new_ingress_hash].read()? {
+        if old_ingress_hash != new_ingress_hash {
+            if self.active_ingress_ips[new_ingress_hash].read()? {
                 Err(ValidatorConfigV2Error::ingress_already_exists(
                     new_ingress.to_string(),
                 ))?
             }
-            self.active_ingress[old_ingress_hash].delete()?;
-            self.active_ingress[new_ingress_hash].write(true)?;
-        }
-
-        if old_egress != new_egress {
-            if self.active_egress[new_egress_hash].read()? {
-                Err(ValidatorConfigV2Error::egress_already_exists(
-                    new_egress.to_string(),
-                ))?
-            }
-            self.active_egress[old_egress_hash].delete()?;
-            self.active_egress[new_egress_hash].write(true)?;
+            self.active_ingress_ips[old_ingress_hash].delete()?;
+            self.active_ingress_ips[new_ingress_hash].write(true)?;
         }
 
         Ok(())
@@ -397,6 +376,7 @@ impl ValidatorConfigV2 {
         self.require_new_pubkey(call.publicKey)?;
         self.require_new_address(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
+        self.require_unique_ingress_ip(&call.ingress)?;
 
         self.verify_validator_signature(
             VALIDATOR_NS_ADD,
@@ -409,10 +389,7 @@ impl ValidatorConfigV2 {
 
         let block_height = self.storage.block_number();
 
-        let (ingress_hash, egress_hash) =
-            self.require_unique_active_ips(&call.ingress, &call.egress)?;
-        self.active_ingress[ingress_hash].write(true)?;
-        self.active_egress[egress_hash].write(true)?;
+        self.active_ingress_ips[Self::ingress_ip_hash(&call.ingress)].write(true)?;
 
         self.append_validator(
             call.validatorAddress,
@@ -436,10 +413,7 @@ impl ValidatorConfigV2 {
 
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
 
-        let ingress_hash = keccak256(v.ingress.as_bytes());
-        let egress_hash = keccak256(v.egress.as_bytes());
-        self.active_ingress[ingress_hash].delete()?;
-        self.active_egress[egress_hash].delete()?;
+        self.active_ingress_ips[Self::ingress_ip_hash(&v.ingress)].delete()?;
 
         v.deactivated_at_height = block_height;
         self.validators[idx].write(v)
@@ -489,7 +463,7 @@ impl ValidatorConfigV2 {
         let block_height = self.storage.block_number();
         let (idx, mut old) = self.get_active_validator(call.validatorAddress)?;
 
-        self.update_active_ips(&old.ingress, &old.egress, &call.ingress, &call.egress)?;
+        self.update_ingress_ip_tracking(&old.ingress, &call.ingress)?;
 
         old.deactivated_at_height = block_height;
         self.validators[idx].write(old)?;
@@ -518,7 +492,7 @@ impl ValidatorConfigV2 {
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
-        self.update_active_ips(&v.ingress, &v.egress, &call.ingress, &call.egress)?;
+        self.update_ingress_ip_tracking(&v.ingress, &call.ingress)?;
 
         v.ingress = call.ingress;
         v.egress = call.egress;
@@ -603,10 +577,11 @@ impl ValidatorConfigV2 {
             .map(|sa| sa.ip().to_string())
             .unwrap_or(v1_val.outboundAddress);
 
-        let (ingress_hash, egress_hash) =
-            self.require_unique_active_ips(&v1_val.inboundAddress, &egress)?;
+        self.require_unique_ingress_ip(&v1_val.inboundAddress)?;
 
         let deactivated_at_height = if v1_val.active { 0 } else { block_height };
+
+        let ingress_hash = Self::ingress_ip_hash(&v1_val.inboundAddress);
 
         self.append_validator(
             v1_val.validatorAddress,
@@ -618,8 +593,7 @@ impl ValidatorConfigV2 {
         )?;
 
         if deactivated_at_height == 0 {
-            self.active_ingress[ingress_hash].write(true)?;
-            self.active_egress[egress_hash].write(true)?;
+            self.active_ingress_ips[ingress_hash].write(true)?;
         }
 
         Ok(())
@@ -1676,7 +1650,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_validator_rejects_duplicate_ingress() -> eyre::Result<()> {
+    fn test_add_validator_rejects_duplicate_ingress_ip() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -1692,32 +1666,7 @@ mod tests {
             vc.storage.set_block_number(201);
             let result = vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.2.1"),
-            );
-
-            assert!(result.is_err());
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_add_validator_rejects_duplicate_egress() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner, false)?;
-
-            vc.storage.set_block_number(200);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.1.1"),
-            )?;
-
-            vc.storage.set_block_number(201);
-            let result = vc.add_validator(
-                owner,
-                make_valid_add_call(Address::random(), "192.168.2.1:8000", "192.168.1.1"),
+                make_valid_add_call(Address::random(), "192.168.1.1:9000", "192.168.2.1"),
             );
 
             assert!(result.is_err());
