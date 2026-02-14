@@ -2011,4 +2011,74 @@ mod tests {
         };
         assert!(valid_expiring_tx.validate().is_ok());
     }
+
+    /// Demonstrates that a sponsored expiring nonce transaction is vulnerable to replay
+    /// via fee payer signature malleability.
+    ///
+    /// The user's `signature_hash` excludes the fee payer signature bytes (replacing them
+    /// with a placeholder), but the transaction `hash` (used for replay protection in both
+    /// the transaction pool validator and the EVM handler) includes the full fee payer
+    /// signature. A malicious fee payer can re-sign with different keys, producing a
+    /// different tx hash while the user's signature remains valid — bypassing replay
+    /// protection.
+    #[test]
+    fn test_expiring_nonce_fee_payer_signature_malleability() {
+        use crate::transaction::AASigned;
+
+        let dummy_call = Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        // Build an expiring nonce transaction (sponsored)
+        let mut tx = TempoTransaction {
+            chain_id: 1,
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 0,
+            valid_before: Some(1000),
+            calls: vec![dummy_call],
+            // First fee payer signature
+            fee_payer_signature: Some(Signature::new(U256::from(1), U256::from(2), false)),
+            ..Default::default()
+        };
+
+        // The user signs over signature_hash which replaces fee_payer_signature with a
+        // placeholder byte, so it is invariant to the fee payer's actual signature.
+        let user_sig_hash = tx.signature_hash();
+
+        // Create a "signed" transaction with fee payer signature A
+        let user_sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
+            U256::from(100),
+            U256::from(200),
+            false,
+        )));
+        let signed_a = AASigned::new_unhashed(tx.clone(), user_sig.clone());
+        let tx_hash_a = *signed_a.hash();
+
+        // Now a different fee payer re-signs: different fee payer signature bytes
+        tx.fee_payer_signature = Some(Signature::new(U256::from(99), U256::from(88), true));
+
+        // The user's signature_hash must be identical — user's intent hasn't changed
+        let user_sig_hash_b = tx.signature_hash();
+        assert_eq!(
+            user_sig_hash, user_sig_hash_b,
+            "User signature_hash must be invariant to fee payer signature changes"
+        );
+
+        // But the full transaction hash changes because it includes fee payer sig bytes
+        let signed_b = AASigned::new_unhashed(tx, user_sig);
+        let tx_hash_b = *signed_b.hash();
+
+        assert_ne!(
+            tx_hash_a, tx_hash_b,
+            "BUG: Different fee payer signatures produce different tx hashes. \
+             Since expiring nonce replay protection keys on tx_hash, a malicious fee \
+             payer can replay the user's transaction by re-signing with different keys."
+        );
+
+        // This is the core of the vulnerability: replay protection uses tx_hash (which
+        // changes with fee payer sig) instead of signature_hash (which is invariant).
+        // The fix should use signature_hash for expiring nonce replay protection.
+    }
 }
