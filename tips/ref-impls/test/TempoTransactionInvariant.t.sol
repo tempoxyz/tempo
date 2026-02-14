@@ -58,7 +58,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](70);
+        bytes4[] memory selectors = new bytes4[](71);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -108,45 +108,45 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         selectors[36] = this.handler_useRevokedKey.selector;
         selectors[37] = this.handler_useExpiredKey.selector;
         // Fee handlers (F1-F8, F10)
-        // NOTE: handler_invalidFeeToken disabled due to BUG-002 (causes tempo-foundry panic)
-        selectors[38] = this.handler_feeCollection.selector;
-        selectors[39] = this.handler_feeRefundSuccess.selector;
-        selectors[40] = this.handler_feeNoRefundFailure.selector;
-        selectors[41] = this.handler_feeOnRevert.selector;
-        selectors[42] = this.handler_explicitFeeToken.selector;
-        selectors[43] = this.handler_feeTokenFallback.selector;
-        selectors[44] = this.handler_insufficientLiquidity.selector;
+        selectors[38] = this.handler_invalidFeeToken.selector;
+        selectors[39] = this.handler_feeCollection.selector;
+        selectors[40] = this.handler_feeRefundSuccess.selector;
+        selectors[41] = this.handler_feeNoRefundFailure.selector;
+        selectors[42] = this.handler_feeOnRevert.selector;
+        selectors[43] = this.handler_explicitFeeToken.selector;
+        selectors[44] = this.handler_feeTokenFallback.selector;
+        selectors[45] = this.handler_insufficientLiquidity.selector;
         // 2D nonce gas tracking (N10/N11)
-        selectors[45] = this.handler_2dNonceGasCost.selector;
+        selectors[46] = this.handler_2dNonceGasCost.selector;
         // Time window handlers (T1-T4)
-        selectors[46] = this.handler_timeBoundValidAfter.selector;
-        selectors[47] = this.handler_timeBoundValidBefore.selector;
-        selectors[48] = this.handler_timeBoundValid.selector;
-        selectors[49] = this.handler_timeBoundOpen.selector;
+        selectors[47] = this.handler_timeBoundValidAfter.selector;
+        selectors[48] = this.handler_timeBoundValidBefore.selector;
+        selectors[49] = this.handler_timeBoundValid.selector;
+        selectors[50] = this.handler_timeBoundOpen.selector;
         // Transaction type handlers (TX4-TX7, TX10)
-        selectors[50] = this.handler_eip1559Transfer.selector;
-        selectors[51] = this.handler_eip1559BaseFeeRejection.selector;
-        selectors[52] = this.handler_eip7702WithAuth.selector;
-        selectors[53] = this.handler_eip7702CreateRejection.selector;
-        selectors[54] = this.handler_tempoFeeSponsor.selector;
+        selectors[51] = this.handler_eip1559Transfer.selector;
+        selectors[52] = this.handler_eip1559BaseFeeRejection.selector;
+        selectors[53] = this.handler_eip7702WithAuth.selector;
+        selectors[54] = this.handler_eip7702CreateRejection.selector;
+        selectors[55] = this.handler_tempoFeeSponsor.selector;
         // Gas tracking handlers (G1-G10)
-        selectors[55] = this.handler_gasTrackingBasic.selector;
-        selectors[56] = this.handler_gasTrackingMulticall.selector;
-        selectors[57] = this.handler_gasTrackingCreate.selector;
-        selectors[58] = this.handler_gasTrackingSignatureTypes.selector;
-        selectors[59] = this.handler_gasTrackingKeyAuth.selector;
+        selectors[56] = this.handler_gasTrackingBasic.selector;
+        selectors[57] = this.handler_gasTrackingMulticall.selector;
+        selectors[58] = this.handler_gasTrackingCreate.selector;
+        selectors[59] = this.handler_gasTrackingSignatureTypes.selector;
+        selectors[60] = this.handler_gasTrackingKeyAuth.selector;
         // Expiring nonce handlers (E1-E7)
-        selectors[60] = this.handler_expiringNonceBasic.selector;
-        selectors[61] = this.handler_expiringNonceReplay.selector;
-        selectors[62] = this.handler_expiringNonceExpired.selector;
-        selectors[63] = this.handler_expiringNonceWindowTooFar.selector;
-        selectors[64] = this.handler_expiringNonceNonZeroNonce.selector;
-        selectors[65] = this.handler_expiringNonceMissingValidBefore.selector;
-        selectors[66] = this.handler_expiringNonceNoNonceMutation.selector;
-        selectors[67] = this.handler_expiringNonceConcurrent.selector;
+        selectors[61] = this.handler_expiringNonceBasic.selector;
+        selectors[62] = this.handler_expiringNonceReplay.selector;
+        selectors[63] = this.handler_expiringNonceExpired.selector;
+        selectors[64] = this.handler_expiringNonceWindowTooFar.selector;
+        selectors[65] = this.handler_expiringNonceNonZeroNonce.selector;
+        selectors[66] = this.handler_expiringNonceMissingValidBefore.selector;
+        selectors[67] = this.handler_expiringNonceNoNonceMutation.selector;
+        selectors[68] = this.handler_expiringNonceConcurrent.selector;
         // Spending limit refund handlers (K-REFUND)
-        selectors[68] = this.handler_keySpendingRefund.selector;
-        selectors[69] = this.handler_keySpendingRefundRevokedKey.selector;
+        selectors[69] = this.handler_keySpendingRefund.selector;
+        selectors[70] = this.handler_keySpendingRefundRevokedKey.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         // Initialize previous nonce tracking for secp256k1 actors
