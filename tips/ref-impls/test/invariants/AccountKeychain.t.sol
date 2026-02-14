@@ -70,6 +70,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     uint256 private _totalKeysAuthorized;
     uint256 private _totalKeysRevoked;
     uint256 private _totalLimitUpdates;
+    uint256 private _totalViewChecks;
 
     /// @dev Coverage log file path
 
@@ -634,39 +635,38 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for attempting to reauthorize a revoked key
     /// @dev Tests TEMPO-KEY4 (revoked keys cannot be reauthorized)
-    function tryReauthorizeRevokedKey(uint256 accountSeed, uint256 keyIdSeed) external {
+    function handler_tryReauthorizeRevokedKey(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint256 sigTypeSeed,
+        uint256 expirySeed,
+        bool enforceLimits,
+        LimitSeeds calldata limitSeeds
+    )
+        external
+    {
         address account = _selectActor(accountSeed);
 
-        // Find a revoked key across all actors (not just the selected account)
+        // Prefer a revoked key for the selected account.
         address keyId = address(0);
-        address keyOwner = address(0);
-        uint256 startActorIdx = accountSeed % _actors.length;
-        for (uint256 a = 0; a < _actors.length && keyId == address(0); a++) {
-            // Use addmod to avoid overflow
-            uint256 actorIdx = addmod(startActorIdx, a, _actors.length);
-            address candidate = _actors[actorIdx];
-            address[] memory keys = _accountKeys[candidate];
-            if (keys.length == 0) continue;
+        address[] memory keys = _accountKeys[account];
+        if (keys.length > 0) {
             uint256 startKeyIdx = keyIdSeed % keys.length;
             for (uint256 k = 0; k < keys.length; k++) {
-                // Use addmod to avoid overflow
                 uint256 keyIdx = addmod(startKeyIdx, k, keys.length);
                 address potentialKey = keys[keyIdx];
-                if (_ghostKeyRevoked[candidate][potentialKey]) {
+                if (_ghostKeyRevoked[account][potentialKey]) {
                     keyId = potentialKey;
-                    keyOwner = candidate;
                     break;
                 }
             }
         }
 
         if (keyId == address(0)) {
-            // No revoked key found - create and revoke one as fallback
-            account = _selectActor(accountSeed);
-            // Find an unused keyId for this account
+            // No revoked key found - create and revoke one as fallback.
+            // Find an unused keyId for this account.
             uint256 startKeyIdx = keyIdSeed % _potentialKeyIds.length;
             for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-                // Use addmod to avoid overflow
                 uint256 idx = addmod(startKeyIdx, i, _potentialKeyIds.length);
                 address candidateKey = _potentialKeyIds[idx];
                 if (
@@ -690,20 +690,23 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             _ghostKeyExpiry[account][keyId] = 0;
             _ghostKeyEnforceLimits[account][keyId] = false;
             _ghostKeySignatureType[account][keyId] = 0;
-        } else {
-            account = keyOwner;
         }
 
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        assertFalse(_ghostKeyExists[account][keyId], "TEMPO-KEY4: revoked key should not be active");
+        assertTrue(_ghostKeyRevoked[account][keyId], "TEMPO-KEY4: key should be marked revoked in ghost");
+
+        IAccountKeychain.SignatureType sigType = _generateSignatureType(sigTypeSeed);
+        uint64 expiry = _generateValidAuthorizeExpiry(expirySeed);
+        IAccountKeychain.TokenLimit[] memory limits = _buildAuthorizeLimits(limitSeeds);
+
+        IAccountKeychain.KeyInfo memory infoBefore = keychain.getKey(account, keyId);
+        uint256[] memory limitsBefore = new uint256[](_tokens.length);
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            limitsBefore[t] = keychain.getRemainingLimit(account, keyId, address(_tokens[t]));
+        }
 
         vm.startPrank(account);
-        try keychain.authorizeKey(
-            keyId,
-            IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
-        ) {
+        try keychain.authorizeKey(keyId, sigType, expiry, enforceLimits, limits) {
             vm.stopPrank();
             revert("TEMPO-KEY4: Reauthorizing revoked key should fail");
         } catch (bytes memory reason) {
@@ -715,6 +718,33 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
+        // Failed re-authorization must not mutate revoked key state.
+        IAccountKeychain.KeyInfo memory infoAfter = keychain.getKey(account, keyId);
+        assertEq(infoAfter.keyId, infoBefore.keyId, "TEMPO-KEY4: keyId should remain unchanged");
+        assertEq(infoAfter.expiry, infoBefore.expiry, "TEMPO-KEY4: expiry should remain unchanged");
+        assertEq(
+            infoAfter.enforceLimits,
+            infoBefore.enforceLimits,
+            "TEMPO-KEY4: enforceLimits should remain unchanged"
+        );
+        assertEq(
+            uint8(infoAfter.signatureType),
+            uint8(infoBefore.signatureType),
+            "TEMPO-KEY4: signature type should remain unchanged"
+        );
+        assertEq(
+            infoAfter.isRevoked, infoBefore.isRevoked, "TEMPO-KEY4: revoked flag should remain unchanged"
+        );
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            assertEq(
+                keychain.getRemainingLimit(account, keyId, address(_tokens[t])),
+                limitsBefore[t],
+                "TEMPO-KEY4: failed reauthorize should not mutate limits"
+            );
+        }
+        assertFalse(_ghostKeyExists[account][keyId], "TEMPO-KEY4: key should remain non-active in ghost");
+        assertTrue(_ghostKeyRevoked[account][keyId], "TEMPO-KEY4: key should remain revoked in ghost");
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -722,6 +752,12 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                     _getActorIndex(account),
                     " keyId=",
                     vm.toString(keyId),
+                    " sigType=",
+                    vm.toString(uint8(sigType)),
+                    " enforceLimits=",
+                    enforceLimits ? "true" : "false",
+                    " limits=",
+                    vm.toString(limits.length),
                     " correctly rejected"
                 )
             );
@@ -1643,7 +1679,13 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for checking getTransactionKey
     /// @dev Tests TEMPO-KEY11 (transaction key returns 0 when not in transaction)
-    function handler_checkTransactionKey() external view {
+    ///      Note: transient storage is never set in this harness, so this is a
+    ///      smoke-test only. Real protocol-context validation (TEMPO-KEY20/21)
+    ///      requires integration tests.
+    function handler_checkTransactionKey() external {
+        // Foundry invariant runner skips `view` functions; bump counter to keep non-view.
+        _totalViewChecks++;
+
         // TEMPO-KEY11: When called directly, should return address(0)
         address txKey = keychain.getTransactionKey();
         assertEq(txKey, address(0), "TEMPO-KEY11: Transaction key should be 0 outside tx context");
@@ -1651,13 +1693,35 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for getting key info on non-existent key
     /// @dev Tests TEMPO-KEY12 (non-existent key returns defaults)
-    function checkNonExistentKey(uint256 accountSeed, uint256 keyIdSeed) external view {
-        address account = _selectActor(accountSeed);
-        address keyId = _selectKeyId(keyIdSeed);
+    ///      "Non-existent" includes never-authorized keys and revoked keys (expiry==0).
+    function handler_checkNonExistentKey(uint256 accountSeed, uint256 keyIdSeed) external {
+        // Foundry invariant runner skips `view` functions; bump counter to keep non-view.
+        _totalViewChecks++;
 
-        // Only test if key doesn't exist
-        if (_ghostKeyExists[account][keyId]) {
-            return;
+        address account = _selectActor(accountSeed);
+
+        // Occasionally test keyId == address(0) (rejected by authorizeKey, but getKey
+        // must still return sane defaults).
+        address keyId;
+        if (keyIdSeed % 16 == 0) {
+            keyId = address(0);
+        } else {
+            keyId = _selectKeyId(keyIdSeed);
+
+            // If the selected key is active, search for a non-existent one to reduce skip rate.
+            if (_ghostKeyExists[account][keyId]) {
+                bool found = false;
+                for (uint256 i = 0; i < 4; i++) {
+                    address candidate =
+                        _selectKeyId(uint256(keccak256(abi.encode(keyIdSeed, i))));
+                    if (!_ghostKeyExists[account][candidate]) {
+                        keyId = candidate;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return;
+            }
         }
 
         IAccountKeychain.KeyInfo memory info = keychain.getKey(account, keyId);
@@ -1666,10 +1730,36 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         assertEq(info.keyId, address(0), "TEMPO-KEY12: KeyId should be 0");
         assertEq(info.expiry, 0, "TEMPO-KEY12: Expiry should be 0");
         assertFalse(info.enforceLimits, "TEMPO-KEY12: EnforceLimits should be false");
-
-        // isRevoked should match ghost state
         assertEq(
-            info.isRevoked, _ghostKeyRevoked[account][keyId], "TEMPO-KEY12: isRevoked should match"
+            uint8(info.signatureType),
+            uint8(IAccountKeychain.SignatureType.Secp256k1),
+            "TEMPO-KEY12: SignatureType should default to Secp256k1"
+        );
+
+        // isRevoked should match ghost state (revoked is sticky even after metadata is cleared)
+        assertEq(
+            info.isRevoked,
+            _ghostKeyRevoked[account][keyId],
+            "TEMPO-KEY12: isRevoked should match ghost"
+        );
+
+        // getRemainingLimit must return 0 for every token on a non-existent/revoked key
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            assertEq(
+                keychain.getRemainingLimit(account, keyId, address(_tokens[t])),
+                0,
+                "TEMPO-KEY12: RemainingLimit should be 0 for non-existent key"
+            );
+        }
+        assertEq(
+            keychain.getRemainingLimit(account, keyId, address(pathUSD)),
+            0,
+            "TEMPO-KEY12: RemainingLimit(pathUSD) should be 0"
+        );
+        assertEq(
+            keychain.getRemainingLimit(account, keyId, address(0)),
+            0,
+            "TEMPO-KEY12: RemainingLimit(address(0)) should be 0"
         );
     }
 
