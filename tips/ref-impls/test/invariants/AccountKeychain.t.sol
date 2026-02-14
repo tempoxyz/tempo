@@ -13,6 +13,23 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @dev Starting offset for key ID address pool (distinct from zero address)
     uint256 private constant KEY_ID_POOL_OFFSET = 1;
 
+    /// @dev Mode of token limits generated for authorizeKey fuzzing
+    enum LimitMode {
+        None,
+        Single,
+        TwoDistinct,
+        TwoDuplicate
+    }
+
+    /// @dev Seed bundle for authorizeKey limit generation
+    struct LimitSeeds {
+        uint256 modeSeed;
+        uint256 token0Seed;
+        uint256 amount0Seed;
+        uint256 token1Seed;
+        uint256 amount1Seed;
+    }
+
     /// @dev Potential key IDs
     address[] private _potentialKeyIds;
 
@@ -87,8 +104,13 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     }
 
     /// @dev Generates a valid expiry timestamp
-    function _generateExpiry(uint256 seed) internal view returns (uint64) {
-        return uint64(block.timestamp + 1 days + (seed % 365 days));
+    function _generateValidAuthorizeExpiry(uint256 seed) internal view returns (uint64) {
+        return uint64(block.timestamp + 1 + (seed % 365 days));
+    }
+
+    /// @dev Generates an invalid expiry timestamp for authorizeKey (expiry <= block.timestamp)
+    function _generateInvalidAuthorizeExpiry(uint256 seed) internal view returns (uint64) {
+        return uint64(bound(seed, 0, block.timestamp));
     }
 
     /// @dev Generates a signature type (0-2)
@@ -100,6 +122,67 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         return IAccountKeychain.SignatureType(seed % 3);
     }
 
+    /// @dev Builds token limit inputs for authorizeKey fuzzing
+    /// @dev Can generate empty, single-token, distinct-two-token, or duplicate-token limits
+    function _buildAuthorizeLimits(LimitSeeds memory seeds)
+        internal
+        view
+        returns (IAccountKeychain.TokenLimit[] memory limits)
+    {
+        if (_tokens.length == 0) {
+            return new IAccountKeychain.TokenLimit[](0);
+        }
+
+        LimitMode mode = LimitMode(seeds.modeSeed % 4);
+        uint256 limitCount = mode == LimitMode.None ? 0 : (mode == LimitMode.Single ? 1 : 2);
+        limits = new IAccountKeychain.TokenLimit[](limitCount);
+        if (limitCount == 0) {
+            return limits;
+        }
+
+        address token0 = address(_selectBaseToken(seeds.token0Seed));
+        uint256 amount0 = (seeds.amount0Seed % 1_000_000) * 1e6;
+        limits[0] = IAccountKeychain.TokenLimit({
+            token: token0, amount: amount0
+        });
+
+        if (limitCount == 1) {
+            return limits;
+        }
+
+        address token1 = address(_selectBaseToken(seeds.token1Seed));
+        if (mode == LimitMode.TwoDuplicate) {
+            token1 = token0;
+        } else if (mode == LimitMode.TwoDistinct && _tokens.length > 1 && token1 == token0) {
+            token1 = address(_tokens[addmod(seeds.token1Seed, 1, _tokens.length)]);
+        }
+        uint256 amount1 = (seeds.amount1Seed % 1_000_000) * 1e6;
+
+        limits[1] = IAccountKeychain.TokenLimit({
+            token: token1, amount: amount1
+        });
+    }
+
+    /// @dev Computes expected stored limit for a token from authorizeKey inputs
+    /// @dev When duplicate token entries exist, last write wins
+    function _expectedLimitForToken(
+        IAccountKeychain.TokenLimit[] memory limits,
+        bool enforceLimits,
+        address token
+    )
+        internal
+        pure
+        returns (uint256 expected)
+    {
+        if (!enforceLimits) return 0;
+
+        for (uint256 i = 0; i < limits.length; i++) {
+            if (limits[i].token == token) {
+                expected = limits[i].amount;
+            }
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                          CORE CREATION HELPERS
     //////////////////////////////////////////////////////////////*/
@@ -108,7 +191,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @param account The account to authorize the key for
     /// @param keyId The key ID to authorize
     function _createKeyInternal(address account, address keyId) internal {
-        uint64 expiry = _generateExpiry(uint256(keccak256(abi.encode(account, keyId))));
+        uint64 expiry = _generateValidAuthorizeExpiry(uint256(keccak256(abi.encode(account, keyId))));
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
         vm.startPrank(account);
@@ -207,7 +290,84 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for authorizing a new key
     /// @dev Tests TEMPO-KEY1 (key authorization), TEMPO-KEY2 (spending limits)
-    function authorizeKey(
+    function handler_authorizeKey(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint256 sigTypeSeed,
+        uint256 expirySeed,
+        bool enforceLimits,
+        LimitSeeds calldata limitSeeds
+    )
+        external
+    {
+        address account = _selectActor(accountSeed);
+        address keyId = _selectKeyId(keyIdSeed);
+
+        // Skip if key already exists or was revoked for this account
+        if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) {
+            return;
+        }
+
+        uint64 expiry = _generateValidAuthorizeExpiry(expirySeed);
+        IAccountKeychain.SignatureType sigType = _generateSignatureType(sigTypeSeed);
+
+        // Generate limit inputs independently from enforceLimits to exercise
+        // "limits ignored when enforceLimits=false" behavior.
+        IAccountKeychain.TokenLimit[] memory limits = _buildAuthorizeLimits(limitSeeds);
+
+        vm.startPrank(account);
+        try keychain.authorizeKey(keyId, sigType, expiry, enforceLimits, limits) {
+            vm.stopPrank();
+
+            _totalKeysAuthorized++;
+
+            // Update ghost state
+            _ghostKeyExists[account][keyId] = true;
+            _ghostKeyExpiry[account][keyId] = expiry;
+            _ghostKeyEnforceLimits[account][keyId] = enforceLimits;
+            _ghostKeySignatureType[account][keyId] = uint8(sigType);
+
+            if (enforceLimits && limits.length > 0) {
+                for (uint256 i = 0; i < limits.length; i++) {
+                    _ghostSpendingLimits[account][keyId][limits[i].token] = limits[i].amount;
+                }
+            }
+
+            if (!_keyUsed[account][keyId]) {
+                _keyUsed[account][keyId] = true;
+                _accountKeys[account].push(keyId);
+            }
+
+            // TEMPO-KEY1: Verify key was stored correctly
+            IAccountKeychain.KeyInfo memory info = keychain.getKey(account, keyId);
+            assertEq(info.keyId, keyId, "TEMPO-KEY1: KeyId should match");
+            assertEq(info.expiry, expiry, "TEMPO-KEY1: Expiry should match");
+            assertEq(info.enforceLimits, enforceLimits, "TEMPO-KEY1: EnforceLimits should match");
+            assertEq(
+                uint8(info.signatureType), uint8(sigType), "TEMPO-KEY1: SignatureType should match"
+            );
+            assertFalse(info.isRevoked, "TEMPO-KEY1: Should not be revoked");
+
+            // TEMPO-KEY2: Verify all limit writes from authorizeKey.
+            // Covers: empty/single/multi limits, duplicate token entries, and
+            // enforceLimits=false with non-empty limits (limits must remain zero).
+            for (uint256 t = 0; t < _tokens.length; t++) {
+                address token = address(_tokens[t]);
+                uint256 expectedLimit = _expectedLimitForToken(limits, enforceLimits, token);
+                uint256 actualLimit = keychain.getRemainingLimit(account, keyId, token);
+                assertEq(
+                    actualLimit, expectedLimit, "TEMPO-KEY2: Stored limit should match input state"
+                );
+            }
+        } catch {
+            vm.stopPrank();
+            revert("TEMPO-KEY1: Valid authorizeKey call should not revert");
+        }
+    }
+
+    /// @notice Handler for authorizing with expiry in the past/boundary (should fail)
+    /// @dev Exercises authorizeKey expiry validation with expiry <= block.timestamp
+    function handler_tryAuthorizeKeyExpiryInPast(
         uint256 accountSeed,
         uint256 keyIdSeed,
         uint256 sigTypeSeed,
@@ -225,53 +385,30 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             return;
         }
 
-        uint64 expiry = _generateExpiry(expirySeed);
+        uint64 badExpiry = _generateInvalidAuthorizeExpiry(expirySeed);
         IAccountKeychain.SignatureType sigType = _generateSignatureType(sigTypeSeed);
 
-        IAccountKeychain.TokenLimit[] memory limits;
-        if (enforceLimits && _tokens.length > 0) {
-            limits = new IAccountKeychain.TokenLimit[](1);
-            limits[0] = IAccountKeychain.TokenLimit({
-                token: address(_tokens[limitAmountSeed % _tokens.length]),
-                amount: (limitAmountSeed % 1_000_000) * 1e6
-            });
-        } else {
-            limits = new IAccountKeychain.TokenLimit[](0);
-        }
+        LimitSeeds memory limitSeeds = LimitSeeds({
+            modeSeed: expirySeed,
+            token0Seed: accountSeed,
+            amount0Seed: keyIdSeed,
+            token1Seed: sigTypeSeed,
+            amount1Seed: limitAmountSeed
+        });
+        IAccountKeychain.TokenLimit[] memory limits = _buildAuthorizeLimits(limitSeeds);
 
         vm.startPrank(account);
-        try keychain.authorizeKey(keyId, sigType, expiry, enforceLimits, limits) {
+        try keychain.authorizeKey(keyId, sigType, badExpiry, enforceLimits, limits) {
             vm.stopPrank();
-
-            _totalKeysAuthorized++;
-
-            // Update ghost state
-            _ghostKeyExists[account][keyId] = true;
-            _ghostKeyExpiry[account][keyId] = expiry;
-            _ghostKeyEnforceLimits[account][keyId] = enforceLimits;
-            _ghostKeySignatureType[account][keyId] = uint8(sigType);
-
-            if (enforceLimits && limits.length > 0) {
-                _ghostSpendingLimits[account][keyId][limits[0].token] = limits[0].amount;
-            }
-
-            if (!_keyUsed[account][keyId]) {
-                _keyUsed[account][keyId] = true;
-                _accountKeys[account].push(keyId);
-            }
-
-            // TEMPO-KEY1: Verify key was stored correctly
-            IAccountKeychain.KeyInfo memory info = keychain.getKey(account, keyId);
-            assertEq(info.keyId, keyId, "TEMPO-KEY1: KeyId should match");
-            assertEq(info.expiry, expiry, "TEMPO-KEY1: Expiry should match");
-            assertEq(info.enforceLimits, enforceLimits, "TEMPO-KEY1: EnforceLimits should match");
-            assertEq(
-                uint8(info.signatureType), uint8(sigType), "TEMPO-KEY1: SignatureType should match"
-            );
-            assertFalse(info.isRevoked, "TEMPO-KEY1: Should not be revoked");
+            revert("TEMPO-KEY1: authorizeKey with expiry <= now should fail");
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownKeychainError(reason);
+            assertTrue(reason.length >= 4, "TEMPO-KEY1: Missing revert selector");
+            assertEq(
+                bytes4(reason),
+                IAccountKeychain.ExpiryInPast.selector,
+                "TEMPO-KEY1: Past/boundary expiry should revert with ExpiryInPast"
+            );
         }
     }
 
