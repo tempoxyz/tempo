@@ -63,20 +63,16 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         _policyTypes[policyId] = policyType;
 
         if (isFallback) {
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_POLICY[fallback]: ",
-                        _getActorIndex(actor),
-                        " created policy ",
-                        vm.toString(policyId),
-                        " type=",
-                        policyType == ITIP403Registry.PolicyType.WHITELIST
-                            ? "WHITELIST"
-                            : "BLACKLIST"
-                    )
-                );
-            }
+            _logHandler(
+                "CREATE_POLICY",
+                string.concat(
+                    _getActorIndex(actor),
+                    " created policy ",
+                    vm.toString(policyId),
+                    " type=",
+                    policyType == ITIP403Registry.PolicyType.WHITELIST ? "WHITELIST" : "BLACKLIST"
+                )
+            );
         }
     }
 
@@ -204,18 +200,16 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         assertEq(uint256(storedType), uint256(policyType), "TEMPO-REG4: Policy type mismatch");
         assertEq(storedAdmin, actor, "TEMPO-REG4: Policy admin mismatch");
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "CREATE_POLICY: ",
-                    _getActorIndex(actor),
-                    " created policy ",
-                    vm.toString(policyId),
-                    " type=",
-                    isWhitelist ? "WHITELIST" : "BLACKLIST"
-                )
-            );
-        }
+        _logHandler(
+            "CREATE_POLICY",
+            string.concat(
+                _getActorIndex(actor),
+                " created policy ",
+                vm.toString(policyId),
+                " type=",
+                isWhitelist ? "WHITELIST" : "BLACKLIST"
+            )
+        );
     }
 
     /// @notice Handler for creating policies with initial accounts
@@ -271,21 +265,20 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
                 }
             }
 
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_POLICY_WITH_ACCOUNTS: ",
-                        _getActorIndex(actor),
-                        " created policy ",
-                        vm.toString(policyId),
-                        " with ",
-                        vm.toString(numAccounts),
-                        " accounts"
-                    )
-                );
-            }
+            _logHandler(
+                "CREATE_POLICY_WITH_ACCOUNTS",
+                string.concat(
+                    _getActorIndex(actor),
+                    " created policy ",
+                    vm.toString(policyId),
+                    " with ",
+                    vm.toString(numAccounts),
+                    " accounts"
+                )
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
+            _logRevert("CREATE_POLICY_WITH_ACCOUNTS", reason);
             _assertKnownError(reason);
         }
     }
@@ -305,20 +298,20 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             (, address storedAdmin) = registry.policyData(policyId);
             assertEq(storedAdmin, newAdmin, "TEMPO-REG6: Admin not updated correctly");
 
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "SET_ADMIN: policy ",
-                        vm.toString(policyId),
-                        " admin changed from ",
-                        _getActorIndex(currentAdmin),
-                        " to ",
-                        _getActorIndex(newAdmin)
-                    )
-                );
-            }
+            _logHandler(
+                "SET_POLICY_ADMIN",
+                string.concat(
+                    "policy ",
+                    vm.toString(policyId),
+                    " admin changed from ",
+                    _getActorIndex(currentAdmin),
+                    " to ",
+                    _getActorIndex(newAdmin)
+                )
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
+            _logRevert("SET_POLICY_ADMIN", reason);
             _assertKnownError(reason);
         }
     }
@@ -367,20 +360,20 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             bool authAfter = registry.isAuthorized(policyId, account);
             assertEq(authAfter, allowed, "TEMPO-REG8: Whitelist authorization mismatch");
 
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "MODIFY_WHITELIST: policy ",
-                        vm.toString(policyId),
-                        " ",
-                        _getActorIndex(account),
-                        " set to ",
-                        allowed ? "ALLOWED" : "DISALLOWED"
-                    )
-                );
-            }
+            _logHandler(
+                "MODIFY_WHITELIST",
+                string.concat(
+                    "policy ",
+                    vm.toString(policyId),
+                    " ",
+                    _getActorIndex(account),
+                    " set to ",
+                    allowed ? "ALLOWED" : "DISALLOWED"
+                )
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
+            _logRevert("MODIFY_WHITELIST", reason);
             _assertKnownError(reason);
         }
     }
@@ -408,20 +401,20 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             bool authAfter = registry.isAuthorized(policyId, account);
             assertEq(authAfter, !restricted, "TEMPO-REG9: Blacklist authorization mismatch");
 
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "MODIFY_BLACKLIST: policy ",
-                        vm.toString(policyId),
-                        " ",
-                        _getActorIndex(account),
-                        " set to ",
-                        restricted ? "RESTRICTED" : "UNRESTRICTED"
-                    )
-                );
-            }
+            _logHandler(
+                "MODIFY_BLACKLIST",
+                string.concat(
+                    "policy ",
+                    vm.toString(policyId),
+                    " ",
+                    _getActorIndex(account),
+                    " set to ",
+                    restricted ? "RESTRICTED" : "UNRESTRICTED"
+                )
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
+            _logRevert("MODIFY_BLACKLIST", reason);
             _assertKnownError(reason);
         }
     }
@@ -532,6 +525,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             revert("TEMPO-REG17: Should not be able to modify special policy");
         } catch (bytes memory reason) {
             vm.stopPrank();
+            _logRevert("TRY_MODIFY_SPECIAL_POLICY", reason);
             _assertKnownError(reason);
         }
 
@@ -542,6 +536,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             revert("TEMPO-REG17: Should not be able to modify special policy");
         } catch (bytes memory reason) {
             vm.stopPrank();
+            _logRevert("TRY_MODIFY_SPECIAL_POLICY", reason);
             _assertKnownError(reason);
         }
 
@@ -552,19 +547,14 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             revert("TEMPO-REG18: Should not be able to change special policy admin");
         } catch (bytes memory reason) {
             vm.stopPrank();
+            _logRevert("TRY_MODIFY_SPECIAL_POLICY", reason);
             _assertKnownError(reason);
         }
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_MODIFY_SPECIAL_POLICY: ",
-                    _getActorIndex(actor),
-                    " blocked on policy ",
-                    vm.toString(policyId)
-                )
-            );
-        }
+        _logHandler(
+            "TRY_MODIFY_SPECIAL_POLICY",
+            string.concat(_getActorIndex(actor), " blocked on policy ", vm.toString(policyId))
+        );
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -618,6 +608,13 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
                 }
             }
         }
+    }
+
+    function afterInvariant() public {
+        string[] memory lines = new string[](2);
+        lines[0] = string.concat("Policies created: ", vm.toString(_totalPoliciesCreated));
+        lines[1] = string.concat("Policies tracked: ", vm.toString(_createdPolicies.length));
+        _logSummary("TIP403Registry Final Summary", lines);
     }
 
     /*//////////////////////////////////////////////////////////////

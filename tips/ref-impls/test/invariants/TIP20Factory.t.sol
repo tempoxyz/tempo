@@ -80,16 +80,10 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             // TEMPO-FAC5: Reserved address range is enforced
             if (bytes4(reason) == ITIP20Factory.AddressReserved.selector) {
                 _totalReservedAttempts++;
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "CREATE_TOKEN_RESERVED: ",
-                            _getActorIndex(actor),
-                            " salt=",
-                            vm.toString(salt)
-                        )
-                    );
-                }
+                _logHandler(
+                    "CREATE_TOKEN_RESERVED",
+                    string.concat(_getActorIndex(actor), " salt=", vm.toString(salt))
+                );
                 return;
             }
             revert("Unknown error in getTokenAddress");
@@ -105,16 +99,10 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 vm.stopPrank();
                 if (bytes4(reason) == ITIP20Factory.TokenAlreadyExists.selector) {
                     _totalDuplicateAttempts++;
-                    if (_loggingEnabled) {
-                        _log(
-                            string.concat(
-                                "CREATE_TOKEN_EXISTS: ",
-                                _getActorIndex(actor),
-                                " at ",
-                                vm.toString(predictedAddr)
-                            )
-                        );
-                    }
+                    _logHandler(
+                        "CREATE_TOKEN_EXISTS",
+                        string.concat(_getActorIndex(actor), " at ", vm.toString(predictedAddr))
+                    );
                     return;
                 }
                 _assertKnownError(reason);
@@ -161,20 +149,15 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC6: Token currency mismatch"
             );
 
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_TOKEN: ",
-                        _getActorIndex(actor),
-                        " created ",
-                        symbol,
-                        " at ",
-                        vm.toString(tokenAddr)
-                    )
-                );
-            }
+            _logHandler(
+                "CREATE_TOKEN",
+                string.concat(
+                    _getActorIndex(actor), " created ", symbol, " at ", vm.toString(tokenAddr)
+                )
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
+            _logRevert("CREATE_TOKEN", reason);
             _assertKnownError(reason);
         }
     }
@@ -212,13 +195,10 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC4: Expected InvalidQuoteToken error"
             );
             _totalInvalidQuoteAttempts++;
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_TOKEN_INVALID_QUOTE: ", _getActorIndex(actor), " with invalid quote"
-                    )
-                );
-            }
+            _logHandler(
+                "CREATE_TOKEN_INVALID_QUOTE",
+                string.concat(_getActorIndex(actor), " with invalid quote")
+            );
         }
     }
 
@@ -264,13 +244,10 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                     "TEMPO-FAC7: Currency mismatch"
                 );
 
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "CREATE_TOKEN_NON_USD: ", _getActorIndex(actor), " currency=", currency
-                        )
-                    );
-                }
+                _logHandler(
+                    "CREATE_TOKEN_NON_USD",
+                    string.concat(_getActorIndex(actor), " currency=", currency)
+                );
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
@@ -349,15 +326,10 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC7: Should revert with InvalidQuoteToken or TokenAlreadyExists"
             );
             _totalUsdWithNonUsdQuoteRejected++;
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_USD_WITH_NON_USD_QUOTE: ",
-                        _getActorIndex(actor),
-                        " correctly rejected"
-                    )
-                );
-            }
+            _logHandler(
+                "CREATE_USD_WITH_NON_USD_QUOTE",
+                string.concat(_getActorIndex(actor), " correctly rejected")
+            );
         }
     }
 
@@ -387,15 +359,10 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC5: createToken should revert with AddressReserved"
             );
             _totalReservedCreateAttempts++;
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_TOKEN_RESERVED_CREATE: ",
-                        _getActorIndex(actor),
-                        " correctly rejected"
-                    )
-                );
-            }
+            _logHandler(
+                "CREATE_TOKEN_RESERVED_CREATE",
+                string.concat(_getActorIndex(actor), " correctly rejected")
+            );
         }
     }
 
@@ -522,33 +489,24 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
     /// @notice Called after each invariant run to log final state
     function afterInvariant() public {
-        if (!_loggingEnabled) return;
-
-        _log("");
-        _log("--------------------------------------------------------------------------------");
-        _log("                              Final State Summary");
-        _log("--------------------------------------------------------------------------------");
-        _log(string.concat("Tokens created: ", vm.toString(_totalTokensCreated)));
-        _log(
-            string.concat(
-                "Reserved attempts (getTokenAddress): ", vm.toString(_totalReservedAttempts)
-            )
+        string[] memory lines = new string[](8);
+        lines[0] = string.concat("Tokens created: ", vm.toString(_totalTokensCreated));
+        lines[1] = string.concat(
+            "Reserved attempts (getTokenAddress): ", vm.toString(_totalReservedAttempts)
         );
-        _log(
-            string.concat(
-                "Reserved attempts (createToken): ", vm.toString(_totalReservedCreateAttempts)
-            )
+        lines[2] = string.concat(
+            "Reserved attempts (createToken): ", vm.toString(_totalReservedCreateAttempts)
         );
-        _log(string.concat("Duplicate attempts: ", vm.toString(_totalDuplicateAttempts)));
-        _log(string.concat("Invalid quote attempts: ", vm.toString(_totalInvalidQuoteAttempts)));
-        _log(string.concat("Non-USD currency created: ", vm.toString(_totalNonUsdCurrencyCreated)));
-        _log(
-            string.concat(
-                "USD with non-USD quote rejected: ", vm.toString(_totalUsdWithNonUsdQuoteRejected)
-            )
+        lines[3] = string.concat("Duplicate attempts: ", vm.toString(_totalDuplicateAttempts));
+        lines[4] =
+            string.concat("Invalid quote attempts: ", vm.toString(_totalInvalidQuoteAttempts));
+        lines[5] =
+            string.concat("Non-USD currency created: ", vm.toString(_totalNonUsdCurrencyCreated));
+        lines[6] = string.concat(
+            "USD with non-USD quote rejected: ", vm.toString(_totalUsdWithNonUsdQuoteRejected)
         );
-        _log(string.concat("isTIP20 checks: ", vm.toString(_totalIsTIP20Checks)));
-        _log("--------------------------------------------------------------------------------");
+        lines[7] = string.concat("isTIP20 checks: ", vm.toString(_totalIsTIP20Checks));
+        _logSummary("TIP20Factory Final Summary", lines);
     }
 
     /*//////////////////////////////////////////////////////////////

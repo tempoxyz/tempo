@@ -2,6 +2,7 @@
 pragma solidity >=0.8.13 <0.9.0;
 
 import { Test } from "forge-std/Test.sol";
+import { console } from "forge-std/console.sol";
 
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { InvariantBase } from "../helpers/InvariantBase.sol";
@@ -289,6 +290,19 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
 
         // Runtime portion (bytes 14+) is already zero-initialized (0x00 = STOP)
         return initcode;
+    }
+
+    function afterInvariant() public view {
+        console.log("");
+        console.log("--- BlockGasLimits Final Summary ---");
+        console.log("Tx gas cap tests: %d", ghost_txGasCapTests);
+        console.log("  At cap succeeded: %d", ghost_txAtCapSucceeded);
+        console.log("  Over cap rejected: %d", ghost_txOverCapRejected);
+        console.log("  Over cap violations: %d", ghost_txOverCapViolations);
+        console.log("Deployment tests: %d", ghost_deploymentTests);
+        console.log("  Max deployment succeeded: %d", ghost_maxDeploymentSucceeded);
+        console.log("  Max deployment failed: %d", ghost_maxDeploymentFailed);
+        console.log("Valid tx executed: %d", ghost_validTxExecuted);
     }
 
 }

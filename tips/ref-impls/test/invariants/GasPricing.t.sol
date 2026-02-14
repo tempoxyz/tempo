@@ -2,6 +2,7 @@
 pragma solidity >=0.8.13 <0.9.0;
 
 import { Test } from "forge-std/Test.sol";
+import { console } from "forge-std/console.sol";
 
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { InvariantBase } from "../helpers/InvariantBase.sol";
@@ -345,6 +346,25 @@ contract GasPricingInvariantTest is InvariantBase {
         } catch {
             ghost_totalTxReverted++;
         }
+    }
+
+    function afterInvariant() public view {
+        console.log("");
+        console.log("--- GasPricing Final Summary ---");
+        console.log("SSTORE tests: %d", ghost_sstoreTests);
+        console.log("  Insufficient gas failed: %d", ghost_sstoreInsufficientGasFailed);
+        console.log("  Sufficient gas succeeded: %d", ghost_sstoreSufficientGasSucceeded);
+        console.log("  Violations: %d", ghost_sstoreViolations);
+        console.log("CREATE tests: %d", ghost_createTests);
+        console.log("  Insufficient gas failed: %d", ghost_createInsufficientGasFailed);
+        console.log("  Sufficient gas succeeded: %d", ghost_createSufficientGasSucceeded);
+        console.log("  Violations: %d", ghost_createViolations);
+        console.log("Multi-slot tests: %d", ghost_multiSlotTests);
+        console.log("  Insufficient gas failed: %d", ghost_multiSlotInsufficientGasFailed);
+        console.log("  Sufficient gas succeeded: %d", ghost_multiSlotSufficientGasSucceeded);
+        console.log("  Violations: %d", ghost_multiSlotViolations);
+        console.log("Total tx executed: %d", ghost_totalTxExecuted);
+        console.log("Total tx reverted: %d", ghost_totalTxReverted);
     }
 
 }

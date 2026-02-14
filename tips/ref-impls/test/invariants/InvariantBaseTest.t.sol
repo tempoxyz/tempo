@@ -6,6 +6,7 @@ import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { ITIP20RolesAuth } from "../../src/interfaces/ITIP20RolesAuth.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
 import { BaseTest } from "../BaseTest.t.sol";
+import { console } from "forge-std/console.sol";
 
 /// @title Invariant Base Test
 /// @notice Shared test infrastructure for invariant testing of Tempo precompiles
@@ -40,6 +41,9 @@ abstract contract InvariantBaseTest is BaseTest {
 
     /// @dev All addresses that may hold token balances (for invariant checks)
     address[] internal _balanceHolders;
+
+    /// @dev Auto-incrementing call counter for handler execution order
+    uint256 internal _handlerCallCount;
 
     /*//////////////////////////////////////////////////////////////
                               SETUP
@@ -339,6 +343,58 @@ abstract contract InvariantBaseTest is BaseTest {
     function _log(string memory message) internal {
         if (!_loggingEnabled) return;
         vm.writeLine(_logFile, message);
+    }
+
+    /// @dev Structured handler log with auto-incrementing call counter
+    /// @param action Handler action name (e.g., "TRANSFER", "MINT")
+    /// @param details Specific details about the call
+    function _logHandler(string memory action, string memory details) internal {
+        _handlerCallCount++;
+        if (!_loggingEnabled) return;
+        _log(string.concat("[", vm.toString(_handlerCallCount), "] ", action, ": ", details));
+    }
+
+    /// @dev Logs a revert in a catch block with error selector
+    /// @param action Handler action name that reverted
+    /// @param reason Raw revert bytes
+    function _logRevert(string memory action, bytes memory reason) internal {
+        _handlerCallCount++;
+        if (!_loggingEnabled) return;
+        _log(
+            string.concat(
+                "[",
+                vm.toString(_handlerCallCount),
+                "] ",
+                action,
+                ": REVERTED selector=",
+                vm.toString(bytes4(reason))
+            )
+        );
+    }
+
+    /// @dev Writes afterInvariant summary to log file and console
+    /// @param title Summary section title
+    /// @param lines Array of "label: value" summary lines
+    function _logSummary(string memory title, string[] memory lines) internal {
+        // Always-on console summary
+        console.log("");
+        console.log(string.concat("--- ", title, " ---"));
+        console.log("Handler calls: %d", _handlerCallCount);
+        for (uint256 i = 0; i < lines.length; i++) {
+            console.log(lines[i]);
+        }
+
+        // File summary (gated)
+        if (!_loggingEnabled) return;
+        _log("");
+        _log("--------------------------------------------------------------------------------");
+        _log(string.concat("                              ", title));
+        _log("--------------------------------------------------------------------------------");
+        _log(string.concat("Handler calls: ", vm.toString(_handlerCallCount)));
+        for (uint256 i = 0; i < lines.length; i++) {
+            _log(lines[i]);
+        }
+        _log("--------------------------------------------------------------------------------");
     }
 
     /// @dev Gets actor index from address for logging
