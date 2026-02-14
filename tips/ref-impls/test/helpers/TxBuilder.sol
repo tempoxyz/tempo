@@ -907,7 +907,7 @@ library TxBuilder {
         return abi.encodePacked(uint8(0x76), rlpPayload);
     }
 
-    /// @notice Encodes fee payer signature as RLP list [r, s, v]
+    /// @notice Encodes fee payer signature as RLP list [v, r, s]
     function _encodeFeePayerSignature(bytes memory sig) private pure returns (bytes memory) {
         require(sig.length == 65, "Invalid fee payer signature length");
 
@@ -921,11 +921,14 @@ library TxBuilder {
             v := byte(0, mload(add(sig, 96)))
         }
 
-        // Encode as RLP list [r, s, v] matching Rust's write_rlp_vrs order
+        // Normalize v from 27/28 to 0/1 parity (Rust decodes as bool)
+        uint8 parity = v >= 27 ? v - 27 : v;
+
+        // Encode as RLP list [v, r, s] matching Rust's Signature::write_rlp_vrs order
         bytes[] memory sigFields = new bytes[](3);
-        sigFields[0] = TxRlp.encodeString(TxRlp.encodeBytes32(r));
-        sigFields[1] = TxRlp.encodeString(TxRlp.encodeBytes32(s));
-        sigFields[2] = TxRlp.encodeString(TxRlp.encodeUint(v));
+        sigFields[0] = TxRlp.encodeString(TxRlp.encodeUint(parity));
+        sigFields[1] = TxRlp.encodeString(TxRlp.encodeBytes32(r));
+        sigFields[2] = TxRlp.encodeString(TxRlp.encodeBytes32(s));
         return TxRlp.encodeRawList(sigFields);
     }
 

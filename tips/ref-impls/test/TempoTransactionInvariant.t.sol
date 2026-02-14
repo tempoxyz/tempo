@@ -222,12 +222,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         );
     }
 
-    // NOTE: test_expiringNonceSponsoredIntentReplay is blocked by a pre-existing issue:
-    // tempo-foundry's vm.executeTransaction cannot decode fee-payer-sponsored transactions
-    // due to an RLP encoding mismatch (Solidity encodes fee payer sig as [r,s,v] but Rust
-    // decoder expects [v,r,s]). This also affects handler_tempoFeeSponsor which silently
-    // catches the decode error. Once this encoding is fixed in tempo-std, the E6 invariant
-    // handler (handler_expiringNonceSponsored) will exercise the replay property.
+    // NOTE: Fee payer signature RLP encoding was fixed to use [v, r, s] order with
+    // normalized parity (0/1 instead of 27/28) to match Rust's Signature::write_rlp_vrs.
+    // The E6 invariant handler (handler_expiringNonceSponsored) now exercises the replay property.
 
     /*//////////////////////////////////////////////////////////////
                         SIGNING PARAMS HELPER
