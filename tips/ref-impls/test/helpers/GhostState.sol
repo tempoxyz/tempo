@@ -45,6 +45,8 @@ abstract contract GhostState {
     uint256 public ghost_nonceTooHighAllowed; // N14 - nonce too high unexpectedly allowed
     uint256 public ghost_nonceTooLowAllowed; // N15 - nonce too low unexpectedly allowed
     uint256 public ghost_keyWrongSignerAllowed; // K1 - wrong signer unexpectedly allowed
+    uint256 public ghost_keyRevokedAllowed; // K7 - revoked key unexpectedly allowed
+    uint256 public ghost_keyExpiredAllowed; // K8 - expired key unexpectedly allowed
     uint256 public ghost_keyWrongChainAllowed; // K3 - wrong chain unexpectedly allowed
     uint256 public ghost_eip7702CreateWithAuthAllowed; // TX7 - CREATE with auth list unexpectedly allowed
     uint256 public ghost_timeBoundValidAfterAllowed; // T1 - validAfter not enforced
@@ -312,7 +314,7 @@ abstract contract GhostState {
 
     // ============ Expected Rejection Recording Functions ============
 
-    /// @notice Record key wrong signer rejection (K1, K7, K8)
+    /// @notice Record key wrong signer rejection (K1)
     function _recordKeyWrongSigner() internal {
         ghost_keyAuthRejectedWrongSigner++;
     }
