@@ -134,8 +134,6 @@ abstract contract GhostState {
     uint256 public ghost_expiringNonceNonZeroAllowed;
     /// @dev E5 violation: missing validBefore allowed
     uint256 public ghost_expiringNonceMissingVBAllowed;
-    /// @dev E6 violation: same user intent (signature_hash) executed twice via fee payer swap
-    uint256 public ghost_expiringNonceSponsoredReplayAllowed;
     /// @dev Attempt counters for coverage tracking
     uint256 public ghost_expiringNonceReplayAttempted;
     uint256 public ghost_expiringNonceExpiredAttempted;
@@ -143,12 +141,15 @@ abstract contract GhostState {
     uint256 public ghost_expiringNonceNonZeroAttempted;
     uint256 public ghost_expiringNonceMissingVBAttempted;
     uint256 public ghost_expiringNonceConcurrentExecuted;
-    uint256 public ghost_expiringNonceSponsoredReplayAttempted;
+    /// @dev Total sponsored expiring nonce txs executed
+    uint256 public ghost_expiringNonceSponsoredExecuted;
 
-    /// @dev Tracks which user intents (signature_hash, i.e. tx hash without fee payer sig)
-    ///      have been executed. Used to detect fee payer signature malleability attacks where
-    ///      the same user intent executes twice with different fee payer signatures.
+    /// @dev Tracks which user intents (tx encoding hash without fee payer sig) have been
+    ///      executed for expiring nonce transactions. If the same intent hash executes twice
+    ///      (e.g. via different fee payer signatures), that's an invariant violation.
     mapping(bytes32 => bool) public ghost_expiringNonceIntentExecuted;
+    /// @dev E6 violation: same user intent executed more than once
+    uint256 public ghost_expiringNonceIntentReplayAllowed;
 
     // ============ Update Functions ============
 

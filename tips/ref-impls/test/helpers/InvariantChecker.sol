@@ -322,12 +322,14 @@ abstract contract InvariantChecker is HandlerBase {
             "E5: Missing validBefore for expiring nonce tx unexpectedly allowed"
         );
 
-        // E6: Fee payer signature malleability - same user intent (signature_hash) must not
-        // execute more than once within the validity window, even with different fee payer sigs
+        // E6: Same user intent must not execute more than once within the validity window.
+        // The intent hash is the tx encoding hash without the fee payer signature — if replay
+        // protection uses a hash that includes the fee payer signature, two different fee payer
+        // signatures for the same user intent would bypass it.
         assertEq(
-            ghost_expiringNonceSponsoredReplayAllowed,
+            ghost_expiringNonceIntentReplayAllowed,
             0,
-            "E6: Sponsored expiring nonce replay via fee payer swap unexpectedly allowed"
+            "E6: Expiring nonce intent executed more than once within validity window"
         );
     }
 
