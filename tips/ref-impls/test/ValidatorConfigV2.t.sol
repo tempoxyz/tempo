@@ -832,4 +832,200 @@ contract ValidatorConfigV2Test is BaseTest {
         }
     }
 
+    // =========================================================================
+    // IP Uniqueness Tests
+    // =========================================================================
+
+    function test_addValidator_rejectsDuplicateIngressIp() public {
+        validatorConfigV2.migrateValidator(0);
+        validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.initializeIfMigrated();
+
+        address newAddr = address(0xDEAD);
+        bytes32 newPubKey = bytes32(uint256(0x9999));
+
+        // Try to add validator with same ingress IP as setupVal1 (even with different port)
+        try validatorConfigV2.addValidator(
+            newAddr, newPubKey, "10.0.0.100:9000", "10.0.0.200", ""
+        ) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(
+                bytes4(err),
+                IValidatorConfigV2.IngressAlreadyExists.selector,
+                "Should revert with IngressAlreadyExists even with different port"
+            );
+        }
+    }
+
+    function test_ingressIpReuse_afterDeactivation() public {
+        validatorConfigV2.migrateValidator(0);
+        validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.initializeIfMigrated();
+
+        // Deactivate setupVal1
+        validatorConfigV2.deactivateValidator(setupVal1);
+
+        // Should now allow reusing setupVal1's ingress IP
+        address newAddr = address(0xDEAD);
+        bytes32 newPubKey = bytes32(uint256(0x9999));
+        validatorConfigV2.addValidator(newAddr, newPubKey, "10.0.0.100:9999", "10.0.0.200", "");
+
+        // Verify new validator has the reused ingress IP (different port is ok)
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(newAddr);
+        assertEq(v.ingress, "10.0.0.100:9999");
+    }
+
+    function test_ingressIpCollision_rejected() public {
+        validatorConfigV2.migrateValidator(0);
+        validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.initializeIfMigrated();
+
+        bytes32 newPubKey = bytes32(uint256(0x9999));
+
+        // setIpAddresses: Try to set setupVal1's ingress IP to setupVal2's ingress IP
+        try validatorConfigV2.setIpAddresses(setupVal1, "10.0.0.101:9999", "10.0.0.200") {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), IValidatorConfigV2.IngressAlreadyExists.selector);
+        }
+
+        // rotateValidator: Try to rotate setupVal1 to setupVal2's ingress IP
+        try validatorConfigV2.rotateValidator(
+            setupVal1, newPubKey, "10.0.0.101:9999", "10.0.0.200", ""
+        ) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), IValidatorConfigV2.IngressAlreadyExists.selector);
+        }
+    }
+
+    function test_setIpAddresses_allowsSameIngressPort() public {
+        validatorConfigV2.migrateValidator(0);
+        validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.initializeIfMigrated();
+
+        // Should allow changing port on same validator's IP
+        validatorConfigV2.setIpAddresses(setupVal1, "10.0.0.100:9999", "10.0.0.100");
+
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
+        assertEq(v.ingress, "10.0.0.100:9999", "Should allow port change on same IP");
+    }
+
+    // =========================================================================
+    // Migration Port Stripping Tests
+    // =========================================================================
+
+    function test_migration_stripsPortFromV1Egress() public {
+        // V1 stores egress as ip:port, V2 should strip the port
+        validatorConfigV2.migrateValidator(0);
+
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByIndex(0);
+        // V1 had "10.0.0.100:9000", V2 should have just "10.0.0.100"
+        assertEq(v.egress, "10.0.0.100", "Port should be stripped from V1 egress");
+        // Ingress should remain unchanged
+        assertEq(v.ingress, "10.0.0.100:8000", "Ingress should remain as ip:port");
+    }
+
+    // =========================================================================
+    // Address Reusability Tests
+    // =========================================================================
+
+    function test_addValidator_allowsReusingDeactivatedAddress() public {
+        validatorConfigV2.migrateValidator(0);
+        validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.initializeIfMigrated();
+
+        // Deactivate setupVal1
+        validatorConfigV2.deactivateValidator(setupVal1);
+
+        // Should allow reusing setupVal1's address with different IPs
+        bytes32 newPubKey = bytes32(uint256(0x9999));
+        validatorConfigV2.addValidator(setupVal1, newPubKey, "10.0.0.200:8000", "10.0.0.200", "");
+
+        // Should have 3 validators total (2 original + 1 new)
+        assertEq(validatorConfigV2.validatorCount(), 3);
+
+        // Address lookup should return the NEW active validator
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
+        assertEq(v.publicKey, newPubKey, "Should return new validator's pubkey");
+        assertEq(v.deactivatedAtHeight, 0, "New validator should be active");
+    }
+
+    function test_addValidator_rejectsActiveAddress() public {
+        validatorConfigV2.migrateValidator(0);
+        validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.initializeIfMigrated();
+
+        // Try to add with setupVal1's address (still active)
+        bytes32 newPubKey = bytes32(uint256(0x9999));
+        try validatorConfigV2.addValidator(
+            setupVal1, newPubKey, "10.0.0.200:8000", "10.0.0.200", ""
+        ) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(
+                bytes4(err),
+                IValidatorConfigV2.ValidatorAlreadyExists.selector,
+                "Should reject active address"
+            );
+        }
+    }
+
+    // =========================================================================
+    // Pre-Initialization Tests
+    // =========================================================================
+
+    function test_deactivateValidator_worksBeforeInit() public {
+        validatorConfigV2.migrateValidator(0);
+        validatorConfigV2.migrateValidator(1);
+
+        // Should work before initialization
+        assertFalse(validatorConfigV2.isInitialized());
+        validatorConfigV2.deactivateValidator(setupVal1);
+
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByIndex(0);
+        assertGt(v.deactivatedAtHeight, 0, "Should be deactivated");
+    }
+
+    function test_setIpAddresses_worksBeforeInit() public {
+        validatorConfigV2.migrateValidator(0);
+        validatorConfigV2.migrateValidator(1);
+
+        // Should work before initialization
+        assertFalse(validatorConfigV2.isInitialized());
+        validatorConfigV2.setIpAddresses(setupVal1, "10.0.0.150:8000", "10.0.0.150");
+
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
+        assertEq(v.ingress, "10.0.0.150:8000");
+        assertEq(v.egress, "10.0.0.150");
+    }
+
+    function test_deactivateValidator_byValidator_worksBeforeInit() public {
+        validatorConfigV2.migrateValidator(0);
+        validatorConfigV2.migrateValidator(1);
+
+        // Validator can deactivate themselves before initialization
+        assertFalse(validatorConfigV2.isInitialized());
+        vm.prank(setupVal1);
+        validatorConfigV2.deactivateValidator(setupVal1);
+
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByIndex(0);
+        assertGt(v.deactivatedAtHeight, 0, "Should be deactivated");
+    }
+
+    function test_setIpAddresses_byValidator_worksBeforeInit() public {
+        validatorConfigV2.migrateValidator(0);
+        validatorConfigV2.migrateValidator(1);
+
+        // Validator can update their own IPs before initialization
+        assertFalse(validatorConfigV2.isInitialized());
+        vm.prank(setupVal1);
+        validatorConfigV2.setIpAddresses(setupVal1, "10.0.0.150:8000", "10.0.0.150");
+
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
+        assertEq(v.ingress, "10.0.0.150:8000");
+        assertEq(v.egress, "10.0.0.150");
+    }
+
 }

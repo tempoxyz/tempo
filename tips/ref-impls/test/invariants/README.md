@@ -385,30 +385,40 @@ The ValidatorConfigV2 precompile replaces V1 with append-only, delete-once seman
 
 ### Per-Handler Assertions
 
-- **TEMPO-VALV2-1**: Auth enforcement - only the owner can add validators; only the owner or the validator itself can deactivate (third parties revert with `Unauthorized`).
-- **TEMPO-VALV2-2**: Append-only count - `validatorCount` only increases; increments by 1 on each addition.
-- **TEMPO-VALV2-3**: Sequential indices - new validators receive index equal to the count before addition.
-- **TEMPO-VALV2-4**: Height tracking - `addedAtHeight == block.number` and `deactivatedAtHeight == 0` on add; `deactivatedAtHeight == block.number` on deactivation.
-- **TEMPO-VALV2-5**: Delete-once - deactivating an already-deactivated validator reverts with `ValidatorAlreadyDeleted`.
-- **TEMPO-VALV2-6**: Address uniqueness - adding a validator with an existing address reverts with `ValidatorAlreadyExists`.
-- **TEMPO-VALV2-7**: Public key uniqueness - all public keys must be unique and non-zero. Duplicates revert with `PublicKeyAlreadyExists`; zero keys revert with `InvalidPublicKey`.
-- **TEMPO-VALV2-8**: Owner transfer - `transferOwnership` correctly updates the owner; only the current owner can call it.
-- **TEMPO-VALV2-9**: DKG ceremony - `setNextFullDkgCeremony` correctly stores the epoch; only the owner can call it.
-- **TEMPO-VALV2-10**: Dual-auth IP update - owner or validator can update ingress/egress via `setIpAddresses`; third parties revert with `Unauthorized`.
-- **TEMPO-VALV2-11**: Validator address transfer - `transferValidatorOwnership` updates address and lookup maps; reverts with `ValidatorAlreadyExists` if the target address is taken.
+- **TEMPO-VALV2-1**: Dual-auth enforcement - functions callable by owner or validator (`deactivateValidator`, `setIpAddresses`, `rotateValidator`, `transferValidatorOwnership`) succeed when called by owner or the validator itself; fail when called by third parties.
+- **TEMPO-VALV2-2**: Owner-only enforcement - functions callable only by owner (`addValidator`, `transferOwnership`, `setNextFullDkgCeremony`, `migrateValidator`, `initializeIfMigrated`) succeed when called by owner; fail when called by non-owners.
+- **TEMPO-VALV2-3**: Validator count changes - active and total validator counts change only as follows: `addValidator` (+1 active, +1 total), `rotateValidator` (+0 active, +1 total), `deactivateValidator` (-1 active, +0 total); all other operations leave counts unchanged.
+- **TEMPO-VALV2-4**: Height field updates - validator height fields are set only by specific operations and always equal `block.number` when set:
+  - `addValidator`: sets new validator's `addedAtHeight = block.number`, `deactivatedAtHeight = 0`
+  - `rotateValidator`: sets old validator's `deactivatedAtHeight = block.number`; sets new validator's `addedAtHeight = block.number`, `deactivatedAtHeight = 0`
+  - `deactivateValidator`: sets validator's `deactivatedAtHeight = block.number`
+  - `migrateValidator`: sets new validator's `addedAtHeight = block.number`, `deactivatedAtHeight = 0` (if V1 active) or `block.number` (if V1 inactive)
+- **TEMPO-VALV2-5**: Initialization-required functions blocked pre-init - functions adding validators are blocked pre-initialization (`addValidator`, `rotateValidator`, `transferValidatorOwnership`) fail when `isInitialized() == false`.
+- **TEMPO-VALV2-6**: Migration-only functions blocked post-init - `migrateValidator` fails when `isInitialized() == true`; migration is only allowed before initialization.
+- **TEMPO-VALV2-7**: Initialization requires complete migration - `initializeIfMigrated()` only succeeds when `validatorCount == V1.getAllValidators().length`; after successful initialization, all global invariants hold.
 
 ### Global Invariants
 
 These are checked after every fuzz run:
 
-- **TEMPO-VALV2-2**: Append-only count consistency - `validatorCount` matches ghost total.
-- **TEMPO-VALV2-3**: Index sequential - each validator's `index` equals its array position.
-- **TEMPO-VALV2-7**: Public key uniqueness - all public keys are unique and non-zero across all validators.
-- **TEMPO-VALV2-8**: Owner consistency - contract owner matches ghost state.
-- **TEMPO-VALV2-9**: DKG ceremony consistency - `getNextFullDkgCeremony` matches ghost state.
-- **TEMPO-VALV2-12**: Validator data consistency - all validator data (public key, index, addedAtHeight, deactivatedAtHeight) matches ghost state.
-- **TEMPO-VALV2-13**: Active validator subset - `getActiveValidators` returns exactly the validators with `deactivatedAtHeight == 0`.
-- **TEMPO-VALV2-14**: Height ordering - for deactivated validators, `deactivatedAtHeight >= addedAtHeight`.
+- **TEMPO-VALV2-8**: Append-only - `validatorCount` is monotonically increasing; never decreases across any sequence of operations.
+- **TEMPO-VALV2-9**: Delete-once - no validator can have `deactivatedAtHeight` transition from non-zero back to zero or to a different non-zero value; once deactivated, the validator remains deactivated permanently.
+- **TEMPO-VALV2-10**: Height tracking - for all validators: `addedAtHeight > 0` (set when added); `deactivatedAtHeight` is either `0` (active) or `>= addedAtHeight` (deactivated at or after addition).
+- **TEMPO-VALV2-11**: Address uniqueness among active - at most one active validator (where `deactivatedAtHeight == 0`) has any given address; deactivated addresses may be reused.
+- **TEMPO-VALV2-12**: Public key uniqueness - all public keys are globally unique and non-zero across all validators (including deactivated); once registered, a public key cannot be reused.
+- **TEMPO-VALV2-13**: Ingress IP uniqueness - no two active validators share the same ingress IP (port excluded from comparison); deactivated validators' ingress IPs may be reused.
+- **TEMPO-VALV2-14**: Sequential indices - each validator's `index` field equals its position in the validators array (validator at array position `i` has `index == i`).
+- **TEMPO-VALV2-15**: Active validator subset correctness - `getActiveValidators()` returns exactly the set of validators where `deactivatedAtHeight == 0` (no more, no fewer).
+- **TEMPO-VALV2-16**: Validator data consistency - all validator data (publicKey, validatorAddress, ingress, egress, index, addedAtHeight, deactivatedAtHeight) in contract matches ghost state for each validator.
+- **TEMPO-VALV2-17**: Validator count consistency - `validatorCount()` equals the actual length of the validators array; both are always in sync.
+- **TEMPO-VALV2-18**: Address lookup correctness - for every validator, `validatorByAddress(validator.validatorAddress)` returns that exact validator; `addressToIndex` mapping is accurate.
+- **TEMPO-VALV2-19**: Public key lookup correctness - for every validator, `validatorByPublicKey(validator.publicKey)` returns that exact validator; `pubkeyToIndex` mapping is accurate.
+- **TEMPO-VALV2-20**: Owner consistency - `owner()` always equals the ghost-tracked owner; ownership transfers are correctly reflected.
+- **TEMPO-VALV2-21**: DKG ceremony consistency - `getNextFullDkgCeremony()` always equals the ghost-tracked epoch; updates via `setNextFullDkgCeremony` are correctly stored.
+- **TEMPO-VALV2-22**: Initialization one-way - once `isInitialized() == true`, it remains true forever; `isInitialized()` only transitions from false to true, never back.
+- **TEMPO-VALV2-23**: Migration completeness - if `isInitialized() == false`, then `validatorCount <= V1.getAllValidators().length`; migration cannot exceed V1 validator count.
+- **TEMPO-VALV2-24**: Migration preserves identity - for each validator at index `i < V1.getAllValidators().length`: `V2.validator[i].publicKey == V1.validator[i].publicKey` and `V2.validator[i].validatorAddress == V1.validator[i].validatorAddress`.
+- **TEMPO-VALV2-25**: Migration preserves activity - for each validator at index `i < V1.getAllValidators().length`: if `V1.validator[i].active == true` then `V2.validator[i].deactivatedAtHeight == 0`, else `V2.validator[i].deactivatedAtHeight > 0`.
 
 ## AccountKeychain
 

@@ -37,6 +37,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     uint64 internal nextDkgCeremony;
 
+    /// @dev Tracks active ingress IPs by their keccak256 hash
+    mapping(bytes32 => bool) internal activeIngressIpHashes;
+
     // =========================================================================
     // Modifiers
     // =========================================================================
@@ -97,11 +100,11 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function deactivateValidator(address validatorAddress)
-        external
-        onlyInitialized
-        onlyOwnerOrValidator(validatorAddress)
-    {
+    function deactivateValidator(address validatorAddress) external {
+        if (msg.sender != validatorAddress && msg.sender != _owner) {
+            revert Unauthorized();
+        }
+
         uint256 idx = addressToIndex[validatorAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
@@ -111,6 +114,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         if (v.deactivatedAtHeight != 0) {
             revert ValidatorAlreadyDeleted();
         }
+
+        bytes32 ingressIpHash = _getIngressIpHash(v.ingress);
+        delete activeIngressIpHashes[ingressIpHash];
 
         v.deactivatedAtHeight = uint64(block.number);
     }
@@ -166,6 +172,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         );
         _verifyEd25519Signature(publicKey, message, signature);
 
+        _updateIngressIp(oldValidator.ingress, ingress);
+
         oldValidator.deactivatedAtHeight = uint64(block.number);
 
         _addValidator(validatorAddress, publicKey, ingress, egress, 0);
@@ -178,9 +186,11 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         string calldata egress
     )
         external
-        onlyInitialized
-        onlyOwnerOrValidator(validatorAddress)
     {
+        if (msg.sender != validatorAddress && msg.sender != _owner) {
+            revert Unauthorized();
+        }
+
         uint256 idx = addressToIndex[validatorAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
@@ -193,6 +203,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         _validateIpPort(ingress, "ingress");
         _validateIp(egress, "egress");
+        _updateIngressIp(v.ingress, ingress);
 
         v.ingress = ingress;
         v.egress = egress;
@@ -337,11 +348,15 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         IValidatorConfig.Validator memory v1Val = v1Validators[idx];
 
+        string memory egress = _extractIpFromSocket(v1Val.outboundAddress);
+
+        _requireUniqueIngressIp(v1Val.inboundAddress);
+
         _addValidator(
             v1Val.validatorAddress,
             v1Val.publicKey,
             v1Val.inboundAddress,
-            v1Val.outboundAddress,
+            egress,
             v1Val.active ? 0 : uint64(block.number)
         );
     }
@@ -379,7 +394,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         if (validatorAddress == address(0)) {
             revert InvalidValidatorAddress();
         }
-        if (addressToIndex[validatorAddress] != 0) {
+        // Allow reusing addresses of deactivated validators
+        uint256 idx1 = addressToIndex[validatorAddress];
+        if (idx1 != 0 && validatorsArray[idx1 - 1].deactivatedAtHeight == 0) {
             revert ValidatorAlreadyExists();
         }
         _validateRotateParams(publicKey, ingress, egress);
@@ -401,6 +418,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
         _validateIpPort(ingress, "ingress");
         _validateIp(egress, "egress");
+        _requireUniqueIngressIp(ingress);
     }
 
     function _addValidator(
@@ -426,6 +444,11 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         validatorsArray.push(newVal);
         addressToIndex[validatorAddress] = idx + 1; // 1-indexed
         pubkeyToIndex[publicKey] = idx + 1; // 1-indexed
+
+        if (deactivatedAtHeight == 0) {
+            bytes32 ingressIpHash = _getIngressIpHash(ingress);
+            activeIngressIpHashes[ingressIpHash] = true;
+        }
     }
 
     // Note: This is a stub implementation. The precompile implementation
@@ -437,6 +460,72 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     )
         internal
         pure { }
+
+    /// @dev Check that ingress IP is not already in use by active validators
+    function _requireUniqueIngressIp(string memory ingress) internal view {
+        bytes32 ingressIpHash = _getIngressIpHash(ingress);
+        if (activeIngressIpHashes[ingressIpHash]) {
+            revert IngressAlreadyExists(ingress);
+        }
+    }
+
+    /// @dev Update ingress IP tracking when ingress changes
+    function _updateIngressIp(string memory oldIngress, string memory newIngress) internal {
+        bytes32 oldIngressIpHash = _getIngressIpHash(oldIngress);
+        bytes32 newIngressIpHash = _getIngressIpHash(newIngress);
+
+        if (oldIngressIpHash != newIngressIpHash) {
+            if (activeIngressIpHashes[newIngressIpHash]) {
+                revert IngressAlreadyExists(newIngress);
+            }
+            delete activeIngressIpHashes[oldIngressIpHash];
+            activeIngressIpHashes[newIngressIpHash] = true;
+        }
+    }
+
+    /// @dev Extract and hash IP from ingress (ip:port -> keccak256(ip))
+    /// Handles both IPv4 (192.168.1.1:8000) and IPv6 ([::1]:8000)
+    function _getIngressIpHash(string memory ingress) internal pure returns (bytes32) {
+        string memory ip = _extractIpFromSocket(ingress);
+        return keccak256(bytes(ip));
+    }
+
+    /// @dev Extract IP from socket address format (ip:port -> ip)
+    /// Handles both IPv4 (192.168.1.1:8000 -> 192.168.1.1) and IPv6 ([::1]:8000 -> ::1)
+    function _extractIpFromSocket(string memory socketAddr) internal pure returns (string memory) {
+        bytes memory b = bytes(socketAddr);
+        if (b.length == 0) return socketAddr;
+
+        // IPv6 format: [ip]:port
+        if (b[0] == "[") {
+            for (uint256 i = 1; i < b.length; i++) {
+                if (b[i] == "]") {
+                    // Extract IPv6 without brackets
+                    bytes memory ip = new bytes(i - 1);
+                    for (uint256 j = 1; j < i; j++) {
+                        ip[j - 1] = b[j];
+                    }
+                    return string(ip);
+                }
+            }
+            return socketAddr; // Malformed, return as-is
+        }
+
+        // IPv4 format: ip:port
+        for (uint256 i = 0; i < b.length; i++) {
+            if (b[i] == ":") {
+                // Extract IP before colon
+                bytes memory ip = new bytes(i);
+                for (uint256 j = 0; j < i; j++) {
+                    ip[j] = b[j];
+                }
+                return string(ip);
+            }
+        }
+
+        // No port found, return as-is
+        return socketAddr;
+    }
 
     function _validateIpPort(string calldata input, string memory field) internal pure {
         bytes memory b = bytes(input);
