@@ -4369,13 +4369,14 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Handler: Execute a sponsored expiring nonce transaction
     /// @dev Combines fee payer sponsorship with expiring nonce flow. The fuzzer varies the
-    ///      fee payer across calls — if two calls happen to share the same sender/recipient/amount
+    ///      fee payer across calls — if two calls share the same sender/recipient/amount
     ///      (same intent), the E6 invariant catches whether replay protection rejected the second.
+    ///      Amount is constrained to a small set so intent collisions happen naturally.
     function handler_expiringNonceSponsored(
         uint256 actorSeed,
         uint256 feePayerSeed,
         uint256 recipientSeed,
-        uint256 amount
+        uint256 amountSeed
     )
         external
     {
@@ -4393,7 +4394,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         address sender = actors[senderIdx];
         address recipient = actors[recipientIdx];
 
-        amount = bound(amount, 1e6, 10e6);
+        // Small fixed set of amounts so the fuzzer produces intent collisions
+        // (same sender + recipient + amount + validBefore = same intent hash)
+        uint256 amount = (bound(amountSeed, 1, 3)) * 1e6;
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount) {
             return;
