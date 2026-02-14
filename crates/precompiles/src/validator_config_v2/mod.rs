@@ -2032,6 +2032,71 @@ mod tests {
     }
 
     #[test]
+    fn test_set_ip_addresses_rejects_ip_collision() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let v1 = Address::random();
+        let v2 = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v2, "192.168.2.1:8000", "192.168.2.1"),
+            )?;
+
+            let result = vc.set_ip_addresses(
+                owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    validatorAddress: v2,
+                    ingress: "192.168.1.1:9000".to_string(),
+                    egress: "192.168.2.1".to_string(),
+                },
+            );
+
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_ip_addresses_allows_same_ip_different_port() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            vc.set_ip_addresses(
+                owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    validatorAddress: validator,
+                    ingress: "192.168.1.1:9000".to_string(),
+                    egress: "192.168.1.1".to_string(),
+                },
+            )?;
+
+            let v = vc.validator_by_address(validator)?;
+            assert_eq!(v.ingress, "192.168.1.1:9000");
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_transfer_validator_ownership_by_validator() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
