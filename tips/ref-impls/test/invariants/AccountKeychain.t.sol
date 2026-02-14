@@ -1006,14 +1006,14 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for authorizing key with zero address (should fail)
     /// @dev Tests TEMPO-KEY7 (zero public key rejection)
-    function tryAuthorizeZeroKey(uint256 accountSeed) external {
+    function handler_tryAuthorizeZeroKey(uint256 accountSeed) external {
         address account = _selectActor(accountSeed);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
         vm.startPrank(account);
         try keychain.authorizeKey(
-            address(0), // Zero key ID
+            address(0),
             IAccountKeychain.SignatureType.Secp256k1,
             uint64(block.timestamp + 1 days),
             false,
@@ -1033,7 +1033,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for authorizing duplicate key (should fail)
     /// @dev Tests TEMPO-KEY8 (duplicate key rejection)
-    function tryAuthorizeDuplicateKey(uint256 accountSeed, uint256 keyIdSeed) external {
+    function handler_tryAuthorizeDuplicateKey(uint256 accountSeed, uint256 keyIdSeed) external {
         // Find an actor with an active key, or create one as fallback (skip if all keys are revoked)
         (address account, address keyId, bool skip) =
             _ensureActorWithActiveKey(accountSeed, keyIdSeed);
@@ -1041,13 +1041,24 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             return;
         }
 
+        // Skip if preconditions aren't met (should not happen, but guard defensively)
+        if (!_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) {
+            return;
+        }
+
+        IAccountKeychain.KeyInfo memory infoBefore = keychain.getKey(account, keyId);
+        uint256[] memory limitsBefore = new uint256[](_tokens.length);
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            limitsBefore[t] = keychain.getRemainingLimit(account, keyId, address(_tokens[t]));
+        }
+
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
         vm.startPrank(account);
         try keychain.authorizeKey(
             keyId,
-            IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 2 days),
+            IAccountKeychain.SignatureType.Secp256k1,
+            uint64(block.timestamp + 1 days),
             false,
             limits
         ) {
@@ -1059,6 +1070,32 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 bytes4(reason),
                 IAccountKeychain.KeyAlreadyExists.selector,
                 "TEMPO-KEY8: Should revert with KeyAlreadyExists"
+            );
+        }
+
+        // Failed duplicate authorization must not mutate key or limit state.
+        IAccountKeychain.KeyInfo memory infoAfter = keychain.getKey(account, keyId);
+        assertEq(infoAfter.keyId, infoBefore.keyId, "TEMPO-KEY8: keyId should remain unchanged");
+        assertEq(infoAfter.expiry, infoBefore.expiry, "TEMPO-KEY8: expiry should remain unchanged");
+        assertEq(
+            infoAfter.enforceLimits,
+            infoBefore.enforceLimits,
+            "TEMPO-KEY8: enforceLimits should remain unchanged"
+        );
+        assertEq(
+            uint8(infoAfter.signatureType),
+            uint8(infoBefore.signatureType),
+            "TEMPO-KEY8: signature type should remain unchanged"
+        );
+        assertEq(
+            infoAfter.isRevoked, infoBefore.isRevoked, "TEMPO-KEY8: revoked flag should remain unchanged"
+        );
+
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            assertEq(
+                keychain.getRemainingLimit(account, keyId, address(_tokens[t])),
+                limitsBefore[t],
+                "TEMPO-KEY8: failed duplicate authorize should not mutate limits"
             );
         }
     }
