@@ -1036,8 +1036,15 @@ where
             // in FeeAMM pool for fee swaps)
             Err(match err {
                 TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
+                    let validator_token = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
+                        TipFeeManager::new().get_validator_token(block.beneficiary())
+                    })
+                    .unwrap_or(Address::ZERO);
+
                     FeePaymentError::InsufficientAmmLiquidity {
                         fee: gas_balance_spending,
+                        user_token: self.fee_token,
+                        validator_token,
                     }
                     .into()
                 }
