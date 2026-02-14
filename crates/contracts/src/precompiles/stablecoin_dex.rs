@@ -1,3 +1,6 @@
+#[allow(unused_imports)]
+use alloc::string::String;
+
 pub use IStablecoinDEX::{
     IStablecoinDEXErrors as StablecoinDEXError, IStablecoinDEXEvents as StablecoinDEXEvents,
 };
