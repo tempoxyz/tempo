@@ -86,6 +86,7 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 - **TEMPO-AMM29**: Fee conservation - `collectedFees + distributed <= totalFeesIn` (fees cannot be created from nothing).
 - **TEMPO-AMM30**: Pool initialization shape - a pool is either completely uninitialized (totalSupply=0, reserves=0) OR properly initialized with totalSupply >= MIN_LIQUIDITY. No partial/bricked states allowed.
 - **TEMPO-AMM31**: Fee double-count prevention - fees accumulate via `+=` (not overwrite), and `distributeFees` zeros the balance before transfer, preventing the same fees from being distributed twice.
+- **TEMPO-AMM35**: Combined solvency - for each token, the AMM's token balance >= sum of all pool reserves for that token + sum of all collected fees for that token. This is strictly stronger than TEMPO-AMM13 (which checks per-pool reserve solvency) and TEMPO-FEE5 (which checks fee solvency alone), ensuring the AMM can meet both obligations simultaneously.
 
 ### Rounding & Exploitation Invariants
 
