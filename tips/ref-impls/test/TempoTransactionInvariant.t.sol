@@ -226,6 +226,19 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     // normalized parity (0/1 instead of 27/28) to match Rust's Signature::write_rlp_vrs.
     // The E6 invariant handler (handler_expiringNonceSponsored) now exercises the replay property.
 
+    /// @notice Smoke test: fee payer signature RLP encoding is correct
+    /// @dev Confirms the [v, r, s] encoding fix — vm.executeTransaction no longer fails
+    ///      with "overflow" when decoding fee-payer-sponsored transactions.
+    ///      The handler catches execution-level reverts (e.g. InsufficientBalance) gracefully;
+    ///      we just verify the RLP decode succeeds by checking no revert propagates.
+    function test_feePayerSignatureDecodesCorrectly() public {
+        // This would previously fail with "failed to decode RLP-encoded transaction: overflow"
+        // Now it decodes successfully (may revert at execution level, caught by handler)
+        this.handler_expiringNonceSponsored(0, 1, 2, 1);
+        this.handler_tempoFeeSponsor(0, 1, 2, 1e6, 1);
+        // If we reach here, the RLP encoding fix is confirmed working
+    }
+
     /*//////////////////////////////////////////////////////////////
                         SIGNING PARAMS HELPER
     //////////////////////////////////////////////////////////////*/
