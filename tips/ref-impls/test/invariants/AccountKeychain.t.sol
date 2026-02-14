@@ -147,9 +147,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         address token0 = address(_selectBaseToken(seeds.token0Seed));
         uint256 amount0 = (seeds.amount0Seed % 1_000_000) * 1e6;
-        limits[0] = IAccountKeychain.TokenLimit({
-            token: token0, amount: amount0
-        });
+        limits[0] = IAccountKeychain.TokenLimit({ token: token0, amount: amount0 });
 
         if (limitCount == 1) {
             return limits;
@@ -163,9 +161,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         }
         uint256 amount1 = (seeds.amount1Seed % 1_000_000) * 1e6;
 
-        limits[1] = IAccountKeychain.TokenLimit({
-            token: token1, amount: amount1
-        });
+        limits[1] = IAccountKeychain.TokenLimit({ token: token1, amount: amount1 });
     }
 
     /// @dev Computes expected stored limit for a token from authorizeKey inputs
@@ -197,7 +193,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @param keyId The key ID to authorize
     /// @param isFallback Whether this is a fallback creation (for logging)
     function _createKeyInternal(address account, address keyId, bool isFallback) internal {
-        uint64 expiry = _generateValidAuthorizeExpiry(uint256(keccak256(abi.encode(account, keyId))));
+        uint64 expiry =
+            _generateValidAuthorizeExpiry(uint256(keccak256(abi.encode(account, keyId))));
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
         vm.startPrank(account);
@@ -364,10 +361,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
             uint256 idx = addmod(startKeyIdx, i, _potentialKeyIds.length);
             address candidateKey = _potentialKeyIds[idx];
-            if (
-                !_ghostKeyExists[account][candidateKey]
-                    && !_ghostKeyRevoked[account][candidateKey]
-            ) {
+            if (!_ghostKeyExists[account][candidateKey] && !_ghostKeyRevoked[account][candidateKey])
+            {
                 _createKeyInternal(account, candidateKey, true);
                 return (account, candidateKey, false);
             }
@@ -693,7 +688,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         }
 
         assertFalse(_ghostKeyExists[account][keyId], "TEMPO-KEY4: revoked key should not be active");
-        assertTrue(_ghostKeyRevoked[account][keyId], "TEMPO-KEY4: key should be marked revoked in ghost");
+        assertTrue(
+            _ghostKeyRevoked[account][keyId], "TEMPO-KEY4: key should be marked revoked in ghost"
+        );
 
         IAccountKeychain.SignatureType sigType = _generateSignatureType(sigTypeSeed);
         uint64 expiry = _generateValidAuthorizeExpiry(expirySeed);
@@ -733,7 +730,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             "TEMPO-KEY4: signature type should remain unchanged"
         );
         assertEq(
-            infoAfter.isRevoked, infoBefore.isRevoked, "TEMPO-KEY4: revoked flag should remain unchanged"
+            infoAfter.isRevoked,
+            infoBefore.isRevoked,
+            "TEMPO-KEY4: revoked flag should remain unchanged"
         );
         for (uint256 t = 0; t < _tokens.length; t++) {
             assertEq(
@@ -742,8 +741,12 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 "TEMPO-KEY4: failed reauthorize should not mutate limits"
             );
         }
-        assertFalse(_ghostKeyExists[account][keyId], "TEMPO-KEY4: key should remain non-active in ghost");
-        assertTrue(_ghostKeyRevoked[account][keyId], "TEMPO-KEY4: key should remain revoked in ghost");
+        assertFalse(
+            _ghostKeyExists[account][keyId], "TEMPO-KEY4: key should remain non-active in ghost"
+        );
+        assertTrue(
+            _ghostKeyRevoked[account][keyId], "TEMPO-KEY4: key should remain revoked in ghost"
+        );
 
         if (_loggingEnabled) {
             _log(
@@ -829,7 +832,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             "TEMPO-KEY5: signature type should remain unchanged"
         );
         assertEq(
-            infoAfter.isRevoked, infoBefore.isRevoked, "TEMPO-KEY5: revoked flag should remain unchanged"
+            infoAfter.isRevoked,
+            infoBefore.isRevoked,
+            "TEMPO-KEY5: revoked flag should remain unchanged"
         );
 
         // TEMPO-KEY28: updating one token must not mutate limits for other tokens.
@@ -925,7 +930,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             "TEMPO-KEY5: signature type should remain unchanged"
         );
         assertEq(
-            infoAfter.isRevoked, infoBefore.isRevoked, "TEMPO-KEY5: revoked flag should remain unchanged"
+            infoAfter.isRevoked,
+            infoBefore.isRevoked,
+            "TEMPO-KEY5: revoked flag should remain unchanged"
         );
         assertEq(
             keychain.getRemainingLimit(account, keyId, token),
@@ -1034,7 +1041,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             "TEMPO-KEY5: signature type should remain unchanged"
         );
         assertEq(
-            infoAfter.isRevoked, infoBefore.isRevoked, "TEMPO-KEY5: revoked flag should remain unchanged"
+            infoAfter.isRevoked,
+            infoBefore.isRevoked,
+            "TEMPO-KEY5: revoked flag should remain unchanged"
         );
         assertEq(
             keychain.getRemainingLimit(account, keyId, token),
@@ -1079,7 +1088,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 address candidate = ownerKeys[idx];
                 if (
                     _ghostKeyExists[owner][candidate] && !_ghostKeyRevoked[owner][candidate]
-                        && !_ghostKeyExists[caller][candidate] && !_ghostKeyRevoked[caller][candidate]
+                        && !_ghostKeyExists[caller][candidate]
+                        && !_ghostKeyRevoked[caller][candidate]
                 ) {
                     keyId = candidate;
                     break;
@@ -1095,7 +1105,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 address candidate = _potentialKeyIds[idx];
                 if (
                     !_ghostKeyExists[owner][candidate] && !_ghostKeyRevoked[owner][candidate]
-                        && !_ghostKeyExists[caller][candidate] && !_ghostKeyRevoked[caller][candidate]
+                        && !_ghostKeyExists[caller][candidate]
+                        && !_ghostKeyRevoked[caller][candidate]
                 ) {
                     keyId = candidate;
                     break;
@@ -1129,8 +1140,14 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // Failed foreign update must not mutate owner's key state.
         IAccountKeychain.KeyInfo memory ownerAfter = keychain.getKey(owner, keyId);
-        assertEq(ownerAfter.keyId, ownerBefore.keyId, "TEMPO-KEY5: owner keyId should remain unchanged");
-        assertEq(ownerAfter.expiry, ownerBefore.expiry, "TEMPO-KEY5: owner expiry should remain unchanged");
+        assertEq(
+            ownerAfter.keyId, ownerBefore.keyId, "TEMPO-KEY5: owner keyId should remain unchanged"
+        );
+        assertEq(
+            ownerAfter.expiry,
+            ownerBefore.expiry,
+            "TEMPO-KEY5: owner expiry should remain unchanged"
+        );
         assertEq(
             ownerAfter.enforceLimits,
             ownerBefore.enforceLimits,
@@ -1142,7 +1159,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             "TEMPO-KEY5: owner signature type should remain unchanged"
         );
         assertEq(
-            ownerAfter.isRevoked, ownerBefore.isRevoked, "TEMPO-KEY5: owner revoked flag should remain unchanged"
+            ownerAfter.isRevoked,
+            ownerBefore.isRevoked,
+            "TEMPO-KEY5: owner revoked flag should remain unchanged"
         );
         assertEq(
             keychain.getRemainingLimit(owner, keyId, token),
@@ -1257,7 +1276,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             "TEMPO-KEY8: signature type should remain unchanged"
         );
         assertEq(
-            infoAfter.isRevoked, infoBefore.isRevoked, "TEMPO-KEY8: revoked flag should remain unchanged"
+            infoAfter.isRevoked,
+            infoBefore.isRevoked,
+            "TEMPO-KEY8: revoked flag should remain unchanged"
         );
 
         for (uint256 t = 0; t < _tokens.length; t++) {
@@ -1413,7 +1434,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             "TEMPO-KEY9: signature type should remain unchanged"
         );
         assertEq(
-            infoAfter.isRevoked, infoBefore.isRevoked, "TEMPO-KEY9: revoked flag should remain unchanged"
+            infoAfter.isRevoked,
+            infoBefore.isRevoked,
+            "TEMPO-KEY9: revoked flag should remain unchanged"
         );
 
         for (uint256 t = 0; t < _tokens.length; t++) {
@@ -1459,7 +1482,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 address candidate = ownerKeys[idx];
                 if (
                     _ghostKeyExists[owner][candidate] && !_ghostKeyRevoked[owner][candidate]
-                        && !_ghostKeyExists[caller][candidate] && !_ghostKeyRevoked[caller][candidate]
+                        && !_ghostKeyExists[caller][candidate]
+                        && !_ghostKeyRevoked[caller][candidate]
                 ) {
                     keyId = candidate;
                     break;
@@ -1475,7 +1499,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 address candidate = _potentialKeyIds[idx];
                 if (
                     !_ghostKeyExists[owner][candidate] && !_ghostKeyRevoked[owner][candidate]
-                        && !_ghostKeyExists[caller][candidate] && !_ghostKeyRevoked[caller][candidate]
+                        && !_ghostKeyExists[caller][candidate]
+                        && !_ghostKeyRevoked[caller][candidate]
                 ) {
                     keyId = candidate;
                     break;
@@ -1489,7 +1514,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         assertTrue(_ghostKeyExists[owner][keyId], "TEMPO-KEY10: owner should have active key");
         assertFalse(_ghostKeyRevoked[owner][keyId], "TEMPO-KEY10: owner key should not be revoked");
         assertFalse(_ghostKeyExists[caller][keyId], "TEMPO-KEY10: caller should not have this key");
-        assertFalse(_ghostKeyRevoked[caller][keyId], "TEMPO-KEY10: caller key should not be revoked");
+        assertFalse(
+            _ghostKeyRevoked[caller][keyId], "TEMPO-KEY10: caller key should not be revoked"
+        );
 
         IAccountKeychain.KeyInfo memory ownerInfoBefore = keychain.getKey(owner, keyId);
 
@@ -1508,8 +1535,14 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // Failed foreign revoke must not mutate owner's key.
         IAccountKeychain.KeyInfo memory ownerInfoAfter = keychain.getKey(owner, keyId);
-        assertEq(ownerInfoAfter.keyId, ownerInfoBefore.keyId, "TEMPO-KEY10: owner keyId should persist");
-        assertEq(ownerInfoAfter.expiry, ownerInfoBefore.expiry, "TEMPO-KEY10: owner expiry should persist");
+        assertEq(
+            ownerInfoAfter.keyId, ownerInfoBefore.keyId, "TEMPO-KEY10: owner keyId should persist"
+        );
+        assertEq(
+            ownerInfoAfter.expiry,
+            ownerInfoBefore.expiry,
+            "TEMPO-KEY10: owner expiry should persist"
+        );
         assertEq(
             ownerInfoAfter.enforceLimits,
             ownerInfoBefore.enforceLimits,
@@ -1521,7 +1554,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             "TEMPO-KEY10: owner signature type should persist"
         );
         assertEq(
-            ownerInfoAfter.isRevoked, ownerInfoBefore.isRevoked, "TEMPO-KEY10: owner revoked flag should persist"
+            ownerInfoAfter.isRevoked,
+            ownerInfoBefore.isRevoked,
+            "TEMPO-KEY10: owner revoked flag should persist"
         );
 
         if (_loggingEnabled) {
@@ -1566,18 +1601,21 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         uint256 initialLimit1 = bound(limit1Seed, 1, 1_000_000) * 1e6;
         uint256 initialLimit2 = bound(limit2Seed, 1, 1_000_000) * 1e6;
         if (initialLimit2 == initialLimit1) {
-            initialLimit2 = initialLimit2 == 1_000_000 * 1e6 ? initialLimit2 - 1e6 : initialLimit2 + 1e6;
+            initialLimit2 =
+                initialLimit2 == 1_000_000 * 1e6 ? initialLimit2 - 1e6 : initialLimit2 + 1e6;
         }
 
         IAccountKeychain.SignatureType sigType1 = _generateSignatureType(limit1Seed);
-        IAccountKeychain.SignatureType sigType2 = IAccountKeychain.SignatureType((uint8(sigType1) + 1) % 3);
+        IAccountKeychain.SignatureType sigType2 =
+            IAccountKeychain.SignatureType((uint8(sigType1) + 1) % 3);
 
         uint64 expiry1 = _generateValidAuthorizeExpiry(limit1Seed);
         uint64 expiry2 = _generateValidAuthorizeExpiry(limit2Seed);
         if (expiry2 == expiry1) expiry2 = expiry1 + 1;
 
         // Snapshot all actors' view state for this keyId before any mutations.
-        IAccountKeychain.KeyInfo[] memory keysBefore = new IAccountKeychain.KeyInfo[](_actors.length);
+        IAccountKeychain.KeyInfo[] memory keysBefore =
+            new IAccountKeychain.KeyInfo[](_actors.length);
         uint256[] memory limitsBefore = new uint256[](_actors.length);
         for (uint256 a = 0; a < _actors.length; a++) {
             keysBefore[a] = keychain.getKey(_actors[a], keyId);
@@ -1630,21 +1668,31 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
             if (actor == account1) {
                 assertEq(info.keyId, keyId, "TEMPO-KEY10: account1 keyId mismatch");
-                assertEq(uint8(info.signatureType), uint8(sigType1), "TEMPO-KEY10: account1 sigType mismatch");
+                assertEq(
+                    uint8(info.signatureType),
+                    uint8(sigType1),
+                    "TEMPO-KEY10: account1 sigType mismatch"
+                );
                 assertEq(info.expiry, expiry1, "TEMPO-KEY10: account1 expiry mismatch");
                 assertTrue(info.enforceLimits, "TEMPO-KEY10: account1 enforceLimits mismatch");
                 assertFalse(info.isRevoked, "TEMPO-KEY10: account1 should not be revoked");
                 assertEq(limit, initialLimit1, "TEMPO-KEY10: account1 limit mismatch");
             } else if (actor == account2) {
                 assertEq(info.keyId, keyId, "TEMPO-KEY10: account2 keyId mismatch");
-                assertEq(uint8(info.signatureType), uint8(sigType2), "TEMPO-KEY10: account2 sigType mismatch");
+                assertEq(
+                    uint8(info.signatureType),
+                    uint8(sigType2),
+                    "TEMPO-KEY10: account2 sigType mismatch"
+                );
                 assertEq(info.expiry, expiry2, "TEMPO-KEY10: account2 expiry mismatch");
                 assertTrue(info.enforceLimits, "TEMPO-KEY10: account2 enforceLimits mismatch");
                 assertFalse(info.isRevoked, "TEMPO-KEY10: account2 should not be revoked");
                 assertEq(limit, initialLimit2, "TEMPO-KEY10: account2 limit mismatch");
             } else {
                 assertEq(info.keyId, keysBefore[a].keyId, "TEMPO-KEY10: unexpected keyId changed");
-                assertEq(info.expiry, keysBefore[a].expiry, "TEMPO-KEY10: unexpected expiry changed");
+                assertEq(
+                    info.expiry, keysBefore[a].expiry, "TEMPO-KEY10: unexpected expiry changed"
+                );
                 assertEq(
                     uint8(info.signatureType),
                     uint8(keysBefore[a].signatureType),
@@ -1655,7 +1703,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                     keysBefore[a].enforceLimits,
                     "TEMPO-KEY10: unexpected enforceLimits changed"
                 );
-                assertEq(info.isRevoked, keysBefore[a].isRevoked, "TEMPO-KEY10: unexpected isRevoked changed");
+                assertEq(
+                    info.isRevoked,
+                    keysBefore[a].isRevoked,
+                    "TEMPO-KEY10: unexpected isRevoked changed"
+                );
                 assertEq(limit, limitsBefore[a], "TEMPO-KEY10: unexpected limit changed");
             }
         }
@@ -1712,8 +1764,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             if (_ghostKeyExists[account][keyId]) {
                 bool found = false;
                 for (uint256 i = 0; i < 4; i++) {
-                    address candidate =
-                        _selectKeyId(uint256(keccak256(abi.encode(keyIdSeed, i))));
+                    address candidate = _selectKeyId(uint256(keccak256(abi.encode(keyIdSeed, i))));
                     if (!_ghostKeyExists[account][candidate]) {
                         keyId = candidate;
                         found = true;
@@ -1766,7 +1817,17 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @notice Handler for testing expiry boundary condition
     /// @dev Tests TEMPO-KEY17 (expiry == block.timestamp counts as expired)
     ///      Rust uses timestamp >= expiry, so expiry == now is already expired
-    function testExpiryBoundary(uint256 accountSeed, uint256 keyIdSeed) external {
+    function testExpiryBoundary(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint256 sigTypeSeed,
+        bool enforceLimits,
+        LimitSeeds calldata limitSeeds,
+        uint256 tokenSeed,
+        uint256 newLimitSeed
+    )
+        external
+    {
         address account = _selectActor(accountSeed);
         address keyId = _selectKeyId(keyIdSeed);
 
@@ -1774,63 +1835,138 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) {
             return;
         }
-        if (_tokens.length == 0) {
-            return;
-        }
 
-        // Create a key with expiry 1 second in the future (valid at creation)
+        // Create a key with expiry 1 second in the future (valid at creation).
+        IAccountKeychain.SignatureType sigType = _generateSignatureType(sigTypeSeed);
         uint64 expiry = uint64(block.timestamp + 1);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        address token = _selectUpdateLimitToken(tokenSeed, account, keyId);
+        uint256 newLimit = _deriveUpdateLimit(newLimitSeed);
+        IAccountKeychain.TokenLimit[] memory limits = _buildAuthorizeLimits(limitSeeds);
 
         vm.startPrank(account);
-        try keychain.authorizeKey(
-            keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, false, limits
-        ) {
+        try keychain.authorizeKey(keyId, sigType, expiry, enforceLimits, limits) {
             vm.stopPrank();
+        } catch {
+            vm.stopPrank();
+            revert("TEMPO-KEY17: authorizeKey setup unexpectedly reverted");
+        }
 
-            // Key was created, update ghost state
-            _ghostKeyExists[account][keyId] = true;
-            _ghostKeyExpiry[account][keyId] = expiry;
-            _ghostKeySignatureType[account][keyId] = 0;
-
-            if (!_keyUsed[account][keyId]) {
-                _keyUsed[account][keyId] = true;
-                _accountKeys[account].push(keyId);
+        // Update ghost state for the newly created key.
+        _totalKeysAuthorized++;
+        _ghostKeyExists[account][keyId] = true;
+        _ghostKeyExpiry[account][keyId] = expiry;
+        _ghostKeyEnforceLimits[account][keyId] = enforceLimits;
+        _ghostKeySignatureType[account][keyId] = uint8(sigType);
+        if (enforceLimits && limits.length > 0) {
+            for (uint256 i = 0; i < limits.length; i++) {
+                _ghostSpendingLimits[account][keyId][limits[i].token] = limits[i].amount;
             }
+        }
 
-            _totalKeysAuthorized++;
+        if (!_keyUsed[account][keyId]) {
+            _keyUsed[account][keyId] = true;
+            _accountKeys[account].push(keyId);
+        }
 
-            // Warp to exactly the expiry timestamp
-            // TEMPO-KEY17: timestamp >= expiry means equality counts as expired
-            vm.warp(expiry);
+        IAccountKeychain.KeyInfo memory infoBefore = keychain.getKey(account, keyId);
+        uint256 watchLen = _tokens.length + 3;
+        address[] memory watchTokens = new address[](watchLen);
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            watchTokens[t] = address(_tokens[t]);
+        }
+        watchTokens[_tokens.length] = address(pathUSD);
+        watchTokens[_tokens.length + 1] = address(0);
+        watchTokens[_tokens.length + 2] = token;
 
-            vm.startPrank(account);
-            try keychain.updateSpendingLimit(keyId, address(_tokens[0]), 1000e6) {
-                vm.stopPrank();
-                revert("TEMPO-KEY17: Operation at expiry timestamp should fail with KeyExpired");
-            } catch (bytes memory reason) {
-                vm.stopPrank();
-                assertEq(
-                    bytes4(reason),
-                    IAccountKeychain.KeyExpired.selector,
-                    "TEMPO-KEY17: Should revert with KeyExpired when timestamp == expiry"
-                );
-            }
+        uint256[] memory watchLimitsBefore = new uint256[](watchTokens.length);
+        for (uint256 t = 0; t < watchTokens.length; t++) {
+            watchLimitsBefore[t] = keychain.getRemainingLimit(account, keyId, watchTokens[t]);
+        }
+        uint256 totalLimitUpdatesBefore = _totalLimitUpdates;
 
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "EXPIRY_BOUNDARY: account=",
-                        _getActorIndex(account),
-                        " key correctly expired at timestamp==expiry"
-                    )
-                );
-            }
+        // Warp to exactly the expiry timestamp.
+        // TEMPO-KEY17: timestamp >= expiry means equality counts as expired.
+        vm.warp(expiry);
+
+        vm.startPrank(account);
+        try keychain.updateSpendingLimit(keyId, token, newLimit) {
+            vm.stopPrank();
+            revert("TEMPO-KEY17: Operation at expiry timestamp should fail with KeyExpired");
         } catch (bytes memory reason) {
             vm.stopPrank();
-            // ExpiryInPast is acceptable if expiry <= block.timestamp at creation
-            _assertKnownKeychainError(reason);
+            assertEq(
+                bytes4(reason),
+                IAccountKeychain.KeyExpired.selector,
+                "TEMPO-KEY17: Should revert with KeyExpired when timestamp == expiry"
+            );
+        }
+
+        // Failed boundary update must not mutate key metadata or limits.
+        IAccountKeychain.KeyInfo memory infoAfter = keychain.getKey(account, keyId);
+        assertEq(infoAfter.keyId, infoBefore.keyId, "TEMPO-KEY17: keyId should remain unchanged");
+        assertEq(infoAfter.expiry, infoBefore.expiry, "TEMPO-KEY17: expiry should remain unchanged");
+        assertEq(
+            infoAfter.enforceLimits,
+            infoBefore.enforceLimits,
+            "TEMPO-KEY17: enforceLimits should remain unchanged"
+        );
+        assertEq(
+            uint8(infoAfter.signatureType),
+            uint8(infoBefore.signatureType),
+            "TEMPO-KEY17: signature type should remain unchanged"
+        );
+        assertEq(
+            infoAfter.isRevoked,
+            infoBefore.isRevoked,
+            "TEMPO-KEY17: revoked flag should remain unchanged"
+        );
+        for (uint256 t = 0; t < watchTokens.length; t++) {
+            assertEq(
+                keychain.getRemainingLimit(account, keyId, watchTokens[t]),
+                watchLimitsBefore[t],
+                "TEMPO-KEY17: failed boundary update should not mutate limits"
+            );
+        }
+        assertEq(
+            _totalLimitUpdates,
+            totalLimitUpdatesBefore,
+            "TEMPO-KEY17: failed boundary update should not change update counter"
+        );
+        assertTrue(
+            _ghostKeyExists[account][keyId], "TEMPO-KEY17: key should remain active in ghost state"
+        );
+        assertFalse(
+            _ghostKeyRevoked[account][keyId],
+            "TEMPO-KEY17: key should not be revoked in ghost state"
+        );
+        assertEq(
+            _ghostKeyExpiry[account][keyId],
+            expiry,
+            "TEMPO-KEY17: ghost expiry should remain unchanged"
+        );
+        assertEq(
+            _ghostKeyEnforceLimits[account][keyId],
+            enforceLimits,
+            "TEMPO-KEY17: ghost enforceLimits should remain unchanged"
+        );
+        assertEq(
+            _ghostKeySignatureType[account][keyId],
+            uint8(sigType),
+            "TEMPO-KEY17: ghost signature type should remain unchanged"
+        );
+
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "EXPIRY_BOUNDARY: account=",
+                    _getActorIndex(account),
+                    " keyId=",
+                    vm.toString(keyId),
+                    " token=",
+                    vm.toString(token),
+                    " correctly rejected at timestamp==expiry"
+                )
+            );
         }
     }
 
@@ -1839,17 +1975,15 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     function testExpiredKeyOperations(
         uint256 accountSeed,
         uint256 keyIdSeed,
-        uint256 warpAmount
+        uint256 warpAmount,
+        uint256 tokenSeed,
+        uint256 newLimitSeed
     )
         external
     {
-        if (_tokens.length == 0) {
-            return;
-        }
-
-        // Find an actor with an active key, or create one as fallback
+        // Find an actor with an active, non-expired key, or create one as fallback.
         (address account, address keyId, bool skip) =
-            _ensureActorWithActiveKey(accountSeed, keyIdSeed);
+            _ensureActorWithUpdatableKey(accountSeed, keyIdSeed);
         if (skip) {
             return;
         }
@@ -1861,13 +1995,32 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             return;
         }
 
+        address token = _selectUpdateLimitToken(tokenSeed, account, keyId);
+        uint256 newLimit = _deriveUpdateLimit(newLimitSeed);
+
+        IAccountKeychain.KeyInfo memory infoBefore = keychain.getKey(account, keyId);
+        uint256 watchLen = _tokens.length + 3;
+        address[] memory watchTokens = new address[](watchLen);
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            watchTokens[t] = address(_tokens[t]);
+        }
+        watchTokens[_tokens.length] = address(pathUSD);
+        watchTokens[_tokens.length + 1] = address(0);
+        watchTokens[_tokens.length + 2] = token;
+
+        uint256[] memory watchLimitsBefore = new uint256[](watchTokens.length);
+        for (uint256 t = 0; t < watchTokens.length; t++) {
+            watchLimitsBefore[t] = keychain.getRemainingLimit(account, keyId, watchTokens[t]);
+        }
+        uint256 totalLimitUpdatesBefore = _totalLimitUpdates;
+
         // Warp past expiry (1 second to 1 day past)
         uint256 warpTo = expiry + 1 + (warpAmount % 1 days);
         vm.warp(warpTo);
 
         // TEMPO-KEY18: Operations on expired keys should fail with KeyExpired
         vm.startPrank(account);
-        try keychain.updateSpendingLimit(keyId, address(_tokens[0]), 1000e6) {
+        try keychain.updateSpendingLimit(keyId, token, newLimit) {
             vm.stopPrank();
             revert("TEMPO-KEY18: Operation on expired key should fail");
         } catch (bytes memory reason) {
@@ -1879,6 +2032,50 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
+        // Failed update on an expired key must not mutate metadata or limits.
+        IAccountKeychain.KeyInfo memory infoAfter = keychain.getKey(account, keyId);
+        assertEq(infoAfter.keyId, infoBefore.keyId, "TEMPO-KEY18: keyId should remain unchanged");
+        assertEq(infoAfter.expiry, infoBefore.expiry, "TEMPO-KEY18: expiry should remain unchanged");
+        assertEq(
+            infoAfter.enforceLimits,
+            infoBefore.enforceLimits,
+            "TEMPO-KEY18: enforceLimits should remain unchanged"
+        );
+        assertEq(
+            uint8(infoAfter.signatureType),
+            uint8(infoBefore.signatureType),
+            "TEMPO-KEY18: signature type should remain unchanged"
+        );
+        assertEq(
+            infoAfter.isRevoked,
+            infoBefore.isRevoked,
+            "TEMPO-KEY18: revoked flag should remain unchanged"
+        );
+        for (uint256 t = 0; t < watchTokens.length; t++) {
+            assertEq(
+                keychain.getRemainingLimit(account, keyId, watchTokens[t]),
+                watchLimitsBefore[t],
+                "TEMPO-KEY18: failed expired update should not mutate limits"
+            );
+        }
+        assertEq(
+            _totalLimitUpdates,
+            totalLimitUpdatesBefore,
+            "TEMPO-KEY18: failed expired update should not change update counter"
+        );
+        assertTrue(
+            _ghostKeyExists[account][keyId], "TEMPO-KEY18: key should remain active in ghost state"
+        );
+        assertFalse(
+            _ghostKeyRevoked[account][keyId],
+            "TEMPO-KEY18: key should not be revoked in ghost state"
+        );
+        assertEq(
+            _ghostKeyExpiry[account][keyId],
+            expiry,
+            "TEMPO-KEY18: ghost expiry should remain unchanged"
+        );
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -1886,6 +2083,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                     _getActorIndex(account),
                     " keyId=",
                     vm.toString(keyId),
+                    " token=",
+                    vm.toString(token),
                     " correctly rejected after expiry"
                 )
             );
@@ -1897,21 +2096,68 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     function testInvalidSignatureType(
         uint256 accountSeed,
         uint256 keyIdSeed,
-        uint8 badType
+        uint8 badType,
+        uint256 expirySeed,
+        bool enforceLimits,
+        LimitSeeds calldata limitSeeds
     )
         external
     {
         address account = _selectActor(accountSeed);
-        address keyId = _selectKeyId(keyIdSeed);
+        address keyId = address(0);
 
-        // Skip if key already exists or was revoked
-        if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) return;
+        // Select a key that is neither active nor revoked for this account.
+        if (keyIdSeed % 8 == 0) {
+            keyId = address(0); // Explicit edge case for pre-validation ordering.
+        } else {
+            keyId = _selectKeyId(keyIdSeed);
+            if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) {
+                bool found = false;
+                for (uint256 i = 0; i < 8; i++) {
+                    address candidate = _selectKeyId(uint256(keccak256(abi.encode(keyIdSeed, i))));
+                    if (
+                        !_ghostKeyExists[account][candidate]
+                            && !_ghostKeyRevoked[account][candidate]
+                    ) {
+                        keyId = candidate;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return;
+            }
+        }
 
         // Only test with values >= 3 (invalid enum values)
         badType = uint8(bound(badType, 3, 255));
 
-        uint64 expiry = uint64(block.timestamp + 1 days);
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+        // Keep expiry valid so signature validation is reached unless a stricter precheck
+        // (like keyId=0) intentionally fires first.
+        uint64 expiry = _generateValidAuthorizeExpiry(expirySeed);
+        IAccountKeychain.TokenLimit[] memory limits = _buildAuthorizeLimits(limitSeeds);
+
+        IAccountKeychain.KeyInfo memory infoBefore = keychain.getKey(account, keyId);
+        uint256 watchLen = _tokens.length + 2;
+        address[] memory watchTokens = new address[](watchLen);
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            watchTokens[t] = address(_tokens[t]);
+        }
+        watchTokens[_tokens.length] = address(pathUSD);
+        watchTokens[_tokens.length + 1] = address(0);
+
+        uint256[] memory watchLimitsBefore = new uint256[](watchTokens.length);
+        for (uint256 t = 0; t < watchTokens.length; t++) {
+            watchLimitsBefore[t] = keychain.getRemainingLimit(account, keyId, watchTokens[t]);
+        }
+
+        uint256 totalAuthorizedBefore = _totalKeysAuthorized;
+        uint256 totalRevokedBefore = _totalKeysRevoked;
+        uint256 totalLimitUpdatesBefore = _totalLimitUpdates;
+        bool ghostExistsBefore = _ghostKeyExists[account][keyId];
+        bool ghostRevokedBefore = _ghostKeyRevoked[account][keyId];
+        uint64 ghostExpiryBefore = _ghostKeyExpiry[account][keyId];
+        bool ghostEnforceBefore = _ghostKeyEnforceLimits[account][keyId];
+        uint8 ghostSigBefore = _ghostKeySignatureType[account][keyId];
 
         // Use low-level call to bypass Solidity's enum type checking
         // This allows us to pass an invalid uint8 value for signatureType
@@ -1920,7 +2166,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             keyId,
             badType, // Raw uint8 instead of enum
             expiry,
-            false,
+            enforceLimits,
             limits
         );
 
@@ -1930,15 +2176,99 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // TEMPO-KEY19: Invalid signature type should be rejected
         assertFalse(success, "TEMPO-KEY19: Invalid signature type should revert");
-        // If revert data is provided, verify it's the expected error
-        // (Empty revert data is acceptable - ABI-level rejection for invalid enum)
+        // Depending on decoder path and validation ordering, failure can surface as:
+        // - InvalidSignatureType custom error (precompile validation path)
+        // - ZeroPublicKey (keyId==0 is checked before sigType in authorizeKey)
+        // - Panic(0x21) or empty revert data (ABI enum decode rejection path)
         if (returnData.length >= 4) {
+            bytes4 selector = bytes4(returnData);
+            if (selector == bytes4(0x4e487b71)) {
+                assertEq(
+                    keccak256(returnData),
+                    keccak256(abi.encodeWithSelector(bytes4(0x4e487b71), uint256(0x21))),
+                    "TEMPO-KEY19: Panic should be enum conversion panic (0x21)"
+                );
+            } else if (keyId == address(0)) {
+                assertEq(
+                    selector,
+                    IAccountKeychain.ZeroPublicKey.selector,
+                    "TEMPO-KEY19: keyId=0 should revert with ZeroPublicKey before sigType check"
+                );
+            } else {
+                assertEq(
+                    selector,
+                    IAccountKeychain.InvalidSignatureType.selector,
+                    "TEMPO-KEY19: Should revert with InvalidSignatureType"
+                );
+            }
+        }
+
+        // Failed authorize must not mutate state.
+        IAccountKeychain.KeyInfo memory infoAfter = keychain.getKey(account, keyId);
+        assertEq(infoAfter.keyId, infoBefore.keyId, "TEMPO-KEY19: keyId should remain unchanged");
+        assertEq(infoAfter.expiry, infoBefore.expiry, "TEMPO-KEY19: expiry should remain unchanged");
+        assertEq(
+            infoAfter.enforceLimits,
+            infoBefore.enforceLimits,
+            "TEMPO-KEY19: enforceLimits should remain unchanged"
+        );
+        assertEq(
+            uint8(infoAfter.signatureType),
+            uint8(infoBefore.signatureType),
+            "TEMPO-KEY19: signature type should remain unchanged"
+        );
+        assertEq(
+            infoAfter.isRevoked,
+            infoBefore.isRevoked,
+            "TEMPO-KEY19: revoked flag should remain unchanged"
+        );
+        for (uint256 t = 0; t < watchTokens.length; t++) {
             assertEq(
-                bytes4(returnData),
-                IAccountKeychain.InvalidSignatureType.selector,
-                "TEMPO-KEY19: Should revert with InvalidSignatureType"
+                keychain.getRemainingLimit(account, keyId, watchTokens[t]),
+                watchLimitsBefore[t],
+                "TEMPO-KEY19: failed authorize should not mutate limits"
             );
         }
+        assertEq(
+            _totalKeysAuthorized,
+            totalAuthorizedBefore,
+            "TEMPO-KEY19: failed authorize should not change authorized counter"
+        );
+        assertEq(
+            _totalKeysRevoked,
+            totalRevokedBefore,
+            "TEMPO-KEY19: failed authorize should not change revoked counter"
+        );
+        assertEq(
+            _totalLimitUpdates,
+            totalLimitUpdatesBefore,
+            "TEMPO-KEY19: failed authorize should not change limit update counter"
+        );
+        assertEq(
+            _ghostKeyExists[account][keyId],
+            ghostExistsBefore,
+            "TEMPO-KEY19: ghost exists should remain"
+        );
+        assertEq(
+            _ghostKeyRevoked[account][keyId],
+            ghostRevokedBefore,
+            "TEMPO-KEY19: ghost revoked should remain"
+        );
+        assertEq(
+            _ghostKeyExpiry[account][keyId],
+            ghostExpiryBefore,
+            "TEMPO-KEY19: ghost expiry should remain"
+        );
+        assertEq(
+            _ghostKeyEnforceLimits[account][keyId],
+            ghostEnforceBefore,
+            "TEMPO-KEY19: ghost enforceLimits should remain"
+        );
+        assertEq(
+            _ghostKeySignatureType[account][keyId],
+            ghostSigBefore,
+            "TEMPO-KEY19: ghost signatureType should remain"
+        );
 
         if (_loggingEnabled) {
             _log(
@@ -1947,6 +2277,12 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                     _getActorIndex(account),
                     " badType=",
                     vm.toString(badType),
+                    " keyId=",
+                    vm.toString(keyId),
+                    " enforceLimits=",
+                    enforceLimits ? "true" : "false",
+                    " limits=",
+                    vm.toString(limits.length),
                     " correctly rejected"
                 )
             );
