@@ -78,6 +78,9 @@ pub enum IdentityProofError {
     /// Failed to decode DKG outcome from block.
     #[error("malformed DKG outcome at height {0}")]
     MalformedData(u64),
+    /// Epoch number is invalid (e.g., overflow in epoch-to-height conversion).
+    #[error("invalid epoch {0}")]
+    InvalidEpoch(u64),
 }
 
 /// Response containing identity transition proofs.
