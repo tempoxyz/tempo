@@ -42,7 +42,7 @@ use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
-    AA2dPool, AA2dPoolConfig, TempoTransactionPool,
+    AA2dPool, AA2dPoolConfig, ExpiryTracker, TempoTransactionPool,
     amm::AmmLiquidityCache,
     validator::{
         DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
@@ -450,7 +450,8 @@ where
             queued_limit: pool_config.queued_limit,
             max_txs_per_sender: pool_config.max_account_slots,
         };
-        let aa_2d_pool = AA2dPool::new(aa_2d_config);
+        let expiry_tracker = Arc::new(ExpiryTracker::new());
+        let aa_2d_pool = AA2dPool::new(aa_2d_config, expiry_tracker);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
 
         let validator = validator.map(|v| {
