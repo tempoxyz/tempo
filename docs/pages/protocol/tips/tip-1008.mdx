@@ -1,0 +1,414 @@
+# Account Ownership Transfer
+
+This document specifies a mechanism for Tempo accounts to transfer ownership to a new address or relinquish root key control entirely.
+
+- **TIP ID**: TIP-1008
+- **Authors/Owners**: Georgios, Tanishk, jxom
+- **Status**: Draft
+- **Related Specs/TIPs**: [AccountKeychain](/protocol/transactions/AccountKeychain), [TIP-1004](/protocol/tips/tip-1004), [Tempo Transaction Spec](/protocol/transactions/spec-tempo-transaction)
+- **Protocol Version**: TBD
+
+---
+
+# Overview
+
+## Abstract
+
+TIP-1008 introduces the ability for Tempo accounts to transfer ownership to a new address or permanently disable root key control by transferring to `address(0)`. This enables multisig governance (where the root key should not have unilateral control) and prepares for post-quantum cryptography migration (where accounts can add a PQ-secure key and disable the classical root key).
+
+To ensure security, this TIP also modifies signature verification at the protocol level: `ecrecover` and other signature verification precompiles will check if an account has transferred ownership, preventing the original root key from signing valid messages (including EIP-2612 permits, Permit2, and any EIP-712 signed messages).
+
+## Motivation
+
+### Multisig Governance
+
+Currently, multisig wallets on Tempo still have a root key that could theoretically bypass the multisig. For true multisig security, the root key must be completely disabled, forcing all operations through the multisig logic.
+
+### Post-Quantum Cryptography
+
+As quantum computing advances, accounts will need to migrate from ECDSA (secp256k1/P256) to post-quantum signature schemes. This requires:
+1. Adding a PQ-secure access key
+2. Disabling the classical root key to prevent quantum attacks
+
+### Signature Verification Attack Surface
+
+Without protocol-level enforcement, a "disabled" root key could still sign valid messages for:
+- EIP-2612 `permit()` on TIP-20 tokens
+- Permit2 signatures
+- Any contract using `ecrecover` directly
+- EIP-712 typed data signatures
+
+This TIP ensures that ownership transfer/relinquishment is enforced at the signature verification level, not just the account level.
+
+---
+
+# Specification
+
+## Storage Changes
+
+### AccountKeychain Precompile
+
+Add a new storage mapping to track account ownership:
+
+```solidity
+// owner[account] -> owner address
+// - address(0) means the root key (derived from account address) is the owner (default)
+// - any other address means ownership has been transferred to that address
+// - account address means ownership is relinquished (root key disabled, no new owner)
+mapping(address account => address owner) public accountOwner;
+```
+
+**Ownership States:**
+
+| `accountOwner[account]` | Meaning |
+|------------------------|---------|
+| `address(0)` | Default: root key (= account address) is owner |
+| `account` (self) | Relinquished: root key disabled, no external owner |
+| Other address | Transferred: new address is the owner |
+
+## New Precompile Functions
+
+### `transferOwnership`
+
+```solidity
+/// @notice Transfer account ownership to a new address or relinquish control
+/// @param newOwner The new owner address. Use address(0) to relinquish control.
+/// @dev Can only be called by the current owner (root key or transferred owner).
+///      - If newOwner is address(0), sets accountOwner[account] = account (relinquished)
+///      - Otherwise, sets accountOwner[account] = newOwner
+///      Once relinquished (set to self), ownership CANNOT be reclaimed.
+///      Emits OwnershipTransferred event.
+function transferOwnership(address newOwner) external;
+```
+
+### `getOwner`
+
+```solidity
+/// @notice Get the current owner of an account
+/// @param account The account to query
+/// @return owner The owner address:
+///         - address(0) if root key is owner (default)
+///         - account address if relinquished
+///         - other address if transferred
+function getOwner(address account) external view returns (address owner);
+```
+
+### `isRootKeyActive`
+
+```solidity
+/// @notice Check if the root key is still active for an account
+/// @param account The account to query
+/// @return active True if root key can sign for this account, false if ownership transferred/relinquished
+/// @dev Returns true only if accountOwner[account] == address(0)
+function isRootKeyActive(address account) external view returns (bool active);
+```
+
+## New Events
+
+```solidity
+/// @notice Emitted when account ownership is transferred or relinquished
+/// @param account The account whose ownership changed
+/// @param previousOwner The previous owner (address(0) for root key)
+/// @param newOwner The new owner (account address if relinquished, address(0) means root key)
+event OwnershipTransferred(
+    address indexed account,
+    address indexed previousOwner,
+    address indexed newOwner
+);
+```
+
+## New Errors
+
+```solidity
+/// @notice Caller is not the current owner of the account
+error NotOwner();
+
+/// @notice Cannot transfer ownership - account ownership has been relinquished
+error OwnershipRelinquished();
+
+/// @notice Cannot transfer ownership to the account's own address directly
+/// @dev Use address(0) to relinquish ownership instead
+error InvalidNewOwner();
+```
+
+## Ownership Transfer Behavior
+
+### Authorization
+
+Only the current owner can call `transferOwnership`:
+
+1. **Default state** (`accountOwner[account] == address(0)`): The root key (transaction signed by account's private key) can transfer
+2. **Transferred state** (`accountOwner[account] == someAddress`): Only `someAddress` can call (as msg.sender or via their root key)
+3. **Relinquished state** (`accountOwner[account] == account`): NO ONE can transfer - ownership is permanently disabled
+
+### Transfer Logic
+
+```solidity
+function transferOwnership(address newOwner) external {
+    address account = msg.sender;
+    address currentOwner = accountOwner[account];
+    
+    // Check authorization
+    // If currentOwner is address(0), root key is owner - checked via transactionKey
+    // If currentOwner is account itself, ownership is relinquished
+    if (currentOwner == account) {
+        revert OwnershipRelinquished();
+    }
+    
+    // For non-default ownership, the caller must be the current owner
+    if (currentOwner != address(0)) {
+        // This would be called by the owner address directly
+        // Or through the account using an access key authorized by the owner
+        // Implementation detail: check msg.sender == currentOwner
+        if (msg.sender != currentOwner) {
+            revert NotOwner();
+        }
+    } else {
+        // Default state: root key must authorize
+        // Checked via transactionKey == address(0) in precompile
+        if (transactionKey != address(0)) {
+            revert NotOwner();
+        }
+    }
+    
+    // Cannot set newOwner to account address directly - use address(0) for relinquish
+    if (newOwner == account) {
+        revert InvalidNewOwner();
+    }
+    
+    address effectiveNewOwner = newOwner;
+    if (newOwner == address(0)) {
+        // Relinquish: store account address to mark as permanently disabled
+        effectiveNewOwner = account;
+    }
+    
+    emit OwnershipTransferred(account, currentOwner, effectiveNewOwner);
+    accountOwner[account] = effectiveNewOwner;
+}
+```
+
+## Signature Verification Modifications
+
+### ecrecover Interception
+
+The protocol MUST intercept `ecrecover` (precompile at `0x01`) to check ownership status:
+
+```
+ecrecover_modified(hash, v, r, s):
+    1. recovered_address = ecrecover_original(hash, v, r, s)
+    2. if recovered_address == address(0):
+        return address(0)  // Invalid signature
+    3. owner_status = AccountKeychain.accountOwner[recovered_address]
+    4. if owner_status != address(0):
+        // Ownership transferred or relinquished - root key invalid
+        return address(0)
+    5. return recovered_address
+```
+
+**Implementation Note**: This is implemented in the EVM handler, not by modifying the actual ecrecover precompile, to maintain compatibility with low-level cryptographic uses.
+
+### P256 and WebAuthn Verification
+
+The same ownership check MUST be applied to P256 (`0x100`) and WebAuthn signature verification precompiles:
+
+```solidity
+// In P256Verify and WebAuthnVerify precompiles
+function verify(bytes32 hash, bytes signature, address expectedSigner) returns (bool) {
+    // ... existing signature verification ...
+    
+    // After verifying the cryptographic signature, check ownership
+    if (AccountKeychain.accountOwner[expectedSigner] != address(0)) {
+        return false;  // Root key disabled for this account
+    }
+    
+    return true;
+}
+```
+
+### Exposed Precompile Functions
+
+To support contracts that need to verify signatures with ownership checks, expose helper functions:
+
+```solidity
+/// @notice Verify an ECDSA signature with ownership check
+/// @param hash The message hash that was signed
+/// @param v Recovery byte
+/// @param r ECDSA signature component
+/// @param s ECDSA signature component
+/// @return signer The recovered signer address, or address(0) if invalid or ownership transferred
+function ecrecoverWithOwnershipCheck(
+    bytes32 hash,
+    uint8 v,
+    bytes32 r,
+    bytes32 s
+) external view returns (address signer);
+
+/// @notice Verify a P256 signature with ownership check
+/// @param hash The message hash
+/// @param signature The P256 signature
+/// @param expectedSigner The expected signer address
+/// @return valid True if signature is valid AND ownership not transferred
+function p256VerifyWithOwnershipCheck(
+    bytes32 hash,
+    bytes calldata signature,
+    address expectedSigner
+) external view returns (bool valid);
+
+/// @notice Verify a WebAuthn signature with ownership check
+/// @param hash The message hash
+/// @param signature The WebAuthn signature
+/// @param expectedSigner The expected signer address  
+/// @return valid True if signature is valid AND ownership not transferred
+function webauthnVerifyWithOwnershipCheck(
+    bytes32 hash,
+    bytes calldata signature,
+    address expectedSigner
+) external view returns (bool valid);
+```
+
+## Transaction Validation Changes
+
+### KeyAuthorization Extension
+
+To support same-transaction ownership transfer (similar to same-transaction access key authorization), extend `KeyAuthorization` with an optional ownership transfer field:
+
+```rust
+pub struct KeyAuthorization {
+    pub chain_id: u64,
+    pub key_type: SignatureType,
+    pub key_id: Address,
+    pub expiry: Option<u64>,
+    pub limits: Option<Vec<TokenLimit>>,
+    // NEW: Optional ownership transfer in the same transaction
+    pub new_owner: Option<Address>,  // None = access key auth, Some = ownership transfer
+}
+```
+
+**RLP Encoding (Backward Compatible):**
+
+```
+KeyAuthorization = [chain_id, key_type, key_id, expiry?, limits?, new_owner?]
+```
+
+The `new_owner` field uses RLP trailing field semantics:
+- Omitted or `0x80` (RLP null): Standard access key authorization (existing behavior)
+- `address(0)`: Ownership transfer to relinquish (store account as owner)
+- Other address: Ownership transfer to that address
+
+**Validation in Handler:**
+
+```rust
+// In validate_tempo_transaction, after KeyAuthorization signature validation
+if let Some(new_owner) = key_auth.new_owner {
+    // This is an ownership transfer, not an access key authorization
+    // Validate that root key signed the KeyAuthorization
+    // Then call AccountKeychain.transferOwnership(new_owner)
+    
+    // IMPORTANT: If new_owner is Some, key_id and other access key fields are ignored
+    // The KeyAuthorization is solely for ownership transfer
+}
+```
+
+### Same-Transaction Use Case
+
+This enables a secure migration flow:
+
+1. Root key signs `KeyAuthorization` with:
+   - `key_id`: New PQ-secure access key
+   - `new_owner`: `address(0)` (relinquish)
+2. New access key signs the transaction
+3. Protocol:
+   - Validates root key signature on `KeyAuthorization`
+   - Authorizes the new access key
+   - Transfers ownership (relinquishes root key)
+   - Executes transaction signed by new access key
+
+This atomic operation ensures the new key is authorized before the root key is disabled.
+
+## Integration with TIP-20 Permit
+
+TIP-1004 (Permit for TIP-20) MUST be updated to use ownership-aware signature verification:
+
+```solidity
+function permit(...) external {
+    // ... existing validation ...
+    
+    // Replace ecrecover with ownership-aware version
+    address recoveredSigner = AccountKeychain.ecrecoverWithOwnershipCheck(
+        digest, v, r, s
+    );
+    
+    if (recoveredSigner == address(0)) {
+        // Check EIP-1271 for smart contract wallets
+        // ...
+    } else if (recoveredSigner != owner) {
+        revert InvalidSignature();
+    }
+    
+    // ... rest of permit logic ...
+}
+```
+
+## Gas Costs
+
+| Operation | Gas Cost |
+|-----------|----------|
+| `transferOwnership` | 25,000 (storage write) |
+| `getOwner` | 2,600 (cold) / 100 (warm) |
+| `isRootKeyActive` | 2,600 (cold) / 100 (warm) |
+| `ecrecover` ownership check | +2,600 (cold) / +100 (warm) per call |
+
+---
+
+# Invariants
+
+## Ownership State Machine
+
+```
+┌─────────────────┐
+│  Default State  │
+│  owner = 0x0    │
+│  (root key)     │
+└────────┬────────┘
+         │ transferOwnership(addr)
+         ▼
+┌─────────────────┐     transferOwnership(0x0)     ┌─────────────────┐
+│ Transferred     │ ─────────────────────────────► │  Relinquished   │
+│ owner = addr    │                                │  owner = self   │
+└────────┬────────┘                                └─────────────────┘
+         │ transferOwnership(newAddr)                      │
+         ▼                                                 │
+┌─────────────────┐                                        │
+│ Transferred     │                                        │
+│ owner = newAddr │ ───────────────────────────────────────┘
+└─────────────────┘   transferOwnership(0x0)
+```
+
+- **Relinquished state is terminal**: Once `accountOwner[account] == account`, no further transfers are possible
+- **Default → Transferred → Relinquished** is the expected migration path
+- **Default → Relinquished** is also valid (direct relinquishment)
+
+## Core Invariants
+
+1. **Ownership monotonicity**: Once ownership is relinquished, it can NEVER be reclaimed
+2. **Root key invalidation**: After ownership transfer, `ecrecover` returning the account address MUST fail ownership checks
+3. **Access key preservation**: Existing access keys remain valid after ownership transfer (they don't depend on root key)
+4. **Atomic migration**: `KeyAuthorization` with `new_owner` field MUST authorize the new key before disabling the root key
+5. **Signature verification consistency**: All signature verification paths (ecrecover, P256, WebAuthn) MUST enforce ownership checks
+
+## Test Cases
+
+1. **Transfer to new owner**: Root key can transfer ownership to another address
+2. **New owner can re-transfer**: After transfer, new owner can transfer to yet another address
+3. **Relinquish via address(0)**: Transferring to address(0) marks account as relinquished
+4. **Relinquished is terminal**: After relinquish, `transferOwnership` reverts with `OwnershipRelinquished`
+5. **ecrecover invalidation**: After transfer, ecrecover with root key returns address(0)
+6. **Permit invalidation**: After transfer, TIP-20 permit signed by root key fails
+7. **Access keys still work**: After relinquish, existing access keys can still sign transactions
+8. **Same-tx migration**: `KeyAuthorization` with `new_owner` atomically authorizes key and transfers ownership
+9. **Backward compatibility**: Transactions without `new_owner` field work as before
+10. **Cannot transfer to self**: `transferOwnership(msg.sender)` reverts with `InvalidNewOwner`
+11. **Only owner can transfer**: Non-owner calling `transferOwnership` reverts with `NotOwner`
+12. **P256/WebAuthn invalidation**: After transfer, P256/WebAuthn signatures from root key fail
+13. **Gas estimation**: Verify gas costs for ownership operations
+14. **Event emission**: Verify `OwnershipTransferred` event is emitted correctly
