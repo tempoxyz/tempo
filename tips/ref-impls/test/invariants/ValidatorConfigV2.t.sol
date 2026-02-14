@@ -45,6 +45,9 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @dev Ghost tracking for total validator count (append-only, never decreases)
     uint256 private _ghostTotalCount;
 
+    /// @dev Ghost tracking for active ingress IP hashes (to match contract's IP uniqueness enforcement)
+    mapping(bytes32 => bool) private _ghostActiveIngressIpHashes;
+
     /// @dev V1 setup validators (migrated during setUp)
     address private _setupVal1 = address(0xA000);
     address private _setupVal2 = address(0xB000);
@@ -82,21 +85,31 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         validatorConfigV2.initializeIfMigrated();
         _ghostInitialized = true;
 
+        // Get migrated validators to track IPs
+        IValidatorConfigV2.Validator memory v0 = validatorConfigV2.validatorByIndex(0);
+        IValidatorConfigV2.Validator memory v1 = validatorConfigV2.validatorByIndex(1);
+
         _ghostAddress[0] = _setupVal1;
         _ghostPubKey[0] = SETUP_PUB_KEY_A;
         _ghostAddedAtHeight[0] = uint64(block.number);
         _ghostDeactivatedAtHeight[0] = 0;
+        _ghostIngress[0] = v0.ingress;
+        _ghostEgress[0] = v0.egress;
         _ghostActiveIndex[_setupVal1] = 0;
         _ghostAddressInUse[_setupVal1] = true;
         _ghostPubKeyUsed[SETUP_PUB_KEY_A] = true;
+        _ghostActiveIngressIpHashes[_extractIngressIpHash(v0.ingress)] = true;
 
         _ghostAddress[1] = _setupVal2;
         _ghostPubKey[1] = SETUP_PUB_KEY_B;
         _ghostAddedAtHeight[1] = uint64(block.number);
         _ghostDeactivatedAtHeight[1] = 0;
+        _ghostIngress[1] = v1.ingress;
+        _ghostEgress[1] = v1.egress;
         _ghostActiveIndex[_setupVal2] = 1;
         _ghostAddressInUse[_setupVal2] = true;
         _ghostPubKeyUsed[SETUP_PUB_KEY_B] = true;
+        _ghostActiveIngressIpHashes[_extractIngressIpHash(v1.ingress)] = true;
 
         _ghostTotalCount = 2;
 
@@ -245,6 +258,10 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         _ghostActiveIndex[validatorAddr] = idx;
         _ghostAddressInUse[validatorAddr] = true;
         _ghostPubKeyUsed[publicKey] = true;
+
+        // Track active ingress IP hash (IP only, without port)
+        _ghostActiveIngressIpHashes[_extractIngressIpHash(ingress)] = true;
+
         _ghostTotalCount++;
     }
 
@@ -254,7 +271,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for adding validators via vm.store (bypasses Ed25519 sig verification)
     /// @dev Tests TEMPO-VALV2-2 (append-only count), TEMPO-VALV2-3 (index assignment),
-    ///      TEMPO-VALV2-4 (height tracking)
+    ///      TEMPO-VALV2-4 (height tracking), TEMPO-VALV2-15 (IP uniqueness)
     function addValidator(uint256 validatorSeed, uint256 keySeed) external {
         address validatorAddr = _selectPotentialValidator(validatorSeed);
 
@@ -265,6 +282,10 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         string memory ingress = _generateIngress(validatorSeed);
         string memory egress = _generateEgress(validatorSeed);
+
+        // Check ingress IP uniqueness (match contract behavior - IP only, without port)
+        bytes32 ingressIpHash = _extractIngressIpHash(ingress);
+        if (_ghostActiveIngressIpHashes[ingressIpHash]) return;
 
         uint256 countBefore = _ghostTotalCount;
 
@@ -339,7 +360,12 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         try validatorConfigV2.deactivateValidator(validatorAddr) {
             vm.stopPrank();
 
+            // Update ghost state
             _ghostDeactivatedAtHeight[ghostIdx] = uint64(block.number);
+
+            // Remove ingress IP hash from active tracking
+            bytes32 ingressIpHash = _extractIngressIpHash(_ghostIngress[ghostIdx]);
+            delete _ghostActiveIngressIpHashes[ingressIpHash];
 
             IValidatorConfigV2.Validator memory v =
                 validatorConfigV2.validatorByAddress(validatorAddr);
@@ -608,6 +634,12 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         try validatorConfigV2.setIpAddresses(validatorAddr, newIngress, newEgress) {
             vm.stopPrank();
 
+            // Update ghost ingress IP tracking
+            bytes32 oldIngressIpHash = _extractIngressIpHash(_ghostIngress[ghostIdx]);
+            bytes32 newIngressIpHash = _extractIngressIpHash(newIngress);
+            delete _ghostActiveIngressIpHashes[oldIngressIpHash];
+            _ghostActiveIngressIpHashes[newIngressIpHash] = true;
+
             _ghostIngress[ghostIdx] = newIngress;
             _ghostEgress[ghostIdx] = newEgress;
 
@@ -760,11 +792,21 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         string memory ingress = _generateIngress(keySeed);
         string memory egress = _generateEgress(keySeed);
 
+        // Check ingress IP uniqueness before rotation (unless reusing same IP)
+        bytes32 oldIngressIpHash = _extractIngressIpHash(_ghostIngress[oldGhostIdx]);
+        bytes32 newIngressIpHash = _extractIngressIpHash(ingress);
+        if (newIngressIpHash != oldIngressIpHash && _ghostActiveIngressIpHashes[newIngressIpHash]) {
+            return;
+        }
+
         address caller = asValidator ? validatorAddr : _ghostOwner;
 
         vm.startPrank(caller);
         try validatorConfigV2.rotateValidator(validatorAddr, newPubKey, ingress, egress, "") {
             vm.stopPrank();
+
+            // Remove old ingress IP hash
+            delete _ghostActiveIngressIpHashes[oldIngressIpHash];
 
             _ghostDeactivatedAtHeight[oldGhostIdx] = uint64(block.number);
 
@@ -777,6 +819,10 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             _ghostEgress[newIdx] = egress;
             _ghostActiveIndex[validatorAddr] = newIdx;
             _ghostPubKeyUsed[newPubKey] = true;
+
+            // Add new ingress IP hash
+            _ghostActiveIngressIpHashes[newIngressIpHash] = true;
+
             _ghostTotalCount++;
 
             IValidatorConfigV2.Validator memory v =
@@ -821,6 +867,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         _invariantActiveValidatorSubset();
         _invariantDkgCeremonyConsistency();
         _invariantHeightTracking();
+        _invariantIpUniqueness();
     }
 
     /// @notice TEMPO-VALV2-2: Validator count only increases (append-only)
@@ -941,6 +988,64 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 );
             }
         }
+    }
+
+    /// @notice TEMPO-VALV2-15: Ingress IP uniqueness among active validators
+    /// @dev No two active validators share the same ingress IP (port is ignored)
+    function _invariantIpUniqueness() internal view {
+        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
+
+        // Check uniqueness among active validators
+        for (uint256 i = 0; i < vals.length; i++) {
+            if (vals[i].deactivatedAtHeight != 0) continue; // Skip deactivated
+
+            for (uint256 j = i + 1; j < vals.length; j++) {
+                if (vals[j].deactivatedAtHeight != 0) continue; // Skip deactivated
+
+                // Check ingress IP uniqueness (extract IP without port)
+                bytes32 ipI = _extractIngressIpHash(vals[i].ingress);
+                bytes32 ipJ = _extractIngressIpHash(vals[j].ingress);
+                assertTrue(
+                    ipI != ipJ, "TEMPO-VALV2-15: Active validators must have unique ingress IPs"
+                );
+
+                // Note: egress uniqueness is NOT enforced
+            }
+        }
+    }
+
+    /// @dev Helper to extract and hash IP from ingress (ip:port -> keccak256(ip))
+    function _extractIngressIpHash(string memory ingress) internal pure returns (bytes32) {
+        bytes memory b = bytes(ingress);
+        if (b.length == 0) return keccak256(b);
+
+        // IPv6 format: [ip]:port -> extract ip
+        if (b[0] == "[") {
+            for (uint256 i = 1; i < b.length; i++) {
+                if (b[i] == "]") {
+                    bytes memory ip = new bytes(i - 1);
+                    for (uint256 j = 1; j < i; j++) {
+                        ip[j - 1] = b[j];
+                    }
+                    return keccak256(ip);
+                }
+            }
+            return keccak256(b); // Malformed
+        }
+
+        // IPv4 format: ip:port -> extract ip
+        for (uint256 i = 0; i < b.length; i++) {
+            if (b[i] == ":") {
+                bytes memory ip = new bytes(i);
+                for (uint256 j = 0; j < i; j++) {
+                    ip[j] = b[j];
+                }
+                return keccak256(ip);
+            }
+        }
+
+        // No port found
+        return keccak256(b);
     }
 
 }
