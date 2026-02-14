@@ -449,7 +449,7 @@ pub fn validate_tick_spacing(tick: i16) -> Result<()> {
 mod tests {
     use super::*;
     use crate::error::TempoPrecompileError;
-    use rand_08::Rng;
+    use rand::Rng;
 
     use alloy::primitives::address;
 
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_validate_tick_spacing() {
-        let mut rng = rand_08::thread_rng();
+        let mut rng = rand::rng();
 
         assert!(validate_tick_spacing(0).is_ok());
         assert!(validate_tick_spacing(10).is_ok());
@@ -553,13 +553,13 @@ mod tests {
         assert!(validate_tick_spacing(MAX_TICK).is_ok());
 
         for _ in 0..100 {
-            let tick = rng.gen_range(MIN_TICK..=MAX_TICK) * TICK_SPACING;
+            let tick = rng.random_range(MIN_TICK..=MAX_TICK) * TICK_SPACING;
             assert!(validate_tick_spacing(tick).is_ok());
         }
 
         for _ in 0..100 {
-            let offset = rng.gen_range(1..TICK_SPACING);
-            let base = rng.gen_range(MIN_TICK..=MAX_TICK) * TICK_SPACING;
+            let offset = rng.random_range(1..TICK_SPACING);
+            let base = rng.random_range(MIN_TICK..=MAX_TICK) * TICK_SPACING;
             let tick = base + offset;
             assert!(validate_tick_spacing(tick).is_err());
         }

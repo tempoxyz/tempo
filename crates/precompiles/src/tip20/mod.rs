@@ -850,7 +850,7 @@ pub(crate) mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, setup_storage},
     };
-    use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
+    use rand::{Rng, distr::Alphanumeric, rng};
 
     #[test]
     fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {
@@ -1482,8 +1482,8 @@ pub(crate) mod tests {
 
         StorageCtx::enter(&mut storage, || {
             for _ in 0..50 {
-                let currency: String = thread_rng()
-                    .sample_iter(&Alphanumeric)
+                let currency: String = rng()
+                    .sample_iter(Alphanumeric)
                     .take(31)
                     .map(char::from)
                     .collect();
@@ -1536,8 +1536,8 @@ pub(crate) mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let currency: String = thread_rng()
-                .sample_iter(&Alphanumeric)
+            let currency: String = rng()
+                .sample_iter(Alphanumeric)
                 .take(31)
                 .map(char::from)
                 .collect();
@@ -1570,8 +1570,8 @@ pub(crate) mod tests {
                 .apply()?;
 
             // Create non USD token
-            let currency_1: String = thread_rng()
-                .sample_iter(&Alphanumeric)
+            let currency_1: String = rng()
+                .sample_iter(Alphanumeric)
                 .take(31)
                 .map(char::from)
                 .collect();
@@ -1581,8 +1581,8 @@ pub(crate) mod tests {
                 .apply()?;
 
             // Create a non USD token with non USD quote token
-            let currency_2: String = thread_rng()
-                .sample_iter(&Alphanumeric)
+            let currency_2: String = rng()
+                .sample_iter(Alphanumeric)
                 .take(31)
                 .map(char::from)
                 .collect();
@@ -1604,8 +1604,8 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let _path_usd = TIP20Setup::path_usd(admin).apply()?;
 
-            let currency: String = thread_rng()
-                .sample_iter(&Alphanumeric)
+            let currency: String = rng()
+                .sample_iter(Alphanumeric)
                 .take(31)
                 .map(char::from)
                 .collect();
@@ -1854,9 +1854,9 @@ pub(crate) mod tests {
             assert_eq!(token.transfer_policy_id()?, 1);
 
             // Test random invalid policy IDs should fail
-            let mut rng = rand_08::thread_rng();
+            let mut rng = rand::rng();
             for _ in 0..20 {
-                let invalid_policy_id = rng.gen_range(2..u64::MAX);
+                let invalid_policy_id = rng.random_range(2..u64::MAX);
                 let result = token.change_transfer_policy_id(
                     admin,
                     ITIP20::changeTransferPolicyIdCall {
