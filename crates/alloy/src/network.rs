@@ -557,4 +557,22 @@ mod tests {
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);
     }
+
+    #[test]
+    fn output_tx_type_nonce_key_is_aa() {
+        let req = TempoTransactionRequest {
+            nonce_key: Some(U256::from(1)),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_fee_token_is_aa() {
+        let req = TempoTransactionRequest {
+            fee_token: Some(Address::repeat_byte(0x01)),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
 }

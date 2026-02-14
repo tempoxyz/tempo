@@ -521,4 +521,93 @@ mod tests {
         assert_eq!(chainspec.tempo_hardfork_at(1000), TempoHardfork::T2);
         assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
     }
+
+    #[test]
+    fn test_general_gas_limit_at_pre_t1() {
+        // testnet has no T0/T1 activation — should use fallback formula
+        let chainspec = super::TempoChainSpecParser::parse("testnet")
+            .expect("the testnet chainspec must always be well formed");
+
+        // (100 - 20) / 2 = 40
+        assert_eq!(chainspec.general_gas_limit_at(0, 100, 20), 40);
+        // (60_000_000 - 0) / 2 = 30_000_000
+        assert_eq!(chainspec.general_gas_limit_at(0, 60_000_000, 0), 30_000_000);
+        // Verify it's actually division not modulo/multiplication
+        assert_eq!(chainspec.general_gas_limit_at(0, 200, 0), 100);
+        // Verify subtraction, not addition
+        assert_eq!(chainspec.general_gas_limit_at(0, 100, 0), 50);
+    }
+
+    #[test]
+    fn test_general_gas_limit_at_t1() {
+        // dev has all hardforks active at 0
+        let chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+
+        // Should return fixed TEMPO_T1_GENERAL_GAS_LIMIT regardless of inputs
+        assert_eq!(
+            chainspec.general_gas_limit_at(0, 999, 999),
+            super::TEMPO_T1_GENERAL_GAS_LIMIT
+        );
+        assert_eq!(
+            chainspec.general_gas_limit_at(0, 0, 0),
+            super::TEMPO_T1_GENERAL_GAS_LIMIT
+        );
+    }
+
+    #[test]
+    fn test_bootnodes_per_chain() {
+        use reth_chainspec::EthChainSpec;
+
+        let presto = super::PRESTO.clone();
+        let andantino = super::ANDANTINO.clone();
+        let moderato = super::MODERATO.clone();
+
+        assert!(presto.bootnodes().is_some(), "presto should have bootnodes");
+        assert!(
+            andantino.bootnodes().is_some(),
+            "andantino should have bootnodes"
+        );
+        assert!(
+            moderato.bootnodes().is_some(),
+            "moderato should have bootnodes"
+        );
+
+        assert!(
+            !presto.bootnodes().unwrap().is_empty(),
+            "presto bootnodes should not be empty"
+        );
+        assert!(
+            !andantino.bootnodes().unwrap().is_empty(),
+            "andantino bootnodes should not be empty"
+        );
+        assert!(
+            !moderato.bootnodes().unwrap().is_empty(),
+            "moderato bootnodes should not be empty"
+        );
+    }
+
+    #[test]
+    fn test_from_genesis_timestamp_millis_part() {
+        use alloy_genesis::Genesis;
+
+        // timestamp 1234567890 => 1234567890 % 1000 = 890
+        let genesis: Genesis = serde_json::from_str(
+            r#"{
+                "config": {
+                    "chainId": 9999
+                },
+                "timestamp": "0x499602D2",
+                "alloc": {}
+            }"#,
+        )
+        .unwrap();
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        assert_eq!(
+            chainspec.inner.genesis_header().timestamp_millis_part,
+            890,
+            "timestamp_millis_part should be timestamp % 1000"
+        );
+    }
 }
