@@ -543,6 +543,16 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Logs final state summary after invariant run
     function afterInvariant() public {
+        // Vacuity warnings — log when handlers were never exercised
+        _logVacuity(_totalProtocolNonceRejections, "NON4 protocol nonce rejection");
+        _logVacuity(_totalAccountIndependenceChecks, "NON5 account independence");
+        _logVacuity(_totalKeyIndependenceChecks, "NON6 key independence");
+        _logVacuity(_totalLargeKeyTests, "NON7 large key");
+        _logVacuity(_totalMultipleIncrements, "NON8 multiple increments");
+        _logVacuity(_totalOverflowTests, "NON9 overflow");
+        _logVacuity(_totalInvalidKeyRejections, "NON10 invalid key increment");
+        _logVacuity(_totalReservedKeyTests, "NON11 reserved key");
+
         if (!_loggingEnabled) return;
 
         _log("");

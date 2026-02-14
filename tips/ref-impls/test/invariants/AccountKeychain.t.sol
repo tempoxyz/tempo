@@ -53,6 +53,13 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     uint256 private _totalKeysAuthorized;
     uint256 private _totalKeysRevoked;
     uint256 private _totalLimitUpdates;
+    uint256 private _totalZeroKeyRejections;
+    uint256 private _totalDuplicateKeyRejections;
+    uint256 private _totalRevokedKeyReauthRejections;
+    uint256 private _totalNonExistentKeyRevocations;
+    uint256 private _totalExpiryBoundaryTests;
+    uint256 private _totalExpiredKeyOpTests;
+    uint256 private _totalInvalidSigTypeTests;
 
     /// @dev Coverage log file path
 
@@ -438,6 +445,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
+        _totalRevokedKeyReauthRejections++;
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -543,6 +552,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
+        _totalZeroKeyRejections++;
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -583,6 +594,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
+        _totalDuplicateKeyRejections++;
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -622,6 +635,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 "TEMPO-KEY9: Should revert with KeyNotFound"
             );
         }
+
+        _totalNonExistentKeyRevocations++;
 
         if (_loggingEnabled) {
             _log(
@@ -832,6 +847,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 );
             }
 
+            _totalExpiryBoundaryTests++;
+
             if (_loggingEnabled) {
                 _log(
                     string.concat(
@@ -893,6 +910,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             );
         }
 
+        _totalExpiredKeyOpTests++;
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -953,6 +972,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 "TEMPO-KEY19: Should revert with InvalidSignatureType"
             );
         }
+
+        _totalInvalidSigTypeTests++;
 
         if (_loggingEnabled) {
             _log(
@@ -1042,6 +1063,15 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Called after each invariant run to log final state
     function afterInvariant() public {
+        // Vacuity warnings — log when negative-case handlers were never exercised
+        _logVacuity(_totalZeroKeyRejections, "KEY7 zero key rejection");
+        _logVacuity(_totalDuplicateKeyRejections, "KEY8 duplicate key rejection");
+        _logVacuity(_totalRevokedKeyReauthRejections, "KEY4 revoked key reauthorization");
+        _logVacuity(_totalNonExistentKeyRevocations, "KEY5 non-existent key revocation");
+        _logVacuity(_totalExpiryBoundaryTests, "KEY17 expiry boundary");
+        _logVacuity(_totalExpiredKeyOpTests, "KEY18 expired key operations");
+        _logVacuity(_totalInvalidSigTypeTests, "KEY19 invalid signature type");
+
         if (!_loggingEnabled) return;
 
         // Count total keys across all accounts

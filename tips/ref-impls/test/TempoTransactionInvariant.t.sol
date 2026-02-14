@@ -183,6 +183,22 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             "Calls + Creates should equal total executed"
         );
 
+        // Vacuity warnings — log when negative-case handlers were never exercised
+        _logVacuity(ghost_replayProtocolAttempted, "N12 replay protocol nonce");
+        _logVacuity(ghost_replay2dAttempted, "N13 replay 2D nonce");
+        _logVacuity(ghost_nonceTooHighAttempted, "N14 nonce too high");
+        _logVacuity(ghost_nonceTooLowAttempted, "N15 nonce too low");
+        _logVacuity(ghost_createNotFirstAttempted, "C1 create-not-first");
+        _logVacuity(ghost_createMultipleAttempted, "C2 multiple-create");
+        _logVacuity(ghost_createWithAuthAttempted, "C3 create-with-auth");
+        _logVacuity(ghost_createWithValueAttempted, "C4 create-with-value");
+        _logVacuity(ghost_createOversizedAttempted, "C8 oversized-initcode");
+        _logVacuity(ghost_expiringNonceReplayAttempted, "E1 expiring nonce replay");
+        _logVacuity(ghost_expiringNonceExpiredAttempted, "E2 expiring nonce expired");
+        _logVacuity(ghost_expiringNonceWindowAttempted, "E3 expiring nonce window");
+        _logVacuity(ghost_expiringNonceNonZeroAttempted, "E4 expiring nonce non-zero");
+        _logVacuity(ghost_expiringNonceMissingVBAttempted, "E5 expiring nonce missing validBefore");
+
         // Replay protection invariants (N12-N15)
         assertEq(ghost_replayProtocolAllowed, 0, "N12: Protocol nonce replay unexpectedly allowed");
         assertEq(ghost_replay2dAllowed, 0, "N13: 2D nonce replay unexpectedly allowed");

@@ -522,6 +522,13 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
     /// @notice Called after each invariant run to log final state
     function afterInvariant() public {
+        // Vacuity warnings — log when negative-case handlers were never exercised
+        _logVacuity(_totalReservedAttempts, "FAC5 reserved address (getTokenAddress)");
+        _logVacuity(_totalReservedCreateAttempts, "FAC5 reserved address (createToken)");
+        _logVacuity(_totalDuplicateAttempts, "FAC3 duplicate token");
+        _logVacuity(_totalInvalidQuoteAttempts, "FAC4 invalid quote token");
+        _logVacuity(_totalUsdWithNonUsdQuoteRejected, "FAC7 USD with non-USD quote");
+
         if (!_loggingEnabled) return;
 
         _log("");

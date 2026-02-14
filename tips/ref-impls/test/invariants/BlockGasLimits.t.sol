@@ -129,6 +129,13 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
         }
     }
 
+    /// @notice Called after each invariant run to check vacuity
+    function afterInvariant() public view {
+        // Vacuity warnings — log when handlers were never exercised
+        _logVacuity(ghost_txGasCapTests, "BLOCK3 tx gas cap enforcement");
+        _logVacuity(ghost_deploymentTests, "BLOCK6 max deployment fits");
+    }
+
     /*//////////////////////////////////////////////////////////////
                             HANDLERS
     //////////////////////////////////////////////////////////////*/

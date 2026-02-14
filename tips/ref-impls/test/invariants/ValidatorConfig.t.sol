@@ -25,6 +25,15 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
     /// @dev Ghost tracking for owner
     address private _ghostOwner;
 
+    /// @dev Counters for negative-case handlers
+    uint256 private _totalUnauthorizedAddAttempts;
+    uint256 private _totalOwnerUpdateAttempts;
+    uint256 private _totalValidatorStatusChangeAttempts;
+    uint256 private _totalUnauthorizedOwnerChangeAttempts;
+    uint256 private _totalDuplicateValidatorAttempts;
+    uint256 private _totalZeroPublicKeyAttempts;
+    uint256 private _totalUnauthorizedDkgAttempts;
+
     /// @dev Ghost tracking for DKG ceremony
     uint64 private _ghostNextDkgCeremony;
 
@@ -157,6 +166,8 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
+        _totalUnauthorizedAddAttempts++;
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -245,6 +256,8 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
+        _totalOwnerUpdateAttempts++;
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -318,6 +331,8 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
+        _totalValidatorStatusChangeAttempts++;
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -379,6 +394,8 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
+        _totalUnauthorizedOwnerChangeAttempts++;
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -413,6 +430,8 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
+        _totalDuplicateValidatorAttempts++;
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -446,6 +465,8 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
                 "TEMPO-VAL10: Should revert with InvalidPublicKey"
             );
         }
+
+        _totalZeroPublicKeyAttempts++;
 
         if (_loggingEnabled) {
             _log(
@@ -570,6 +591,8 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             );
         }
 
+        _totalUnauthorizedDkgAttempts++;
+
         if (_loggingEnabled) {
             _log(
                 string.concat(
@@ -666,6 +689,18 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             _ghostNextDkgCeremony,
             "TEMPO-VAL12: DKG epoch should match ghost state"
         );
+    }
+
+    /// @notice Called after each invariant run to check vacuity
+    function afterInvariant() public {
+        // Vacuity warnings — log when negative-case handlers were never exercised
+        _logVacuity(_totalUnauthorizedAddAttempts, "VAL1 unauthorized add");
+        _logVacuity(_totalOwnerUpdateAttempts, "VAL4 owner update validator");
+        _logVacuity(_totalValidatorStatusChangeAttempts, "VAL8 validator change own status");
+        _logVacuity(_totalUnauthorizedOwnerChangeAttempts, "VAL14 unauthorized owner change");
+        _logVacuity(_totalDuplicateValidatorAttempts, "VAL9 duplicate validator");
+        _logVacuity(_totalZeroPublicKeyAttempts, "VAL10 zero public key");
+        _logVacuity(_totalUnauthorizedDkgAttempts, "VAL13 unauthorized DKG ceremony");
     }
 
     /*//////////////////////////////////////////////////////////////

@@ -6,6 +6,7 @@ import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { ITIP20RolesAuth } from "../../src/interfaces/ITIP20RolesAuth.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
 import { BaseTest } from "../BaseTest.t.sol";
+import { console } from "forge-std/console.sol";
 
 /// @title Invariant Base Test
 /// @notice Shared test infrastructure for invariant testing of Tempo precompiles
@@ -371,6 +372,13 @@ abstract contract InvariantBaseTest is BaseTest {
             );
         }
         _log(balanceStr);
+    }
+
+    /// @dev Logs a vacuity warning if a counter is zero (handler was never exercised)
+    function _logVacuity(uint256 counter, string memory label) internal view {
+        if (counter == 0) {
+            console.log(string.concat("VACUITY WARNING: ", label, " never attempted"));
+        }
     }
 
     /*//////////////////////////////////////////////////////////////

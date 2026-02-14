@@ -6,6 +6,7 @@ import { BaseTest } from "../BaseTest.t.sol";
 import { ActorManager } from "./ActorManager.sol";
 import { GhostState } from "./GhostState.sol";
 import { TxBuilder } from "./TxBuilder.sol";
+import { console } from "forge-std/console.sol";
 import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
 
 /// @title InvariantBase - Combined Base Contract for Invariant Tests
@@ -182,6 +183,15 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
     function _transferFeeTokens(address from, address to, uint256 amount) internal {
         vm.prank(from);
         feeToken.transfer(to, amount);
+    }
+
+    // ============ Vacuity Helpers ============
+
+    /// @dev Logs a vacuity warning if a counter is zero (handler was never exercised)
+    function _logVacuity(uint256 counter, string memory label) internal view {
+        if (counter == 0) {
+            console.log(string.concat("VACUITY WARNING: ", label, " never attempted"));
+        }
     }
 
 }

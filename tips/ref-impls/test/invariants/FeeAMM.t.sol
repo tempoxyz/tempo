@@ -1239,6 +1239,14 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @notice Called after each invariant run to log final state
     function afterInvariant() public {
+        // Vacuity warnings — log when handlers were never exercised
+        _logVacuity(_totalMints, "AMM mint");
+        _logVacuity(_totalBurns, "AMM burn");
+        _logVacuity(_totalRebalanceSwaps, "AMM rebalance swap");
+        _logVacuity(_totalFeeCollections, "AMM fee collection");
+        _logVacuity(_totalMintBurnCycles, "AMM mint/burn cycles");
+        _logVacuity(_totalSmallRebalanceSwaps, "AMM small rebalance swaps");
+
         // TEMPO-AMM24: All participants can exit - simulate full withdrawal
         _verifyAllCanExit();
 
