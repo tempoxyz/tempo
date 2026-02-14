@@ -181,9 +181,10 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
             // Over-cap tx was accepted - VIOLATION
             ghost_txOverCapViolations++;
             ghost_protocolNonce[sender]++;
-        } catch {
-            // Expected: rejected
-            ghost_txOverCapRejected++;
+        } catch (bytes memory reason) {
+            if (_isGasCapRevert(reason)) {
+                ghost_txOverCapRejected++;
+            }
         }
     }
 
@@ -240,6 +241,19 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
     /*//////////////////////////////////////////////////////////////
                             HELPERS
     //////////////////////////////////////////////////////////////*/
+
+    /// @notice Check if revert reason indicates a gas cap violation
+    function _isGasCapRevert(bytes memory reason) internal view returns (bool) {
+        if (reason.length < 4) return false;
+        if (bytes4(reason) != bytes4(keccak256("Error(string)"))) return false;
+
+        bytes memory payload = new bytes(reason.length - 4);
+        for (uint256 i = 0; i < payload.length; i++) {
+            payload[i] = reason[i + 4];
+        }
+        string memory msg_ = abi.decode(payload, (string));
+        return vm.contains(msg_, "is greater than the cap");
+    }
 
     /// @notice Create initcode that deploys a contract of target runtime size
     /// @param targetSize Target runtime bytecode size
