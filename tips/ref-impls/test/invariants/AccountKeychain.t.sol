@@ -1505,101 +1505,132 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for verifying account isolation
     /// @dev Tests TEMPO-KEY10 (keys are isolated per account)
-    function verifyAccountIsolation(
+    ///      Snapshots all actors' view state for a keyId, authorizes the key for two
+    ///      actors with distinct settings, then asserts every other actor is unchanged.
+    function handler_checkAccountIsolation(
         uint256 account1Seed,
         uint256 account2Seed,
-        uint256 keyIdSeed
+        uint256 keyIdSeed,
+        uint256 tokenSeed,
+        uint256 limit1Seed,
+        uint256 limit2Seed
     )
         external
     {
         address account1 = _selectActor(account1Seed);
         address account2 = _selectActorExcluding(account2Seed, account1);
-
         address keyId = _selectKeyId(keyIdSeed);
 
-        // Skip if either account has this key already
-        if (_ghostKeyExists[account1][keyId] || _ghostKeyRevoked[account1][keyId]) {
-            return;
-        }
-        if (_ghostKeyExists[account2][keyId] || _ghostKeyRevoked[account2][keyId]) {
-            return;
+        if (_ghostKeyExists[account1][keyId] || _ghostKeyRevoked[account1][keyId]) return;
+        if (_ghostKeyExists[account2][keyId] || _ghostKeyRevoked[account2][keyId]) return;
+        if (_tokens.length == 0) return;
+
+        address token = _selectToken(tokenSeed);
+
+        uint256 initialLimit1 = bound(limit1Seed, 1, 1_000_000) * 1e6;
+        uint256 initialLimit2 = bound(limit2Seed, 1, 1_000_000) * 1e6;
+        if (initialLimit2 == initialLimit1) {
+            initialLimit2 = initialLimit2 == 1_000_000 * 1e6 ? initialLimit2 - 1e6 : initialLimit2 + 1e6;
         }
 
-        // Need at least one token for limits
-        if (_tokens.length == 0) {
-            return;
+        IAccountKeychain.SignatureType sigType1 = _generateSignatureType(limit1Seed);
+        IAccountKeychain.SignatureType sigType2 = IAccountKeychain.SignatureType((uint8(sigType1) + 1) % 3);
+
+        uint64 expiry1 = _generateValidAuthorizeExpiry(limit1Seed);
+        uint64 expiry2 = _generateValidAuthorizeExpiry(limit2Seed);
+        if (expiry2 == expiry1) expiry2 = expiry1 + 1;
+
+        // Snapshot all actors' view state for this keyId before any mutations.
+        IAccountKeychain.KeyInfo[] memory keysBefore = new IAccountKeychain.KeyInfo[](_actors.length);
+        uint256[] memory limitsBefore = new uint256[](_actors.length);
+        for (uint256 a = 0; a < _actors.length; a++) {
+            keysBefore[a] = keychain.getKey(_actors[a], keyId);
+            limitsBefore[a] = keychain.getRemainingLimit(_actors[a], keyId, token);
         }
 
-        // Authorize key for account1
+        // Authorize key for account1.
         IAccountKeychain.TokenLimit[] memory limits1 = new IAccountKeychain.TokenLimit[](1);
-        limits1[0] = IAccountKeychain.TokenLimit({ token: address(_tokens[0]), amount: 1000e6 });
+        limits1[0] = IAccountKeychain.TokenLimit({ token: token, amount: initialLimit1 });
 
         vm.prank(account1);
-        keychain.authorizeKey(
-            keyId,
-            IAccountKeychain.SignatureType.P256,
-            uint64(block.timestamp + 1 days),
-            true,
-            limits1
-        );
+        keychain.authorizeKey(keyId, sigType1, expiry1, true, limits1);
 
-        // Update ghost state for account1
+        _totalKeysAuthorized++;
         _ghostKeyExists[account1][keyId] = true;
-        _ghostKeyExpiry[account1][keyId] = uint64(block.timestamp + 1 days);
+        _ghostKeyExpiry[account1][keyId] = expiry1;
         _ghostKeyEnforceLimits[account1][keyId] = true;
-        _ghostKeySignatureType[account1][keyId] = 1;
-        _ghostSpendingLimits[account1][keyId][address(_tokens[0])] = 1000e6;
+        _ghostKeySignatureType[account1][keyId] = uint8(sigType1);
+        _ghostSpendingLimits[account1][keyId][token] = initialLimit1;
 
         if (!_keyUsed[account1][keyId]) {
             _keyUsed[account1][keyId] = true;
             _accountKeys[account1].push(keyId);
         }
 
-        // Authorize same keyId for account2 with different settings
+        // Authorize same keyId for account2 with different settings.
         IAccountKeychain.TokenLimit[] memory limits2 = new IAccountKeychain.TokenLimit[](1);
-        limits2[0] = IAccountKeychain.TokenLimit({ token: address(_tokens[0]), amount: 2000e6 });
+        limits2[0] = IAccountKeychain.TokenLimit({ token: token, amount: initialLimit2 });
 
         vm.prank(account2);
-        keychain.authorizeKey(
-            keyId,
-            IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 2 days),
-            true,
-            limits2
-        );
+        keychain.authorizeKey(keyId, sigType2, expiry2, true, limits2);
 
-        // Update ghost state for account2
+        _totalKeysAuthorized++;
         _ghostKeyExists[account2][keyId] = true;
-        _ghostKeyExpiry[account2][keyId] = uint64(block.timestamp + 2 days);
+        _ghostKeyExpiry[account2][keyId] = expiry2;
         _ghostKeyEnforceLimits[account2][keyId] = true;
-        _ghostKeySignatureType[account2][keyId] = 0;
-        _ghostSpendingLimits[account2][keyId][address(_tokens[0])] = 2000e6;
+        _ghostKeySignatureType[account2][keyId] = uint8(sigType2);
+        _ghostSpendingLimits[account2][keyId][token] = initialLimit2;
 
         if (!_keyUsed[account2][keyId]) {
             _keyUsed[account2][keyId] = true;
             _accountKeys[account2].push(keyId);
         }
 
-        _totalKeysAuthorized += 2;
+        // TEMPO-KEY10: Verify the two mutated accounts and assert all others unchanged.
+        for (uint256 a = 0; a < _actors.length; a++) {
+            address actor = _actors[a];
+            IAccountKeychain.KeyInfo memory info = keychain.getKey(actor, keyId);
+            uint256 limit = keychain.getRemainingLimit(actor, keyId, token);
 
-        // TEMPO-KEY10: Verify keys are isolated
-        IAccountKeychain.KeyInfo memory info1 = keychain.getKey(account1, keyId);
-        IAccountKeychain.KeyInfo memory info2 = keychain.getKey(account2, keyId);
-
-        assertEq(uint8(info1.signatureType), 1, "TEMPO-KEY10: Account1 should have P256");
-        assertEq(uint8(info2.signatureType), 0, "TEMPO-KEY10: Account2 should have Secp256k1");
-
-        uint256 limit1 = keychain.getRemainingLimit(account1, keyId, address(_tokens[0]));
-        uint256 limit2 = keychain.getRemainingLimit(account2, keyId, address(_tokens[0]));
-
-        assertEq(limit1, 1000e6, "TEMPO-KEY10: Account1 limit should be 1000");
-        assertEq(limit2, 2000e6, "TEMPO-KEY10: Account2 limit should be 2000");
+            if (actor == account1) {
+                assertEq(info.keyId, keyId, "TEMPO-KEY10: account1 keyId mismatch");
+                assertEq(uint8(info.signatureType), uint8(sigType1), "TEMPO-KEY10: account1 sigType mismatch");
+                assertEq(info.expiry, expiry1, "TEMPO-KEY10: account1 expiry mismatch");
+                assertTrue(info.enforceLimits, "TEMPO-KEY10: account1 enforceLimits mismatch");
+                assertFalse(info.isRevoked, "TEMPO-KEY10: account1 should not be revoked");
+                assertEq(limit, initialLimit1, "TEMPO-KEY10: account1 limit mismatch");
+            } else if (actor == account2) {
+                assertEq(info.keyId, keyId, "TEMPO-KEY10: account2 keyId mismatch");
+                assertEq(uint8(info.signatureType), uint8(sigType2), "TEMPO-KEY10: account2 sigType mismatch");
+                assertEq(info.expiry, expiry2, "TEMPO-KEY10: account2 expiry mismatch");
+                assertTrue(info.enforceLimits, "TEMPO-KEY10: account2 enforceLimits mismatch");
+                assertFalse(info.isRevoked, "TEMPO-KEY10: account2 should not be revoked");
+                assertEq(limit, initialLimit2, "TEMPO-KEY10: account2 limit mismatch");
+            } else {
+                assertEq(info.keyId, keysBefore[a].keyId, "TEMPO-KEY10: unexpected keyId changed");
+                assertEq(info.expiry, keysBefore[a].expiry, "TEMPO-KEY10: unexpected expiry changed");
+                assertEq(
+                    uint8(info.signatureType),
+                    uint8(keysBefore[a].signatureType),
+                    "TEMPO-KEY10: unexpected sigType changed"
+                );
+                assertEq(
+                    info.enforceLimits,
+                    keysBefore[a].enforceLimits,
+                    "TEMPO-KEY10: unexpected enforceLimits changed"
+                );
+                assertEq(info.isRevoked, keysBefore[a].isRevoked, "TEMPO-KEY10: unexpected isRevoked changed");
+                assertEq(limit, limitsBefore[a], "TEMPO-KEY10: unexpected limit changed");
+            }
+        }
 
         if (_loggingEnabled) {
             _log(
                 string.concat(
                     "ACCOUNT_ISOLATION: keyId=",
                     vm.toString(keyId),
+                    " token=",
+                    vm.toString(token),
                     " ",
                     _getActorIndex(account1),
                     " ",
@@ -1612,7 +1643,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for checking getTransactionKey
     /// @dev Tests TEMPO-KEY11 (transaction key returns 0 when not in transaction)
-    function checkTransactionKey() external view {
+    function handler_checkTransactionKey() external view {
         // TEMPO-KEY11: When called directly, should return address(0)
         address txKey = keychain.getTransactionKey();
         assertEq(txKey, address(0), "TEMPO-KEY11: Transaction key should be 0 outside tx context");
