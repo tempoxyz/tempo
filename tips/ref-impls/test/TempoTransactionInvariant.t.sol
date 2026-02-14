@@ -226,17 +226,35 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     // normalized parity (0/1 instead of 27/28) to match Rust's Signature::write_rlp_vrs.
     // The E6 invariant handler (handler_expiringNonceSponsored) now exercises the replay property.
 
-    /// @notice Smoke test: fee payer signature RLP encoding is correct
-    /// @dev Confirms the [v, r, s] encoding fix — vm.executeTransaction no longer fails
-    ///      with "overflow" when decoding fee-payer-sponsored transactions.
-    ///      The handler catches execution-level reverts (e.g. InsufficientBalance) gracefully;
-    ///      we just verify the RLP decode succeeds by checking no revert propagates.
-    function test_feePayerSignatureDecodesCorrectly() public {
-        // This would previously fail with "failed to decode RLP-encoded transaction: overflow"
-        // Now it decodes successfully (may revert at execution level, caught by handler)
-        this.handler_expiringNonceSponsored(0, 1, 2, 1);
+    /// @notice Smoke test: sponsored fee payer tx executes successfully
+    /// @dev Confirms the full fee payer sponsorship flow works end-to-end:
+    ///      correct RLP encoding [v,r,s], correct fee payer signature hash (0x78 magic byte),
+    ///      and successful execution via vm.executeTransaction.
+    function test_sponsoredFeePayerTxExecutes() public {
         this.handler_tempoFeeSponsor(0, 1, 2, 1e6, 1);
-        // If we reach here, the RLP encoding fix is confirmed working
+        assertTrue(ghost_totalTxExecuted > 0, "Sponsored tx should have executed");
+    }
+
+    /// @notice Confirms E6 invariant detects fee payer signature malleability replay
+    /// @dev Exercises handler_expiringNonceSponsored twice with same user intent but
+    ///      different fee payers. The first tx should succeed. The second should be rejected
+    ///      by replay protection (same signature_hash). E6 counter must stay at 0.
+    function test_e6ExpiringNonceSponsoredReplayRejected() public {
+        // First sponsored expiring nonce tx should succeed
+        this.handler_expiringNonceSponsored(0, 1, 2, 1);
+        assertGt(
+            ghost_expiringNonceSponsoredExecuted, 0,
+            "First sponsored expiring nonce tx should execute"
+        );
+
+        // Second call with different fee payer but same intent
+        this.handler_expiringNonceSponsored(0, 3, 2, 1);
+
+        // E6: replay should NOT be allowed (protocol uses signature_hash for dedup)
+        assertEq(
+            ghost_expiringNonceIntentReplayAllowed, 0,
+            "E6: Intent replay should not be allowed"
+        );
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -3481,8 +3499,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
             .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(currentNonce);
 
-        bytes memory unsignedTxForFeePayer = tx_.encode(vmRlp);
-        bytes32 feePayerTxHash = keccak256(unsignedTxForFeePayer);
+        bytes32 feePayerTxHash = tx_.feePayerSignatureHash(vmRlp, sender);
 
         (uint8 fpV, bytes32 fpR, bytes32 fpS) = vm.sign(actorKeys[feePayerIdx], feePayerTxHash);
         bytes memory feePayerSig = abi.encodePacked(fpR, fpS, fpV);
@@ -4369,11 +4386,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             .withValidBefore(validBefore);
 
         // Intent hash = encoding without fee payer sig (user intent identity)
-        bytes memory unsignedEncoding = tx_.encode(vmRlp);
-        intentHash = keccak256(unsignedEncoding);
+        intentHash = keccak256(tx_.encode(vmRlp));
 
-        // Fee payer signs the unsigned encoding
-        (uint8 fpV, bytes32 fpR, bytes32 fpS) = vm.sign(actorKeys[feePayerIdx], intentHash);
+        // Fee payer signs the fee payer signature hash (0x78 || RLP with sender address)
+        address sender = actors[senderIdx];
+        bytes32 fpHash = tx_.feePayerSignatureHash(vmRlp, sender);
+        (uint8 fpV, bytes32 fpR, bytes32 fpS) = vm.sign(actorKeys[feePayerIdx], fpHash);
         bytes memory feePayerSig = abi.encodePacked(fpR, fpS, fpV);
         tx_ = tx_.withFeePayerSignature(feePayerSig);
 

@@ -753,8 +753,9 @@ library TxBuilder {
         view
         returns (bytes memory)
     {
-        bytes memory unsignedTx = tx_.encode(vmRlp);
-        bytes32 txHash = keccak256(unsignedTx);
+        // Use signingHash which handles fee payer sig correctly:
+        // skips fee_token and uses placeholder for fee payer sig field
+        bytes32 txHash = tx_.signingHash(vmRlp);
 
         if (params.strategy == SigningStrategy.Secp256k1) {
             (uint8 v, bytes32 r, bytes32 s) = vm.sign(params.privateKey, txHash);
