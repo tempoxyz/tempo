@@ -1511,8 +1511,10 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         address[] memory watchTokens = _watchTokens(token);
         KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-        // Warp to exactly the expiry timestamp.
+        // Warp to exactly the expiry timestamp, restoring afterward to avoid
+        // polluting block.timestamp for other handlers.
         // TEMPO-KEY17: timestamp >= expiry means equality counts as expired.
+        uint256 tsBefore = block.timestamp;
         vm.warp(expiry);
 
         vm.startPrank(account);
@@ -1530,6 +1532,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // Failed boundary update must not mutate key metadata or limits.
         _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY17");
+
+        vm.warp(tsBefore);
 
         if (_loggingEnabled) {
             _log(
@@ -1576,7 +1580,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         address[] memory watchTokens = _watchTokens(token);
         KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-        // Warp past expiry (1 second to 1 day past)
+        // Warp past expiry (1 second to 1 day past), restoring afterward to
+        // avoid polluting block.timestamp for other handlers.
+        uint256 tsBefore = block.timestamp;
         uint256 warpTo = expiry + 1 + (warpAmount % 1 days);
         vm.warp(warpTo);
 
@@ -1596,6 +1602,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // Failed update on an expired key must not mutate metadata or limits.
         _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY18");
+
+        vm.warp(tsBefore);
 
         if (_loggingEnabled) {
             _log(
