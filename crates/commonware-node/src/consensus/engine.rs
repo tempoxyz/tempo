@@ -19,14 +19,14 @@ use commonware_cryptography::{
     certificate::Scheme as _,
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_p2p::{Address, Blocker, Receiver, Sender};
+use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_parallel::Sequential;
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::paged::CacheRef,
     spawn_cell,
 };
 use commonware_storage::archive::immutable;
-use commonware_utils::{NZU64, ordered::Map};
+use commonware_utils::NZU64;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_08::{CryptoRng, Rng};
@@ -38,7 +38,7 @@ use crate::{
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
-    subblocks,
+    peer_manager, subblocks,
 };
 
 use super::block::Block;
@@ -97,9 +97,8 @@ pub struct Builder<TBlocker, TPeerManager> {
 
 impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
 where
-    TBlocker: Blocker<PublicKey = PublicKey>,
-    TPeerManager:
-        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>> + Sync,
+    TBlocker: Blocker<PublicKey = PublicKey> + Sync,
+    TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
     pub fn with_execution_node(mut self, execution_node: TempoFullNode) -> Self {
         self.execution_node = Some(execution_node);
@@ -109,7 +108,7 @@ where
     pub async fn try_init<TContext>(
         self,
         context: TContext,
-    ) -> eyre::Result<Engine<TBlocker, TContext, TPeerManager>>
+    ) -> eyre::Result<Engine<TContext, TBlocker, TPeerManager>>
     where
         TContext: Clock
             + governor::clock::Clock
@@ -137,6 +136,11 @@ where
             "using public ed25519 verifying key derived from provided private ed25519 signing key",
         );
 
+        let (peer_manager, peer_manager_mailbox) = peer_manager::init(peer_manager::Config {
+            execution_node: execution_node.clone(),
+            oracle: self.peer_manager.clone(),
+        });
+
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             context.with_label("broadcast"),
             buffered::Config {
@@ -155,7 +159,7 @@ where
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
-            manager: self.peer_manager.clone(),
+            provider: peer_manager_mailbox.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
             initial: Duration::from_secs(1),
@@ -371,7 +375,7 @@ where
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
-                peer_manager: self.peer_manager.clone(),
+                peer_manager: peer_manager_mailbox.clone(),
             },
         )
         .await
@@ -397,6 +401,9 @@ where
             epoch_manager,
             epoch_manager_mailbox,
 
+            peer_manager,
+            peer_manager_mailbox,
+
             feed,
 
             subblocks,
@@ -404,9 +411,8 @@ where
     }
 }
 
-pub struct Engine<TBlocker, TContext, TPeerManager>
+pub struct Engine<TContext, TBlocker, TPeerManager>
 where
-    TBlocker: Blocker<PublicKey = PublicKey>,
     TContext: Clock
         + governor::clock::Clock
         + Rng
@@ -416,7 +422,8 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>>,
+    TBlocker: Blocker<PublicKey = PublicKey>,
+    TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
     context: ContextCell<TContext>,
 
@@ -425,7 +432,7 @@ where
     broadcast: buffered::Engine<TContext, PublicKey, Block>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext, TPeerManager>,
+    dkg_manager: dkg::manager::Actor<TContext, peer_manager::Mailbox>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// Acts as the glue between the consensus and execution layers implementing
@@ -439,23 +446,25 @@ where
     executor_mailbox: crate::executor::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
-    resolver_config: marshal::resolver::p2p::Config<PublicKey, TPeerManager, TBlocker>,
+    resolver_config: marshal::resolver::p2p::Config<PublicKey, peer_manager::Mailbox, TBlocker>,
 
     /// Listens to consensus events and syncs blocks from the network to the
     /// local node.
     marshal: crate::alias::marshal::Actor<TContext>,
 
-    epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
+    epoch_manager: epoch::manager::Actor<TContext, TBlocker>,
     epoch_manager_mailbox: epoch::manager::Mailbox,
+
+    peer_manager: peer_manager::Actor<TPeerManager>,
+    peer_manager_mailbox: peer_manager::Mailbox,
 
     feed: crate::feed::Actor<TContext>,
 
     subblocks: subblocks::Actor<TContext>,
 }
 
-impl<TBlocker, TContext, TPeerManager> Engine<TBlocker, TContext, TPeerManager>
+impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
 where
-    TBlocker: Blocker<PublicKey = PublicKey>,
     TContext: Clock
         + governor::clock::Clock
         + Rng
@@ -465,8 +474,8 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager:
-        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>> + Sync,
+    TBlocker: Blocker<PublicKey = PublicKey> + Sync,
+    TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
     #[expect(
         clippy::too_many_arguments,
@@ -553,6 +562,10 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> eyre::Result<()> {
+        let peer_manager = self
+            .peer_manager
+            .start(self.context.with_label("peer_manager"));
+
         let broadcast = self.broadcast.start(broadcast_channel);
         let resolver =
             marshal::resolver::p2p::init(&self.context, self.resolver_config, marshal_channel);
@@ -563,7 +576,10 @@ where
         let marshal = self.marshal.start(
             Reporters::from((
                 self.epoch_manager_mailbox,
-                Reporters::from((self.executor_mailbox, self.dkg_manager_mailbox.clone())),
+                Reporters::from((
+                    self.executor_mailbox,
+                    Reporters::from((self.dkg_manager_mailbox.clone(), self.peer_manager_mailbox)),
+                )),
             )),
             self.broadcast_mailbox,
             resolver,
@@ -589,6 +605,7 @@ where
             feed,
             marshal,
             dkg_manager,
+            peer_manager,
             subblocks,
         ])
         .await

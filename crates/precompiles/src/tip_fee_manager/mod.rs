@@ -776,4 +776,27 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_initialize_sets_storage_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut fee_manager = TipFeeManager::new();
+
+            // Before init, should not be initialized
+            assert!(!fee_manager.is_initialized()?);
+
+            // Initialize
+            fee_manager.initialize()?;
+
+            // After init, should be initialized
+            assert!(fee_manager.is_initialized()?);
+
+            // New handle should still see initialized state
+            let fee_manager2 = TipFeeManager::new();
+            assert!(fee_manager2.is_initialized()?);
+
+            Ok(())
+        })
+    }
 }

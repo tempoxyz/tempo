@@ -48,6 +48,7 @@ tempo-dkg-onchain-artifacts.workspace = true
 reth-cli-commands.workspace = true
 reth-cli-runner.workspace = true
 reth-cli-util.workspace = true
+rustls.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
 reth-ethereum-cli.workspace = true
 reth-node-builder.workspace = true

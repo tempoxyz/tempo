@@ -1,6 +1,9 @@
-[profile.default]
+[profile.ci]
+fail-fast = false
+retries = 2
+test-threads = "num-cpus"
 
-[[profile.default.overrides]]
-filter = "test(sync::can_restart_after_joining_from_snapshot)"
-slow-timeout = { period = "60s", terminate-after = 4, on-timeout = "pass" }
-success-output = "final"
+[[profile.ci.overrides]]
+filter = "package(tempo-e2e)"
+failure-output = "never"
+threads-required = 2

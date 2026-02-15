@@ -106,6 +106,11 @@ impl PolicyData {
     fn is_compound(&self) -> bool {
         self.policy_type == PolicyType::COMPOUND as u8
     }
+
+    /// Returns `true` if the policy data is the default (uninitialized) value.
+    fn is_default(&self) -> bool {
+        self.policy_type == 0 && self.admin == Address::ZERO
+    }
 }
 
 impl TIP403Registry {
@@ -135,13 +140,16 @@ impl TIP403Registry {
         &self,
         call: ITIP403Registry::policyDataCall,
     ) -> Result<ITIP403Registry::policyDataReturn> {
-        // Check if policy exists before returning data
-        if !self.policy_exists(ITIP403Registry::policyExistsCall {
-            policyId: call.policyId,
-        })? {
+        // Check if policy exists before reading the data (spec: pre-T2)
+        if !self.storage.spec().is_t2()
+            && !self.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: call.policyId,
+            })?
+        {
             return Err(TIP403RegistryError::policy_not_found().into());
         }
 
+        // Get policy data and verify that the policy id exists (spec: +T2)
         let data = self.get_policy_data(call.policyId)?;
 
         Ok(ITIP403Registry::policyDataReturn {
@@ -515,8 +523,22 @@ impl TIP403Registry {
     }
 
     // Internal helper functions
+
+    /// Returns policy data for the given policy ID.
+    /// Errors with `PolicyNotFound` for invalid policy ids.
     fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
-        self.policy_records[policy_id].base.read()
+        let data = self.policy_records[policy_id].base.read()?;
+
+        // Verify that the policy id exists (spec: +T2).
+        // Skip the counter read (extra SLOAD) when policy data is non-default.
+        if self.storage.spec().is_t2()
+            && data.is_default()
+            && policy_id >= self.policy_id_counter()?
+        {
+            return Err(TIP403RegistryError::policy_not_found().into());
+        }
+
+        Ok(data)
     }
 
     fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
@@ -587,7 +609,7 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::{
         primitives::{Address, Log},
@@ -1936,6 +1958,126 @@ mod tests {
                 TIP403RegistryError::invalid_policy_type().into()
             );
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_policy_data_encode_to_slot_returns_correct_value() -> eyre::Result<()> {
+        let admin = Address::random();
+        let policy_data = PolicyData {
+            policy_type: 0, // WHITELIST
+            admin,
+        };
+
+        let encoded = policy_data.encode_to_slot();
+
+        // Decode it back and verify
+        let decoded = PolicyData::decode_from_slot(encoded);
+        assert_eq!(decoded.policy_type, policy_data.policy_type);
+        assert_eq!(decoded.admin, policy_data.admin);
+
+        // Verify encoded is NOT default (all zeros)
+        assert_ne!(
+            encoded,
+            U256::ZERO,
+            "encode_to_slot should return non-default value for valid policy data"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_initialize_sets_storage_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Before init, should not be initialized
+            assert!(!registry.is_initialized()?);
+
+            // Initialize
+            registry.initialize()?;
+
+            // After init, should be initialized
+            assert!(registry.is_initialized()?);
+
+            // New handle should still see initialized state
+            let registry2 = TIP403Registry::new();
+            assert!(registry2.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_policy_exists_boundary_at_counter() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create a policy to get policy_id = 2 (counter starts at 2)
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+
+            // The counter should now be 3
+            let counter = registry.policy_id_counter()?;
+            assert_eq!(counter, 3);
+
+            // Policy at counter - 1 should exist
+            assert!(registry.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: policy_id,
+            })?);
+
+            // Policy at exactly counter should NOT exist (tests < vs <=)
+            assert!(
+                !registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: counter })?
+            );
+
+            // Policy at counter + 1 should NOT exist
+            assert!(!registry.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: counter + 1,
+            })?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_nonexistent_policy_behavior() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let user = Address::random();
+        let nonexistent_id = 999;
+
+        // Pre-T2: silently returns default data / false
+        StorageCtx::enter(&mut storage, || -> Result<()> {
+            let registry = TIP403Registry::new();
+            let data = registry.get_policy_data(nonexistent_id)?;
+            assert!(data.is_default());
+            assert!(!registry.is_authorized_as(nonexistent_id, user, AuthRole::Transfer)?);
+            Ok(())
+        })?;
+
+        // T2: reverts with `PolicyNotFound`
+        let mut storage = storage.with_spec(TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+            assert_eq!(
+                registry.get_policy_data(nonexistent_id).unwrap_err(),
+                TIP403RegistryError::policy_not_found().into()
+            );
+            assert_eq!(
+                registry
+                    .is_authorized_as(nonexistent_id, user, AuthRole::Transfer)
+                    .unwrap_err(),
+                TIP403RegistryError::policy_not_found().into()
+            );
             Ok(())
         })
     }

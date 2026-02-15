@@ -15,15 +15,16 @@ use reth_transaction_pool::{
 };
 use revm::database::BundleAccount;
 use std::{
-    cell::RefCell,
     collections::{
         BTreeMap, BTreeSet,
         Bound::{Excluded, Unbounded},
         btree_map::Entry,
         hash_map,
     },
-    rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
@@ -151,11 +152,6 @@ impl AA2dPool {
             .aa_transaction_id()
             .expect("Transaction added to AA2D pool must be an AA transaction");
 
-        // Cache the nonce key slot for reverse lookup, if this transaction uses 2D nonce.
-        if transaction.transaction.is_aa_2d() {
-            self.record_2d_slot(&transaction.transaction);
-        }
-
         if transaction.nonce() < on_chain_nonce {
             // outdated transaction
             return Err(PoolError::new(
@@ -177,7 +173,7 @@ impl AA2dPool {
                     .priority(&transaction.transaction, hardfork.base_fee()),
                 transaction: transaction.clone(),
             },
-            is_pending: Rc::new(RefCell::new(false)),
+            is_pending: AtomicBool::new(false),
         });
 
         // Use entry API once to both check for replacement and insert.
@@ -216,6 +212,13 @@ impl AA2dPool {
                 None
             }
         };
+
+        // Cache the nonce key slot for reverse lookup, if this transaction uses 2D nonce.
+        // This must happen after successful by_id insertion to avoid leaking slot entries
+        // when the transaction is rejected (e.g., by per-sender limit or replacement check).
+        if transaction.transaction.is_aa_2d() {
+            self.record_2d_slot(&transaction.transaction);
+        }
 
         // clean up replaced
         if let Some(replaced) = &replaced {
@@ -1352,7 +1355,7 @@ impl Default for AA2dPoolConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct AA2dInternalTransaction {
     /// Keeps track of the transaction
     ///
@@ -1362,31 +1365,23 @@ struct AA2dInternalTransaction {
     ///
     /// If it's not pending, it is queued.
     ///
-    /// Uses `Rc<RefCell<bool>>` so we can mutate this flag without removing/reinserting
+    /// Uses `AtomicBool` so we can mutate this flag without removing/reinserting
     /// the transaction from the eviction set. This allows a single eviction set for
     /// all transactions, with pending/queued filtering done at eviction time.
-    is_pending: Rc<RefCell<bool>>,
+    is_pending: AtomicBool,
 }
 
 impl AA2dInternalTransaction {
     /// Returns whether this transaction is pending/executable.
     fn is_pending(&self) -> bool {
-        *self.is_pending.borrow()
+        self.is_pending.load(Ordering::Relaxed)
     }
 
     /// Sets the pending status of this transaction, returning the previous value.
     fn set_pending(&self, pending: bool) -> bool {
-        std::mem::replace(&mut *self.is_pending.borrow_mut(), pending)
+        self.is_pending.swap(pending, Ordering::Relaxed)
     }
 }
-
-// SAFETY: `AA2dInternalTransaction` contains `Rc<RefCell<bool>>` which is not `Send`/`Sync`.
-// However, `AA2dPool` is only ever accessed through `Arc<RwLock<AA2dPool>>`, meaning:
-// - All reads require holding the read lock (shared access to the pool, no mutation of is_pending)
-// - All writes require holding the write lock (exclusive access, single consumer)
-// Since we never have concurrent access to `is_pending`, this is safe.
-unsafe impl Send for AA2dInternalTransaction {}
-unsafe impl Sync for AA2dInternalTransaction {}
 
 /// Key for ordering transactions by eviction priority.
 ///
@@ -2682,12 +2677,10 @@ mod tests {
         // All should be pending
         for nonce in 0..=4 {
             assert!(
-                *pool
-                    .by_id
+                pool.by_id
                     .get(&AA2dTransactionId::new(seq_id, nonce))
                     .unwrap()
-                    .is_pending
-                    .borrow()
+                    .is_pending()
             );
         }
 
@@ -5212,6 +5205,67 @@ mod tests {
 
         let (pending, _) = pool.pending_and_queued_txn_count();
         assert_eq!(pending, 0);
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_rejected_2d_tx_does_not_leak_slot_entries() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 1000,
+                max_size: usize::MAX,
+            },
+            max_txs_per_sender: 1,
+        };
+        let mut pool = AA2dPool::new(config);
+        let sender = Address::random();
+
+        let tx0 = TxBuilder::aa(sender)
+            .nonce_key(U256::from(1))
+            .nonce(0)
+            .build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        assert_eq!(pool.slot_to_seq_id.len(), 1);
+        assert_eq!(pool.seq_id_to_slot.len(), 1);
+
+        for i in 2..12u64 {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::from(i))
+                .nonce(0)
+                .build();
+            let result = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
+            assert!(
+                result.is_err(),
+                "tx with nonce_key {i} should be rejected by sender limit"
+            );
+        }
+
+        assert_eq!(
+            pool.slot_to_seq_id.len(),
+            1,
+            "rejected txs with new nonce keys should not grow slot_to_seq_id"
+        );
+        assert_eq!(
+            pool.seq_id_to_slot.len(),
+            1,
+            "rejected txs with new nonce keys should not grow seq_id_to_slot"
+        );
+
         pool.assert_invariants();
     }
 }

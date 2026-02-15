@@ -12,6 +12,7 @@ pub(crate) mod epoch;
 pub(crate) mod executor;
 pub mod feed;
 pub mod metrics;
+pub(crate) mod peer_manager;
 pub(crate) mod utils;
 
 pub(crate) mod subblocks;
@@ -90,6 +91,7 @@ pub async fn run_consensus_stack(
         execution_node: Some(execution_node),
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),
+
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
         signer: signing_key.into_inner(),
