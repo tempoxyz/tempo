@@ -84,7 +84,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         selectors[6] = this.handler_multipleIncrements.selector;
         selectors[7] = this.handler_nonceOverflow.selector;
         selectors[8] = this.handler_invalidNonceKeyIncrement.selector;
-        selectors[9] = this.testReservedExpiringNonceKey.selector;
+        selectors[9] = this.handler_testReservedExpiringNonceKey.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         _setupInvariantBase();
@@ -1107,31 +1107,174 @@ contract NonceInvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice Handler for testing reserved TEMPO_EXPIRING_NONCE_KEY readability
-    /// @dev Tests TEMPO-NON11 (reserved key type(uint256).max is readable via getNonce)
-    /// @dev Expiring nonces use tx-hash-based replay protection (separate storage). This
-    ///      test verifies the key is accessible and returns 0 for uninitialized accounts.
-    function testReservedExpiringNonceKey(uint256 actorSeed) external {
-        address actor = _selectActor(actorSeed);
+    /// @notice Handler for testing reserved TEMPO_EXPIRING_NONCE_KEY behavior
+    /// @dev Tests TEMPO-NON11 (reserved key type(uint256).max):
+    ///      - Readable via getNonce (returns value from 2D nonce mapping)
+    ///      - Reads are idempotent (no side effects)
+    ///      - Reading does not touch expiring nonce storage (slots 1-3)
+    ///      - Reading does not touch adjacent keys or other accounts
+    ///      - Raw storage consistency (no dirty high bits)
+    ///      - Ghost state consistency
+    /// @dev Expiring nonces use tx-hash-based replay protection in separate storage
+    ///      (expiringNonceSeen, expiringNonceRing, expiringNonceRingPtr). The 2D nonce
+    ///      slot at nonces[account][uint256.max] is independent of that mechanism.
+    function handler_testReservedExpiringNonceKey(
+        uint256 actorSeed,
+        uint256 normalKeySeed,
+        uint256 otherActorSeed
+    )
+        external
+    {
+        // --- Select account: broaden domain beyond _actors ---
+        address account;
+        uint256 branch = actorSeed % 8;
+        if (branch == 0) {
+            account = address(0);
+        } else if (branch == 1) {
+            account = address(this);
+        } else if (branch == 2) {
+            account = _NONCE;
+        } else {
+            account = _selectActor(actorSeed);
+        }
+
         uint256 reservedKey = type(uint256).max;
 
-        // TEMPO-NON11: Reserved key should be readable (returns 0 for uninitialized)
-        // The key is reserved for expiring nonces but reading it works
-        uint64 result = nonce.getNonce(actor, reservedKey);
+        // --- Snapshot reserved key: raw storage + ghost ---
 
-        // For uninitialized, it should return 0
-        // (We don't track this in ghost state since it's reserved)
-        assertEq(result, 0, "TEMPO-NON11: Reserved key should return 0 for uninitialized");
+        bytes32 reservedSlot = _getNonceSlot(account, reservedKey);
+        bytes32 rawBefore = vm.load(_NONCE, reservedSlot);
+        uint64 ghostBefore = _ghostNonces[account][reservedKey];
+
+        // TEMPO-NON2: Raw storage must match ghost before read
+        assertEq(
+            rawBefore,
+            bytes32(uint256(ghostBefore)),
+            "TEMPO-NON11: Raw storage mismatch vs ghost before read"
+        );
+
+        // --- Snapshot adjacent/cross-account slots for isolation ---
+
+        uint256 normalKey = _selectNonceKey(normalKeySeed);
+        bytes32 normalSlot = _getNonceSlot(account, normalKey);
+        bytes32 normalBefore = vm.load(_NONCE, normalSlot);
+
+        // Adjacent large key (uint256.max - 1) for near-neighbor isolation
+        bytes32 adjacentLargeSlot = _getNonceSlot(account, type(uint256).max - 1);
+        bytes32 adjacentLargeBefore = vm.load(_NONCE, adjacentLargeSlot);
+
+        // Cross-account: same reserved key on a different account
+        address otherAccount;
+        if (branch >= 3) {
+            otherAccount = _selectActorExcluding(otherActorSeed, account);
+        } else {
+            otherAccount = _selectActor(otherActorSeed);
+        }
+        bytes32 crossSlot = _getNonceSlot(otherAccount, reservedKey);
+        bytes32 crossBefore = vm.load(_NONCE, crossSlot);
+
+        // --- Snapshot expiring nonce storage (slots 1-3) ---
+        // These should never be touched by a getNonce read.
+
+        // Slot 3: expiringNonceRingPtr (scalar at slot 3)
+        bytes32 ptrSlot = bytes32(uint256(3));
+        bytes32 ptrBefore = vm.load(_NONCE, ptrSlot);
+
+        // Slot 1 sample: expiringNonceSeen[hash] for a deterministic hash
+        bytes32 sampleTxHash = keccak256(abi.encodePacked(actorSeed, account));
+        bytes32 seenSlot = keccak256(abi.encode(sampleTxHash, uint256(1)));
+        bytes32 seenBefore = vm.load(_NONCE, seenSlot);
+
+        // Slot 2 sample: expiringNonceRing[idx] for a deterministic index
+        uint32 sampleIdx = uint32(actorSeed % 300_000);
+        bytes32 ringSlot = keccak256(abi.encode(uint256(sampleIdx), uint256(2)));
+        bytes32 ringBefore = vm.load(_NONCE, ringSlot);
+
+        // --- Read reserved key twice (idempotency) ---
+
+        uint64 v1 = nonce.getNonce(account, reservedKey);
+        uint64 v2 = nonce.getNonce(account, reservedKey);
+
+        // TEMPO-NON11: Reads must be idempotent
+        assertEq(v1, v2, "TEMPO-NON11: Read should be idempotent");
+
+        // TEMPO-NON11: Returned value must match raw storage
+        assertEq(v1, uint64(uint256(rawBefore)), "TEMPO-NON11: Return value vs raw storage mismatch");
+
+        // TEMPO-NON11: Raw storage should have no dirty high bits
+        assertEq(
+            rawBefore,
+            bytes32(uint256(v1)),
+            "TEMPO-NON11: Raw storage has dirty high bits"
+        );
+
+        // TEMPO-NON2: Returned value must match ghost state
+        assertEq(v1, ghostBefore, "TEMPO-NON11: Return value vs ghost state mismatch");
+
+        // Uninitialized-key check: if ghost is zero, value must be zero
+        if (!_nonceKeyUsed[account][reservedKey]) {
+            assertEq(v1, 0, "TEMPO-NON11: Uninitialized reserved key should be zero");
+        }
+
+        // --- Assert no side effects on 2D nonce storage ---
+
+        // Reserved slot itself unchanged
+        assertEq(
+            vm.load(_NONCE, reservedSlot),
+            rawBefore,
+            "TEMPO-NON11: Read mutated reserved key slot"
+        );
+
+        // Normal key slot unchanged
+        assertEq(
+            vm.load(_NONCE, normalSlot),
+            normalBefore,
+            "TEMPO-NON11: Read mutated normal key slot"
+        );
+
+        // Adjacent large key slot unchanged
+        assertEq(
+            vm.load(_NONCE, adjacentLargeSlot),
+            adjacentLargeBefore,
+            "TEMPO-NON11: Read mutated adjacent large key slot"
+        );
+
+        // Cross-account reserved key slot unchanged
+        assertEq(
+            vm.load(_NONCE, crossSlot),
+            crossBefore,
+            "TEMPO-NON11: Read mutated cross-account reserved key slot"
+        );
+
+        // --- Assert no side effects on expiring nonce storage (slots 1-3) ---
+
+        assertEq(
+            vm.load(_NONCE, ptrSlot),
+            ptrBefore,
+            "TEMPO-NON11: Read mutated expiringNonceRingPtr (slot 3)"
+        );
+
+        assertEq(
+            vm.load(_NONCE, seenSlot),
+            seenBefore,
+            "TEMPO-NON11: Read mutated expiringNonceSeen sample (slot 1)"
+        );
+
+        assertEq(
+            vm.load(_NONCE, ringSlot),
+            ringBefore,
+            "TEMPO-NON11: Read mutated expiringNonceRing sample (slot 2)"
+        );
 
         _totalReservedKeyTests++;
 
         if (_loggingEnabled) {
             _log(
                 string.concat(
-                    "RESERVED_EXPIRING_KEY: ",
-                    _getActorIndex(actor),
+                    "RESERVED_EXPIRING_KEY: account=",
+                    vm.toString(account),
                     " key=MAX_UINT256 readable, value=",
-                    vm.toString(result)
+                    vm.toString(v1)
                 )
             );
         }
