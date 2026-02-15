@@ -1,25 +1,27 @@
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
-use commonware_consensus::Heightable as _;
-use commonware_consensus::marshal::Update;
-use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
+use commonware_consensus::{
+    Heightable as _,
+    marshal::Update,
+    types::{Epocher as _, FixedEpocher, Height},
+};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::{AddressableManager, Provider};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
-use commonware_utils::Acknowledgement;
-use commonware_utils::acknowledgement::Exact;
+use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use reth_ethereum::network::NetworkInfo;
-use reth_provider::BlockNumReader as _;
-use reth_provider::HeaderProvider;
+use reth_provider::{BlockNumReader as _, HeaderProvider};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tracing::{Span, error, info, info_span, instrument, warn};
 
-use crate::consensus::block::Block;
-use crate::validators::{self, DecodedValidator, read_validator_config_with_retry};
+use crate::{
+    consensus::block::Block,
+    validators::{self, DecodedValidator, read_validator_config_with_retry},
+};
 
 use super::ingress::{Message, MessageWithCause};
 
