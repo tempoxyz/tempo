@@ -391,6 +391,10 @@ These are checked after every fuzz run:
 - **TEMPO-KEY14**: Spending limit consistency - all spending limits match ghost state for active keys with limits enforced.
 - **TEMPO-KEY15**: Revocation permanence - revoked keys remain revoked (isRevoked stays true).
 - **TEMPO-KEY16**: Signature type consistency - key signature type matches ghost state for all active keys.
+- **TEMPO-KEY22**: EnforceLimits one-way ratchet - once `enforceLimits` becomes `true` for a key (via `updateSpendingLimit`), it cannot be set back to `false`.
+- **TEMPO-KEY23**: Revoked key limit inaccessibility - `getRemainingLimit` returns 0 for all tokens on revoked keys.
+- **TEMPO-KEY25**: Limits zero when unenforced - `getRemainingLimit` returns 0 for all tokens on active keys with `enforceLimits=false`.
+- **TEMPO-KEY26**: Signature type boundedness - active key signature type must be in `{0, 1, 2}`.
 
 ### Per-Handler Assertions
 
@@ -410,6 +414,7 @@ These verify correct behavior when the specific function is called:
 
 - **TEMPO-KEY5**: Limit update - `updateSpendingLimit` correctly updates the spending limit for a token.
 - **TEMPO-KEY6**: Limit enforcement activation - calling `updateSpendingLimit` on a key with `enforceLimits=false` enables limit enforcement.
+- **TEMPO-KEY24**: Per-token independence - updating the spending limit for one token must not affect the remaining limit for any other token on the same `(account, keyId)`.
 
 #### Input Validation
 

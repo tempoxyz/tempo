@@ -6,14 +6,14 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title AccountKeychain Invariant Tests
 /// @notice Fuzz-based invariant tests for the AccountKeychain precompile
-/// @dev Tests invariants TEMPO-KEY1 through TEMPO-KEY19 for access key management
+/// @dev Tests invariants TEMPO-KEY1 through TEMPO-KEY26
 ///      Note: TEMPO-KEY20/21 require integration tests (transient storage for transaction_key)
 contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @dev Starting offset for key ID address pool (distinct from zero address)
     uint256 private constant KEY_ID_POOL_OFFSET = 1;
 
-    /// @dev Mode of token limits generated for authorizeKey fuzzing
+    /// @dev Type of token limits generated for authorizeKey fuzzing
     enum LimitScenario {
         None,
         Single,
@@ -88,6 +88,14 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// account => keyId => token => limit
     mapping(address => mapping(address => mapping(address => uint256))) private
         _ghostSpendingLimits;
+
+    /// @dev Track tokens that have been written for a (account, keyId) pair
+    /// account => keyId => list of tokens ever written
+    mapping(address => mapping(address => address[])) private _ghostLimitTokens;
+
+    /// @dev Dedup guard for _ghostLimitTokens
+    /// account => keyId => token => seen
+    mapping(address => mapping(address => mapping(address => bool))) private _ghostLimitTokenSeen;
 
     /// @dev Track all keys created per account
     mapping(address => address[]) private _accountKeys;
@@ -480,6 +488,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             if (enforceLimits && limits.length > 0) {
                 for (uint256 i = 0; i < limits.length; i++) {
                     _ghostSpendingLimits[account][keyId][limits[i].token] = limits[i].amount;
+                    _trackLimitToken(account, keyId, limits[i].token);
                 }
             }
 
@@ -759,7 +768,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for revoking a key
     /// @dev Tests TEMPO-KEY3 (key revocation), TEMPO-KEY4 (revocation prevents reauthorization),
-    ///      and TEMPO-KEY25 (revoked key limits are inaccessible)
+    ///      and TEMPO-KEY23 (revoked key limits are inaccessible)
     function handler_revokeKey(uint256 accountSeed, uint256 keyIdSeed) external {
         // Find an actor with an active key, or create one as fallback
         (address account, address keyId, bool skip) =
@@ -789,14 +798,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             "TEMPO-KEY3: SignatureType should be cleared to default"
         );
 
-        // TEMPO-KEY25 (T2+): Revoked key limits are inaccessible.
-        for (uint256 t = 0; t < _tokens.length; t++) {
-            assertEq(
-                keychain.getRemainingLimit(account, keyId, address(_tokens[t])),
-                0,
-                "TEMPO-KEY25: Revoked key limit should read as 0"
-            );
-        }
+        // TEMPO-KEY23 (T2+): Revoked key limits are inaccessible for all known tokens.
+        _assertAllLimitsZero(account, keyId, "TEMPO-KEY23");
 
         if (_loggingEnabled) {
             _log(
@@ -813,7 +816,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for updating spending limits
     /// @dev Tests TEMPO-KEY5 (limit update), TEMPO-KEY6 (enables limits on unlimited key),
-    ///      TEMPO-KEY24 (enforceLimits one-way ratchet), and TEMPO-KEY28 (token independence)
+    ///      TEMPO-KEY22 (enforceLimits one-way ratchet), and TEMPO-KEY24 (token independence)
     function handler_updateSpendingLimit(
         uint256 accountSeed,
         uint256 keyIdSeed,
@@ -834,7 +837,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         IAccountKeychain.KeyInfo memory infoBefore = keychain.getKey(account, keyId);
 
-        // Build a watch list of token addresses to check for independence (TEMPO-KEY28).
+        // Build a watch list of token addresses to check for independence (TEMPO-KEY24).
         address[] memory watchTokens = _watchTokens(token);
 
         uint256[] memory watchLimitsBefore = new uint256[](watchTokens.length);
@@ -851,23 +854,24 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         // Update ghost state
         _ghostSpendingLimits[account][keyId][token] = newLimit;
         _ghostKeyEnforceLimits[account][keyId] = true; // Always enables limits
+        _trackLimitToken(account, keyId, token);
 
         // TEMPO-KEY5: selected token limit should be updated to newLimit
         uint256 storedLimit = keychain.getRemainingLimit(account, keyId, token);
         assertEq(storedLimit, newLimit, "TEMPO-KEY5: selected token limit should equal newLimit");
 
-        // TEMPO-KEY6 / KEY24: enforceLimits should be true and remain a one-way ratchet
+        // TEMPO-KEY6 / KEY22: enforceLimits should be true and remain a one-way ratchet
         IAccountKeychain.KeyInfo memory infoAfter = keychain.getKey(account, keyId);
         assertTrue(infoAfter.enforceLimits, "TEMPO-KEY6: enforceLimits should be true after update");
         _assertKeyMetadataUnchanged(infoBefore, account, keyId, "TEMPO-KEY5");
 
-        // TEMPO-KEY28: updating one token must not mutate limits for other tokens.
+        // TEMPO-KEY24: updating one token must not mutate limits for other tokens.
         for (uint256 t = 0; t < watchTokens.length; t++) {
             uint256 expected = watchTokens[t] == token ? newLimit : watchLimitsBefore[t];
             assertEq(
                 keychain.getRemainingLimit(account, keyId, watchTokens[t]),
                 expected,
-                "TEMPO-KEY28: unrelated token limits should remain unchanged"
+                "TEMPO-KEY24: unrelated token limits should remain unchanged"
             );
         }
 
@@ -1263,6 +1267,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         _ghostKeyEnforceLimits[account1][keyId] = true;
         _ghostKeySignatureType[account1][keyId] = uint8(sigType1);
         _ghostSpendingLimits[account1][keyId][token] = initialLimit1;
+        _trackLimitToken(account1, keyId, token);
 
         if (!_keyUsed[account1][keyId]) {
             _keyUsed[account1][keyId] = true;
@@ -1282,6 +1287,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         _ghostKeyEnforceLimits[account2][keyId] = true;
         _ghostKeySignatureType[account2][keyId] = uint8(sigType2);
         _ghostSpendingLimits[account2][keyId][token] = initialLimit2;
+        _trackLimitToken(account2, keyId, token);
 
         if (!_keyUsed[account2][keyId]) {
             _keyUsed[account2][keyId] = true;
@@ -1488,6 +1494,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         if (enforceLimits && limits.length > 0) {
             for (uint256 i = 0; i < limits.length; i++) {
                 _ghostSpendingLimits[account][keyId][limits[i].token] = limits[i].amount;
+                _trackLimitToken(account, keyId, limits[i].token);
             }
         }
 
@@ -1705,9 +1712,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Run all invariant checks in a single pass over actors
-    /// @dev Consolidates TEMPO-KEY13, KEY14, KEY15, KEY16 into unified loops
+    /// @dev Consolidates TEMPO-KEY13, KEY14, KEY15, KEY16, KEY23, KEY25, KEY26
     function invariant_globalInvariants() public view {
-        // Single pass over all actors and their keys
         for (uint256 a = 0; a < _actors.length; a++) {
             address account = _actors[a];
             address[] memory keys = _accountKeys[account];
@@ -1730,6 +1736,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                         "TEMPO-KEY13: Revoked key signatureType should be 0"
                     );
                     // TEMPO-KEY15: Revoked keys stay revoked (already checked via isRevoked above)
+
+                    // TEMPO-KEY23: Revoked key limits must read as 0 for all known tokens
+                    _assertAllLimitsZero(account, keyId, "TEMPO-KEY23");
                 } else if (_ghostKeyExists[account][keyId]) {
                     // TEMPO-KEY13: Active key should match ghost state
                     assertEq(info.keyId, keyId, "TEMPO-KEY13: Active key keyId should match");
@@ -1743,29 +1752,34 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                         _ghostKeyEnforceLimits[account][keyId],
                         "TEMPO-KEY13: EnforceLimits should match"
                     );
+                    assertFalse(info.isRevoked, "TEMPO-KEY13: Active key should not be revoked");
+
                     // TEMPO-KEY16: Signature type must match ghost state for all active keys
                     assertEq(
                         uint8(info.signatureType),
                         _ghostKeySignatureType[account][keyId],
                         "TEMPO-KEY16: SignatureType must match ghost state"
                     );
-                    assertFalse(info.isRevoked, "TEMPO-KEY13: Active key should not be revoked");
 
-                    // TEMPO-KEY14: Check spending limits for active keys with limits enforced
+                    // TEMPO-KEY26: Stored signature type must be bounded to valid enum range
+                    assertLe(
+                        uint8(info.signatureType),
+                        2,
+                        "TEMPO-KEY26: SignatureType must be in {0,1,2}"
+                    );
+
+                    uint64 expiry = _ghostKeyExpiry[account][keyId];
+                    bool isExpired = expiry != type(uint64).max && block.timestamp >= expiry;
+
                     if (_ghostKeyEnforceLimits[account][keyId]) {
-                        uint64 expiry = _ghostKeyExpiry[account][keyId];
-                        bool isExpired = expiry != type(uint64).max && block.timestamp >= expiry;
+                        // TEMPO-KEY14: Spending limits must match ghost state for all known tokens
                         if (!isExpired) {
-                            for (uint256 t = 0; t < _tokens.length; t++) {
-                                address token = address(_tokens[t]);
-                                uint256 expected = _ghostSpendingLimits[account][keyId][token];
-                                uint256 actual = keychain.getRemainingLimit(account, keyId, token);
-                                assertEq(
-                                    actual,
-                                    expected,
-                                    "TEMPO-KEY14: Spending limit should match ghost state"
-                                );
-                            }
+                            _assertAllLimitsMatchGhost(account, keyId, "TEMPO-KEY14");
+                        }
+                    } else {
+                        // TEMPO-KEY25: enforceLimits=false → all limits must read as 0
+                        if (!isExpired) {
+                            _assertAllLimitsZero(account, keyId, "TEMPO-KEY25");
                         }
                     }
                 }
@@ -1808,6 +1822,95 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /*//////////////////////////////////////////////////////////////
                               HELPERS
     //////////////////////////////////////////////////////////////*/
+
+    /// @dev Registers a token as having been written for a (account, keyId) pair
+    function _trackLimitToken(address account, address keyId, address token) internal {
+        if (_ghostLimitTokenSeen[account][keyId][token]) return;
+        _ghostLimitTokenSeen[account][keyId][token] = true;
+        _ghostLimitTokens[account][keyId].push(token);
+    }
+
+    /// @dev Asserts getRemainingLimit matches ghost state for all known tokens on a key.
+    ///      "Known tokens" = base _tokens + pathUSD + address(0) + all tokens ever written
+    ///      for this (account, keyId) pair via _trackLimitToken.
+    function _assertAllLimitsMatchGhost(
+        address account,
+        address keyId,
+        string memory tag
+    )
+        internal
+        view
+    {
+        // Check base tokens
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            address token = address(_tokens[t]);
+            assertEq(
+                keychain.getRemainingLimit(account, keyId, token),
+                _ghostSpendingLimits[account][keyId][token],
+                string.concat(tag, ": limit mismatch for base token")
+            );
+        }
+        // Check pathUSD and address(0)
+        assertEq(
+            keychain.getRemainingLimit(account, keyId, address(pathUSD)),
+            _ghostSpendingLimits[account][keyId][address(pathUSD)],
+            string.concat(tag, ": limit mismatch for pathUSD")
+        );
+        assertEq(
+            keychain.getRemainingLimit(account, keyId, address(0)),
+            _ghostSpendingLimits[account][keyId][address(0)],
+            string.concat(tag, ": limit mismatch for address(0)")
+        );
+        // Check all tokens ever written for this key
+        address[] memory tracked = _ghostLimitTokens[account][keyId];
+        for (uint256 t = 0; t < tracked.length; t++) {
+            assertEq(
+                keychain.getRemainingLimit(account, keyId, tracked[t]),
+                _ghostSpendingLimits[account][keyId][tracked[t]],
+                string.concat(tag, ": limit mismatch for tracked token")
+            );
+        }
+    }
+
+    /// @dev Asserts getRemainingLimit is 0 for all known tokens on a key.
+    ///      Used for revoked keys (KEY25) and enforceLimits=false keys (KEY30).
+    function _assertAllLimitsZero(
+        address account,
+        address keyId,
+        string memory tag
+    )
+        internal
+        view
+    {
+        // Check base tokens
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            assertEq(
+                keychain.getRemainingLimit(account, keyId, address(_tokens[t])),
+                0,
+                string.concat(tag, ": limit should be 0 for base token")
+            );
+        }
+        // Check pathUSD and address(0)
+        assertEq(
+            keychain.getRemainingLimit(account, keyId, address(pathUSD)),
+            0,
+            string.concat(tag, ": limit should be 0 for pathUSD")
+        );
+        assertEq(
+            keychain.getRemainingLimit(account, keyId, address(0)),
+            0,
+            string.concat(tag, ": limit should be 0 for address(0)")
+        );
+        // Check all tokens ever written for this key
+        address[] memory tracked = _ghostLimitTokens[account][keyId];
+        for (uint256 t = 0; t < tracked.length; t++) {
+            assertEq(
+                keychain.getRemainingLimit(account, keyId, tracked[t]),
+                0,
+                string.concat(tag, ": limit should be 0 for tracked token")
+            );
+        }
+    }
 
     /// @dev Builds the standard watch-token list: all _tokens + pathUSD + address(0) + selected
     function _watchTokens(address selected) internal view returns (address[] memory tokens) {
