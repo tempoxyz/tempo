@@ -5,8 +5,12 @@ import { INonce } from "../../src/interfaces/INonce.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title Nonce Invariant Tests
-/// @notice Fuzz-based invariant tests for the Nonce precompile
-/// @dev Tests invariants TEMPO-NON1 through TEMPO-NON11 for the 2D nonce system
+/// @notice Fuzz-based invariant tests for Nonce precompile storage layout and view behavior
+/// @dev Tests invariants TEMPO-NON1 through TEMPO-NON11 for the 2D nonce system.
+///      Uses direct storage manipulation (vm.store/vm.load) to simulate nonce increments
+///      against the deployed Solidity reference contract. This validates storage slot layout,
+///      getNonce view correctness, and ghost state consistency. Real precompile execution
+///      (increment_nonce via Rust) is covered by TempoTransactionInvariant.t.sol.
 contract NonceInvariantTest is InvariantBaseTest {
 
     /// @dev Storage slot for nonces mapping (slot 0)
@@ -71,7 +75,7 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         // Exclude helper functions from fuzzing - only target actual handlers
         bytes4[] memory selectors = new bytes4[](10);
-        selectors[0] = this.incrementNonce.selector;
+        selectors[0] = this.handler_incrementNonce.selector;
         selectors[1] = this.readNonce.selector;
         selectors[2] = this.tryProtocolNonce.selector;
         selectors[3] = this.verifyAccountIndependence.selector;
@@ -172,32 +176,65 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for incrementing nonces
     /// @dev Tests TEMPO-NON1 (monotonic increment), TEMPO-NON2 (sequential values)
-    function incrementNonce(uint256 actorSeed, uint256 keySeed) external {
+    function handler_incrementNonce(uint256 actorSeed, uint256 keySeed) external {
         address actor = _selectActor(actorSeed);
         uint256 nonceKey = _selectNonceKey(keySeed);
 
         uint64 expectedBefore = _ghostNonces[actor][nonceKey];
         uint64 actualBefore = nonce.getNonce(actor, nonceKey);
 
-        // TEMPO-NON2: Ghost state should match actual state
+        // TEMPO-NON2: Ghost state should match actual state before increment
         assertEq(actualBefore, expectedBefore, "TEMPO-NON2: Ghost nonce mismatch before increment");
+
+        // Verify raw storage matches before increment (catches high-bit corruption
+        // that getNonce's uint64 return would mask)
+        bytes32 slot = _getNonceSlot(actor, nonceKey);
+        bytes32 rawBefore = vm.load(_NONCE, slot);
+        assertEq(
+            rawBefore,
+            bytes32(uint256(expectedBefore)),
+            "TEMPO-NON2: Raw storage mismatch before increment"
+        );
+
+        // Snapshot an adjacent key's slot to verify it is untouched after increment
+        uint256 otherKey = _selectNonceKeyExcluding(keySeed ^ 0xBEEF, nonceKey);
+        bytes32 otherSlot = _getNonceSlot(actor, otherKey);
+        bytes32 otherBefore = vm.load(_NONCE, otherSlot);
+
+        // Compute expected value independently of the storage helper
+        uint64 expectedAfter = expectedBefore + 1;
 
         uint64 newNonce = _incrementNonceViaStorage(actor, nonceKey);
         _totalIncrements++;
 
-        // Update ghost state
-        _ghostNonces[actor][nonceKey] = newNonce;
-        _lastSeenNonces[actor][nonceKey] = newNonce;
+        // TEMPO-NON1: Nonce should increment by exactly 1
+        assertEq(newNonce, expectedAfter, "TEMPO-NON1: Nonce should increment by 1");
+
+        // Verify raw storage after increment (catches high-bit corruption)
+        bytes32 rawAfter = vm.load(_NONCE, slot);
+        assertEq(
+            rawAfter,
+            bytes32(uint256(expectedAfter)),
+            "TEMPO-NON1: Raw storage mismatch after increment"
+        );
+
+        // Verify adjacent key slot was not modified
+        assertEq(
+            vm.load(_NONCE, otherSlot),
+            otherBefore,
+            "TEMPO-NON6: Increment wrote to adjacent key slot"
+        );
+
+        // Update ghost state from independently computed expected value (not helper return)
+        _ghostNonces[actor][nonceKey] = expectedAfter;
+        _lastSeenNonces[actor][nonceKey] = expectedAfter;
 
         // Track nonce key usage
         _trackNonceKey(actor, nonceKey);
 
-        // TEMPO-NON1: Nonce should increment by exactly 1
-        assertEq(newNonce, expectedBefore + 1, "TEMPO-NON1: Nonce should increment by 1");
-
-        // TEMPO-NON3: New value should be readable
+        // TEMPO-NON3: New value should be readable via getNonce
         uint64 actualAfter = nonce.getNonce(actor, nonceKey);
-        assertEq(actualAfter, newNonce, "TEMPO-NON3: Stored nonce should match returned value");
+        assertEq(actualAfter, expectedAfter, "TEMPO-NON3: Stored nonce should match expected value");
 
         if (_loggingEnabled) {
             _log(
@@ -209,7 +246,7 @@ contract NonceInvariantTest is InvariantBaseTest {
                     " ",
                     vm.toString(expectedBefore),
                     " -> ",
-                    vm.toString(newNonce)
+                    vm.toString(expectedAfter)
                 )
             );
         }
