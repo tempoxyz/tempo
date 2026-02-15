@@ -48,6 +48,77 @@ contract TIP20InvariantTest is InvariantBaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
+                           ENSURE HELPERS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Ensures a token is unpaused. If paused, unpauses it.
+    function _ensureUnpaused(TIP20 token) internal {
+        if (!token.paused()) return;
+        vm.startPrank(admin);
+        token.grantRole(_UNPAUSE_ROLE, admin);
+        token.unpause();
+        vm.stopPrank();
+    }
+
+    /// @dev Ensures a token is paused. If unpaused, pauses it.
+    function _ensurePaused(TIP20 token) internal {
+        if (token.paused()) return;
+        vm.startPrank(admin);
+        token.grantRole(_PAUSE_ROLE, admin);
+        token.pause();
+        vm.stopPrank();
+    }
+
+    /// @dev Ensures an actor has at least `min` balance, minting if needed. Updates ghost state.
+    ///      Returns false if supply cap prevents minting enough tokens or mint reverts.
+    function _ensureBalance(TIP20 token, address actor, uint256 min) internal returns (bool) {
+        uint256 bal = token.balanceOf(actor);
+        if (bal >= min) return true;
+        uint256 needed = min - bal;
+        uint256 cap = token.supplyCap();
+        uint256 supply = token.totalSupply();
+        if (supply >= cap) return false;
+        uint256 remaining = cap - supply;
+        if (remaining < needed) return false;
+        uint256 mintAmt = needed + (remaining - needed < 100_000_000 ? 0 : 100_000_000);
+        vm.prank(admin);
+        try token.mint(actor, mintAmt) {
+            _tokenMintSum[address(token)] += mintAmt;
+            _registerHolder(address(token), actor);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /// @dev Ensures spender has at least `min` allowance from owner. Approves if needed.
+    ///      Returns false if approve reverts (e.g. due to AccountKeychain constraints).
+    function _ensureAllowance(TIP20 token, address owner, address spender, uint256 min) internal returns (bool) {
+        if (token.allowance(owner, spender) >= min) return true;
+        vm.prank(owner);
+        try token.approve(spender, min) {
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /// @dev Ensures there is opted-in supply by opting in an actor if needed.
+    function _ensureOptedInSupply(TIP20 token, uint256 seed) internal returns (bool) {
+        if (token.optedInSupply() > 0) return true;
+        uint256 start = seed % _actors.length;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address cand = _actors[addmod(start, i, _actors.length)];
+            if (_isAuthorized(address(token), cand) && token.balanceOf(cand) > 0) {
+                vm.prank(cand);
+                token.setRewardRecipient(cand);
+                return token.optedInSupply() > 0;
+            }
+        }
+        return false;
+    }
+
+    /*//////////////////////////////////////////////////////////////
                         TRANSFER SNAPSHOT HELPERS
     //////////////////////////////////////////////////////////////*/
 
@@ -64,6 +135,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 toRPT;
         uint256 fromDelegateRewardBal;
         uint256 toDelegateRewardBal;
+        uint256 spenderRPTBefore;
+        uint256 spenderRewardBalBefore;
     }
 
     /// @dev Takes a snapshot of all transfer-relevant state
@@ -206,6 +279,89 @@ contract TIP20InvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @dev Asserts spender reward info is unchanged after a transferFrom.
+    function _assertSpenderIsolation(
+        TIP20 token,
+        address spender,
+        address owner,
+        address recipient,
+        TransferSnapshot memory s
+    ) internal view {
+        if (spender != owner && spender != recipient && spender != s.fromDelegate && spender != s.toDelegate) {
+            (, uint256 rptA, uint256 rbA) = token.userRewardInfo(spender);
+            assertEq(rptA, s.spenderRPTBefore, "Spender rewardPerToken changed");
+            assertEq(rbA, s.spenderRewardBalBefore, "Spender rewardBalance changed");
+        }
+    }
+
+    /// @dev Executes transferFrom and asserts event, allowance, post-transfer, and spender isolation.
+    function _transferFromAndAssert(
+        TIP20 token,
+        address owner,
+        address spender,
+        address recipient,
+        uint256 amount,
+        TransferSnapshot memory s
+    ) internal {
+        uint256 allowBefore = token.allowance(owner, spender);
+
+        vm.expectEmit(true, true, false, true, address(token));
+        emit ITIP20.Transfer(owner, recipient, amount);
+
+        vm.startPrank(spender);
+        assertTrue(token.transferFrom(owner, recipient, amount), "TEMPO-TIP3: TransferFrom should return true");
+        vm.stopPrank();
+
+        // Allowance check
+        {
+            uint256 allowAfter = token.allowance(owner, spender);
+            if (allowBefore == type(uint256).max) {
+                assertEq(allowAfter, type(uint256).max, "TEMPO-TIP4: Infinite allowance should remain infinite");
+            } else {
+                assertEq(allowAfter, allowBefore - amount, "TEMPO-TIP3: Allowance not decreased correctly");
+            }
+        }
+
+        _assertPostTransfer(token, owner, recipient, amount, s, "transferFrom");
+        _assertSpenderIsolation(token, spender, owner, recipient, s);
+    }
+
+    /// @dev Executes transferFromWithMemo and asserts event, allowance, post-transfer, and spender isolation.
+    function _transferFromWithMemoAndAssert(
+        TIP20 token,
+        address owner,
+        address spender,
+        address recipient,
+        uint256 amount,
+        bytes32 memo,
+        TransferSnapshot memory s
+    ) internal {
+        uint256 allowBefore = token.allowance(owner, spender);
+
+        vm.expectEmit(true, true, false, true, address(token));
+        emit ITIP20.Transfer(owner, recipient, amount);
+
+        vm.startPrank(spender);
+        assertTrue(
+            token.transferFromWithMemo(owner, recipient, amount, memo),
+            "TEMPO-TIP9: TransferFromWithMemo should return true"
+        );
+        vm.stopPrank();
+
+        // Allowance check
+        {
+            uint256 allowAfter = token.allowance(owner, spender);
+            if (allowBefore == type(uint256).max) {
+                assertEq(allowAfter, type(uint256).max, "TEMPO-TIP4: Infinite allowance should remain infinite");
+            } else {
+                assertEq(allowAfter, allowBefore - amount, "TEMPO-TIP3: Allowance not decreased correctly");
+            }
+        }
+
+        _assertPostTransfer(token, owner, recipient, amount, s, "transferFromWithMemo");
+        _assertSpenderIsolation(token, spender, owner, recipient, s);
+    }
+
     /// @notice Sets up the test environment
     function setUp() public override {
         super.setUp();
@@ -279,16 +435,19 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedSender(actorSeed, address(token));
-        address recipient = _selectActorExcluding(recipientSeed, actor);
+        _ensureUnpaused(token);
 
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance > 0);
+        address actor;
+        address recipient;
+        {
+            bool ok;
+            (actor, ok) = _trySelectFundedSender(actorSeed, token);
+            if (!ok) return;
+            (recipient, ok) = _trySelectAuthorizedRecipientExcluding(recipientSeed, address(token), actor);
+            if (!ok) return;
+        }
 
-        amount = bound(amount, 1, actorBalance);
-
-        vm.assume(_isAuthorizedRecipient(address(token), recipient));
-        vm.assume(!token.paused());
+        amount = bound(amount, 1, token.balanceOf(actor));
 
         TransferSnapshot memory s = _snapTransfer(token, actor, recipient);
 
@@ -329,15 +488,17 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedSender(actorSeed, address(token));
+        _ensureUnpaused(token);
 
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance > 0);
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectFundedSender(actorSeed, token);
+            if (!ok) return;
+            if (!_isAuthorizedRecipient(address(token), actor)) return;
+        }
 
-        amount = bound(amount, 0, actorBalance);
-
-        vm.assume(_isAuthorizedRecipient(address(token), actor));
-        vm.assume(!token.paused());
+        amount = bound(amount, 0, token.balanceOf(actor));
 
         TransferSnapshot memory s = _snapTransfer(token, actor, actor);
 
@@ -375,11 +536,17 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedSender(actorSeed, address(token));
-        address recipient = _selectActorExcluding(recipientSeed, actor);
+        _ensureUnpaused(token);
 
-        vm.assume(_isAuthorizedRecipient(address(token), recipient));
-        vm.assume(!token.paused());
+        address actor;
+        address recipient;
+        {
+            bool ok;
+            (actor, ok) = _trySelectAuthorizedSender(actorSeed, address(token));
+            if (!ok) return;
+            (recipient, ok) = _trySelectAuthorizedRecipientExcluding(recipientSeed, address(token), actor);
+            if (!ok) return;
+        }
 
         TransferSnapshot memory s = _snapTransfer(token, actor, recipient);
 
@@ -417,13 +584,16 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedSender(actorSeed, address(token));
+        _ensureUnpaused(token);
 
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance > 0);
-        amount = bound(amount, 1, actorBalance);
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectFundedSender(actorSeed, token);
+            if (!ok) return;
+        }
 
-        vm.assume(!token.paused());
+        amount = bound(amount, 1, token.balanceOf(actor));
 
         vm.startPrank(actor);
         vm.expectRevert(ITIP20.InvalidRecipient.selector);
@@ -442,13 +612,16 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedSender(actorSeed, address(token));
+        _ensureUnpaused(token);
 
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance > 0);
-        amount = bound(amount, 1, actorBalance);
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectFundedSender(actorSeed, token);
+            if (!ok) return;
+        }
 
-        vm.assume(!token.paused());
+        amount = bound(amount, 1, token.balanceOf(actor));
 
         // Construct a TIP20-prefix address: upper 96 bits = 0x20c000000000000000000000
         uint64 lowBits = uint64(bound(lowBitsSeed, 1, type(uint64).max));
@@ -472,17 +645,19 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address owner = _selectAuthorizedSender(ownerSeed, address(token));
-        address spender = _selectActorExcluding(actorSeed, owner);
+        _ensureUnpaused(token);
 
-        uint256 ownerBalance = token.balanceOf(owner);
-        vm.assume(ownerBalance > 0);
-        amount = bound(amount, 1, ownerBalance);
+        address owner;
+        address spender;
+        {
+            bool ok;
+            (owner, ok) = _trySelectFundedSender(ownerSeed, token);
+            if (!ok) return;
+        }
+        spender = _selectActorExcluding(actorSeed, owner);
 
-        uint256 currentAllowance = token.allowance(owner, spender);
-        vm.assume(currentAllowance >= amount);
-
-        vm.assume(!token.paused());
+        amount = bound(amount, 1, token.balanceOf(owner));
+        if (!_ensureAllowance(token, owner, spender, amount)) return;
 
         // Construct a TIP20-prefix address: upper 96 bits = 0x20c000000000000000000000
         uint64 lowBits = uint64(bound(lowBitsSeed, 1, type(uint64).max));
@@ -505,14 +680,20 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedSender(actorSeed, address(token));
-        address recipient = _selectActorExcluding(recipientSeed, actor);
+        _ensureUnpaused(token);
+
+        address actor;
+        address recipient;
+        {
+            bool ok;
+            (actor, ok) = _trySelectAuthorizedSender(actorSeed, address(token));
+            if (!ok) return;
+            (recipient, ok) = _trySelectAuthorizedRecipientExcluding(recipientSeed, address(token), actor);
+            if (!ok) return;
+        }
 
         uint256 actorBalance = token.balanceOf(actor);
         extra = bound(extra, 1, 1_000_000_000_000);
-
-        vm.assume(_isAuthorizedRecipient(address(token), recipient));
-        vm.assume(!token.paused());
 
         vm.startPrank(actor);
         vm.expectRevert(
@@ -536,18 +717,24 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectActor(actorSeed);
+        _ensureUnpaused(token);
+
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectAuthorizedSender(actorSeed, address(token));
+            if (!ok) return;
+        }
         address recipient = _selectActorExcluding(recipientSeed, actor);
 
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance > 0);
-        amount = bound(amount, 1, actorBalance);
+        if (!_ensureBalance(token, actor, 1)) return;
+        amount = bound(amount, 1, token.balanceOf(actor));
 
-        vm.assume(!token.paused());
+        uint64 policyId = _getPolicyId(address(token));
+        if (policyId < 2) return; // special policies cannot be modified
 
         uint256 snap = vm.snapshotState();
 
-        uint64 policyId = _getPolicyId(address(token));
         address policyAdmin = _getPolicyAdmin(address(token));
 
         vm.prank(policyAdmin);
@@ -573,18 +760,24 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedSender(actorSeed, address(token));
+        _ensureUnpaused(token);
+
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectFundedSender(actorSeed, token);
+            if (!ok) return;
+        }
         address recipient = _selectActorExcluding(recipientSeed, actor);
+        if (!_isAuthorizedRecipient(address(token), recipient)) return;
 
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance > 0);
-        amount = bound(amount, 1, actorBalance);
+        amount = bound(amount, 1, token.balanceOf(actor));
 
-        vm.assume(!token.paused());
+        uint64 policyId = _getPolicyId(address(token));
+        if (policyId < 2) return; // special policies cannot be modified
 
         uint256 snap = vm.snapshotState();
 
-        uint64 policyId = _getPolicyId(address(token));
         address policyAdmin = _getPolicyAdmin(address(token));
 
         vm.prank(policyAdmin);
@@ -610,16 +803,19 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        vm.assume(token.paused());
+        _ensurePaused(token);
 
-        address actor = _selectAuthorizedSender(actorSeed, address(token));
-        address recipient = _selectActorExcluding(recipientSeed, actor);
+        address actor;
+        address recipient;
+        {
+            bool ok;
+            (actor, ok) = _trySelectFundedSender(actorSeed, token);
+            if (!ok) return;
+            (recipient, ok) = _trySelectAuthorizedRecipientExcluding(recipientSeed, address(token), actor);
+            if (!ok) return;
+        }
 
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance > 0);
-        amount = bound(amount, 1, actorBalance);
-
-        vm.assume(_isAuthorizedRecipient(address(token), recipient));
+        amount = bound(amount, 1, token.balanceOf(actor));
 
         vm.startPrank(actor);
         vm.expectRevert(ITIP20.ContractPaused.selector);
@@ -641,59 +837,31 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address owner = _selectAuthorizedSender(ownerSeed, address(token));
-        address spender = _selectActorExcluding(actorSeed, owner);
-        address recipient = _selectActorExcluding(recipientSeed, owner);
+        _ensureUnpaused(token);
 
-        uint256 ownerBalance = token.balanceOf(owner);
-        vm.assume(ownerBalance > 0);
+        address owner;
+        address spender;
+        address recipient;
+        {
+            bool ok;
+            (owner, ok) = _trySelectFundedSender(ownerSeed, token);
+            if (!ok) return;
+            (recipient, ok) = _trySelectAuthorizedRecipientExcluding(recipientSeed, address(token), owner);
+            if (!ok) return;
+        }
+        spender = _selectActorExcluding(actorSeed, owner);
 
-        uint256 currentAllowance = token.allowance(owner, spender);
-        vm.assume(currentAllowance > 0);
-
-        amount = bound(amount, 1, ownerBalance < currentAllowance ? ownerBalance : currentAllowance);
-
-        vm.assume(_isAuthorizedRecipient(address(token), recipient));
-        vm.assume(!token.paused());
+        {
+            if (!_ensureAllowance(token, owner, spender, 1)) return;
+            uint256 a = token.allowance(owner, spender);
+            uint256 b = token.balanceOf(owner);
+            amount = bound(amount, 1, b < a ? b : a);
+        }
 
         TransferSnapshot memory s = _snapTransfer(token, owner, recipient);
-        bool isInfiniteAllowance = currentAllowance == type(uint256).max;
+        (, s.spenderRPTBefore, s.spenderRewardBalBefore) = token.userRewardInfo(spender);
 
-        // Snapshot spender reward info to assert it is unchanged
-        (, uint256 spenderRPTBefore, uint256 spenderRewardBalBefore) = token.userRewardInfo(spender);
-
-        vm.expectEmit(true, true, false, true, address(token));
-        emit ITIP20.Transfer(owner, recipient, amount);
-
-        vm.startPrank(spender);
-        bool success = token.transferFrom(owner, recipient, amount);
-        vm.stopPrank();
-
-        assertTrue(success, "TEMPO-TIP3: TransferFrom should return true");
-
-        // TEMPO-TIP3/TIP4: Allowance handling
-        if (isInfiniteAllowance) {
-            assertEq(
-                token.allowance(owner, spender),
-                type(uint256).max,
-                "TEMPO-TIP4: Infinite allowance should remain infinite"
-            );
-        } else {
-            assertEq(
-                token.allowance(owner, spender),
-                currentAllowance - amount,
-                "TEMPO-TIP3: Allowance not decreased correctly"
-            );
-        }
-
-        _assertPostTransfer(token, owner, recipient, amount, s, "transferFrom");
-
-        // Spender reward info must be unchanged when spender is not involved in _transfer
-        if (spender != owner && spender != recipient && spender != s.fromDelegate && spender != s.toDelegate) {
-            (, uint256 spenderRPTAfter, uint256 spenderRewardBalAfter) = token.userRewardInfo(spender);
-            assertEq(spenderRPTAfter, spenderRPTBefore, "Spender rewardPerToken changed");
-            assertEq(spenderRewardBalAfter, spenderRewardBalBefore, "Spender rewardBalance changed");
-        }
+        _transferFromAndAssert(token, owner, spender, recipient, amount, s);
 
         if (_loggingEnabled) {
             _log(
@@ -725,48 +893,28 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address owner = _selectAuthorizedSender(ownerSeed, address(token));
+        _ensureUnpaused(token);
+
+        address owner;
+        {
+            bool ok;
+            (owner, ok) = _trySelectFundedSender(ownerSeed, token);
+            if (!ok) return;
+            if (!_isAuthorizedRecipient(address(token), owner)) return;
+        }
         address spender = _selectActorExcluding(actorSeed, owner);
 
-        uint256 ownerBalance = token.balanceOf(owner);
-        vm.assume(ownerBalance > 0);
-
-        uint256 currentAllowance = token.allowance(owner, spender);
-        vm.assume(currentAllowance > 0);
-
-        amount = bound(amount, 0, ownerBalance < currentAllowance ? ownerBalance : currentAllowance);
-
-        vm.assume(_isAuthorizedRecipient(address(token), owner));
-        vm.assume(!token.paused());
-
-        TransferSnapshot memory s = _snapTransfer(token, owner, owner);
-        bool isInfiniteAllowance = currentAllowance == type(uint256).max;
-
-        vm.expectEmit(true, true, false, true, address(token));
-        emit ITIP20.Transfer(owner, owner, amount);
-
-        vm.startPrank(spender);
-        bool success = token.transferFrom(owner, owner, amount);
-        vm.stopPrank();
-
-        assertTrue(success, "Self-transferFrom should return true");
-
-        // Allowance handling still applies
-        if (isInfiniteAllowance) {
-            assertEq(
-                token.allowance(owner, spender),
-                type(uint256).max,
-                "TEMPO-TIP4: Infinite allowance should remain infinite on self-transferFrom"
-            );
-        } else {
-            assertEq(
-                token.allowance(owner, spender),
-                currentAllowance - amount,
-                "TEMPO-TIP3: Allowance not decreased correctly on self-transferFrom"
-            );
+        {
+            if (!_ensureAllowance(token, owner, spender, 1)) return;
+            uint256 a = token.allowance(owner, spender);
+            uint256 b = token.balanceOf(owner);
+            amount = bound(amount, 0, b < a ? b : a);
         }
 
-        _assertPostTransfer(token, owner, owner, amount, s, "self-transferFrom");
+        TransferSnapshot memory s = _snapTransfer(token, owner, owner);
+        (, s.spenderRPTBefore, s.spenderRewardBalBefore) = token.userRewardInfo(spender);
+
+        _transferFromAndAssert(token, owner, spender, owner, amount, s);
 
         if (_loggingEnabled) {
             _log(
@@ -796,12 +944,18 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address owner = _selectAuthorizedSender(ownerSeed, address(token));
-        address spender = _selectActorExcluding(actorSeed, owner);
-        address recipient = _selectActorExcluding(recipientSeed, owner);
+        _ensureUnpaused(token);
 
-        vm.assume(_isAuthorizedRecipient(address(token), recipient));
-        vm.assume(!token.paused());
+        address owner;
+        address recipient;
+        {
+            bool ok;
+            (owner, ok) = _trySelectAuthorizedSender(ownerSeed, address(token));
+            if (!ok) return;
+            (recipient, ok) = _trySelectAuthorizedRecipientExcluding(recipientSeed, address(token), owner);
+            if (!ok) return;
+        }
+        address spender = _selectActorExcluding(actorSeed, owner);
 
         TransferSnapshot memory s = _snapTransfer(token, owner, recipient);
         uint256 allowanceBefore = token.allowance(owner, spender);
@@ -852,22 +1006,31 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address owner = _selectAuthorizedSender(ownerSeed, address(token));
+        _ensureUnpaused(token);
+
+        address owner;
+        address recipient;
+        {
+            bool ok;
+            (owner, ok) = _trySelectAuthorizedSender(ownerSeed, address(token));
+            if (!ok) return;
+            (recipient, ok) = _trySelectAuthorizedRecipientExcluding(recipientSeed, address(token), owner);
+            if (!ok) return;
+        }
         address spender = _selectActorExcluding(actorSeed, owner);
-        address recipient = _selectActorExcluding(recipientSeed, owner);
 
         uint256 currentAllowance = token.allowance(owner, spender);
-        vm.assume(currentAllowance < type(uint256).max);
+        if (currentAllowance == type(uint256).max) return;
 
+        // Ensure owner has enough balance so the revert comes from allowance, not balance.
+        // We need balance >= transferAmount > allowance. If allowance is huge (from a prior
+        // approve), minting that much may exceed supply cap, so derive from achievable balance.
         extra = bound(extra, 1, 1_000_000_000_000);
+        if (!_ensureBalance(token, owner, currentAllowance + extra)) {
+            // Can't achieve balance > allowance; skip
+            return;
+        }
         uint256 transferAmount = currentAllowance + extra;
-
-        // Ensure owner has sufficient balance so the revert is from allowance, not balance
-        uint256 ownerBalance = token.balanceOf(owner);
-        vm.assume(ownerBalance >= transferAmount);
-
-        vm.assume(_isAuthorizedRecipient(address(token), recipient));
-        vm.assume(!token.paused());
 
         vm.startPrank(spender);
         vm.expectRevert(ITIP20.InsufficientAllowance.selector);
@@ -887,20 +1050,24 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address owner = _selectAuthorizedSender(ownerSeed, address(token));
+        _ensureUnpaused(token);
+
+        address owner;
+        address recipient;
+        {
+            bool ok;
+            (owner, ok) = _trySelectAuthorizedSender(ownerSeed, address(token));
+            if (!ok) return;
+            (recipient, ok) = _trySelectAuthorizedRecipientExcluding(recipientSeed, address(token), owner);
+            if (!ok) return;
+        }
         address spender = _selectActorExcluding(actorSeed, owner);
-        address recipient = _selectActorExcluding(recipientSeed, owner);
 
         uint256 ownerBalance = token.balanceOf(owner);
         extra = bound(extra, 1, 1_000_000_000_000);
         uint256 transferAmount = ownerBalance + extra;
 
-        // Ensure allowance is sufficient so the revert is from balance, not allowance
-        uint256 currentAllowance = token.allowance(owner, spender);
-        vm.assume(currentAllowance >= transferAmount);
-
-        vm.assume(_isAuthorizedRecipient(address(token), recipient));
-        vm.assume(!token.paused());
+        if (!_ensureAllowance(token, owner, spender, transferAmount)) return;
 
         vm.startPrank(spender);
         vm.expectRevert(
@@ -925,22 +1092,26 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address owner = _selectActor(ownerSeed);
+        _ensureUnpaused(token);
+
+        address owner;
+        {
+            bool ok;
+            (owner, ok) = _trySelectAuthorizedSender(ownerSeed, address(token));
+            if (!ok) return;
+        }
         address spender = _selectActorExcluding(actorSeed, owner);
         address recipient = _selectActorExcluding(recipientSeed, owner);
 
-        uint256 ownerBalance = token.balanceOf(owner);
-        vm.assume(ownerBalance > 0);
-        amount = bound(amount, 1, ownerBalance);
+        if (!_ensureBalance(token, owner, 1)) return;
+        amount = bound(amount, 1, token.balanceOf(owner));
+        if (!_ensureAllowance(token, owner, spender, amount)) return;
 
-        uint256 currentAllowance = token.allowance(owner, spender);
-        vm.assume(currentAllowance >= amount);
-
-        vm.assume(!token.paused());
+        uint64 policyId = _getPolicyId(address(token));
+        if (policyId < 2) return; // special policies cannot be modified
 
         uint256 snap = vm.snapshotState();
 
-        uint64 policyId = _getPolicyId(address(token));
         address policyAdmin = _getPolicyAdmin(address(token));
 
         vm.prank(policyAdmin);
@@ -967,22 +1138,26 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address owner = _selectAuthorizedSender(ownerSeed, address(token));
+        _ensureUnpaused(token);
+
+        address owner;
+        {
+            bool ok;
+            (owner, ok) = _trySelectFundedSender(ownerSeed, token);
+            if (!ok) return;
+        }
         address spender = _selectActorExcluding(actorSeed, owner);
         address recipient = _selectActorExcluding(recipientSeed, owner);
+        if (!_isAuthorizedRecipient(address(token), recipient)) return;
 
-        uint256 ownerBalance = token.balanceOf(owner);
-        vm.assume(ownerBalance > 0);
-        amount = bound(amount, 1, ownerBalance);
+        amount = bound(amount, 1, token.balanceOf(owner));
+        if (!_ensureAllowance(token, owner, spender, amount)) return;
 
-        uint256 currentAllowance = token.allowance(owner, spender);
-        vm.assume(currentAllowance >= amount);
-
-        vm.assume(!token.paused());
+        uint64 policyId = _getPolicyId(address(token));
+        if (policyId < 2) return; // special policies cannot be modified
 
         uint256 snap = vm.snapshotState();
 
-        uint64 policyId = _getPolicyId(address(token));
         address policyAdmin = _getPolicyAdmin(address(token));
 
         vm.prank(policyAdmin);
@@ -1009,20 +1184,21 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        vm.assume(token.paused());
+        _ensurePaused(token);
 
-        address owner = _selectAuthorizedSender(ownerSeed, address(token));
+        address owner;
+        address recipient;
+        {
+            bool ok;
+            (owner, ok) = _trySelectFundedSender(ownerSeed, token);
+            if (!ok) return;
+            (recipient, ok) = _trySelectAuthorizedRecipientExcluding(recipientSeed, address(token), owner);
+            if (!ok) return;
+        }
         address spender = _selectActorExcluding(actorSeed, owner);
-        address recipient = _selectActorExcluding(recipientSeed, owner);
 
-        uint256 ownerBalance = token.balanceOf(owner);
-        vm.assume(ownerBalance > 0);
-        amount = bound(amount, 1, ownerBalance);
-
-        uint256 currentAllowance = token.allowance(owner, spender);
-        vm.assume(currentAllowance >= amount);
-
-        vm.assume(_isAuthorizedRecipient(address(token), recipient));
+        amount = bound(amount, 1, token.balanceOf(owner));
+        if (!_ensureAllowance(token, owner, spender, amount)) return;
 
         vm.startPrank(spender);
         vm.expectRevert(ITIP20.ContractPaused.selector);
@@ -1041,17 +1217,18 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address owner = _selectAuthorizedSender(ownerSeed, address(token));
+        _ensureUnpaused(token);
+
+        address owner;
+        {
+            bool ok;
+            (owner, ok) = _trySelectFundedSender(ownerSeed, token);
+            if (!ok) return;
+        }
         address spender = _selectActorExcluding(actorSeed, owner);
 
-        uint256 ownerBalance = token.balanceOf(owner);
-        vm.assume(ownerBalance > 0);
-        amount = bound(amount, 1, ownerBalance);
-
-        uint256 currentAllowance = token.allowance(owner, spender);
-        vm.assume(currentAllowance >= amount);
-
-        vm.assume(!token.paused());
+        amount = bound(amount, 1, token.balanceOf(owner));
+        if (!_ensureAllowance(token, owner, spender, amount)) return;
 
         vm.startPrank(spender);
         vm.expectRevert(ITIP20.InvalidRecipient.selector);
@@ -1275,16 +1452,19 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP6 (supply increase), TEMPO-TIP7 (supply cap)
     function mint(uint256 tokenSeed, uint256 recipientSeed, uint256 amount) external {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address recipient = _selectAuthorizedActor(recipientSeed, address(token));
+
+        address recipient;
+        {
+            bool ok;
+            (recipient, ok) = _trySelectPolicyAuthorized(recipientSeed, address(token));
+            if (!ok) return;
+        }
 
         uint256 currentSupply = token.totalSupply();
         uint256 supplyCap = token.supplyCap();
         uint256 remaining = supplyCap > currentSupply ? supplyCap - currentSupply : 0;
-
-        vm.assume(remaining > 0);
+        if (remaining == 0) return;
         amount = bound(amount, 1, remaining);
-
-        vm.assume(_isAuthorized(address(token), recipient));
 
         uint256 recipientBalanceBefore = token.balanceOf(recipient);
 
@@ -1334,7 +1514,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         TIP20 token = _selectBaseToken(tokenSeed);
 
         uint256 adminBalance = token.balanceOf(admin);
-        vm.assume(adminBalance > 0);
+        if (adminBalance == 0) return;
 
         amount = bound(amount, 1, adminBalance);
 
@@ -1380,18 +1560,21 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedActor(actorSeed, address(token));
-        address recipient = _selectActorExcluding(recipientSeed, actor);
+        _ensureUnpaused(token);
 
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance > 0);
+        address actor;
+        address recipient;
+        {
+            bool ok;
+            (actor, ok) = _trySelectFundedSender(actorSeed, token);
+            if (!ok) return;
+            (recipient, ok) = _trySelectAuthorizedRecipientExcluding(recipientSeed, address(token), actor);
+            if (!ok) return;
+        }
 
-        amount = bound(amount, 1, actorBalance);
+        amount = bound(amount, 1, token.balanceOf(actor));
 
-        vm.assume(_isAuthorized(address(token), actor));
-        vm.assume(_isAuthorized(address(token), recipient));
-        vm.assume(!token.paused());
-
+        uint256 actorBalBefore = token.balanceOf(actor);
         uint256 recipientBalanceBefore = token.balanceOf(recipient);
         uint256 totalSupplyBefore = token.totalSupply();
 
@@ -1402,7 +1585,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             // TEMPO-TIP9: Balance changes same as regular transfer
             assertEq(
                 token.balanceOf(actor),
-                actorBalance - amount,
+                actorBalBefore - amount,
                 "TEMPO-TIP9: Sender balance not decreased"
             );
             assertEq(
@@ -1445,78 +1628,46 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address owner = _selectAuthorizedActor(ownerSeed, address(token));
+        _ensureUnpaused(token);
+
+        address owner;
+        address recipient;
+        {
+            bool ok;
+            (owner, ok) = _trySelectFundedSender(ownerSeed, token);
+            if (!ok) return;
+            (recipient, ok) = _trySelectAuthorizedRecipientExcluding(recipientSeed, address(token), owner);
+            if (!ok) return;
+        }
         address spender = _selectActorExcluding(actorSeed, owner);
-        address recipient = _selectActorExcluding(recipientSeed, owner);
 
-        uint256 ownerBalance = token.balanceOf(owner);
-        vm.assume(ownerBalance > 0);
+        {
+            if (!_ensureAllowance(token, owner, spender, 1)) return;
+            uint256 a = token.allowance(owner, spender);
+            uint256 b = token.balanceOf(owner);
+            amount = bound(amount, 1, b < a ? b : a);
+        }
 
-        uint256 allowance = token.allowance(owner, spender);
-        vm.assume(allowance > 0);
+        TransferSnapshot memory s = _snapTransfer(token, owner, recipient);
+        (, s.spenderRPTBefore, s.spenderRewardBalBefore) = token.userRewardInfo(spender);
 
-        amount = bound(amount, 1, ownerBalance < allowance ? ownerBalance : allowance);
+        _transferFromWithMemoAndAssert(token, owner, spender, recipient, amount, memo, s);
 
-        vm.assume(_isAuthorized(address(token), owner));
-        vm.assume(_isAuthorized(address(token), recipient));
-        vm.assume(!token.paused());
-
-        uint256 recipientBalanceBefore = token.balanceOf(recipient);
-        uint256 totalSupplyBefore = token.totalSupply();
-        bool isInfiniteAllowance = allowance == type(uint256).max;
-
-        vm.startPrank(spender);
-        try token.transferFromWithMemo(owner, recipient, amount, memo) returns (bool success) {
-            vm.stopPrank();
-            assertTrue(success, "TEMPO-TIP9: TransferFromWithMemo should return true");
-
-            // Balance changes same as regular transferFrom
-            assertEq(
-                token.balanceOf(owner),
-                ownerBalance - amount,
-                "TEMPO-TIP9: Owner balance not decreased"
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRANSFER_FROM_MEMO: ",
+                    _getActorIndex(owner),
+                    " -> ",
+                    _getActorIndex(recipient),
+                    " via ",
+                    _getActorIndex(spender),
+                    " ",
+                    vm.toString(amount),
+                    " ",
+                    token.symbol()
+                )
             );
-            assertEq(
-                token.balanceOf(recipient),
-                recipientBalanceBefore + amount,
-                "TEMPO-TIP9: Recipient balance not increased"
-            );
-            assertEq(token.totalSupply(), totalSupplyBefore, "TEMPO-TIP9: Total supply changed");
-
-            // Allowance handling same as transferFrom
-            if (isInfiniteAllowance) {
-                assertEq(
-                    token.allowance(owner, spender),
-                    type(uint256).max,
-                    "TEMPO-TIP4: Infinite allowance should remain infinite"
-                );
-            } else {
-                assertEq(
-                    token.allowance(owner, spender),
-                    allowance - amount,
-                    "TEMPO-TIP3: Allowance not decreased correctly"
-                );
-            }
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TRANSFER_FROM_MEMO: ",
-                        _getActorIndex(owner),
-                        " -> ",
-                        _getActorIndex(recipient),
-                        " via ",
-                        _getActorIndex(spender),
-                        " ",
-                        vm.toString(amount),
-                        " ",
-                        token.symbol()
-                    )
-                );
-            }
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -1530,25 +1681,29 @@ contract TIP20InvariantTest is InvariantBaseTest {
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedActor(actorSeed, address(token));
+        _ensureUnpaused(token);
+
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectPolicyAuthorized(actorSeed, address(token));
+            if (!ok) return;
+        }
 
         // 0 = opt-out, 1 = opt-in to self, 2+ = delegate to another actor
-        uint256 choice = recipientSeed % 3;
         address newRecipient;
-        if (choice == 0) {
-            newRecipient = address(0);
-        } else if (choice == 1) {
-            newRecipient = actor;
-        } else {
-            newRecipient = _selectActor(recipientSeed);
-            if (newRecipient == actor) newRecipient = _selectActor(recipientSeed + 1);
+        {
+            uint256 choice = recipientSeed % 3;
+            if (choice == 0) {
+                newRecipient = address(0);
+            } else if (choice == 1) {
+                newRecipient = actor;
+            } else {
+                bool ok;
+                (newRecipient, ok) = _trySelectPolicyAuthorizedExcluding(recipientSeed, address(token), actor);
+                if (!ok) return;
+            }
         }
-
-        vm.assume(_isAuthorized(address(token), actor));
-        if (newRecipient != address(0)) {
-            vm.assume(_isAuthorized(address(token), newRecipient));
-        }
-        vm.assume(!token.paused());
 
         (address currentRecipient,,) = token.userRewardInfo(actor);
         uint256 actorBalance = token.balanceOf(actor);
@@ -1621,18 +1776,19 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP12, TEMPO-TIP13
     function distributeReward(uint256 actorSeed, uint256 tokenSeed, uint256 amount) external {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedActor(actorSeed, address(token));
+        _ensureUnpaused(token);
 
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance > 0);
+        if (!_isAuthorized(address(token), address(token))) return;
+        if (!_ensureOptedInSupply(token, actorSeed)) return;
 
-        amount = bound(amount, 1, actorBalance);
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectFundedSender(actorSeed, token);
+            if (!ok) return;
+        }
 
-        vm.assume(_isAuthorized(address(token), actor));
-        vm.assume(_isAuthorized(address(token), address(token))); // Token contract must be authorized as recipient
-        vm.assume(!token.paused());
-
-        vm.assume(token.optedInSupply() > 0);
+        amount = bound(amount, 1, token.balanceOf(actor));
 
         uint256 globalRPTBefore = token.globalRewardPerToken();
         uint256 tokenBalanceBefore = token.balanceOf(address(token));
@@ -1691,33 +1847,34 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP12 edge case: when amount << optedInSupply, delta is 0
     function distributeRewardTiny(uint256 actorSeed, uint256 tokenSeed) external {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedActor(actorSeed, address(token));
+        _ensureUnpaused(token);
 
-        vm.assume(_isAuthorized(address(token), actor));
-        vm.assume(_isAuthorized(address(token), address(token))); // Token contract must be authorized as recipient
-        vm.assume(!token.paused());
+        if (!_isAuthorized(address(token), address(token))) return;
+        if (!_ensureOptedInSupply(token, actorSeed)) return;
 
         uint128 optedInSupply = token.optedInSupply();
-        vm.assume(optedInSupply > ACC_PRECISION); // Ensure division will result in 0
+        if (optedInSupply <= ACC_PRECISION) return;
 
         // Use amount = 1 where delta = floor(1 * ACC_PRECISION / optedInSupply) = 0
-        uint256 amount = 1;
-        uint256 expectedDelta = (amount * ACC_PRECISION) / optedInSupply;
-        vm.assume(expectedDelta == 0); // Confirm this is indeed a zero-delta case
+        if ((ACC_PRECISION / optedInSupply) != 0) return;
 
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance >= amount);
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectFundedSender(actorSeed, token);
+            if (!ok) return;
+        }
 
         uint256 globalRPTBefore = token.globalRewardPerToken();
 
         vm.startPrank(actor);
-        try token.distributeReward(amount) {
+        try token.distributeReward(1) {
             vm.stopPrank();
 
             // Update ghost variables (same as distributeReward)
             _totalRewardsDistributed++;
-            _ghostRewardInputSum += amount;
-            _tokenRewardsDistributed[address(token)] += amount;
+            _ghostRewardInputSum += 1;
+            _tokenRewardsDistributed[address(token)] += 1;
             _tokenDistributionCount[address(token)]++;
             _registerHolder(address(token), actor);
             _registerHolder(address(token), address(token));
@@ -1751,17 +1908,18 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP12 edge case: must revert with NoOptedInSupply when nobody is opted in
     function distributeRewardZeroOptedIn(uint256 actorSeed, uint256 tokenSeed) external {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedActor(actorSeed, address(token));
+        _ensureUnpaused(token);
 
-        vm.assume(_isAuthorized(address(token), actor));
-        vm.assume(_isAuthorized(address(token), address(token))); // Token contract must be authorized as recipient
-        vm.assume(!token.paused());
+        if (!_isAuthorized(address(token), address(token))) return;
+        if (token.optedInSupply() != 0) return;
 
-        uint128 optedInSupply = token.optedInSupply();
-        vm.assume(optedInSupply == 0); // Only test when nobody is opted in
-
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance >= 1000);
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectPolicyAuthorized(actorSeed, address(token));
+            if (!ok) return;
+        }
+        if (!_ensureBalance(token, actor, 1000)) return;
 
         vm.startPrank(actor);
         try token.distributeReward(1000) {
@@ -1792,11 +1950,16 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP14, TEMPO-TIP15
     function claimRewards(uint256 actorSeed, uint256 tokenSeed) external {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedActor(actorSeed, address(token));
+        _ensureUnpaused(token);
 
-        vm.assume(_isAuthorized(address(token), actor));
-        vm.assume(_isAuthorized(address(token), address(token)));
-        vm.assume(!token.paused());
+        if (!_isAuthorized(address(token), address(token))) return;
+
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectPolicyAuthorized(actorSeed, address(token));
+            if (!ok) return;
+        }
 
         (,, uint256 rewardBalance) = token.userRewardInfo(actor);
         uint256 actorBalanceBefore = token.balanceOf(actor);
@@ -1856,11 +2019,16 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP14/TIP15: verifies claim is bounded by contract balance and stored rewards
     function claimRewardsVerified(uint256 actorSeed, uint256 tokenSeed) external {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address actor = _selectAuthorizedActor(actorSeed, address(token));
+        _ensureUnpaused(token);
 
-        vm.assume(_isAuthorized(address(token), actor));
-        vm.assume(_isAuthorized(address(token), address(token)));
-        vm.assume(!token.paused());
+        if (!_isAuthorized(address(token), address(token))) return;
+
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectPolicyAuthorized(actorSeed, address(token));
+            if (!ok) return;
+        }
 
         uint256 contractBalance = token.balanceOf(address(token));
         uint256 actorBalanceBefore = token.balanceOf(actor);
@@ -1928,16 +2096,25 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP23 (burnBlocked functionality)
     function burnBlocked(uint256 tokenSeed, uint256 targetSeed, uint256 amount) external {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address target = _selectActor(targetSeed);
 
-        // Ensure target is blacklisted for this test
-        uint64 policyId = _tokenPolicyIds[address(token)];
-        bool isBlacklisted = !registry.isAuthorized(policyId, target);
-        vm.assume(isBlacklisted);
+        // Find a blacklisted actor with balance
+        address target;
+        {
+            uint64 policyId = _getPolicyId(address(token));
+            bool found;
+            uint256 start = targetSeed % _actors.length;
+            for (uint256 i = 0; i < _actors.length; i++) {
+                address cand = _actors[addmod(start, i, _actors.length)];
+                if (!registry.isAuthorized(policyId, cand) && token.balanceOf(cand) > 0) {
+                    target = cand;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return;
+        }
 
         uint256 targetBalance = token.balanceOf(target);
-        vm.assume(targetBalance > 0);
-
         amount = bound(amount, 1, targetBalance);
 
         uint256 totalSupplyBefore = token.totalSupply();
@@ -2023,11 +2200,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for unauthorized mint attempts
     /// @dev Tests TEMPO-TIP26 (only ISSUER_ROLE can mint)
     function mintUnauthorized(uint256 actorSeed, uint256 tokenSeed, uint256 amount) external {
-        address attacker = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
-
-        // Ensure attacker doesn't have ISSUER_ROLE
-        vm.assume(!token.hasRole(attacker, _ISSUER_ROLE));
+        (address attacker, bool ok) = _trySelectActorWithoutRole(actorSeed, token, _ISSUER_ROLE);
+        if (!ok) return;
 
         amount = bound(amount, 1, 1_000_000);
 
@@ -2044,12 +2219,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for unauthorized pause attempts
     /// @dev Tests TEMPO-TIP27 (only PAUSE_ROLE can pause)
     function pauseUnauthorized(uint256 actorSeed, uint256 tokenSeed) external {
-        address attacker = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
-
-        // Ensure attacker doesn't have PAUSE_ROLE
-        vm.assume(!token.hasRole(attacker, _PAUSE_ROLE));
-        vm.assume(!token.paused());
+        _ensureUnpaused(token);
+        (address attacker, bool ok) = _trySelectActorWithoutRole(actorSeed, token, _PAUSE_ROLE);
+        if (!ok) return;
 
         vm.startPrank(attacker);
         try token.pause() {
@@ -2064,12 +2237,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for unauthorized unpause attempts
     /// @dev Tests TEMPO-TIP28 (only UNPAUSE_ROLE can unpause)
     function unpauseUnauthorized(uint256 actorSeed, uint256 tokenSeed) external {
-        address attacker = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
-
-        // Ensure attacker doesn't have UNPAUSE_ROLE
-        vm.assume(!token.hasRole(attacker, _UNPAUSE_ROLE));
-        vm.assume(token.paused());
+        _ensurePaused(token);
+        (address attacker, bool ok) = _trySelectActorWithoutRole(actorSeed, token, _UNPAUSE_ROLE);
+        if (!ok) return;
 
         vm.startPrank(attacker);
         try token.unpause() {
@@ -2091,16 +2262,13 @@ contract TIP20InvariantTest is InvariantBaseTest {
     )
         external
     {
-        address attacker = _selectActor(actorSeed);
-        address target = _selectActor(targetSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
+        (address attacker, bool ok) = _trySelectActorWithoutRole(actorSeed, token, _BURN_BLOCKED_ROLE);
+        if (!ok) return;
 
-        // Ensure attacker doesn't have BURN_BLOCKED_ROLE
-        vm.assume(!token.hasRole(attacker, _BURN_BLOCKED_ROLE));
-
-        uint256 targetBalance = token.balanceOf(target);
-        vm.assume(targetBalance > 0);
-        amount = bound(amount, 1, targetBalance);
+        address target = _selectActor(targetSeed);
+        if (!_ensureBalance(token, target, 1)) return;
+        amount = bound(amount, 1, token.balanceOf(target));
 
         vm.startPrank(attacker);
         try token.burnBlocked(target, amount) {
@@ -2117,14 +2285,16 @@ contract TIP20InvariantTest is InvariantBaseTest {
     function changeTransferPolicyId(uint256 tokenSeed, uint256 policySeed) external {
         TIP20 token = _selectBaseToken(tokenSeed);
 
-        // Select from special policies (0, 1) or created policies
+        // Select from special policies or created policies.
+        // Bias toward modifiable blacklist policies to avoid stalling transfer coverage.
         uint64 newPolicyId;
-        if (policySeed % 3 == 0) {
-            newPolicyId = 0; // always-reject
-        } else if (policySeed % 3 == 1) {
+        uint256 r = policySeed % 20;
+        if (r == 0) {
+            newPolicyId = 0; // always-reject (rare — 5%)
+        } else if (r == 1) {
             newPolicyId = 1; // always-allow
         } else {
-            // Use the token's current policy or a nearby valid one
+            // Use a created blacklist policy (most likely to keep transfers functional)
             newPolicyId = uint64(policySeed % 10) + 2;
         }
 
@@ -2158,11 +2328,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for unauthorized policy change attempts
     /// @dev Tests that non-admin cannot change transfer policy
     function changeTransferPolicyIdUnauthorized(uint256 actorSeed, uint256 tokenSeed) external {
-        address attacker = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
-
-        // Ensure attacker is not admin
-        vm.assume(!token.hasRole(attacker, bytes32(0))); // DEFAULT_ADMIN_ROLE
+        (address attacker, bool ok) = _trySelectActorWithoutRole(actorSeed, token, bytes32(0));
+        if (!ok) return;
 
         vm.startPrank(attacker);
         try token.changeTransferPolicyId(1) {
@@ -2178,19 +2346,18 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests setNextQuoteToken and completeQuoteTokenUpdate
     function updateQuoteToken(uint256 tokenSeed, uint256 quoteTokenSeed) external {
         TIP20 token = _selectBaseToken(tokenSeed);
+        if (address(token) == address(pathUSD)) return;
 
-        // Skip pathUSD - it cannot change quote token
-        vm.assume(address(token) != address(pathUSD));
-
-        // Select a different token as potential new quote
         TIP20 newQuoteToken = _selectBaseToken(quoteTokenSeed);
-        vm.assume(address(newQuoteToken) != address(token));
+        if (address(newQuoteToken) == address(token)) return;
 
         // For USD tokens, quote must also be USD
-        bool isUsdToken = keccak256(bytes(token.currency())) == keccak256(bytes("USD"));
-        if (isUsdToken) {
-            bool isUsdQuote = keccak256(bytes(newQuoteToken.currency())) == keccak256(bytes("USD"));
-            vm.assume(isUsdQuote);
+        {
+            bool isUsdToken = keccak256(bytes(token.currency())) == keccak256(bytes("USD"));
+            if (isUsdToken) {
+                bool isUsdQuote = keccak256(bytes(newQuoteToken.currency())) == keccak256(bytes("USD"));
+                if (!isUsdQuote) return;
+            }
         }
 
         vm.startPrank(admin);
@@ -2230,11 +2397,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for unauthorized quote token update attempts
     /// @dev Tests that non-admin cannot change quote token
     function updateQuoteTokenUnauthorized(uint256 actorSeed, uint256 tokenSeed) external {
-        address attacker = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
-
-        vm.assume(address(token) != address(pathUSD));
-        vm.assume(!token.hasRole(attacker, bytes32(0))); // DEFAULT_ADMIN_ROLE
+        if (address(token) == address(pathUSD)) return;
+        (address attacker, bool ok) = _trySelectActorWithoutRole(actorSeed, token, bytes32(0));
+        if (!ok) return;
 
         vm.startPrank(attacker);
         try token.setNextQuoteToken(ITIP20(address(pathUSD))) {
@@ -2296,10 +2462,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
     )
         external
     {
-        address attacker = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
-
-        vm.assume(!token.hasRole(attacker, bytes32(0))); // DEFAULT_ADMIN_ROLE
+        (address attacker, bool ok) = _trySelectActorWithoutRole(actorSeed, token, bytes32(0));
+        if (!ok) return;
 
         vm.startPrank(attacker);
         try token.setSupplyCap(newCap) {
@@ -2317,7 +2482,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         TIP20 token = _selectBaseToken(tokenSeed);
 
         uint256 currentSupply = token.totalSupply();
-        vm.assume(currentSupply > 1);
+        if (currentSupply <= 1) return;
 
         uint256 invalidCap = currentSupply - 1;
 
@@ -2342,15 +2507,15 @@ contract TIP20InvariantTest is InvariantBaseTest {
         TIP20 token = _selectBaseToken(tokenSeed);
 
         // Only toggle for actors 0-4
-        vm.assume(actorSeed % _actors.length < 5);
+        if (actorSeed % _actors.length >= 5) return;
 
         // Skip if policy is a special policy (0 or 1) which cannot be modified
         uint64 policyId = _getPolicyId(address(token));
-        vm.assume(policyId >= 2);
+        if (policyId < 2) return;
 
         // Ensure we are the policy admin (policy may have changed via changeTransferPolicyId)
         address policyAdmin = _getPolicyAdmin(address(token));
-        vm.assume(policyAdmin == admin || policyAdmin == pathUSDAdmin);
+        if (policyAdmin != admin && policyAdmin != pathUSDAdmin) return;
 
         bool currentlyAuthorized = _isAuthorized(address(token), actor);
 
@@ -2419,15 +2584,16 @@ contract TIP20InvariantTest is InvariantBaseTest {
     )
         external
     {
-        address actor = _selectActor(actorSeed);
-        address recipient = _selectActorExcluding(recipientSeed, actor);
         TIP20 token = _selectBaseToken(tokenSeed);
+        _ensurePaused(token);
 
-        // Only test when token is paused
-        vm.assume(token.paused());
-
-        uint256 actorBalance = token.balanceOf(actor);
-        vm.assume(actorBalance > 0);
+        address actor;
+        {
+            bool ok;
+            (actor, ok) = _trySelectFundedSender(actorSeed, token);
+            if (!ok) return;
+        }
+        address recipient = _selectActorExcluding(recipientSeed, actor);
 
         vm.startPrank(actor);
         try token.transfer(recipient, 1) {

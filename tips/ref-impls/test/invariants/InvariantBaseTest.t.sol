@@ -294,6 +294,99 @@ abstract contract InvariantBaseTest is BaseTest {
         return authorized[bound(seed, 0, count - 1)];
     }
 
+    /// @dev Tries to select an authorized actor. Returns (actor, true) or (address(0), false).
+    function _trySelectPolicyAuthorized(uint256 seed, address token) internal view returns (address, bool) {
+        uint64 policyId = _getPolicyId(token);
+        uint256 start = seed % _actors.length;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address cand = _actors[addmod(start, i, _actors.length)];
+            if (registry.isAuthorized(policyId, cand)) return (cand, true);
+        }
+        return (address(0), false);
+    }
+
+    /// @dev Tries to select an authorized sender. Returns (actor, true) or (address(0), false).
+    function _trySelectAuthorizedSender(uint256 seed, address token) internal view returns (address, bool) {
+        uint64 policyId = _getPolicyId(token);
+        uint256 start = seed % _actors.length;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address cand = _actors[addmod(start, i, _actors.length)];
+            if (registry.isAuthorizedSender(policyId, cand)) return (cand, true);
+        }
+        return (address(0), false);
+    }
+
+    /// @dev Tries to select an authorized recipient. Returns (actor, true) or (address(0), false).
+    function _trySelectAuthorizedRecipient(uint256 seed, address token) internal view returns (address, bool) {
+        uint64 policyId = _getPolicyId(token);
+        uint256 start = seed % _actors.length;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address cand = _actors[addmod(start, i, _actors.length)];
+            if (registry.isAuthorizedRecipient(policyId, cand)) return (cand, true);
+        }
+        return (address(0), false);
+    }
+
+    /// @dev Tries to select an authorized actor excluding a specific address.
+    function _trySelectPolicyAuthorizedExcluding(
+        uint256 seed,
+        address token,
+        address excluded
+    ) internal view returns (address, bool) {
+        uint64 policyId = _getPolicyId(token);
+        uint256 start = seed % _actors.length;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address cand = _actors[addmod(start, i, _actors.length)];
+            if (cand != excluded && registry.isAuthorized(policyId, cand)) return (cand, true);
+        }
+        return (address(0), false);
+    }
+
+    /// @dev Tries to select an authorized sender with balance > 0 for a token.
+    function _trySelectFundedSender(
+        uint256 seed,
+        TIP20 token
+    ) internal view returns (address, bool) {
+        uint64 policyId = _getPolicyId(address(token));
+        uint256 start = seed % _actors.length;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address cand = _actors[addmod(start, i, _actors.length)];
+            if (registry.isAuthorizedSender(policyId, cand) && token.balanceOf(cand) > 0) {
+                return (cand, true);
+            }
+        }
+        return (address(0), false);
+    }
+
+    /// @dev Tries to select an authorized recipient excluding a specific address.
+    function _trySelectAuthorizedRecipientExcluding(
+        uint256 seed,
+        address token,
+        address excluded
+    ) internal view returns (address, bool) {
+        uint64 policyId = _getPolicyId(token);
+        uint256 start = seed % _actors.length;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address cand = _actors[addmod(start, i, _actors.length)];
+            if (cand != excluded && registry.isAuthorizedRecipient(policyId, cand)) return (cand, true);
+        }
+        return (address(0), false);
+    }
+
+    /// @dev Tries to find an actor without a specific role.
+    function _trySelectActorWithoutRole(
+        uint256 seed,
+        TIP20 token,
+        bytes32 role
+    ) internal view returns (address, bool) {
+        uint256 start = seed % _actors.length;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address cand = _actors[addmod(start, i, _actors.length)];
+            if (!token.hasRole(cand, role)) return (cand, true);
+        }
+        return (address(0), false);
+    }
+
     /// @dev Gets token symbol for logging
     /// @param token Token address
     /// @return Symbol string
