@@ -78,7 +78,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         selectors[0] = this.handler_incrementNonce.selector;
         selectors[1] = this.handler_readNonce.selector;
         selectors[2] = this.handler_tryProtocolNonce.selector;
-        selectors[3] = this.verifyAccountIndependence.selector;
+        selectors[3] = this.handler_verifyAccountIndependence.selector;
         selectors[4] = this.verifyKeyIndependence.selector;
         selectors[5] = this.testLargeNonceKey.selector;
         selectors[6] = this.multipleIncrements.selector;
@@ -383,7 +383,7 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for verifying account independence
     /// @dev Tests TEMPO-NON5 (different accounts have independent nonces)
-    function verifyAccountIndependence(
+    function handler_verifyAccountIndependence(
         uint256 actor1Seed,
         uint256 actor2Seed,
         uint256 keySeed
@@ -394,17 +394,72 @@ contract NonceInvariantTest is InvariantBaseTest {
         address actor2 = _selectActorExcluding(actor2Seed, actor1);
         uint256 nonceKey = _selectNonceKey(keySeed);
 
+        // --- actor1 before: view + ghost + raw ---
+        uint64 expected1Before = _ghostNonces[actor1][nonceKey];
+        assertEq(
+            nonce.getNonce(actor1, nonceKey),
+            expected1Before,
+            "TEMPO-NON2: actor1 ghost mismatch before increment"
+        );
+        bytes32 slot1 = _getNonceSlot(actor1, nonceKey);
+        assertEq(
+            vm.load(_NONCE, slot1),
+            bytes32(uint256(expected1Before)),
+            "TEMPO-NON2: actor1 raw storage mismatch before increment"
+        );
+
+        // --- actor2 before: view + ghost + raw ---
+        uint64 expected2Before = _ghostNonces[actor2][nonceKey];
         uint64 nonce2Before = nonce.getNonce(actor2, nonceKey);
+        assertEq(nonce2Before, expected2Before, "TEMPO-NON5: actor2 ghost mismatch before increment");
+        bytes32 slot2 = _getNonceSlot(actor2, nonceKey);
+        bytes32 raw2Before = vm.load(_NONCE, slot2);
+        assertEq(
+            raw2Before,
+            bytes32(uint256(expected2Before)),
+            "TEMPO-NON5: actor2 raw storage mismatch before increment"
+        );
+
+        // Skip if actor1 is at max (overflow tested by testNonceOverflow)
+        if (expected1Before == type(uint64).max) return;
+
+        // Compute expected value independently of the storage helper
+        uint64 expected1After = expected1Before + 1;
 
         // Increment actor1's nonce
         uint64 newNonce1 = _incrementNonceViaStorage(actor1, nonceKey);
-        _ghostNonces[actor1][nonceKey] = newNonce1;
-        _lastSeenNonces[actor1][nonceKey] = newNonce1;
+
+        // TEMPO-NON1: Verify helper returned the independently computed value
+        assertEq(newNonce1, expected1After, "TEMPO-NON1: actor1 increment returned wrong value");
+
+        // Verify actor1 raw storage after increment (catches high-bit corruption)
+        assertEq(
+            vm.load(_NONCE, slot1),
+            bytes32(uint256(expected1After)),
+            "TEMPO-NON1: actor1 raw storage mismatch after increment"
+        );
+
+        // Update ghost state from independently computed value (not helper return)
+        assertGe(
+            expected1After,
+            _lastSeenNonces[actor1][nonceKey],
+            "TEMPO-NON1: actor1 lastSeen would decrease"
+        );
+        _ghostNonces[actor1][nonceKey] = expected1After;
+        _lastSeenNonces[actor1][nonceKey] = expected1After;
         _trackNonceKey(actor1, nonceKey);
 
-        // TEMPO-NON5: Actor2's nonce should be unchanged
+        // --- actor2 after: view + raw unchanged ---
         uint64 nonce2After = nonce.getNonce(actor2, nonceKey);
-        assertEq(nonce2After, nonce2Before, "TEMPO-NON5: Other account nonce should be unchanged");
+        assertEq(nonce2After, nonce2Before, "TEMPO-NON5: actor2 view changed after actor1 increment");
+        assertEq(
+            vm.load(_NONCE, slot2),
+            raw2Before,
+            "TEMPO-NON5: actor2 raw slot changed after actor1 increment"
+        );
+
+        // Track actor2's key so global invariant covers it going forward
+        _trackNonceKey(actor2, nonceKey);
 
         _totalAccountIndependenceChecks++;
 
@@ -413,7 +468,13 @@ contract NonceInvariantTest is InvariantBaseTest {
                 string.concat(
                     "ACCOUNT_INDEPENDENCE: ",
                     _getActorIndex(actor1),
-                    " incremented, ",
+                    " key=",
+                    vm.toString(nonceKey),
+                    " ",
+                    vm.toString(expected1Before),
+                    " -> ",
+                    vm.toString(expected1After),
+                    ", ",
                     _getActorIndex(actor2),
                     " unchanged at ",
                     vm.toString(nonce2After)
