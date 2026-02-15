@@ -305,6 +305,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
         (,, uint256 delegateRewardBalBefore) =
             actorDelegate != address(0) ? token.userRewardInfo(actorDelegate) : (address(0), uint256(0), uint256(0));
 
+        vm.recordLogs();
+
         vm.startPrank(actor);
         bool success = token.transfer(actor, amount);
         vm.stopPrank();
@@ -347,6 +349,35 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 delegateRewardBalBefore + expectedAccrual,
                 "Self-transfer: delegate reward accrual should happen exactly once"
             );
+        }
+
+        // Verify Transfer event (self-transfers must still emit)
+        {
+            Vm.Log[] memory entries = vm.getRecordedLogs();
+            bytes32 transferSig = keccak256("Transfer(address,address,uint256)");
+            bool found = false;
+            for (uint256 i = 0; i < entries.length; i++) {
+                if (entries[i].emitter == address(token) && entries[i].topics[0] == transferSig) {
+                    assertEq(
+                        entries[i].topics[1],
+                        bytes32(uint256(uint160(actor))),
+                        "Transfer event: wrong from on self-transfer"
+                    );
+                    assertEq(
+                        entries[i].topics[2],
+                        bytes32(uint256(uint160(actor))),
+                        "Transfer event: wrong to on self-transfer"
+                    );
+                    assertEq(
+                        abi.decode(entries[i].data, (uint256)),
+                        amount,
+                        "Transfer event: wrong amount on self-transfer"
+                    );
+                    found = true;
+                    break;
+                }
+            }
+            assertTrue(found, "Transfer event not emitted on self-transfer");
         }
 
         if (_loggingEnabled) {
@@ -497,6 +528,71 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.stopPrank();
     }
 
+    /// @notice Handler for transfer to TIP20-prefix address
+    /// @dev Tests that transfers to TIP20 token addresses revert with InvalidRecipient
+    function handler_tryTransferInvalidRecipientTIP20Prefix(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 amount,
+        uint256 lowBitsSeed
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address actor = _selectAuthorizedActor(actorSeed, address(token));
+
+        uint256 actorBalance = token.balanceOf(actor);
+        vm.assume(actorBalance > 0);
+        amount = bound(amount, 1, actorBalance);
+
+        vm.assume(_isAuthorizedSender(address(token), actor));
+        vm.assume(!token.paused());
+
+        // Construct a TIP20-prefix address: upper 96 bits = 0x20c000000000000000000000
+        uint64 lowBits = uint64(bound(lowBitsSeed, 1, type(uint64).max));
+        address tip20Addr = address(uint160(0x20c000000000000000000000) << 64 | uint160(lowBits));
+
+        vm.startPrank(actor);
+        vm.expectRevert(ITIP20.InvalidRecipient.selector);
+        token.transfer(tip20Addr, amount);
+        vm.stopPrank();
+    }
+
+    /// @notice Handler for transferFrom to TIP20-prefix address
+    /// @dev Tests that transferFrom to TIP20 token addresses reverts with InvalidRecipient
+    function handler_tryTransferFromInvalidRecipientTIP20Prefix(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 ownerSeed,
+        uint256 amount,
+        uint256 lowBitsSeed
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address owner = _selectAuthorizedActor(ownerSeed, address(token));
+        address spender = _selectActorExcluding(actorSeed, owner);
+
+        uint256 ownerBalance = token.balanceOf(owner);
+        vm.assume(ownerBalance > 0);
+        amount = bound(amount, 1, ownerBalance);
+
+        uint256 currentAllowance = token.allowance(owner, spender);
+        vm.assume(currentAllowance >= amount);
+
+        vm.assume(_isAuthorizedSender(address(token), owner));
+        vm.assume(!token.paused());
+
+        // Construct a TIP20-prefix address: upper 96 bits = 0x20c000000000000000000000
+        uint64 lowBits = uint64(bound(lowBitsSeed, 1, type(uint64).max));
+        address tip20Addr = address(uint160(0x20c000000000000000000000) << 64 | uint160(lowBits));
+
+        vm.startPrank(spender);
+        vm.expectRevert(ITIP20.InvalidRecipient.selector);
+        token.transferFrom(owner, tip20Addr, amount);
+        vm.stopPrank();
+    }
+
     /// @notice Handler for transfer with insufficient balance
     /// @dev Tests that transfers exceeding balance revert with InsufficientBalance
     function handler_tryTransferInsufficientBalance(
@@ -528,6 +624,83 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.stopPrank();
     }
 
+    /// @notice Handler for transfer from blacklisted sender
+    /// @dev Tests that transfers from a blacklisted address revert with PolicyForbids
+    function handler_tryTransferPolicyForbidsSender(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address actor = _selectActor(actorSeed);
+        address recipient = _selectActorExcluding(recipientSeed, actor);
+
+        uint256 actorBalance = token.balanceOf(actor);
+        vm.assume(actorBalance > 0);
+        amount = bound(amount, 1, actorBalance);
+
+        vm.assume(!token.paused());
+
+        // Blacklist the sender
+        uint64 policyId = _getPolicyId(address(token));
+        address policyAdmin = _getPolicyAdmin(address(token));
+
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, actor, true);
+
+        // Sender is now blacklisted, transfer should revert
+        vm.startPrank(actor);
+        vm.expectRevert(ITIP20.PolicyForbids.selector);
+        token.transfer(recipient, amount);
+        vm.stopPrank();
+
+        // Clean up: remove from blacklist
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, actor, false);
+    }
+
+    /// @notice Handler for transfer to blacklisted recipient
+    /// @dev Tests that transfers to a blacklisted address revert with PolicyForbids
+    function handler_tryTransferPolicyForbidsRecipient(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address actor = _selectActor(actorSeed);
+        address recipient = _selectActorExcluding(recipientSeed, actor);
+
+        uint256 actorBalance = token.balanceOf(actor);
+        vm.assume(actorBalance > 0);
+        amount = bound(amount, 1, actorBalance);
+
+        vm.assume(!token.paused());
+        vm.assume(_isAuthorizedSender(address(token), actor));
+
+        // Blacklist the recipient
+        uint64 policyId = _getPolicyId(address(token));
+        address policyAdmin = _getPolicyAdmin(address(token));
+
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, recipient, true);
+
+        // Recipient is now blacklisted, transfer should revert
+        vm.startPrank(actor);
+        vm.expectRevert(ITIP20.PolicyForbids.selector);
+        token.transfer(recipient, amount);
+        vm.stopPrank();
+
+        // Clean up: remove from blacklist
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, recipient, false);
+    }
+
     /// @notice Handler for transfer when contract is paused
     /// @dev Tests that transfers revert with ContractPaused when paused
     function handler_tryTransferWhenPaused(
@@ -555,8 +728,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for transferFrom with allowance
-    /// @dev Tests TEMPO-TIP3 (allowance consumption), TEMPO-TIP4 (infinite allowance)
-    function transferFrom(
+    /// @dev Tests TEMPO-TIP3 (allowance consumption), TEMPO-TIP4 (infinite allowance),
+    ///      balance conservation, total supply unchanged, optedInSupply consistency,
+    ///      reward accounting, and Transfer event emission
+    function handler_transferFrom(
         uint256 actorSeed,
         uint256 tokenSeed,
         uint256 ownerSeed,
@@ -573,69 +748,828 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 ownerBalance = token.balanceOf(owner);
         vm.assume(ownerBalance > 0);
 
-        uint256 allowance = token.allowance(owner, spender);
-        vm.assume(allowance > 0);
+        uint256 currentAllowance = token.allowance(owner, spender);
+        vm.assume(currentAllowance > 0);
 
-        amount = bound(amount, 1, ownerBalance < allowance ? ownerBalance : allowance);
+        amount = bound(amount, 1, ownerBalance < currentAllowance ? ownerBalance : currentAllowance);
 
-        vm.assume(_isAuthorized(address(token), owner));
-        vm.assume(_isAuthorized(address(token), recipient));
+        vm.assume(_isAuthorizedSender(address(token), owner));
+        vm.assume(_isAuthorizedRecipient(address(token), recipient));
+        vm.assume(!token.paused());
+
+        // Snapshot all relevant state before transferFrom
+        uint256 recipientBalanceBefore = token.balanceOf(recipient);
+        uint256 totalSupplyBefore = token.totalSupply();
+        uint128 optedInSupplyBefore = token.optedInSupply();
+        uint256 globalRPTBefore = token.globalRewardPerToken();
+        bool isInfiniteAllowance = currentAllowance == type(uint256).max;
+
+        // Snapshot reward info for owner and recipient
+        (address fromDelegate, uint256 fromRPTBefore,) = token.userRewardInfo(owner);
+        (address toDelegate, uint256 toRPTBefore,) = token.userRewardInfo(recipient);
+
+        // Snapshot delegate reward balances before transfer
+        (,, uint256 fromDelegateRewardBalBefore) =
+            fromDelegate != address(0) ? token.userRewardInfo(fromDelegate) : (address(0), uint256(0), uint256(0));
+        (,, uint256 toDelegateRewardBalBefore) =
+            toDelegate != address(0) ? token.userRewardInfo(toDelegate) : (address(0), uint256(0), uint256(0));
+
+        // Snapshot spender reward info to assert it is unchanged
+        (, uint256 spenderRPTBefore, uint256 spenderRewardBalBefore) = token.userRewardInfo(spender);
+
+        vm.recordLogs();
+
+        vm.startPrank(spender);
+        bool success = token.transferFrom(owner, recipient, amount);
+        vm.stopPrank();
+
+        assertTrue(success, "TEMPO-TIP3: TransferFrom should return true");
+
+        // TEMPO-TIP3/TIP4: Allowance handling
+        if (isInfiniteAllowance) {
+            assertEq(
+                token.allowance(owner, spender),
+                type(uint256).max,
+                "TEMPO-TIP4: Infinite allowance should remain infinite"
+            );
+        } else {
+            assertEq(
+                token.allowance(owner, spender),
+                currentAllowance - amount,
+                "TEMPO-TIP3: Allowance not decreased correctly"
+            );
+        }
+
+        // Balance conservation
+        assertEq(
+            token.balanceOf(owner),
+            ownerBalance - amount,
+            "TEMPO-TIP3: Owner balance not decreased correctly"
+        );
+        assertEq(
+            token.balanceOf(recipient),
+            recipientBalanceBefore + amount,
+            "TEMPO-TIP3: Recipient balance not increased correctly"
+        );
+
+        // Total supply unchanged
+        assertEq(
+            token.totalSupply(),
+            totalSupplyBefore,
+            "TEMPO-TIP2: Total supply changed during transferFrom"
+        );
+
+        // optedInSupply consistency: must reflect movement between opted-in/out accounts
+        {
+            int256 expectedDelta =
+                (toDelegate != address(0) ? int256(uint256(amount)) : int256(0))
+                - (fromDelegate != address(0) ? int256(uint256(amount)) : int256(0));
+
+            assertEq(
+                int256(uint256(token.optedInSupply())),
+                int256(uint256(optedInSupplyBefore)) + expectedDelta,
+                "optedInSupply delta mismatch after transferFrom"
+            );
+        }
+
+        // globalRewardPerToken must not change during transferFrom
+        assertEq(
+            token.globalRewardPerToken(),
+            globalRPTBefore,
+            "globalRewardPerToken changed during transferFrom"
+        );
+
+        // Both parties' rewardPerToken must be synced to global after transferFrom
+        (, uint256 fromRPTAfter,) = token.userRewardInfo(owner);
+        (, uint256 toRPTAfter,) = token.userRewardInfo(recipient);
+        assertEq(fromRPTAfter, globalRPTBefore, "Owner rewardPerToken not synced to global");
+        assertEq(toRPTAfter, globalRPTBefore, "Recipient rewardPerToken not synced to global");
+
+        // Reward accrual: delegates must receive correct reward increments
+        if (fromDelegate != address(0) && globalRPTBefore > fromRPTBefore) {
+            uint256 expectedAccrual = (ownerBalance * (globalRPTBefore - fromRPTBefore)) / ACC_PRECISION;
+            (,, uint256 fromDelegateRewardBalAfter) = token.userRewardInfo(fromDelegate);
+            uint256 base = fromDelegateRewardBalBefore;
+            if (fromDelegate == toDelegate && globalRPTBefore > toRPTBefore) {
+                base += (recipientBalanceBefore * (globalRPTBefore - toRPTBefore)) / ACC_PRECISION;
+            }
+            assertEq(
+                fromDelegateRewardBalAfter,
+                base + expectedAccrual,
+                "Owner delegate reward accrual incorrect"
+            );
+        }
+        if (toDelegate != address(0) && globalRPTBefore > toRPTBefore) {
+            uint256 expectedAccrual = (recipientBalanceBefore * (globalRPTBefore - toRPTBefore)) / ACC_PRECISION;
+            (,, uint256 toDelegateRewardBalAfter) = token.userRewardInfo(toDelegate);
+            uint256 base = toDelegateRewardBalBefore;
+            if (fromDelegate == toDelegate && globalRPTBefore > fromRPTBefore) {
+                base += (ownerBalance * (globalRPTBefore - fromRPTBefore)) / ACC_PRECISION;
+            }
+            assertEq(
+                toDelegateRewardBalAfter,
+                base + expectedAccrual,
+                "Recipient delegate reward accrual incorrect"
+            );
+        }
+
+        // Spender reward info must be unchanged when spender is not involved in _transfer
+        // and is not a reward delegate of either party
+        if (spender != owner && spender != recipient && spender != fromDelegate && spender != toDelegate) {
+            (, uint256 spenderRPTAfter, uint256 spenderRewardBalAfter) = token.userRewardInfo(spender);
+            assertEq(spenderRPTAfter, spenderRPTBefore, "Spender rewardPerToken changed");
+            assertEq(spenderRewardBalAfter, spenderRewardBalBefore, "Spender rewardBalance changed");
+        }
+
+        // Verify Transfer event
+        {
+            Vm.Log[] memory entries = vm.getRecordedLogs();
+            bytes32 transferSig = keccak256("Transfer(address,address,uint256)");
+            bool found = false;
+            for (uint256 i = 0; i < entries.length; i++) {
+                if (entries[i].emitter == address(token) && entries[i].topics[0] == transferSig) {
+                    assertEq(
+                        entries[i].topics[1],
+                        bytes32(uint256(uint160(owner))),
+                        "Transfer event: wrong from"
+                    );
+                    assertEq(
+                        entries[i].topics[2],
+                        bytes32(uint256(uint160(recipient))),
+                        "Transfer event: wrong to"
+                    );
+                    assertEq(
+                        abi.decode(entries[i].data, (uint256)),
+                        amount,
+                        "Transfer event: wrong amount"
+                    );
+                    found = true;
+                    break;
+                }
+            }
+            assertTrue(found, "Transfer event not emitted on transferFrom");
+        }
+
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRANSFER_FROM: ",
+                    _getActorIndex(owner),
+                    " -> ",
+                    _getActorIndex(recipient),
+                    " via ",
+                    _getActorIndex(spender),
+                    " ",
+                    vm.toString(amount),
+                    " ",
+                    token.symbol()
+                )
+            );
+        }
+    }
+
+    /// @notice Handler for transferFrom self-transfer edge case (owner == recipient)
+    /// @dev Self-transfers via transferFrom are valid and must not change balances or optedInSupply
+    function handler_transferFromSelf(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 ownerSeed,
+        uint256 amount
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address owner = _selectAuthorizedActor(ownerSeed, address(token));
+        address spender = _selectActorExcluding(actorSeed, owner);
+
+        uint256 ownerBalance = token.balanceOf(owner);
+        vm.assume(ownerBalance > 0);
+
+        uint256 currentAllowance = token.allowance(owner, spender);
+        vm.assume(currentAllowance > 0);
+
+        amount = bound(amount, 0, ownerBalance < currentAllowance ? ownerBalance : currentAllowance);
+
+        vm.assume(_isAuthorizedSender(address(token), owner));
+        vm.assume(_isAuthorizedRecipient(address(token), owner));
+        vm.assume(!token.paused());
+
+        uint256 totalSupplyBefore = token.totalSupply();
+        uint128 optedInSupplyBefore = token.optedInSupply();
+        uint256 globalRPTBefore = token.globalRewardPerToken();
+        bool isInfiniteAllowance = currentAllowance == type(uint256).max;
+        (address ownerDelegate, uint256 ownerRPTBefore,) = token.userRewardInfo(owner);
+
+        // Snapshot delegate reward balance before transfer
+        (,, uint256 delegateRewardBalBefore) =
+            ownerDelegate != address(0) ? token.userRewardInfo(ownerDelegate) : (address(0), uint256(0), uint256(0));
+
+        vm.recordLogs();
+
+        vm.startPrank(spender);
+        bool success = token.transferFrom(owner, owner, amount);
+        vm.stopPrank();
+
+        assertTrue(success, "Self-transferFrom should return true");
+
+        // Balance must be unchanged
+        assertEq(token.balanceOf(owner), ownerBalance, "Balance changed on self-transferFrom");
+
+        // Allowance handling still applies
+        if (isInfiniteAllowance) {
+            assertEq(
+                token.allowance(owner, spender),
+                type(uint256).max,
+                "TEMPO-TIP4: Infinite allowance should remain infinite on self-transferFrom"
+            );
+        } else {
+            assertEq(
+                token.allowance(owner, spender),
+                currentAllowance - amount,
+                "TEMPO-TIP3: Allowance not decreased correctly on self-transferFrom"
+            );
+        }
+
+        // Total supply unchanged
+        assertEq(token.totalSupply(), totalSupplyBefore, "Total supply changed on self-transferFrom");
+
+        // optedInSupply must be unchanged (from and to are the same, deltas cancel)
+        assertEq(
+            token.optedInSupply(),
+            optedInSupplyBefore,
+            "optedInSupply changed on self-transferFrom"
+        );
+
+        // globalRewardPerToken must not change
+        assertEq(
+            token.globalRewardPerToken(),
+            globalRPTBefore,
+            "globalRewardPerToken changed on self-transferFrom"
+        );
+
+        // rewardPerToken must be synced to global
+        (, uint256 ownerRPTAfter,) = token.userRewardInfo(owner);
+        assertEq(ownerRPTAfter, globalRPTBefore, "rewardPerToken not synced on self-transferFrom");
+
+        // Reward accrual: if opted-in, accrual happens exactly once (not doubled)
+        if (ownerDelegate != address(0) && globalRPTBefore > ownerRPTBefore) {
+            uint256 expectedAccrual =
+                (ownerBalance * (globalRPTBefore - ownerRPTBefore)) / ACC_PRECISION;
+            (,, uint256 delegateRewardBalAfter) = token.userRewardInfo(ownerDelegate);
+            assertEq(
+                delegateRewardBalAfter,
+                delegateRewardBalBefore + expectedAccrual,
+                "Self-transferFrom: delegate reward accrual should happen exactly once"
+            );
+        }
+
+        // Verify Transfer event (self-transfers must still emit)
+        {
+            Vm.Log[] memory entries = vm.getRecordedLogs();
+            bytes32 transferSig = keccak256("Transfer(address,address,uint256)");
+            bool found = false;
+            for (uint256 i = 0; i < entries.length; i++) {
+                if (entries[i].emitter == address(token) && entries[i].topics[0] == transferSig) {
+                    assertEq(
+                        entries[i].topics[1],
+                        bytes32(uint256(uint160(owner))),
+                        "Transfer event: wrong from on self-transferFrom"
+                    );
+                    assertEq(
+                        entries[i].topics[2],
+                        bytes32(uint256(uint160(owner))),
+                        "Transfer event: wrong to on self-transferFrom"
+                    );
+                    assertEq(
+                        abi.decode(entries[i].data, (uint256)),
+                        amount,
+                        "Transfer event: wrong amount on self-transferFrom"
+                    );
+                    found = true;
+                    break;
+                }
+            }
+            assertTrue(found, "Transfer event not emitted on self-transferFrom");
+        }
+
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRANSFER_FROM_SELF: ",
+                    _getActorIndex(owner),
+                    " via ",
+                    _getActorIndex(spender),
+                    " ",
+                    vm.toString(amount),
+                    " ",
+                    token.symbol()
+                )
+            );
+        }
+    }
+
+    /// @notice Handler for transferFrom where spender is also the owner (self-spend)
+    /// @dev TIP20 requires allowance even for self-spend (unlike some ERC20s)
+    function handler_transferFromSpenderIsOwner(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address owner = _selectAuthorizedActor(actorSeed, address(token));
+        address recipient = _selectActorExcluding(recipientSeed, owner);
+
+        uint256 ownerBalance = token.balanceOf(owner);
+        vm.assume(ownerBalance > 0);
+
+        // Spender == owner: must still check allowance[owner][owner]
+        uint256 currentAllowance = token.allowance(owner, owner);
+        vm.assume(currentAllowance > 0);
+
+        amount = bound(amount, 1, ownerBalance < currentAllowance ? ownerBalance : currentAllowance);
+
+        vm.assume(_isAuthorizedSender(address(token), owner));
+        vm.assume(_isAuthorizedRecipient(address(token), recipient));
         vm.assume(!token.paused());
 
         uint256 recipientBalanceBefore = token.balanceOf(recipient);
-        bool isInfiniteAllowance = allowance == type(uint256).max;
+        uint256 totalSupplyBefore = token.totalSupply();
+        bool isInfiniteAllowance = currentAllowance == type(uint256).max;
+
+        vm.startPrank(owner);
+        bool success = token.transferFrom(owner, recipient, amount);
+        vm.stopPrank();
+
+        assertTrue(success, "TransferFrom self-spend should return true");
+
+        // Balance conservation
+        assertEq(
+            token.balanceOf(owner),
+            ownerBalance - amount,
+            "Owner balance not decreased on self-spend transferFrom"
+        );
+        assertEq(
+            token.balanceOf(recipient),
+            recipientBalanceBefore + amount,
+            "Recipient balance not increased on self-spend transferFrom"
+        );
+
+        // Total supply unchanged
+        assertEq(token.totalSupply(), totalSupplyBefore, "Total supply changed on self-spend transferFrom");
+
+        // Allowance handling
+        if (isInfiniteAllowance) {
+            assertEq(
+                token.allowance(owner, owner),
+                type(uint256).max,
+                "Infinite self-allowance should remain infinite"
+            );
+        } else {
+            assertEq(
+                token.allowance(owner, owner),
+                currentAllowance - amount,
+                "Self-allowance not decreased correctly"
+            );
+        }
+
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRANSFER_FROM_SELF_SPEND: ",
+                    _getActorIndex(owner),
+                    " -> ",
+                    _getActorIndex(recipient),
+                    " ",
+                    vm.toString(amount),
+                    " ",
+                    token.symbol()
+                )
+            );
+        }
+    }
+
+    /// @notice Handler for transferFrom where spender is also the recipient
+    /// @dev Tests that spender can transferFrom to themselves
+    function handler_transferFromSpenderIsRecipient(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 ownerSeed,
+        uint256 amount
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address owner = _selectAuthorizedActor(ownerSeed, address(token));
+        address spender = _selectActorExcluding(actorSeed, owner);
+
+        uint256 ownerBalance = token.balanceOf(owner);
+        vm.assume(ownerBalance > 0);
+
+        uint256 currentAllowance = token.allowance(owner, spender);
+        vm.assume(currentAllowance > 0);
+
+        amount = bound(amount, 1, ownerBalance < currentAllowance ? ownerBalance : currentAllowance);
+
+        vm.assume(_isAuthorizedSender(address(token), owner));
+        vm.assume(_isAuthorizedRecipient(address(token), spender));
+        vm.assume(!token.paused());
+
+        // spender == recipient: spender receives the tokens
+        uint256 spenderBalanceBefore = token.balanceOf(spender);
+        uint256 totalSupplyBefore = token.totalSupply();
+        bool isInfiniteAllowance = currentAllowance == type(uint256).max;
 
         vm.startPrank(spender);
-        try token.transferFrom(owner, recipient, amount) returns (bool success) {
-            vm.stopPrank();
-            assertTrue(success, "TEMPO-TIP3: TransferFrom should return true");
+        bool success = token.transferFrom(owner, spender, amount);
+        vm.stopPrank();
 
-            // TEMPO-TIP3/TIP4: Allowance handling
-            if (isInfiniteAllowance) {
-                assertEq(
-                    token.allowance(owner, spender),
-                    type(uint256).max,
-                    "TEMPO-TIP4: Infinite allowance should remain infinite"
-                );
-            } else {
-                assertEq(
-                    token.allowance(owner, spender),
-                    allowance - amount,
-                    "TEMPO-TIP3: Allowance not decreased correctly"
-                );
-            }
+        assertTrue(success, "TransferFrom spender-is-recipient should return true");
 
+        // Balance conservation
+        assertEq(
+            token.balanceOf(owner),
+            ownerBalance - amount,
+            "Owner balance not decreased on spender-is-recipient transferFrom"
+        );
+        assertEq(
+            token.balanceOf(spender),
+            spenderBalanceBefore + amount,
+            "Spender/recipient balance not increased on spender-is-recipient transferFrom"
+        );
+
+        // Total supply unchanged
+        assertEq(
+            token.totalSupply(),
+            totalSupplyBefore,
+            "Total supply changed on spender-is-recipient transferFrom"
+        );
+
+        // Allowance handling
+        if (isInfiniteAllowance) {
             assertEq(
-                token.balanceOf(owner),
-                ownerBalance - amount,
-                "TEMPO-TIP3: Owner balance not decreased"
+                token.allowance(owner, spender),
+                type(uint256).max,
+                "Infinite allowance should remain infinite"
             );
+        } else {
             assertEq(
-                token.balanceOf(recipient),
-                recipientBalanceBefore + amount,
-                "TEMPO-TIP3: Recipient balance not increased"
+                token.allowance(owner, spender),
+                currentAllowance - amount,
+                "Allowance not decreased correctly on spender-is-recipient transferFrom"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TRANSFER_FROM: ",
-                        _getActorIndex(owner),
-                        " -> ",
-                        _getActorIndex(recipient),
-                        " via ",
-                        _getActorIndex(spender),
-                        " ",
-                        vm.toString(amount),
-                        " ",
-                        token.symbol()
-                    )
-                );
-            }
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
+
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRANSFER_FROM_SPENDER_IS_RECIPIENT: ",
+                    _getActorIndex(owner),
+                    " -> ",
+                    _getActorIndex(spender),
+                    " ",
+                    vm.toString(amount),
+                    " ",
+                    token.symbol()
+                )
+            );
+        }
+    }
+
+    /// @notice Handler for zero-amount transferFrom edge case
+    /// @dev Tests that zero-amount transferFrom succeeds even with zero allowance
+    function handler_transferFromZeroAmount(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 ownerSeed,
+        uint256 recipientSeed
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address owner = _selectAuthorizedActor(ownerSeed, address(token));
+        address spender = _selectActorExcluding(actorSeed, owner);
+        address recipient = _selectActorExcluding(recipientSeed, owner);
+
+        vm.assume(_isAuthorizedSender(address(token), owner));
+        vm.assume(_isAuthorizedRecipient(address(token), recipient));
+        vm.assume(!token.paused());
+
+        uint256 ownerBalanceBefore = token.balanceOf(owner);
+        uint256 recipientBalanceBefore = token.balanceOf(recipient);
+        uint256 totalSupplyBefore = token.totalSupply();
+        uint128 optedInSupplyBefore = token.optedInSupply();
+        uint256 globalRPTBefore = token.globalRewardPerToken();
+        uint256 allowanceBefore = token.allowance(owner, spender);
+
+        vm.recordLogs();
+
+        vm.startPrank(spender);
+        bool success = token.transferFrom(owner, recipient, 0);
+        vm.stopPrank();
+
+        assertTrue(success, "Zero-amount transferFrom should return true");
+
+        // Balances unchanged
+        assertEq(token.balanceOf(owner), ownerBalanceBefore, "Owner balance changed on zero transferFrom");
+        assertEq(
+            token.balanceOf(recipient),
+            recipientBalanceBefore,
+            "Recipient balance changed on zero transferFrom"
+        );
+        assertEq(token.totalSupply(), totalSupplyBefore, "Total supply changed on zero transferFrom");
+
+        // Allowance unchanged (0 deducted from any allowance is still the same)
+        assertEq(
+            token.allowance(owner, spender),
+            allowanceBefore,
+            "Allowance changed on zero transferFrom"
+        );
+
+        // optedInSupply unchanged
+        assertEq(
+            token.optedInSupply(),
+            optedInSupplyBefore,
+            "optedInSupply changed on zero transferFrom"
+        );
+
+        // globalRewardPerToken must not change
+        assertEq(
+            token.globalRewardPerToken(),
+            globalRPTBefore,
+            "globalRewardPerToken changed on zero transferFrom"
+        );
+
+        // rewardPerToken must be synced for both parties
+        (, uint256 fromRPTAfter,) = token.userRewardInfo(owner);
+        (, uint256 toRPTAfter,) = token.userRewardInfo(recipient);
+        assertEq(fromRPTAfter, globalRPTBefore, "Owner rewardPerToken not synced on zero transferFrom");
+        assertEq(toRPTAfter, globalRPTBefore, "Recipient rewardPerToken not synced on zero transferFrom");
+
+        // Transfer event must still be emitted for zero-amount transferFrom
+        {
+            Vm.Log[] memory entries = vm.getRecordedLogs();
+            bytes32 transferSig = keccak256("Transfer(address,address,uint256)");
+            bool found = false;
+            for (uint256 i = 0; i < entries.length; i++) {
+                if (entries[i].emitter == address(token) && entries[i].topics[0] == transferSig) {
+                    assertEq(
+                        entries[i].topics[1],
+                        bytes32(uint256(uint160(owner))),
+                        "Transfer event: wrong from on zero transferFrom"
+                    );
+                    assertEq(
+                        entries[i].topics[2],
+                        bytes32(uint256(uint160(recipient))),
+                        "Transfer event: wrong to on zero transferFrom"
+                    );
+                    assertEq(
+                        abi.decode(entries[i].data, (uint256)),
+                        0,
+                        "Transfer event: wrong amount on zero transferFrom"
+                    );
+                    found = true;
+                    break;
+                }
+            }
+            assertTrue(found, "Transfer event not emitted on zero transferFrom");
+        }
+
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "TRANSFER_FROM_ZERO: ",
+                    _getActorIndex(owner),
+                    " -> ",
+                    _getActorIndex(recipient),
+                    " via ",
+                    _getActorIndex(spender),
+                    " 0 ",
+                    token.symbol()
+                )
+            );
+        }
+    }
+
+    /// @notice Handler for transferFrom with insufficient allowance
+    /// @dev Tests that transferFrom reverts with InsufficientAllowance when amount > allowance
+    function handler_tryTransferFromInsufficientAllowance(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 ownerSeed,
+        uint256 recipientSeed,
+        uint256 extra
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address owner = _selectAuthorizedActor(ownerSeed, address(token));
+        address spender = _selectActorExcluding(actorSeed, owner);
+        address recipient = _selectActorExcluding(recipientSeed, owner);
+
+        uint256 currentAllowance = token.allowance(owner, spender);
+        vm.assume(currentAllowance < type(uint256).max);
+
+        extra = bound(extra, 1, 1_000_000_000_000);
+        uint256 transferAmount = currentAllowance + extra;
+
+        // Ensure owner has sufficient balance so the revert is from allowance, not balance
+        uint256 ownerBalance = token.balanceOf(owner);
+        vm.assume(ownerBalance >= transferAmount);
+
+        vm.assume(_isAuthorizedSender(address(token), owner));
+        vm.assume(_isAuthorizedRecipient(address(token), recipient));
+        vm.assume(!token.paused());
+
+        vm.startPrank(spender);
+        vm.expectRevert(ITIP20.InsufficientAllowance.selector);
+        token.transferFrom(owner, recipient, transferAmount);
+        vm.stopPrank();
+    }
+
+    /// @notice Handler for transferFrom with insufficient balance
+    /// @dev Tests that transferFrom reverts with InsufficientBalance when amount > balance
+    function handler_tryTransferFromInsufficientBalance(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 ownerSeed,
+        uint256 recipientSeed,
+        uint256 extra
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address owner = _selectAuthorizedActor(ownerSeed, address(token));
+        address spender = _selectActorExcluding(actorSeed, owner);
+        address recipient = _selectActorExcluding(recipientSeed, owner);
+
+        uint256 ownerBalance = token.balanceOf(owner);
+        extra = bound(extra, 1, 1_000_000_000_000);
+        uint256 transferAmount = ownerBalance + extra;
+
+        // Ensure allowance is sufficient so the revert is from balance, not allowance
+        uint256 currentAllowance = token.allowance(owner, spender);
+        vm.assume(currentAllowance >= transferAmount);
+
+        vm.assume(_isAuthorizedSender(address(token), owner));
+        vm.assume(_isAuthorizedRecipient(address(token), recipient));
+        vm.assume(!token.paused());
+
+        vm.startPrank(spender);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ITIP20.InsufficientBalance.selector, ownerBalance, transferAmount, address(token)
+            )
+        );
+        token.transferFrom(owner, recipient, transferAmount);
+        vm.stopPrank();
+    }
+
+    /// @notice Handler for transferFrom from blacklisted owner
+    /// @dev Tests that transferFrom from a blacklisted address reverts with PolicyForbids
+    function handler_tryTransferFromPolicyForbidsSender(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 ownerSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address owner = _selectActor(ownerSeed);
+        address spender = _selectActorExcluding(actorSeed, owner);
+        address recipient = _selectActorExcluding(recipientSeed, owner);
+
+        uint256 ownerBalance = token.balanceOf(owner);
+        vm.assume(ownerBalance > 0);
+        amount = bound(amount, 1, ownerBalance);
+
+        uint256 currentAllowance = token.allowance(owner, spender);
+        vm.assume(currentAllowance >= amount);
+
+        vm.assume(!token.paused());
+
+        // Blacklist the owner (sender)
+        uint64 policyId = _getPolicyId(address(token));
+        address policyAdmin = _getPolicyAdmin(address(token));
+
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, owner, true);
+
+        // Owner is now blacklisted, transferFrom should revert
+        vm.startPrank(spender);
+        vm.expectRevert(ITIP20.PolicyForbids.selector);
+        token.transferFrom(owner, recipient, amount);
+        vm.stopPrank();
+
+        // Clean up: remove from blacklist
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, owner, false);
+    }
+
+    /// @notice Handler for transferFrom to blacklisted recipient
+    /// @dev Tests that transferFrom to a blacklisted address reverts with PolicyForbids
+    function handler_tryTransferFromPolicyForbidsRecipient(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 ownerSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address owner = _selectActor(ownerSeed);
+        address spender = _selectActorExcluding(actorSeed, owner);
+        address recipient = _selectActorExcluding(recipientSeed, owner);
+
+        uint256 ownerBalance = token.balanceOf(owner);
+        vm.assume(ownerBalance > 0);
+        amount = bound(amount, 1, ownerBalance);
+
+        uint256 currentAllowance = token.allowance(owner, spender);
+        vm.assume(currentAllowance >= amount);
+
+        vm.assume(!token.paused());
+        vm.assume(_isAuthorizedSender(address(token), owner));
+
+        // Blacklist the recipient
+        uint64 policyId = _getPolicyId(address(token));
+        address policyAdmin = _getPolicyAdmin(address(token));
+
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, recipient, true);
+
+        // Recipient is now blacklisted, transferFrom should revert
+        vm.startPrank(spender);
+        vm.expectRevert(ITIP20.PolicyForbids.selector);
+        token.transferFrom(owner, recipient, amount);
+        vm.stopPrank();
+
+        // Clean up: remove from blacklist
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, recipient, false);
+    }
+
+    /// @notice Handler for transferFrom when contract is paused
+    /// @dev Tests that transferFrom reverts with ContractPaused when paused
+    function handler_tryTransferFromWhenPaused(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 ownerSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        vm.assume(token.paused());
+
+        address owner = _selectActor(ownerSeed);
+        address spender = _selectActorExcluding(actorSeed, owner);
+        address recipient = _selectActorExcluding(recipientSeed, owner);
+
+        uint256 ownerBalance = token.balanceOf(owner);
+        vm.assume(ownerBalance > 0);
+        amount = bound(amount, 1, ownerBalance);
+
+        vm.startPrank(spender);
+        vm.expectRevert(ITIP20.ContractPaused.selector);
+        token.transferFrom(owner, recipient, amount);
+        vm.stopPrank();
+    }
+
+    /// @notice Handler for transferFrom to invalid recipient (zero address)
+    /// @dev Tests that transferFrom to address(0) reverts with InvalidRecipient
+    function handler_tryTransferFromInvalidRecipient(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 ownerSeed,
+        uint256 amount
+    )
+        external
+    {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address owner = _selectAuthorizedActor(ownerSeed, address(token));
+        address spender = _selectActorExcluding(actorSeed, owner);
+
+        uint256 ownerBalance = token.balanceOf(owner);
+        vm.assume(ownerBalance > 0);
+        amount = bound(amount, 1, ownerBalance);
+
+        uint256 currentAllowance = token.allowance(owner, spender);
+        vm.assume(currentAllowance >= amount);
+
+        vm.assume(_isAuthorizedSender(address(token), owner));
+        vm.assume(!token.paused());
+
+        vm.startPrank(spender);
+        vm.expectRevert(ITIP20.InvalidRecipient.selector);
+        token.transferFrom(owner, address(0), amount);
+        vm.stopPrank();
     }
 
     /// @notice Handler for approvals
