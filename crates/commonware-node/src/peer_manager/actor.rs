@@ -20,7 +20,7 @@ use tracing::{Span, error, info, info_span, instrument, warn};
 
 use crate::{
     consensus::block::Block,
-    validators::{self, DecodedValidator, read_validator_config_with_retry},
+    validators::{self, DecodedValidatorV1, read_validator_config_with_retry},
 };
 
 use super::ingress::{Message, MessageWithCause};
@@ -294,7 +294,7 @@ fn is_past_hardfork(_block: &Block) -> bool {
 
 fn construct_peer_set(
     outcome: &OnchainDkgOutcome,
-    validators: &commonware_utils::ordered::Map<PublicKey, DecodedValidator>,
+    validators: &commonware_utils::ordered::Map<PublicKey, DecodedValidatorV1>,
 ) -> commonware_utils::ordered::Map<PublicKey, commonware_p2p::Address> {
     // Dealers are output.players() from the previous epoch's DKG output.
     // Players are outcome.next_players (the players for the next DKG round).

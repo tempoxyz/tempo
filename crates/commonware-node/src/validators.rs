@@ -36,7 +36,7 @@ pub(crate) async fn read_validator_config_with_retry(
     node: &TempoFullNode,
     target: ReadTarget,
     total_attempts: &Counter,
-) -> ordered::Map<PublicKey, DecodedValidator> {
+) -> ordered::Map<PublicKey, DecodedValidatorV1> {
     let mut attempts = 0;
     const MIN_RETRY: Duration = Duration::from_secs(1);
     const MAX_RETRY: Duration = Duration::from_secs(30);
@@ -159,7 +159,7 @@ pub(crate) async fn read_from_contract_at_height(
     _attempt: u32,
     node: &TempoFullNode,
     height: Height,
-) -> eyre::Result<ordered::Map<PublicKey, DecodedValidator>> {
+) -> eyre::Result<ordered::Map<PublicKey, DecodedValidatorV1>> {
     let raw_validators = read_validator_config_at_height(node, height, |config| {
         config
             .get_validators()
@@ -174,12 +174,12 @@ pub(crate) async fn read_from_contract_at_height(
 #[instrument(skip_all, fields(validators_to_decode = contract_vals.len()))]
 async fn decode_from_contract(
     contract_vals: Vec<IValidatorConfig::Validator>,
-) -> ordered::Map<PublicKey, DecodedValidator> {
+) -> ordered::Map<PublicKey, DecodedValidatorV1> {
     let mut decoded = HashMap::new();
     for val in contract_vals.into_iter() {
         // NOTE: not reporting errors because `decode_from_contract` emits
         // events on success and error
-        if let Ok(val) = DecodedValidator::decode_from_contract(val)
+        if let Ok(val) = DecodedValidatorV1::decode_from_contract(val)
             && let Some(old) = decoded.insert(val.public_key.clone(), val)
         {
             warn!(
@@ -199,7 +199,7 @@ async fn decode_from_contract(
 /// `<host>` is either an IPv4 or IPV6 address, or a fully qualified domain name.
 /// `<ip>` is an IPv4 or IPv6 address.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DecodedValidator {
+pub(crate) struct DecodedValidatorV1 {
     pub(crate) active: bool,
     /// The `publicKey` field of the contract. Used by other validators to
     /// identify a peer by verifying the signatures of its p2p messages and
@@ -224,7 +224,7 @@ pub(crate) struct DecodedValidator {
     pub(crate) address: Address,
 }
 
-impl DecodedValidator {
+impl DecodedValidatorV1 {
     /// Attempts to decode a single validator from the values read in the smart contract.
     ///
     /// This function does not perform hostname lookup on either of the addresses.
@@ -260,7 +260,7 @@ impl DecodedValidator {
     }
 }
 
-impl std::fmt::Display for DecodedValidator {
+impl std::fmt::Display for DecodedValidatorV1 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
             "public key = `{}`, inbound = `{}`, outbound = `{}`, index = `{}`, address = `{}`",
