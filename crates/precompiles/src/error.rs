@@ -108,6 +108,7 @@ impl TempoPrecompileError {
             | Self::FeeManagerError(_)
             | Self::TIP403RegistryError(_)
             | Self::ValidatorConfigError(_)
+            | Self::ValidatorConfigV2Error(_)
             | Self::AccountKeychainError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
