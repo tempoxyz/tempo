@@ -85,6 +85,13 @@ abstract contract GhostState {
     uint256 public ghost_keyRefundRevokedNoop;
     uint256 public ghost_keyRefundOverflowSafe;
 
+    // ============ Spending Limit Deduction Tracking (KEY21, KEY28-KEY30) ============
+
+    uint256 public ghost_keyExactDeductionVerified;
+    uint256 public ghost_keyApproveDeltaVerified;
+    uint256 public ghost_keyExhaustionVerified;
+    uint256 public ghost_keyTxOriginVerified;
+
     // ============ Access Key Invariant Tracking (K1-K3, K6, K10-K12, K16) ============
 
     uint256 public ghost_keyAuthRejectedWrongSigner;

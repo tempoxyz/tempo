@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
+import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
+
 /// @title SimpleStorage - A minimal contract for CREATE testing
 contract SimpleStorage {
 
@@ -102,6 +104,19 @@ library InitcodeHelper {
         bytes memory base = type(SimpleStorage).creationCode;
         bytes memory padding = new bytes(size > base.length ? size - base.length : 0);
         return abi.encodePacked(base, padding, abi.encode(uint256(42)));
+    }
+
+}
+
+/// @title KeychainOriginProxy - Proxy for testing tx_origin spending limit enforcement (TEMPO-KEY21)
+/// @notice When an access-key-signed tx calls this proxy, which then calls TIP20.transfer(),
+///         the spending limit should NOT be consumed because msg.sender (proxy) != tx.origin (EOA).
+contract KeychainOriginProxy {
+
+    function transferOut(address token, address to, uint256 amount) external {
+        (bool success, bytes memory data) =
+            token.call(abi.encodeCall(ITIP20.transfer, (to, amount)));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "transfer failed");
     }
 
 }
