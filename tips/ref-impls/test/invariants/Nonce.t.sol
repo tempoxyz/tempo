@@ -83,7 +83,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         selectors[5] = this.handler_testLargeNonceKey.selector;
         selectors[6] = this.handler_multipleIncrements.selector;
         selectors[7] = this.handler_nonceOverflow.selector;
-        selectors[8] = this.testInvalidNonceKeyIncrement.selector;
+        selectors[8] = this.handler_invalidNonceKeyIncrement.selector;
         selectors[9] = this.testReservedExpiringNonceKey.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
@@ -987,19 +987,121 @@ contract NonceInvariantTest is InvariantBaseTest {
     /// Note: Rust distinguishes between:
     /// - get_nonce(key=0) -> ProtocolNonceNotSupported
     /// - increment_nonce(key=0) -> InvalidNonceKey
-    function testInvalidNonceKeyIncrement(uint256 actorSeed) external {
-        address actor = _selectActor(actorSeed);
+    function handler_invalidNonceKeyIncrement(
+        uint256 accountSeed,
+        uint256 otherKeySeed,
+        uint256 otherActorSeed
+    )
+        external
+    {
+        // Broaden the account domain beyond _actors to verify key-0 rejection
+        // is account-independent. Use accountSeed to occasionally inject edge-case addresses.
+        address account;
+        uint256 branch = accountSeed % 8;
+        if (branch == 0) {
+            account = address(0);
+        } else if (branch == 1) {
+            account = address(this);
+        } else if (branch == 2) {
+            account = _NONCE;
+        } else {
+            account = _selectActor(accountSeed);
+        }
 
-        // TEMPO-NON10: Increment with key 0 should revert with InvalidNonceKey
-        vm.expectRevert(INonce.InvalidNonceKey.selector);
-        this.externalIncrementNonceViaStorage(actor, 0);
+        uint256 otherKey = _selectNonceKey(otherKeySeed);
+
+        // --- Snapshot storage before the rejected increment ---
+
+        // Key-0 slot itself (should never be written)
+        bytes32 slot0 = _getNonceSlot(account, 0);
+        bytes32 snap0 = vm.load(_NONCE, slot0);
+
+        // Adjacent key slot
+        bytes32 otherSlot = _getNonceSlot(account, otherKey);
+        bytes32 snapOther = vm.load(_NONCE, otherSlot);
+
+        // Cross-account slot (if account is from _actors, pick a different actor)
+        address otherActor;
+        if (branch >= 3) {
+            otherActor = _selectActorExcluding(otherActorSeed, account);
+        } else {
+            otherActor = _selectActor(otherActorSeed);
+        }
+        bytes32 crossSlot = _getNonceSlot(otherActor, otherKey);
+        bytes32 snapCross = vm.load(_NONCE, crossSlot);
+
+        // Snapshot ghost state for the adjacent key (should not change)
+        uint64 ghostOtherBefore = _ghostNonces[account][otherKey];
+
+        // Snapshot the increment counter (should not change)
+        uint256 incrementsBefore = _totalIncrements;
+
+        // --- TEMPO-NON10: Increment with key 0 should revert with InvalidNonceKey ---
+
+        bytes memory expectedRevert = abi.encodeWithSelector(INonce.InvalidNonceKey.selector);
+
+        try this.externalIncrementNonceViaStorage(account, 0) {
+            revert("TEMPO-NON10: Increment with key 0 should revert");
+        } catch (bytes memory reason) {
+            // Assert exact revert payload (4 bytes, exact match)
+            assertEq(reason.length, 4, "TEMPO-NON10: Revert data should be exactly 4 bytes");
+            assertEq(reason, expectedRevert, "TEMPO-NON10: Should revert with InvalidNonceKey");
+        }
+
+        // --- Assert statelessness: a second call should revert identically ---
+
+        try this.externalIncrementNonceViaStorage(account, 0) {
+            revert("TEMPO-NON10: Repeat increment with key 0 should revert");
+        } catch (bytes memory reason2) {
+            assertEq(
+                reason2, expectedRevert, "TEMPO-NON10: Repeat call should revert identically"
+            );
+        }
+
+        // --- Assert no side effects on storage ---
+
+        // Key-0 slot unchanged
+        assertEq(
+            vm.load(_NONCE, slot0), snap0, "TEMPO-NON10: Key-0 slot modified by rejected increment"
+        );
+
+        // Adjacent key slot unchanged
+        assertEq(
+            vm.load(_NONCE, otherSlot),
+            snapOther,
+            "TEMPO-NON10: Adjacent key slot modified by rejected increment"
+        );
+
+        // Cross-account slot unchanged
+        assertEq(
+            vm.load(_NONCE, crossSlot),
+            snapCross,
+            "TEMPO-NON10: Cross-account slot modified by rejected increment"
+        );
+
+        // --- Assert no side effects on ghost state ---
+
+        assertEq(
+            _ghostNonces[account][otherKey],
+            ghostOtherBefore,
+            "TEMPO-NON10: Ghost state modified by rejected increment"
+        );
+
+        // Increment counter should not have changed
+        assertEq(
+            _totalIncrements,
+            incrementsBefore,
+            "TEMPO-NON10: Increment counter modified by rejected increment"
+        );
 
         _totalInvalidKeyRejections++;
 
         if (_loggingEnabled) {
             _log(
                 string.concat(
-                    "INVALID_KEY_INCREMENT: ", _getActorIndex(actor), " key=0 correctly reverted"
+                    "INVALID_KEY_INCREMENT: account=",
+                    vm.toString(account),
+                    " key=0 correctly reverted"
                 )
             );
         }
