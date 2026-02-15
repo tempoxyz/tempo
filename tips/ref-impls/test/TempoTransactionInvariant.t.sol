@@ -4641,13 +4641,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // NON9: Transaction must be rejected (nonce would overflow)
         try vmExec.executeTransaction(signedTx) {
-            // If it somehow succeeded, the nonce must NOT have wrapped to 0
-            uint64 actualNonce = nonce.getNonce(actor, nonceKey);
-            assertGe(
-                actualNonce,
-                type(uint64).max,
-                "NON9: Nonce wrapped past u64::MAX"
-            );
+            fail("NON9: Transaction at u64::MAX must be rejected");
         } catch {
             // Expected: tx rejected due to overflow
             // Verify nonce is still at max
