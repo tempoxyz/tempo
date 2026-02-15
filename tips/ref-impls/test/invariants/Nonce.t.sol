@@ -80,7 +80,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         selectors[2] = this.handler_tryProtocolNonce.selector;
         selectors[3] = this.handler_verifyAccountIndependence.selector;
         selectors[4] = this.handler_verifyKeyIndependence.selector;
-        selectors[5] = this.testLargeNonceKey.selector;
+        selectors[5] = this.handler_testLargeNonceKey.selector;
         selectors[6] = this.multipleIncrements.selector;
         selectors[7] = this.testNonceOverflow.selector;
         selectors[8] = this.testInvalidNonceKeyIncrement.selector;
@@ -116,6 +116,24 @@ contract NonceInvariantTest is InvariantBaseTest {
             key += 1;
         }
         return key;
+    }
+
+    /// @dev Number of interesting large nonce keys
+    uint256 private constant NUM_LARGE_KEYS = 8;
+
+    /// @dev Selects from a bounded set of interesting large nonce keys
+    /// Exercises storage slot derivation at extreme uint256 values without unbounded key growth.
+    /// Avoids type(uint256).max which is reserved for TEMPO_EXPIRING_NONCE_KEY.
+    function _selectLargeNonceKey(uint256 seed) internal pure returns (uint256) {
+        uint256 idx = seed % NUM_LARGE_KEYS;
+        if (idx == 0) return type(uint256).max - 1;
+        if (idx == 1) return type(uint256).max - 2;
+        if (idx == 2) return 1 << 255;
+        if (idx == 3) return (1 << 255) + 123;
+        if (idx == 4) return 1 << 128;
+        if (idx == 5) return (1 << 128) + 456;
+        if (idx == 6) return type(uint256).max / 2;
+        return type(uint256).max - 10_000;
     }
 
     /// @dev Tracks a nonce key for an actor in ghost state (for invariant iteration)
@@ -585,35 +603,108 @@ contract NonceInvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice Handler for testing max nonce key
-    /// @dev Tests TEMPO-NON7 (large nonce keys work)
-    /// Note: type(uint256).max is reserved for TEMPO_EXPIRING_NONCE_KEY, so we use max-1
-    function testLargeNonceKey(uint256 actorSeed) external {
+    /// @notice Handler for testing large nonce keys
+    /// @dev Tests TEMPO-NON7 (large nonce keys work correctly)
+    /// Selects from a bounded set of interesting large keys to exercise storage slot
+    /// derivation at extreme uint256 values without unbounded key growth.
+    /// Note: type(uint256).max is reserved for TEMPO_EXPIRING_NONCE_KEY.
+    function handler_testLargeNonceKey(uint256 actorSeed, uint256 keySeed) external {
         address actor = _selectActor(actorSeed);
-        uint256 largeKey = type(uint256).max - 1;
+        uint256 largeKey = _selectLargeNonceKey(keySeed);
 
-        // Should work with large uint256 key
-        uint64 result = nonce.getNonce(actor, largeKey);
-        assertEq(result, _ghostNonces[actor][largeKey], "TEMPO-NON7: Large key should work");
+        uint64 expectedBefore = _ghostNonces[actor][largeKey];
+        uint64 actualBefore = nonce.getNonce(actor, largeKey);
 
-        // Increment and verify
+        // TEMPO-NON7: Ghost state should match actual state before increment
+        assertEq(actualBefore, expectedBefore, "TEMPO-NON7: Ghost nonce mismatch before increment");
+
+        // Verify raw storage matches before increment (catches high-bit corruption
+        // that getNonce's uint64 return would mask)
+        bytes32 slot = _getNonceSlot(actor, largeKey);
+        bytes32 rawBefore = vm.load(_NONCE, slot);
+        assertEq(
+            rawBefore,
+            bytes32(uint256(expectedBefore)),
+            "TEMPO-NON7: Raw storage mismatch before increment"
+        );
+
+        // Snapshot reserved key slot to verify it is untouched after increment
+        bytes32 reservedSlot = _getNonceSlot(actor, type(uint256).max);
+        bytes32 reservedBefore = vm.load(_NONCE, reservedSlot);
+
+        // Snapshot a normal-range key slot to verify cross-range isolation
+        uint256 normalKey = _selectNonceKey(keySeed ^ 0xBEEF);
+        bytes32 normalSlot = _getNonceSlot(actor, normalKey);
+        bytes32 normalBefore = vm.load(_NONCE, normalSlot);
+
+        // Snapshot same large key on a different actor for cross-account isolation
+        address otherActor = _selectActor(actorSeed ^ 0xDEAD);
+        bytes32 otherActorSlot = _getNonceSlot(otherActor, largeKey);
+        bytes32 otherActorBefore = vm.load(_NONCE, otherActorSlot);
+
+        // Compute expected value independently of the storage helper
+        uint64 expectedAfter = expectedBefore + 1;
+
         uint64 newNonce = _incrementNonceViaStorage(actor, largeKey);
-        _ghostNonces[actor][largeKey] = newNonce;
-        _lastSeenNonces[actor][largeKey] = newNonce;
+        _totalIncrements++;
+        _totalLargeKeyTests++;
+
+        // TEMPO-NON7: Nonce should increment by exactly 1
+        assertEq(newNonce, expectedAfter, "TEMPO-NON7: Large key nonce should increment by 1");
+
+        // Verify raw storage after increment (catches high-bit corruption)
+        bytes32 rawAfter = vm.load(_NONCE, slot);
+        assertEq(
+            rawAfter,
+            bytes32(uint256(expectedAfter)),
+            "TEMPO-NON7: Raw storage mismatch after increment"
+        );
+
+        // Verify reserved key slot was not modified
+        assertEq(
+            vm.load(_NONCE, reservedSlot),
+            reservedBefore,
+            "TEMPO-NON7: Increment wrote to reserved key (MAX) slot"
+        );
+
+        // Verify normal-range key slot was not modified
+        assertEq(
+            vm.load(_NONCE, normalSlot),
+            normalBefore,
+            "TEMPO-NON7: Increment wrote to normal-range key slot"
+        );
+
+        // Verify same large key on different actor was not modified
+        assertEq(
+            vm.load(_NONCE, otherActorSlot),
+            otherActorBefore,
+            "TEMPO-NON7: Increment wrote to other actor's slot"
+        );
+
+        // Update ghost state from independently computed expected value (not helper return)
+        _ghostNonces[actor][largeKey] = expectedAfter;
+        _lastSeenNonces[actor][largeKey] = expectedAfter;
+
+        // Track nonce key usage
         _trackNonceKey(actor, largeKey);
 
-        uint64 afterIncrement = nonce.getNonce(actor, largeKey);
-        assertEq(afterIncrement, newNonce, "TEMPO-NON7: Large key should increment correctly");
-
-        _totalLargeKeyTests++;
+        // TEMPO-NON7: New value should be readable via getNonce
+        uint64 actualAfter = nonce.getNonce(actor, largeKey);
+        assertEq(
+            actualAfter, expectedAfter, "TEMPO-NON7: Large key stored nonce should match expected"
+        );
 
         if (_loggingEnabled) {
             _log(
                 string.concat(
                     "LARGE_KEY: ",
                     _getActorIndex(actor),
-                    " key=MAX_UINT256-1 nonce=",
-                    vm.toString(newNonce)
+                    " key=",
+                    vm.toString(largeKey),
+                    " ",
+                    vm.toString(expectedBefore),
+                    " -> ",
+                    vm.toString(expectedAfter)
                 )
             );
         }
