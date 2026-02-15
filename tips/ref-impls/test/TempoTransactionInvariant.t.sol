@@ -9,7 +9,12 @@ import { IAccountKeychain } from "../src/interfaces/IAccountKeychain.sol";
 import { INonce } from "../src/interfaces/INonce.sol";
 import { ITIP20 } from "../src/interfaces/ITIP20.sol";
 import { InvariantChecker } from "./helpers/InvariantChecker.sol";
-import { Counter, InitcodeHelper, SimpleStorage } from "./helpers/TestContracts.sol";
+import {
+    Counter,
+    InitcodeHelper,
+    KeychainOriginProxy,
+    SimpleStorage
+} from "./helpers/TestContracts.sol";
 import { TxBuilder } from "./helpers/TxBuilder.sol";
 
 import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
@@ -47,6 +52,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     mapping(address => mapping(uint256 => uint256)) public ghost_firstUseGas;
     mapping(address => mapping(uint256 => uint256)) public ghost_subsequentUseGas;
 
+    // KEY21: Origin proxy for tx_origin spending limit enforcement
+    KeychainOriginProxy public originProxy;
+
     // Note: Time window (T1-T4) and transaction type (TX4-TX12) ghost state moved to GhostState.sol
 
     // ============ Setup ============
@@ -58,7 +66,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](70);
+        bytes4[] memory selectors = new bytes4[](74);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -147,6 +155,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Spending limit refund handlers (K-REFUND)
         selectors[68] = this.handler_keySpendingRefund.selector;
         selectors[69] = this.handler_keySpendingRefundRevokedKey.selector;
+        // Spending limit deduction handlers (KEY21, KEY28-KEY30)
+        selectors[70] = this.handler_keyExactTransferDeduction.selector;
+        selectors[71] = this.handler_keyApproveDeltaDeduction.selector;
+        selectors[72] = this.handler_keySpendLimitExhaustion.selector;
+        selectors[73] = this.handler_keyTxOriginNoDeduction.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         // Initialize previous nonce tracking for secp256k1 actors
@@ -162,6 +175,16 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_previousProtocolNonce[p256Addr] = 0;
         }
         vm.stopPrank();
+
+        // Deploy origin proxy for KEY21 (tx_origin spending limit enforcement)
+        originProxy = new KeychainOriginProxy();
+        // Fund proxy with pathUSD so it can transfer
+        vm.startPrank(admin);
+        pathUSD.mint(address(originProxy), 100_000_000e6);
+        vm.stopPrank();
+
+        // Sanity: fee token and pathUSD must be distinct for deduction test isolation
+        assert(address(feeToken) != address(pathUSD));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -2172,6 +2195,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             owner
         );
 
+        // KEY30: Snapshot remaining limit before attempted spend
+        uint256 remainingBefore = keychain.getRemainingLimit(owner, keyId, address(feeToken));
+
         ghost_previousProtocolNonce[owner] = ghost_protocolNonce[owner];
         vm.coinbase(validator);
 
@@ -2180,6 +2206,14 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_keyZeroLimitAllowed++;
             _recordProtocolNonceTxSuccess(owner);
         } catch {
+            // KEY30: SpendingLimitExceeded must not mutate remaining limit
+            uint256 remainingAfter = keychain.getRemainingLimit(owner, keyId, address(feeToken));
+            assertEq(
+                remainingAfter,
+                remainingBefore,
+                "KEY30: SpendingLimitExceeded must not mutate remaining limit"
+            );
+
             _handleRevertProtocol(owner);
             _recordKeyZeroLimit();
         }
@@ -4511,6 +4545,406 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             );
 
             ghost_keyRefundRevokedNoop++;
+        } catch {
+            _handleRevertProtocol(ctx.owner);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+         SPENDING LIMIT DEDUCTION HANDLERS (KEY21, KEY28-KEY30)
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Handler KEY28: Verify transfer deducts exactly `amount` from spending limit (non-fee token)
+    /// @dev Uses pathUSD (not feeToken) so fee deduction doesn't interfere with the assertion.
+    ///      This tests the Rust precompile's verify_and_update_spending via the TIP20 transfer path.
+    function handler_keyExactTransferDeduction(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
+        amount = bound(amount, 1e6, 10e6);
+
+        if (!ghost_keyAuthorized[ctx.owner][ctx.keyId]) return;
+        if (ghost_keyExpiry[ctx.owner][ctx.keyId] <= block.timestamp) return;
+        if (!ghost_keyEnforceLimits[ctx.owner][ctx.keyId]) return;
+
+        // Ensure key has a pathUSD spending limit (set one if not)
+        uint256 pathUsdLimit = keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+        if (pathUsdLimit == 0) {
+            // Set a generous pathUSD limit via root key
+            vm.prank(ctx.owner);
+            try keychain.updateSpendingLimit(ctx.keyId, address(pathUSD), 1_000_000e6) {
+                ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(pathUSD)] = 1_000_000e6;
+                pathUsdLimit = 1_000_000e6;
+            } catch {
+                return;
+            }
+        }
+
+        if (amount > pathUsdLimit) return;
+
+        // Ensure fee token spending limit is sufficient for gas (use on-chain remaining, not ghost)
+        uint256 feeLimit = ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(feeToken)];
+        if (feeLimit > 0) {
+            uint256 feeRemaining =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+            if (feeRemaining < 50e6) return;
+        }
+
+        // Ensure owner has pathUSD balance
+        if (pathUSD.balanceOf(ctx.owner) < amount) {
+            vm.prank(admin);
+            pathUSD.mint(ctx.owner, amount + 100_000e6);
+        }
+        // Ensure owner has feeToken for gas
+        _ensureFeeTokenBalance(ctx.owner, 50e6);
+
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.actorIdx == recipientIdx) recipientIdx = (recipientIdx + 1) % actors.length;
+        address recipient = actors[recipientIdx];
+
+        uint64 currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
+
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
+            vmRlp,
+            vm,
+            address(pathUSD),
+            abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0,
+            currentNonce,
+            ctx.keyPk,
+            ctx.owner
+        );
+
+        uint256 remainingBefore = keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+        if (remainingBefore < amount) return;
+
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            _recordProtocolNonceTxSuccess(ctx.owner);
+
+            uint256 remainingAfter =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+
+            // KEY28: Remaining limit must decrease by exactly the transfer amount
+            assertEq(
+                remainingAfter,
+                remainingBefore - amount,
+                "KEY28: Spending limit must decrease by exactly transfer amount"
+            );
+
+            ghost_keyExactDeductionVerified++;
+        } catch {
+            _handleRevertProtocol(ctx.owner);
+        }
+    }
+
+    /// @notice Handler KEY29: Verify approve deducts only the allowance increase from spending limit
+    /// @dev Uses pathUSD (not feeToken) so fee deduction doesn't interfere.
+    ///      Tests the Rust precompile's authorize_approve which only deducts max(new - old, 0).
+    function handler_keyApproveDeltaDeduction(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 spenderSeed,
+        uint256 newAllowanceSeed
+    )
+        external
+    {
+        AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
+
+        if (!ghost_keyAuthorized[ctx.owner][ctx.keyId]) return;
+        if (ghost_keyExpiry[ctx.owner][ctx.keyId] <= block.timestamp) return;
+        if (!ghost_keyEnforceLimits[ctx.owner][ctx.keyId]) return;
+
+        // Ensure key has a pathUSD spending limit
+        uint256 pathUsdRemaining =
+            keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+        if (pathUsdRemaining == 0) {
+            vm.prank(ctx.owner);
+            try keychain.updateSpendingLimit(ctx.keyId, address(pathUSD), 1_000_000e6) {
+                ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(pathUSD)] = 1_000_000e6;
+                pathUsdRemaining = 1_000_000e6;
+            } catch {
+                return;
+            }
+        }
+
+        // Ensure fee token spending limit is sufficient for gas (use on-chain remaining, not ghost)
+        uint256 feeLimit = ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(feeToken)];
+        if (feeLimit > 0) {
+            uint256 feeRemaining =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+            if (feeRemaining < 50e6) return;
+        }
+        _ensureFeeTokenBalance(ctx.owner, 50e6);
+
+        uint256 spenderIdx = spenderSeed % actors.length;
+        if (ctx.actorIdx == spenderIdx) spenderIdx = (spenderIdx + 1) % actors.length;
+        address spender = actors[spenderIdx];
+
+        uint256 oldAllowance = pathUSD.allowance(ctx.owner, spender);
+        uint256 newAllowance = bound(newAllowanceSeed, 0, 500e6);
+
+        // Calculate expected deduction: only the increase counts
+        uint256 expectedDeduction = newAllowance > oldAllowance ? newAllowance - oldAllowance : 0;
+
+        // Ensure limit can cover the deduction
+        if (expectedDeduction > pathUsdRemaining) return;
+
+        uint64 currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
+
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
+            vmRlp,
+            vm,
+            address(pathUSD),
+            abi.encodeCall(ITIP20.approve, (spender, newAllowance)),
+            0,
+            currentNonce,
+            ctx.keyPk,
+            ctx.owner
+        );
+
+        uint256 remainingBefore = keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+        if (remainingBefore < expectedDeduction) return;
+
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            _recordProtocolNonceTxSuccess(ctx.owner);
+
+            uint256 remainingAfter =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+
+            // KEY29: Remaining limit must decrease by exactly the allowance increase
+            assertEq(
+                remainingAfter,
+                remainingBefore - expectedDeduction,
+                "KEY29: Spending limit must decrease by exactly the allowance increase"
+            );
+
+            ghost_keyApproveDeltaVerified++;
+        } catch {
+            _handleRevertProtocol(ctx.owner);
+        }
+    }
+
+    /// @notice Handler KEY30: Verify spending exactly the remaining limit sets it to 0, then further spend reverts
+    /// @dev Uses pathUSD to avoid fee interference. Sets limit = amount, spends exactly that,
+    ///      verifies remaining = 0, then attempts another spend which must fail.
+    function handler_keySpendLimitExhaustion(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
+        amount = bound(amount, 1e6, 10e6);
+
+        if (!ghost_keyAuthorized[ctx.owner][ctx.keyId]) return;
+        if (ghost_keyExpiry[ctx.owner][ctx.keyId] <= block.timestamp) return;
+
+        // Set pathUSD limit to exactly the transfer amount
+        vm.prank(ctx.owner);
+        try keychain.updateSpendingLimit(ctx.keyId, address(pathUSD), amount) {
+            ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(pathUSD)] = amount;
+            ghost_keyEnforceLimits[ctx.owner][ctx.keyId] = true;
+        } catch {
+            return;
+        }
+
+        // Read actual on-chain remaining (may differ from amount due to prior period spending)
+        uint256 remaining = keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+        if (remaining == 0) return;
+
+        // Ensure fee token spending limit is sufficient for gas (need enough for 2 txs)
+        uint256 feeLimit = ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(feeToken)];
+        if (feeLimit > 0) {
+            uint256 feeRemaining =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+            if (feeRemaining < 100e6) return;
+        }
+
+        // Ensure balances
+        if (pathUSD.balanceOf(ctx.owner) < remaining) {
+            vm.prank(admin);
+            pathUSD.mint(ctx.owner, remaining + 100_000e6);
+        }
+        _ensureFeeTokenBalance(ctx.owner, 100e6);
+
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.actorIdx == recipientIdx) recipientIdx = (recipientIdx + 1) % actors.length;
+        address recipient = actors[recipientIdx];
+
+        // Step 1: Spend exactly the remaining limit
+        uint64 currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
+            vmRlp,
+            vm,
+            address(pathUSD),
+            abi.encodeCall(ITIP20.transfer, (recipient, remaining)),
+            0,
+            currentNonce,
+            ctx.keyPk,
+            ctx.owner
+        );
+
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            _recordProtocolNonceTxSuccess(ctx.owner);
+
+            uint256 remainingAfter =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+
+            // KEY30: After spending exactly the limit, remaining must be 0
+            assertEq(
+                remainingAfter, 0, "KEY30: Remaining must be 0 after spending exactly the limit"
+            );
+
+            // Step 2: Attempt another spend — must fail
+            if (pathUSD.balanceOf(ctx.owner) < 1e6) {
+                vm.prank(admin);
+                pathUSD.mint(ctx.owner, 10e6);
+            }
+
+            currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
+            bytes memory signedTx2 = TxBuilder.buildTempoCallKeychain(
+                vmRlp,
+                vm,
+                address(pathUSD),
+                abi.encodeCall(ITIP20.transfer, (recipient, 1e6)),
+                0,
+                currentNonce,
+                ctx.keyPk,
+                ctx.owner
+            );
+
+            ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
+            vm.coinbase(validator);
+
+            try vmExec.executeTransaction(signedTx2) {
+                // Should not succeed — spending limit exhausted
+                _recordProtocolNonceTxSuccess(ctx.owner);
+                revert("KEY30: Transfer should fail after spending limit exhausted");
+            } catch {
+                // KEY30: Failed spend must not mutate remaining limit
+                uint256 remainingAfterFail =
+                    keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+                assertEq(
+                    remainingAfterFail, 0, "KEY30: Failed spend must not mutate remaining limit"
+                );
+
+                _handleRevertProtocol(ctx.owner);
+            }
+
+            ghost_keyExhaustionVerified++;
+        } catch {
+            _handleRevertProtocol(ctx.owner);
+        }
+    }
+
+    /// @notice Handler KEY21: Verify contract-initiated transfers don't consume EOA's spending limit
+    /// @dev An access-key-signed tx calls KeychainOriginProxy.transferOut(), which calls
+    ///      pathUSD.transfer(). Since msg.sender (proxy) != tx.origin (EOA), the access key's
+    ///      pathUSD spending limit must NOT be consumed by the proxy's transfer.
+    function handler_keyTxOriginNoDeduction(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        AccessKeyContext memory ctx = _setupSecp256k1KeyContext(actorSeed, keySeed);
+        amount = bound(amount, 1e6, 10e6);
+
+        if (!ghost_keyAuthorized[ctx.owner][ctx.keyId]) return;
+        if (ghost_keyExpiry[ctx.owner][ctx.keyId] <= block.timestamp) return;
+        if (!ghost_keyEnforceLimits[ctx.owner][ctx.keyId]) return;
+
+        // Ensure key has a pathUSD spending limit
+        uint256 pathUsdLimit = keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+        if (pathUsdLimit == 0) {
+            vm.prank(ctx.owner);
+            try keychain.updateSpendingLimit(ctx.keyId, address(pathUSD), 1_000_000e6) {
+                ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(pathUSD)] = 1_000_000e6;
+                pathUsdLimit = 1_000_000e6;
+            } catch {
+                return;
+            }
+        }
+
+        // Ensure fee token spending limit is sufficient for gas (use on-chain remaining, not ghost)
+        uint256 feeLimit = ghost_keySpendingLimit[ctx.owner][ctx.keyId][address(feeToken)];
+        if (feeLimit > 0) {
+            uint256 feeRemaining =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(feeToken));
+            if (feeRemaining < 50e6) return;
+        }
+        _ensureFeeTokenBalance(ctx.owner, 50e6);
+
+        // Ensure proxy has pathUSD balance
+        if (pathUSD.balanceOf(address(originProxy)) < amount) {
+            vm.prank(admin);
+            pathUSD.mint(address(originProxy), amount + 100_000e6);
+        }
+
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.actorIdx == recipientIdx) recipientIdx = (recipientIdx + 1) % actors.length;
+        address recipient = actors[recipientIdx];
+
+        uint64 currentNonce = uint64(ghost_protocolNonce[ctx.owner]);
+
+        // Build access-key-signed tx that calls the proxy (not pathUSD directly)
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
+            vmRlp,
+            vm,
+            address(originProxy),
+            abi.encodeCall(KeychainOriginProxy.transferOut, (address(pathUSD), recipient, amount)),
+            0,
+            currentNonce,
+            ctx.keyPk,
+            ctx.owner
+        );
+
+        uint256 remainingBefore = keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+        uint256 recipientBalBefore = pathUSD.balanceOf(recipient);
+
+        ghost_previousProtocolNonce[ctx.owner] = ghost_protocolNonce[ctx.owner];
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            _recordProtocolNonceTxSuccess(ctx.owner);
+
+            uint256 remainingAfter =
+                keychain.getRemainingLimit(ctx.owner, ctx.keyId, address(pathUSD));
+            uint256 recipientBalAfter = pathUSD.balanceOf(recipient);
+
+            // Sanity check: the transfer actually happened
+            assertEq(
+                recipientBalAfter,
+                recipientBalBefore + amount,
+                "KEY21: Proxy transfer should have succeeded"
+            );
+
+            // KEY21: pathUSD spending limit must NOT be consumed (proxy is msg.sender, not EOA)
+            assertEq(
+                remainingAfter,
+                remainingBefore,
+                "KEY21: Contract-initiated transfer must not consume EOA spending limit"
+            );
+
+            ghost_keyTxOriginVerified++;
         } catch {
             _handleRevertProtocol(ctx.owner);
         }

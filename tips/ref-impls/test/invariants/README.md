@@ -383,6 +383,10 @@ The ValidatorConfig precompile manages the set of validators that participate in
 
 The AccountKeychain precompile manages authorized Access Keys for accounts, enabling Root Keys to provision scoped secondary keys with expiry timestamps and per-TIP20 token spending limits.
 
+> **Testing architecture**: AccountKeychain invariants are split across two test suites:
+> - `AccountKeychain.t.sol` — Tests key lifecycle (CRUD) operations via direct precompile calls. Covers authorization, revocation, limit updates, expiry, and input validation.
+> - `TempoTransactionInvariant.t.sol` — Tests spending limit *deduction* and transaction-level key behavior via `vmExec.executeTransaction()`, which executes real transactions through the full Rust EVM pipeline. This is the only way to test spending deduction, as it is implemented in the Rust TIP20 precompile and not reachable through the Solidity ref-impl's public interface.
+
 ### Global Invariants
 
 These are checked after every fuzz run:
@@ -441,12 +445,29 @@ These verify correct behavior when the specific function is called:
 
 - **TEMPO-KEY27**: Duplicate token limits last wins - when `authorizeKey` is called with duplicate token entries in `limits`, the loop writes sequentially so the last entry wins. No error is raised.
 
+#### Spending Limit Deduction
+
+- **TEMPO-KEY28**: Transfer spending limit exact deduction - a successful transfer of `amount` using an Access Key decreases `getRemainingLimit(owner, keyId, token)` by exactly `amount`.
+- **TEMPO-KEY29**: Approve spending limit delta deduction - `approve(spender, newAllowance)` using an Access Key deducts only `max(newAllowance - oldAllowance, 0)` from the spending limit. Decreases and no-ops do not consume limit.
+- **TEMPO-KEY30**: Spending limit exhaustion boundary - spending exactly the remaining limit succeeds and sets remaining to 0; any subsequent spend on that token reverts. Failed spends do not mutate the remaining limit.
+
 #### Transaction Context
 
-> **Note**: KEY20/21 cannot be tested in Foundry invariant tests because `transaction_key` uses transient storage (TSTORE/TLOAD) which `vm.store` cannot modify. These invariants require integration tests in `crates/node/tests/it/` that submit real signed transactions.
+> **Note**: KEY20/21 cannot be tested in `AccountKeychain.t.sol` because `transaction_key` uses transient storage set by the protocol during transaction execution. They are tested in `TempoTransactionInvariant.t.sol`.
 
 - **TEMPO-KEY20**: Main-key-only administration - `authorizeKey`, `revokeKey`, and `updateSpendingLimit` require `transaction_key == 0` (Root Key context). When called with a non-zero transaction key (i.e., from an Access Key), these operations revert with `UnauthorizedCaller`. This ensures only the Root Key can manage Access Keys.
-- **TEMPO-KEY21**: Spending limit tx_origin enforcement - spending limits are only consumed when `msg_sender == tx_origin`. Contract-initiated transfers (where msg_sender is a contract, not the signing EOA) do not consume the EOA's spending limit. This prevents contracts from unexpectedly draining a user's spending limits.
+- **TEMPO-KEY21**: Spending limit tx_origin enforcement - spending limits are only consumed when `msg_sender == tx_origin`. Contract-initiated transfers (where msg_sender is a contract, not the signing EOA) do not consume the EOA's spending limit.
+
+#### Transaction-Level Key Invariants
+
+- **TEMPO-KEY31**: Wrong chain_id rejection - key authorization with a `chain_id` that doesn't match the current chain (and isn't 0) is rejected.
+- **TEMPO-KEY32**: Same-transaction authorize and use - a key authorized in one call of a multicall can be used in a subsequent call of the same transaction.
+- **TEMPO-KEY33**: Spending period reset - spending limits reset after the spending period expires, allowing the key to spend again.
+- **TEMPO-KEY34**: Unlimited spending at runtime - keys with `enforceLimits=false` can execute transfers of any amount without spending limit deduction.
+- **TEMPO-KEY35**: Zero-limit enforcement - keys with `enforceLimits=true` and no token limits set cannot spend anything (transactions are rejected).
+- **TEMPO-KEY36**: Signature type mismatch rejection - using a key with a different signature type than the one it was authorized with is rejected.
+- **TEMPO-KEY37**: Gas refund restores spending limit - after a successful transaction, unused gas is refunded to the spending limit. The remaining limit is bounded: `(before - amount - maxFee) <= after <= (before - amount)`.
+- **TEMPO-KEY38**: Refund no-op on revoked key - if a key is revoked between spending and refund, the refund is silently skipped and the remaining limit is unchanged.
 
 ## TIP20
 

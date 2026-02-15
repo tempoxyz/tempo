@@ -5,9 +5,16 @@ import { IAccountKeychain } from "../../src/interfaces/IAccountKeychain.sol";
 import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title AccountKeychain Invariant Tests
-/// @notice Fuzz-based invariant tests for the AccountKeychain precompile
+/// @notice Fuzz-based invariant tests for the AccountKeychain precompile (CRUD operations)
 /// @dev Tests invariants TEMPO-KEY1 through TEMPO-KEY27 (see README.md for mapping)
-///      Note: TEMPO-KEY20/21 require integration tests (transient storage for transaction_key)
+///      This suite tests key lifecycle operations via direct precompile calls:
+///      authorization, revocation, limit updates, expiry, and input validation.
+///
+///      Spending limit DEDUCTION invariants (TEMPO-KEY28-KEY30) and transaction-level
+///      key behavior (TEMPO-KEY20-KEY21, KEY31-KEY38) are tested in
+///      TempoTransactionInvariant.t.sol via vmExec.executeTransaction(), which exercises
+///      the real Rust EVM pipeline including the AccountKeychain and TIP20 precompiles.
+///      See README.md for the full invariant mapping.
 contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @dev Starting offset for key ID address pool (distinct from zero address)
@@ -585,7 +592,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             (address account, address keyId, bool skip) =
                 _ensureActorWithActiveKey(accountSeed, keyIdSeed);
             if (skip) return;
-            if (!_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) return;
 
             IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -1858,16 +1864,21 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                     uint64 expiry = _ghostKeyExpiry[account][keyId];
                     bool isExpired = expiry != type(uint64).max && block.timestamp >= expiry;
 
-                    if (_ghostKeyEnforceLimits[account][keyId]) {
-                        // TEMPO-KEY14: Spending limits must match ghost state for all known tokens
-                        if (!isExpired) {
+                    if (isExpired) {
+                        // Expired-but-not-revoked keys: stored limits must still
+                        // match ghost state (the precompile does not clear them on
+                        // expiry; it only rejects mutating operations).
+                        if (_ghostKeyEnforceLimits[account][keyId]) {
                             _assertAllLimitsMatchGhost(account, keyId, "TEMPO-KEY14");
-                        }
-                    } else {
-                        // TEMPO-KEY25: enforceLimits=false → all limits must read as 0
-                        if (!isExpired) {
+                        } else {
                             _assertAllLimitsZero(account, keyId, "TEMPO-KEY25");
                         }
+                    } else if (_ghostKeyEnforceLimits[account][keyId]) {
+                        // TEMPO-KEY14: Spending limits must match ghost state for all known tokens
+                        _assertAllLimitsMatchGhost(account, keyId, "TEMPO-KEY14");
+                    } else {
+                        // TEMPO-KEY25: enforceLimits=false → all limits must read as 0
+                        _assertAllLimitsZero(account, keyId, "TEMPO-KEY25");
                     }
                 }
             }
@@ -1960,7 +1971,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     }
 
     /// @dev Asserts getRemainingLimit is 0 for all known tokens on a key.
-    ///      Used for revoked keys (KEY25) and enforceLimits=false keys (KEY30).
+    ///      Used for revoked keys (KEY23) and enforceLimits=false keys (KEY25).
     function _assertAllLimitsZero(address account, address keyId, string memory tag) internal view {
         // Check base tokens
         for (uint256 t = 0; t < _tokens.length; t++) {
