@@ -82,7 +82,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         selectors[4] = this.handler_verifyKeyIndependence.selector;
         selectors[5] = this.handler_testLargeNonceKey.selector;
         selectors[6] = this.handler_multipleIncrements.selector;
-        selectors[7] = this.testNonceOverflow.selector;
+        selectors[7] = this.handler_nonceOverflow.selector;
         selectors[8] = this.testInvalidNonceKeyIncrement.selector;
         selectors[9] = this.testReservedExpiringNonceKey.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
@@ -850,30 +850,122 @@ contract NonceInvariantTest is InvariantBaseTest {
     /// @notice Handler for testing nonce overflow at u64::MAX
     /// @dev Tests TEMPO-NON9 (nonce overflow protection)
     /// Uses a small bounded key range to avoid conflicts and prevent unbounded key growth:
-    /// - Normal handlers (1 to MAX_NORMAL_NONCE_KEY)
-    /// - testLargeNonceKey (max-1)
-    /// - Reserved TEMPO_EXPIRING_NONCE_KEY (max)
-    function testNonceOverflow(uint256 actorSeed, uint256 keySeed) external {
+    /// - Normal handlers use keys (1 to MAX_NORMAL_NONCE_KEY)
+    /// - testLargeNonceKey uses extreme uint256 values
+    /// - Reserved TEMPO_EXPIRING_NONCE_KEY uses type(uint256).max
+    /// - This handler uses keys (MAX_NORMAL_NONCE_KEY + 1 to MAX_NORMAL_NONCE_KEY + 100)
+    ///
+    /// Tests the boundary in two steps:
+    /// 1. Set nonce to max-1, increment once (should succeed, reaching max)
+    /// 2. Attempt to increment again at max (should revert with NonceOverflow)
+    /// Verifies raw storage immutability on revert, adjacent key isolation, and ghost consistency.
+    function handler_nonceOverflow(uint256 actorSeed, uint256 keySeed) external {
         address actor = _selectActor(actorSeed);
         // Use a small bounded range to prevent unbounded _accountNonceKeys growth
         uint256 nonceKey = bound(keySeed, MAX_NORMAL_NONCE_KEY + 1, MAX_NORMAL_NONCE_KEY + 100);
 
-        // Set nonce to max value via direct storage manipulation
         bytes32 slot = _getNonceSlot(actor, nonceKey);
-        vm.store(_NONCE, slot, bytes32(uint256(type(uint64).max)));
 
-        // Verify the nonce is at max
-        uint64 currentNonce = nonce.getNonce(actor, nonceKey);
-        assertEq(currentNonce, type(uint64).max, "TEMPO-NON9: Nonce should be at max");
+        // Snapshot an adjacent key's slot to verify isolation after overflow attempt
+        uint256 otherKey = _selectNonceKeyExcluding(keySeed ^ 0xBEEF, nonceKey);
+        bytes32 otherSlot = _getNonceSlot(actor, otherKey);
+        bytes32 otherBefore = vm.load(_NONCE, otherSlot);
 
-        // Update ghost state to reflect the storage manipulation
+        // Snapshot another actor's same key slot to verify cross-actor isolation
+        address otherActor = _selectActorExcluding(actorSeed ^ 0xDEAD, actor);
+        bytes32 otherActorSlot = _getNonceSlot(otherActor, nonceKey);
+        bytes32 otherActorBefore = vm.load(_NONCE, otherActorSlot);
+
+        // --- Step 1: Boundary test at max-1 (should succeed) ---
+
+        // Set nonce to max-1 via direct storage manipulation
+        vm.store(_NONCE, slot, bytes32(uint256(type(uint64).max - 1)));
+
+        // Verify raw storage is canonical (no high-bit corruption from vm.store)
+        assertEq(
+            vm.load(_NONCE, slot),
+            bytes32(uint256(type(uint64).max - 1)),
+            "TEMPO-NON9: Raw storage should be canonical after vm.store"
+        );
+
+        // Verify getNonce reads the expected value
+        assertEq(
+            nonce.getNonce(actor, nonceKey),
+            type(uint64).max - 1,
+            "TEMPO-NON9: getNonce should return max-1"
+        );
+
+        // Increment from max-1: should succeed and reach max
+        uint64 newNonce = _incrementNonceViaStorage(actor, nonceKey);
+        assertEq(newNonce, type(uint64).max, "TEMPO-NON9: Increment from max-1 should reach max");
+
+        // Verify raw storage after successful increment
+        assertEq(
+            vm.load(_NONCE, slot),
+            bytes32(uint256(type(uint64).max)),
+            "TEMPO-NON9: Raw storage should be max after increment from max-1"
+        );
+
+        // Verify getNonce after successful increment
+        assertEq(
+            nonce.getNonce(actor, nonceKey),
+            type(uint64).max,
+            "TEMPO-NON9: getNonce should return max after increment from max-1"
+        );
+
+        // Update ghost state to reflect the successful increment
         _ghostNonces[actor][nonceKey] = type(uint64).max;
         _lastSeenNonces[actor][nonceKey] = type(uint64).max;
         _trackNonceKey(actor, nonceKey);
 
+        // --- Step 2: Overflow test at max (should revert) ---
+
+        // Snapshot raw storage before the overflow attempt
+        bytes32 rawBeforeOverflow = vm.load(_NONCE, slot);
+
         // TEMPO-NON9: Attempting to increment at max should revert with NonceOverflow
         vm.expectRevert(INonce.NonceOverflow.selector);
         this.externalIncrementNonceViaStorage(actor, nonceKey);
+
+        // Verify raw storage was NOT modified by the reverted call
+        assertEq(
+            vm.load(_NONCE, slot),
+            rawBeforeOverflow,
+            "TEMPO-NON9: Raw storage must not change on overflow revert"
+        );
+
+        // Verify getNonce still returns max after the reverted overflow attempt
+        assertEq(
+            nonce.getNonce(actor, nonceKey),
+            type(uint64).max,
+            "TEMPO-NON9: getNonce must still return max after overflow revert"
+        );
+
+        // Verify ghost state is still consistent
+        assertEq(
+            _ghostNonces[actor][nonceKey],
+            type(uint64).max,
+            "TEMPO-NON9: Ghost state must remain max after overflow revert"
+        );
+        assertEq(
+            _lastSeenNonces[actor][nonceKey],
+            type(uint64).max,
+            "TEMPO-NON9: Last seen must remain max after overflow revert"
+        );
+
+        // Verify adjacent key slot was not modified by the overflow attempt
+        assertEq(
+            vm.load(_NONCE, otherSlot),
+            otherBefore,
+            "TEMPO-NON6: Overflow attempt wrote to adjacent key slot"
+        );
+
+        // Verify other actor's same key slot was not modified
+        assertEq(
+            vm.load(_NONCE, otherActorSlot),
+            otherActorBefore,
+            "TEMPO-NON5: Overflow attempt wrote to other actor's slot"
+        );
 
         _totalOverflowTests++;
 
@@ -884,7 +976,7 @@ contract NonceInvariantTest is InvariantBaseTest {
                     _getActorIndex(actor),
                     " key=",
                     vm.toString(nonceKey),
-                    " at u64::MAX - increment correctly reverted"
+                    " max-1 -> max succeeded, max -> max+1 correctly reverted"
                 )
             );
         }
