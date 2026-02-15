@@ -14,7 +14,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     uint256 private constant KEY_ID_POOL_OFFSET = 1;
 
     /// @dev Mode of token limits generated for authorizeKey fuzzing
-    enum LimitMode {
+    enum LimitScenario {
         None,
         Single,
         TwoDistinct,
@@ -23,11 +23,33 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @dev Seed bundle for authorizeKey limit generation
     struct LimitSeeds {
-        uint256 modeSeed;
+        uint256 scenarioSeed;
         uint256 token0Seed;
         uint256 amount0Seed;
         uint256 token1Seed;
         uint256 amount1Seed;
+    }
+
+    /// @dev Revert scenario for authorizeKey consolidated handler
+    enum AuthorizeKeyRevertScenario {
+        ZeroPublicKey,
+        KeyAlreadyExists,
+        ExpiryInPast,
+        KeyAlreadyRevoked
+    }
+
+    /// @dev Revert scenario for revokeKey consolidated handler
+    enum RevokeKeyRevertScenario {
+        NeverAuthorized,
+        AlreadyRevoked,
+        OtherAccount
+    }
+
+    /// @dev Revert scenario for updateSpendingLimit consolidated handler
+    enum UpdateLimitRevertScenario {
+        NonExistent,
+        Revoked,
+        OtherAccount
     }
 
     /// @dev Snapshot of key state for immutability checks
@@ -145,8 +167,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             return new IAccountKeychain.TokenLimit[](0);
         }
 
-        LimitMode mode = LimitMode(seeds.modeSeed % 4);
-        uint256 limitCount = mode == LimitMode.None ? 0 : (mode == LimitMode.Single ? 1 : 2);
+        LimitScenario scenario = LimitScenario(seeds.scenarioSeed % 4);
+        uint256 limitCount =
+            scenario == LimitScenario.None ? 0 : (scenario == LimitScenario.Single ? 1 : 2);
         limits = new IAccountKeychain.TokenLimit[](limitCount);
         if (limitCount == 0) {
             return limits;
@@ -161,9 +184,10 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         }
 
         address token1 = address(_selectBaseToken(seeds.token1Seed));
-        if (mode == LimitMode.TwoDuplicate) {
+        if (scenario == LimitScenario.TwoDuplicate) {
             token1 = token0;
-        } else if (mode == LimitMode.TwoDistinct && _tokens.length > 1 && token1 == token0) {
+        } else if (scenario == LimitScenario.TwoDistinct && _tokens.length > 1 && token1 == token0)
+        {
             token1 = address(_tokens[addmod(seeds.token1Seed, 1, _tokens.length)]);
         }
         uint256 amount1 = (seeds.amount1Seed % 1_000_000) * 1e6;
@@ -510,71 +534,227 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice Handler for authorizing with expiry in the past/boundary (should fail)
-    /// @dev Exercises authorizeKey expiry validation with expiry <= block.timestamp
-    function handler_tryAuthorizeKeyExpiryInPast(
+    /// @notice Revert handler for authorizeKey (internal, dispatched by per-scenario wrappers)
+    /// @dev Tests TEMPO-KEY1 (ExpiryInPast), KEY4 (KeyAlreadyRevoked), KEY7 (ZeroPublicKey),
+    ///      KEY8 (KeyAlreadyExists)
+    function _tryAuthorizeKeyRevert(
+        AuthorizeKeyRevertScenario scenario,
         uint256 accountSeed,
         uint256 keyIdSeed,
         uint256 sigTypeSeed,
         uint256 expirySeed,
         bool enforceLimits,
-        uint256 limitAmountSeed
+        LimitSeeds calldata limitSeeds
+    )
+        internal
+    {
+        if (scenario == AuthorizeKeyRevertScenario.ZeroPublicKey) {
+            address account = _selectActor(accountSeed);
+            IAccountKeychain.SignatureType sigType = _generateSignatureType(sigTypeSeed);
+            uint64 expiry = _generateValidAuthorizeExpiry(expirySeed);
+            IAccountKeychain.TokenLimit[] memory limits = _buildAuthorizeLimits(limitSeeds);
+
+            _expectAuthorizeKeyRevert(
+                account,
+                address(0),
+                sigType,
+                expiry,
+                enforceLimits,
+                limits,
+                IAccountKeychain.ZeroPublicKey.selector,
+                "TEMPO-KEY7"
+            );
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "TRY_AUTHORIZE_REVERT[ZeroPublicKey]: account=", _getActorIndex(account)
+                    )
+                );
+            }
+        } else if (scenario == AuthorizeKeyRevertScenario.KeyAlreadyExists) {
+            (address account, address keyId, bool skip) =
+                _ensureActorWithActiveKey(accountSeed, keyIdSeed);
+            if (skip) return;
+            if (!_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) return;
+
+            IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+
+            _expectAuthorizeKeyRevert(
+                account,
+                keyId,
+                IAccountKeychain.SignatureType.Secp256k1,
+                uint64(block.timestamp + 1 days),
+                false,
+                limits,
+                IAccountKeychain.KeyAlreadyExists.selector,
+                "TEMPO-KEY8"
+            );
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "TRY_AUTHORIZE_REVERT[KeyAlreadyExists]: account=",
+                        _getActorIndex(account),
+                        " keyId=",
+                        vm.toString(keyId)
+                    )
+                );
+            }
+        } else if (scenario == AuthorizeKeyRevertScenario.ExpiryInPast) {
+            address account = _selectActor(accountSeed);
+            address keyId = _selectKeyId(keyIdSeed);
+            if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) return;
+
+            uint64 badExpiry = _generateInvalidAuthorizeExpiry(expirySeed);
+            IAccountKeychain.SignatureType sigType = _generateSignatureType(sigTypeSeed);
+            IAccountKeychain.TokenLimit[] memory limits = _buildAuthorizeLimits(limitSeeds);
+
+            _expectAuthorizeKeyRevert(
+                account,
+                keyId,
+                sigType,
+                badExpiry,
+                enforceLimits,
+                limits,
+                IAccountKeychain.ExpiryInPast.selector,
+                "TEMPO-KEY1"
+            );
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "TRY_AUTHORIZE_REVERT[ExpiryInPast]: account=",
+                        _getActorIndex(account),
+                        " keyId=",
+                        vm.toString(keyId),
+                        " expiry=",
+                        vm.toString(badExpiry)
+                    )
+                );
+            }
+        } else {
+            // TEMPO-KEY4: KeyAlreadyRevoked
+            address account = _selectActor(accountSeed);
+
+            (address keyId, bool skip) = _ensureRevokedKey(account, keyIdSeed);
+            if (skip) return;
+
+            assertFalse(
+                _ghostKeyExists[account][keyId], "TEMPO-KEY4: revoked key should not be active"
+            );
+            assertTrue(_ghostKeyRevoked[account][keyId], "TEMPO-KEY4: key should be marked revoked");
+
+            IAccountKeychain.SignatureType sigType = _generateSignatureType(sigTypeSeed);
+            uint64 expiry = _generateValidAuthorizeExpiry(expirySeed);
+            IAccountKeychain.TokenLimit[] memory limits = _buildAuthorizeLimits(limitSeeds);
+
+            _expectAuthorizeKeyRevert(
+                account,
+                keyId,
+                sigType,
+                expiry,
+                enforceLimits,
+                limits,
+                IAccountKeychain.KeyAlreadyRevoked.selector,
+                "TEMPO-KEY4"
+            );
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "TRY_AUTHORIZE_REVERT[KeyAlreadyRevoked]: account=",
+                        _getActorIndex(account),
+                        " keyId=",
+                        vm.toString(keyId)
+                    )
+                );
+            }
+        }
+    }
+
+    function handler_tryAuthorizeKeyRevert_ZeroPublicKey(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint256 sigTypeSeed,
+        uint256 expirySeed,
+        bool enforceLimits,
+        LimitSeeds calldata limitSeeds
     )
         external
     {
-        address account = _selectActor(accountSeed);
-        address keyId = _selectKeyId(keyIdSeed);
+        _tryAuthorizeKeyRevert(
+            AuthorizeKeyRevertScenario.ZeroPublicKey,
+            accountSeed,
+            keyIdSeed,
+            sigTypeSeed,
+            expirySeed,
+            enforceLimits,
+            limitSeeds
+        );
+    }
 
-        // Skip if key already exists or was revoked for this account
-        if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) {
-            return;
-        }
+    function handler_tryAuthorizeKeyRevert_KeyAlreadyExists(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint256 sigTypeSeed,
+        uint256 expirySeed,
+        bool enforceLimits,
+        LimitSeeds calldata limitSeeds
+    )
+        external
+    {
+        _tryAuthorizeKeyRevert(
+            AuthorizeKeyRevertScenario.KeyAlreadyExists,
+            accountSeed,
+            keyIdSeed,
+            sigTypeSeed,
+            expirySeed,
+            enforceLimits,
+            limitSeeds
+        );
+    }
 
-        uint64 badExpiry = _generateInvalidAuthorizeExpiry(expirySeed);
-        IAccountKeychain.SignatureType sigType = _generateSignatureType(sigTypeSeed);
+    function handler_tryAuthorizeKeyRevert_ExpiryInPast(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint256 sigTypeSeed,
+        uint256 expirySeed,
+        bool enforceLimits,
+        LimitSeeds calldata limitSeeds
+    )
+        external
+    {
+        _tryAuthorizeKeyRevert(
+            AuthorizeKeyRevertScenario.ExpiryInPast,
+            accountSeed,
+            keyIdSeed,
+            sigTypeSeed,
+            expirySeed,
+            enforceLimits,
+            limitSeeds
+        );
+    }
 
-        LimitSeeds memory limitSeeds = LimitSeeds({
-            modeSeed: expirySeed,
-            token0Seed: accountSeed,
-            amount0Seed: keyIdSeed,
-            token1Seed: sigTypeSeed,
-            amount1Seed: limitAmountSeed
-        });
-        IAccountKeychain.TokenLimit[] memory limits = _buildAuthorizeLimits(limitSeeds);
-
-        address[] memory watchTokens = _watchTokens(keyId);
-        KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-
-        vm.startPrank(account);
-        try keychain.authorizeKey(keyId, sigType, badExpiry, enforceLimits, limits) {
-            vm.stopPrank();
-            revert("TEMPO-KEY1: authorizeKey with expiry <= now should fail");
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertTrue(reason.length >= 4, "TEMPO-KEY1: Missing revert selector");
-            assertEq(
-                bytes4(reason),
-                IAccountKeychain.ExpiryInPast.selector,
-                "TEMPO-KEY1: Past/boundary expiry should revert with ExpiryInPast"
-            );
-        }
-
-        // Failed authorization must not mutate key state.
-        _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY1");
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_AUTHORIZE_EXPIRY_IN_PAST: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " expiry=",
-                    vm.toString(badExpiry),
-                    " correctly rejected"
-                )
-            );
-        }
+    function handler_tryAuthorizeKeyRevert_KeyAlreadyRevoked(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint256 sigTypeSeed,
+        uint256 expirySeed,
+        bool enforceLimits,
+        LimitSeeds calldata limitSeeds
+    )
+        external
+    {
+        _tryAuthorizeKeyRevert(
+            AuthorizeKeyRevertScenario.KeyAlreadyRevoked,
+            accountSeed,
+            keyIdSeed,
+            sigTypeSeed,
+            expirySeed,
+            enforceLimits,
+            limitSeeds
+        );
     }
 
     /// @notice Handler for revoking a key
@@ -595,17 +775,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             }
         }
 
-        vm.prank(account);
-        keychain.revokeKey(keyId);
-
-        _totalKeysRevoked++;
-
-        // Update ghost state - key metadata is cleared but revocation is sticky.
-        _ghostKeyExists[account][keyId] = false;
-        _ghostKeyRevoked[account][keyId] = true;
-        _ghostKeyExpiry[account][keyId] = 0;
-        _ghostKeyEnforceLimits[account][keyId] = false;
-        _ghostKeySignatureType[account][keyId] = 0;
+        _revokeKey(account, keyId);
 
         // TEMPO-KEY3: Verify key is revoked and all fields match Rust Default
         IAccountKeychain.KeyInfo memory info = keychain.getKey(account, keyId);
@@ -636,118 +806,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                     " keyId=",
                     vm.toString(keyId),
                     hadNonZeroLimit ? " hadLimit=true" : " hadLimit=false"
-                )
-            );
-        }
-    }
-
-    /// @notice Handler for attempting to reauthorize a revoked key
-    /// @dev Tests TEMPO-KEY4 (revoked keys cannot be reauthorized)
-    function handler_tryReauthorizeRevokedKey(
-        uint256 accountSeed,
-        uint256 keyIdSeed,
-        uint256 sigTypeSeed,
-        uint256 expirySeed,
-        bool enforceLimits,
-        LimitSeeds calldata limitSeeds
-    )
-        external
-    {
-        address account = _selectActor(accountSeed);
-
-        // Prefer a revoked key for the selected account.
-        address keyId = address(0);
-        address[] memory keys = _accountKeys[account];
-        if (keys.length > 0) {
-            uint256 startKeyIdx = keyIdSeed % keys.length;
-            for (uint256 k = 0; k < keys.length; k++) {
-                uint256 keyIdx = addmod(startKeyIdx, k, keys.length);
-                address potentialKey = keys[keyIdx];
-                if (_ghostKeyRevoked[account][potentialKey]) {
-                    keyId = potentialKey;
-                    break;
-                }
-            }
-        }
-
-        if (keyId == address(0)) {
-            // No revoked key found - create and revoke one as fallback.
-            // Find an unused keyId for this account.
-            uint256 startKeyIdx = keyIdSeed % _potentialKeyIds.length;
-            for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-                uint256 idx = addmod(startKeyIdx, i, _potentialKeyIds.length);
-                address candidateKey = _potentialKeyIds[idx];
-                if (
-                    !_ghostKeyExists[account][candidateKey]
-                        && !_ghostKeyRevoked[account][candidateKey]
-                ) {
-                    keyId = candidateKey;
-                    break;
-                }
-            }
-            if (keyId == address(0)) {
-                return;
-            }
-            // Create and immediately revoke the key
-            _createKeyInternal(account, keyId, false);
-            vm.prank(account);
-            keychain.revokeKey(keyId);
-            _totalKeysRevoked++;
-            _ghostKeyExists[account][keyId] = false;
-            _ghostKeyRevoked[account][keyId] = true;
-            _ghostKeyExpiry[account][keyId] = 0;
-            _ghostKeyEnforceLimits[account][keyId] = false;
-            _ghostKeySignatureType[account][keyId] = 0;
-        }
-
-        assertFalse(_ghostKeyExists[account][keyId], "TEMPO-KEY4: revoked key should not be active");
-        assertTrue(
-            _ghostKeyRevoked[account][keyId], "TEMPO-KEY4: key should be marked revoked in ghost"
-        );
-
-        IAccountKeychain.SignatureType sigType = _generateSignatureType(sigTypeSeed);
-        uint64 expiry = _generateValidAuthorizeExpiry(expirySeed);
-        IAccountKeychain.TokenLimit[] memory limits = _buildAuthorizeLimits(limitSeeds);
-
-        address[] memory watchTokens = _watchTokens(keyId);
-        KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-
-        vm.startPrank(account);
-        try keychain.authorizeKey(keyId, sigType, expiry, enforceLimits, limits) {
-            vm.stopPrank();
-            revert("TEMPO-KEY4: Reauthorizing revoked key should fail");
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                IAccountKeychain.KeyAlreadyRevoked.selector,
-                "TEMPO-KEY4: Should revert with KeyAlreadyRevoked"
-            );
-        }
-
-        // Failed re-authorization must not mutate revoked key state.
-        _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY4");
-        assertFalse(
-            _ghostKeyExists[account][keyId], "TEMPO-KEY4: key should remain non-active in ghost"
-        );
-        assertTrue(
-            _ghostKeyRevoked[account][keyId], "TEMPO-KEY4: key should remain revoked in ghost"
-        );
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_REAUTHORIZE_REVOKED: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " sigType=",
-                    vm.toString(uint8(sigType)),
-                    " enforceLimits=",
-                    enforceLimits ? "true" : "false",
-                    " limits=",
-                    vm.toString(limits.length),
-                    " correctly rejected"
                 )
             );
         }
@@ -832,164 +890,125 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice Handler for updating spending limit on a never-authorized key (should fail)
-    /// @dev Tests KeyNotFound branch for updateSpendingLimit
-    function handler_tryUpdateSpendingLimitNonExistentKey(
+    /// @notice Revert handler for updateSpendingLimit (internal, dispatched by per-scenario wrappers)
+    /// @dev Tests TEMPO-KEY5 (KeyNotFound: non-existent, KeyAlreadyRevoked: revoked)
+    ///      and cross-account isolation (KeyNotFound: foreign key)
+    function _tryUpdateSpendingLimitRevert(
+        UpdateLimitRevertScenario scenario,
         uint256 accountSeed,
+        uint256 callerSeed,
         uint256 keyIdSeed,
         uint256 tokenSeed,
         uint256 newLimitSeed
     )
-        external
+        internal
     {
-        address account = _selectActor(accountSeed);
-        address keyId = address(0);
+        if (scenario == UpdateLimitRevertScenario.NonExistent) {
+            address account = _selectActor(accountSeed);
+            address keyId = address(0);
 
-        // Sample keyId=0 as explicit edge case; otherwise pick a never-authorized pool key.
-        if (keyIdSeed % 8 != 0) {
-            uint256 startPoolIdx = keyIdSeed % _potentialKeyIds.length;
-            for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-                uint256 idx = addmod(startPoolIdx, i, _potentialKeyIds.length);
-                address candidate = _potentialKeyIds[idx];
-                if (!_ghostKeyExists[account][candidate] && !_ghostKeyRevoked[account][candidate]) {
-                    keyId = candidate;
-                    break;
-                }
+            if (keyIdSeed % 8 != 0) {
+                bool found;
+                (keyId, found) = _findFreshKeyIdForAccount(account, keyIdSeed);
+                if (!found) keyId = address(0);
             }
-        }
 
-        if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) {
-            return;
-        }
+            if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) return;
 
-        address token = _selectUpdateLimitToken(tokenSeed, account, keyId);
-        uint256 newLimit = _deriveUpdateLimit(newLimitSeed);
+            address token = _selectUpdateLimitToken(tokenSeed, account, keyId);
+            uint256 newLimit = _deriveUpdateLimit(newLimitSeed);
 
-        address[] memory watchTokens = _watchTokens(token);
-        KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-
-        vm.startPrank(account);
-        try keychain.updateSpendingLimit(keyId, token, newLimit) {
-            vm.stopPrank();
-            revert("TEMPO-KEY5: Updating non-existent key should fail");
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertEq(
-                bytes4(reason),
+            _expectUpdateLimitRevert(
+                account,
+                account,
+                keyId,
+                token,
+                newLimit,
                 IAccountKeychain.KeyNotFound.selector,
-                "TEMPO-KEY5: non-existent key should revert with KeyNotFound"
+                "TEMPO-KEY5"
             );
-        }
 
-        // Failed update should not mutate key or limit view state.
-        _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY5");
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_UPDATE_LIMIT_NONEXISTENT: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " correctly rejected"
-                )
-            );
-        }
-    }
-
-    /// @notice Handler for updating spending limit on a revoked key (should fail)
-    /// @dev Tests KeyAlreadyRevoked branch for updateSpendingLimit
-    function handler_tryUpdateSpendingLimitRevokedKey(
-        uint256 accountSeed,
-        uint256 keyIdSeed,
-        uint256 tokenSeed,
-        uint256 newLimitSeed
-    )
-        external
-    {
-        address account = _selectActor(accountSeed);
-        address keyId = address(0);
-
-        // Prefer an already revoked key for this account.
-        address[] memory keys = _accountKeys[account];
-        if (keys.length > 0) {
-            uint256 startKeyIdx = keyIdSeed % keys.length;
-            for (uint256 k = 0; k < keys.length; k++) {
-                uint256 idx = addmod(startKeyIdx, k, keys.length);
-                address candidate = keys[idx];
-                if (_ghostKeyRevoked[account][candidate]) {
-                    keyId = candidate;
-                    break;
-                }
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "TRY_UPDATE_LIMIT_REVERT[NonExistent]: account=",
+                        _getActorIndex(account),
+                        " keyId=",
+                        vm.toString(keyId)
+                    )
+                );
             }
-        }
+        } else if (scenario == UpdateLimitRevertScenario.Revoked) {
+            address account = _selectActor(accountSeed);
 
-        // Fallback: create+revoke to guarantee this path is exercised.
-        if (keyId == address(0)) {
-            uint256 startPoolIdx = keyIdSeed % _potentialKeyIds.length;
-            for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-                uint256 idx = addmod(startPoolIdx, i, _potentialKeyIds.length);
-                address candidate = _potentialKeyIds[idx];
-                if (!_ghostKeyExists[account][candidate] && !_ghostKeyRevoked[account][candidate]) {
-                    keyId = candidate;
-                    break;
-                }
-            }
-            if (keyId == address(0)) return;
+            (address keyId, bool skip) = _ensureRevokedKey(account, keyIdSeed);
+            if (skip) return;
+            if (!_ghostKeyRevoked[account][keyId]) return;
 
-            _createKeyInternal(account, keyId, false);
-            vm.prank(account);
-            keychain.revokeKey(keyId);
+            address token = _selectUpdateLimitToken(tokenSeed, account, keyId);
+            uint256 newLimit = _deriveUpdateLimit(newLimitSeed);
 
-            _totalKeysRevoked++;
-            _ghostKeyExists[account][keyId] = false;
-            _ghostKeyRevoked[account][keyId] = true;
-            _ghostKeyExpiry[account][keyId] = 0;
-            _ghostKeyEnforceLimits[account][keyId] = false;
-            _ghostKeySignatureType[account][keyId] = 0;
-        }
-
-        if (!_ghostKeyRevoked[account][keyId]) return;
-
-        address token = _selectUpdateLimitToken(tokenSeed, account, keyId);
-        uint256 newLimit = _deriveUpdateLimit(newLimitSeed);
-
-        address[] memory watchTokens = _watchTokens(token);
-        KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-
-        vm.startPrank(account);
-        try keychain.updateSpendingLimit(keyId, token, newLimit) {
-            vm.stopPrank();
-            revert("TEMPO-KEY5: Updating revoked key should fail");
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertEq(
-                bytes4(reason),
+            _expectUpdateLimitRevert(
+                account,
+                account,
+                keyId,
+                token,
+                newLimit,
                 IAccountKeychain.KeyAlreadyRevoked.selector,
-                "TEMPO-KEY5: revoked key should revert with KeyAlreadyRevoked"
+                "TEMPO-KEY5"
             );
-        }
 
-        // Failed update should not mutate revoked key state.
-        _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY5");
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "TRY_UPDATE_LIMIT_REVERT[Revoked]: account=",
+                        _getActorIndex(account),
+                        " keyId=",
+                        vm.toString(keyId)
+                    )
+                );
+            }
+        } else {
+            // Cross-account (caller tries to update owner's key)
+            address owner = _selectActor(accountSeed);
+            address caller = _selectActorExcluding(callerSeed, owner);
 
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_UPDATE_LIMIT_REVOKED: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " correctly rejected"
-                )
+            (address keyId, bool skip) = _ensureActiveKeyOwnedByOther(owner, caller, keyIdSeed);
+            if (skip) return;
+
+            if (!_ghostKeyExists[owner][keyId] || _ghostKeyRevoked[owner][keyId]) return;
+            if (_ghostKeyExists[caller][keyId] || _ghostKeyRevoked[caller][keyId]) return;
+
+            address token = _selectUpdateLimitToken(tokenSeed, owner, keyId);
+            uint256 newLimit = _deriveUpdateLimit(newLimitSeed);
+
+            _expectUpdateLimitRevert(
+                caller,
+                owner,
+                keyId,
+                token,
+                newLimit,
+                IAccountKeychain.KeyNotFound.selector,
+                "TEMPO-KEY5"
             );
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "TRY_UPDATE_LIMIT_REVERT[OtherAccount]: owner=",
+                        _getActorIndex(owner),
+                        " caller=",
+                        _getActorIndex(caller),
+                        " keyId=",
+                        vm.toString(keyId)
+                    )
+                );
+            }
         }
     }
 
-    /// @notice Handler for updating another account's key (should fail)
-    /// @dev Tests account isolation for updateSpendingLimit
-    function handler_tryUpdateSpendingLimitOtherAccountsKey(
-        uint256 ownerSeed,
+    function handler_tryUpdateSpendingLimitRevert_NonExistent(
+        uint256 accountSeed,
         uint256 callerSeed,
         uint256 keyIdSeed,
         uint256 tokenSeed,
@@ -997,403 +1016,190 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     )
         external
     {
-        address owner = _selectActor(ownerSeed);
-        address caller = _selectActorExcluding(callerSeed, owner);
-        address keyId = address(0);
+        _tryUpdateSpendingLimitRevert(
+            UpdateLimitRevertScenario.NonExistent,
+            accountSeed,
+            callerSeed,
+            keyIdSeed,
+            tokenSeed,
+            newLimitSeed
+        );
+    }
 
-        // Prefer an owner-active key that caller does not have.
-        address[] memory ownerKeys = _accountKeys[owner];
-        if (ownerKeys.length > 0) {
-            uint256 startKeyIdx = keyIdSeed % ownerKeys.length;
-            for (uint256 k = 0; k < ownerKeys.length; k++) {
-                uint256 idx = addmod(startKeyIdx, k, ownerKeys.length);
-                address candidate = ownerKeys[idx];
-                if (
-                    _ghostKeyExists[owner][candidate] && !_ghostKeyRevoked[owner][candidate]
-                        && !_ghostKeyExists[caller][candidate]
-                        && !_ghostKeyRevoked[caller][candidate]
-                ) {
-                    keyId = candidate;
-                    break;
-                }
+    function handler_tryUpdateSpendingLimitRevert_Revoked(
+        uint256 accountSeed,
+        uint256 callerSeed,
+        uint256 keyIdSeed,
+        uint256 tokenSeed,
+        uint256 newLimitSeed
+    )
+        external
+    {
+        _tryUpdateSpendingLimitRevert(
+            UpdateLimitRevertScenario.Revoked,
+            accountSeed,
+            callerSeed,
+            keyIdSeed,
+            tokenSeed,
+            newLimitSeed
+        );
+    }
+
+    function handler_tryUpdateSpendingLimitRevert_OtherAccount(
+        uint256 accountSeed,
+        uint256 callerSeed,
+        uint256 keyIdSeed,
+        uint256 tokenSeed,
+        uint256 newLimitSeed
+    )
+        external
+    {
+        _tryUpdateSpendingLimitRevert(
+            UpdateLimitRevertScenario.OtherAccount,
+            accountSeed,
+            callerSeed,
+            keyIdSeed,
+            tokenSeed,
+            newLimitSeed
+        );
+    }
+
+    /// @notice Revert handler for revokeKey (internal, dispatched by per-scenario wrappers)
+    /// @dev Tests TEMPO-KEY9 (KeyNotFound: never-authorized, already-revoked) and
+    ///      TEMPO-KEY10 (KeyNotFound: cross-account isolation)
+    function _tryRevokeKeyRevert(
+        RevokeKeyRevertScenario scenario,
+        uint256 accountSeed,
+        uint256 callerSeed,
+        uint256 keyIdSeed
+    )
+        internal
+    {
+        if (scenario == RevokeKeyRevertScenario.NeverAuthorized) {
+            address account = _selectActor(accountSeed);
+            address keyId = address(0);
+
+            if (keyIdSeed % 8 != 0) {
+                bool found;
+                (keyId, found) = _findFreshKeyIdForAccount(account, keyIdSeed);
+                if (!found) keyId = address(0);
             }
-        }
 
-        // Fallback: create fresh owner key that is absent for caller.
-        if (keyId == address(0)) {
-            uint256 startPoolIdx = keyIdSeed % _potentialKeyIds.length;
-            for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-                uint256 idx = addmod(startPoolIdx, i, _potentialKeyIds.length);
-                address candidate = _potentialKeyIds[idx];
-                if (
-                    !_ghostKeyExists[owner][candidate] && !_ghostKeyRevoked[owner][candidate]
-                        && !_ghostKeyExists[caller][candidate]
-                        && !_ghostKeyRevoked[caller][candidate]
-                ) {
-                    keyId = candidate;
-                    break;
-                }
+            assertFalse(
+                _ghostKeyExists[account][keyId], "TEMPO-KEY9: target key must not be active"
+            );
+            assertFalse(
+                _ghostKeyRevoked[account][keyId], "TEMPO-KEY9: target key must not be revoked"
+            );
+
+            _expectRevokeKeyRevert(
+                account, account, keyId, IAccountKeychain.KeyNotFound.selector, "TEMPO-KEY9"
+            );
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "TRY_REVOKE_REVERT[NeverAuthorized]: account=",
+                        _getActorIndex(account),
+                        " keyId=",
+                        vm.toString(keyId)
+                    )
+                );
             }
-            if (keyId == address(0)) return;
-            _createKeyInternal(owner, keyId, false);
-        }
+        } else if (scenario == RevokeKeyRevertScenario.AlreadyRevoked) {
+            address account = _selectActor(accountSeed);
 
-        if (!_ghostKeyExists[owner][keyId] || _ghostKeyRevoked[owner][keyId]) return;
-        if (_ghostKeyExists[caller][keyId] || _ghostKeyRevoked[caller][keyId]) return;
+            (address keyId, bool skip) = _ensureRevokedKey(account, keyIdSeed);
+            if (skip) return;
 
-        address token = _selectUpdateLimitToken(tokenSeed, owner, keyId);
-        uint256 newLimit = _deriveUpdateLimit(newLimitSeed);
-
-        address[] memory watchTokens = _watchTokens(token);
-        KeySnapshot memory ownerSnap = _snapshotKey(owner, keyId, watchTokens);
-
-        vm.startPrank(caller);
-        try keychain.updateSpendingLimit(keyId, token, newLimit) {
-            vm.stopPrank();
-            revert("TEMPO-KEY5: Caller should not update another account's key");
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                IAccountKeychain.KeyNotFound.selector,
-                "TEMPO-KEY5: foreign key update should revert with KeyNotFound"
+            assertFalse(
+                _ghostKeyExists[account][keyId], "TEMPO-KEY9: target key must not be active"
             );
-        }
+            assertTrue(_ghostKeyRevoked[account][keyId], "TEMPO-KEY9: target key must be revoked");
 
-        // Failed foreign update must not mutate owner's key state.
-        _assertKeyUnchanged(ownerSnap, owner, keyId, "TEMPO-KEY5");
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_UPDATE_LIMIT_FOREIGN: owner=",
-                    _getActorIndex(owner),
-                    " caller=",
-                    _getActorIndex(caller),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " correctly rejected"
-                )
+            _expectRevokeKeyRevert(
+                account, account, keyId, IAccountKeychain.KeyNotFound.selector, "TEMPO-KEY9"
             );
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "TRY_REVOKE_REVERT[AlreadyRevoked]: account=",
+                        _getActorIndex(account),
+                        " keyId=",
+                        vm.toString(keyId)
+                    )
+                );
+            }
+        } else {
+            // TEMPO-KEY10: Revoke another account's key (cross-account isolation)
+            address owner = _selectActor(accountSeed);
+            address caller = _selectActorExcluding(callerSeed, owner);
+
+            (address keyId, bool skip) = _ensureActiveKeyOwnedByOther(owner, caller, keyIdSeed);
+            if (skip) return;
+
+            assertTrue(_ghostKeyExists[owner][keyId], "TEMPO-KEY10: owner should have active key");
+            assertFalse(
+                _ghostKeyRevoked[owner][keyId], "TEMPO-KEY10: owner key should not be revoked"
+            );
+            assertFalse(
+                _ghostKeyExists[caller][keyId], "TEMPO-KEY10: caller should not have this key"
+            );
+
+            _expectRevokeKeyRevert(
+                caller, owner, keyId, IAccountKeychain.KeyNotFound.selector, "TEMPO-KEY10"
+            );
+
+            if (_loggingEnabled) {
+                _log(
+                    string.concat(
+                        "TRY_REVOKE_REVERT[OtherAccount]: owner=",
+                        _getActorIndex(owner),
+                        " caller=",
+                        _getActorIndex(caller),
+                        " keyId=",
+                        vm.toString(keyId)
+                    )
+                );
+            }
         }
     }
 
-    /// @notice Handler for authorizing key with zero address (should fail)
-    /// @dev Tests TEMPO-KEY7 (zero public key rejection)
-    function handler_tryAuthorizeZeroKey(uint256 accountSeed) external {
-        address account = _selectActor(accountSeed);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
-
-        vm.startPrank(account);
-        try keychain.authorizeKey(
-            address(0),
-            IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
-        ) {
-            vm.stopPrank();
-            revert("TEMPO-KEY7: Zero key ID should fail");
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                IAccountKeychain.ZeroPublicKey.selector,
-                "TEMPO-KEY7: Should revert with ZeroPublicKey"
-            );
-        }
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_ZERO_KEY: account=", _getActorIndex(account), " correctly rejected"
-                )
-            );
-        }
-    }
-
-    /// @notice Handler for authorizing duplicate key (should fail)
-    /// @dev Tests TEMPO-KEY8 (duplicate key rejection)
-    function handler_tryAuthorizeDuplicateKey(uint256 accountSeed, uint256 keyIdSeed) external {
-        // Find an actor with an active key, or create one as fallback (skip if all keys are revoked)
-        (address account, address keyId, bool skip) =
-            _ensureActorWithActiveKey(accountSeed, keyIdSeed);
-        if (skip) {
-            return;
-        }
-
-        // Skip if preconditions aren't met (should not happen, but guard defensively)
-        if (!_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) {
-            return;
-        }
-
-        address[] memory watchTokens = _watchTokens(keyId);
-        KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
-
-        vm.startPrank(account);
-        try keychain.authorizeKey(
-            keyId,
-            IAccountKeychain.SignatureType.Secp256k1,
-            uint64(block.timestamp + 1 days),
-            false,
-            limits
-        ) {
-            vm.stopPrank();
-            revert("TEMPO-KEY8: Duplicate key should fail");
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                IAccountKeychain.KeyAlreadyExists.selector,
-                "TEMPO-KEY8: Should revert with KeyAlreadyExists"
-            );
-        }
-
-        // Failed duplicate authorization must not mutate key or limit state.
-        _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY8");
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_DUPLICATE_KEY: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " correctly rejected"
-                )
-            );
-        }
-    }
-
-    /// @notice Handler for revoking a never-authorized key (should fail)
-    /// @dev Tests TEMPO-KEY9 (revoke non-existent key returns KeyNotFound)
-    function handler_tryRevokeNonExistentKey(uint256 accountSeed, uint256 keyIdSeed) external {
-        address account = _selectActor(accountSeed);
-        address keyId = address(0);
-
-        // Sample keyId=0 as explicit edge case; otherwise pick a never-authorized pool key.
-        if (keyIdSeed % 8 != 0) {
-            uint256 startPoolIdx = keyIdSeed % _potentialKeyIds.length;
-            for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-                uint256 idx = addmod(startPoolIdx, i, _potentialKeyIds.length);
-                address candidate = _potentialKeyIds[idx];
-                if (!_ghostKeyExists[account][candidate] && !_ghostKeyRevoked[account][candidate]) {
-                    keyId = candidate;
-                    break;
-                }
-            }
-        }
-
-        // Sanity: ensure this is truly never-authorized for this account.
-        assertFalse(_ghostKeyExists[account][keyId], "TEMPO-KEY9: target key must not be active");
-        assertFalse(_ghostKeyRevoked[account][keyId], "TEMPO-KEY9: target key must not be revoked");
-
-        address[] memory watchTokens = _watchTokens(keyId);
-        KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-
-        vm.startPrank(account);
-        try keychain.revokeKey(keyId) {
-            vm.stopPrank();
-            revert("TEMPO-KEY9: Revoking non-existent key should fail");
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                IAccountKeychain.KeyNotFound.selector,
-                "TEMPO-KEY9: Should revert with KeyNotFound"
-            );
-        }
-
-        // Failed revoke must not mutate key state.
-        _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY9");
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_REVOKE_NONEXISTENT: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " correctly rejected with KeyNotFound"
-                )
-            );
-        }
-    }
-
-    /// @notice Handler for revoking an already-revoked key (should fail)
-    /// @dev Tests TEMPO-KEY9 replay branch (double revoke returns KeyNotFound)
-    function handler_tryRevokeAlreadyRevokedKey(uint256 accountSeed, uint256 keyIdSeed) external {
-        address account = _selectActor(accountSeed);
-        address keyId = address(0);
-
-        // Prefer an already revoked key for this account.
-        address[] memory keys = _accountKeys[account];
-        if (keys.length > 0) {
-            uint256 startKeyIdx = keyIdSeed % keys.length;
-            for (uint256 k = 0; k < keys.length; k++) {
-                uint256 idx = addmod(startKeyIdx, k, keys.length);
-                address candidate = keys[idx];
-                if (_ghostKeyRevoked[account][candidate]) {
-                    keyId = candidate;
-                    break;
-                }
-            }
-        }
-
-        // Fallback: create+revoke to ensure this path is exercised.
-        if (keyId == address(0)) {
-            uint256 startPoolIdx = keyIdSeed % _potentialKeyIds.length;
-            for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-                uint256 idx = addmod(startPoolIdx, i, _potentialKeyIds.length);
-                address candidate = _potentialKeyIds[idx];
-                if (!_ghostKeyExists[account][candidate] && !_ghostKeyRevoked[account][candidate]) {
-                    keyId = candidate;
-                    break;
-                }
-            }
-            if (keyId == address(0)) return;
-
-            _createKeyInternal(account, keyId, false);
-            vm.prank(account);
-            keychain.revokeKey(keyId);
-
-            _totalKeysRevoked++;
-            _ghostKeyExists[account][keyId] = false;
-            _ghostKeyRevoked[account][keyId] = true;
-            _ghostKeyExpiry[account][keyId] = 0;
-            _ghostKeyEnforceLimits[account][keyId] = false;
-            _ghostKeySignatureType[account][keyId] = 0;
-        }
-
-        // Sanity: key should be in revoked state before attempting second revoke.
-        assertFalse(_ghostKeyExists[account][keyId], "TEMPO-KEY9: target key must not be active");
-        assertTrue(_ghostKeyRevoked[account][keyId], "TEMPO-KEY9: target key must be revoked");
-
-        address[] memory watchTokens = _watchTokens(keyId);
-        KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-
-        vm.startPrank(account);
-        try keychain.revokeKey(keyId) {
-            vm.stopPrank();
-            revert("TEMPO-KEY9: Revoking already-revoked key should fail");
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                IAccountKeychain.KeyNotFound.selector,
-                "TEMPO-KEY9: Should revert with KeyNotFound"
-            );
-        }
-
-        // Failed double-revoke must not mutate key state.
-        _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY9");
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_REVOKE_ALREADY_REVOKED: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " correctly rejected with KeyNotFound"
-                )
-            );
-        }
-    }
-
-    /// @notice Handler for revoking another account's active key (should fail)
-    /// @dev Tests account isolation branch for revoke: caller cannot revoke owner's key
-    function handler_tryRevokeOtherAccountsKey(
-        uint256 ownerSeed,
+    function handler_tryRevokeKeyRevert_NeverAuthorized(
+        uint256 accountSeed,
         uint256 callerSeed,
         uint256 keyIdSeed
     )
         external
     {
-        address owner = _selectActor(ownerSeed);
-        address caller = _selectActorExcluding(callerSeed, owner);
-        address keyId = address(0);
-
-        // Prefer an owner-active key that is absent for caller.
-        address[] memory ownerKeys = _accountKeys[owner];
-        if (ownerKeys.length > 0) {
-            uint256 startKeyIdx = keyIdSeed % ownerKeys.length;
-            for (uint256 k = 0; k < ownerKeys.length; k++) {
-                uint256 idx = addmod(startKeyIdx, k, ownerKeys.length);
-                address candidate = ownerKeys[idx];
-                if (
-                    _ghostKeyExists[owner][candidate] && !_ghostKeyRevoked[owner][candidate]
-                        && !_ghostKeyExists[caller][candidate]
-                        && !_ghostKeyRevoked[caller][candidate]
-                ) {
-                    keyId = candidate;
-                    break;
-                }
-            }
-        }
-
-        // Fallback: create a fresh owner key that caller doesn't have.
-        if (keyId == address(0)) {
-            uint256 startPoolIdx = keyIdSeed % _potentialKeyIds.length;
-            for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-                uint256 idx = addmod(startPoolIdx, i, _potentialKeyIds.length);
-                address candidate = _potentialKeyIds[idx];
-                if (
-                    !_ghostKeyExists[owner][candidate] && !_ghostKeyRevoked[owner][candidate]
-                        && !_ghostKeyExists[caller][candidate]
-                        && !_ghostKeyRevoked[caller][candidate]
-                ) {
-                    keyId = candidate;
-                    break;
-                }
-            }
-            if (keyId == address(0)) return;
-            _createKeyInternal(owner, keyId, false);
-        }
-
-        // Sanity: key is active for owner and missing for caller.
-        assertTrue(_ghostKeyExists[owner][keyId], "TEMPO-KEY10: owner should have active key");
-        assertFalse(_ghostKeyRevoked[owner][keyId], "TEMPO-KEY10: owner key should not be revoked");
-        assertFalse(_ghostKeyExists[caller][keyId], "TEMPO-KEY10: caller should not have this key");
-        assertFalse(
-            _ghostKeyRevoked[caller][keyId], "TEMPO-KEY10: caller key should not be revoked"
+        _tryRevokeKeyRevert(
+            RevokeKeyRevertScenario.NeverAuthorized, accountSeed, callerSeed, keyIdSeed
         );
+    }
 
-        address[] memory watchTokens = _watchTokens(keyId);
-        KeySnapshot memory ownerSnap = _snapshotKey(owner, keyId, watchTokens);
+    function handler_tryRevokeKeyRevert_AlreadyRevoked(
+        uint256 accountSeed,
+        uint256 callerSeed,
+        uint256 keyIdSeed
+    )
+        external
+    {
+        _tryRevokeKeyRevert(
+            RevokeKeyRevertScenario.AlreadyRevoked, accountSeed, callerSeed, keyIdSeed
+        );
+    }
 
-        vm.startPrank(caller);
-        try keychain.revokeKey(keyId) {
-            vm.stopPrank();
-            revert("TEMPO-KEY10: Caller should not be able to revoke another account's key");
-        } catch (bytes memory reason) {
-            vm.stopPrank();
-            assertEq(
-                bytes4(reason),
-                IAccountKeychain.KeyNotFound.selector,
-                "TEMPO-KEY10: Should revert with KeyNotFound for foreign key"
-            );
-        }
-
-        // Failed foreign revoke must not mutate owner's key.
-        _assertKeyUnchanged(ownerSnap, owner, keyId, "TEMPO-KEY10");
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_REVOKE_OTHER_ACCOUNT_KEY: owner=",
-                    _getActorIndex(owner),
-                    " caller=",
-                    _getActorIndex(caller),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " correctly rejected"
-                )
-            );
-        }
+    function handler_tryRevokeKeyRevert_OtherAccount(
+        uint256 accountSeed,
+        uint256 callerSeed,
+        uint256 keyIdSeed
+    )
+        external
+    {
+        _tryRevokeKeyRevert(
+            RevokeKeyRevertScenario.OtherAccount, accountSeed, callerSeed, keyIdSeed
+        );
     }
 
     /// @notice Handler for verifying account isolation
@@ -1692,8 +1498,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         address[] memory watchTokens = _watchTokens(token);
         KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-        uint256 totalLimitUpdatesBefore = _totalLimitUpdates;
-
         // Warp to exactly the expiry timestamp.
         // TEMPO-KEY17: timestamp >= expiry means equality counts as expired.
         vm.warp(expiry);
@@ -1713,33 +1517,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // Failed boundary update must not mutate key metadata or limits.
         _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY17");
-        assertEq(
-            _totalLimitUpdates,
-            totalLimitUpdatesBefore,
-            "TEMPO-KEY17: failed boundary update should not change update counter"
-        );
-        assertTrue(
-            _ghostKeyExists[account][keyId], "TEMPO-KEY17: key should remain active in ghost state"
-        );
-        assertFalse(
-            _ghostKeyRevoked[account][keyId],
-            "TEMPO-KEY17: key should not be revoked in ghost state"
-        );
-        assertEq(
-            _ghostKeyExpiry[account][keyId],
-            expiry,
-            "TEMPO-KEY17: ghost expiry should remain unchanged"
-        );
-        assertEq(
-            _ghostKeyEnforceLimits[account][keyId],
-            enforceLimits,
-            "TEMPO-KEY17: ghost enforceLimits should remain unchanged"
-        );
-        assertEq(
-            _ghostKeySignatureType[account][keyId],
-            uint8(sigType),
-            "TEMPO-KEY17: ghost signature type should remain unchanged"
-        );
 
         if (_loggingEnabled) {
             _log(
@@ -1786,8 +1563,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         address[] memory watchTokens = _watchTokens(token);
         KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-        uint256 totalLimitUpdatesBefore = _totalLimitUpdates;
-
         // Warp past expiry (1 second to 1 day past)
         uint256 warpTo = expiry + 1 + (warpAmount % 1 days);
         vm.warp(warpTo);
@@ -1808,23 +1583,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // Failed update on an expired key must not mutate metadata or limits.
         _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY18");
-        assertEq(
-            _totalLimitUpdates,
-            totalLimitUpdatesBefore,
-            "TEMPO-KEY18: failed expired update should not change update counter"
-        );
-        assertTrue(
-            _ghostKeyExists[account][keyId], "TEMPO-KEY18: key should remain active in ghost state"
-        );
-        assertFalse(
-            _ghostKeyRevoked[account][keyId],
-            "TEMPO-KEY18: key should not be revoked in ghost state"
-        );
-        assertEq(
-            _ghostKeyExpiry[account][keyId],
-            expiry,
-            "TEMPO-KEY18: ghost expiry should remain unchanged"
-        );
 
         if (_loggingEnabled) {
             _log(
@@ -1843,7 +1601,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for testing invalid signature type
     /// @dev Tests TEMPO-KEY19 (invalid enum values >= 3 are rejected with InvalidSignatureType)
-    function testInvalidSignatureType(
+    function handler_testInvalidSignatureType(
         uint256 accountSeed,
         uint256 keyIdSeed,
         uint8 badType,
@@ -1860,22 +1618,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         if (keyIdSeed % 8 == 0) {
             keyId = address(0); // Explicit edge case for pre-validation ordering.
         } else {
-            keyId = _selectKeyId(keyIdSeed);
-            if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) {
-                bool found = false;
-                for (uint256 i = 0; i < 8; i++) {
-                    address candidate = _selectKeyId(uint256(keccak256(abi.encode(keyIdSeed, i))));
-                    if (
-                        !_ghostKeyExists[account][candidate]
-                            && !_ghostKeyRevoked[account][candidate]
-                    ) {
-                        keyId = candidate;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) return;
-            }
+            bool found;
+            (keyId, found) = _findFreshKeyIdForAccount(account, keyIdSeed);
+            if (!found) return;
         }
 
         // Only test with values >= 3 (invalid enum values)
@@ -1888,15 +1633,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         address[] memory watchTokens = _watchTokens(keyId);
         KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-
-        uint256 totalAuthorizedBefore = _totalKeysAuthorized;
-        uint256 totalRevokedBefore = _totalKeysRevoked;
-        uint256 totalLimitUpdatesBefore = _totalLimitUpdates;
-        bool ghostExistsBefore = _ghostKeyExists[account][keyId];
-        bool ghostRevokedBefore = _ghostKeyRevoked[account][keyId];
-        uint64 ghostExpiryBefore = _ghostKeyExpiry[account][keyId];
-        bool ghostEnforceBefore = _ghostKeyEnforceLimits[account][keyId];
-        uint8 ghostSigBefore = _ghostKeySignatureType[account][keyId];
 
         // Use low-level call to bypass Solidity's enum type checking
         // This allows us to pass an invalid uint8 value for signatureType
@@ -1944,46 +1680,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // Failed authorize must not mutate state.
         _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY19");
-        assertEq(
-            _totalKeysAuthorized,
-            totalAuthorizedBefore,
-            "TEMPO-KEY19: failed authorize should not change authorized counter"
-        );
-        assertEq(
-            _totalKeysRevoked,
-            totalRevokedBefore,
-            "TEMPO-KEY19: failed authorize should not change revoked counter"
-        );
-        assertEq(
-            _totalLimitUpdates,
-            totalLimitUpdatesBefore,
-            "TEMPO-KEY19: failed authorize should not change limit update counter"
-        );
-        assertEq(
-            _ghostKeyExists[account][keyId],
-            ghostExistsBefore,
-            "TEMPO-KEY19: ghost exists should remain"
-        );
-        assertEq(
-            _ghostKeyRevoked[account][keyId],
-            ghostRevokedBefore,
-            "TEMPO-KEY19: ghost revoked should remain"
-        );
-        assertEq(
-            _ghostKeyExpiry[account][keyId],
-            ghostExpiryBefore,
-            "TEMPO-KEY19: ghost expiry should remain"
-        );
-        assertEq(
-            _ghostKeyEnforceLimits[account][keyId],
-            ghostEnforceBefore,
-            "TEMPO-KEY19: ghost enforceLimits should remain"
-        );
-        assertEq(
-            _ghostKeySignatureType[account][keyId],
-            ghostSigBefore,
-            "TEMPO-KEY19: ghost signatureType should remain"
-        );
 
         if (_loggingEnabled) {
             _log(
@@ -2125,6 +1821,108 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         tokens[_tokens.length + 2] = selected;
     }
 
+    /// @dev Revokes a key and updates ghost state (no assertions)
+    function _revokeKey(address account, address keyId) internal {
+        vm.prank(account);
+        keychain.revokeKey(keyId);
+
+        _totalKeysRevoked++;
+        _ghostKeyExists[account][keyId] = false;
+        _ghostKeyRevoked[account][keyId] = true;
+        _ghostKeyExpiry[account][keyId] = 0;
+        _ghostKeyEnforceLimits[account][keyId] = false;
+        _ghostKeySignatureType[account][keyId] = 0;
+    }
+
+    /// @dev Finds a keyId from the pool that is neither active nor revoked for an account
+    function _findFreshKeyIdForAccount(
+        address account,
+        uint256 seed
+    )
+        internal
+        view
+        returns (address keyId, bool found)
+    {
+        uint256 start = seed % _potentialKeyIds.length;
+        for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
+            address candidate = _potentialKeyIds[addmod(start, i, _potentialKeyIds.length)];
+            if (!_ghostKeyExists[account][candidate] && !_ghostKeyRevoked[account][candidate]) {
+                return (candidate, true);
+            }
+        }
+        return (address(0), false);
+    }
+
+    /// @dev Finds an existing revoked key for an account, or creates and revokes one
+    function _ensureRevokedKey(
+        address account,
+        uint256 keyIdSeed
+    )
+        internal
+        returns (address keyId, bool skip)
+    {
+        // Prefer an existing revoked key.
+        address[] memory keys = _accountKeys[account];
+        if (keys.length > 0) {
+            uint256 start = keyIdSeed % keys.length;
+            for (uint256 i = 0; i < keys.length; i++) {
+                address candidate = keys[addmod(start, i, keys.length)];
+                if (_ghostKeyRevoked[account][candidate]) {
+                    return (candidate, false);
+                }
+            }
+        }
+
+        // Fallback: create and revoke a fresh key.
+        bool found;
+        (keyId, found) = _findFreshKeyIdForAccount(account, keyIdSeed);
+        if (!found) return (address(0), true);
+
+        _createKeyInternal(account, keyId, false);
+        _revokeKey(account, keyId);
+        return (keyId, false);
+    }
+
+    /// @dev Finds or creates a key that is active for owner but unused by another account
+    function _ensureActiveKeyOwnedByOther(
+        address owner,
+        address other,
+        uint256 keyIdSeed
+    )
+        internal
+        returns (address keyId, bool skip)
+    {
+        // Prefer an existing owner key that is active and unused by other.
+        address[] memory keys = _accountKeys[owner];
+        if (keys.length > 0) {
+            uint256 start = keyIdSeed % keys.length;
+            for (uint256 i = 0; i < keys.length; i++) {
+                address candidate = keys[addmod(start, i, keys.length)];
+                if (
+                    _ghostKeyExists[owner][candidate] && !_ghostKeyRevoked[owner][candidate]
+                        && !_ghostKeyExists[other][candidate] && !_ghostKeyRevoked[other][candidate]
+                ) {
+                    return (candidate, false);
+                }
+            }
+        }
+
+        // Fallback: create a fresh key for the owner.
+        uint256 startPool = keyIdSeed % _potentialKeyIds.length;
+        for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
+            address candidate = _potentialKeyIds[addmod(startPool, i, _potentialKeyIds.length)];
+            if (
+                !_ghostKeyExists[owner][candidate] && !_ghostKeyRevoked[owner][candidate]
+                    && !_ghostKeyExists[other][candidate] && !_ghostKeyRevoked[other][candidate]
+            ) {
+                _createKeyInternal(owner, candidate, false);
+                return (candidate, false);
+            }
+        }
+
+        return (address(0), true);
+    }
+
     /// @dev Snapshots KeyInfo + token limits for immutability checks
     function _snapshotKey(
         address account,
@@ -2188,6 +1986,86 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @dev Attempts authorizeKey and asserts it reverts with the expected selector
+    function _expectAuthorizeKeyRevert(
+        address caller,
+        address keyId,
+        IAccountKeychain.SignatureType sigType,
+        uint64 expiry,
+        bool enforceLimits,
+        IAccountKeychain.TokenLimit[] memory limits,
+        bytes4 expectedSelector,
+        string memory tag
+    )
+        internal
+    {
+        address[] memory watchTokens = _watchTokens(keyId);
+        KeySnapshot memory snap = _snapshotKey(caller, keyId, watchTokens);
+
+        vm.startPrank(caller);
+        try keychain.authorizeKey(keyId, sigType, expiry, enforceLimits, limits) {
+            vm.stopPrank();
+            revert(string.concat(tag, ": should have reverted"));
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertEq(bytes4(reason), expectedSelector, string.concat(tag, ": wrong error selector"));
+        }
+
+        _assertKeyUnchanged(snap, caller, keyId, tag);
+    }
+
+    /// @dev Attempts revokeKey and asserts it reverts with the expected selector
+    function _expectRevokeKeyRevert(
+        address caller,
+        address snapshotAccount,
+        address keyId,
+        bytes4 expectedSelector,
+        string memory tag
+    )
+        internal
+    {
+        address[] memory watchTokens = _watchTokens(keyId);
+        KeySnapshot memory snap = _snapshotKey(snapshotAccount, keyId, watchTokens);
+
+        vm.startPrank(caller);
+        try keychain.revokeKey(keyId) {
+            vm.stopPrank();
+            revert(string.concat(tag, ": should have reverted"));
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertEq(bytes4(reason), expectedSelector, string.concat(tag, ": wrong error selector"));
+        }
+
+        _assertKeyUnchanged(snap, snapshotAccount, keyId, tag);
+    }
+
+    /// @dev Attempts updateSpendingLimit and asserts it reverts with the expected selector
+    function _expectUpdateLimitRevert(
+        address caller,
+        address snapshotAccount,
+        address keyId,
+        address token,
+        uint256 newLimit,
+        bytes4 expectedSelector,
+        string memory tag
+    )
+        internal
+    {
+        address[] memory watchTokens = _watchTokens(token);
+        KeySnapshot memory snap = _snapshotKey(snapshotAccount, keyId, watchTokens);
+
+        vm.startPrank(caller);
+        try keychain.updateSpendingLimit(keyId, token, newLimit) {
+            vm.stopPrank();
+            revert(string.concat(tag, ": should have reverted"));
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertEq(bytes4(reason), expectedSelector, string.concat(tag, ": wrong error selector"));
+        }
+
+        _assertKeyUnchanged(snap, snapshotAccount, keyId, tag);
+    }
+
     /// @dev Asserts KeyInfo fields (not limits) are unchanged from snapshot
     function _assertKeyMetadataUnchanged(
         IAccountKeychain.KeyInfo memory infoBefore,
@@ -2200,9 +2078,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     {
         IAccountKeychain.KeyInfo memory infoAfter = keychain.getKey(account, keyId);
         assertEq(
-            infoAfter.keyId,
-            infoBefore.keyId,
-            string.concat(tag, ": keyId should remain unchanged")
+            infoAfter.keyId, infoBefore.keyId, string.concat(tag, ": keyId should remain unchanged")
         );
         assertEq(
             infoAfter.expiry,
