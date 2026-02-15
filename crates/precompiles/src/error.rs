@@ -15,7 +15,7 @@ use revm::{
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
     TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-    ValidatorConfigError,
+    ValidatorConfigError, ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -61,6 +61,10 @@ pub enum TempoPrecompileError {
     /// Error from validator config
     #[error("Validator config error: {0:?}")]
     ValidatorConfigError(ValidatorConfigError),
+
+    /// Error from validator config v2
+    #[error("Validator config v2 error: {0:?}")]
+    ValidatorConfigV2Error(ValidatorConfigV2Error),
 
     /// Error from account keychain precompile
     #[error("Account keychain error: {0:?}")]
@@ -135,6 +139,7 @@ impl TempoPrecompileError {
                 panic.abi_encode().into()
             }
             Self::ValidatorConfigError(e) => e.abi_encode().into(),
+            Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Err(PrecompileError::OutOfGas);
@@ -197,6 +202,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIPFeeAMMError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::NonceError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigV2Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
 
     registry

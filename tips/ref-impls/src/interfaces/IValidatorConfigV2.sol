@@ -22,7 +22,7 @@ interface IValidatorConfigV2 {
     error Unauthorized();
 
     /// @notice Thrown when trying to add a validator with an address that already exists
-    error ValidatorAlreadyExists();
+    error AddressAlreadyHasValidator();
 
     /// @notice Thrown when trying to add a validator with a public key that already exists
     error PublicKeyAlreadyExists();
@@ -202,7 +202,7 @@ interface IValidatorConfigV2 {
     /// @notice Get validator information by index in the validators array
     /// @param index The index in the validators array
     /// @return The validator struct at the given index
-    function validatorByIndex(uint256 index) external view returns (Validator memory);
+    function validatorByIndex(uint64 index) external view returns (Validator memory);
 
     /// @notice Get validator information by address
     /// @param validatorAddress The validator address to look up

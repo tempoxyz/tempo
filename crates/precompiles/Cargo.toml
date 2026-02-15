@@ -19,6 +19,9 @@ alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-evm.workspace = true
 revm.workspace = true
 
+commonware-cryptography.workspace = true
+commonware-codec.workspace = true
+
 tracing.workspace = true
 thiserror.workspace = true
 derive_more.workspace = true

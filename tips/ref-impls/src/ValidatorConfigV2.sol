@@ -30,10 +30,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     Validator[] internal validatorsArray;
 
     /// @dev 1-indexed: 0 means not found. Stored value is arrayIndex + 1.
-    mapping(address => uint256) internal addressToIndex;
+    mapping(address => uint64) internal addressToIndex;
 
     /// @dev 1-indexed: 0 means not found. Stored value is arrayIndex + 1.
-    mapping(bytes32 => uint256) internal pubkeyToIndex;
+    mapping(bytes32 => uint64) internal pubkeyToIndex;
 
     uint64 internal nextDkgCeremony;
 
@@ -105,7 +105,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert Unauthorized();
         }
 
-        uint256 idx = addressToIndex[validatorAddress];
+        uint64 idx = addressToIndex[validatorAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
         }
@@ -147,7 +147,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         onlyInitialized
         onlyOwnerOrValidator(validatorAddress)
     {
-        uint256 idx = addressToIndex[validatorAddress];
+        uint64 idx = addressToIndex[validatorAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
         }
@@ -191,7 +191,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert Unauthorized();
         }
 
-        uint256 idx = addressToIndex[validatorAddress];
+        uint64 idx = addressToIndex[validatorAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
         }
@@ -222,12 +222,12 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert InvalidValidatorAddress();
         }
 
-        uint256 idx = addressToIndex[currentAddress];
+        uint64 idx = addressToIndex[currentAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
         }
         if (addressToIndex[newAddress] != 0) {
-            revert ValidatorAlreadyExists();
+            revert AddressAlreadyHasValidator();
         }
 
         Validator storage v = validatorsArray[idx - 1];
@@ -251,10 +251,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     /// @inheritdoc IValidatorConfigV2
     function getActiveValidators() external view returns (Validator[] memory validators) {
-        uint256 len = validatorsArray.length;
+        uint64 len = uint64(validatorsArray.length);
         validators = new Validator[](len);
-        uint256 idx = 0;
-        for (uint256 i = 0; i < len; i++) {
+        uint64 idx = 0;
+        for (uint64 i = 0; i < len; i++) {
             Validator storage v = validatorsArray[i];
             if (v.deactivatedAtHeight == 0) {
                 validators[idx] = v;
@@ -280,7 +280,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function validatorByIndex(uint256 index) external view returns (Validator memory) {
+    function validatorByIndex(uint64 index) external view returns (Validator memory) {
         if (index >= validatorsArray.length) {
             revert ValidatorNotFound();
         }
@@ -289,7 +289,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     /// @inheritdoc IValidatorConfigV2
     function validatorByAddress(address validatorAddress) external view returns (Validator memory) {
-        uint256 idx = addressToIndex[validatorAddress];
+        uint64 idx = addressToIndex[validatorAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
         }
@@ -298,7 +298,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     /// @inheritdoc IValidatorConfigV2
     function validatorByPublicKey(bytes32 publicKey) external view returns (Validator memory) {
-        uint256 idx = pubkeyToIndex[publicKey];
+        uint64 idx = pubkeyToIndex[publicKey];
         if (idx == 0) {
             revert ValidatorNotFound();
         }
@@ -395,9 +395,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert InvalidValidatorAddress();
         }
         // Allow reusing addresses of deactivated validators
-        uint256 idx1 = addressToIndex[validatorAddress];
+        uint64 idx1 = addressToIndex[validatorAddress];
         if (idx1 != 0 && validatorsArray[idx1 - 1].deactivatedAtHeight == 0) {
-            revert ValidatorAlreadyExists();
+            revert AddressAlreadyHasValidator();
         }
         _validateRotateParams(publicKey, ingress, egress);
     }
