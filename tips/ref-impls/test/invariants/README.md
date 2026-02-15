@@ -437,6 +437,10 @@ These verify correct behavior when the specific function is called:
 
 - **TEMPO-KEY19**: Invalid signature type rejection - enum values >= 3 are invalid and revert with `InvalidSignatureType`.
 
+#### Duplicate Token Limits
+
+- **TEMPO-KEY27**: Duplicate token limits last wins - when `authorizeKey` is called with duplicate token entries in `limits`, the loop writes sequentially so the last entry wins. No error is raised.
+
 #### Transaction Context
 
 > **Note**: KEY20/21 cannot be tested in Foundry invariant tests because `transaction_key` uses transient storage (TSTORE/TLOAD) which `vm.store` cannot modify. These invariants require integration tests in `crates/node/tests/it/` that submit real signed transactions.

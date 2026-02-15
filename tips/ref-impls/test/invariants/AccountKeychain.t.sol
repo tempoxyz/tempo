@@ -6,7 +6,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title AccountKeychain Invariant Tests
 /// @notice Fuzz-based invariant tests for the AccountKeychain precompile
-/// @dev Tests invariants TEMPO-KEY1 through TEMPO-KEY26
+/// @dev Tests invariants TEMPO-KEY1 through TEMPO-KEY27 (see README.md for mapping)
 ///      Note: TEMPO-KEY20/21 require integration tests (transient storage for transaction_key)
 contract AccountKeychainInvariantTest is InvariantBaseTest {
 
@@ -1487,6 +1487,93 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     }
 
+    /// @notice Handler for testing duplicate token limits (last write wins)
+    /// @dev Tests TEMPO-KEY27 (when authorizeKey is called with duplicate token entries,
+    ///      the last entry wins because limits are written sequentially)
+    function handler_testDuplicateTokenLimitsLastWins(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint256 sigTypeSeed,
+        uint256 expirySeed,
+        uint256 amount0Seed,
+        uint256 amount1Seed
+    )
+        external
+    {
+        address account = _selectActor(accountSeed);
+        address keyId = _selectKeyId(keyIdSeed);
+
+        // Need a fresh key and at least one token
+        if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) return;
+        if (_tokens.length == 0) return;
+
+        uint64 expiry = _generateValidAuthorizeExpiry(expirySeed);
+        IAccountKeychain.SignatureType sigType = _generateSignatureType(sigTypeSeed);
+
+        // Build limits with the same token appearing twice at different amounts
+        address token = address(_selectBaseToken(amount0Seed));
+        uint256 firstAmount = (amount0Seed % 1_000_000) * 1e6;
+        uint256 secondAmount = (amount1Seed % 1_000_000) * 1e6;
+        // Ensure amounts are distinct so we can tell which one won
+        if (secondAmount == firstAmount) {
+            secondAmount = firstAmount == 0 ? 1e6 : firstAmount - 1;
+        }
+
+        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](2);
+        limits[0] = IAccountKeychain.TokenLimit({ token: token, amount: firstAmount });
+        limits[1] = IAccountKeychain.TokenLimit({ token: token, amount: secondAmount });
+
+        vm.startPrank(account);
+        try keychain.authorizeKey(keyId, sigType, expiry, true, limits) {
+            vm.stopPrank();
+        } catch {
+            vm.stopPrank();
+            revert("TEMPO-KEY27: authorizeKey with duplicate limits should not revert");
+        }
+
+        _totalKeysAuthorized++;
+        _ghostKeyExists[account][keyId] = true;
+        _ghostKeyExpiry[account][keyId] = expiry;
+        _ghostKeyEnforceLimits[account][keyId] = true;
+        _ghostKeySignatureType[account][keyId] = uint8(sigType);
+        _ghostSpendingLimits[account][keyId][token] = secondAmount;
+        _trackLimitToken(account, keyId, token);
+
+        if (!_keyUsed[account][keyId]) {
+            _keyUsed[account][keyId] = true;
+            _accountKeys[account].push(keyId);
+        }
+
+        // TEMPO-KEY27: The second (last) entry must win
+        uint256 storedLimit = keychain.getRemainingLimit(account, keyId, token);
+        assertEq(
+            storedLimit, secondAmount, "TEMPO-KEY27: Duplicate token limit should use last entry"
+        );
+        assertTrue(
+            storedLimit != firstAmount || firstAmount == secondAmount,
+            "TEMPO-KEY27: First entry should NOT win when duplicates exist"
+        );
+
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "DUPLICATE_LIMITS: account=",
+                    _getActorIndex(account),
+                    " keyId=",
+                    vm.toString(keyId),
+                    " token=",
+                    vm.toString(token),
+                    " first=",
+                    vm.toString(firstAmount),
+                    " second=",
+                    vm.toString(secondAmount),
+                    " stored=",
+                    vm.toString(storedLimit)
+                )
+            );
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                          GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
@@ -1622,14 +1709,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @dev Asserts getRemainingLimit is 0 for all known tokens on a key.
     ///      Used for revoked keys (KEY25) and enforceLimits=false keys (KEY30).
-    function _assertAllLimitsZero(
-        address account,
-        address keyId,
-        string memory tag
-    )
-        internal
-        view
-    {
+    function _assertAllLimitsZero(address account, address keyId, string memory tag) internal view {
         // Check base tokens
         for (uint256 t = 0; t < _tokens.length; t++) {
             assertEq(
