@@ -4599,6 +4599,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 "NON5: Other account nonce changed after increment"
             );
         } catch {
+            // NON5: Other actor's nonce must be unchanged even on rejected tx
+            uint64 otherNonceAfter = nonce.getNonce(otherActor, nonceKey);
+            assertEq(
+                otherNonceAfter,
+                otherNonceBefore,
+                "NON5: Other account nonce changed after rejected tx"
+            );
             _handleRevert2d(actor, nonceKey);
         }
     }
@@ -4621,6 +4628,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Sync ghost state
         ghost_2dNonce[actor][nonceKey] = type(uint64).max;
         _mark2dNonceKeyUsed(actor, nonceKey);
+
+        // Ensure actor has sufficient balance so the tx can't pass vacuously
+        _ensureFeeTokenBalance(actor, 1e6);
 
         // Build a tx that would trigger increment on this key
         uint256 recipientIdx = (actorIdx + 1) % actors.length;
@@ -4654,8 +4664,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         }
     }
 
-    /// @notice Handler: Verify reserved expiring nonce key is readable
-    /// @dev Tests NON11 - type(uint256).max is reserved but readable via getNonce
+    /// @notice Handler: Verify reserved expiring nonce key is readable and unmutated
+    /// @dev Tests NON11 - type(uint256).max is reserved but readable via getNonce.
+    ///      No handler in this suite uses this key, so it must remain zero.
     function handler_nonceReservedKeyReadable(uint256 actorSeed) external {
         uint256 actorIdx = actorSeed % actors.length;
         address actor = actors[actorIdx];
@@ -4663,8 +4674,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // NON11: Reading the reserved expiring nonce key must not revert
         uint64 result = nonce.getNonce(actor, type(uint256).max);
 
-        // For accounts that haven't used expiring nonces, should return 0
-        assertEq(result, 0, "NON11: Reserved key should return 0 for uninitialized");
+        // No handler in this suite mutates this key, so it must remain zero.
+        // Catches accidental mutations from expiring nonce or other flows.
+        assertEq(result, 0, "NON11: Reserved key should remain 0 (no handler uses this key)");
     }
 
 }

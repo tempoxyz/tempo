@@ -66,16 +66,6 @@ contract NonceInvariantTest is InvariantBaseTest {
     /// @dev Snapshot of expiringNonceRingPtr (slot 3) at setUp, for isolation checks
     bytes32 private _expiringNonceRingPtrInit;
 
-    /// @dev Snapshot of a deterministic expiringNonceSeen sample (slot 1) at setUp
-    bytes32 private _expiringNonceSeenSampleInit;
-
-    /// @dev Snapshot of a deterministic expiringNonceRing sample (slot 2) at setUp
-    bytes32 private _expiringNonceRingSampleInit;
-
-    /// @dev Deterministic slot keys for expiring nonce sample snapshots
-    bytes32 private _expiringNonceSeenSampleSlot;
-    bytes32 private _expiringNonceRingSampleSlot;
-
     /*//////////////////////////////////////////////////////////////
                                SETUP
     //////////////////////////////////////////////////////////////*/
@@ -87,7 +77,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         // Exclude helper functions from fuzzing - only target actual handlers
-        bytes4[] memory selectors = new bytes4[](10);
+        bytes4[] memory selectors = new bytes4[](11);
         selectors[0] = this.handler_incrementNonce.selector;
         selectors[1] = this.handler_readNonce.selector;
         selectors[2] = this.handler_tryProtocolNonce.selector;
@@ -98,23 +88,14 @@ contract NonceInvariantTest is InvariantBaseTest {
         selectors[7] = this.handler_nonceOverflow.selector;
         selectors[8] = this.handler_invalidNonceKeyIncrement.selector;
         selectors[9] = this.handler_testReservedExpiringNonceKey.selector;
+        selectors[10] = this.handler_protocolNonceWithStorage.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         _setupInvariantBase();
         _actors = _buildActors(10);
 
-        // Snapshot expiring nonce storage (slots 1-3) for isolation invariant.
-        // 2D nonce handlers must never mutate these slots.
+        // Snapshot expiringNonceRingPtr (slot 3) for isolation invariant.
         _expiringNonceRingPtrInit = vm.load(_NONCE, bytes32(uint256(3)));
-
-        // Deterministic sample from expiringNonceSeen (mapping at slot 1)
-        bytes32 sampleTxHash = keccak256(abi.encodePacked("isolation_check"));
-        _expiringNonceSeenSampleSlot = keccak256(abi.encode(sampleTxHash, uint256(1)));
-        _expiringNonceSeenSampleInit = vm.load(_NONCE, _expiringNonceSeenSampleSlot);
-
-        // Deterministic sample from expiringNonceRing (mapping at slot 2)
-        _expiringNonceRingSampleSlot = keccak256(abi.encode(uint256(0), uint256(2)));
-        _expiringNonceRingSampleInit = vm.load(_NONCE, _expiringNonceRingSampleSlot);
 
         _initLogFile("nonce.log", "Nonce Invariant Test Log");
     }
@@ -354,6 +335,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         _ghostNonces[actor1][nonceKey] = newNonce1;
         _lastSeenNonces[actor1][nonceKey] = newNonce1;
         _trackNonceKey(actor1, nonceKey);
+        _totalIncrements++;
 
         // TEMPO-NON5: Actor2's nonce should be unchanged
         uint64 nonce2After = nonce.getNonce(actor2, nonceKey);
@@ -395,6 +377,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         _ghostNonces[actor][key1] = newNonce1;
         _lastSeenNonces[actor][key1] = newNonce1;
         _trackNonceKey(actor, key1);
+        _totalIncrements++;
 
         // TEMPO-NON6: Key2's nonce should be unchanged
         uint64 nonce2After = nonce.getNonce(actor, key2);
@@ -629,6 +612,9 @@ contract NonceInvariantTest is InvariantBaseTest {
             assertEq(result, 0, "TEMPO-NON11: Uninitialized reserved key should be zero");
         }
 
+        // Track so global invariants cover this key
+        _trackNonceKey(account, reservedKey);
+
         _totalReservedKeyTests++;
 
         if (_loggingEnabled) {
@@ -638,6 +624,41 @@ contract NonceInvariantTest is InvariantBaseTest {
                     vm.toString(account),
                     " key=MAX_UINT256 readable, value=",
                     vm.toString(result)
+                )
+            );
+        }
+    }
+
+    /// @notice Handler for testing that key 0 reverts even when storage is non-zero
+    /// @dev Tests TEMPO-NON4 semantically: the key-0 guard is checked before reading storage,
+    ///      so even if someone writes a value to the key-0 slot, getNonce must still revert.
+    function handler_protocolNonceWithStorage(uint256 actorSeed) external {
+        address actor = _selectActor(actorSeed);
+
+        // Write a non-zero value into the key-0 storage slot
+        bytes32 slot = _getNonceSlot(actor, 0);
+        vm.store(_NONCE, slot, bytes32(uint256(123)));
+
+        // TEMPO-NON4: getNonce(actor, 0) must still revert despite non-zero storage
+        try nonce.getNonce(actor, 0) {
+            revert("TEMPO-NON4: getNonce(actor, 0) must revert even with non-zero storage");
+        } catch (bytes memory reason) {
+            assertEq(
+                bytes4(reason),
+                INonce.ProtocolNonceNotSupported.selector,
+                "TEMPO-NON4: Should revert with ProtocolNonceNotSupported"
+            );
+        }
+
+        // Clean up: restore slot to zero so we don't pollute isolation checks
+        vm.store(_NONCE, slot, bytes32(0));
+
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "PROTOCOL_NONCE_WITH_STORAGE: actor=",
+                    vm.toString(actor),
+                    " key=0 correctly reverted despite non-zero storage"
                 )
             );
         }
@@ -718,8 +739,8 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice 2D nonce operations must never mutate expiring nonce storage (slots 1-3)
     /// @dev Tests storage isolation between the 2D nonce system (slot 0 mapping) and
-    ///      the expiring nonce system (slots 1-3). Snapshots are taken in setUp();
-    ///      this invariant asserts they remain unchanged after every handler call.
+    ///      the expiring nonce system (slots 1-3). For each tracked (actor, nonceKey) pair,
+    ///      verifies that wrong-base-slot derived locations (slots 1 and 2) are still zero.
     function invariant_expiringNonceStorageIsolation() public view {
         // Slot 3: expiringNonceRingPtr (scalar)
         assertEq(
@@ -728,19 +749,36 @@ contract NonceInvariantTest is InvariantBaseTest {
             "Storage isolation: expiringNonceRingPtr (slot 3) mutated by 2D nonce operation"
         );
 
-        // Slot 1 sample: expiringNonceSeen mapping entry
-        assertEq(
-            vm.load(_NONCE, _expiringNonceSeenSampleSlot),
-            _expiringNonceSeenSampleInit,
-            "Storage isolation: expiringNonceSeen (slot 1) sample mutated by 2D nonce operation"
-        );
+        // For each tracked (actor, nonceKey), verify wrong-base-slot locations are zero.
+        // If the 2D nonce base slot (0) accidentally changed to 1 or 2, writes would
+        // land at these derived locations instead. They must remain untouched.
+        for (uint256 a = 0; a < _actors.length; a++) {
+            address actor = _actors[a];
+            uint256[] storage keys = _accountNonceKeys[actor];
+            uint256 keysLength = keys.length;
 
-        // Slot 2 sample: expiringNonceRing mapping entry
-        assertEq(
-            vm.load(_NONCE, _expiringNonceRingSampleSlot),
-            _expiringNonceRingSampleInit,
-            "Storage isolation: expiringNonceRing (slot 2) sample mutated by 2D nonce operation"
-        );
+            for (uint256 k = 0; k < keysLength; k++) {
+                uint256 nonceKey = keys[k];
+
+                // Slot that would be written if base slot were 1 (expiringNonceSeen)
+                bytes32 wrongSlot1 =
+                    keccak256(abi.encode(nonceKey, keccak256(abi.encode(actor, uint256(1)))));
+                assertEq(
+                    vm.load(_NONCE, wrongSlot1),
+                    bytes32(0),
+                    "Storage isolation: wrong-base-slot 1 location is non-zero"
+                );
+
+                // Slot that would be written if base slot were 2 (expiringNonceRing)
+                bytes32 wrongSlot2 =
+                    keccak256(abi.encode(nonceKey, keccak256(abi.encode(actor, uint256(2)))));
+                assertEq(
+                    vm.load(_NONCE, wrongSlot2),
+                    bytes32(0),
+                    "Storage isolation: wrong-base-slot 2 location is non-zero"
+                );
+            }
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
