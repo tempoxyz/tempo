@@ -81,7 +81,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         selectors[3] = this.handler_verifyAccountIndependence.selector;
         selectors[4] = this.handler_verifyKeyIndependence.selector;
         selectors[5] = this.handler_testLargeNonceKey.selector;
-        selectors[6] = this.multipleIncrements.selector;
+        selectors[6] = this.handler_multipleIncrements.selector;
         selectors[7] = this.testNonceOverflow.selector;
         selectors[8] = this.testInvalidNonceKeyIncrement.selector;
         selectors[9] = this.testReservedExpiringNonceKey.selector;
@@ -712,31 +712,122 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for multiple sequential increments
     /// @dev Tests TEMPO-NON8 (strict monotonicity over many increments)
-    function multipleIncrements(uint256 actorSeed, uint256 keySeed, uint8 countSeed) external {
+    ///      Mirrors handler_incrementNonce rigor: ghost consistency, raw storage,
+    ///      key/account isolation, and independently computed expected values.
+    ///      Event emission (NonceIncremented) is not verifiable here because this
+    ///      suite uses vm.store; event checks are covered by TempoTransactionInvariant.t.sol.
+    function handler_multipleIncrements(
+        uint256 actorSeed,
+        uint256 keySeed,
+        uint8 countSeed
+    )
+        external
+    {
         address actor = _selectActor(actorSeed);
         uint256 nonceKey = _selectNonceKey(keySeed);
-        uint256 count = (countSeed % 10) + 1; // 1-10 increments
+        uint256 count = bound(countSeed, 1, 32);
 
-        uint64 startNonce = nonce.getNonce(actor, nonceKey);
+        // --- Pre-loop: verify ghost consistency and snapshot isolation targets ---
 
-        for (uint256 i = 0; i < count; i++) {
-            uint64 beforeIncrement = nonce.getNonce(actor, nonceKey);
-            uint64 newNonce = _incrementNonceViaStorage(actor, nonceKey);
-            _ghostNonces[actor][nonceKey] = newNonce;
-            _lastSeenNonces[actor][nonceKey] = newNonce;
+        uint64 expectedBefore = _ghostNonces[actor][nonceKey];
+        uint64 actualBefore = nonce.getNonce(actor, nonceKey);
 
-            // TEMPO-NON8: Each increment should be exactly +1
-            assertEq(
-                newNonce, beforeIncrement + 1, "TEMPO-NON8: Each increment should be exactly +1"
-            );
+        // TEMPO-NON2: Ghost must match actual before we begin
+        assertEq(
+            actualBefore, expectedBefore, "TEMPO-NON2: Ghost nonce mismatch before multi-increment"
+        );
+
+        // Raw storage check (catches high-bit corruption that uint64 return would mask)
+        bytes32 slot = _getNonceSlot(actor, nonceKey);
+        bytes32 rawBefore = vm.load(_NONCE, slot);
+        assertEq(
+            rawBefore,
+            bytes32(uint256(expectedBefore)),
+            "TEMPO-NON2: Raw storage mismatch before multi-increment"
+        );
+
+        // Snapshot adjacent key for isolation (TEMPO-NON6)
+        uint256 otherKey = _selectNonceKeyExcluding(keySeed ^ 0xBEEF, nonceKey);
+        bytes32 otherSlot = _getNonceSlot(actor, otherKey);
+        bytes32 otherKeyBefore = vm.load(_NONCE, otherSlot);
+
+        // Snapshot other actor same key for account isolation (TEMPO-NON5)
+        address otherActor = _selectActorExcluding(actorSeed ^ 0xDEAD, actor);
+        bytes32 otherActorSlot = _getNonceSlot(otherActor, nonceKey);
+        bytes32 otherActorBefore = vm.load(_NONCE, otherActorSlot);
+
+        // Clamp count to avoid overflow in the helper (and in test arithmetic)
+        uint256 maxSteps = uint256(type(uint64).max) - uint256(expectedBefore);
+        if (count > maxSteps) {
+            count = maxSteps;
         }
+        if (count == 0) return;
 
+        // Track key before loop so it's recorded even on early return paths
         _trackNonceKey(actor, nonceKey);
 
+        // --- Loop: per-iteration assertions with independently computed expected values ---
+
+        uint64 expected = expectedBefore;
+
+        for (uint256 i = 0; i < count; i++) {
+            uint64 expectedAfter = expected + 1;
+
+            uint64 newNonce = _incrementNonceViaStorage(actor, nonceKey);
+
+            // TEMPO-NON8: Helper return must match independently computed expected
+            assertEq(
+                newNonce,
+                expectedAfter,
+                "TEMPO-NON8: Each increment should be exactly +1"
+            );
+
+            // TEMPO-NON3: Read-back via getNonce must agree
+            assertEq(
+                nonce.getNonce(actor, nonceKey),
+                expectedAfter,
+                "TEMPO-NON3: getNonce mismatch after increment in multi-increment"
+            );
+
+            // Raw storage must match (catches high-bit corruption)
+            assertEq(
+                vm.load(_NONCE, slot),
+                bytes32(uint256(expectedAfter)),
+                "TEMPO-NON8: Raw storage mismatch after increment in multi-increment"
+            );
+
+            // Update ghost from independently computed value (not helper return)
+            _ghostNonces[actor][nonceKey] = expectedAfter;
+            _lastSeenNonces[actor][nonceKey] = expectedAfter;
+
+            expected = expectedAfter;
+        }
+
+        // --- Post-loop: final consistency and isolation checks ---
+
         uint64 endNonce = nonce.getNonce(actor, nonceKey);
-        assertEq(endNonce, startNonce + uint64(count), "TEMPO-NON8: Total increment should match");
+        assertEq(
+            endNonce,
+            expectedBefore + uint64(count),
+            "TEMPO-NON8: Total increment should match count"
+        );
+
+        // TEMPO-NON6: Adjacent key must be untouched
+        assertEq(
+            vm.load(_NONCE, otherSlot),
+            otherKeyBefore,
+            "TEMPO-NON6: Multi-increment wrote to adjacent key slot"
+        );
+
+        // TEMPO-NON5: Other actor same key must be untouched
+        assertEq(
+            vm.load(_NONCE, otherActorSlot),
+            otherActorBefore,
+            "TEMPO-NON5: Multi-increment wrote to other actor's slot"
+        );
 
         _totalMultipleIncrements++;
+        _totalIncrements += count;
 
         if (_loggingEnabled) {
             _log(
@@ -748,9 +839,9 @@ contract NonceInvariantTest is InvariantBaseTest {
                     " count=",
                     vm.toString(count),
                     " ",
-                    vm.toString(startNonce),
+                    vm.toString(uint256(expectedBefore)),
                     " -> ",
-                    vm.toString(endNonce)
+                    vm.toString(uint256(endNonce))
                 )
             );
         }
