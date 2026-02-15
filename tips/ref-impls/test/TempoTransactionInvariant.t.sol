@@ -58,7 +58,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](70);
+        bytes4[] memory selectors = new bytes4[](74);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -147,6 +147,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Spending limit refund handlers (K-REFUND)
         selectors[68] = this.handler_keySpendingRefund.selector;
         selectors[69] = this.handler_keySpendingRefundRevokedKey.selector;
+        // Nonce precompile invariants (NON4, NON5, NON9, NON11)
+        selectors[70] = this.handler_nonceProtocolKeyReverts.selector;
+        selectors[71] = this.handler_nonceAccountIndependence.selector;
+        selectors[72] = this.handler_nonceOverflow.selector;
+        selectors[73] = this.handler_nonceReservedKeyReadable.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         // Initialize previous nonce tracking for secp256k1 actors
@@ -375,7 +380,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     }
 
     /*//////////////////////////////////////////////////////////////
-                    NONCE HANDLERS (N1-N5, N12-N15)
+                    NONCE HANDLERS (N1-N6, N12-N15)
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Handler: Execute a transfer from a random actor with random signature type
@@ -614,7 +619,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     }
 
     /// @notice Handler: Execute transactions on multiple different nonce keys for same actor
-    /// @dev Tests N6 (keys are independent) with real transactions
+    /// @dev Tests NON6 (key independence) - explicitly asserts each key is unaffected by the other's increment
     function handler_multipleNonceKeys(
         uint256 actorSeed,
         uint256 key1,
@@ -643,6 +648,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Execute tx on key1
         uint64 nonce1 = uint64(ghost_2dNonce[actor][key1]);
         ghost_previous2dNonce[actor][key1] = ghost_2dNonce[actor][key1];
+        uint64 nonce2 = uint64(ghost_2dNonce[actor][key2]);
 
         TempoCall[] memory calls = new TempoCall[](1);
         calls[0] = TempoCall({
@@ -657,13 +663,16 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         try vmExec.executeTransaction(signedTx1) {
             _record2dNonceTxSuccess(actor, uint64(key1), nonce1);
+            // NON6: key2 must be unaffected by key1 increment
+            assertEq(
+                nonce.getNonce(actor, key2), nonce2, "NON6: key2 nonce changed after key1 increment"
+            );
         } catch {
             _handleRevert2d(actor, uint64(key1));
             return;
         }
 
         // Execute tx on key2 - should be independent of key1
-        uint64 nonce2 = uint64(ghost_2dNonce[actor][key2]);
         ghost_previous2dNonce[actor][key2] = ghost_2dNonce[actor][key2];
 
         bytes memory signedTx2 = TxBuilder.buildTempoMultiCall(
@@ -672,6 +681,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         try vmExec.executeTransaction(signedTx2) {
             _record2dNonceTxSuccess(actor, uint64(key2), nonce2);
+            // NON6: key1 must be unaffected by key2 increment
+            uint64 nonce1After = nonce.getNonce(actor, key1);
+            assertEq(nonce1After, nonce1 + 1, "NON6: key1 nonce changed after key2 increment");
         } catch {
             _handleRevert2d(actor, uint64(key2));
         }
@@ -1496,15 +1508,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         try vmExec.executeTransaction(signedTx) {
-            // Verify on-chain nonce actually incremented before updating ghost
-            uint64 actualNonce = nonce.getNonce(ctx.sender, nonceKey);
-            if (actualNonce > currentNonce) {
-                ghost_2dNonce[ctx.sender][nonceKey] = actualNonce;
-                ghost_2dNonceUsed[ctx.sender][nonceKey] = true;
-                ghost_totalTxExecuted++;
-                ghost_totalCallsExecuted++;
-                ghost_total2dNonceTxs++;
-            }
+            _record2dNonceTxSuccess(ctx.sender, uint64(nonceKey), currentNonce);
         } catch {
             ghost_totalTxReverted++;
             return;
@@ -1638,20 +1642,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         try vmExec.executeTransaction(signedTx) {
             uint256 gasUsed = gasBefore - gasleft();
 
-            // Verify on-chain nonce actually incremented before updating ghost
-            uint64 actualNonce = nonce.getNonce(ctx.sender, nonceKey);
-            if (actualNonce > currentNonce) {
-                ghost_2dNonce[ctx.sender][nonceKey] = actualNonce;
-                ghost_2dNonceUsed[ctx.sender][nonceKey] = true;
-                ghost_totalTxExecuted++;
-                ghost_totalCallsExecuted++;
-                ghost_total2dNonceTxs++;
+            _record2dNonceTxSuccess(ctx.sender, uint64(nonceKey), currentNonce);
 
-                if (isFirstUse) {
-                    ghost_firstUseGas[ctx.sender][nonceKey] = gasUsed;
-                } else {
-                    ghost_subsequentUseGas[ctx.sender][nonceKey] = gasUsed;
-                }
+            if (isFirstUse) {
+                ghost_firstUseGas[ctx.sender][nonceKey] = gasUsed;
+            } else {
+                ghost_subsequentUseGas[ctx.sender][nonceKey] = gasUsed;
             }
         } catch {
             _handleRevert2d(ctx.sender, nonceKey);
@@ -4514,6 +4510,162 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         } catch {
             _handleRevertProtocol(ctx.owner);
         }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    NONCE PRECOMPILE INVARIANTS (NON4-NON11)
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Handler: Verify getNonce(key=0) reverts with ProtocolNonceNotSupported
+    /// @dev Tests NON4 - protocol nonce key rejected by precompile
+    function handler_nonceProtocolKeyReverts(uint256 actorSeed) external {
+        uint256 actorIdx = actorSeed % actors.length;
+        address actor = actors[actorIdx];
+
+        // NON4: getNonce with key 0 must revert with ProtocolNonceNotSupported
+        try nonce.getNonce(actor, 0) {
+            revert("NON4: getNonce(key=0) should revert");
+        } catch (bytes memory reason) {
+            assertEq(
+                bytes4(reason),
+                INonce.ProtocolNonceNotSupported.selector,
+                "NON4: Should revert with ProtocolNonceNotSupported"
+            );
+        }
+    }
+
+    /// @notice Handler: Verify incrementing one account's nonce doesn't affect another
+    /// @dev Tests NON5 - account independence via real Rust precompile execution
+    function handler_nonceAccountIndependence(
+        uint256 actorSeed,
+        uint256 otherActorSeed,
+        uint256 nonceKeySeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        uint256 actorIdx = actorSeed % actors.length;
+        address actor = actors[actorIdx];
+
+        // Pick a different actor to observe
+        uint256 otherIdx = otherActorSeed % actors.length;
+        if (otherIdx == actorIdx) otherIdx = (otherIdx + 1) % actors.length;
+        address otherActor = actors[otherIdx];
+
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (recipientIdx == actorIdx) recipientIdx = (recipientIdx + 1) % actors.length;
+        address recipient = actors[recipientIdx];
+
+        uint64 nonceKey = uint64(bound(nonceKeySeed, 1, 100));
+        amount = bound(amount, 1e6, 10e6);
+
+        if (!_checkBalance(actor, amount)) return;
+
+        uint64 currentNonce = uint64(ghost_2dNonce[actor][nonceKey]);
+
+        // Snapshot other actor's nonce on the same key BEFORE tx
+        uint64 otherNonceBefore = nonce.getNonce(otherActor, nonceKey);
+
+        ghost_previous2dNonce[actor][nonceKey] = ghost_2dNonce[actor][nonceKey];
+
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken),
+            value: 0,
+            data: abi.encodeCall(ITIP20.transfer, (recipient, amount))
+        });
+
+        bytes memory signedTx = TxBuilder.buildTempoMultiCall(
+            vmRlp, vm, calls, nonceKey, currentNonce, actorKeys[actorIdx]
+        );
+
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            _record2dNonceTxSuccess(actor, nonceKey, currentNonce);
+
+            // NON5: Other actor's nonce on the same key must be unchanged
+            uint64 otherNonceAfter = nonce.getNonce(otherActor, nonceKey);
+            assertEq(
+                otherNonceAfter,
+                otherNonceBefore,
+                "NON5: Other account nonce changed after increment"
+            );
+        } catch {
+            // NON5: Other actor's nonce must be unchanged even on rejected tx
+            uint64 otherNonceAfter = nonce.getNonce(otherActor, nonceKey);
+            assertEq(
+                otherNonceAfter,
+                otherNonceBefore,
+                "NON5: Other account nonce changed after rejected tx"
+            );
+            _handleRevert2d(actor, nonceKey);
+        }
+    }
+
+    /// @notice Handler: Verify nonce overflow at u64::MAX is rejected
+    /// @dev Tests NON9 - uses vm.store to set nonce to max, then attempts a real tx
+    function handler_nonceOverflow(uint256 actorSeed, uint256 nonceKeySeed) external {
+        uint256 actorIdx = actorSeed % actors.length;
+        address actor = actors[actorIdx];
+
+        // Use a dedicated key range to avoid interfering with other handlers
+        uint64 nonceKey = uint64(bound(nonceKeySeed, 201, 300));
+
+        // Set nonce to u64::MAX via direct storage manipulation
+        bytes32 slot =
+            keccak256(abi.encode(uint256(nonceKey), keccak256(abi.encode(actor, uint256(0)))));
+        vm.store(_NONCE, slot, bytes32(uint256(type(uint64).max)));
+
+        // Sync ghost state
+        ghost_2dNonce[actor][nonceKey] = type(uint64).max;
+        _mark2dNonceKeyUsed(actor, nonceKey);
+
+        // Ensure actor has sufficient balance so the tx can't pass vacuously
+        _ensureFeeTokenBalance(actor, 1e6);
+
+        // Build a tx that would trigger increment on this key
+        uint256 recipientIdx = (actorIdx + 1) % actors.length;
+        address recipient = actors[recipientIdx];
+
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken), value: 0, data: abi.encodeCall(ITIP20.transfer, (recipient, 1e6))
+        });
+
+        bytes memory signedTx = TxBuilder.buildTempoMultiCall(
+            vmRlp, vm, calls, nonceKey, type(uint64).max, actorKeys[actorIdx]
+        );
+
+        vm.coinbase(validator);
+
+        // NON9: Transaction must be rejected (nonce would overflow)
+        try vmExec.executeTransaction(signedTx) {
+            fail("NON9: Transaction at u64::MAX must be rejected");
+        } catch {
+            // Expected: tx rejected due to overflow
+            // Verify nonce is still at max
+            uint64 actualNonce = nonce.getNonce(actor, nonceKey);
+            assertEq(
+                actualNonce, type(uint64).max, "NON9: Nonce changed despite overflow rejection"
+            );
+        }
+    }
+
+    /// @notice Handler: Verify reserved expiring nonce key is readable and unmutated
+    /// @dev Tests NON11 - type(uint256).max is reserved but readable via getNonce.
+    ///      No handler in this suite uses this key, so it must remain zero.
+    function handler_nonceReservedKeyReadable(uint256 actorSeed) external {
+        uint256 actorIdx = actorSeed % actors.length;
+        address actor = actors[actorIdx];
+
+        // NON11: Reading the reserved expiring nonce key must not revert
+        uint64 result = nonce.getNonce(actor, type(uint256).max);
+
+        // No handler in this suite mutates this key, so it must remain zero.
+        // Catches accidental mutations from expiring nonce or other flows.
+        assertEq(result, 0, "NON11: Reserved key should remain 0 (no handler uses this key)");
     }
 
 }
