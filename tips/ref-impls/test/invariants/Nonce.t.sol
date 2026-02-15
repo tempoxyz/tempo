@@ -266,7 +266,10 @@ contract NonceInvariantTest is InvariantBaseTest {
         // TEMPO-NON3: Read should return correct value
         assertEq(actual, expected, "TEMPO-NON3: Read nonce should match ghost state");
 
-        // Update last-seen for monotonicity tracking
+        // TEMPO-NON1: Fail immediately if nonce decreased from last observation
+        uint64 lastSeen = _lastSeenNonces[actor][nonceKey];
+        assertGe(actual, lastSeen, "TEMPO-NON1: Nonce decreased since last seen");
+
         _lastSeenNonces[actor][nonceKey] = actual;
 
         if (_loggingEnabled) {
@@ -612,9 +615,6 @@ contract NonceInvariantTest is InvariantBaseTest {
             assertEq(result, 0, "TEMPO-NON11: Uninitialized reserved key should be zero");
         }
 
-        // Track so global invariants cover this key
-        _trackNonceKey(account, reservedKey);
-
         _totalReservedKeyTests++;
 
         if (_loggingEnabled) {
@@ -742,6 +742,19 @@ contract NonceInvariantTest is InvariantBaseTest {
     ///      the expiring nonce system (slots 1-3). For each tracked (actor, nonceKey) pair,
     ///      verifies that wrong-base-slot derived locations (slots 1 and 2) are still zero.
     function invariant_expiringNonceStorageIsolation() public view {
+        // Base scalar slots 1 and 2 must remain zero (mapping base slots are never written).
+        // Catches direct-slot clobbering that derived-slot checks alone would miss.
+        assertEq(
+            vm.load(_NONCE, bytes32(uint256(1))),
+            bytes32(0),
+            "Storage isolation: base slot 1 (expiringNonceSeen) is non-zero"
+        );
+        assertEq(
+            vm.load(_NONCE, bytes32(uint256(2))),
+            bytes32(0),
+            "Storage isolation: base slot 2 (expiringNonceRing) is non-zero"
+        );
+
         // Slot 3: expiringNonceRingPtr (scalar)
         assertEq(
             vm.load(_NONCE, bytes32(uint256(3))),

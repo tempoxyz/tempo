@@ -501,28 +501,34 @@ abstract contract HandlerBase is InvariantBase {
     {
         uint64 previousNonce = uint64(ghost_2dNonce[sender][nonceKey]);
         uint64 actualNonce = nonce.getNonce(sender, nonceKey);
-        if (actualNonce > previousNonce) {
-            ghost_2dNonce[sender][nonceKey] = actualNonce;
-            _mark2dNonceKeyUsed(sender, nonceKey);
-            ghost_totalTxExecuted++;
-            ghost_totalCreatesExecuted++;
-            ghost_total2dNonceTxs++;
 
-            // CREATE also consumes protocol nonce for address derivation
-            // Verify on-chain protocol nonce actually changed
-            uint256 actualProtocolNonce = vm.getNonce(sender);
-            if (actualProtocolNonce > ghost_protocolNonce[sender]) {
-                ghost_protocolNonce[sender] = actualProtocolNonce;
-                ghost_totalProtocolNonceTxs++;
-            }
+        // NON1: 2D nonce must increment by exactly 1
+        assertEq(
+            actualNonce,
+            previousNonce + 1,
+            "NON1: 2D nonce should increment by exactly 1 (CREATE)"
+        );
 
-            // Only record CREATE address tracking if code was actually deployed
-            if (expectedAddress.code.length > 0) {
-                ghost_total2dNonceCreates++;
-                bytes32 key = keccak256(abi.encodePacked(sender, uint256(protocolNonce)));
-                ghost_createAddresses[key] = expectedAddress;
-                ghost_createCount[sender]++;
-            }
+        ghost_2dNonce[sender][nonceKey] = actualNonce;
+        _mark2dNonceKeyUsed(sender, nonceKey);
+        ghost_totalTxExecuted++;
+        ghost_totalCreatesExecuted++;
+        ghost_total2dNonceTxs++;
+
+        // CREATE also consumes protocol nonce for address derivation
+        // Verify on-chain protocol nonce actually changed
+        uint256 actualProtocolNonce = vm.getNonce(sender);
+        if (actualProtocolNonce > ghost_protocolNonce[sender]) {
+            ghost_protocolNonce[sender] = actualProtocolNonce;
+            ghost_totalProtocolNonceTxs++;
+        }
+
+        // Only record CREATE address tracking if code was actually deployed
+        if (expectedAddress.code.length > 0) {
+            ghost_total2dNonceCreates++;
+            bytes32 key = keccak256(abi.encodePacked(sender, uint256(protocolNonce)));
+            ghost_createAddresses[key] = expectedAddress;
+            ghost_createCount[sender]++;
         }
     }
 
