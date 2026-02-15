@@ -1,10 +1,15 @@
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
+use alloy_consensus::BlockHeader;
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::types::Height;
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_utils::ordered;
+use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::{
@@ -16,12 +21,15 @@ use reth_provider::{
     BlockHashReader as _, BlockIdReader as _, BlockNumReader as _, BlockReader as _, BlockSource,
     StateProviderFactory as _,
 };
+use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
+    validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2},
 };
 
+use tempo_primitives::TempoHeader;
 use tracing::{Level, info, instrument, warn};
 
 pub(crate) enum ReadTarget {
@@ -31,12 +39,16 @@ pub(crate) enum ReadTarget {
 
 /// Attempts to read the validator config from the smart contract, retrying
 /// until the required block height is available.
+///
+/// Uses the timestamp of `reference_header` to decide whether to read validator
+/// config v1 or v2.
 pub(crate) async fn read_validator_config_with_retry(
     context: &impl commonware_runtime::Clock,
     node: &TempoFullNode,
+    reference_header: &TempoHeader,
     target: ReadTarget,
     total_attempts: &Counter,
-) -> ordered::Map<PublicKey, DecodedValidatorV1> {
+) -> Validators {
     let mut attempts = 0;
     const MIN_RETRY: Duration = Duration::from_secs(1);
     const MAX_RETRY: Duration = Duration::from_secs(30);
@@ -56,7 +68,9 @@ pub(crate) async fn read_validator_config_with_retry(
                 .unwrap_or(height),
         };
 
-        if let Ok(validators) = read_from_contract_at_height(attempts, node, target_height).await {
+        if let Ok(validators) =
+            read_from_contract_at_height(attempts, node, target_height.get(), reference_header)
+        {
             break 'read_contract validators;
         }
 
@@ -83,11 +97,14 @@ pub(crate) async fn read_validator_config_with_retry(
 }
 
 /// Reads state from the ValidatorConfig precompile at a given block height.
-pub(crate) fn read_validator_config_at_height<T>(
+pub(crate) fn read_validator_config_at_height<C, T>(
     node: &TempoFullNode,
-    height: Height,
-    read_fn: impl FnOnce(&ValidatorConfig) -> eyre::Result<T>,
-) -> eyre::Result<T> {
+    height: u64,
+    read_fn: impl FnOnce(&C) -> eyre::Result<T>,
+) -> eyre::Result<T>
+where
+    C: Default,
+{
     // Try mapping the block height to a hash tracked by reth.
     //
     // First check the canonical chain, then fallback to pending block state.
@@ -95,7 +112,7 @@ pub(crate) fn read_validator_config_at_height<T>(
     // Necessary because the DKG and application actors process finalized block concurrently.
     let block_hash = if let Some(hash) = node
         .provider
-        .block_hash(height.get())
+        .block_hash(height)
         .wrap_err_with(|| format!("failed reading block hash at height `{height}`"))?
     {
         hash
@@ -103,7 +120,7 @@ pub(crate) fn read_validator_config_at_height<T>(
         .provider
         .pending_block_num_hash()
         .wrap_err("failed reading pending block state")?
-        && pending.number == height.get()
+        && pending.number == height
     {
         pending.hash
     } else {
@@ -138,13 +155,19 @@ pub(crate) fn read_validator_config_at_height<T>(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
-        || read_fn(&ValidatorConfig::new()),
+        || read_fn(&C::default()),
     )
 }
 
-/// Reads the validator config from the boundary block of `epoch`.
+pub(crate) enum Validators {
+    V1(ordered::Map<PublicKey, DecodedValidatorV1>),
+    V2(ordered::Map<PublicKey, DecodedValidatorV2>),
+}
+
+/// Reads the validator config at `height`.
 ///
-/// If `epoch` is not set, reads the genesis block.
+/// Uses `reference_header` to determine whether to read validators from
+/// validator config v1 or v2.
 ///
 /// Note that this returns all validators, active and inactive.
 #[instrument(
@@ -155,24 +178,68 @@ pub(crate) fn read_validator_config_at_height<T>(
     ),
     err
 )]
-pub(crate) async fn read_from_contract_at_height(
+pub(crate) fn read_from_contract_at_height(
     _attempt: u32,
     node: &TempoFullNode,
-    height: Height,
-) -> eyre::Result<ordered::Map<PublicKey, DecodedValidatorV1>> {
-    let raw_validators = read_validator_config_at_height(node, height, |config| {
-        config
-            .get_validators()
-            .wrap_err("failed to query contract for validator config")
-    })?;
+    height: u64,
+    reference_header: &TempoHeader,
+) -> eyre::Result<Validators> {
+    let vals = if node
+        .chain_spec()
+        .is_t2_active_at_timestamp(reference_header.timestamp())
+        && is_v2_active(node, height).wrap_err(
+            "failed reading from validator config v2 activity state after hardfork activation",
+        )? {
+        let raw_validators =
+            read_validator_config_at_height(node, height, |config: &ValidatorConfigV2| {
+                config
+                    .get_validators()
+                    .wrap_err("failed to query contract for validator config")
+            })?;
 
-    info!(?raw_validators, "read validators from contract",);
+        info!(
+            ?raw_validators,
+            "read validators from validator config v2 contract",
+        );
 
-    Ok(decode_from_contract(raw_validators).await)
+        let decoded_validators = raw_validators
+            .into_iter()
+            .map(|raw| DecodedValidatorV2::decode_from_contract(raw))
+            .collect::<Result<Vec<_>, _>>()
+            .wrap_err("failed an entry in the on-chain validator set")?;
+
+        Validators::V2(
+            ordered::Map::try_from_iter(
+                decoded_validators
+                    .into_iter()
+                    .map(|validator| (validator.public_key.clone(), validator)),
+            )
+            .wrap_err("contract contained validators with duplicate public keys")?,
+        )
+    } else {
+        let raw_validators =
+            read_validator_config_at_height(node, height, |config: &ValidatorConfig| {
+                config
+                    .get_validators()
+                    .wrap_err("failed to query contract for validator config")
+            })?;
+        info!(
+            ?raw_validators,
+            "read validators from validator config v1 contract",
+        );
+        Validators::V1(decode_from_contract(raw_validators))
+    };
+    Ok(vals)
+}
+
+fn is_v2_active(node: &TempoFullNode, height: u64) -> eyre::Result<bool> {
+    read_validator_config_at_height(node, height, |config: &ValidatorConfigV2| {
+        config.is_initialized().map_err(eyre::Report::new)
+    })
 }
 
 #[instrument(skip_all, fields(validators_to_decode = contract_vals.len()))]
-async fn decode_from_contract(
+fn decode_from_contract(
     contract_vals: Vec<IValidatorConfig::Validator>,
 ) -> ordered::Map<PublicKey, DecodedValidatorV1> {
     let mut decoded = HashMap::new();
@@ -230,7 +297,7 @@ impl DecodedValidatorV1 {
     /// This function does not perform hostname lookup on either of the addresses.
     /// Instead, only the shape of the addresses are checked for whether they are
     /// socket addresses (IP:PORT pairs), or fully qualified domain names.
-    #[instrument(ret(Display, level = Level::INFO), err(level = Level::WARN))]
+    #[instrument(ret(Display, level = Level::DEBUG), err(level = Level::WARN))]
     fn decode_from_contract(
         IValidatorConfig::Validator {
             active,
@@ -258,6 +325,10 @@ impl DecodedValidatorV1 {
             address: validatorAddress,
         })
     }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
 }
 
 impl std::fmt::Display for DecodedValidatorV1 {
@@ -265,6 +336,77 @@ impl std::fmt::Display for DecodedValidatorV1 {
         f.write_fmt(format_args!(
             "public key = `{}`, inbound = `{}`, outbound = `{}`, index = `{}`, address = `{}`",
             self.public_key, self.inbound, self.outbound, self.index, self.address
+        ))
+    }
+}
+
+/// An entry in the validator config v2 contract with all its fields decoded
+/// into Rust types.
+pub(crate) struct DecodedValidatorV2 {
+    public_key: PublicKey,
+    ingress: SocketAddr,
+    egress: IpAddr,
+    added_at_height: u64,
+    deleted_at_height: u64,
+    index: u64,
+    address: Address,
+}
+
+impl DecodedValidatorV2 {
+    pub(crate) fn public_key(&self) -> &PublicKey {
+        &self.public_key
+    }
+
+    pub(crate) fn ingress(&self) -> SocketAddr {
+        self.ingress
+    }
+
+    pub(crate) fn egress(&self) -> IpAddr {
+        self.egress
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.deleted_at_height == 0
+    }
+
+    #[instrument(ret(Display, level = Level::DEBUG), err(level = Level::WARN))]
+    fn decode_from_contract(
+        IValidatorConfigV2::Validator {
+            publicKey,
+            validatorAddress: address,
+            ingress,
+            egress,
+            index,
+            addedAtHeight: added_at_height,
+            deactivatedAtHeight: deleted_at_height,
+        }: IValidatorConfigV2::Validator,
+    ) -> eyre::Result<Self> {
+        let public_key = PublicKey::decode(publicKey.as_ref())
+            .wrap_err("failed decoding publicKey field as ed25519 public key")?;
+        let ingress = ingress.parse().wrap_err("ingress was not valid")?;
+        let egress = egress.parse().wrap_err("egress was not valid")?;
+        Ok(Self {
+            public_key,
+            ingress,
+            egress,
+            added_at_height,
+            deleted_at_height,
+            index,
+            address,
+        })
+    }
+}
+impl std::fmt::Display for DecodedValidatorV2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "public key = `{}`, ingress = `{}`, egress = `{}`, added_at_height: `{}`, deleted_at_height = `{}`, index = `{}`, address = `{}`",
+            self.public_key,
+            self.ingress,
+            self.egress,
+            self.added_at_height,
+            self.deleted_at_height,
+            self.index,
+            self.address
         ))
     }
 }

@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
@@ -11,6 +13,7 @@ use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt as _, channel::mpsc};
+use itertools::Either;
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use reth_ethereum::network::NetworkInfo;
 use reth_provider::{BlockNumReader as _, HeaderProvider};
@@ -20,7 +23,7 @@ use tracing::{Span, error, info, info_span, instrument, warn};
 
 use crate::{
     consensus::block::Block,
-    validators::{self, DecodedValidatorV1, read_validator_config_with_retry},
+    validators::{self, Validators, read_validator_config_with_retry},
 };
 
 use super::ingress::{Message, MessageWithCause};
@@ -173,6 +176,7 @@ where
         let all_validators = read_validator_config_with_retry(
             &self.context,
             &self.execution_node,
+            &header,
             validators::ReadTarget::AtLeast {
                 height: last_boundary,
             },
@@ -264,6 +268,7 @@ where
             let all_validators = read_validator_config_with_retry(
                 &self.context,
                 &self.execution_node,
+                block.header(),
                 validators::ReadTarget::AtLeast {
                     height: block.height(),
                 },
@@ -292,9 +297,9 @@ fn is_past_hardfork(_block: &Block) -> bool {
     false
 }
 
-fn construct_peer_set(
+pub(crate) fn construct_peer_set(
     outcome: &OnchainDkgOutcome,
-    validators: &commonware_utils::ordered::Map<PublicKey, DecodedValidatorV1>,
+    validators: &Validators,
 ) -> commonware_utils::ordered::Map<PublicKey, commonware_p2p::Address> {
     // Dealers are output.players() from the previous epoch's DKG output.
     // Players are outcome.next_players (the players for the next DKG round).
@@ -303,21 +308,40 @@ fn construct_peer_set(
         .dealers()
         .iter()
         .chain(outcome.next_players().iter())
-        .chain(
-            validators
-                .iter_pairs()
-                .filter(|(_, v)| v.active)
-                .map(|(k, _)| k),
-        );
+        .chain(match validators {
+            Validators::V1(validators) => Either::Left(
+                validators
+                    .iter_pairs()
+                    .filter_map(|(k, v)| v.is_active().then_some(k)),
+            ),
+            Validators::V2(validators) => Either::Right(
+                validators
+                    .iter_pairs()
+                    .filter_map(|(k, v)| v.is_active().then_some(k)),
+            ),
+        });
 
     commonware_utils::ordered::Map::from_iter_dedup(all_keys.map(|key| {
-        let addr = validators
-            .get_value(key)
-            .expect(
-                "all DKG participants must have an entry in the \
+        let addr = match validators {
+            Validators::V1(vals) => commonware_p2p::Address::Symmetric(
+                vals.get_value(key)
+                    .expect(
+                        "all DKG participants must have an entry in the \
                  unfiltered, contract validator set",
-            )
-            .outbound;
-        (key.clone(), commonware_p2p::Address::Symmetric(addr))
+                    )
+                    .outbound,
+            ),
+            Validators::V2(vals) => {
+                let val = vals.get_value(key).expect(
+                    "all DKG participants must have an entry in the \
+                     unfiltered, contract validator set",
+                );
+                commonware_p2p::Address::Asymmetric {
+                    ingress: commonware_p2p::Ingress::Socket(val.ingress()),
+                    egress: SocketAddr::new(val.egress(), 0),
+                }
+            }
+        };
+        (key.clone(), addr)
     }))
 }
