@@ -12,6 +12,7 @@ import { IAccountKeychain } from "../src/interfaces/IAccountKeychain.sol";
 import { INonce } from "../src/interfaces/INonce.sol";
 import { ITIP20 } from "../src/interfaces/ITIP20.sol";
 import { IValidatorConfig } from "../src/interfaces/IValidatorConfig.sol";
+import { IValidatorConfigV2 } from "../src/interfaces/IValidatorConfigV2.sol";
 import { Test, console } from "forge-std/Test.sol";
 
 /// @notice Base test framework for all spec tests
@@ -27,6 +28,7 @@ contract BaseTest is Test {
     address internal constant _FEE_AMM = 0xfeEC000000000000000000000000000000000000;
     address internal constant _NONCE = 0x4e4F4E4345000000000000000000000000000000;
     address internal constant _VALIDATOR_CONFIG = 0xCccCcCCC00000000000000000000000000000000;
+    address internal constant _VALIDATOR_CONFIG_V2 = 0xCcCCCCcC00000000000000000000000000000001;
 
     // Role constants
     bytes32 internal constant _ISSUER_ROLE = keccak256("ISSUER_ROLE");
@@ -52,6 +54,7 @@ contract BaseTest is Test {
     TIP403Registry public registry = TIP403Registry(_TIP403REGISTRY);
     INonce public nonce = INonce(_NONCE);
     IValidatorConfig public validatorConfig = IValidatorConfig(_VALIDATOR_CONFIG);
+    IValidatorConfigV2 public validatorConfigV2 = IValidatorConfigV2(_VALIDATOR_CONFIG_V2);
     TIP20 public token1;
     TIP20 public token2;
     bool isTempo;
@@ -83,6 +86,8 @@ contract BaseTest is Test {
             deployCodeTo("Nonce", _NONCE);
             // Deploy ValidatorConfig with admin as owner
             deployCodeTo("ValidatorConfig.sol", abi.encode(admin), _VALIDATOR_CONFIG);
+            // Deploy ValidatorConfigV2
+            deployCodeTo("ValidatorConfigV2.sol", _VALIDATOR_CONFIG_V2);
         }
 
         if (isTempo) {
@@ -110,7 +115,6 @@ contract BaseTest is Test {
             if (_VALIDATOR_CONFIG.code.length == 0) {
                 revert MissingPrecompile("ValidatorConfig", _VALIDATOR_CONFIG);
             }
-
             // Set ValidatorConfig owner to admin via direct storage write
             // owner is at slot 0 in ValidatorConfig
             vm.store(_VALIDATOR_CONFIG, bytes32(uint256(0)), bytes32(uint256(uint160(admin))));

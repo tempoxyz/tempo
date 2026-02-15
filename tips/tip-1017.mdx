@@ -45,7 +45,7 @@ V2 solves these problems with an append-only design where:
 - `addedAtHeight` and `deactivatedAtHeight` fields enable historical reconstruction
   from current state
 - Ed25519 signature verification proves key ownership at registration time
-- Both address and public key remain reserved forever (even after deletion)
+- Public keys remain reserved forever (even after deactivation); addresses are unique among current validators but can be reassigned via `transferValidatorOwnership`
 
 ### Key Design Principle
 
@@ -95,7 +95,7 @@ interface IValidatorConfigV2 {
     error Unauthorized();
 
     /// @notice Thrown when trying to add a validator with an address that already exists
-    error ValidatorAlreadyExists();
+    error AddressAlreadyHasValidator();
 
     /// @notice Thrown when trying to add a validator with a public key that already exists
     error PublicKeyAlreadyExists();
@@ -118,6 +118,10 @@ interface IValidatorConfigV2 {
     /// @param backtrace Additional error context
     error NotIpPort(string field, string input, string backtrace);
 
+    /// @notice Thrown when trying to use an ingress IP already in use by another active validator
+    /// @param ingress The ingress address that is already in use
+    error IngressAlreadyExists(string ingress);
+
     /// @notice Validator information (V2 - append-only, delete-once)
     /// @param publicKey Ed25519 communication public key (non-zero, unique across all validators)
     /// @param validatorAddress Ethereum-style address of the validator (unique across all validators)
@@ -138,7 +142,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Get all validators (including deleted ones) in array order
     /// @return validators Array of all validators with their information
-    function getValidators() external view returns (Validator[] memory validators);
+    function getAllValidators() external view returns (Validator[] memory validators);
 
     /// @notice Get only active validators (where deactivatedAtHeight == 0)
     /// @return validators Array of active validators
@@ -160,7 +164,7 @@ interface IValidatorConfigV2 {
     /// @notice Get validator information by index in the validators array
     /// @param index The index in the validators array
     /// @return The validator struct at the given index
-    function validatorByIndex(uint256 index) external view returns (Validator memory);
+    function validatorByIndex(uint64 index) external view returns (Validator memory);
 
     /// @notice Get validator information by address
     /// @param validatorAddress The validator address to look up
@@ -179,8 +183,8 @@ interface IValidatorConfigV2 {
 
     /// @notice Add a new validator (owner only)
     /// @dev The signature must be an Ed25519 signature over:
-    ///      keccak256(abi.encodePacked(<NAMESPACE>, chainId, contractAddress, validatorAddress, ingress, egress)),
-    ///      where `<NAMESPACE>` is "TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"
+    ///      keccak256(abi.encodePacked(bytes8(chainId), contractAddress, validatorAddress, ingress, egress))
+    ///      using the namespace "TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR".
     ///      This proves the caller controls the private key corresponding to publicKey.
     ///      Reverts if isInitialized() returns false.
     /// @param validatorAddress The address of the new validator
@@ -199,7 +203,9 @@ interface IValidatorConfigV2 {
     /// @notice Deactivates a validator (owner or existing validator)
     /// @dev Marks the validator as deactivated by setting deactivatedAtHeight to the current block height.
     ///      The validator's entry remains in storage for historical queries.
-    ///      The address and public key remain reserved and cannot be reused.
+    ///      The public key remains reserved and cannot be reused. The address remains
+    ///      reserved unless reassigned via transferValidatorOwnership.
+    ///
     /// @param validatorAddress The validator address to deactivate
     function deactivateValidator(address validatorAddress) external;
 
@@ -213,10 +219,8 @@ interface IValidatorConfigV2 {
     ///      - Egress must be parseable as <ip>.
     ///      - The signature must prove ownership of the new public key
     ///      The signature must be an Ed25519 signature over:
-    ///      keccak256(abi.encodePacked(
-    ///          <NAMESPACE>, chainId, contractAddress, validatorAddress, ingress, egress
-    ///      )),
-    ///      where `<NAMESPACE>` is "TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR".
+    ///      keccak256(abi.encodePacked(bytes8(chainId), contractAddress, validatorAddress, ingress, egress))
+    ///      using the namespace "TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR".
     /// @param validatorAddress The address of the validator to rotate
     /// @param publicKey The new validator's Ed25519 communication public key
     /// @param ingress The new validator's inbound address `<ip>:<port>` for incoming connections
@@ -253,7 +257,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Transfer owner of the contract (owner only)
     /// @param newOwner The new owner address
-    function transferOwner(address newOwner) external;
+    function transferOwnership(address newOwner) external;
 
     /// @notice Set the epoch at which a fresh DKG ceremony will be triggered (owner only)
     /// @param epoch The epoch in which to run the fresh DKG ceremony.
@@ -316,38 +320,28 @@ Unlike V1, validators in V2 follow a strict lifecycle:
 
 ### Signature Verification
 
-When adding a validator, the caller must provide an Ed25519 signature proving
-ownership of the public key:
+When adding a validator, the caller must provide an Ed25519 signature proving ownership of the public key. The
+signature is checked over the a full message containing: the length of the namespace in bytes, the namespace, and a
+32-bytes hashed message.
 
+**Namespace:** `b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"`
+
+**Message:**
 ```
 message = keccak256(abi.encodePacked(
-    b"TEMPO",                             // bytes: global namespace prefix 
-    b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR" // bytes: contract specific namespace
-    chainId,                         // uint64: Prevents cross-chain replay
-    contractAddress,                      // address: Prevents cross-contract replay
-    validatorAddress,                     // address: Binds to specific validator address
-    ingress,                       // string: Binds network configuration
-    egress                       // string: Binds network configuration
+    bytes8(chainId),      // uint64: Prevents cross-chain replay
+    contractAddress,      // address: Prevents cross-contract replay
+    validatorAddress,     // address: Binds to specific validator address
+    ingress,              // string: Binds network configuration
+    egress                // string: Binds network configuration
 ))
 ```
 
-The signature must be exactly 64 bytes and must verify against the provided
-public key.
+The Ed25519 signature is computed over the message using the namespace parameter
+(see commonware's [signing scheme](https://github.com/commonwarexyz/monorepo/blob/abb883b4a8b42b362d4003b510bd644361eb3953/cryptography/src/ed25519/scheme.rs#L38-L40)
+and [union format](https://github.com/commonwarexyz/monorepo/blob/abb883b4a8b42b362d4003b510bd644361eb3953/utils/src/lib.rs#L166-L174)).
 
-When rotating a validator, the signature message format is identical to `addValidator`
-except for the namespace:
-
-```
-message = keccak256(abi.encodePacked(
-    b"TEMPO",                                  // bytes: global namespace prefix 
-    b"_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"  // bytes: contract specific namespace
-    chainId,                                   // uint64: Prevents cross-chain replay
-    contractAddress,                           // address: Prevents cross-contract replay
-    validatorAddress,                          // address: Binds to specific new validator address
-    ingress,                            // string: Binds network configuration
-    egress                            // string: Binds network configuration
-))
-```
+For validator rotations, the namespace `b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"` is used instead.
 
 ### Determining Active Validators
 
@@ -380,6 +374,21 @@ This distinction matters because:
 Both IPv4 and IPv6 addresses are supported. For ingress, IPv6 addresses must be
 enclosed in brackets: `[2001:db8::1]:8080`.
 
+### IP Address Uniqueness
+
+Only the ingress IP address must be unique among active validators:
+- No two active validators can have the same ingress IP
+- Egress addresses have no uniqueness constraint
+- Deactivated validators excluded from checks, IP reuse is allowed after deactivation
+
+**Implementation**: Tracked via storage mapping (`active_ingress_ips: Mapping<B256, bool>`) where keys are `keccak256(ingressIp)` for O(1) validation.
+
+**Enforcement**:
+- `migrateValidator`: Rejects if ingress IP already in use by active validators
+- `addValidator`: Rejects if ingress IP already in use
+- `rotateValidator`: Rejects if new ingress IP already in use (after removing old)
+- `setIpAddresses`: Rejects if new ingress IP already in use (after removing old)
+
 ### Consensus Layer Behavior
 
 **IP Address Changes**: When a validator's IP address changes via `setIpAddresses`, the consensus layer is expected to update its peer list on the next finalized block.
@@ -405,27 +414,24 @@ This enables nodes to reconstruct DKG player sets without accessing historical a
 Both the validator address and public key must be globally unique across all
 validators (including deleted ones):
 
-- `ValidatorAlreadyExists`: Reverts if the address has ever been registered
+- `AddressAlreadyHasValidator`: Reverts if the address has ever been registered
 - `PublicKeyAlreadyExists`: Reverts if the public key has ever been registered
 
 This ensures historical queries always return consistent results.
 
 ## Storage Layout
 
-| Slot | Field | Description |
-|------|-------|-------------|
-| 0 (bits 0-159) | `owner` | Owner address (160 bits, left-aligned) |
-| 0 (bits 191-254) | `initializedAtHeight` | What height V2 has been initialized at (64 bits, right-aligned) |
-| 0 (bit 255) | `initialized` | Whether V2 has been initialized from V1 (1 bit) |
-| 1 | `validatorsArray.length` | Count of validators ever added |
-| keccak256(1) + i | `validatorsArray[i]` | Validator address at index i |
-| keccak256(addr, 2) | `validators[addr]` | Validator struct for address |
-| keccak256(pubkey, 3) | `pubkeyToIndex[pubkey]` | Index for public key lookup |
-| 4 | `nextDkgCeremony` | Next full DKG ceremony epoch |
+The contract stores the following state:
+- `owner`: Contract owner address
+- `initialized`: Whether V2 has been initialized from V1 (boolean)
+- `initializedAtHeight`: Block height when V2 was initialized (uint64)
+- `validatorsArray`: Append-only array of all validators (Validator[])
+- `addressToIndex`: Mapping from validator address to array index (mapping)
+- `pubkeyToIndex`: Mapping from public key to array index (mapping)
+- `nextDkgCeremony`: Next full DKG ceremony epoch (uint64)
+- `active_ingress_ips`: Mapping from `keccak256(ingressIp)` to bool (Mapping<B256, bool>)
 
-The `owner` address is right-aligned (bits 0-159) following Solidity's standard
-packing. The `initializedAtHeight` flag uses bits 191-254. The `initialized` flag
-uses bit 255, leaving bits 160-190 unused.
+Implementation details such as slot packing are left to the implementation.
 
 ## Differences from V1
 
@@ -435,9 +441,9 @@ uses bit 255, leaving bits 160-190 unused.
 | Creation tracking | None | `addedAtHeight: uint64` |
 | Mutability | Mutable via `updateValidator()` | Immutable after creation |
 | Deletion | Sets `active = false` | Sets `deactivatedAtHeight = block.number` |
-| Re-registration | Allowed after deletion | Never allowed (address/pubkey reserved forever) |
+| Re-registration | Allowed after deletion | Pubkey reserved forever; address reassignable via `transferValidatorOwnership` |
 | Key ownership | Not verified | Ed25519 signature required |
-| Historical queries | Requires historical state | Filter `getValidators()` by `addedAtHeight`/`deactivatedAtHeight` |
+| Historical queries | Requires historical state | Filter `getAllValidators()` by `addedAtHeight`/`deactivatedAtHeight` |
 | Uniqueness | Address only | Address AND public key |
 | Precompile address | `0xCCCC...0000` | `0xCCCC...0001` |
 
@@ -456,8 +462,8 @@ The following invariants must always hold:
    changed by the contract owner.
 
 3. **Address update**: `transferValidatorOwnership` updates the address of an
-    existing validator without changing any other fields. This can only be called
-    by the contract owner (not the owner of the entry) and is required for
+    existing validator without changing any other fields. This can be called
+    by the contract owner or by the validator themselves and is required for
     post-migration fixes: validator contract v1 contains unusable dummy addresses
     that are not usable.
 
@@ -486,12 +492,14 @@ The following invariants must always hold:
    changes.
 
 11. **Owner authorization**: Only the owner can call `addValidator`,
-    `transferOwner`, `migrateValidator`, `initializeIfMigrated`, and
+    `transferOwnership`, `migrateValidator`, `initializeIfMigrated`, and
     `setNextFullDkgCeremony`.
 
-12. **Dual authorization**: `rotateValidator`, `deactivateValidator`,
-    `transferValidatorOwnership`, and `setIpAddresses` can be called by either
-    the owner or the validator itself.
+12. **Dual authorization**:
+    - `rotateValidator` and `transferValidatorOwnership` can be called by either
+      the owner or the validator itself. These functions require initialization.
+    - `deactivateValidator` and `setIpAddresses` can be called by the owner or the validator itself.
+      These functions do NOT require initialization and can be used during migration.
 
 13. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
     transition from 0 to 1, never back to 0.
@@ -555,6 +563,17 @@ in one go and would require logic to run several migrations. This would require
 manual intervention anyway, and require extra logic in the precompile to check
 which validators have already been migrated.
 
+### Validator Deactivation During Migration
+
+During the migration window (after `migrateValidator` calls begin but before `initializeIfMigrated()` is called):
+
+- **Deactivation is allowed**: Both validators (self-deactivation) and the owner can call `deactivateValidator()` before initialization
+- This allows validators to opt-out and the owner to manage the validator set during the migration window
+
+Unlike other mutating operations (`addValidator`, `rotateValidator`, `transferValidatorOwnership`),
+`deactivateValidator` and `setIpAddresses` do not require initialization. This design choice allows
+flexible validator management and IP updates during the migration phase.
+
 ### CL Read Behavior
 
 The CL checks `v2.isInitialized()` to determine which contract to read:
@@ -578,13 +597,13 @@ precompile does NOT proxy reads to V1.
   - `ingress`: copied from V1 `inboundAddress`
   - `egress`: copied from V1 `outboundAddress`
   - `index`: set to `idx`
-  - `addedAtHeight`: `0`
+  - `addedAtHeight`: `block.height`
   - `deactivatedAtHeight`: set to `0` if V1 `active == true`, otherwise `block.height`
 - Adds to `validatorsArray`
 - Populates lookup maps (`validators[validatorAddress]`, `pubkeyToIndex[pubkey]`)
 
 **`initializeIfMigrated()`**:
-- Reverts if `validatorsArray.length < V1.getValidators().length` (ensures all validators migrated)
+- Reverts if `validatorsArray.length < V1.getAllValidators().length` (ensures all validators migrated)
 - Copies `nextDkgCeremony` from V1 to V2
 - Sets `initialized = true` (bit 255 of slot 0)
 - After this call, CL reads from V2 instead of V1
@@ -608,7 +627,7 @@ interface IValidatorConfigV1 {
         string outboundAddress;
     }
 
-    function getValidators() external view returns (Validator[] memory);
+    function getAllValidators() external view returns (Validator[] memory);
     function getNextFullDkgCeremony() external view returns (uint64);
     function owner() external view returns (address);
 }
@@ -623,7 +642,7 @@ interface IValidatorConfigV1 {
 - **No signatures required**: V1 validators are imported without Ed25519 signatures
   (they were already validated in V1)
 - **All validators imported**: Both active and inactive V1 validators are
-  imported; active ones have `addedAtHeight == block.height` and `deactivatedAtheight = 0`,
+  imported; active ones have `addedAtHeight == block.height` and `deactivatedAtHeight == 0`,
   inactive ones have `addedAtHeight == deactivatedAtHeight == block.height`.
 - **Initialize validates migration**: `initializeIfMigrated()` reverts if not
   all V1 validators have been migrated
@@ -687,7 +706,7 @@ The test suite must cover:
 
 ### Query Functions
 
-6. **getValidators**: Returns all validators including deleted with correct
+6. **getAllValidators**: Returns all validators including deleted with correct
    `addedAtHeight` and `deactivatedAtHeight`
 7. **getActiveValidators**: Returns only validators with `deactivatedAtHeight == 0`
    (note: validators with `addedAtHeight == deactivatedAtHeight` are excluded)
@@ -703,6 +722,7 @@ The test suite must cover:
 14. **ValidatorAlreadyDeleted**: Cannot delete twice
 15. **InvalidPublicKey**: Rejects zero public key
 16. **InvalidSignature**: Rejects wrong signature, wrong length, wrong signer
+17. **IngressAlreadyExists**: Cannot use ingress IP already in use by active validator (even with different port)
 
 ### rotateValidator
 
@@ -742,21 +762,20 @@ The test suite must cover:
     if `isInitialized() == true`
 36. **migrateValidator owner only**: Non-owner cannot call `migrateValidator`
 37. **All validators imported on migration**: Both V1 active and inactive validators
-    are imported; active ones have `addedAtHeight > 0` and `deactivatedAtHeight == 0`
+    are imported; active ones have `addedAtHeight > 0` and `deactivatedAtHeight == 0`,
     inactive ones have `addedAtHeight == deactivatedAtHeight > 0`.
-38. **addedAtHeight set correctly**: Active validators have `addedAtHeight > 0`
-    at migration time.
-39. **deactivatedAtHeight set correctly**: Inactive validators have
-    `deactivatedAtHeight > 0` at migration time.
+38. **addedAtHeight set correctly**: All migrated validators have `addedAtHeight > 0` (block.height at migration time).
+39. **deactivatedAtHeight set correctly**: Active validators have `deactivatedAtHeight == 0`.
+    Inactive validators have `addedAtHeight == deactivatedAtHeight > 0` at migration time.
 40. **initialize sets flag**: After `initializeIfMigrated()`, `isInitialized()` returns true
 41. **migrateValidator copies owner**: V2 `owner()` matches V1 after first `migrateValidator` call
 42. **initialize copies DKG ceremony**: V2 `getNextFullDkgCeremony()` matches V1
     after `initializeIfMigrated()`
 43. **initialize owner only**: Non-owner cannot call `initialize`
 44. **isInitialized returns correct value**: Returns false before initialize, true after
-45. **Writes blocked before init**: `addValidator`, `deactivateValidator`, `rotateValidator`
+45. **Writes blocked before init**: `addValidator`, `rotateValidator`, `transferValidatorOwnership`
 46. **initialize reverts if not all migrated**: `initializeIfMigrated()` reverts if
-    `validatorsArray.length < V1.getValidators().length`
+    `validatorsArray.length < V1.getAllValidators().length`
 
 ### transferValidatorOwnership
 
@@ -775,6 +794,10 @@ The test suite must cover:
 56. **setIpAddresses reverts on invalid validator**: Reverts if validator does not exist
 57. **setIpAddresses reverts on deactivated validator**: Reverts if validator is already deactivated
 58. **setIpAddresses validates format**: Rejects invalid `<ip>:<port>` format
+59. **setIpAddresses before init (self)**: Validator can update their own IPs before initialization
+60. **setIpAddresses before init (owner)**: Owner can update validator IPs before initialization
+61. **deactivateValidator before init (self)**: Validator can deactivate themselves before initialization
+62. **deactivateValidator before init (owner)**: Owner can deactivate validators before initialization
 
 ---
 
