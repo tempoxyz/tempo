@@ -83,7 +83,7 @@ jobs:
   test:
     name: test
     needs: check-precompiles
-    runs-on: depot-ubuntu-latest-16
+    runs-on: depot-ubuntu-latest-64
     timeout-minutes: 30
     permissions:
       contents: read
