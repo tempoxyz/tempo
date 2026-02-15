@@ -76,8 +76,8 @@ contract NonceInvariantTest is InvariantBaseTest {
         // Exclude helper functions from fuzzing - only target actual handlers
         bytes4[] memory selectors = new bytes4[](10);
         selectors[0] = this.handler_incrementNonce.selector;
-        selectors[1] = this.readNonce.selector;
-        selectors[2] = this.tryProtocolNonce.selector;
+        selectors[1] = this.handler_readNonce.selector;
+        selectors[2] = this.handler_tryProtocolNonce.selector;
         selectors[3] = this.verifyAccountIndependence.selector;
         selectors[4] = this.verifyKeyIndependence.selector;
         selectors[5] = this.testLargeNonceKey.selector;
@@ -253,41 +253,130 @@ contract NonceInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for reading nonces
-    /// @dev Tests TEMPO-NON3 (read consistency)
-    function readNonce(uint256 actorSeed, uint256 keySeed) external {
+    /// @dev Tests TEMPO-NON3 (read consistency), TEMPO-NON1 (monotonicity on read)
+    function handler_readNonce(uint256 actorSeed, uint256 keySeed) external {
         address actor = _selectActor(actorSeed);
         uint256 nonceKey = _selectNonceKey(keySeed);
 
-        uint64 actual = nonce.getNonce(actor, nonceKey);
         uint64 expected = _ghostNonces[actor][nonceKey];
+        bytes32 slot = _getNonceSlot(actor, nonceKey);
+
+        // Snapshot raw storage before reads
+        bytes32 rawBefore = vm.load(_NONCE, slot);
+
+        // Read twice to verify idempotency (view should have no side effects)
+        uint64 v1 = nonce.getNonce(actor, nonceKey);
+        uint64 v2 = nonce.getNonce(actor, nonceKey);
 
         _totalReads++;
 
+        // TEMPO-NON3: Reads should be idempotent
+        assertEq(v1, v2, "TEMPO-NON3: Read should be idempotent");
+
         // TEMPO-NON3: Read should return correct value
-        assertEq(actual, expected, "TEMPO-NON3: Read nonce should match ghost state");
+        assertEq(v1, expected, "TEMPO-NON3: Read nonce should match ghost state");
+
+        // TEMPO-NON3: Raw storage should match ghost (catches high-bit corruption
+        // that getNonce's uint64 return would mask)
+        assertEq(
+            rawBefore,
+            bytes32(uint256(expected)),
+            "TEMPO-NON3: Raw storage mismatch / dirty high bits"
+        );
+
+        // TEMPO-NON3: Read should not mutate storage
+        assertEq(
+            vm.load(_NONCE, slot),
+            rawBefore,
+            "TEMPO-NON3: Read should not mutate storage"
+        );
+
+        // TEMPO-NON1: Nonce should never decrease from last seen value
+        uint64 lastSeen = _lastSeenNonces[actor][nonceKey];
+        assertGe(v1, lastSeen, "TEMPO-NON1: Nonce decreased since last seen");
+        _lastSeenNonces[actor][nonceKey] = v1;
+
+        // Explicit uninitialized-key check
+        if (!_nonceKeyUsed[actor][nonceKey]) {
+            assertEq(v1, 0, "TEMPO-NON3: Uninitialized nonce should be zero");
+        }
+
+        if (_loggingEnabled) {
+            _log(
+                string.concat(
+                    "READ: ",
+                    _getActorIndex(actor),
+                    " key=",
+                    vm.toString(nonceKey),
+                    " value=",
+                    vm.toString(v1)
+                )
+            );
+        }
     }
 
     /// @notice Handler for testing protocol nonce rejection
     /// @dev Tests TEMPO-NON4 (protocol nonce key 0 not supported)
-    function tryProtocolNonce(uint256 actorSeed) external {
-        address actor = _selectActor(actorSeed);
+    function handler_tryProtocolNonce(uint256 actorSeed) external {
+        // Broaden the account domain beyond _actors to verify key-0 rejection
+        // is account-independent. Use actorSeed to occasionally inject edge-case addresses.
+        address account;
+        uint256 branch = actorSeed % 8;
+        if (branch == 0) {
+            account = address(0);
+        } else if (branch == 1) {
+            account = address(this);
+        } else if (branch == 2) {
+            account = _NONCE;
+        } else {
+            account = _selectActor(actorSeed);
+        }
+
+        // Snapshot sampled storage slots to verify no side effects
+        uint256 k1 = _selectNonceKey(actorSeed ^ 0xA1);
+        uint256 k2 = _selectNonceKeyExcluding(actorSeed ^ 0xA2, k1);
+        bytes32 slot1 = _getNonceSlot(account, k1);
+        bytes32 slot2 = _getNonceSlot(account, k2);
+        bytes32 snap1 = vm.load(_NONCE, slot1);
+        bytes32 snap2 = vm.load(_NONCE, slot2);
+
+        // Also snapshot the key-0 slot itself to detect accidental writes to key 0
+        bytes32 slot0 = _getNonceSlot(account, 0);
+        bytes32 snap0 = vm.load(_NONCE, slot0);
 
         // TEMPO-NON4: Key 0 should revert with ProtocolNonceNotSupported
-        try nonce.getNonce(actor, 0) {
+        bytes memory expectedRevert =
+            abi.encodeWithSelector(INonce.ProtocolNonceNotSupported.selector);
+
+        try nonce.getNonce(account, 0) {
             revert("TEMPO-NON4: Protocol nonce (key 0) should revert");
         } catch (bytes memory reason) {
-            assertEq(
-                bytes4(reason),
-                INonce.ProtocolNonceNotSupported.selector,
-                "TEMPO-NON4: Should revert with ProtocolNonceNotSupported"
-            );
+            // Assert exact revert payload, not just selector (catches malformed revert data)
+            assertEq(reason.length, 4, "TEMPO-NON4: Revert data should be exactly 4 bytes");
+            assertEq(reason, expectedRevert, "TEMPO-NON4: Should revert with ProtocolNonceNotSupported");
         }
+
+        // Assert statelessness: a second call should revert identically
+        try nonce.getNonce(account, 0) {
+            revert("TEMPO-NON4: Protocol nonce (key 0) should revert on repeat call");
+        } catch (bytes memory reason2) {
+            assertEq(reason2, expectedRevert, "TEMPO-NON4: Repeat call should revert identically");
+        }
+
+        // Verify no side effects on sampled storage slots
+        assertEq(vm.load(_NONCE, slot0), snap0, "TEMPO-NON4: Key-0 slot modified by rejected read");
+        assertEq(vm.load(_NONCE, slot1), snap1, "TEMPO-NON4: Adjacent key slot modified by rejected read");
+        assertEq(vm.load(_NONCE, slot2), snap2, "TEMPO-NON4: Adjacent key slot modified by rejected read");
 
         _totalProtocolNonceRejections++;
 
         if (_loggingEnabled) {
             _log(
-                string.concat("TRY_PROTOCOL_NONCE: ", _getActorIndex(actor), " correctly rejected")
+                string.concat(
+                    "TRY_PROTOCOL_NONCE: account=",
+                    vm.toString(account),
+                    " correctly rejected"
+                )
             );
         }
     }
