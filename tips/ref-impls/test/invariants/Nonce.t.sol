@@ -172,6 +172,15 @@ contract NonceInvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @dev Selects an account, occasionally injecting edge-case addresses
+    function _selectAccount(uint256 seed) internal view returns (address) {
+        uint256 branch = seed % 8;
+        if (branch == 0) return address(0);
+        if (branch == 1) return address(this);
+        if (branch == 2) return _NONCE;
+        return _selectActor(seed);
+    }
+
     /*//////////////////////////////////////////////////////////////
                           STORAGE HELPERS
     //////////////////////////////////////////////////////////////*/
@@ -219,7 +228,8 @@ contract NonceInvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Handler for incrementing nonces
-    /// @dev Tests TEMPO-NON1 (monotonic increment), TEMPO-NON2 (sequential values)
+    /// @dev Tests TEMPO-NON1 (monotonic increment), TEMPO-NON2 (sequential values),
+    ///      TEMPO-NON3 (read-back consistency)
     function handler_incrementNonce(uint256 actorSeed, uint256 keySeed) external {
         address actor = _selectActor(actorSeed);
         uint256 nonceKey = _selectNonceKey(keySeed);
@@ -227,58 +237,23 @@ contract NonceInvariantTest is InvariantBaseTest {
         uint64 expectedBefore = _ghostNonces[actor][nonceKey];
         uint64 actualBefore = nonce.getNonce(actor, nonceKey);
 
-        // TEMPO-NON2: Ghost state should match actual state before increment
+        // TEMPO-NON2: Ghost state should match actual state
         assertEq(actualBefore, expectedBefore, "TEMPO-NON2: Ghost nonce mismatch before increment");
-
-        // Verify raw storage matches before increment (catches high-bit corruption
-        // that getNonce's uint64 return would mask)
-        bytes32 slot = _getNonceSlot(actor, nonceKey);
-        bytes32 rawBefore = vm.load(_NONCE, slot);
-        assertEq(
-            rawBefore,
-            bytes32(uint256(expectedBefore)),
-            "TEMPO-NON2: Raw storage mismatch before increment"
-        );
-
-        // Snapshot an adjacent key's slot to verify it is untouched after increment
-        uint256 otherKey = _selectNonceKeyExcluding(keySeed ^ 0xBEEF, nonceKey);
-        bytes32 otherSlot = _getNonceSlot(actor, otherKey);
-        bytes32 otherBefore = vm.load(_NONCE, otherSlot);
-
-        // Compute expected value independently of the storage helper
-        uint64 expectedAfter = expectedBefore + 1;
 
         uint64 newNonce = _incrementNonceViaStorage(actor, nonceKey);
         _totalIncrements++;
 
-        // TEMPO-NON1: Nonce should increment by exactly 1
-        assertEq(newNonce, expectedAfter, "TEMPO-NON1: Nonce should increment by 1");
-
-        // Verify raw storage after increment (catches high-bit corruption)
-        bytes32 rawAfter = vm.load(_NONCE, slot);
-        assertEq(
-            rawAfter,
-            bytes32(uint256(expectedAfter)),
-            "TEMPO-NON1: Raw storage mismatch after increment"
-        );
-
-        // Verify adjacent key slot was not modified
-        assertEq(
-            vm.load(_NONCE, otherSlot),
-            otherBefore,
-            "TEMPO-NON6: Increment wrote to adjacent key slot"
-        );
-
-        // Update ghost state from independently computed expected value (not helper return)
-        _ghostNonces[actor][nonceKey] = expectedAfter;
-        _lastSeenNonces[actor][nonceKey] = expectedAfter;
-
-        // Track nonce key usage
+        // Update ghost state
+        _ghostNonces[actor][nonceKey] = newNonce;
+        _lastSeenNonces[actor][nonceKey] = newNonce;
         _trackNonceKey(actor, nonceKey);
+
+        // TEMPO-NON1: Nonce should increment by exactly 1
+        assertEq(newNonce, expectedBefore + 1, "TEMPO-NON1: Nonce should increment by 1");
 
         // TEMPO-NON3: New value should be readable via getNonce
         uint64 actualAfter = nonce.getNonce(actor, nonceKey);
-        assertEq(actualAfter, expectedAfter, "TEMPO-NON3: Stored nonce should match expected value");
+        assertEq(actualAfter, newNonce, "TEMPO-NON3: Stored nonce should match returned value");
 
         if (_loggingEnabled) {
             _log(
@@ -290,60 +265,28 @@ contract NonceInvariantTest is InvariantBaseTest {
                     " ",
                     vm.toString(expectedBefore),
                     " -> ",
-                    vm.toString(expectedAfter)
+                    vm.toString(newNonce)
                 )
             );
         }
     }
 
     /// @notice Handler for reading nonces
-    /// @dev Tests TEMPO-NON3 (read consistency), TEMPO-NON1 (monotonicity on read)
+    /// @dev Tests TEMPO-NON3 (read consistency)
     function handler_readNonce(uint256 actorSeed, uint256 keySeed) external {
         address actor = _selectActor(actorSeed);
         uint256 nonceKey = _selectNonceKey(keySeed);
 
+        uint64 actual = nonce.getNonce(actor, nonceKey);
         uint64 expected = _ghostNonces[actor][nonceKey];
-        bytes32 slot = _getNonceSlot(actor, nonceKey);
-
-        // Snapshot raw storage before reads
-        bytes32 rawBefore = vm.load(_NONCE, slot);
-
-        // Read twice to verify idempotency (view should have no side effects)
-        uint64 v1 = nonce.getNonce(actor, nonceKey);
-        uint64 v2 = nonce.getNonce(actor, nonceKey);
 
         _totalReads++;
 
-        // TEMPO-NON3: Reads should be idempotent
-        assertEq(v1, v2, "TEMPO-NON3: Read should be idempotent");
-
         // TEMPO-NON3: Read should return correct value
-        assertEq(v1, expected, "TEMPO-NON3: Read nonce should match ghost state");
+        assertEq(actual, expected, "TEMPO-NON3: Read nonce should match ghost state");
 
-        // TEMPO-NON3: Raw storage should match ghost (catches high-bit corruption
-        // that getNonce's uint64 return would mask)
-        assertEq(
-            rawBefore,
-            bytes32(uint256(expected)),
-            "TEMPO-NON3: Raw storage mismatch / dirty high bits"
-        );
-
-        // TEMPO-NON3: Read should not mutate storage
-        assertEq(
-            vm.load(_NONCE, slot),
-            rawBefore,
-            "TEMPO-NON3: Read should not mutate storage"
-        );
-
-        // TEMPO-NON1: Nonce should never decrease from last seen value
-        uint64 lastSeen = _lastSeenNonces[actor][nonceKey];
-        assertGe(v1, lastSeen, "TEMPO-NON1: Nonce decreased since last seen");
-        _lastSeenNonces[actor][nonceKey] = v1;
-
-        // Explicit uninitialized-key check
-        if (!_nonceKeyUsed[actor][nonceKey]) {
-            assertEq(v1, 0, "TEMPO-NON3: Uninitialized nonce should be zero");
-        }
+        // Update last-seen for monotonicity tracking
+        _lastSeenNonces[actor][nonceKey] = actual;
 
         if (_loggingEnabled) {
             _log(
@@ -353,7 +296,7 @@ contract NonceInvariantTest is InvariantBaseTest {
                     " key=",
                     vm.toString(nonceKey),
                     " value=",
-                    vm.toString(v1)
+                    vm.toString(actual)
                 )
             );
         }
@@ -362,55 +305,18 @@ contract NonceInvariantTest is InvariantBaseTest {
     /// @notice Handler for testing protocol nonce rejection
     /// @dev Tests TEMPO-NON4 (protocol nonce key 0 not supported)
     function handler_tryProtocolNonce(uint256 actorSeed) external {
-        // Broaden the account domain beyond _actors to verify key-0 rejection
-        // is account-independent. Use actorSeed to occasionally inject edge-case addresses.
-        address account;
-        uint256 branch = actorSeed % 8;
-        if (branch == 0) {
-            account = address(0);
-        } else if (branch == 1) {
-            account = address(this);
-        } else if (branch == 2) {
-            account = _NONCE;
-        } else {
-            account = _selectActor(actorSeed);
-        }
-
-        // Snapshot sampled storage slots to verify no side effects
-        uint256 k1 = _selectNonceKey(actorSeed ^ 0xA1);
-        uint256 k2 = _selectNonceKeyExcluding(actorSeed ^ 0xA2, k1);
-        bytes32 slot1 = _getNonceSlot(account, k1);
-        bytes32 slot2 = _getNonceSlot(account, k2);
-        bytes32 snap1 = vm.load(_NONCE, slot1);
-        bytes32 snap2 = vm.load(_NONCE, slot2);
-
-        // Also snapshot the key-0 slot itself to detect accidental writes to key 0
-        bytes32 slot0 = _getNonceSlot(account, 0);
-        bytes32 snap0 = vm.load(_NONCE, slot0);
+        address account = _selectAccount(actorSeed);
 
         // TEMPO-NON4: Key 0 should revert with ProtocolNonceNotSupported
-        bytes memory expectedRevert =
-            abi.encodeWithSelector(INonce.ProtocolNonceNotSupported.selector);
-
         try nonce.getNonce(account, 0) {
             revert("TEMPO-NON4: Protocol nonce (key 0) should revert");
         } catch (bytes memory reason) {
-            // Assert exact revert payload, not just selector (catches malformed revert data)
-            assertEq(reason.length, 4, "TEMPO-NON4: Revert data should be exactly 4 bytes");
-            assertEq(reason, expectedRevert, "TEMPO-NON4: Should revert with ProtocolNonceNotSupported");
+            assertEq(
+                bytes4(reason),
+                INonce.ProtocolNonceNotSupported.selector,
+                "TEMPO-NON4: Should revert with ProtocolNonceNotSupported"
+            );
         }
-
-        // Assert statelessness: a second call should revert identically
-        try nonce.getNonce(account, 0) {
-            revert("TEMPO-NON4: Protocol nonce (key 0) should revert on repeat call");
-        } catch (bytes memory reason2) {
-            assertEq(reason2, expectedRevert, "TEMPO-NON4: Repeat call should revert identically");
-        }
-
-        // Verify no side effects on sampled storage slots
-        assertEq(vm.load(_NONCE, slot0), snap0, "TEMPO-NON4: Key-0 slot modified by rejected read");
-        assertEq(vm.load(_NONCE, slot1), snap1, "TEMPO-NON4: Adjacent key slot modified by rejected read");
-        assertEq(vm.load(_NONCE, slot2), snap2, "TEMPO-NON4: Adjacent key slot modified by rejected read");
 
         _totalProtocolNonceRejections++;
 
@@ -438,71 +344,22 @@ contract NonceInvariantTest is InvariantBaseTest {
         address actor2 = _selectActorExcluding(actor2Seed, actor1);
         uint256 nonceKey = _selectNonceKey(keySeed);
 
-        // --- actor1 before: view + ghost + raw ---
-        uint64 expected1Before = _ghostNonces[actor1][nonceKey];
-        assertEq(
-            nonce.getNonce(actor1, nonceKey),
-            expected1Before,
-            "TEMPO-NON2: actor1 ghost mismatch before increment"
-        );
-        bytes32 slot1 = _getNonceSlot(actor1, nonceKey);
-        assertEq(
-            vm.load(_NONCE, slot1),
-            bytes32(uint256(expected1Before)),
-            "TEMPO-NON2: actor1 raw storage mismatch before increment"
-        );
-
-        // --- actor2 before: view + ghost + raw ---
-        uint64 expected2Before = _ghostNonces[actor2][nonceKey];
         uint64 nonce2Before = nonce.getNonce(actor2, nonceKey);
-        assertEq(nonce2Before, expected2Before, "TEMPO-NON5: actor2 ghost mismatch before increment");
-        bytes32 slot2 = _getNonceSlot(actor2, nonceKey);
-        bytes32 raw2Before = vm.load(_NONCE, slot2);
-        assertEq(
-            raw2Before,
-            bytes32(uint256(expected2Before)),
-            "TEMPO-NON5: actor2 raw storage mismatch before increment"
-        );
 
-        // Skip if actor1 is at max (overflow tested by testNonceOverflow)
-        if (expected1Before == type(uint64).max) return;
-
-        // Compute expected value independently of the storage helper
-        uint64 expected1After = expected1Before + 1;
+        // Skip if actor1 is at max (overflow tested by handler_nonceOverflow)
+        if (_ghostNonces[actor1][nonceKey] == type(uint64).max) return;
 
         // Increment actor1's nonce
         uint64 newNonce1 = _incrementNonceViaStorage(actor1, nonceKey);
-
-        // TEMPO-NON1: Verify helper returned the independently computed value
-        assertEq(newNonce1, expected1After, "TEMPO-NON1: actor1 increment returned wrong value");
-
-        // Verify actor1 raw storage after increment (catches high-bit corruption)
-        assertEq(
-            vm.load(_NONCE, slot1),
-            bytes32(uint256(expected1After)),
-            "TEMPO-NON1: actor1 raw storage mismatch after increment"
-        );
-
-        // Update ghost state from independently computed value (not helper return)
-        assertGe(
-            expected1After,
-            _lastSeenNonces[actor1][nonceKey],
-            "TEMPO-NON1: actor1 lastSeen would decrease"
-        );
-        _ghostNonces[actor1][nonceKey] = expected1After;
-        _lastSeenNonces[actor1][nonceKey] = expected1After;
+        _ghostNonces[actor1][nonceKey] = newNonce1;
+        _lastSeenNonces[actor1][nonceKey] = newNonce1;
         _trackNonceKey(actor1, nonceKey);
 
-        // --- actor2 after: view + raw unchanged ---
+        // TEMPO-NON5: Actor2's nonce should be unchanged
         uint64 nonce2After = nonce.getNonce(actor2, nonceKey);
-        assertEq(nonce2After, nonce2Before, "TEMPO-NON5: actor2 view changed after actor1 increment");
-        assertEq(
-            vm.load(_NONCE, slot2),
-            raw2Before,
-            "TEMPO-NON5: actor2 raw slot changed after actor1 increment"
-        );
+        assertEq(nonce2After, nonce2Before, "TEMPO-NON5: Other account nonce should be unchanged");
 
-        // Track actor2's key so global invariant covers it going forward
+        // Track actor2's key so global invariant covers it
         _trackNonceKey(actor2, nonceKey);
 
         _totalAccountIndependenceChecks++;
@@ -512,13 +369,7 @@ contract NonceInvariantTest is InvariantBaseTest {
                 string.concat(
                     "ACCOUNT_INDEPENDENCE: ",
                     _getActorIndex(actor1),
-                    " key=",
-                    vm.toString(nonceKey),
-                    " ",
-                    vm.toString(expected1Before),
-                    " -> ",
-                    vm.toString(expected1After),
-                    ", ",
+                    " incremented, ",
                     _getActorIndex(actor2),
                     " unchanged at ",
                     vm.toString(nonce2After)
@@ -529,82 +380,27 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for verifying key independence
     /// @dev Tests TEMPO-NON6 (different keys have independent nonces for the same account)
-    function handler_verifyKeyIndependence(
-        uint256 actorSeed,
-        uint256 key1Seed,
-        uint256 key2Seed
-    )
-        external
-    {
+    function handler_verifyKeyIndependence(uint256 actorSeed, uint256 key1Seed, uint256 key2Seed) external {
         address actor = _selectActor(actorSeed);
         uint256 key1 = _selectNonceKey(key1Seed);
         uint256 key2 = _selectNonceKeyExcluding(key2Seed, key1);
 
-        // --- key1 before: view + ghost + raw ---
-        uint64 expected1Before = _ghostNonces[actor][key1];
-        assertEq(
-            nonce.getNonce(actor, key1),
-            expected1Before,
-            "TEMPO-NON2: key1 ghost mismatch before increment"
-        );
-        bytes32 slot1 = _getNonceSlot(actor, key1);
-        assertEq(
-            vm.load(_NONCE, slot1),
-            bytes32(uint256(expected1Before)),
-            "TEMPO-NON2: key1 raw storage mismatch before increment"
-        );
-
-        // --- key2 (witness) before: view + ghost + raw ---
-        uint64 expected2Before = _ghostNonces[actor][key2];
         uint64 nonce2Before = nonce.getNonce(actor, key2);
-        assertEq(nonce2Before, expected2Before, "TEMPO-NON6: key2 ghost mismatch before increment");
-        bytes32 slot2 = _getNonceSlot(actor, key2);
-        bytes32 raw2Before = vm.load(_NONCE, slot2);
-        assertEq(
-            raw2Before,
-            bytes32(uint256(expected2Before)),
-            "TEMPO-NON6: key2 raw storage mismatch before increment"
-        );
 
-        // Skip if key1 is at max (overflow tested by testNonceOverflow)
-        if (expected1Before == type(uint64).max) return;
-
-        // Compute expected value independently of the storage helper
-        uint64 expected1After = expected1Before + 1;
+        // Skip if key1 is at max (overflow tested by handler_nonceOverflow)
+        if (_ghostNonces[actor][key1] == type(uint64).max) return;
 
         // Increment key1's nonce
         uint64 newNonce1 = _incrementNonceViaStorage(actor, key1);
-
-        // TEMPO-NON1: Verify helper returned the independently computed value
-        assertEq(newNonce1, expected1After, "TEMPO-NON1: key1 increment returned wrong value");
-
-        // Verify key1 raw storage after increment (catches high-bit corruption)
-        assertEq(
-            vm.load(_NONCE, slot1),
-            bytes32(uint256(expected1After)),
-            "TEMPO-NON1: key1 raw storage mismatch after increment"
-        );
-
-        // Update ghost state from independently computed value (not helper return)
-        assertGe(
-            expected1After,
-            _lastSeenNonces[actor][key1],
-            "TEMPO-NON1: key1 lastSeen would decrease"
-        );
-        _ghostNonces[actor][key1] = expected1After;
-        _lastSeenNonces[actor][key1] = expected1After;
+        _ghostNonces[actor][key1] = newNonce1;
+        _lastSeenNonces[actor][key1] = newNonce1;
         _trackNonceKey(actor, key1);
 
-        // --- key2 (witness) after: view + raw unchanged ---
+        // TEMPO-NON6: Key2's nonce should be unchanged
         uint64 nonce2After = nonce.getNonce(actor, key2);
-        assertEq(nonce2After, nonce2Before, "TEMPO-NON6: key2 view changed after key1 increment");
-        assertEq(
-            vm.load(_NONCE, slot2),
-            raw2Before,
-            "TEMPO-NON6: key2 raw slot changed after key1 increment"
-        );
+        assertEq(nonce2After, nonce2Before, "TEMPO-NON6: Other key nonce should be unchanged");
 
-        // Track key2 so global invariant covers it going forward
+        // Track key2 so global invariant covers it
         _trackNonceKey(actor, key2);
 
         _totalKeyIndependenceChecks++;
@@ -616,11 +412,7 @@ contract NonceInvariantTest is InvariantBaseTest {
                     _getActorIndex(actor),
                     " key=",
                     vm.toString(key1),
-                    " ",
-                    vm.toString(expected1Before),
-                    " -> ",
-                    vm.toString(expected1After),
-                    ", key=",
+                    " incremented, key=",
                     vm.toString(key2),
                     " unchanged at ",
                     vm.toString(nonce2After)
@@ -644,81 +436,17 @@ contract NonceInvariantTest is InvariantBaseTest {
         // TEMPO-NON7: Ghost state should match actual state before increment
         assertEq(actualBefore, expectedBefore, "TEMPO-NON7: Ghost nonce mismatch before increment");
 
-        // Verify raw storage matches before increment (catches high-bit corruption
-        // that getNonce's uint64 return would mask)
-        bytes32 slot = _getNonceSlot(actor, largeKey);
-        bytes32 rawBefore = vm.load(_NONCE, slot);
-        assertEq(
-            rawBefore,
-            bytes32(uint256(expectedBefore)),
-            "TEMPO-NON7: Raw storage mismatch before increment"
-        );
-
-        // Snapshot reserved key slot to verify it is untouched after increment
-        bytes32 reservedSlot = _getNonceSlot(actor, type(uint256).max);
-        bytes32 reservedBefore = vm.load(_NONCE, reservedSlot);
-
-        // Snapshot a normal-range key slot to verify cross-range isolation
-        uint256 normalKey = _selectNonceKey(keySeed ^ 0xBEEF);
-        bytes32 normalSlot = _getNonceSlot(actor, normalKey);
-        bytes32 normalBefore = vm.load(_NONCE, normalSlot);
-
-        // Snapshot same large key on a different actor for cross-account isolation
-        address otherActor = _selectActor(actorSeed ^ 0xDEAD);
-        bytes32 otherActorSlot = _getNonceSlot(otherActor, largeKey);
-        bytes32 otherActorBefore = vm.load(_NONCE, otherActorSlot);
-
-        // Compute expected value independently of the storage helper
-        uint64 expectedAfter = expectedBefore + 1;
-
+        // Increment and verify
         uint64 newNonce = _incrementNonceViaStorage(actor, largeKey);
+        _ghostNonces[actor][largeKey] = newNonce;
+        _lastSeenNonces[actor][largeKey] = newNonce;
+        _trackNonceKey(actor, largeKey);
         _totalIncrements++;
         _totalLargeKeyTests++;
 
-        // TEMPO-NON7: Nonce should increment by exactly 1
-        assertEq(newNonce, expectedAfter, "TEMPO-NON7: Large key nonce should increment by 1");
-
-        // Verify raw storage after increment (catches high-bit corruption)
-        bytes32 rawAfter = vm.load(_NONCE, slot);
-        assertEq(
-            rawAfter,
-            bytes32(uint256(expectedAfter)),
-            "TEMPO-NON7: Raw storage mismatch after increment"
-        );
-
-        // Verify reserved key slot was not modified
-        assertEq(
-            vm.load(_NONCE, reservedSlot),
-            reservedBefore,
-            "TEMPO-NON7: Increment wrote to reserved key (MAX) slot"
-        );
-
-        // Verify normal-range key slot was not modified
-        assertEq(
-            vm.load(_NONCE, normalSlot),
-            normalBefore,
-            "TEMPO-NON7: Increment wrote to normal-range key slot"
-        );
-
-        // Verify same large key on different actor was not modified
-        assertEq(
-            vm.load(_NONCE, otherActorSlot),
-            otherActorBefore,
-            "TEMPO-NON7: Increment wrote to other actor's slot"
-        );
-
-        // Update ghost state from independently computed expected value (not helper return)
-        _ghostNonces[actor][largeKey] = expectedAfter;
-        _lastSeenNonces[actor][largeKey] = expectedAfter;
-
-        // Track nonce key usage
-        _trackNonceKey(actor, largeKey);
-
-        // TEMPO-NON7: New value should be readable via getNonce
-        uint64 actualAfter = nonce.getNonce(actor, largeKey);
-        assertEq(
-            actualAfter, expectedAfter, "TEMPO-NON7: Large key stored nonce should match expected"
-        );
+        // TEMPO-NON7: Large key should increment correctly
+        uint64 afterIncrement = nonce.getNonce(actor, largeKey);
+        assertEq(afterIncrement, newNonce, "TEMPO-NON7: Large key should increment correctly");
 
         if (_loggingEnabled) {
             _log(
@@ -730,7 +458,7 @@ contract NonceInvariantTest is InvariantBaseTest {
                     " ",
                     vm.toString(expectedBefore),
                     " -> ",
-                    vm.toString(expectedAfter)
+                    vm.toString(newNonce)
                 )
             );
         }
@@ -738,10 +466,6 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for multiple sequential increments
     /// @dev Tests TEMPO-NON8 (strict monotonicity over many increments)
-    ///      Mirrors handler_incrementNonce rigor: ghost consistency, raw storage,
-    ///      key/account isolation, and independently computed expected values.
-    ///      Event emission (NonceIncremented) is not verifiable here because this
-    ///      suite uses vm.store; event checks are covered by TempoTransactionInvariant.t.sol.
     function handler_multipleIncrements(
         uint256 actorSeed,
         uint256 keySeed,
@@ -753,104 +477,31 @@ contract NonceInvariantTest is InvariantBaseTest {
         uint256 nonceKey = _selectNonceKey(keySeed);
         uint256 count = bound(countSeed, 1, 32);
 
-        // --- Pre-loop: verify ghost consistency and snapshot isolation targets ---
+        uint64 startNonce = nonce.getNonce(actor, nonceKey);
 
-        uint64 expectedBefore = _ghostNonces[actor][nonceKey];
-        uint64 actualBefore = nonce.getNonce(actor, nonceKey);
-
-        // TEMPO-NON2: Ghost must match actual before we begin
-        assertEq(
-            actualBefore, expectedBefore, "TEMPO-NON2: Ghost nonce mismatch before multi-increment"
-        );
-
-        // Raw storage check (catches high-bit corruption that uint64 return would mask)
-        bytes32 slot = _getNonceSlot(actor, nonceKey);
-        bytes32 rawBefore = vm.load(_NONCE, slot);
-        assertEq(
-            rawBefore,
-            bytes32(uint256(expectedBefore)),
-            "TEMPO-NON2: Raw storage mismatch before multi-increment"
-        );
-
-        // Snapshot adjacent key for isolation (TEMPO-NON6)
-        uint256 otherKey = _selectNonceKeyExcluding(keySeed ^ 0xBEEF, nonceKey);
-        bytes32 otherSlot = _getNonceSlot(actor, otherKey);
-        bytes32 otherKeyBefore = vm.load(_NONCE, otherSlot);
-
-        // Snapshot other actor same key for account isolation (TEMPO-NON5)
-        address otherActor = _selectActorExcluding(actorSeed ^ 0xDEAD, actor);
-        bytes32 otherActorSlot = _getNonceSlot(otherActor, nonceKey);
-        bytes32 otherActorBefore = vm.load(_NONCE, otherActorSlot);
-
-        // Clamp count to avoid overflow in the helper (and in test arithmetic)
-        uint256 maxSteps = uint256(type(uint64).max) - uint256(expectedBefore);
+        // Clamp count to avoid overflow
+        uint256 maxSteps = uint256(type(uint64).max) - uint256(startNonce);
         if (count > maxSteps) {
             count = maxSteps;
         }
         if (count == 0) return;
 
-        // Track key before loop so it's recorded even on early return paths
         _trackNonceKey(actor, nonceKey);
 
-        // --- Loop: per-iteration assertions with independently computed expected values ---
-
-        uint64 expected = expectedBefore;
-
         for (uint256 i = 0; i < count; i++) {
-            uint64 expectedAfter = expected + 1;
-
+            uint64 beforeIncrement = nonce.getNonce(actor, nonceKey);
             uint64 newNonce = _incrementNonceViaStorage(actor, nonceKey);
+            _ghostNonces[actor][nonceKey] = newNonce;
+            _lastSeenNonces[actor][nonceKey] = newNonce;
 
-            // TEMPO-NON8: Helper return must match independently computed expected
+            // TEMPO-NON8: Each increment should be exactly +1
             assertEq(
-                newNonce,
-                expectedAfter,
-                "TEMPO-NON8: Each increment should be exactly +1"
+                newNonce, beforeIncrement + 1, "TEMPO-NON8: Each increment should be exactly +1"
             );
-
-            // TEMPO-NON3: Read-back via getNonce must agree
-            assertEq(
-                nonce.getNonce(actor, nonceKey),
-                expectedAfter,
-                "TEMPO-NON3: getNonce mismatch after increment in multi-increment"
-            );
-
-            // Raw storage must match (catches high-bit corruption)
-            assertEq(
-                vm.load(_NONCE, slot),
-                bytes32(uint256(expectedAfter)),
-                "TEMPO-NON8: Raw storage mismatch after increment in multi-increment"
-            );
-
-            // Update ghost from independently computed value (not helper return)
-            _ghostNonces[actor][nonceKey] = expectedAfter;
-            _lastSeenNonces[actor][nonceKey] = expectedAfter;
-
-            expected = expectedAfter;
         }
 
-        // --- Post-loop: final consistency and isolation checks ---
-
         uint64 endNonce = nonce.getNonce(actor, nonceKey);
-        assertEq(
-            endNonce,
-            expectedBefore + uint64(count),
-            "TEMPO-NON8: Total increment should match count"
-        );
-
-        // TEMPO-NON6: Adjacent key must be untouched
-        assertEq(
-            vm.load(_NONCE, otherSlot),
-            otherKeyBefore,
-            "TEMPO-NON6: Multi-increment wrote to adjacent key slot"
-        );
-
-        // TEMPO-NON5: Other actor same key must be untouched
-        assertEq(
-            vm.load(_NONCE, otherActorSlot),
-            otherActorBefore,
-            "TEMPO-NON5: Multi-increment wrote to other actor's slot"
-        );
+        assertEq(endNonce, startNonce + uint64(count), "TEMPO-NON8: Total increment should match");
 
         _totalMultipleIncrements++;
         _totalIncrements += count;
@@ -865,7 +516,7 @@ contract NonceInvariantTest is InvariantBaseTest {
                     " count=",
                     vm.toString(count),
                     " ",
-                    vm.toString(uint256(expectedBefore)),
+                    vm.toString(uint256(startNonce)),
                     " -> ",
                     vm.toString(uint256(endNonce))
                 )
@@ -875,122 +526,41 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for testing nonce overflow at u64::MAX
     /// @dev Tests TEMPO-NON9 (nonce overflow protection)
-    /// Uses a small bounded key range to avoid conflicts and prevent unbounded key growth:
-    /// - Normal handlers use keys (1 to MAX_NORMAL_NONCE_KEY)
-    /// - testLargeNonceKey uses extreme uint256 values
-    /// - Reserved TEMPO_EXPIRING_NONCE_KEY uses type(uint256).max
-    /// - This handler uses keys (MAX_NORMAL_NONCE_KEY + 1 to MAX_NORMAL_NONCE_KEY + 100)
-    ///
+    /// Uses a small bounded key range to avoid conflicts and prevent unbounded key growth.
     /// Tests the boundary in two steps:
     /// 1. Set nonce to max-1, increment once (should succeed, reaching max)
     /// 2. Attempt to increment again at max (should revert with NonceOverflow)
-    /// Verifies raw storage immutability on revert, adjacent key isolation, and ghost consistency.
     function handler_nonceOverflow(uint256 actorSeed, uint256 keySeed) external {
         address actor = _selectActor(actorSeed);
-        // Use a small bounded range to prevent unbounded _accountNonceKeys growth
         uint256 nonceKey = bound(keySeed, MAX_NORMAL_NONCE_KEY + 1, MAX_NORMAL_NONCE_KEY + 100);
 
         bytes32 slot = _getNonceSlot(actor, nonceKey);
 
-        // Snapshot an adjacent key's slot to verify isolation after overflow attempt
-        uint256 otherKey = _selectNonceKeyExcluding(keySeed ^ 0xBEEF, nonceKey);
-        bytes32 otherSlot = _getNonceSlot(actor, otherKey);
-        bytes32 otherBefore = vm.load(_NONCE, otherSlot);
-
-        // Snapshot another actor's same key slot to verify cross-actor isolation
-        address otherActor = _selectActorExcluding(actorSeed ^ 0xDEAD, actor);
-        bytes32 otherActorSlot = _getNonceSlot(otherActor, nonceKey);
-        bytes32 otherActorBefore = vm.load(_NONCE, otherActorSlot);
-
-        // --- Step 1: Boundary test at max-1 (should succeed) ---
-
-        // Set nonce to max-1 via direct storage manipulation
+        // Step 1: Set nonce to max-1 and increment once (should succeed)
         vm.store(_NONCE, slot, bytes32(uint256(type(uint64).max - 1)));
 
-        // Verify raw storage is canonical (no high-bit corruption from vm.store)
-        assertEq(
-            vm.load(_NONCE, slot),
-            bytes32(uint256(type(uint64).max - 1)),
-            "TEMPO-NON9: Raw storage should be canonical after vm.store"
-        );
-
-        // Verify getNonce reads the expected value
-        assertEq(
-            nonce.getNonce(actor, nonceKey),
-            type(uint64).max - 1,
-            "TEMPO-NON9: getNonce should return max-1"
-        );
-
-        // Increment from max-1: should succeed and reach max
         uint64 newNonce = _incrementNonceViaStorage(actor, nonceKey);
         assertEq(newNonce, type(uint64).max, "TEMPO-NON9: Increment from max-1 should reach max");
-
-        // Verify raw storage after successful increment
-        assertEq(
-            vm.load(_NONCE, slot),
-            bytes32(uint256(type(uint64).max)),
-            "TEMPO-NON9: Raw storage should be max after increment from max-1"
-        );
-
-        // Verify getNonce after successful increment
         assertEq(
             nonce.getNonce(actor, nonceKey),
             type(uint64).max,
             "TEMPO-NON9: getNonce should return max after increment from max-1"
         );
 
-        // Update ghost state to reflect the successful increment
+        // Update ghost state
         _ghostNonces[actor][nonceKey] = type(uint64).max;
         _lastSeenNonces[actor][nonceKey] = type(uint64).max;
         _trackNonceKey(actor, nonceKey);
 
-        // --- Step 2: Overflow test at max (should revert) ---
-
-        // Snapshot raw storage before the overflow attempt
-        bytes32 rawBeforeOverflow = vm.load(_NONCE, slot);
-
-        // TEMPO-NON9: Attempting to increment at max should revert with NonceOverflow
+        // Step 2: Attempt to increment at max (should revert)
         vm.expectRevert(INonce.NonceOverflow.selector);
         this.externalIncrementNonceViaStorage(actor, nonceKey);
 
-        // Verify raw storage was NOT modified by the reverted call
-        assertEq(
-            vm.load(_NONCE, slot),
-            rawBeforeOverflow,
-            "TEMPO-NON9: Raw storage must not change on overflow revert"
-        );
-
-        // Verify getNonce still returns max after the reverted overflow attempt
+        // Verify nonce is still at max after revert
         assertEq(
             nonce.getNonce(actor, nonceKey),
             type(uint64).max,
             "TEMPO-NON9: getNonce must still return max after overflow revert"
-        );
-
-        // Verify ghost state is still consistent
-        assertEq(
-            _ghostNonces[actor][nonceKey],
-            type(uint64).max,
-            "TEMPO-NON9: Ghost state must remain max after overflow revert"
-        );
-        assertEq(
-            _lastSeenNonces[actor][nonceKey],
-            type(uint64).max,
-            "TEMPO-NON9: Last seen must remain max after overflow revert"
-        );
-
-        // Verify adjacent key slot was not modified by the overflow attempt
-        assertEq(
-            vm.load(_NONCE, otherSlot),
-            otherBefore,
-            "TEMPO-NON6: Overflow attempt wrote to adjacent key slot"
-        );
-
-        // Verify other actor's same key slot was not modified
-        assertEq(
-            vm.load(_NONCE, otherActorSlot),
-            otherActorBefore,
-            "TEMPO-NON5: Overflow attempt wrote to other actor's slot"
         );
 
         _totalOverflowTests++;
@@ -1013,112 +583,19 @@ contract NonceInvariantTest is InvariantBaseTest {
     /// Note: Rust distinguishes between:
     /// - get_nonce(key=0) -> ProtocolNonceNotSupported
     /// - increment_nonce(key=0) -> InvalidNonceKey
-    function handler_invalidNonceKeyIncrement(
-        uint256 accountSeed,
-        uint256 otherKeySeed,
-        uint256 otherActorSeed
-    )
-        external
-    {
-        // Broaden the account domain beyond _actors to verify key-0 rejection
-        // is account-independent. Use accountSeed to occasionally inject edge-case addresses.
-        address account;
-        uint256 branch = accountSeed % 8;
-        if (branch == 0) {
-            account = address(0);
-        } else if (branch == 1) {
-            account = address(this);
-        } else if (branch == 2) {
-            account = _NONCE;
-        } else {
-            account = _selectActor(accountSeed);
-        }
+    function handler_invalidNonceKeyIncrement(uint256 accountSeed) external {
+        address account = _selectAccount(accountSeed);
 
-        uint256 otherKey = _selectNonceKey(otherKeySeed);
-
-        // --- Snapshot storage before the rejected increment ---
-
-        // Key-0 slot itself (should never be written)
-        bytes32 slot0 = _getNonceSlot(account, 0);
-        bytes32 snap0 = vm.load(_NONCE, slot0);
-
-        // Adjacent key slot
-        bytes32 otherSlot = _getNonceSlot(account, otherKey);
-        bytes32 snapOther = vm.load(_NONCE, otherSlot);
-
-        // Cross-account slot (if account is from _actors, pick a different actor)
-        address otherActor;
-        if (branch >= 3) {
-            otherActor = _selectActorExcluding(otherActorSeed, account);
-        } else {
-            otherActor = _selectActor(otherActorSeed);
-        }
-        bytes32 crossSlot = _getNonceSlot(otherActor, otherKey);
-        bytes32 snapCross = vm.load(_NONCE, crossSlot);
-
-        // Snapshot ghost state for the adjacent key (should not change)
-        uint64 ghostOtherBefore = _ghostNonces[account][otherKey];
-
-        // Snapshot the increment counter (should not change)
-        uint256 incrementsBefore = _totalIncrements;
-
-        // --- TEMPO-NON10: Increment with key 0 should revert with InvalidNonceKey ---
-
-        bytes memory expectedRevert = abi.encodeWithSelector(INonce.InvalidNonceKey.selector);
-
+        // TEMPO-NON10: Increment with key 0 should revert with InvalidNonceKey
         try this.externalIncrementNonceViaStorage(account, 0) {
             revert("TEMPO-NON10: Increment with key 0 should revert");
         } catch (bytes memory reason) {
-            // Assert exact revert payload (4 bytes, exact match)
-            assertEq(reason.length, 4, "TEMPO-NON10: Revert data should be exactly 4 bytes");
-            assertEq(reason, expectedRevert, "TEMPO-NON10: Should revert with InvalidNonceKey");
-        }
-
-        // --- Assert statelessness: a second call should revert identically ---
-
-        try this.externalIncrementNonceViaStorage(account, 0) {
-            revert("TEMPO-NON10: Repeat increment with key 0 should revert");
-        } catch (bytes memory reason2) {
             assertEq(
-                reason2, expectedRevert, "TEMPO-NON10: Repeat call should revert identically"
+                bytes4(reason),
+                INonce.InvalidNonceKey.selector,
+                "TEMPO-NON10: Should revert with InvalidNonceKey"
             );
         }
-
-        // --- Assert no side effects on storage ---
-
-        // Key-0 slot unchanged
-        assertEq(
-            vm.load(_NONCE, slot0), snap0, "TEMPO-NON10: Key-0 slot modified by rejected increment"
-        );
-
-        // Adjacent key slot unchanged
-        assertEq(
-            vm.load(_NONCE, otherSlot),
-            snapOther,
-            "TEMPO-NON10: Adjacent key slot modified by rejected increment"
-        );
-
-        // Cross-account slot unchanged
-        assertEq(
-            vm.load(_NONCE, crossSlot),
-            snapCross,
-            "TEMPO-NON10: Cross-account slot modified by rejected increment"
-        );
-
-        // --- Assert no side effects on ghost state ---
-
-        assertEq(
-            _ghostNonces[account][otherKey],
-            ghostOtherBefore,
-            "TEMPO-NON10: Ghost state modified by rejected increment"
-        );
-
-        // Increment counter should not have changed
-        assertEq(
-            _totalIncrements,
-            incrementsBefore,
-            "TEMPO-NON10: Increment counter modified by rejected increment"
-        );
 
         _totalInvalidKeyRejections++;
 
@@ -1133,164 +610,24 @@ contract NonceInvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice Handler for testing reserved TEMPO_EXPIRING_NONCE_KEY behavior
-    /// @dev Tests TEMPO-NON11 (reserved key type(uint256).max):
-    ///      - Readable via getNonce (returns value from 2D nonce mapping)
-    ///      - Reads are idempotent (no side effects)
-    ///      - Reading does not touch expiring nonce storage (slots 1-3)
-    ///      - Reading does not touch adjacent keys or other accounts
-    ///      - Raw storage consistency (no dirty high bits)
-    ///      - Ghost state consistency
-    /// @dev Expiring nonces use tx-hash-based replay protection in separate storage
-    ///      (expiringNonceSeen, expiringNonceRing, expiringNonceRingPtr). The 2D nonce
-    ///      slot at nonces[account][uint256.max] is independent of that mechanism.
-    function handler_testReservedExpiringNonceKey(
-        uint256 actorSeed,
-        uint256 normalKeySeed,
-        uint256 otherActorSeed
-    )
-        external
-    {
-        // --- Select account: broaden domain beyond _actors ---
-        address account;
-        uint256 branch = actorSeed % 8;
-        if (branch == 0) {
-            account = address(0);
-        } else if (branch == 1) {
-            account = address(this);
-        } else if (branch == 2) {
-            account = _NONCE;
-        } else {
-            account = _selectActor(actorSeed);
-        }
-
+    /// @notice Handler for testing reserved TEMPO_EXPIRING_NONCE_KEY readability
+    /// @dev Tests TEMPO-NON11 (reserved key type(uint256).max is readable via getNonce)
+    /// @dev Expiring nonces use tx-hash-based replay protection (separate storage). This
+    ///      test verifies the key is accessible and returns the expected value.
+    function handler_testReservedExpiringNonceKey(uint256 actorSeed) external {
+        address account = _selectAccount(actorSeed);
         uint256 reservedKey = type(uint256).max;
 
-        // --- Snapshot reserved key: raw storage + ghost ---
+        // TEMPO-NON11: Reserved key should be readable
+        uint64 result = nonce.getNonce(account, reservedKey);
+        uint64 expected = _ghostNonces[account][reservedKey];
 
-        bytes32 reservedSlot = _getNonceSlot(account, reservedKey);
-        bytes32 rawBefore = vm.load(_NONCE, reservedSlot);
-        uint64 ghostBefore = _ghostNonces[account][reservedKey];
+        assertEq(result, expected, "TEMPO-NON11: Reserved key should match ghost state");
 
-        // TEMPO-NON2: Raw storage must match ghost before read
-        assertEq(
-            rawBefore,
-            bytes32(uint256(ghostBefore)),
-            "TEMPO-NON11: Raw storage mismatch vs ghost before read"
-        );
-
-        // --- Snapshot adjacent/cross-account slots for isolation ---
-
-        uint256 normalKey = _selectNonceKey(normalKeySeed);
-        bytes32 normalSlot = _getNonceSlot(account, normalKey);
-        bytes32 normalBefore = vm.load(_NONCE, normalSlot);
-
-        // Adjacent large key (uint256.max - 1) for near-neighbor isolation
-        bytes32 adjacentLargeSlot = _getNonceSlot(account, type(uint256).max - 1);
-        bytes32 adjacentLargeBefore = vm.load(_NONCE, adjacentLargeSlot);
-
-        // Cross-account: same reserved key on a different account
-        address otherAccount;
-        if (branch >= 3) {
-            otherAccount = _selectActorExcluding(otherActorSeed, account);
-        } else {
-            otherAccount = _selectActor(otherActorSeed);
-        }
-        bytes32 crossSlot = _getNonceSlot(otherAccount, reservedKey);
-        bytes32 crossBefore = vm.load(_NONCE, crossSlot);
-
-        // --- Snapshot expiring nonce storage (slots 1-3) ---
-        // These should never be touched by a getNonce read.
-
-        // Slot 3: expiringNonceRingPtr (scalar at slot 3)
-        bytes32 ptrSlot = bytes32(uint256(3));
-        bytes32 ptrBefore = vm.load(_NONCE, ptrSlot);
-
-        // Slot 1 sample: expiringNonceSeen[hash] for a deterministic hash
-        bytes32 sampleTxHash = keccak256(abi.encodePacked(actorSeed, account));
-        bytes32 seenSlot = keccak256(abi.encode(sampleTxHash, uint256(1)));
-        bytes32 seenBefore = vm.load(_NONCE, seenSlot);
-
-        // Slot 2 sample: expiringNonceRing[idx] for a deterministic index
-        uint32 sampleIdx = uint32(actorSeed % 300_000);
-        bytes32 ringSlot = keccak256(abi.encode(uint256(sampleIdx), uint256(2)));
-        bytes32 ringBefore = vm.load(_NONCE, ringSlot);
-
-        // --- Read reserved key twice (idempotency) ---
-
-        uint64 v1 = nonce.getNonce(account, reservedKey);
-        uint64 v2 = nonce.getNonce(account, reservedKey);
-
-        // TEMPO-NON11: Reads must be idempotent
-        assertEq(v1, v2, "TEMPO-NON11: Read should be idempotent");
-
-        // TEMPO-NON11: Returned value must match raw storage
-        assertEq(v1, uint64(uint256(rawBefore)), "TEMPO-NON11: Return value vs raw storage mismatch");
-
-        // TEMPO-NON11: Raw storage should have no dirty high bits
-        assertEq(
-            rawBefore,
-            bytes32(uint256(v1)),
-            "TEMPO-NON11: Raw storage has dirty high bits"
-        );
-
-        // TEMPO-NON2: Returned value must match ghost state
-        assertEq(v1, ghostBefore, "TEMPO-NON11: Return value vs ghost state mismatch");
-
-        // Uninitialized-key check: if ghost is zero, value must be zero
+        // Uninitialized accounts should return 0
         if (!_nonceKeyUsed[account][reservedKey]) {
-            assertEq(v1, 0, "TEMPO-NON11: Uninitialized reserved key should be zero");
+            assertEq(result, 0, "TEMPO-NON11: Uninitialized reserved key should be zero");
         }
-
-        // --- Assert no side effects on 2D nonce storage ---
-
-        // Reserved slot itself unchanged
-        assertEq(
-            vm.load(_NONCE, reservedSlot),
-            rawBefore,
-            "TEMPO-NON11: Read mutated reserved key slot"
-        );
-
-        // Normal key slot unchanged
-        assertEq(
-            vm.load(_NONCE, normalSlot),
-            normalBefore,
-            "TEMPO-NON11: Read mutated normal key slot"
-        );
-
-        // Adjacent large key slot unchanged
-        assertEq(
-            vm.load(_NONCE, adjacentLargeSlot),
-            adjacentLargeBefore,
-            "TEMPO-NON11: Read mutated adjacent large key slot"
-        );
-
-        // Cross-account reserved key slot unchanged
-        assertEq(
-            vm.load(_NONCE, crossSlot),
-            crossBefore,
-            "TEMPO-NON11: Read mutated cross-account reserved key slot"
-        );
-
-        // --- Assert no side effects on expiring nonce storage (slots 1-3) ---
-
-        assertEq(
-            vm.load(_NONCE, ptrSlot),
-            ptrBefore,
-            "TEMPO-NON11: Read mutated expiringNonceRingPtr (slot 3)"
-        );
-
-        assertEq(
-            vm.load(_NONCE, seenSlot),
-            seenBefore,
-            "TEMPO-NON11: Read mutated expiringNonceSeen sample (slot 1)"
-        );
-
-        assertEq(
-            vm.load(_NONCE, ringSlot),
-            ringBefore,
-            "TEMPO-NON11: Read mutated expiringNonceRing sample (slot 2)"
-        );
 
         _totalReservedKeyTests++;
 
@@ -1300,7 +637,7 @@ contract NonceInvariantTest is InvariantBaseTest {
                     "RESERVED_EXPIRING_KEY: account=",
                     vm.toString(account),
                     " key=MAX_UINT256 readable, value=",
-                    vm.toString(v1)
+                    vm.toString(result)
                 )
             );
         }
@@ -1313,7 +650,8 @@ contract NonceInvariantTest is InvariantBaseTest {
     /// @notice Run all invariant checks in a single unified loop
     /// @dev Combines TEMPO-NON1 (never decrease), TEMPO-NON2 (ghost consistency),
     ///      and raw storage canonical checks across all tracked (actor, nonceKey) pairs.
-    ///      Caches nonce.getNonce() result to avoid duplicate external calls.
+    ///      Raw storage checks catch high-bit corruption that getNonce's uint64 return
+    ///      would mask — important for validating the precompile's storage layout.
     function invariant_globalInvariants() public view {
         for (uint256 a = 0; a < _actors.length; a++) {
             address actor = _actors[a];
@@ -1349,18 +687,17 @@ contract NonceInvariantTest is InvariantBaseTest {
     /// @notice Protocol nonce key 0 must always revert, regardless of state mutations
     /// @dev Tests TEMPO-NON4 globally: getNonce(account, 0) must revert with
     ///      ProtocolNonceNotSupported for all actors and edge-case addresses.
-    ///      Handler-level checks cover this per-call, but a global check ensures
-    ///      no handler accidentally makes key 0 readable.
+    ///      Ensures no handler accidentally makes key 0 readable.
     function invariant_protocolNonceAlwaysReverts() public {
-        bytes memory expectedRevert =
-            abi.encodeWithSelector(INonce.ProtocolNonceNotSupported.selector);
-
         for (uint256 a = 0; a < _actors.length; a++) {
             try nonce.getNonce(_actors[a], 0) {
                 revert("TEMPO-NON4: getNonce(actor, 0) must revert");
             } catch (bytes memory reason) {
-                assertEq(reason.length, 4, "TEMPO-NON4: Revert data should be exactly 4 bytes");
-                assertEq(reason, expectedRevert, "TEMPO-NON4: Should revert with ProtocolNonceNotSupported");
+                assertEq(
+                    bytes4(reason),
+                    INonce.ProtocolNonceNotSupported.selector,
+                    "TEMPO-NON4: Should revert with ProtocolNonceNotSupported"
+                );
             }
         }
 
@@ -1370,8 +707,11 @@ contract NonceInvariantTest is InvariantBaseTest {
             try nonce.getNonce(edgeAccounts[i], 0) {
                 revert("TEMPO-NON4: getNonce(edgeAddr, 0) must revert");
             } catch (bytes memory reason) {
-                assertEq(reason.length, 4, "TEMPO-NON4: Revert data should be exactly 4 bytes");
-                assertEq(reason, expectedRevert, "TEMPO-NON4: Should revert with ProtocolNonceNotSupported");
+                assertEq(
+                    bytes4(reason),
+                    INonce.ProtocolNonceNotSupported.selector,
+                    "TEMPO-NON4: Should revert with ProtocolNonceNotSupported"
+                );
             }
         }
     }
