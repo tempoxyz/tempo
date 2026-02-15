@@ -256,7 +256,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             _keyUsed[account][keyId] = true;
             _accountKeys[account].push(keyId);
         }
-
     }
 
     /// @dev Find an existing active (non-revoked) key for an account
@@ -512,7 +511,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                     actualLimit, expectedLimit, "TEMPO-KEY2: Stored limit should match input state"
                 );
             }
-
         } catch {
             vm.stopPrank();
             revert("TEMPO-KEY1: Valid authorizeKey call should not revert");
@@ -549,7 +547,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 IAccountKeychain.ZeroPublicKey.selector,
                 "TEMPO-KEY7"
             );
-
         } else if (scenario == AuthorizeKeyRevertScenario.KeyAlreadyExists) {
             (address account, address keyId, bool skip) =
                 _ensureActorWithActiveKey(accountSeed, keyIdSeed);
@@ -567,7 +564,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 IAccountKeychain.KeyAlreadyExists.selector,
                 "TEMPO-KEY8"
             );
-
         } else if (scenario == AuthorizeKeyRevertScenario.ExpiryInPast) {
             address account = _selectActor(accountSeed);
             address keyId = _selectKeyId(keyIdSeed);
@@ -587,7 +583,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 IAccountKeychain.ExpiryInPast.selector,
                 "TEMPO-KEY1"
             );
-
         } else {
             // TEMPO-KEY4: KeyAlreadyRevoked
             address account = _selectActor(accountSeed);
@@ -614,7 +609,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 IAccountKeychain.KeyAlreadyRevoked.selector,
                 "TEMPO-KEY4"
             );
-
         }
     }
 
@@ -736,7 +730,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // TEMPO-KEY23 (T2+): Revoked key limits are inaccessible for all known tokens.
         _assertAllLimitsZero(account, keyId, "TEMPO-KEY23");
-
     }
 
     /// @notice Handler for updating spending limits
@@ -799,7 +792,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 "TEMPO-KEY24: unrelated token limits should remain unchanged"
             );
         }
-
     }
 
     /// @notice Revert handler for updateSpendingLimit (internal, dispatched by per-scenario wrappers)
@@ -839,7 +831,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 IAccountKeychain.KeyNotFound.selector,
                 "TEMPO-KEY5"
             );
-
         } else if (scenario == UpdateLimitRevertScenario.Revoked) {
             address account = _selectActor(accountSeed);
 
@@ -859,7 +850,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 IAccountKeychain.KeyAlreadyRevoked.selector,
                 "TEMPO-KEY5"
             );
-
         } else {
             // Cross-account (caller tries to update owner's key)
             address owner = _selectActor(accountSeed);
@@ -883,7 +873,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 IAccountKeychain.KeyNotFound.selector,
                 "TEMPO-KEY5"
             );
-
         }
     }
 
@@ -975,7 +964,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             _expectRevokeKeyRevert(
                 account, account, keyId, IAccountKeychain.KeyNotFound.selector, "TEMPO-KEY9"
             );
-
         } else if (scenario == RevokeKeyRevertScenario.AlreadyRevoked) {
             address account = _selectActor(accountSeed);
 
@@ -990,7 +978,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             _expectRevokeKeyRevert(
                 account, account, keyId, IAccountKeychain.KeyNotFound.selector, "TEMPO-KEY9"
             );
-
         } else {
             // TEMPO-KEY10: Revoke another account's key (cross-account isolation)
             address owner = _selectActor(accountSeed);
@@ -1010,7 +997,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             _expectRevokeKeyRevert(
                 caller, owner, keyId, IAccountKeychain.KeyNotFound.selector, "TEMPO-KEY10"
             );
-
         }
     }
 
@@ -1189,7 +1175,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 assertEq(limit, limitsBefore[a], "TEMPO-KEY10: unexpected limit changed");
             }
         }
-
     }
 
     /// @notice Handler for checking getTransactionKey
@@ -1334,8 +1319,10 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         address[] memory watchTokens = _watchTokens(token);
         KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-        // Warp to exactly the expiry timestamp.
+        // Warp to exactly the expiry timestamp, restoring afterward to avoid
+        // polluting block.timestamp for other handlers.
         // TEMPO-KEY17: timestamp >= expiry means equality counts as expired.
+        uint256 tsBefore = block.timestamp;
         vm.warp(expiry);
 
         vm.startPrank(account);
@@ -1354,6 +1341,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         // Failed boundary update must not mutate key metadata or limits.
         _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY17");
 
+        vm.warp(tsBefore);
     }
 
     /// @notice Handler for testing operations on expired keys
@@ -1386,7 +1374,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         address[] memory watchTokens = _watchTokens(token);
         KeySnapshot memory snap = _snapshotKey(account, keyId, watchTokens);
-        // Warp past expiry (1 second to 1 day past)
+        // Warp past expiry (1 second to 1 day past), restoring afterward to
+        // avoid polluting block.timestamp for other handlers.
+        uint256 tsBefore = block.timestamp;
         uint256 warpTo = expiry + 1 + (warpAmount % 1 days);
         vm.warp(warpTo);
 
@@ -1407,6 +1397,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         // Failed update on an expired key must not mutate metadata or limits.
         _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY18");
 
+        vm.warp(tsBefore);
     }
 
     /// @notice Handler for testing invalid signature type
@@ -1490,7 +1481,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // Failed authorize must not mutate state.
         _assertKeyUnchanged(snap, account, keyId, "TEMPO-KEY19");
-
     }
 
     /// @notice Handler for testing duplicate token limits (last write wins)
@@ -1559,25 +1549,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             storedLimit != firstAmount || firstAmount == secondAmount,
             "TEMPO-KEY27: First entry should NOT win when duplicates exist"
         );
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "DUPLICATE_LIMITS: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " token=",
-                    vm.toString(token),
-                    " first=",
-                    vm.toString(firstAmount),
-                    " second=",
-                    vm.toString(secondAmount),
-                    " stored=",
-                    vm.toString(storedLimit)
-                )
-            );
-        }
     }
 
     /*//////////////////////////////////////////////////////////////
