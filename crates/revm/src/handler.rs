@@ -157,14 +157,22 @@ fn calculate_key_authorization_gas(
 /// For pre-T1: Uses `init_and_floor_gas` directly to maintain backward compatibility,
 /// since pre-T1 doesn't have key_authorization gas tracking and Genesis has special
 /// handling where nonce_2d_gas is added to init_and_floor_gas but not to evm.initial_gas.
+///
+/// `evm_initial_state_gas` captures additional state gas from runtime checks in
+/// `validate_against_state_and_deduct_caller` (e.g., 2D nonce + CREATE + caller nonce == 0).
 #[inline]
 fn adjusted_initial_gas(
     spec: tempo_chainspec::hardfork::TempoHardfork,
     evm_initial_gas: u64,
+    evm_initial_state_gas: u64,
     init_and_floor_gas: &InitialAndFloorGas,
 ) -> InitialAndFloorGas {
     if spec.is_t1() {
-        InitialAndFloorGas::new(evm_initial_gas, init_and_floor_gas.floor_gas)
+        InitialAndFloorGas::new_with_state_gas(
+            evm_initial_gas,
+            init_and_floor_gas.initial_state_gas + evm_initial_state_gas,
+            init_and_floor_gas.floor_gas,
+        )
     } else {
         *init_and_floor_gas
     }
@@ -309,6 +317,7 @@ where
         let gas_limit = evm.ctx().tx().gas_limit();
         let mut remaining_gas = gas_limit - init_and_floor_gas.initial_total_gas;
         let mut accumulated_gas_refund = 0i64;
+        let mut accumulated_state_gas_spent = 0u64;
 
         // Store original TxEnv values to restore after batch execution
         let original_kind = evm.ctx().tx().kind();
@@ -377,26 +386,32 @@ where
                 // Include gas from all previous successful calls + failed call
                 let gas_spent_by_failed_call = frame_result.gas().spent();
                 let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_call;
+                // State gas only applies to successful calls that create state.
+                // On revert/halt no new state is created, so the failed call's
+                // state gas is not charged.
+                let total_state_gas = accumulated_state_gas_spent;
 
-                // Create new Gas with correct limit, because Gas does not have a set_limit method
-                // (the frame_result has the limit from just the last call)
-                let mut corrected_gas = Gas::new(gas_limit);
+                // Use flattened gas reconstruction (Gas::new_spent + erase_cost) for robustness
+                // under the EIP-8037 reservoir model. This avoids ambiguity from Gas::new's
+                // reservoir initialization.
+                let mut corrected_gas = Gas::new_spent(gas_limit);
                 if instruction_result.is_revert() {
-                    corrected_gas.set_spent(total_gas_spent);
-                } else {
-                    corrected_gas.spend_all();
+                    corrected_gas.erase_cost(gas_limit - total_gas_spent);
                 }
                 corrected_gas.set_refund(0); // No refunds when batch fails and all state is reverted
+                corrected_gas.set_state_gas_spent(total_state_gas);
                 *frame_result.gas_mut() = corrected_gas;
 
                 return Ok(frame_result);
             }
 
-            // Call succeeded - accumulate gas usage and refunds
+            // Call succeeded - accumulate gas usage, refunds, and state gas
             let gas_spent = frame_result.gas().spent();
             let gas_refunded = frame_result.gas().refunded();
 
             accumulated_gas_refund = accumulated_gas_refund.saturating_add(gas_refunded);
+            accumulated_state_gas_spent =
+                accumulated_state_gas_spent.saturating_add(frame_result.gas().state_gas_spent());
             // Subtract only execution gas (intrinsic gas already deducted upfront)
             remaining_gas = remaining_gas.saturating_sub(gas_spent);
 
@@ -412,11 +427,12 @@ where
 
         let total_gas_spent = gas_limit - remaining_gas;
 
-        // Create new Gas with correct limit, because Gas does not have a set_limit method
-        // (the frame_result has the limit from just the last call)
-        let mut corrected_gas = Gas::new(gas_limit);
-        corrected_gas.set_spent(total_gas_spent);
+        // Use flattened gas reconstruction (Gas::new_spent + erase_cost) for robustness
+        // under the EIP-8037 reservoir model, and preserve accumulated state_gas_spent.
+        let mut corrected_gas = Gas::new_spent(gas_limit);
+        corrected_gas.erase_cost(gas_limit - total_gas_spent);
         corrected_gas.set_refund(accumulated_gas_refund);
+        corrected_gas.set_state_gas_spent(accumulated_state_gas_spent);
         *result.gas_mut() = corrected_gas;
 
         Ok(result)
@@ -509,7 +525,12 @@ where
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
         let spec = evm.ctx_ref().cfg().spec();
-        let adjusted_gas = adjusted_initial_gas(*spec, evm.initial_gas, init_and_floor_gas);
+        let adjusted_gas = adjusted_initial_gas(
+            *spec,
+            evm.initial_gas,
+            evm.initial_state_gas,
+            init_and_floor_gas,
+        );
         let tx = evm.tx();
 
         if let Some(oog) = check_gas_limit(*spec, tx, &adjusted_gas) {
@@ -654,6 +675,10 @@ where
         // This case would create a new account for caller.
         if !nonce_key.is_zero() && tx.kind().is_create() && caller_account.nonce() == 0 {
             evm.initial_gas += cfg.gas_params().get(GasId::new_account_cost());
+            // TIP-1016: Track state gas for new account creation (T2+ only)
+            if spec.is_t2() {
+                evm.initial_state_gas += cfg.gas_params().new_account_state_gas();
+            }
 
             // do the gas limit check again.
             if tx.gas_limit() < evm.initial_gas {
@@ -1237,6 +1262,9 @@ where
                 if auth.nonce == 0 {
                     init_gas.initial_total_gas +=
                         gas_params.tx_tip1000_auth_account_creation_cost();
+                    // TIP-1016: Track state gas for auth account creation
+                    init_gas.initial_state_gas +=
+                        gas_params.tx_tip1000_auth_account_creation_state_gas();
                 }
             }
 
@@ -1244,6 +1272,10 @@ where
             // Transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
             if spec.is_t1() && tx.nonce == 0 {
                 init_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
+                // TIP-1016: Track state gas for new account creation (T2+ only)
+                if spec.is_t2() {
+                    init_gas.initial_state_gas += gas_params.new_account_state_gas();
+                }
             }
 
             if evm.ctx.cfg.is_eip7623_disabled() {
@@ -1361,6 +1393,8 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
         if auth.nonce == 0 {
             gas.initial_total_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+            // TIP-1016: Track state gas for auth account creation
+            gas.initial_state_gas += gas_params.tx_tip1000_auth_account_creation_state_gas();
         }
     }
 
@@ -1384,6 +1418,10 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
 
             // EIP-3860: Initcode analysis gas using revm helper
             gas.initial_total_gas += gas_params.tx_initcode_cost(call.input.len());
+
+            // TIP-1016: Track predictable state gas for CREATE calls
+            gas.initial_state_gas +=
+                gas_params.new_account_state_gas() + gas_params.create_state_gas();
         }
 
         // Note: Transaction value is not allowed in AA transactions as there is no balances in accounts yet.
@@ -1466,6 +1504,10 @@ where
             // TIP-1000: Storage pricing updates for launch
             // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
             batch_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
+            // TIP-1016: Track state gas for new account creation (T2+ only)
+            if spec.is_t2() {
+                batch_gas.initial_state_gas += gas_params.new_account_state_gas();
+            }
         } else if !aa_env.nonce_key.is_zero() {
             // Existing 2D nonce key usage (nonce > 0)
             // TIP-1000 Invariant 3: existing state updates must charge +5,000 gas
@@ -1573,7 +1615,12 @@ where
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
         let spec = evm.ctx_ref().cfg().spec();
-        let adjusted_gas = adjusted_initial_gas(*spec, evm.initial_gas, init_and_floor_gas);
+        let adjusted_gas = adjusted_initial_gas(
+            *spec,
+            evm.initial_gas,
+            evm.initial_state_gas,
+            init_and_floor_gas,
+        );
 
         let tx = evm.tx();
 
@@ -1661,7 +1708,10 @@ pub fn validate_time_window(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{TempoBlockEnv, TempoTxEnv, evm::TempoEvm, tx::TempoBatchCallEnv};
+    use crate::{
+        TempoBlockEnv, TempoTxEnv, evm::TempoEvm, gas_params::tempo_gas_params,
+        tx::TempoBatchCallEnv,
+    };
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
     use proptest::prelude::*;
     use revm::{
@@ -1676,7 +1726,7 @@ mod tests {
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
     use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
     use tempo_primitives::transaction::{
-        Call, TempoSignature,
+        Call, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     };
 
@@ -2498,11 +2548,18 @@ mod tests {
             };
 
             let cases = if spec.is_t0() {
-                vec![
-                    (BASE_INTRINSIC_GAS + 10_000, 0u64, false), // Insufficient for nonce==0
+                let mut cases = vec![
                     (BASE_INTRINSIC_GAS + nonce_zero_gas, 0, true), // Exactly sufficient for nonce==0
                     (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Exactly sufficient for existing key
-                ]
+                ];
+                // Only test "insufficient" case when nonce_zero_gas > 10k (T1 has 250k, T2 has 5k)
+                if nonce_zero_gas > 10_000 {
+                    cases.push((BASE_INTRINSIC_GAS + 10_000, 0u64, false)); // Insufficient for nonce==0
+                } else {
+                    // T2: nonce_zero_gas is 5k, so BASE + nonce_zero_gas - 1 is insufficient
+                    cases.push((BASE_INTRINSIC_GAS + nonce_zero_gas - 1, 0u64, false));
+                }
+                cases
             } else {
                 // Genesis: nonce gas is added AFTER validation, so lower gas_limit still passes
                 vec![
@@ -3261,6 +3318,707 @@ mod tests {
         assert_eq!(
             gas_delta, EXISTING_NONCE_KEY_GAS,
             "Difference between existing 2D nonce and regular nonce should be EXISTING_NONCE_KEY_GAS ({EXISTING_NONCE_KEY_GAS})"
+        );
+    }
+
+    /// TIP-1016: Standard CREATE tx should populate initial_state_gas with
+    /// new_account_state_gas + create_state_gas when state gas is enabled (T2+).
+    #[test]
+    fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
+        let gas_params = tempo_gas_params(TempoHardfork::T2);
+        let initcode = Bytes::from(vec![0x60, 0x80]);
+
+        let init_gas = gas_params.initial_tx_gas(
+            &initcode, true, // is_create
+            0, 0, 0,
+        );
+
+        let expected_state_gas = gas_params.new_account_state_gas() + gas_params.create_state_gas();
+
+        assert!(
+            expected_state_gas > 0,
+            "State gas constants should be non-zero"
+        );
+        assert_eq!(
+            init_gas.initial_state_gas,
+            expected_state_gas,
+            "CREATE tx should have initial_state_gas = new_account_state_gas ({}) + create_state_gas ({})",
+            gas_params.new_account_state_gas(),
+            gas_params.create_state_gas()
+        );
+    }
+
+    /// TIP-1016: Standard CALL tx should have zero initial_state_gas.
+    #[test]
+    fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
+        let gas_params = tempo_gas_params(TempoHardfork::T2);
+        let calldata = Bytes::from(vec![1, 2, 3]);
+
+        let init_gas = gas_params.initial_tx_gas(
+            &calldata, false, // not create
+            0, 0, 0,
+        );
+
+        assert_eq!(
+            init_gas.initial_state_gas, 0,
+            "CALL tx should have zero initial_state_gas"
+        );
+    }
+
+    /// TIP-1016: AA CREATE tx should populate initial_state_gas.
+    #[test]
+    fn test_state_gas_aa_create_tx_populates_initial_state_gas() {
+        let gas_params = tempo_gas_params(TempoHardfork::T2);
+        let initcode = Bytes::from(vec![0x60, 0x80]);
+
+        let call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: initcode,
+        };
+
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
+            aa_calls: vec![call],
+            key_authorization: None,
+            signature_hash: B256::ZERO,
+            ..Default::default()
+        };
+
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+        )
+        .unwrap();
+
+        let expected_state_gas = gas_params.new_account_state_gas() + gas_params.create_state_gas();
+
+        assert_eq!(
+            gas.initial_state_gas, expected_state_gas,
+            "AA CREATE tx should have initial_state_gas = new_account_state_gas + create_state_gas"
+        );
+    }
+
+    /// TIP-1016: AA CALL tx should have zero initial_state_gas.
+    #[test]
+    fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
+        let gas_params = tempo_gas_params(TempoHardfork::T2);
+        let calldata = Bytes::from(vec![1, 2, 3]);
+
+        let call = Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: calldata,
+        };
+
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
+            aa_calls: vec![call],
+            key_authorization: None,
+            signature_hash: B256::ZERO,
+            ..Default::default()
+        };
+
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+        )
+        .unwrap();
+
+        assert_eq!(
+            gas.initial_state_gas, 0,
+            "AA CALL tx should have zero initial_state_gas"
+        );
+    }
+
+    /// TIP-1016: validate_initial_tx_gas for standard CREATE tx should set
+    /// initial_state_gas when T2 is active and state gas is enabled.
+    #[test]
+    fn test_state_gas_validate_initial_tx_gas_create_t2() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T2;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T2);
+        cfg.enable_state_gas = true;
+
+        let initcode = Bytes::from(vec![0x60, 0x80]);
+
+        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                gas_limit: 60_000_000, // Above cap to test cap bypass
+                kind: TxKind::Create,
+                data: initcode,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg.clone())
+            .with_tx(tx_env)
+            .with_new_journal(journal);
+        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+
+        // CREATE state gas + nonce==0 new account state gas (two different accounts)
+        let expected_state_gas = cfg.gas_params.new_account_state_gas()
+            + cfg.gas_params.create_state_gas()
+            + cfg.gas_params.new_account_state_gas();
+
+        assert_eq!(
+            init_gas.initial_state_gas, expected_state_gas,
+            "T2 CREATE tx with nonce==0 should track state gas for both CREATE target and caller"
+        );
+    }
+
+    /// TIP-1016: When enable_state_gas is true, tx gas limit can exceed the cap
+    /// (upstream revm validation skips the cap check).
+    #[test]
+    fn test_state_gas_tx_gas_limit_above_cap_allowed() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T2;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T2);
+        cfg.enable_state_gas = true;
+        cfg.tx_gas_limit_cap = Some(30_000_000);
+
+        let calldata = Bytes::from(vec![1, 2, 3]);
+
+        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                gas_limit: 60_000_000, // Double the cap
+                kind: TxKind::Call(Address::random()),
+                data: calldata,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg)
+            .with_tx(tx_env)
+            .with_new_journal(journal);
+        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        // validate_env should pass even though gas_limit > cap
+        let result = handler.validate_env(&mut evm);
+        assert!(
+            result.is_ok(),
+            "With enable_state_gas=true, tx gas limit above cap should be allowed, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// TIP-1016: When enable_state_gas is false (pre-T2), tx gas limit above cap is rejected.
+    #[test]
+    fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t2() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+        cfg.enable_state_gas = false;
+        cfg.tx_gas_limit_cap = Some(30_000_000);
+
+        let calldata = Bytes::from(vec![1, 2, 3]);
+
+        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                gas_limit: 60_000_000, // Double the cap
+                kind: TxKind::Call(Address::random()),
+                data: calldata,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg)
+            .with_tx(tx_env)
+            .with_new_journal(journal);
+        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        // validate_env should reject: gas_limit > cap with state gas disabled
+        let result = handler.validate_env(&mut evm);
+        assert!(
+            result.is_err(),
+            "With enable_state_gas=false, tx gas limit above cap should be rejected"
+        );
+    }
+
+    /// TIP-1016: Pre-T2 behavior unchanged - initial_state_gas is still populated
+    /// by upstream revm for CREATE txs (it's a property of gas_params, not gating).
+    /// But enable_state_gas=false means the reservoir won't be used.
+    #[test]
+    fn test_state_gas_backward_compat_t1_no_state_gas_enabled() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+
+        assert!(
+            !cfg.enable_state_gas,
+            "Pre-T2 should NOT have enable_state_gas"
+        );
+
+        let calldata = Bytes::from(vec![1, 2, 3]);
+
+        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                gas_limit: 1_000_000,
+                kind: TxKind::Call(Address::random()),
+                data: calldata,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg)
+            .with_tx(tx_env)
+            .with_new_journal(journal);
+        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+
+        // CALL tx - no state gas in either case
+        assert_eq!(init_gas.initial_state_gas, 0);
+    }
+
+    /// TIP-1016: AA batch with multiple calls including CREATE should track
+    /// state gas for the CREATE call only.
+    #[test]
+    fn test_state_gas_aa_mixed_batch_create_and_call() {
+        let gas_params = tempo_gas_params(TempoHardfork::T2);
+        let calldata = Bytes::from(vec![1, 2, 3]);
+        let initcode = Bytes::from(vec![0x60, 0x80]);
+
+        let calls = vec![
+            Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: calldata,
+            },
+            Call {
+                to: TxKind::Create,
+                value: U256::ZERO,
+                input: initcode,
+            },
+        ];
+
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
+            aa_calls: calls,
+            key_authorization: None,
+            signature_hash: B256::ZERO,
+            ..Default::default()
+        };
+
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+        )
+        .unwrap();
+
+        // Only the CREATE call contributes state gas
+        let expected_state_gas = gas_params.new_account_state_gas() + gas_params.create_state_gas();
+
+        assert_eq!(
+            gas.initial_state_gas, expected_state_gas,
+            "Mixed batch should have state gas only from CREATE call"
+        );
+    }
+
+    /// TIP-1016: adjusted_initial_gas must preserve initial_state_gas.
+    #[test]
+    fn test_state_gas_adjusted_initial_gas_preserves_state_gas() {
+        let init = InitialAndFloorGas::new_with_state_gas(100_000, 57_000, 21_000);
+
+        // T2: adjusted_initial_gas should preserve initial_state_gas
+        let adjusted = adjusted_initial_gas(TempoHardfork::T2, 100_000, 0, &init);
+        assert_eq!(
+            adjusted.initial_state_gas, 57_000,
+            "adjusted_initial_gas must preserve initial_state_gas for T2"
+        );
+
+        // T1: adjusted_initial_gas should also preserve initial_state_gas
+        let adjusted_t1 = adjusted_initial_gas(TempoHardfork::T1, 100_000, 0, &init);
+        assert_eq!(
+            adjusted_t1.initial_state_gas, 57_000,
+            "adjusted_initial_gas must preserve initial_state_gas for T1"
+        );
+
+        // T2: evm_initial_state_gas should be added to init_and_floor_gas.initial_state_gas
+        let adjusted_with_extra = adjusted_initial_gas(TempoHardfork::T2, 100_000, 245_000, &init);
+        assert_eq!(
+            adjusted_with_extra.initial_state_gas,
+            57_000 + 245_000,
+            "adjusted_initial_gas must add evm_initial_state_gas for T2"
+        );
+    }
+
+    /// TIP-1016: AA batch with multiple CREATE calls accumulates state gas.
+    #[test]
+    fn test_state_gas_aa_multiple_create_calls() {
+        let gas_params = tempo_gas_params(TempoHardfork::T2);
+        let initcode = Bytes::from(vec![0x60, 0x80]);
+
+        let calls = vec![
+            Call {
+                to: TxKind::Create,
+                value: U256::ZERO,
+                input: initcode.clone(),
+            },
+            Call {
+                to: TxKind::Create,
+                value: U256::ZERO,
+                input: initcode,
+            },
+        ];
+
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
+            aa_calls: calls,
+            key_authorization: None,
+            signature_hash: B256::ZERO,
+            ..Default::default()
+        };
+
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+        )
+        .unwrap();
+
+        // Two CREATE calls should accumulate state gas
+        let per_create_state_gas =
+            gas_params.new_account_state_gas() + gas_params.create_state_gas();
+
+        assert_eq!(
+            gas.initial_state_gas,
+            per_create_state_gas * 2,
+            "Multiple CREATE calls should accumulate initial_state_gas"
+        );
+    }
+
+    /// TIP-1016: In multi-call execution, per-call init gas uses
+    /// `InitialAndFloorGas::new(0, 0)` so state gas is only deducted once
+    /// upfront via `calculate_aa_batch_intrinsic_gas`, not per call.
+    #[test]
+    fn test_state_gas_multi_call_per_call_init_has_zero_state_gas() {
+        let zero_init_gas = InitialAndFloorGas::new(0, 0);
+        assert_eq!(
+            zero_init_gas.initial_state_gas, 0,
+            "Per-call init gas in multi-call must have zero initial_state_gas; \
+             state gas is deducted once upfront, not per call"
+        );
+    }
+
+    /// TIP-1016: Multi-call corrected gas (success path) must use flattened
+    /// reconstruction (Gas::new_spent + erase_cost) to be robust under the
+    /// EIP-8037 reservoir model, and must preserve accumulated state_gas_spent.
+    #[test]
+    fn test_state_gas_multi_call_corrected_gas_success_preserves_state_gas() {
+        let gas_limit: u64 = 1_000_000;
+        let total_gas_spent: u64 = 400_000;
+        let accumulated_state_gas: u64 = 150_000;
+        let accumulated_refund: i64 = 5_000;
+
+        // Simulate flattened gas reconstruction (same pattern as execute_multi_call_with)
+        let mut corrected_gas = Gas::new_spent(gas_limit);
+        corrected_gas.erase_cost(gas_limit - total_gas_spent);
+        corrected_gas.set_refund(accumulated_refund);
+        corrected_gas.set_state_gas_spent(accumulated_state_gas);
+
+        assert_eq!(
+            corrected_gas.spent(),
+            total_gas_spent,
+            "Flattened gas must have correct spent"
+        );
+        assert_eq!(
+            corrected_gas.used(),
+            total_gas_spent - accumulated_refund as u64,
+            "Flattened gas must have correct used (spent - refunded)"
+        );
+        assert_eq!(
+            corrected_gas.state_gas_spent(),
+            accumulated_state_gas,
+            "Corrected gas must preserve accumulated state_gas_spent"
+        );
+        assert_eq!(
+            corrected_gas.reservoir(),
+            0,
+            "Flattened gas must have zero reservoir"
+        );
+    }
+
+    /// TIP-1016: Multi-call corrected gas (failure path) must preserve
+    /// state_gas_spent from all calls up to and including the failed one.
+    #[test]
+    fn test_state_gas_multi_call_corrected_gas_failure_preserves_state_gas() {
+        let gas_limit: u64 = 1_000_000;
+        let total_gas_spent: u64 = 600_000;
+        let accumulated_state_gas: u64 = 200_000;
+
+        // Simulate flattened gas reconstruction on failure (revert case)
+        let mut corrected_gas = Gas::new_spent(gas_limit);
+        corrected_gas.erase_cost(gas_limit - total_gas_spent);
+        corrected_gas.set_refund(0); // No refunds on batch failure
+        corrected_gas.set_state_gas_spent(accumulated_state_gas);
+
+        assert_eq!(
+            corrected_gas.spent(),
+            total_gas_spent,
+            "Failure path: flattened gas must have correct spent"
+        );
+        assert_eq!(
+            corrected_gas.state_gas_spent(),
+            accumulated_state_gas,
+            "Failure path: corrected gas must preserve state_gas_spent"
+        );
+    }
+
+    /// TIP-1016: AA auth list entries with nonce==0 should track state gas.
+    #[test]
+    fn test_state_gas_aa_auth_list_nonce_zero() {
+        let gas_params = tempo_gas_params(TempoHardfork::T2);
+
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
+            aa_calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::from(vec![1, 2, 3]),
+            }],
+            tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
+                TempoSignedAuthorization::new_unchecked(
+                    alloy_eips::eip7702::Authorization {
+                        chain_id: U256::from(1),
+                        address: Address::random(),
+                        nonce: 0,
+                    },
+                    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                        alloy_primitives::Signature::test_signature(),
+                    )),
+                ),
+            )],
+            ..Default::default()
+        };
+
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+        )
+        .unwrap();
+
+        assert_eq!(
+            gas.initial_state_gas,
+            gas_params.tx_tip1000_auth_account_creation_state_gas(),
+            "Auth list entry with nonce==0 should track state gas"
+        );
+    }
+
+    /// TIP-1016: AA nonce==0 new account should track state gas in T2.
+    #[test]
+    fn test_state_gas_aa_nonce_zero_new_account() {
+        let gas_params = tempo_gas_params(TempoHardfork::T2);
+
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
+            aa_calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::from(vec![1, 2, 3]),
+            }],
+            nonce_key: U256::from(1),
+            ..Default::default()
+        };
+
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                gas_limit: 60_000_000,
+                nonce: 0,
+                ..Default::default()
+            },
+            tempo_tx_env: Some(Box::new(aa_env)),
+            ..Default::default()
+        };
+
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T2;
+        cfg.gas_params = gas_params.clone();
+        cfg.enable_state_gas = true;
+
+        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg)
+            .with_tx(tx_env)
+            .with_new_journal(journal);
+        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+
+        assert_eq!(
+            init_gas.initial_state_gas,
+            gas_params.new_account_state_gas(),
+            "AA tx with nonce==0 should track new_account_state_gas in T2"
+        );
+    }
+
+    /// TIP-1016: Auth list state gas (GasId 254) must be zero on T1.
+    #[test]
+    fn test_state_gas_auth_list_zero_on_t1() {
+        let gas_params = tempo_gas_params(TempoHardfork::T1);
+        assert_eq!(
+            gas_params.tx_tip1000_auth_account_creation_state_gas(),
+            0,
+            "Auth account creation state gas must be zero on T1"
+        );
+
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
+            aa_calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::from(vec![1, 2, 3]),
+            }],
+            tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
+                TempoSignedAuthorization::new_unchecked(
+                    alloy_eips::eip7702::Authorization {
+                        chain_id: U256::from(1),
+                        address: Address::random(),
+                        nonce: 0,
+                    },
+                    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                        alloy_primitives::Signature::test_signature(),
+                    )),
+                ),
+            )],
+            ..Default::default()
+        };
+
+        let gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+        )
+        .unwrap();
+
+        assert_eq!(
+            gas.initial_state_gas, 0,
+            "T1 auth list nonce==0 should have zero initial_state_gas"
+        );
+    }
+
+    /// TIP-1016: Standard tx with nonce==0 should track state gas on T2 only.
+    #[test]
+    fn test_state_gas_standard_tx_nonce_zero_t2() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T2;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T2);
+        cfg.enable_state_gas = true;
+
+        let calldata = Bytes::from(vec![1, 2, 3]);
+
+        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                gas_limit: 60_000_000,
+                kind: TxKind::Call(Address::random()),
+                nonce: 0,
+                data: calldata,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg.clone())
+            .with_tx(tx_env)
+            .with_new_journal(journal);
+        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+
+        assert_eq!(
+            init_gas.initial_state_gas,
+            cfg.gas_params.new_account_state_gas(),
+            "T2 standard tx with nonce==0 should track new_account_state_gas"
+        );
+    }
+
+    /// TIP-1016: Standard tx with nonce==0 should NOT track state gas on T1.
+    #[test]
+    fn test_state_gas_standard_tx_nonce_zero_t1_no_state_gas() {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+
+        let calldata = Bytes::from(vec![1, 2, 3]);
+
+        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                gas_limit: 60_000_000,
+                kind: TxKind::Call(Address::random()),
+                nonce: 0,
+                data: calldata,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg)
+            .with_tx(tx_env)
+            .with_new_journal(journal);
+        let mut evm = TempoEvm::<_, ()>::new(ctx, ());
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+
+        assert_eq!(
+            init_gas.initial_state_gas, 0,
+            "T1 standard tx with nonce==0 must NOT track state gas"
         );
     }
 }

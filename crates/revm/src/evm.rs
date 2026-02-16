@@ -39,6 +39,11 @@ pub struct TempoEvm<DB: Database, I> {
     ///
     /// Additional initial gas cost is added for authorization_key setting in pre execution.
     pub(crate) initial_gas: u64,
+    /// TIP-1016: Additional initial state gas accumulated after validate_initial_tx_gas.
+    ///
+    /// Tracks state gas from runtime checks in validate_against_state_and_deduct_caller
+    /// (e.g., 2D nonce + CREATE + caller nonce == 0) that can't be determined upfront.
+    pub(crate) initial_state_gas: u64,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -73,6 +78,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             logs: Vec::new(),
             collected_fee: U256::ZERO,
             initial_gas: 0,
+            initial_state_gas: 0,
         }
     }
 }
