@@ -42,6 +42,10 @@ pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
 /// Cap for non-payment transactions.
 pub const TEMPO_T1_GENERAL_GAS_LIMIT: u64 = 30_000_000;
 
+/// EIP-7825 Osaka per-transaction gas limit: 16,777,216 gas (2^24).
+/// Used pre-T1A to match the Osaka hardfork limit.
+pub const TEMPO_OSAKA_TX_GAS_LIMIT: u64 = 16_777_216;
+
 /// TIP-1010 per-transaction gas limit cap: 30 million gas.
 /// Allows maximum-sized contract deployments under TIP-1000 state creation costs.
 pub const TEMPO_T1_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
