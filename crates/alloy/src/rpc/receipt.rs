@@ -82,3 +82,63 @@ impl ReceiptResponse for TempoTransactionReceipt {
         self.inner.state_root()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::ReceiptWithBloom;
+    use alloy_network::ReceiptResponse;
+    use alloy_primitives::{Address, Bloom};
+    use alloy_rpc_types_eth::TransactionReceipt;
+    use tempo_primitives::{TempoReceipt, TempoTxType};
+
+    fn make_receipt(success: bool, effective_gas_price: u128) -> TempoTransactionReceipt {
+        let inner_receipt = TempoReceipt {
+            tx_type: TempoTxType::Eip1559,
+            success,
+            cumulative_gas_used: 21000,
+            logs: vec![],
+        };
+        TempoTransactionReceipt {
+            inner: TransactionReceipt {
+                inner: ReceiptWithBloom {
+                    receipt: inner_receipt,
+                    logs_bloom: Bloom::default(),
+                },
+                transaction_hash: B256::ZERO,
+                transaction_index: Some(0),
+                block_hash: Some(B256::ZERO),
+                block_number: Some(1),
+                gas_used: 21000,
+                effective_gas_price,
+                blob_gas_used: None,
+                blob_gas_price: None,
+                from: Address::repeat_byte(0x01),
+                to: Some(Address::repeat_byte(0x02)),
+                contract_address: None,
+            },
+            fee_token: None,
+            fee_payer: Address::repeat_byte(0x01),
+        }
+    }
+
+    #[test]
+    fn test_status_true() {
+        let receipt = make_receipt(true, 1000);
+        assert!(receipt.status());
+    }
+
+    #[test]
+    fn test_status_false() {
+        let receipt = make_receipt(false, 1000);
+        assert!(!receipt.status());
+    }
+
+    #[test]
+    fn test_effective_gas_price() {
+        let receipt = make_receipt(true, 42_000_000);
+        assert_eq!(receipt.effective_gas_price(), 42_000_000);
+        assert_ne!(receipt.effective_gas_price(), 0);
+        assert_ne!(receipt.effective_gas_price(), 1);
+    }
+}

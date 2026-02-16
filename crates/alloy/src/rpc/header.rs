@@ -117,3 +117,31 @@ impl AsRef<TempoHeader> for TempoHeaderResponse {
         &self.inner
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_timestamp_delegates_to_inner() {
+        let consensus_header = TempoHeader {
+            inner: alloy_consensus::Header {
+                timestamp: 1234,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let rpc_header = Header::new(consensus_header);
+
+        let resp = TempoHeaderResponse {
+            inner: rpc_header,
+            timestamp_millis: 1234000,
+        };
+
+        let ts = BlockHeader::timestamp(&resp);
+        assert_eq!(ts, 1234);
+        assert_ne!(ts, 0);
+        assert_ne!(ts, 1);
+    }
+}

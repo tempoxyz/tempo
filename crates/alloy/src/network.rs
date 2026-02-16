@@ -557,4 +557,89 @@ mod tests {
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);
     }
+
+    #[test]
+    fn test_set_input_round_trip() {
+        let mut req = TempoTransactionRequest::default();
+        let data = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]);
+        TransactionBuilder::<TempoNetwork>::set_input(&mut req, data.clone());
+        assert_eq!(TransactionBuilder::<TempoNetwork>::input(&req), Some(&data));
+    }
+
+    #[test]
+    fn test_from_round_trip() {
+        let addr = Address::repeat_byte(0x42);
+        let mut req = TempoTransactionRequest::default();
+        TransactionBuilder::<TempoNetwork>::set_from(&mut req, addr);
+        assert_eq!(TransactionBuilder::<TempoNetwork>::from(&req), Some(addr));
+        // Must not be None or Default
+        assert_ne!(TransactionBuilder::<TempoNetwork>::from(&req), None);
+        assert_ne!(
+            TransactionBuilder::<TempoNetwork>::from(&req),
+            Some(Address::default())
+        );
+    }
+
+    #[test]
+    fn test_set_kind_round_trip() {
+        let mut req = TempoTransactionRequest::default();
+        let kind = TxKind::Call(Address::repeat_byte(0xBB));
+        TransactionBuilder::<TempoNetwork>::set_kind(&mut req, kind);
+        assert_eq!(TransactionBuilder::<TempoNetwork>::kind(&req), Some(kind));
+    }
+
+    #[test]
+    fn output_tx_type_calls_is_aa() {
+        // Covers the || vs && mutant on line 161: !self.calls.is_empty()
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest::default(),
+            calls: vec![tempo_primitives::transaction::Call {
+                to: TxKind::Call(Address::repeat_byte(0x11)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_nonce_key_is_aa() {
+        // Covers || vs && mutant on line 162: self.nonce_key.is_some()
+        let req = TempoTransactionRequest {
+            nonce_key: Some(U256::from(1)),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_fee_token_is_aa() {
+        // Covers || vs && mutant on line 163: self.fee_token.is_some()
+        let req = TempoTransactionRequest {
+            fee_token: Some(Address::repeat_byte(0x20)),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn test_network_wallet_default_signer_address() {
+        let signer = PrivateKeySigner::random();
+        let expected_addr = signer.address();
+        let wallet: EthereumWallet = signer.into();
+        let addr = NetworkWallet::<TempoNetwork>::default_signer_address(&wallet);
+        assert_eq!(addr, expected_addr);
+        assert_ne!(addr, Address::default());
+    }
+
+    #[test]
+    fn test_into_wallet_returns_correct_wallet() {
+        let signer = PrivateKeySigner::random();
+        let expected_addr = signer.address();
+        let wallet = IntoWallet::<TempoNetwork>::into_wallet(signer);
+        let addr = NetworkWallet::<TempoNetwork>::default_signer_address(&wallet);
+        assert_eq!(addr, expected_addr);
+        assert_ne!(addr, Address::default());
+    }
 }

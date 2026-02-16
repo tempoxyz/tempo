@@ -558,6 +558,25 @@ mod tests {
     }
 
     #[test]
+    fn test_as_ref_returns_inner() {
+        let mut req = TempoTransactionRequest::default();
+        req.inner.nonce = Some(42);
+        req.inner.gas = Some(100_000);
+        let as_ref: &TransactionRequest = req.as_ref();
+        assert_eq!(as_ref.nonce, Some(42));
+        assert_eq!(as_ref.gas, Some(100_000));
+    }
+
+    #[test]
+    fn test_as_mut_returns_inner() {
+        let mut req = TempoTransactionRequest::default();
+        req.inner.nonce = Some(1);
+        let as_mut: &mut TransactionRequest = req.as_mut();
+        as_mut.nonce = Some(99);
+        assert_eq!(req.inner.nonce, Some(99));
+    }
+
+    #[test]
     fn test_build_aa_preserves_key_authorization() {
         use tempo_primitives::transaction::{
             KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization,

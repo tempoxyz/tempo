@@ -171,7 +171,8 @@ mod tests {
     use crate::{TempoNetwork, fillers::Random2DNonceFiller, rpc::TempoTransactionRequest};
     use alloy_network::TransactionBuilder;
     use alloy_primitives::ruint::aliases::U256;
-    use alloy_provider::{ProviderBuilder, mock::Asserter};
+    use alloy_provider::{ProviderBuilder, SendableTx, mock::Asserter};
+    use alloy_provider::fillers::TxFiller;
     use eyre;
 
     #[tokio::test]
@@ -205,5 +206,35 @@ mod tests {
         assert!(filled_request.nonce().is_none());
 
         Ok(())
+    }
+
+    #[test]
+    fn test_fill_sync_skips_when_already_filled() {
+        let filler = Random2DNonceFiller;
+        let mut req = TempoTransactionRequest::default();
+        req.set_nonce(5);
+
+        let mut tx: SendableTx<TempoNetwork> = SendableTx::Builder(req);
+        filler.fill_sync(&mut tx);
+
+        let builder = tx.as_mut_builder().expect("should be builder");
+        // Nonce was already set to 5, so filler should NOT overwrite
+        assert_eq!(builder.nonce(), Some(5));
+        // nonce_key should remain None since filler was skipped
+        assert!(builder.nonce_key.is_none());
+    }
+
+    #[test]
+    fn test_fill_sync_fills_when_empty() {
+        let filler = Random2DNonceFiller;
+        let req = TempoTransactionRequest::default();
+
+        let mut tx: SendableTx<TempoNetwork> = SendableTx::Builder(req);
+        filler.fill_sync(&mut tx);
+
+        let builder = tx.as_mut_builder().expect("should be builder");
+        // After fill_sync, nonce should be 0 and nonce_key should be set
+        assert_eq!(builder.nonce(), Some(0));
+        assert!(builder.nonce_key.is_some());
     }
 }

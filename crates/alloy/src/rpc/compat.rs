@@ -408,8 +408,261 @@ mod tests {
         assert_eq!(webauthn_sig.webauthn_data.len(), 800);
     }
 
+    #[test]
+    fn test_try_into_sim_tx_produces_non_default_envelope() {
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(address!(
+                    "0x1111111111111111111111111111111111111111"
+                ))),
+                nonce: Some(1),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            calls: vec![Call {
+                to: TxKind::Call(address!("0x2222222222222222222222222222222222222222")),
+                value: alloy_primitives::U256::from(42),
+                input: Bytes::from(vec![0xab]),
+            }],
+            nonce_key: Some(alloy_primitives::U256::from(7)),
+            ..Default::default()
+        };
+
+        let envelope = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(req)
+            .expect("should produce sim tx");
+        // The envelope must be AA variant (mutant returns Ok(Default::default()))
+        assert!(matches!(envelope, TempoTxEnvelope::AA(_)));
+    }
+
+    #[test]
+    fn test_try_into_tx_env_produces_non_default() {
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                to: Some(TxKind::Call(address!(
+                    "0x1111111111111111111111111111111111111111"
+                ))),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                input: alloy_rpc_types_eth::TransactionInput::new(Bytes::from(vec![0xcc])),
+                ..Default::default()
+            },
+            calls: vec![Call {
+                to: TxKind::Call(address!("0x2222222222222222222222222222222222222222")),
+                value: alloy_primitives::U256::from(1),
+                input: Bytes::from(vec![0xaa]),
+            }],
+            nonce_key: Some(alloy_primitives::U256::from(5)),
+            ..Default::default()
+        };
+
+        let evm_env =
+            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+
+        // tempo_tx_env must be Some when calls/nonce_key are set (mutant returns Ok(Default::default()) which has None)
+        let tempo = tx_env.tempo_tx_env.expect("tempo_tx_env should be Some");
+        // calls should include both the existing call and the `to` field appended
+        assert_eq!(tempo.aa_calls.len(), 2);
+    }
+
+    #[test]
+    fn test_try_into_tx_env_no_tempo_fields_yields_none() {
+        // A plain EIP-1559 request with no tempo fields should produce tempo_tx_env == None
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                to: Some(TxKind::Call(address!(
+                    "0x1111111111111111111111111111111111111111"
+                ))),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let evm_env =
+            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+        // When no tempo fields, the tempo_tx_env branch should NOT fire
+        assert!(tx_env.tempo_tx_env.is_none());
+    }
+
+    #[test]
+    fn test_try_into_tx_env_empty_calls_error() {
+        // If calls is empty AND inner.to is None, we should get an error
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            nonce_key: Some(alloy_primitives::U256::from(1)),
+            ..Default::default()
+        };
+
+        let evm_env =
+            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let result = req.try_into_tx_env(&evm_env);
+        assert!(result.is_err(), "empty calls with no 'to' should error");
+    }
+
+    #[test]
+    fn test_create_mock_primitive_signature_secp256k1() {
+        let sig = create_mock_primitive_signature(&SignatureType::Secp256k1, None);
+        match sig {
+            PrimitiveSignature::Secp256k1(_) => {}
+            _ => panic!("Expected Secp256k1 signature variant"),
+        }
+    }
+
+    #[test]
+    fn test_create_mock_primitive_signature_p256() {
+        let sig = create_mock_primitive_signature(&SignatureType::P256, None);
+        match sig {
+            PrimitiveSignature::P256(p) => {
+                assert_eq!(p.r, alloy_primitives::B256::ZERO);
+                assert_eq!(p.s, alloy_primitives::B256::ZERO);
+                assert_eq!(p.pub_key_x, alloy_primitives::B256::ZERO);
+                assert_eq!(p.pub_key_y, alloy_primitives::B256::ZERO);
+                assert!(!p.pre_hash);
+            }
+            _ => panic!("Expected P256 signature variant"),
+        }
+    }
+
+    #[test]
+    fn test_create_mock_primitive_signature_webauthn_1byte_size() {
+        let key_data = Bytes::from(vec![200u8]); // 200 bytes
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data));
+        let PrimitiveSignature::WebAuthn(w) = sig else {
+            panic!("Expected WebAuthn");
+        };
+        assert_eq!(w.webauthn_data.len(), 200);
+    }
+
+    #[test]
+    fn test_create_mock_primitive_signature_webauthn_2byte_size() {
+        let key_data = Bytes::from(vec![0x01, 0x00]); // 256
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data));
+        let PrimitiveSignature::WebAuthn(w) = sig else {
+            panic!("Expected WebAuthn");
+        };
+        assert_eq!(w.webauthn_data.len(), 256);
+    }
+
+    #[test]
+    fn test_create_mock_primitive_signature_webauthn_4byte_size() {
+        let key_data = Bytes::from(vec![0x00, 0x00, 0x02, 0x00]); // 512
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data));
+        let PrimitiveSignature::WebAuthn(w) = sig else {
+            panic!("Expected WebAuthn");
+        };
+        assert_eq!(w.webauthn_data.len(), 512);
+    }
+
+    #[test]
+    fn test_create_mock_primitive_signature_webauthn_3byte_fallback() {
+        // 3-byte key_data should use DEFAULT_WEBAUTHN_SIZE (800)
+        let key_data = Bytes::from(vec![0x01, 0x02, 0x03]);
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data));
+        let PrimitiveSignature::WebAuthn(w) = sig else {
+            panic!("Expected WebAuthn");
+        };
+        assert_eq!(w.webauthn_data.len(), 800);
+    }
+
+    #[test]
+    fn test_create_mock_primitive_signature_webauthn_additional_bytes() {
+        // Size > MIN_WEBAUTHN_SIZE should produce padding in the origin field
+        let key_data = Bytes::from(vec![0x00, 0x00, 0x00, 100u8]); // 100 bytes
+        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data));
+        let PrimitiveSignature::WebAuthn(w) = sig else {
+            panic!("Expected WebAuthn");
+        };
+        // Size is 100, which is > MIN_WEBAUTHN_SIZE (87), so total should be 100
+        assert_eq!(w.webauthn_data.len(), 100);
+
+        // The authenticator data should have UP flag at byte 32
+        assert_eq!(w.webauthn_data[32], 0x01);
+    }
+
+    #[test]
+    fn test_create_mock_tempo_signature_without_key_id() {
+        let sig = create_mock_tempo_signature(
+            &SignatureType::Secp256k1,
+            None,
+            None,
+            Address::ZERO,
+        );
+        match sig {
+            TempoSignature::Primitive(_) => {}
+            _ => panic!("Expected Primitive variant when key_id is None"),
+        }
+    }
+
+    #[test]
+    fn test_create_mock_tempo_signature_with_key_id() {
+        let caller = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let key_id = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let sig = create_mock_tempo_signature(
+            &SignatureType::P256,
+            None,
+            Some(key_id),
+            caller,
+        );
+        match sig {
+            TempoSignature::Keychain(ks) => {
+                assert_eq!(ks.user_address, caller);
+            }
+            _ => panic!("Expected Keychain variant when key_id is Some"),
+        }
+    }
+
+    #[test]
+    fn test_from_consensus_header_preserves_fields() {
+        use alloy_consensus::Header;
+        use reth_primitives_traits::SealedHeader;
+
+        let header = TempoHeader {
+            general_gas_limit: 1_000_000,
+            shared_gas_limit: 500_000,
+            timestamp_millis_part: 456,
+            inner: Header {
+                number: 42,
+                timestamp: 1_000,
+                gas_limit: 30_000_000,
+                gas_used: 15_000_000,
+                ..Default::default()
+            },
+        };
+
+        let sealed = SealedHeader::seal_slow(header.clone());
+        let response = TempoHeaderResponse::from_consensus_header(sealed, 1024);
+
+        // from_consensus_header must preserve timestamp_millis
+        assert_eq!(response.timestamp_millis, header.timestamp_millis());
+        assert_eq!(response.timestamp_millis, 1_000 * 1000 + 456);
+        // The inner header fields should be present
+        assert_ne!(response.timestamp_millis, 0);
+    }
+
     #[tokio::test]
-    async fn test_signable_tx_request_preserves_tempo_fields() {
+    async fn test_try_build_and_sign_aa() {
         use alloy_signer_local::PrivateKeySigner;
         use tempo_primitives::transaction::Call;
 
@@ -454,6 +707,41 @@ mod tests {
             }
             other => panic!(
                 "Expected AA envelope for request with Tempo fields, got {:?}",
+                other.tx_type()
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_try_build_and_sign_non_aa() {
+        use alloy_signer_local::PrivateKeySigner;
+
+        let signer = PrivateKeySigner::random();
+
+        // An EIP-1559 request (no tempo fields) should go through the non-AA path
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(address!(
+                    "0x1111111111111111111111111111111111111111"
+                ))),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let envelope = SignableTxRequest::<TempoTxEnvelope>::try_build_and_sign(req, &signer)
+            .await
+            .expect("should build and sign EIP-1559");
+
+        match &envelope {
+            TempoTxEnvelope::Eip1559(_) => {}
+            other => panic!(
+                "Expected EIP-1559 envelope for plain request, got {:?}",
                 other.tx_type()
             ),
         }
