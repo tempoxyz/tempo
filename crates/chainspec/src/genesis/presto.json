@@ -26,6 +26,7 @@
     "epochLength": 21600,
     "t0Time": 0,
     "t1Time": 1770908400,
+    "t1aTime": 1770908400,
     "depositContractAddress": "0x0000000000000000000000000000000000000000"
   },
   "nonce": "0x42",
