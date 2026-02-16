@@ -1,6 +1,5 @@
 use crate::TempoEvmConfig;
 use alloy_consensus::crypto::RecoveryError;
-use alloy_evm::block::ExecutableTxParts;
 use alloy_primitives::Address;
 use rayon::prelude::*;
 use reth_evm::{

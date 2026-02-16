@@ -29,8 +29,6 @@ use reth_transaction_pool::{
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-
-
 use tempo_primitives::Block;
 
 /// Tempo transaction pool that routes based on nonce_key

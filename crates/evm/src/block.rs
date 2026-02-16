@@ -409,7 +409,6 @@ where
             tx,
         } = output;
 
-
         let gas_used = self.inner.commit_transaction(inner)?;
 
         // TODO: remove once revm supports emitting logs for reverted transactions
