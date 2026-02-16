@@ -38,7 +38,7 @@ declare -A CRATE_DIR=(
 # ---------------------------------------------------------------------------
 cleanup() {
   echo "🔄 Restoring original files..."
-  git checkout -- . 2>/dev/null || true
+  git checkout -- crates/ Cargo.toml Cargo.lock 2>/dev/null || true
   echo "✅ Restored."
 }
 trap cleanup EXIT
@@ -199,18 +199,31 @@ def should_strip_cfg(cfg_text):
     return any(f in REMOVED_FEATURES for f in features)
 
 def skip_next_item(lines, i):
-    """Skip the next Rust item (could be single line or brace-delimited block)."""
+    """Skip the next Rust item (could be single line or brace-delimited block).
+
+    Handles items where { appears on a later line (e.g. multi-line fn signatures,
+    impl blocks with trait bounds spanning lines).
+    """
     if i >= len(lines):
         return i
-    next_stripped = lines[i].strip()
-    if '{' in next_stripped:
-        brace_count = next_stripped.count('{') - next_stripped.count('}')
+
+    # Scan forward to find the opening brace
+    brace_count = 0
+    found_brace = False
+    while i < len(lines):
+        line = lines[i]
+        for ch in line:
+            if ch == '{':
+                brace_count += 1
+                found_brace = True
+            elif ch == '}':
+                brace_count -= 1
         i += 1
-        while i < len(lines) and brace_count > 0:
-            brace_count += lines[i].count('{') - lines[i].count('}')
-            i += 1
-    else:
-        i += 1
+        if found_brace and brace_count == 0:
+            break
+        # If we hit a semicolon before any brace, it's a single-statement item
+        if not found_brace and ';' in line:
+            break
     return i
 
 def strip_gated_code(filepath):
@@ -391,6 +404,14 @@ sed -i '/^\[lints\]/,/^workspace = true/d' "$PRIM_TOML"
 # Strip reth-gated code
 strip_reth_code "$PRIM_SRC"
 
+
+# Add back TempoReceipt as a type alias using pure alloy types
+# (the original uses reth_ethereum_primitives which is not publishable)
+echo "" >> "$PRIM_SRC/lib.rs"
+echo "/// Tempo receipt." >> "$PRIM_SRC/lib.rs"
+echo "pub type TempoReceipt<L = alloy_primitives::Log> = alloy_consensus::Receipt<L>;" >> "$PRIM_SRC/lib.rs"
+
+
 echo "  ✅ tempo-primitives prepared"
 
 # ---------------------------------------------------------------------------
@@ -469,13 +490,34 @@ PYEOF
 
 rm -f "${ALLOY_SRC}/rpc/compat.rs"
 
+# Fix receipt types: TempoReceipt (now alloy Receipt) doesn't implement
+# Eip2718 traits needed for Network::ReceiptEnvelope. Use ReceiptEnvelope
+# (same as Ethereum's Network impl) which does.
+# network.rs: ReceiptWithBloom<TempoReceipt> -> ReceiptEnvelope
+sed -i 's/ReceiptWithBloom<TempoReceipt>/alloy_consensus::ReceiptEnvelope/' "${ALLOY_SRC}/network.rs"
+sed -i 's/, TempoReceipt,/,/' "${ALLOY_SRC}/network.rs"
+# Remove unused ReceiptWithBloom import
+sed -i 's/use alloy_consensus::{ReceiptWithBloom, TxType/use alloy_consensus::{TxType/' "${ALLOY_SRC}/network.rs"
+# receipt.rs: use the default TransactionReceipt (which uses ReceiptEnvelope)
+sed -i 's/use tempo_primitives::TempoReceipt;//' "${ALLOY_SRC}/rpc/receipt.rs"
+sed -i '/use alloy_consensus::ReceiptWithBloom;/d' "${ALLOY_SRC}/rpc/receipt.rs"
+sed -i 's/TransactionReceipt<ReceiptWithBloom<TempoReceipt<Log>>>/TransactionReceipt/' "${ALLOY_SRC}/rpc/receipt.rs"
+sed -i '/use alloy_rpc_types_eth::{Log, TransactionReceipt};/s/, Log//' "${ALLOY_SRC}/rpc/receipt.rs"
+
+
+
 echo "  ✅ tempo-alloy prepared"
 
 # ---------------------------------------------------------------------------
 # Step 4: Verify each crate can be packaged
 #
 # We package each crate independently by temporarily creating a standalone
-# Cargo.toml (since the workspace still references reth features).
+# workspace (since the main workspace still references reth features).
+#
+# For crates that depend on other co-published crates (e.g. tempo-alloy
+# depends on tempo-primitives + tempo-contracts), we use `cargo check`
+# since `cargo publish --dry-run` would fail trying to resolve them from
+# crates.io where they don't exist yet.
 # ---------------------------------------------------------------------------
 echo ""
 echo "━━━ Verifying packages ━━━"
@@ -487,42 +529,44 @@ for crate in "${CRATES[@]}"; do
   # Create a temporary standalone workspace with all publishable crates
   tmpdir=$(mktemp -d)
 
-  # Copy all three crates
   for c in "${CRATES[@]}"; do
     cp -r "${CRATE_DIR[$c]}" "$tmpdir/$(basename "${CRATE_DIR[$c]}")"
   done
 
-  # Create a minimal workspace Cargo.toml
   cat > "$tmpdir/Cargo.toml" << WSEOF
 [workspace]
 members = ["primitives", "contracts", "alloy"]
 resolver = "3"
 WSEOF
 
-  # Rewrite tempo-* deps to use path + version within this temp workspace
+  # For alloy: rewrite version-only deps to path deps so cargo can resolve them
   alloy_toml="$tmpdir/alloy/Cargo.toml"
   if [[ -f "$alloy_toml" ]]; then
-    sed -i "s|tempo-contracts = { version = \"$VERSION\"|tempo-contracts = { version = \"$VERSION\", path = \"../contracts\"|" "$alloy_toml"
-    sed -i "s|tempo-primitives = { version = \"$VERSION\"|tempo-primitives = { version = \"$VERSION\", path = \"../primitives\"|" "$alloy_toml"
+    sed -i "s|tempo-contracts = { version = \"$VERSION\"|tempo-contracts = { path = \"../contracts\"|" "$alloy_toml"
+    sed -i "s|tempo-primitives = { version = \"$VERSION\"|tempo-primitives = { path = \"../primitives\"|" "$alloy_toml"
   fi
 
-  # Package the target crate
   cd "$tmpdir"
-  if cargo package -p "$crate" --no-verify --allow-dirty 2>&1; then
-    echo "  ✅ $crate packages successfully"
+
+  # For leaf crates (no co-published deps): full publish --dry-run
+  # For tempo-alloy: cargo check (deps not on crates.io yet)
+  if [[ "$crate" == "tempo-alloy" ]]; then
+    if ! cargo check -p "$crate" 2>&1; then
+      echo "  ❌ $crate failed to compile"
+      cd "$REPO_ROOT"
+      rm -rf "$tmpdir"
+      exit 1
+    fi
   else
-    # tempo-alloy may fail packaging in dry-run because its deps aren't
-    # published yet. This is expected — verify Cargo.toml is well-formed.
-    if [[ "$crate" == "tempo-alloy" ]]; then
-      echo "  ⚠️  $crate packaging skipped (deps not yet on crates.io, expected in dry-run)"
-      echo "     Cargo.toml validated — will succeed after tempo-primitives + tempo-contracts are published."
-    else
+    if ! cargo publish -p "$crate" --dry-run --allow-dirty 2>&1; then
       echo "  ❌ $crate failed to package"
       cd "$REPO_ROOT"
       rm -rf "$tmpdir"
       exit 1
     fi
   fi
+
+  echo "  ✅ $crate verified successfully"
   cd "$REPO_ROOT"
   rm -rf "$tmpdir"
 done
