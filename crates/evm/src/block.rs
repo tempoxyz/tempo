@@ -567,7 +567,7 @@ mod tests {
         )];
         let result: ExecutionResult<TempoHaltReason> = ExecutionResult::Success {
             reason: revm::context::result::SuccessReason::Return,
-            gas: ResultGas::new(21000, 21000, 0, 0, 0),
+            gas: ResultGas::new(21000, 21000, 0, 0, 0, 0),
             logs,
             output: revm::context::result::Output::Call(Bytes::new()),
         };
@@ -1077,7 +1077,7 @@ mod tests {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
                         reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::new(21000, 21000, 0, 0, 0),
+                        gas: ResultGas::new(21000, 21000, 0, 0, 0, 0),
                         logs: vec![],
                         output: revm::context::result::Output::Call(Bytes::new()),
                     },
