@@ -24,6 +24,14 @@ pub struct Args {
     #[arg(long = "consensus.signing-share")]
     pub signing_share: Option<PathBuf>,
 
+    /// Name of the environment variable that holds the passphrase for
+    /// decrypting the signing key and signing share at rest. When set, both
+    /// `--consensus.signing-key` and `--consensus.signing-share` files are
+    /// expected to be (or will be read as) AES-256-GCM encrypted envelopes.
+    /// Plaintext files are still accepted for backward compatibility.
+    #[arg(long = "consensus.key-passphrase-env", value_name = "ENV_VAR")]
+    key_passphrase_env: Option<String>,
+
     /// The socket address that will be bound to listen for consensus communication from
     /// other nodes.
     #[arg(long = "consensus.listen-address", default_value = "127.0.0.1:8000")]
@@ -267,19 +275,46 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
-    /// Returns the signing key loaded from specified file.
+    /// Resolves the key passphrase from the configured environment variable,
+    /// if any. Returns `None` when no `--consensus.key-passphrase-env` was
+    /// provided.
+    pub fn resolve_passphrase(&self) -> eyre::Result<Option<Vec<u8>>> {
+        match &self.key_passphrase_env {
+            None => Ok(None),
+            Some(var) => {
+                let value = std::env::var(var).wrap_err_with(|| {
+                    format!(
+                        "environment variable `{var}` specified by \
+                         --consensus.key-passphrase-env is not set"
+                    )
+                })?;
+                if value.is_empty() {
+                    eyre::bail!(
+                        "environment variable `{var}` is set but empty; \
+                         a non-empty passphrase is required"
+                    );
+                }
+                Ok(Some(value.into_bytes()))
+            }
+        }
+    }
+
+    /// Returns the signing key loaded from specified file. When a passphrase
+    /// env var is configured, encrypted key files are decrypted transparently.
     pub(crate) fn signing_key(&self) -> eyre::Result<Option<SigningKey>> {
         if let Some(signing_key) = self.loaded_signing_key.get() {
             return Ok(signing_key.clone());
         }
 
+        let passphrase = self.resolve_passphrase()?;
+
         let signing_key = self
             .signing_key
             .as_ref()
             .map(|path| {
-                SigningKey::read_from_file(path).wrap_err_with(|| {
+                SigningKey::read_maybe_encrypted(path, passphrase.as_deref()).wrap_err_with(|| {
                     format!(
-                        "failed reading private ed25519 signing key share from file `{}`",
+                        "failed reading private ed25519 signing key from file `{}`",
                         path.display()
                     )
                 })

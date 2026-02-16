@@ -12002,11 +12002,14 @@ dependencies = [
 name = "tempo-commonware-node-config"
 version = "1.2.0"
 dependencies = [
+ "aes-gcm",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-utils",
  "const-hex",
+ "pbkdf2",
  "rand 0.8.5",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
 

@@ -16,6 +16,11 @@ commonware-cryptography.workspace = true
 const-hex.workspace = true
 thiserror.workspace = true
 
+# Encryption-at-rest for key material (issue #1713)
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+sha2.workspace = true
+
 [dev-dependencies]
 commonware-utils.workspace = true
 rand_08.workspace = true

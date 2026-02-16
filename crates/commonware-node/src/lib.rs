@@ -39,11 +39,13 @@ pub async fn run_consensus_stack(
     execution_node: TempoFullNode,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
+    let passphrase = config.resolve_passphrase()?;
+
     let share = config
         .signing_share
         .as_ref()
         .map(|share| {
-            SigningShare::read_from_file(share).wrap_err_with(|| {
+            SigningShare::read_maybe_encrypted(share, passphrase.as_deref()).wrap_err_with(|| {
                 format!(
                     "failed reading private bls12-381 key share from file `{}`",
                     share.display()

@@ -1,7 +1,7 @@
 use commonware_cryptography::{
-    Signer as _,
     bls12381::{dkg, primitives::variant::MinSig},
     ed25519::PrivateKey,
+    Signer as _,
 };
 use commonware_utils::{N3f1, NZU32};
 use rand_08::SeedableRng as _;
@@ -44,4 +44,69 @@ fn signing_share_roundtrip() {
         signing_share,
         SigningShare::try_from_hex(&signing_share.to_string()).unwrap(),
     );
+}
+
+// --- Encrypted key roundtrip tests ---
+
+#[test]
+fn signing_key_encrypted_roundtrip() {
+    let dir = std::env::temp_dir().join("tempo_test_enc_key");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("test.key.enc");
+
+    let original: SigningKey = PrivateKey::from_seed(99).into();
+    let passphrase = b"integration-test-passphrase";
+
+    original.write_encrypted(&path, passphrase).unwrap();
+
+    // The file on disk must not contain the hex key in cleartext.
+    let raw = std::fs::read(&path).unwrap();
+    assert!(crate::encrypted::is_encrypted(&raw));
+
+    // Decrypt and verify the public key matches.
+    let recovered = SigningKey::read_maybe_encrypted(&path, Some(passphrase)).unwrap();
+    assert_eq!(original.public_key(), recovered.public_key());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn signing_key_plaintext_still_works_with_passphrase() {
+    let dir = std::env::temp_dir().join("tempo_test_plain_key");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("test.key");
+
+    let original: SigningKey = PrivateKey::from_seed(7).into();
+    let mut file = std::fs::File::create(&path).unwrap();
+    original.to_writer(&mut file).unwrap();
+
+    // Plaintext files are read transparently even when a passphrase is supplied.
+    let recovered = SigningKey::read_maybe_encrypted(&path, Some(b"unused")).unwrap();
+    assert_eq!(original.public_key(), recovered.public_key());
+
+    // Also works without any passphrase at all.
+    let recovered_no_pass = SigningKey::read_maybe_encrypted(&path, None).unwrap();
+    assert_eq!(original.public_key(), recovered_no_pass.public_key());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn signing_share_encrypted_roundtrip() {
+    let dir = std::env::temp_dir().join("tempo_test_enc_share");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("test.share.enc");
+
+    let mut rng = rand_08::rngs::StdRng::seed_from_u64(42);
+    let (_, mut shares) =
+        dkg::deal_anonymous::<MinSig, N3f1>(&mut rng, Default::default(), NZU32!(1));
+    let original: SigningShare = shares.remove(0).into();
+    let passphrase = b"share-passphrase";
+
+    original.write_encrypted(&path, passphrase).unwrap();
+
+    let recovered = SigningShare::read_maybe_encrypted(&path, Some(passphrase)).unwrap();
+    assert_eq!(original, recovered);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
