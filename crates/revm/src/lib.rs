@@ -2,6 +2,7 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![allow(clippy::result_large_err)]
 
 mod block;
 // Suppress unused_crate_dependencies warning for tracing

@@ -3,8 +3,8 @@ use alloy_consensus::crypto::RecoveryError;
 use alloy_evm::block::ExecutableTxParts;
 use alloy_primitives::Address;
 use reth_evm::{
-    ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutableTxTuple,
-    ExecutionCtxFor, FromRecoveredTx, RecoveredTx, ToTxEnv,
+    ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
+    FromRecoveredTx, RecoveredTx, ToTxEnv,
 };
 use reth_primitives_traits::{SealedBlock, SignedTransaction};
 use std::sync::Arc;
