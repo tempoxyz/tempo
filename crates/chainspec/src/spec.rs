@@ -464,7 +464,7 @@ mod tests {
             TempoHardfork::Genesis
         );
 
-        // At and after T0/T1 activation
+        // At and after T0/T1 activation (before T1A)
         assert_eq!(
             moderato_genesis.tempo_hardfork_at(1770303600),
             TempoHardfork::T1
@@ -473,9 +473,21 @@ mod tests {
             moderato_genesis.tempo_hardfork_at(1770303601),
             TempoHardfork::T1
         );
+
+        // Before T1A activation (1771513200 = Feb 19th 2026 16:00 CET)
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1771513199),
+            TempoHardfork::T1
+        );
+
+        // At and after T1A activation
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1771513200),
+            TempoHardfork::T1A
+        );
         assert_eq!(
             moderato_genesis.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::T1
+            TempoHardfork::T1A
         );
 
         let testnet_chainspec = super::TempoChainSpecParser::parse("testnet")
