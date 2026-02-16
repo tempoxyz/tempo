@@ -12,7 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth"] }
 
 reth-cli = { workspace = true, optional = true }
 reth-chainspec.workspace = true
