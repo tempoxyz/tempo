@@ -172,12 +172,6 @@ where
     }
 
     async fn run(mut self) {
-        info!(
-            consensus = %self.last_consensus_finalized_height,
-            execution = %self.last_execution_finalized_height,
-            "latest finalized blocks on startup",
-        );
-
         info_span!("start").in_scope(|| {
             info!(
                 last_finalized_consensus_height = %self.last_consensus_finalized_height,
