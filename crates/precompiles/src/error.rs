@@ -338,6 +338,25 @@ mod tests {
     }
 
     #[test]
+    fn test_is_system_error_returns_false_for_domain_errors() {
+        // Domain errors should NOT be system errors
+        assert!(!TempoPrecompileError::StablecoinDEX(
+            StablecoinDEXError::order_does_not_exist()
+        )
+        .is_system_error());
+        assert!(
+            !TempoPrecompileError::UnknownFunctionSelector([0xAA; 4]).is_system_error()
+        );
+    }
+
+    #[test]
+    fn test_is_system_error_returns_true_for_system_errors() {
+        assert!(TempoPrecompileError::OutOfGas.is_system_error());
+        assert!(TempoPrecompileError::Fatal("boom".into()).is_system_error());
+        assert!(TempoPrecompileError::Panic(PanicKind::UnderOverflow).is_system_error());
+    }
+
+    #[test]
     fn test_decode_error_with_tip20_error() {
         // Use insufficient_allowance which has a unique selector (no collision with other errors)
         let error = TIP20Error::insufficient_allowance();

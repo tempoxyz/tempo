@@ -1666,6 +1666,107 @@ mod tests {
         })
     }
 
+    #[test]
+    fn test_vec_handler_len_slot_returns_nondefault() {
+        let slot = U256::from(99);
+        let handler = VecHandler::<u8>::new(slot, Address::random());
+        assert_eq!(handler.len_slot(), slot);
+        assert_ne!(handler.len_slot(), U256::ZERO);
+    }
+
+    #[test]
+    fn test_vec_handler_is_empty_non_empty() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let handler = VecHandler::<U256>::new(U256::ZERO, address);
+
+            // Initially empty
+            assert!(handler.is_empty()?);
+
+            // Push one element
+            handler.push(U256::from(42))?;
+            assert!(!handler.is_empty()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_vec_delete_boundary_single_element() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = VecHandler::<u32>::new(U256::ZERO, address);
+            handler.push(1u32)?;
+            assert_eq!(handler.len()?, 1);
+
+            handler.delete()?;
+            assert_eq!(handler.len()?, 0);
+            assert!(handler.is_empty()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_vec_max_index_packed() {
+        // For u32 (4 bytes, packed), max_index = u32::MAX / 4
+        let max = VecHandler::<u32>::max_index();
+        assert_eq!(max, u32::MAX as usize / 4);
+    }
+
+    #[test]
+    fn test_vec_max_index_unpacked() {
+        // For U256 (32 bytes, unpacked), max_index = u32::MAX / 1 (SLOTS=1)
+        let max = VecHandler::<U256>::max_index();
+        assert_eq!(max, u32::MAX as usize / 1);
+    }
+
+    #[test]
+    fn test_vec_compute_handler_packed() {
+        // Verify compute_handler produces correct slots for packed types
+        let address = Address::random();
+
+        // For u32 (4 bytes), 8 elements per slot
+        // Element 0: slot 1000, offset 0
+        // Element 7: slot 1000, offset 28
+        // Element 8: slot 1001, offset 0
+        let (mut storage, _) = setup_storage();
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = VecHandler::<u32>::new(U256::ZERO, address);
+            // Write length manually
+            Slot::<U256>::new(U256::ZERO, address).write(U256::from(16)).unwrap();
+
+            // Write some values via full vec
+            let data: Vec<u32> = (0..16).collect();
+            handler.write(data.clone()).unwrap();
+            let loaded = handler.read().unwrap();
+            assert_eq!(loaded, data);
+        });
+    }
+
+    #[test]
+    fn test_vec_compute_handler_unpacked() {
+        // Verify compute_handler for unpacked (multi-slot) types
+        let (mut storage, address) = setup_storage();
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = VecHandler::<U256>::new(U256::ZERO, address);
+
+            let data = vec![U256::from(100), U256::from(200), U256::from(300)];
+            handler.write(data.clone()).unwrap();
+            let loaded = handler.read().unwrap();
+            assert_eq!(loaded, data);
+
+            // Access individual elements
+            assert_eq!(handler.at(0)?.unwrap().read()?, U256::from(100));
+            assert_eq!(handler.at(1)?.unwrap().read()?, U256::from(200));
+            assert_eq!(handler.at(2)?.unwrap().read()?, U256::from(300));
+
+            Ok::<(), crate::error::TempoPrecompileError>(())
+        }).unwrap();
+    }
+
     // -- PROPTEST STRATEGIES ------------------------------------------------------
 
     prop_compose! {

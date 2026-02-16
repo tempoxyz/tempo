@@ -437,6 +437,85 @@ mod tests {
     }
 
     #[test]
+    fn test_is_expiring_nonce_seen_boundary_at_exact_now() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        let valid_before = now + 20;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            let tx_hash = B256::repeat_byte(0xAA);
+            mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
+
+            // When now == expiry, the entry should NOT be seen (expiry > now fails)
+            // This kills: replace > with >= in is_expiring_nonce_seen
+            assert!(!mgr.is_expiring_nonce_seen(tx_hash, valid_before)?);
+
+            // When now == expiry - 1, the entry IS still seen
+            assert!(mgr.is_expiring_nonce_seen(tx_hash, valid_before - 1)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_check_and_mark_expiring_nonce_replay_at_exact_expiry() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        let valid_before = now + 20;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            let tx_hash1 = B256::repeat_byte(0xBB);
+            mgr.check_and_mark_expiring_nonce(tx_hash1, valid_before)?;
+
+            // Same hash should be rejected (replay)
+            let tx_hash_same = tx_hash1;
+            let result = mgr.check_and_mark_expiring_nonce(tx_hash_same, valid_before);
+            assert!(result.is_err());
+
+            // Different hash at valid_before = now + 1 (boundary of window)
+            let tx_hash2 = B256::repeat_byte(0xCC);
+            mgr.check_and_mark_expiring_nonce(tx_hash2, now + 1)?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_check_and_mark_eviction_of_non_expired_entry_fails() -> eyre::Result<()> {
+        // Tests that the `!= 0 && > now` check correctly identifies non-expired entries
+        // Kills: replace != with == in check_and_mark_expiring_nonce (line 144)
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            // Fill ring position 0 with a non-expired entry
+            let tx_hash1 = B256::repeat_byte(0x11);
+            let valid_before1 = now + 20;
+            mgr.check_and_mark_expiring_nonce(tx_hash1, valid_before1)?;
+
+            // Reset pointer to 0 to force eviction attempt on same slot
+            mgr.expiring_nonce_ring_ptr.write(0)?;
+
+            // Try to insert another entry at same ring position
+            let tx_hash2 = B256::repeat_byte(0x22);
+            let valid_before2 = now + 15;
+            let result = mgr.check_and_mark_expiring_nonce(tx_hash2, valid_before2);
+
+            // Should fail because old entry is not expired
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::expiring_nonce_set_full())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_initialize_sets_storage_state() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {

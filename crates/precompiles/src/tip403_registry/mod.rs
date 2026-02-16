@@ -2081,4 +2081,122 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_policy_data_is_default() {
+        // Kills: PolicyData::is_default -> bool with true, and && with ||
+        let default = PolicyData {
+            policy_type: 0,
+            admin: Address::ZERO,
+        };
+        assert!(default.is_default());
+
+        // Non-default: only policy_type != 0
+        let non_default1 = PolicyData {
+            policy_type: 1,
+            admin: Address::ZERO,
+        };
+        assert!(!non_default1.is_default());
+
+        // Non-default: only admin != zero
+        let non_default2 = PolicyData {
+            policy_type: 0,
+            admin: Address::repeat_byte(0x11),
+        };
+        assert!(!non_default2.is_default());
+
+        // Non-default: both non-zero
+        let non_default3 = PolicyData {
+            policy_type: 1,
+            admin: Address::repeat_byte(0x11),
+        };
+        assert!(!non_default3.is_default());
+    }
+
+    #[test]
+    fn test_t2_compound_is_authorized_as_transfer_both_must_pass() -> eyre::Result<()> {
+        // Kills: replace && with || in is_authorized_as (line 458)
+        // and: delete ! in is_authorized_as (line 458)
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let admin = Address::random();
+        let user_sender = Address::random();
+        let user_recipient = Address::random();
+        let user_both = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create sender whitelist
+            let sender_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: PolicyType::WHITELIST,
+                },
+            )?;
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: sender_policy,
+                    account: user_sender,
+                    allowed: true,
+                },
+            )?;
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: sender_policy,
+                    account: user_both,
+                    allowed: true,
+                },
+            )?;
+
+            // Create recipient whitelist
+            let recipient_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: PolicyType::WHITELIST,
+                },
+            )?;
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: recipient_policy,
+                    account: user_recipient,
+                    allowed: true,
+                },
+            )?;
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: recipient_policy,
+                    account: user_both,
+                    allowed: true,
+                },
+            )?;
+
+            // Create compound policy
+            let compound_id = registry.create_compound_policy(
+                admin,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: sender_policy,
+                    recipientPolicyId: recipient_policy,
+                    mintRecipientPolicyId: 1, // allow all
+                },
+            )?;
+
+            // user_both: in both whitelists → authorized for Transfer
+            assert!(registry.is_authorized_as(compound_id, user_both, AuthRole::Transfer)?);
+
+            // user_sender: only in sender whitelist → NOT authorized for Transfer (need both)
+            // With `||`, this would be true (wrong). With `&&`, correctly false.
+            assert!(!registry.is_authorized_as(compound_id, user_sender, AuthRole::Transfer)?);
+
+            // user_recipient: only in recipient whitelist → NOT authorized for Transfer
+            assert!(!registry.is_authorized_as(compound_id, user_recipient, AuthRole::Transfer)?);
+
+            Ok(())
+        })
+    }
 }

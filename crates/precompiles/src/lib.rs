@@ -495,6 +495,30 @@ mod tests {
     }
 
     #[test]
+    fn test_fill_precompile_output_no_refund_when_reverted() {
+        use crate::storage::hashmap::HashMapStorageProvider;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            // Simulate some gas refund
+            StorageCtx.refund_gas(42);
+            assert_eq!(StorageCtx.gas_refunded(), 0); // hashmap provider always returns 0
+
+            // When output is NOT reverted, gas_refunded should be set
+            let output = PrecompileOutput::new(100, Bytes::new());
+            let filled = fill_precompile_output(output, &StorageCtx);
+            assert!(!filled.reverted);
+            assert_eq!(filled.gas_refunded, StorageCtx.gas_refunded());
+
+            // When output IS reverted, gas_refunded must be 0
+            let reverted_output = PrecompileOutput::new_reverted(100, Bytes::new());
+            let filled = fill_precompile_output(reverted_output, &StorageCtx);
+            assert!(filled.reverted);
+            assert_eq!(filled.gas_refunded, 0);
+        });
+    }
+
+    #[test]
     fn test_input_cost_returns_non_zero_for_input() {
         // Empty input should cost 0
         assert_eq!(input_cost(0), 0);

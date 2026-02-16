@@ -803,6 +803,24 @@ mod tests {
     }
 
     #[test]
+    fn test_handler_is_empty_with_elements() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
+
+            // Empty set should be empty
+            assert!(handler.is_empty()?);
+
+            // After inserting, should NOT be empty
+            handler.insert(U256::from(1))?;
+            assert!(!handler.is_empty()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_handler_metadata() {
         let address = Address::ZERO;
         let handler = SetHandler::<U256>::new(U256::from(42), address);

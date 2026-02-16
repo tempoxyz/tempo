@@ -502,6 +502,42 @@ mod tests {
     }
 
     #[test]
+    fn test_calc_string_length_long_string_exact() {
+        // For a long string of length 50:
+        //   slot_value = 50 * 2 + 1 = 101
+        //   calc_string_length(101, true) should return 50
+        //   With `-`: (101 - 1) / 2 = 50 ✓
+        //   With `/`: 101 / 2 = 50 (integer division) — happens to match for odd values
+        //
+        // For a long string of length 32:
+        //   slot_value = 32 * 2 + 1 = 65
+        //   With `-`: (65 - 1) / 2 = 32 ✓
+        //   With `/`: 65 / 2 = 32 — same (integer truncation)
+        //
+        // But for length 1:
+        //   slot_value = 1 * 2 + 1 = 3
+        //   With `-`: (3 - 1) / 2 = 1 ✓
+        //   With `/`: 3 / 2 = 1 — same
+        //
+        // Actually we need a case where they differ: any even length.
+        // For length 100:
+        //   slot_value = 100 * 2 + 1 = 201
+        //   With `-`: (201 - 1) / 2 = 100 ✓
+        //   With `/`: 201 / 2 = 100 — same due to integer division
+        //
+        // The mutant replaces the whole (value - 1) / 2 expression's `-` with `/`,
+        // so it becomes (value / 1) / 2 = value / 2. For length 50, value=101,
+        // value/2 = 50 (same). But we need the store→load roundtrip to catch it.
+        // The roundtrip tests already cover this, but let's add a specific assertion
+        // that the long string calc is correct for a known value.
+        let slot_value = encode_long_string_length(33);
+        assert_eq!(calc_string_length(slot_value, true), 33);
+
+        let slot_value = encode_long_string_length(64);
+        assert_eq!(calc_string_length(slot_value, true), 64);
+    }
+
+    #[test]
     fn test_encode_decode_roundtrip() {
         // Short strings roundtrip
         for len in [0, 1, 15, 30, 31] {

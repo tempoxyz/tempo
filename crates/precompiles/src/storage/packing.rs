@@ -906,6 +906,24 @@ mod tests {
         })
     }
 
+    #[test]
+    fn test_insert_into_word_preserves_existing_bits() {
+        // This kills the `| vs ^` mutant. XOR would clear bits that are already set,
+        // while OR preserves them. We insert into a word that already has bits set
+        // at the target position (same value), and verify the result is unchanged.
+        let existing: u8 = 0xAB;
+        let slot = insert_into_word(U256::ZERO, &existing, 0, 1).unwrap();
+
+        // Re-insert the same value at the same offset
+        let slot2 = insert_into_word(slot, &existing, 0, 1).unwrap();
+
+        // With `|`, reinserting the same value produces the same word.
+        // With `^`, the bits would cancel out to 0.
+        let extracted: u8 = extract_from_word(slot2, 0, 1).unwrap();
+        assert_eq!(extracted, existing, "Reinserting same value must preserve it (| not ^)");
+        assert_eq!(slot, slot2, "Word should be identical after re-insert of same value");
+    }
+
     // -- PROPERTY TESTS -----------------------------------------------------------
 
     use proptest::prelude::*;

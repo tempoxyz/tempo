@@ -518,6 +518,156 @@ mod tests {
     }
 
     #[test]
+    fn test_timestamp_returns_nondefault() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        ctx.block.timestamp = U256::from(0x1234u64);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+        let ts = provider.timestamp();
+        assert_eq!(ts, U256::from(0x1234u64));
+        assert_ne!(ts, U256::ZERO, "timestamp must not be default");
+        Ok(())
+    }
+
+    #[test]
+    fn test_beneficiary_returns_nondefault() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let beneficiary_addr = address!("aabbccddee11223344556677889900aabbccddee");
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        ctx.block.beneficiary = beneficiary_addr;
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+        let bene = provider.beneficiary();
+        assert_eq!(bene, beneficiary_addr);
+        assert_ne!(bene, Address::ZERO, "beneficiary must not be default");
+        Ok(())
+    }
+
+    #[test]
+    fn test_emit_event_deducts_gas() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let gas_limit = 100_000u64;
+        let mut provider = EvmPrecompileStorageProvider::new(
+            evm_internals,
+            gas_limit,
+            ctx.cfg.spec,
+            false,
+            ctx.cfg.gas_params.clone(),
+        );
+
+        let address = address!("4000000000000000000000000000000000000004");
+        let topic = b256!("0000000000000000000000000000000000000000000000000000000000000001");
+        let data = bytes!("0102030405060708");
+        let log_data = LogData::new_unchecked(vec![topic], data);
+
+        let gas_before = provider.gas_used();
+        provider.emit_event(address, log_data)?;
+        let gas_after = provider.gas_used();
+
+        assert!(gas_after > gas_before, "emit_event must deduct gas");
+        Ok(())
+    }
+
+    #[test]
+    fn test_deduct_gas_and_gas_used() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let gas_limit = 1000u64;
+        let mut provider = EvmPrecompileStorageProvider::new(
+            evm_internals,
+            gas_limit,
+            ctx.cfg.spec,
+            false,
+            ctx.cfg.gas_params.clone(),
+        );
+
+        assert_eq!(provider.gas_used(), 0);
+        provider.deduct_gas(300)?;
+        assert_eq!(provider.gas_used(), 300);
+        // gas_used = gas_limit - gas_remaining = 1000 - 700 = 300
+
+        // OOG
+        let result = provider.deduct_gas(800);
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_refund_gas_and_gas_refunded() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new(
+            evm_internals,
+            1000,
+            ctx.cfg.spec,
+            false,
+            ctx.cfg.gas_params.clone(),
+        );
+
+        assert_eq!(provider.gas_refunded(), 0);
+        provider.refund_gas(50);
+        assert_eq!(provider.gas_refunded(), 50);
+        provider.refund_gas(-10);
+        assert_eq!(provider.gas_refunded(), 40);
+        // Verify it's not a fixed value (kills mutant replacing with 0, 1, -1)
+        assert_ne!(provider.gas_refunded(), 0);
+        assert_ne!(provider.gas_refunded(), 1);
+        assert_ne!(provider.gas_refunded(), -1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_static() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        // Non-static
+        let provider = EvmPrecompileStorageProvider::new(
+            evm_internals,
+            u64::MAX,
+            ctx.cfg.spec,
+            false,
+            ctx.cfg.gas_params.clone(),
+        );
+        assert!(!provider.is_static());
+
+        // Now test static = true
+        let db2 = CacheDB::new(EmptyDB::new());
+        let mut evm2 = TempoEvmFactory::default().create_evm(db2, EvmEnv::default());
+        let ctx2 = evm2.ctx_mut();
+        let evm_internals2 =
+            EvmInternals::new(&mut ctx2.journaled_state, &ctx2.block, &ctx2.cfg, &ctx2.tx);
+        let provider2 = EvmPrecompileStorageProvider::new(
+            evm_internals2,
+            u64::MAX,
+            ctx2.cfg.spec,
+            true,
+            ctx2.cfg.gas_params.clone(),
+        );
+        assert!(provider2.is_static());
+        Ok(())
+    }
+
+    #[test]
     fn test_transient_storage_isolation_from_persistent() -> eyre::Result<()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());

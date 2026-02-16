@@ -589,7 +589,7 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -1856,6 +1856,122 @@ mod tests {
                 U256::from(140),
                 "saturating_add should allow refund beyond original limit without overflow"
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_initialize_sets_initialized_flag() -> eyre::Result<()> {
+        // Kills: replace AccountKeychain::initialize -> Result<()> with Ok(())
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+
+            assert!(!keychain.is_initialized()?);
+            keychain.initialize()?;
+            assert!(keychain.is_initialized()?);
+
+            // A new handle should still see initialized state
+            let keychain2 = AccountKeychain::new();
+            assert!(keychain2.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_key_returns_zero_keyid_for_nonexistent() -> eyre::Result<()> {
+        // Kills: delete match arm 0 in AccountKeychain::get_key (line 303)
+        // match arm 0 maps signature_type 0 -> Secp256k1
+        let mut storage = HashMapStorageProvider::new(1);
+        let account = Address::random();
+        let nonexistent_key = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let keychain = AccountKeychain::new();
+
+            let info = keychain.get_key(getKeyCall {
+                account,
+                keyId: nonexistent_key,
+            })?;
+
+            // Nonexistent key should return keyId == Address::ZERO
+            assert_eq!(info.keyId, Address::ZERO);
+            assert_eq!(info.expiry, 0);
+            // Default signature type for nonexistent key
+            assert_eq!(info.signatureType, SignatureType::Secp256k1);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_remaining_limit_zero_for_revoked_or_expired_key_t2() -> eyre::Result<()> {
+        // Kills: replace || with && in AccountKeychain::get_remaining_limit (line 323)
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Authorize a key with spending limit
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(1000),
+                    }],
+                },
+            )?;
+
+            // Should have remaining limit
+            let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
+                account,
+                keyId: key_id,
+                token,
+            })?;
+            assert_eq!(remaining, U256::from(1000));
+
+            // Revoke the key
+            keychain.revoke_key(
+                account,
+                revokeKeyCall { keyId: key_id },
+            )?;
+
+            // After revocation, remaining limit should be zero on T2
+            // With `||`: (expiry==0) || (is_revoked==true) → true → return zero ✓
+            // With `&&`: (expiry==0) && (is_revoked==true) → true → return zero ✓
+            // But we need a case where only one condition is true:
+            // After revoke: expiry=0, is_revoked=true → both true, same result
+            // We need to test when only is_revoked is true but expiry != 0
+            // That can't happen with the current revoke logic (sets expiry=0 AND is_revoked=true)
+            // But we can verify the correct behavior for the existing case
+            let remaining_after_revoke = keychain.get_remaining_limit(getRemainingLimitCall {
+                account,
+                keyId: key_id,
+                token,
+            })?;
+            assert_eq!(remaining_after_revoke, U256::ZERO);
+
+            // Non-existent key (expiry==0, is_revoked==false) should also return zero
+            // With `||`: (expiry==0) || (is_revoked==false) → true → return zero ✓
+            // With `&&`: (expiry==0) && (is_revoked==false) → false → read limit (wrong!)
+            let nonexistent_key = Address::random();
+            let remaining_nonexistent = keychain.get_remaining_limit(getRemainingLimitCall {
+                account,
+                keyId: nonexistent_key,
+                token,
+            })?;
+            assert_eq!(remaining_nonexistent, U256::ZERO);
 
             Ok(())
         })

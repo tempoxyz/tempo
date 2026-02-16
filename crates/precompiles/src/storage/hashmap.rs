@@ -194,3 +194,31 @@ impl HashMapStorageProvider {
             .or_default();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_beneficiary_returns_set_value() {
+        let mut provider = HashMapStorageProvider::new(1);
+        let bene = Address::repeat_byte(0xCC);
+        provider.set_beneficiary(bene);
+        assert_eq!(provider.beneficiary(), bene);
+        assert_ne!(provider.beneficiary(), Address::ZERO);
+    }
+
+    #[test]
+    fn test_gas_refunded_returns_zero() {
+        let provider = HashMapStorageProvider::new(1);
+        assert_eq!(provider.gas_refunded(), 0);
+        assert_ne!(provider.gas_refunded(), 1);
+        assert_ne!(provider.gas_refunded(), -1);
+    }
+
+    #[test]
+    fn test_is_static_returns_false_by_default() {
+        let provider = HashMapStorageProvider::new(1);
+        assert!(!provider.is_static());
+    }
+}

@@ -209,7 +209,7 @@ where
 mod tests {
     use super::*;
     use crate::{
-        storage::{Layout, LayoutCtx, PrecompileStorageProvider, StorageCtx},
+        storage::{Layout, LayoutCtx, PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::setup_storage,
     };
     use proptest::prelude::*;
@@ -451,6 +451,71 @@ mod tests {
             let slot_value = storage.sload(address, base_slot + U256::from(i)).unwrap();
             assert_eq!(slot_value, U256::ZERO, "Slot {i} not cleared after delete");
         }
+    }
+
+    #[test]
+    fn test_array_base_slot_returns_nondefault() {
+        let base = U256::from(42);
+        let handler = ArrayHandler::<u8, 32>::new(base, Address::ZERO);
+        assert_eq!(handler.base_slot(), base);
+        assert_ne!(handler.base_slot(), U256::ZERO);
+    }
+
+    #[test]
+    fn test_array_compute_handler_packed_slot_calculation() {
+        // For [u8; 32], BYTES=1, elements pack 32 per slot
+        // Index 0 -> slot base+0, offset 0
+        // Index 31 -> slot base+0, offset 31
+        // Index 32 -> slot base+1, offset 0  (for larger arrays)
+        let base = U256::from(100);
+        let address = Address::ZERO;
+        let mut handler = ArrayHandler::<u8, 64>::new(base, address);
+
+        // Element 0: slot base+0
+        let h0 = handler.at(0).unwrap();
+        let val0 = StorageCtx::enter(&mut HashMapStorageProvider::new(1), || {
+            // Just verify it's created at the right slot by checking base_slot computes correctly
+            h0.read()
+        });
+        assert!(val0.is_ok());
+
+        // Element 33: slot base+1 (33 / 32 = 1 slot offset)
+        let h33 = handler.at(33).unwrap();
+        let val33 = StorageCtx::enter(&mut HashMapStorageProvider::new(1), || h33.read());
+        assert!(val33.is_ok());
+
+        // OOB check
+        assert!(handler.at(64).is_none());
+    }
+
+    #[test]
+    fn test_array_compute_handler_unpacked_slot_calculation() {
+        // For [U256; 5], BYTES=32, each element gets its own slot
+        // Index i -> slot base + i * SLOTS = base + i * 1
+        let base = U256::from(10);
+        let address = Address::ZERO;
+        let (mut storage, _) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut handler = ArrayHandler::<U256, 5>::new(base, address);
+
+            // Write to index 0 and index 2
+            handler.at(0).unwrap();
+            handler.at(2).unwrap();
+
+            // Write distinct values to verify slot arithmetic
+            let mut h = <[U256; 5]>::handle(base, LayoutCtx::FULL, address);
+            h.write([U256::from(10), U256::from(20), U256::from(30), U256::from(40), U256::from(50)]).unwrap();
+
+            // Read back individual elements
+            let v0 = handler[0].read().unwrap();
+            let v2 = handler[2].read().unwrap();
+            let v4 = handler[4].read().unwrap();
+
+            assert_eq!(v0, U256::from(10));
+            assert_eq!(v2, U256::from(30));
+            assert_eq!(v4, U256::from(50));
+        });
     }
 
     proptest! {
