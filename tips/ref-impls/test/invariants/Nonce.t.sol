@@ -85,8 +85,6 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         _setupInvariantBase();
         _actors = _buildActors(10);
-
-        _initLogFile("nonce.log", "Nonce Invariant Test Log");
     }
 
     /// @dev Gets a valid nonce key (1 to MAX_NORMAL_NONCE_KEY)
@@ -198,21 +196,6 @@ contract NonceInvariantTest is InvariantBaseTest {
         // TEMPO-NON3: New value should be readable
         uint64 actualAfter = nonce.getNonce(actor, nonceKey);
         assertEq(actualAfter, newNonce, "TEMPO-NON3: Stored nonce should match returned value");
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "INCREMENT: ",
-                    _getActorIndex(actor),
-                    " key=",
-                    vm.toString(nonceKey),
-                    " ",
-                    vm.toString(expectedBefore),
-                    " -> ",
-                    vm.toString(newNonce)
-                )
-            );
-        }
     }
 
     /// @notice Handler for reading nonces
@@ -247,12 +230,6 @@ contract NonceInvariantTest is InvariantBaseTest {
         }
 
         _totalProtocolNonceRejections++;
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat("TRY_PROTOCOL_NONCE: ", _getActorIndex(actor), " correctly rejected")
-            );
-        }
     }
 
     /// @notice Handler for verifying account independence
@@ -281,19 +258,6 @@ contract NonceInvariantTest is InvariantBaseTest {
         assertEq(nonce2After, nonce2Before, "TEMPO-NON5: Other account nonce should be unchanged");
 
         _totalAccountIndependenceChecks++;
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "ACCOUNT_INDEPENDENCE: ",
-                    _getActorIndex(actor1),
-                    " incremented, ",
-                    _getActorIndex(actor2),
-                    " unchanged at ",
-                    vm.toString(nonce2After)
-                )
-            );
-        }
     }
 
     /// @notice Handler for verifying key independence
@@ -316,21 +280,6 @@ contract NonceInvariantTest is InvariantBaseTest {
         assertEq(nonce2After, nonce2Before, "TEMPO-NON6: Other key nonce should be unchanged");
 
         _totalKeyIndependenceChecks++;
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "KEY_INDEPENDENCE: ",
-                    _getActorIndex(actor),
-                    " key=",
-                    vm.toString(key1),
-                    " incremented, key=",
-                    vm.toString(key2),
-                    " unchanged at ",
-                    vm.toString(nonce2After)
-                )
-            );
-        }
     }
 
     /// @notice Handler for testing max nonce key
@@ -354,17 +303,6 @@ contract NonceInvariantTest is InvariantBaseTest {
         assertEq(afterIncrement, newNonce, "TEMPO-NON7: Large key should increment correctly");
 
         _totalLargeKeyTests++;
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "LARGE_KEY: ",
-                    _getActorIndex(actor),
-                    " key=MAX_UINT256-1 nonce=",
-                    vm.toString(newNonce)
-                )
-            );
-        }
     }
 
     /// @notice Handler for multiple sequential increments
@@ -394,23 +332,6 @@ contract NonceInvariantTest is InvariantBaseTest {
         assertEq(endNonce, startNonce + uint64(count), "TEMPO-NON8: Total increment should match");
 
         _totalMultipleIncrements++;
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "MULTI_INCREMENT: ",
-                    _getActorIndex(actor),
-                    " key=",
-                    vm.toString(nonceKey),
-                    " count=",
-                    vm.toString(count),
-                    " ",
-                    vm.toString(startNonce),
-                    " -> ",
-                    vm.toString(endNonce)
-                )
-            );
-        }
     }
 
     /// @notice Handler for testing nonce overflow at u64::MAX
@@ -442,18 +363,6 @@ contract NonceInvariantTest is InvariantBaseTest {
         this.externalIncrementNonceViaStorage(actor, nonceKey);
 
         _totalOverflowTests++;
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "NONCE_OVERFLOW: ",
-                    _getActorIndex(actor),
-                    " key=",
-                    vm.toString(nonceKey),
-                    " at u64::MAX - increment correctly reverted"
-                )
-            );
-        }
     }
 
     /// @notice Handler for testing invalid nonce key (key 0) increment rejection
@@ -469,14 +378,6 @@ contract NonceInvariantTest is InvariantBaseTest {
         this.externalIncrementNonceViaStorage(actor, 0);
 
         _totalInvalidKeyRejections++;
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "INVALID_KEY_INCREMENT: ", _getActorIndex(actor), " key=0 correctly reverted"
-                )
-            );
-        }
     }
 
     /// @notice Handler for testing reserved TEMPO_EXPIRING_NONCE_KEY readability
@@ -496,17 +397,6 @@ contract NonceInvariantTest is InvariantBaseTest {
         assertEq(result, 0, "TEMPO-NON11: Reserved key should return 0 for uninitialized");
 
         _totalReservedKeyTests++;
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "RESERVED_EXPIRING_KEY: ",
-                    _getActorIndex(actor),
-                    " key=MAX_UINT256 readable, value=",
-                    vm.toString(result)
-                )
-            );
-        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -535,59 +425,6 @@ contract NonceInvariantTest is InvariantBaseTest {
                 assertGe(actual, lastSeen, "TEMPO-NON1: Nonce decreased from last seen value");
             }
         }
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                          AFTER INVARIANT
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Logs final state summary after invariant run
-    function afterInvariant() public {
-        if (!_loggingEnabled) return;
-
-        _log("");
-        _log("--------------------------------------------------------------------------------");
-        _log("                              Final State Summary");
-        _log("--------------------------------------------------------------------------------");
-        _log(string.concat("Total increments: ", vm.toString(_totalIncrements)));
-        _log(string.concat("Total reads: ", vm.toString(_totalReads)));
-        _log(
-            string.concat(
-                "Protocol nonce rejections (NON4): ", vm.toString(_totalProtocolNonceRejections)
-            )
-        );
-        _log(
-            string.concat(
-                "Account independence checks (NON5): ", vm.toString(_totalAccountIndependenceChecks)
-            )
-        );
-        _log(
-            string.concat(
-                "Key independence checks (NON6): ", vm.toString(_totalKeyIndependenceChecks)
-            )
-        );
-        _log(string.concat("Large key tests (NON7): ", vm.toString(_totalLargeKeyTests)));
-        _log(
-            string.concat(
-                "Multiple increment operations (NON8): ", vm.toString(_totalMultipleIncrements)
-            )
-        );
-        _log(string.concat("Overflow tests (NON9): ", vm.toString(_totalOverflowTests)));
-        _log(
-            string.concat(
-                "Invalid key rejections (NON10): ", vm.toString(_totalInvalidKeyRejections)
-            )
-        );
-        _log(string.concat("Reserved key tests (NON11): ", vm.toString(_totalReservedKeyTests)));
-        _log("--------------------------------------------------------------------------------");
-
-        // Count total unique nonce keys tracked
-        uint256 totalTrackedKeys = 0;
-        for (uint256 a = 0; a < _actors.length; a++) {
-            totalTrackedKeys += _accountNonceKeys[_actors[a]].length;
-        }
-        _log(string.concat("Total tracked nonce keys: ", vm.toString(totalTrackedKeys)));
-        _log("--------------------------------------------------------------------------------");
     }
 
 }
