@@ -436,6 +436,8 @@ mod tests {
         );
 
         // At and after T1/T1A activation (both activate at 1770908400)
+        assert!(mainnet_chainspec.is_t1_active_at_timestamp(1770908400));
+        assert!(mainnet_chainspec.is_t1a_active_at_timestamp(1770908400));
         assert_eq!(
             mainnet_chainspec.tempo_hardfork_at(1770908400),
             TempoHardfork::T1A
