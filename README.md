@@ -67,7 +67,7 @@ You can connect to Tempo's public testnet using the following details:
 
 | Property           | Value                              |
 | ------------------ | ---------------------------------- |
-| **Network Name**   | Tempo Testnet (Moderato)           |
+| **Network Name**   | Tempo Testnet (Moderato)           |**Network ID**   | 42431                            |
 | **Currency**       | `USD`                              |
 | **Chain ID**       | `42431`                            |
 | **HTTP URL**       | `https://rpc.moderato.tempo.xyz`   |
