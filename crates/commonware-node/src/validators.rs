@@ -32,9 +32,54 @@ use tempo_precompiles::{
 use tempo_primitives::TempoHeader;
 use tracing::{Level, info, instrument, warn};
 
+pub(crate) fn v2_activation_height(node: &TempoFullNode, height: u64) -> eyre::Result<u64> {
+    read_validator_config_at_height(node, height, |config: &ValidatorConfigV2| {
+        config
+            .get_initialized_at_height()
+            .map_err(eyre::Report::new)
+    })
+}
+
+pub(crate) fn is_v2_active(node: &TempoFullNode, height: u64) -> eyre::Result<bool> {
+    read_validator_config_at_height(node, height, |config: &ValidatorConfigV2| {
+        config.is_initialized().map_err(eyre::Report::new)
+    })
+}
+
+/// Reads the `nextFullDkgCeremony` epoch value from the ValidatorConfig precompile.
+///
+/// This is used to determine if the next DKG ceremony should be a full ceremony
+/// (new polynomial) instead of a reshare.
+#[instrument(
+    skip_all,
+    fields(
+        at_height,
+    ),
+    err,
+    ret(level = Level::INFO)
+)]
+pub(crate) fn read_re_dkg_epoch(node: &TempoFullNode, at_height: u64) -> eyre::Result<u64> {
+    if at_height
+        >= v2_activation_height(node, at_height).wrap_err(
+            "failed reading contract to determine validator config v2 activation height",
+        )?
+    {
+        read_validator_config_at_height(node, at_height, |config: &ValidatorConfigV2| {
+            config
+                .get_next_full_dkg_ceremony()
+                .map_err(eyre::Report::new)
+        })
+    } else {
+        read_validator_config_at_height(node, at_height, |config: &ValidatorConfig| {
+            config
+                .get_next_full_dkg_ceremony()
+                .map_err(eyre::Report::new)
+        })
+    }
+}
+
 pub(crate) enum ReadTarget {
     AtLeast { height: Height },
-    Exact { height: Height },
 }
 
 /// Attempts to read the validator config from the smart contract, retrying
@@ -58,7 +103,6 @@ pub(crate) async fn read_validator_config_with_retry(
         attempts += 1;
 
         let target_height = match target {
-            ReadTarget::Exact { height } => height,
             ReadTarget::AtLeast { height } => node
                 .provider
                 .best_block_number()
@@ -232,14 +276,8 @@ pub(crate) fn read_from_contract_at_height(
     Ok(vals)
 }
 
-fn is_v2_active(node: &TempoFullNode, height: u64) -> eyre::Result<bool> {
-    read_validator_config_at_height(node, height, |config: &ValidatorConfigV2| {
-        config.is_initialized().map_err(eyre::Report::new)
-    })
-}
-
 #[instrument(skip_all, fields(validators_to_decode = contract_vals.len()))]
-fn decode_from_contract(
+pub(crate) fn decode_from_contract(
     contract_vals: Vec<IValidatorConfig::Validator>,
 ) -> ordered::Map<PublicKey, DecodedValidatorV1> {
     let mut decoded = HashMap::new();
@@ -369,8 +407,13 @@ impl DecodedValidatorV2 {
         self.deleted_at_height == 0
     }
 
+    pub(crate) fn is_active_at_height(&self, height: u64) -> bool {
+        self.added_at_height <= height
+            && (self.deleted_at_height == 0 || self.deleted_at_height > height)
+    }
+
     #[instrument(ret(Display, level = Level::DEBUG), err(level = Level::WARN))]
-    fn decode_from_contract(
+    pub(crate) fn decode_from_contract(
         IValidatorConfigV2::Validator {
             publicKey,
             validatorAddress: address,

@@ -8,7 +8,6 @@ use tempo_node::TempoFullNode;
 
 mod actor;
 mod ingress;
-mod validators;
 
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
