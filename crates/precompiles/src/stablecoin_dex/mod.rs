@@ -4278,33 +4278,73 @@ mod tests {
         })
     }
 
+    /// Common state produced by [`setup_flip_order_test`].
+    struct FlipOrderTestCtx {
+        exchange: StablecoinDEX,
+        alice: Address,
+        bob: Address,
+        admin: Address,
+        base_token: Address,
+        quote_token: Address,
+        book_key: B256,
+        amount: u128,
+        flip_tick: i16,
+    }
+
+    /// Sets up a [`StablecoinDEX`] with a flip bid order ready to be filled.
+    fn setup_flip_order_test() -> eyre::Result<FlipOrderTestCtx> {
+        let mut exchange = StablecoinDEX::new();
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let bob = Address::random();
+        let admin = Address::random();
+        let amount = MIN_ORDER_AMOUNT;
+        let tick = 100i16;
+        let flip_tick = 200i16;
+
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, quote_token) =
+            setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
+        exchange.create_pair(base_token)?;
+
+        let book_key = compute_book_key(base_token, quote_token);
+
+        // Place a flip bid order: when filled, it should flip to an ask at flip_tick
+        exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
+
+        Ok(FlipOrderTestCtx {
+            exchange,
+            alice,
+            bob,
+            admin,
+            base_token,
+            quote_token,
+            book_key,
+            amount,
+            flip_tick,
+        })
+    }
+
     #[test]
     fn test_flip_order_fill_ignores_business_logic_error() -> eyre::Result<()> {
         // Business logic errors during flip are silently ignored (always).
         for spec in [TempoHardfork::T1, TempoHardfork::T2] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
-
-                let alice = Address::random();
-                let bob = Address::random();
-                let admin = Address::random();
-                let amount = MIN_ORDER_AMOUNT;
-                let tick = 100i16;
-                let flip_tick = 200i16;
-
-                let price = orderbook::tick_to_price(tick);
-                let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
-
-                let (base_token, quote_token) =
-                    setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
-                exchange.create_pair(base_token)?;
-
-                let book_key = compute_book_key(base_token, quote_token);
-
-                // Place a flip bid order: when filled, it should flip to an ask at flip_tick
-                exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
+                let FlipOrderTestCtx {
+                    mut exchange,
+                    alice,
+                    bob,
+                    admin,
+                    base_token,
+                    quote_token,
+                    book_key,
+                    amount,
+                    flip_tick,
+                } = setup_flip_order_test()?;
 
                 // Blacklist alice on the base token AFTER order placement.
                 // When the flip (ask) is placed during fill, ensure_transfer_authorized(alice, dex)
@@ -4369,27 +4409,17 @@ mod tests {
         for spec in [TempoHardfork::T1, TempoHardfork::T2] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
-
-                let alice = Address::random();
-                let bob = Address::random();
-                let admin = Address::random();
-                let amount = MIN_ORDER_AMOUNT;
-                let tick = 100i16;
-                let flip_tick = 200i16;
-
-                let price = orderbook::tick_to_price(tick);
-                let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
-
-                let (base_token, quote_token) =
-                    setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
-                exchange.create_pair(base_token)?;
-
-                let book_key = compute_book_key(base_token, quote_token);
-
-                // Place a flip bid order: when filled, it should flip to an ask at flip_tick
-                exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
+                let FlipOrderTestCtx {
+                    mut exchange,
+                    alice,
+                    bob,
+                    base_token,
+                    quote_token,
+                    book_key,
+                    amount,
+                    flip_tick,
+                    ..
+                } = setup_flip_order_test()?;
 
                 let alice_quote_before = exchange.balance_of(alice, quote_token)?;
 
