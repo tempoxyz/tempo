@@ -239,13 +239,28 @@ impl ValidatorConfigV2 {
         })
     }
 
-    fn ingress_ip_hash(ingress: &str) -> B256 {
-        let ingress_ip = ingress.split(':').next().unwrap_or(ingress);
-        keccak256(ingress_ip.as_bytes())
+    fn ingress_ip_key(ingress: &str) -> B256 {
+        ingress
+            .parse::<std::net::SocketAddr>()
+            .map(|sa| {
+                let mut bytes = [0u8; 32];
+                match sa.ip() {
+                    std::net::IpAddr::V4(ip) => {
+                        bytes[0] = 4; // version discriminator
+                        bytes[1..5].copy_from_slice(&ip.octets());
+                    }
+                    std::net::IpAddr::V6(ip) => {
+                        bytes[0] = 6; // version discriminator
+                        bytes[1..17].copy_from_slice(&ip.octets());
+                    }
+                }
+                B256::from(bytes)
+            })
+            .unwrap_or_else(|_| keccak256(ingress.as_bytes()))
     }
 
     fn require_unique_ingress_ip(&self, ingress: &str) -> Result<()> {
-        let ingress_hash = Self::ingress_ip_hash(ingress);
+        let ingress_hash = Self::ingress_ip_key(ingress);
         if self.active_ingress_ips[ingress_hash].read()? {
             Err(ValidatorConfigV2Error::ingress_already_exists(
                 ingress.to_string(),
@@ -256,8 +271,8 @@ impl ValidatorConfigV2 {
     }
 
     fn update_ingress_ip_tracking(&mut self, old_ingress: &str, new_ingress: &str) -> Result<()> {
-        let old_ingress_hash = Self::ingress_ip_hash(old_ingress);
-        let new_ingress_hash = Self::ingress_ip_hash(new_ingress);
+        let old_ingress_hash = Self::ingress_ip_key(old_ingress);
+        let new_ingress_hash = Self::ingress_ip_key(new_ingress);
 
         if old_ingress_hash != new_ingress_hash {
             if self.active_ingress_ips[new_ingress_hash].read()? {
@@ -389,7 +404,7 @@ impl ValidatorConfigV2 {
 
         let block_height = self.storage.block_number();
 
-        self.active_ingress_ips[Self::ingress_ip_hash(&call.ingress)].write(true)?;
+        self.active_ingress_ips[Self::ingress_ip_key(&call.ingress)].write(true)?;
 
         self.append_validator(
             call.validatorAddress,
@@ -413,7 +428,7 @@ impl ValidatorConfigV2 {
 
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
 
-        self.active_ingress_ips[Self::ingress_ip_hash(&v.ingress)].delete()?;
+        self.active_ingress_ips[Self::ingress_ip_key(&v.ingress)].delete()?;
 
         v.deactivated_at_height = block_height;
         self.validators[idx].write(v)
@@ -581,7 +596,7 @@ impl ValidatorConfigV2 {
 
         let deactivated_at_height = if v1_val.active { 0 } else { block_height };
 
-        let ingress_hash = Self::ingress_ip_hash(&v1_val.inboundAddress);
+        let ingress_hash = Self::ingress_ip_key(&v1_val.inboundAddress);
 
         self.append_validator(
             v1_val.validatorAddress,
@@ -2181,6 +2196,195 @@ mod tests {
                 Err(ValidatorConfigV2Error::public_key_already_exists().into())
             );
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_add_validator_with_ipv6() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            // Add validator with IPv6 ingress
+            vc.storage.set_block_number(200);
+            vc.add_validator(owner, make_valid_add_call(validator, "[::1]:8000", "::1"))?;
+
+            assert_eq!(vc.validator_count()?, 1);
+            let v = vc.validator_by_index(0)?;
+            assert_eq!(v.validatorAddress, validator);
+            assert_eq!(v.ingress, "[::1]:8000");
+            assert_eq!(v.egress, "::1");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_add_validator_rejects_duplicate_ipv6() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "[2001:db8::1]:8000", "2001:db8::1"),
+            )?;
+
+            // Try to add another validator with same IPv6 IP (different port)
+            vc.storage.set_block_number(201);
+            let result = vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "[2001:db8::1]:9000", "2001:db8::2"),
+            );
+
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ipv6_reuse_after_deactivation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let v1 = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "[2001:db8::1]:8000", "2001:db8::1"),
+            )?;
+
+            vc.storage.set_block_number(300);
+            vc.deactivate_validator(
+                owner,
+                IValidatorConfigV2::deactivateValidatorCall {
+                    validatorAddress: v1,
+                },
+            )?;
+
+            // Should allow IPv6 reuse after deactivation
+            vc.storage.set_block_number(400);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "[2001:db8::1]:8000", "2001:db8::1"),
+            )?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_rotate_validator_with_ipv6() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            // Add initial validator with IPv4
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            // Rotate to IPv6
+            let (new_pubkey, new_sig) = make_test_keypair_and_signature(
+                validator,
+                "[2001:db8::1]:8000",
+                "2001:db8::1",
+                VALIDATOR_NS_ROTATE,
+            );
+            vc.storage.set_block_number(300);
+            vc.rotate_validator(
+                owner,
+                IValidatorConfigV2::rotateValidatorCall {
+                    validatorAddress: validator,
+                    publicKey: new_pubkey,
+                    ingress: "[2001:db8::1]:8000".to_string(),
+                    egress: "2001:db8::1".to_string(),
+                    signature: new_sig.into(),
+                },
+            )?;
+
+            assert_eq!(vc.validator_count()?, 2);
+            let old = vc.validator_by_index(0)?;
+            assert_eq!(old.deactivatedAtHeight, 300);
+
+            let new = vc.validator_by_index(1)?;
+            assert_eq!(new.deactivatedAtHeight, 0);
+            assert_eq!(new.ingress, "[2001:db8::1]:8000");
+            assert_eq!(new.egress, "2001:db8::1");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ipv6_canonical_representation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            // Add validator with compressed IPv6 notation
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "[::1]:8000", "::1"),
+            )?;
+
+            // Try to add another validator with expanded IPv6 notation of same IP
+            // This should fail because [::1] and [0:0:0:0:0:0:0:1] are the same IP
+            vc.storage.set_block_number(201);
+            let result = vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "[0:0:0:0:0:0:0:1]:9000", "::1"),
+            );
+
+            assert!(
+                result.is_err(),
+                "Different IPv6 notations of same IP should be rejected"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ipv4_ipv6_different_ips() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            // Add IPv4 validator
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            // Add IPv6 validator - should succeed (different IP)
+            vc.storage.set_block_number(201);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "[2001:db8::1]:8000", "2001:db8::1"),
+            )?;
+
+            assert_eq!(vc.validator_count()?, 2);
             Ok(())
         })
     }
