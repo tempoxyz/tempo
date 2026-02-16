@@ -29,6 +29,7 @@
 //!
 //! The `Genesis` variant is a placeholder representing the pre-hardfork baseline.
 
+use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
 use reth_chainspec::{EthereumHardforks, ForkCondition};
@@ -103,7 +104,7 @@ impl TempoHardfork {
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
         match self {
             Self::T1A | Self::T2 => Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
-            Self::T0 | Self::Genesis | Self::T1 => Some(crate::spec::TEMPO_OSAKA_TX_GAS_LIMIT),
+            Self::T0 | Self::Genesis | Self::T1 => Some(MAX_TX_GAS_LIMIT_OSAKA),
         }
     }
 
