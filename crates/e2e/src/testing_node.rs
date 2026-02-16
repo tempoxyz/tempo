@@ -5,7 +5,7 @@ use alloy_primitives::Address;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
-use reth_db::{DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
+use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
 use reth_ethereum::{
     provider::{
         DatabaseProviderFactory, ProviderFactory,
@@ -48,8 +48,8 @@ where
     pub execution_runtime: ExecutionRuntimeHandle,
     /// Configuration for the execution node
     pub execution_config: ExecutionNodeConfig,
-    /// Path to the execution node database (database is reopened on each start)
-    pub execution_database_path: PathBuf,
+    /// Database instance for the execution node (created once, cloned for each restart)
+    pub execution_database: Option<DatabaseEnv>,
     /// The execution node name assigned at initialization. Important when
     /// constructing the datadir at which to find the node.
     pub execution_node_name: String,
@@ -90,7 +90,6 @@ where
         let execution_node_datadir = execution_runtime
             .nodes_dir()
             .join(execution_runtime::execution_node_name(&public_key));
-        let execution_database_path = execution_node_datadir.join("db");
 
         let execution_node_name = execution_runtime::execution_node_name(&public_key);
         Self {
@@ -104,7 +103,7 @@ where
             execution_runtime,
             execution_config,
             execution_node_name,
-            execution_database_path,
+            execution_database: None,
             last_db_block_on_stop: None,
             network_address,
             chain_address,
@@ -165,18 +164,22 @@ where
             self.uid
         );
 
-        // Open/create database at the stored path (MDBX will use existing data if present)
-        let database =
-            reth_db::init_db(&self.execution_database_path, DatabaseArguments::default())
-                .expect("failed to init database")
-                .with_metrics();
+        // Create database if not exists, otherwise reuse the existing handle
+        if self.execution_database.is_none() {
+            let db_path = self.execution_node_datadir.join("db");
+            self.execution_database = Some(
+                reth_db::init_db(db_path, DatabaseArguments::default())
+                    .expect("failed to init database")
+                    .with_metrics(),
+            );
+        }
 
         let execution_node = self
             .execution_runtime
             .spawn_node(
                 &self.execution_node_name,
                 self.execution_config.clone(),
-                database,
+                self.execution_database.as_ref().unwrap().clone(),
             )
             .await
             .expect("must be able to spawn execution node");
@@ -336,6 +339,19 @@ where
 
         execution_node.shutdown().await;
 
+        // Acquire a RW transaction and immediately drop it. This blocks until any
+        // pending write transaction completes, ensuring all database writes are
+        // fully flushed. Without this, a pending write could still be in-flight
+        // after shutdown returns, leading to database/static-file inconsistencies
+        // when the node restarts.
+        drop(
+            self.execution_database
+                .as_ref()
+                .expect("database should exist")
+                .tx_mut()
+                .expect("failed to acquire rw transaction"),
+        );
+
         debug!(%self.uid, "stopped execution node for testing node");
     }
 
@@ -395,10 +411,12 @@ where
         // Open a read-only provider to the database
         // Note: MDBX allows multiple readers, so this is safe even if another process
         // has the database open for reading
-        let database =
-            open_db_read_only(&self.execution_database_path, DatabaseArguments::default())
-                .expect("failed to open execution node database")
-                .with_metrics();
+        let database = open_db_read_only(
+            self.execution_node_datadir.join("db"),
+            DatabaseArguments::default(),
+        )
+        .expect("failed to open execution node database")
+        .with_metrics();
 
         let static_file_provider =
             StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"), true)

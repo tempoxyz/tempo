@@ -11979,7 +11979,6 @@ dependencies = [
  "commonware-codec",
  "commonware-cryptography",
  "derive_more",
- "rayon",
  "reth-chainspec",
  "reth-consensus",
  "reth-evm",
