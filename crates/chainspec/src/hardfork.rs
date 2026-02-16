@@ -29,7 +29,6 @@
 //!
 //! The `Genesis` variant is a placeholder representing the pre-hardfork baseline.
 
-use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
 use reth_chainspec::{EthereumHardforks, ForkCondition};
@@ -99,13 +98,13 @@ impl TempoHardfork {
     }
 
     /// Returns the per-transaction gas limit cap.
-    /// - Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas) — enforced by reth consensus before the
-    ///   reth bump that removed the check
+    /// - Pre-T1A: u64::MAX (no intentional cap — the EIP-7825 Osaka limit was a bug, not a
+    ///   feature. Must be `Some` to prevent revm from falling back to EIP-7825.)
     /// - T1A+: 30M gas (allows maximum-sized contract deployments under TIP-1000 state creation)
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
         match self {
             Self::T1A | Self::T2 => Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
-            Self::T0 | Self::Genesis | Self::T1 => Some(MAX_TX_GAS_LIMIT_OSAKA),
+            Self::T0 | Self::Genesis | Self::T1 => Some(u64::MAX),
         }
     }
 

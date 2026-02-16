@@ -1,7 +1,7 @@
 //! Tests for per-transaction gas limit caps across hardforks (TIP-1000/1010).
 //!
-//! Pre-T1: no per-tx gas cap (effectively unlimited).
-//! Post-T1 (TIP-1010): per-tx gas limit cap is 30M (`TEMPO_T1_TX_GAS_LIMIT_CAP`).
+//! Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas).
+//! Post-T1A (TIP-1010): per-tx gas limit cap is 30M (`TEMPO_T1_TX_GAS_LIMIT_CAP`).
 
 use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
@@ -151,20 +151,22 @@ async fn test_post_t1_tx_exceeding_tempo_cap() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Pre-T1 (T0 only): tx with gas_limit above 30M should be accepted by the
-/// pool and included in a block because there is no per-tx gas cap before T1.
+/// Pre-T1A (T0 only): tx with gas_limit above 30M should be accepted because
+/// there is no intentional per-tx gas cap before T1A (the EIP-7825 Osaka limit
+/// was a bug, not a feature).
 #[tokio::test(flavor = "multi_thread")]
-async fn test_pre_t1_tx_above_30m() -> eyre::Result<()> {
+async fn test_pre_t1a_tx_above_30m() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let genesis_str = include_str!("../assets/test-genesis.json");
     let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
     genesis["config"].as_object_mut().unwrap().remove("t1Time");
+    genesis["config"].as_object_mut().unwrap().remove("t1aTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
-    let pre_t1_genesis = serde_json::to_string(&genesis)?;
+    let pre_t1a_genesis = serde_json::to_string(&genesis)?;
 
     let mut setup = TestNodeBuilder::new()
-        .with_genesis(pre_t1_genesis)
+        .with_genesis(pre_t1a_genesis)
         .build_with_node_access()
         .await?;
 
@@ -184,7 +186,7 @@ async fn test_pre_t1_tx_above_30m() -> eyre::Result<()> {
         .body()
         .transactions()
         .any(|tx| *tx.tx_hash() == expected_hash);
-    assert!(included, "pre-T1 should allow tx with gas_limit > 30M");
+    assert!(included, "pre-T1A should allow tx with gas_limit > 30M");
 
     Ok(())
 }
