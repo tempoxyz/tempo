@@ -307,7 +307,7 @@ impl ValidatorsInfo {
 }
 
 // ---------------------------------------------------------------------------
-// check-peers: P2P connectivity diagnostic
+// check-peers: P2P connectivity diagnostic using encrypted handshake
 // ---------------------------------------------------------------------------
 
 /// Per-validator connectivity result.
@@ -317,8 +317,12 @@ struct PeerCheckResult {
     inbound_address: String,
     active: bool,
     in_committee: bool,
-    tcp_reachable: bool,
-    tcp_latency_ms: Option<u64>,
+    /// Whether the peer was reachable at the TCP level.
+    reachable: bool,
+    /// Whether the ed25519 P2P handshake completed, proving the correct
+    /// validator key is behind the endpoint (not just a proxy).
+    identity_verified: bool,
+    handshake_latency_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -331,6 +335,7 @@ struct CheckPeersOutput {
     total_validators: usize,
     reachable: usize,
     unreachable: usize,
+    verified: usize,
     peers: Vec<PeerCheckResult>,
 }
 
@@ -349,8 +354,14 @@ pub(crate) struct CheckPeers {
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
 
-    /// Timeout per TCP connection attempt.
-    #[arg(long, default_value_t = 5)]
+    /// Path to the operator's ed25519 signing key. Required for the P2P
+    /// handshake — the key must be in the active validator set so that remote
+    /// peers accept the connection.
+    #[arg(long, value_name = "FILE")]
+    signing_key: PathBuf,
+
+    /// Timeout per handshake attempt in seconds.
+    #[arg(long, default_value_t = 10)]
     timeout_secs: u64,
 
     /// Only check a specific validator (hex-encoded ed25519 public key).
@@ -358,20 +369,59 @@ pub(crate) struct CheckPeers {
     validator: Option<String>,
 }
 
+/// Stream-level namespace used by Tempo's P2P layer. The lookup network
+/// constructs this as `union(union_unique(NAMESPACE, b"_P2P"), b"_STREAM")`
+/// where `NAMESPACE = b"TEMPO"`. Must match `commonware-node/src/config.rs`.
+fn stream_namespace() -> Vec<u8> {
+    const NAMESPACE: &[u8] = b"TEMPO";
+    commonware_utils::union(
+        &commonware_utils::union_unique(NAMESPACE, b"_P2P"),
+        b"_STREAM",
+    )
+}
+
 impl CheckPeers {
     fn run(self) -> eyre::Result<()> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .wrap_err("failed constructing async runtime")?
-            .block_on(self.run_async())
+        use commonware_runtime::Runner as _;
+
+        // Load the operator's signing key before entering the runtime so that
+        // file-system errors surface immediately.
+        let signing_key = SigningKey::read_from_file(&self.signing_key)
+            .wrap_err_with(|| {
+                format!(
+                    "failed reading signing key from `{}`",
+                    self.signing_key.display()
+                )
+            })?;
+        let private_key = signing_key.into_inner();
+
+        let cfg = commonware_runtime::tokio::Config::default()
+            .with_worker_threads(2);
+
+        commonware_runtime::tokio::Runner::new(cfg).start(|ctx| async move {
+            match self.run_async(ctx, private_key).await {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("error: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+        });
+
+        Ok(())
     }
 
-    async fn run_async(self) -> eyre::Result<()> {
+    async fn run_async(
+        self,
+        ctx: commonware_runtime::tokio::Context,
+        signing_key: PrivateKey,
+    ) -> eyre::Result<()> {
         use alloy_consensus::BlockHeader;
         use alloy_provider::ProviderBuilder;
+        use commonware_runtime::Spawner as _;
+        use reth_ethereum::chainspec::EthChainSpec as _;
 
-        let timeout = Duration::from_secs(self.timeout_secs);
+        let handshake_timeout = Duration::from_secs(self.timeout_secs);
 
         // Resolve chain metadata.
         let epoch_length = self
@@ -396,6 +446,15 @@ impl CheckPeers {
             .containing(current_height)
             .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
         let current_epoch = current_epoch_info.epoch();
+
+        let own_pubkey = signing_key.public_key();
+        eprintln!(
+            "using signing key with public key: {own_pubkey}\n\
+             chain: {}\n\
+             epoch: {}",
+            self.chain.chain(),
+            current_epoch.get(),
+        );
 
         // Read DKG outcome from the boundary block.
         let boundary_height = current_epoch
@@ -433,7 +492,7 @@ impl CheckPeers {
                 .wrap_err("failed to decode getValidators response")?;
 
         // Build the list of validators to check.
-        let mut targets: Vec<(String, String, bool, bool)> = Vec::new();
+        let mut targets: Vec<(PublicKey, String, String, bool, bool)> = Vec::new();
         for v in decoded.into_iter() {
             let key = PublicKey::decode(&mut &v.publicKey.0[..])
                 .wrap_err("failed decoding on-chain ed25519 key")?;
@@ -443,7 +502,7 @@ impl CheckPeers {
                 .as_ref()
                 .is_some_and(|o| o.players().position(&key).is_some());
 
-            // Skip inactive validators not in committee unless explicitly requested.
+            // Skip inactive validators not in committee.
             if !v.active && !in_committee {
                 continue;
             }
@@ -455,35 +514,54 @@ impl CheckPeers {
                 }
             }
 
-            targets.push((key_hex, v.inboundAddress, v.active, in_committee));
+            targets.push((key, key_hex, v.inboundAddress, v.active, in_committee));
         }
 
-        // Run connectivity checks concurrently.
+        eprintln!("checking {} validator(s)...\n", targets.len());
+
+        // Run handshake checks concurrently via the commonware spawner.
+        let namespace = stream_namespace();
         let mut handles = Vec::with_capacity(targets.len());
-        for (key_hex, addr_str, active, in_committee) in &targets {
-            let addr_str = addr_str.clone();
-            let key_hex = key_hex.clone();
-            let active = *active;
-            let in_committee = *in_committee;
-            handles.push(tokio::spawn(async move {
-                check_tcp(&key_hex, &addr_str, active, in_committee, timeout).await
+        for (peer_key, key_hex, addr_str, active, in_committee) in targets {
+            let signing_key = signing_key.clone();
+            let namespace = namespace.clone();
+            handles.push(ctx.clone().spawn(move |inner_ctx| async move {
+                check_handshake(
+                    inner_ctx,
+                    &signing_key,
+                    &namespace,
+                    &peer_key,
+                    &key_hex,
+                    &addr_str,
+                    active,
+                    in_committee,
+                    handshake_timeout,
+                )
+                .await
             }));
         }
 
         let mut peers = Vec::with_capacity(handles.len());
         for handle in handles {
-            peers.push(handle.await.wrap_err("task join error")?);
+            match handle.await {
+                Ok(result) => peers.push(result),
+                Err(e) => {
+                    eprintln!("warning: task failed: {e}");
+                }
+            }
         }
 
-        let reachable = peers.iter().filter(|p| p.tcp_reachable).count();
+        let reachable = peers.iter().filter(|p| p.reachable).count();
         let unreachable = peers.len() - reachable;
+        let verified = peers.iter().filter(|p| p.identity_verified).count();
 
         let output = CheckPeersOutput {
-            chain: self.chain.info.chain_name().to_string(),
+            chain: self.chain.chain().to_string(),
             current_epoch: current_epoch.get(),
             total_validators: peers.len(),
             reachable,
             unreachable,
+            verified,
             peers,
         };
 
@@ -492,25 +570,54 @@ impl CheckPeers {
     }
 }
 
-/// Attempts a TCP connection to a validator's inbound address and measures
-/// latency.
-async fn check_tcp(
+/// Performs a full P2P handshake against a single validator using the
+/// `commonware-stream` encrypted transport. A successful handshake proves
+/// that the node behind the address holds the expected ed25519 private key.
+async fn check_handshake(
+    ctx: commonware_runtime::tokio::Context,
+    signing_key: &PrivateKey,
+    namespace: &[u8],
+    peer_key: &PublicKey,
     key_hex: &str,
     addr_str: &str,
     active: bool,
     in_committee: bool,
-    timeout: Duration,
+    handshake_timeout: Duration,
 ) -> PeerCheckResult {
+    use commonware_runtime::Network as _;
+    use commonware_stream::encrypted;
+
     let result = async {
         let addr: SocketAddr = addr_str
             .parse()
             .map_err(|e| eyre!("invalid address `{addr_str}`: {e}"))?;
 
+        // Phase 1: TCP connect (measures raw reachability).
         let start = std::time::Instant::now();
-        tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr))
-            .await
-            .map_err(|_| eyre!("connection timed out after {timeout:?}"))?
-            .map_err(|e| eyre!("tcp connect failed: {e}"))?;
+        let (sink, stream) = ctx.dial(addr).await.map_err(|e| eyre!("dial failed: {e}"))?;
+
+        // Phase 2: Encrypted handshake — proves the peer holds the correct key.
+        let stream_config = encrypted::Config {
+            signing_key: signing_key.clone(),
+            namespace: namespace.to_vec(),
+            max_message_size: 16 * 1024 * 1024, // 16 MiB, generous upper bound
+            synchrony_bound: Duration::from_secs(5),
+            max_handshake_age: Duration::from_secs(10),
+            handshake_timeout,
+        };
+
+        let _connection = encrypted::dial(
+            ctx.clone(),
+            stream_config,
+            peer_key.clone(),
+            stream,
+            sink,
+        )
+        .await
+        .map_err(|e| eyre!("handshake failed: {e}"))?;
+
+        // Connection established — the peer's SynAck signature verified.
+        // We can drop the channel immediately; the diagnostic is complete.
         Ok::<_, Report>(start.elapsed())
     }
     .await;
@@ -521,18 +628,25 @@ async fn check_tcp(
             inbound_address: addr_str.to_string(),
             active,
             in_committee,
-            tcp_reachable: true,
-            tcp_latency_ms: Some(elapsed.as_millis() as u64),
+            reachable: true,
+            identity_verified: true,
+            handshake_latency_ms: Some(elapsed.as_millis() as u64),
             error: None,
         },
-        Err(e) => PeerCheckResult {
-            public_key: key_hex.to_string(),
-            inbound_address: addr_str.to_string(),
-            active,
-            in_committee,
-            tcp_reachable: false,
-            tcp_latency_ms: None,
-            error: Some(e.to_string()),
-        },
+        Err(e) => {
+            let err_str = format!("{e:#}");
+            // Distinguish between TCP-level and handshake-level failures.
+            let reachable = !err_str.contains("dial failed");
+            PeerCheckResult {
+                public_key: key_hex.to_string(),
+                inbound_address: addr_str.to_string(),
+                active,
+                in_committee,
+                reachable,
+                identity_verified: false,
+                handshake_latency_ms: None,
+                error: Some(err_str),
+            }
+        }
     }
 }

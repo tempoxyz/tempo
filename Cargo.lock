@@ -11833,6 +11833,7 @@ dependencies = [
  "commonware-cryptography",
  "commonware-math",
  "commonware-runtime",
+ "commonware-stream",
  "commonware-utils",
  "eyre",
  "futures",
