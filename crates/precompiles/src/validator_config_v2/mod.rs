@@ -6,7 +6,7 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    ip_validation::{ensure_address_is_ip, ensure_address_is_ip_port},
+    ip_validation::{IpWithPortParseError, ensure_address_is_ip, ensure_address_is_ip_port},
     storage::{Handler, Mapping},
     validator_config::ValidatorConfig,
 };
@@ -239,40 +239,37 @@ impl ValidatorConfigV2 {
         })
     }
 
-    fn ingress_ip_key(ingress: &str) -> B256 {
-        ingress
+    /// Parses `ingress` as an `<ip>:<port>` pair and returns the hash of the
+    /// binary representation of its IP address.
+    fn ingress_ip_key(ingress: &str) -> Result<B256> {
+        let ingress = ingress
             .parse::<std::net::SocketAddr>()
-            .map(|sa| {
-                let mut bytes = [0u8; 32];
-                match sa.ip() {
-                    std::net::IpAddr::V4(ip) => {
-                        bytes[0] = 4; // version discriminator
-                        bytes[1..5].copy_from_slice(&ip.octets());
-                    }
-                    std::net::IpAddr::V6(ip) => {
-                        bytes[0] = 6; // version discriminator
-                        bytes[1..17].copy_from_slice(&ip.octets());
-                    }
-                }
-                B256::from(bytes)
-            })
-            .unwrap_or_else(|_| keccak256(ingress.as_bytes()))
+            .map_err(IpWithPortParseError::from)
+            .map_err(|err| {
+                TempoPrecompileError::from(ValidatorConfigV2Error::not_ip_port(
+                    ingress.to_string(),
+                    format!("{err:?}"),
+                ))
+            })?;
+        Ok(match ingress.ip() {
+            std::net::IpAddr::V4(v4) => keccak256(v4.octets()),
+            std::net::IpAddr::V6(v6) => keccak256(v6.octets()),
+        })
     }
 
-    fn require_unique_ingress_ip(&self, ingress: &str) -> Result<()> {
-        let ingress_hash = Self::ingress_ip_key(ingress);
+    fn require_unique_ingress_ip(&self, ingress: &str) -> Result<B256> {
+        let ingress_hash = Self::ingress_ip_key(ingress)?;
         if self.active_ingress_ips[ingress_hash].read()? {
             Err(ValidatorConfigV2Error::ingress_already_exists(
                 ingress.to_string(),
             ))?
         }
-
-        Ok(())
+        Ok(ingress_hash)
     }
 
     fn update_ingress_ip_tracking(&mut self, old_ingress: &str, new_ingress: &str) -> Result<()> {
-        let old_ingress_hash = Self::ingress_ip_key(old_ingress);
-        let new_ingress_hash = Self::ingress_ip_key(new_ingress);
+        let old_ingress_hash = Self::ingress_ip_key(old_ingress)?;
+        let new_ingress_hash = Self::ingress_ip_key(new_ingress)?;
 
         if old_ingress_hash != new_ingress_hash {
             if self.active_ingress_ips[new_ingress_hash].read()? {
@@ -391,7 +388,7 @@ impl ValidatorConfigV2 {
         self.require_new_pubkey(call.publicKey)?;
         self.require_new_address(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
-        self.require_unique_ingress_ip(&call.ingress)?;
+        let ingress_hash = self.require_unique_ingress_ip(&call.ingress)?;
 
         self.verify_validator_signature(
             VALIDATOR_NS_ADD,
@@ -404,7 +401,7 @@ impl ValidatorConfigV2 {
 
         let block_height = self.storage.block_number();
 
-        self.active_ingress_ips[Self::ingress_ip_key(&call.ingress)].write(true)?;
+        self.active_ingress_ips[ingress_hash].write(true)?;
 
         self.append_validator(
             call.validatorAddress,
@@ -428,7 +425,9 @@ impl ValidatorConfigV2 {
 
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
 
-        self.active_ingress_ips[Self::ingress_ip_key(&v.ingress)].delete()?;
+        self.active_ingress_ips
+            [Self::ingress_ip_key(&v.ingress).expect("contract must only contain valid ingress")]
+        .delete()?;
 
         v.deactivated_at_height = block_height;
         self.validators[idx].write(v)
@@ -592,11 +591,9 @@ impl ValidatorConfigV2 {
             .map(|sa| sa.ip().to_string())
             .unwrap_or(v1_val.outboundAddress);
 
-        self.require_unique_ingress_ip(&v1_val.inboundAddress)?;
+        let ingress_hash = self.require_unique_ingress_ip(&v1_val.inboundAddress)?;
 
         let deactivated_at_height = if v1_val.active { 0 } else { block_height };
-
-        let ingress_hash = Self::ingress_ip_key(&v1_val.inboundAddress);
 
         self.append_validator(
             v1_val.validatorAddress,
@@ -1975,6 +1972,59 @@ mod tests {
             assert_eq!(vc.validator_by_index(0)?.deactivatedAtHeight, 300);
             assert_eq!(vc.validator_by_index(1)?.deactivatedAtHeight, 0);
             assert_eq!(vc.validator_by_address(validator)?.publicKey, new_pubkey);
+            assert_eq!(
+                vc.validator_by_address(validator)?.ingress,
+                "192.168.1.1:8000"
+            );
+            assert_eq!(vc.validator_by_address(validator)?.egress, "192.168.1.1");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_rotate_validator_to_different_ingress_port() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            // Rotate keeping the same ingress/egress — should succeed
+            let (new_pubkey, new_sig) = make_test_keypair_and_signature(
+                validator,
+                "192.168.1.1:8001",
+                "192.168.1.1",
+                VALIDATOR_NS_ROTATE,
+            );
+            vc.storage.set_block_number(300);
+            vc.rotate_validator(
+                owner,
+                IValidatorConfigV2::rotateValidatorCall {
+                    validatorAddress: validator,
+                    publicKey: new_pubkey,
+                    ingress: "192.168.1.1:8001".to_string(),
+                    egress: "192.168.1.1".to_string(),
+                    signature: new_sig.into(),
+                },
+            )?;
+
+            assert_eq!(vc.validator_count()?, 2);
+            assert_eq!(vc.validator_by_index(0)?.deactivatedAtHeight, 300);
+            assert_eq!(vc.validator_by_index(1)?.deactivatedAtHeight, 0);
+            assert_eq!(vc.validator_by_address(validator)?.publicKey, new_pubkey);
+            assert_eq!(
+                vc.validator_by_address(validator)?.ingress,
+                "192.168.1.1:8001"
+            );
+            assert_eq!(vc.validator_by_address(validator)?.egress, "192.168.1.1");
 
             Ok(())
         })
@@ -2007,6 +2057,39 @@ mod tests {
 
             let v = vc.validator_by_address(validator)?;
             assert_eq!(v.ingress, "10.0.0.1:8000");
+            assert_eq!(v.egress, "192.168.1.1");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_ip_addresses_ingress_port_only() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner, false)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            // Change ingress only, keep egress the same
+            vc.set_ip_addresses(
+                owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    validatorAddress: validator,
+                    ingress: "192.168.1.1:8001".to_string(),
+                    egress: "192.168.1.1".to_string(),
+                },
+            )?;
+
+            let v = vc.validator_by_address(validator)?;
+            assert_eq!(v.ingress, "192.168.1.1:8001");
             assert_eq!(v.egress, "192.168.1.1");
 
             Ok(())
