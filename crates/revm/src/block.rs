@@ -96,6 +96,81 @@ mod tests {
         any::<[u64; 4]>().prop_map(U256::from_limbs)
     }
 
+    #[test]
+    fn test_block_trait_accessors() {
+        use revm::context::Block;
+
+        let beneficiary = Address::repeat_byte(0xAB);
+        let number = U256::from(42u64);
+        let timestamp = U256::from(1_000_000u64);
+        let gas_limit = 30_000_000u64;
+        let basefee = 1_000_000_000u64;
+        let difficulty = U256::from(12345u64);
+        let prevrandao = B256::repeat_byte(0xCD);
+
+        let block = TempoBlockEnv {
+            inner: BlockEnv {
+                number,
+                beneficiary,
+                timestamp,
+                gas_limit,
+                basefee,
+                difficulty,
+                prevrandao: Some(prevrandao),
+                ..Default::default()
+            },
+            timestamp_millis_part: 500,
+        };
+
+        assert_eq!(block.number(), number);
+        assert_eq!(block.beneficiary(), beneficiary);
+        assert_eq!(block.timestamp(), timestamp);
+        assert_eq!(block.gas_limit(), gas_limit);
+        assert_eq!(block.basefee(), basefee);
+        assert_eq!(block.difficulty(), difficulty);
+        assert_eq!(block.prevrandao(), Some(prevrandao));
+    }
+
+    #[test]
+    fn test_block_trait_accessors_non_default() {
+        use revm::context::Block;
+
+        // Ensure accessors return non-default values (kills Default::default() mutants)
+        let block = TempoBlockEnv {
+            inner: BlockEnv {
+                number: U256::from(999u64),
+                beneficiary: Address::repeat_byte(0x01),
+                difficulty: U256::from(7u64),
+                prevrandao: Some(B256::repeat_byte(0xFF)),
+                ..Default::default()
+            },
+            timestamp_millis_part: 0,
+        };
+
+        assert_ne!(block.number(), U256::ZERO);
+        assert_ne!(block.beneficiary(), Address::ZERO);
+        assert_ne!(block.difficulty(), U256::ZERO);
+        assert_ne!(block.prevrandao(), Some(B256::ZERO));
+    }
+
+    #[test]
+    fn test_block_environment_inner_mut() {
+        let mut block = TempoBlockEnv {
+            inner: BlockEnv {
+                number: U256::from(10u64),
+                ..Default::default()
+            },
+            timestamp_millis_part: 0,
+        };
+
+        // inner_mut should return a mutable reference to the actual inner BlockEnv
+        let inner = block.inner_mut();
+        inner.number = U256::from(20u64);
+
+        // Verify mutation took effect on the original
+        assert_eq!(block.inner.number, U256::from(20u64));
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(500))]
 

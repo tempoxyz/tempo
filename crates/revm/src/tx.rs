@@ -884,4 +884,184 @@ mod tests {
         let non_aa_tx = make_tx_env(21_000, 0, alloy_primitives::U256::ZERO);
         assert_eq!(non_aa_tx.calls().count(), 1);
     }
+
+    // ==================== is_subblock_transaction ====================
+
+    #[test]
+    fn test_is_subblock_transaction_true() {
+        let tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                subblock_transaction: true,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(tx.is_subblock_transaction());
+    }
+
+    #[test]
+    fn test_is_subblock_transaction_false_no_aa() {
+        let tx = super::TempoTxEnv::default();
+        assert!(!tx.is_subblock_transaction());
+    }
+
+    #[test]
+    fn test_is_subblock_transaction_false_aa_not_subblock() {
+        let tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                subblock_transaction: false,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(!tx.is_subblock_transaction());
+    }
+
+    // ==================== Transaction trait accessors ====================
+
+    #[test]
+    fn test_transaction_chain_id() {
+        let tx = super::TempoTxEnv {
+            inner: revm::context::TxEnv {
+                chain_id: Some(42),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(Transaction::chain_id(&tx), Some(42));
+
+        // With no chain_id
+        let tx2 = super::TempoTxEnv {
+            inner: revm::context::TxEnv {
+                chain_id: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(Transaction::chain_id(&tx2), None);
+    }
+
+    #[test]
+    fn test_transaction_access_list() {
+        use revm::context::transaction::{AccessList, AccessListItem};
+
+        let items = vec![AccessListItem {
+            address: alloy_primitives::Address::repeat_byte(0xAA),
+            storage_keys: vec![alloy_primitives::B256::repeat_byte(0xBB)],
+        }];
+        let tx = super::TempoTxEnv {
+            inner: revm::context::TxEnv {
+                access_list: AccessList(items.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let al: Option<Vec<_>> = Transaction::access_list(&tx).map(|iter| iter.collect());
+        assert!(al.is_some());
+        let al = al.unwrap();
+        assert_eq!(al.len(), 1);
+        assert_eq!(al[0].address, alloy_primitives::Address::repeat_byte(0xAA));
+    }
+
+    #[test]
+    fn test_transaction_authorization_list() {
+        use revm::context::either::Either;
+        use revm::context::transaction::SignedAuthorization;
+
+        let auth = SignedAuthorization::new_unchecked(
+            alloy_eips::eip7702::Authorization {
+                chain_id: alloy_primitives::U256::from(1),
+                address: alloy_primitives::Address::repeat_byte(0x01),
+                nonce: 0,
+            },
+            0,
+            alloy_primitives::U256::from(1),
+            alloy_primitives::U256::from(2),
+        );
+        let tx = super::TempoTxEnv {
+            inner: revm::context::TxEnv {
+                authorization_list: vec![Either::Left(auth)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(Transaction::authorization_list_len(&tx), 1);
+        assert_eq!(Transaction::authorization_list(&tx).count(), 1);
+    }
+
+    #[test]
+    fn test_transaction_authorization_list_empty() {
+        let tx = super::TempoTxEnv::default();
+        assert_eq!(Transaction::authorization_list_len(&tx), 0);
+        assert_eq!(Transaction::authorization_list(&tx).count(), 0);
+    }
+
+    // ==================== IntoTxEnv ====================
+
+    #[test]
+    fn test_into_tx_env_preserves_fields() {
+        use alloy_evm::IntoTxEnv;
+
+        let addr = alloy_primitives::Address::repeat_byte(0x42);
+        let fee_token = alloy_primitives::Address::repeat_byte(0xFE);
+        let tx = super::TempoTxEnv {
+            inner: revm::context::TxEnv {
+                caller: addr,
+                gas_limit: 100_000,
+                nonce: 77,
+                ..Default::default()
+            },
+            fee_token: Some(fee_token),
+            is_system_tx: true,
+            ..Default::default()
+        };
+
+        let converted = tx.into_tx_env();
+        assert_eq!(converted.inner.caller, addr);
+        assert_eq!(converted.inner.gas_limit, 100_000);
+        assert_eq!(converted.inner.nonce, 77);
+        assert_eq!(converted.fee_token, Some(fee_token));
+        assert!(converted.is_system_tx);
+    }
+
+    // ==================== FromRecoveredTx<TempoTxEnvelope> ====================
+
+    #[test]
+    fn test_from_recovered_tx_legacy() {
+        use alloy_evm::FromRecoveredTx;
+
+        let sender = alloy_primitives::Address::repeat_byte(0x11);
+        let legacy_tx = alloy_consensus::TxLegacy {
+            nonce: 5,
+            gas_price: 20,
+            gas_limit: 21000,
+            to: TxKind::Call(alloy_primitives::Address::repeat_byte(0x22)),
+            value: alloy_primitives::U256::from(100),
+            input: alloy_primitives::Bytes::from(vec![0x01]),
+            chain_id: Some(1),
+        };
+        let system_sig = alloy_primitives::Signature::new(
+            alloy_primitives::U256::ZERO,
+            alloy_primitives::U256::ZERO,
+            false,
+        );
+        let envelope = tempo_primitives::TempoTxEnvelope::Legacy(
+            alloy_consensus::Signed::new_unhashed(legacy_tx, system_sig),
+        );
+
+        let tx_env = super::TempoTxEnv::from_recovered_tx(&envelope, sender);
+        assert_eq!(Transaction::caller(&tx_env), sender);
+        assert_eq!(Transaction::nonce(&tx_env), 5);
+        assert_eq!(Transaction::gas_limit(&tx_env), 21000);
+        assert_eq!(
+            Transaction::kind(&tx_env),
+            TxKind::Call(alloy_primitives::Address::repeat_byte(0x22))
+        );
+        assert_eq!(Transaction::value(&tx_env), alloy_primitives::U256::from(100));
+        assert!(tx_env.is_system_tx);
+        assert!(tx_env.fee_token.is_none());
+        assert!(tx_env.tempo_tx_env.is_none());
+    }
 }

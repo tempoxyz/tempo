@@ -438,6 +438,390 @@ mod tests {
         tip20::{IRolesAuth::*, ITIP20::*, slots as tip20_slots},
     };
 
+    // ==================== TempoTx trait tests for TempoTxEnv ====================
+
+    #[test]
+    fn test_tempo_tx_env_is_aa_true() {
+        let tx = TempoTxEnv {
+            tempo_tx_env: Some(Box::new(crate::tx::TempoBatchCallEnv::default())),
+            ..Default::default()
+        };
+        assert!(tx.is_aa());
+    }
+
+    #[test]
+    fn test_tempo_tx_env_is_aa_false() {
+        let tx = TempoTxEnv {
+            tempo_tx_env: None,
+            ..Default::default()
+        };
+        assert!(!tx.is_aa());
+    }
+
+    // ==================== TempoTx trait tests for Recovered<TempoTxEnvelope> ====================
+
+    #[test]
+    fn test_recovered_envelope_fee_token_aa() {
+        use alloy_consensus::transaction::Recovered;
+        use alloy_primitives::Signature;
+        use tempo_primitives::TempoTxEnvelope;
+
+        let signer = Address::repeat_byte(0xAA);
+
+        // Legacy variant: no fee_token, not AA
+        let system_sig = Signature::new(U256::ZERO, U256::ZERO, false);
+        let legacy_envelope = TempoTxEnvelope::Legacy(
+            alloy_consensus::Signed::new_unhashed(Default::default(), system_sig),
+        );
+        let recovered_legacy = Recovered::new_unchecked(legacy_envelope, signer);
+        assert_eq!(TempoTx::fee_token(&recovered_legacy), None);
+        assert!(!TempoTx::is_aa(&recovered_legacy));
+        assert_eq!(TempoTx::caller(&recovered_legacy), signer);
+        assert_eq!(TempoTx::calls(&recovered_legacy).count(), 1);
+    }
+
+    #[test]
+    fn test_recovered_envelope_caller_returns_signer() {
+        use alloy_consensus::transaction::Recovered;
+        use alloy_primitives::Signature;
+        use tempo_primitives::TempoTxEnvelope;
+
+        let signer = Address::repeat_byte(0x42);
+        let system_sig = Signature::new(U256::ZERO, U256::ZERO, false);
+        let envelope = TempoTxEnvelope::Legacy(
+            alloy_consensus::Signed::new_unhashed(Default::default(), system_sig),
+        );
+        let recovered = Recovered::new_unchecked(envelope, signer);
+
+        assert_eq!(TempoTx::caller(&recovered), signer);
+        assert_ne!(TempoTx::caller(&recovered), Address::ZERO);
+    }
+
+    // ==================== TempoStateAccess<()> for DB ====================
+
+    #[test]
+    fn test_tempo_state_access_db_basic_returns_account_info() {
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let addr = Address::repeat_byte(0x11);
+        let balance = U256::from(12345u64);
+        db.insert_account_info(
+            addr,
+            revm::state::AccountInfo {
+                balance,
+                nonce: 7,
+                ..Default::default()
+            },
+        );
+
+        let info = TempoStateAccess::<()>::basic(&mut db, addr).unwrap();
+        assert_eq!(info.balance, balance);
+        assert_eq!(info.nonce, 7);
+    }
+
+    #[test]
+    fn test_tempo_state_access_db_basic_missing_account() {
+        let mut db = EmptyDB::default();
+        let addr = Address::repeat_byte(0x99);
+
+        // Missing account should return default info (not error)
+        let info = TempoStateAccess::<()>::basic(&mut db, addr).unwrap();
+        assert_eq!(info.balance, U256::ZERO);
+        assert_eq!(info.nonce, 0);
+    }
+
+    // ==================== is_valid_fee_token ====================
+
+    #[test]
+    fn test_is_valid_fee_token_non_tip20_prefix() -> eyre::Result<()> {
+        // An address without the TIP20 prefix should return false
+        let non_tip20_addr = Address::repeat_byte(0x01);
+        let mut db = EmptyDB::default();
+        let result = db.is_valid_fee_token(TempoHardfork::Genesis, non_tip20_addr)?;
+        assert!(!result, "Non-TIP20 address should not be valid fee token");
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_valid_fee_token_tip20_usd() -> eyre::Result<()> {
+        let fee_token = PATH_USD_ADDRESS;
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+
+        // Set currency to "USD"
+        db.insert_account_storage(
+            fee_token,
+            tip20_slots::CURRENCY,
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256),
+        )?;
+
+        let result = db.is_valid_fee_token(TempoHardfork::Genesis, fee_token)?;
+        assert!(result, "TIP20 with USD currency should be valid fee token");
+        Ok(())
+    }
+
+    // ==================== ReadOnlyStorageProvider::spec ====================
+
+    #[test]
+    fn test_read_only_storage_provider_spec() -> eyre::Result<()> {
+        let mut db = EmptyDB::default();
+        // with_read_only_storage_ctx sets up a ReadOnlyStorageProvider with the given spec.
+        // We verify that the spec is correctly propagated by using a method that depends on it.
+        // The simplest way is to call an operation that uses StorageCtx internally.
+        // We can verify spec indirectly by checking that is_valid_fee_token works
+        // (it calls with_read_only_storage_ctx internally).
+        let result = db.is_valid_fee_token(TempoHardfork::Genesis, Address::repeat_byte(0x01))?;
+        assert!(!result);
+        Ok(())
+    }
+
+    // ==================== get_fee_token boundary tests ====================
+
+    #[test]
+    fn test_get_fee_token_aa_tx_not_fee_manager() -> eyre::Result<()> {
+        // AA tx calling FeeManager should NOT trigger the setUserToken shortcut
+        // (because is_aa() returns true, so the !tx.is_aa() guard fails)
+        let caller = Address::random();
+        let token = Address::random();
+
+        let call = IFeeManager::setUserTokenCall { token };
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                data: call.abi_encode().into(),
+                kind: TxKind::Call(TIP_FEE_MANAGER_ADDRESS),
+                caller,
+                ..Default::default()
+            },
+            // AA tx
+            tempo_tx_env: Some(Box::new(crate::tx::TempoBatchCallEnv::default())),
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
+        // Should NOT return `token` because is_aa() is true — should fall through to default
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_fee_manager_different_fee_payer() -> eyre::Result<()> {
+        // Non-AA tx calling FeeManager, but fee_payer != caller
+        // The `fee_payer == tx.caller()` check should fail
+        let caller = Address::repeat_byte(0x01);
+        let fee_payer = Address::repeat_byte(0x02);
+        let token = Address::random();
+
+        let call = IFeeManager::setUserTokenCall { token };
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                data: call.abi_encode().into(),
+                kind: TxKind::Call(TIP_FEE_MANAGER_ADDRESS),
+                caller,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let result_token = db.get_fee_token(tx, fee_payer, TempoHardfork::Genesis)?;
+        // Should NOT return `token` since fee_payer != caller
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_user_token_zero_falls_through() -> eyre::Result<()> {
+        // User token stored as zero should fall through (not return zero address)
+        let caller = Address::random();
+
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        // Explicitly set user token to zero
+        let user_slot = TipFeeManager::new().user_tokens[caller].slot();
+        db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, U256::ZERO)?;
+
+        let result_token =
+            db.get_fee_token(TempoTxEnv::default(), caller, TempoHardfork::Genesis)?;
+        // Zero user token should fall through to DEFAULT_FEE_TOKEN
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_user_token_nonzero_returns_it() -> eyre::Result<()> {
+        let caller = Address::random();
+        let user_token = Address::repeat_byte(0xCC);
+
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let user_slot = TipFeeManager::new().user_tokens[caller].slot();
+        db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())?;
+
+        let result_token =
+            db.get_fee_token(TempoTxEnv::default(), caller, TempoHardfork::Genesis)?;
+        assert_eq!(result_token, user_token);
+        assert_ne!(result_token, DEFAULT_FEE_TOKEN);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_tip20_inference_aa_different_fee_payer() -> eyre::Result<()> {
+        // AA tx where fee_payer != caller: TIP20 inference should be skipped
+        // (kills the && vs || mutant on line 158: `tx.is_aa() && fee_payer != tx.caller()`)
+        let caller = Address::repeat_byte(0x01);
+        let fee_payer = Address::repeat_byte(0x02);
+
+        let transfer_data = ITIP20::transferCall::SELECTOR.to_vec();
+        let tip20_addr = PATH_USD_ADDRESS;
+
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                data: transfer_data.into(),
+                kind: TxKind::Call(tip20_addr),
+                caller,
+                ..Default::default()
+            },
+            tempo_tx_env: Some(Box::new(crate::tx::TempoBatchCallEnv {
+                aa_calls: vec![tempo_primitives::transaction::Call {
+                    to: TxKind::Call(tip20_addr),
+                    value: U256::ZERO,
+                    input: ITIP20::transferCall::SELECTOR.to_vec().into(),
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        // Set up the TIP20 token with USD currency so it would be valid
+        db.insert_account_storage(
+            tip20_addr,
+            tip20_slots::CURRENCY,
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256),
+        )?;
+
+        let result_token = db.get_fee_token(tx, fee_payer, TempoHardfork::Genesis)?;
+        // Because is_aa && fee_payer != caller, can_infer_tip20 = false → falls to default
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_tip20_inference_non_transfer_call() -> eyre::Result<()> {
+        // Non-AA tx calling a TIP20 with a non-transfer selector (e.g., mint)
+        // The is_tip20_fee_inference_call check should fail
+        let caller = Address::random();
+        let tip20_addr = PATH_USD_ADDRESS;
+
+        let mint_data = mintCall::SELECTOR.to_vec();
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                data: mint_data.into(),
+                kind: TxKind::Call(tip20_addr),
+                caller,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        db.insert_account_storage(
+            tip20_addr,
+            tip20_slots::CURRENCY,
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256),
+        )?;
+
+        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
+        // Non-transfer call: can_infer_tip20 = false (all() fails) → default
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_stablecoin_dex_aa_multi_call() -> eyre::Result<()> {
+        // AA tx with multiple calls to Stablecoin DEX: should NOT infer fee token
+        // (kills the `!tx.is_aa() || calls.next().is_none()` mutant on line 180)
+        let caller = Address::random();
+        let token_in = DEFAULT_FEE_TOKEN;
+        let token_out = address!("0x20C0000000000000000000000000000000000001");
+
+        let swap_call = IStablecoinDEX::swapExactAmountInCall {
+            tokenIn: token_in,
+            tokenOut: token_out,
+            amountIn: 1000,
+            minAmountOut: 900,
+        };
+        let swap_data: Bytes = swap_call.abi_encode().into();
+
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                data: swap_data.clone(),
+                kind: TxKind::Call(STABLECOIN_DEX_ADDRESS),
+                caller,
+                ..Default::default()
+            },
+            tempo_tx_env: Some(Box::new(crate::tx::TempoBatchCallEnv {
+                aa_calls: vec![
+                    tempo_primitives::transaction::Call {
+                        to: TxKind::Call(STABLECOIN_DEX_ADDRESS),
+                        value: U256::ZERO,
+                        input: swap_data.clone(),
+                    },
+                    tempo_primitives::transaction::Call {
+                        to: TxKind::Call(STABLECOIN_DEX_ADDRESS),
+                        value: U256::ZERO,
+                        input: swap_data,
+                    },
+                ],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
+        // AA with >1 call: the `calls.next().is_none()` returns false → skip DEX inference
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_stablecoin_dex_aa_single_call() -> eyre::Result<()> {
+        // AA tx with single call to Stablecoin DEX: should infer fee token
+        let caller = Address::random();
+        let token_in = DEFAULT_FEE_TOKEN;
+        let token_out = address!("0x20C0000000000000000000000000000000000001");
+
+        let swap_call = IStablecoinDEX::swapExactAmountInCall {
+            tokenIn: token_in,
+            tokenOut: token_out,
+            amountIn: 1000,
+            minAmountOut: 900,
+        };
+        let swap_data: Bytes = swap_call.abi_encode().into();
+
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                data: swap_data.clone(),
+                kind: TxKind::Call(STABLECOIN_DEX_ADDRESS),
+                caller,
+                ..Default::default()
+            },
+            tempo_tx_env: Some(Box::new(crate::tx::TempoBatchCallEnv {
+                aa_calls: vec![tempo_primitives::transaction::Call {
+                    to: TxKind::Call(STABLECOIN_DEX_ADDRESS),
+                    value: U256::ZERO,
+                    input: swap_data,
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
+        // AA with single call to DEX: should infer token_in as fee token
+        assert_eq!(result_token, token_in);
+        Ok(())
+    }
+
     #[test]
     fn test_get_fee_token_fee_token_set() -> eyre::Result<()> {
         let caller = Address::random();

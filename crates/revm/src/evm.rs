@@ -2201,4 +2201,25 @@ mod tests {
 
         Ok(())
     }
+
+    /// Test that frame_stack() returns a reference to the actual inner frame stack.
+    #[test]
+    fn test_frame_stack_returns_inner() {
+        use revm::handler::EvmTr;
+
+        let mut evm = create_evm();
+
+        // frame_stack() should return a reference to the same FrameStack as inner.frame_stack
+        // An empty FrameStack has index() == None
+        let fs = evm.frame_stack();
+        assert_eq!(fs.index(), None, "Empty frame_stack should have no index");
+
+        // Verify frame_stack via all_mut is also the same (empty)
+        let (_, _, _, fs_via_all_mut) = evm.all_mut();
+        assert_eq!(
+            fs_via_all_mut.index(),
+            None,
+            "frame_stack via all_mut should also be empty"
+        );
+    }
 }

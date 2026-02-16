@@ -155,4 +155,44 @@ mod tests {
         let exec_result = result.unwrap();
         assert!(exec_result.result.is_success());
     }
+
+    /// Test that set_block actually updates the block environment (kills "replace with ()" mutant).
+    #[test]
+    fn test_set_block_updates_block_env() {
+        use alloy_primitives::{Address, U256};
+        use revm::context::Block;
+
+        let db = EmptyDB::new();
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(Default::default())
+            .with_tx(TempoTxEnv::default());
+        let mut evm = TempoEvm::new(ctx, ());
+
+        // Verify block starts with defaults
+        assert_eq!(evm.inner.ctx.block.number(), U256::ZERO);
+        assert_eq!(evm.inner.ctx.block.beneficiary(), Address::ZERO);
+
+        // Set a new block with non-default values
+        let new_block = TempoBlockEnv {
+            inner: revm::context::BlockEnv {
+                number: U256::from(42u64),
+                beneficiary: Address::repeat_byte(0xBB),
+                timestamp: U256::from(1234u64),
+                ..Default::default()
+            },
+            timestamp_millis_part: 500,
+        };
+        evm.set_block(new_block);
+
+        // Verify the block environment was actually updated
+        assert_eq!(evm.inner.ctx.block.number(), U256::from(42u64));
+        assert_eq!(
+            evm.inner.ctx.block.beneficiary(),
+            Address::repeat_byte(0xBB)
+        );
+        assert_eq!(evm.inner.ctx.block.timestamp(), U256::from(1234u64));
+        assert_eq!(evm.inner.ctx.block.timestamp_millis_part, 500);
+    }
 }
