@@ -1,0 +1,41 @@
+name: Publish dry-run
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/primitives/**"
+      - "crates/contracts/**"
+      - "crates/alloy/**"
+      - "scripts/publish-crates.sh"
+  pull_request:
+    paths:
+      - "crates/primitives/**"
+      - "crates/contracts/**"
+      - "crates/alloy/**"
+      - "scripts/publish-crates.sh"
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish-dry-run:
+    name: Verify crates are publishable
+    runs-on: depot-ubuntu-latest-4
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Dry-run publish
+        run: ./scripts/publish-crates.sh
