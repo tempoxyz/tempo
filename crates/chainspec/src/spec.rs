@@ -446,9 +446,26 @@ mod tests {
             mainnet_chainspec.tempo_hardfork_at(1770908401),
             TempoHardfork::T1A
         );
+
+        // Before T2 activation (1771858800 = Feb 23rd 2026 16:00 CET)
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1771858799),
+            TempoHardfork::T1A
+        );
+
+        // At and after T2 activation
+        assert!(mainnet_chainspec.is_t2_active_at_timestamp(1771858800));
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1771858800),
+            TempoHardfork::T2
+        );
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1771858801),
+            TempoHardfork::T2
+        );
         assert_eq!(
             mainnet_chainspec.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::T1A
+            TempoHardfork::T2
         );
 
         let moderato_genesis = super::TempoChainSpecParser::parse("moderato")
@@ -480,14 +497,16 @@ mod tests {
             TempoHardfork::T1
         );
 
-        // At and after T1A activation
+        // At and after T1A/T2 activation (both activate at 1771513200)
+        assert!(moderato_genesis.is_t1a_active_at_timestamp(1771513200));
+        assert!(moderato_genesis.is_t2_active_at_timestamp(1771513200));
         assert_eq!(
             moderato_genesis.tempo_hardfork_at(1771513200),
-            TempoHardfork::T1A
+            TempoHardfork::T2
         );
         assert_eq!(
             moderato_genesis.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::T1A
+            TempoHardfork::T2
         );
 
         let testnet_chainspec = super::TempoChainSpecParser::parse("testnet")
