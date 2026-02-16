@@ -397,30 +397,6 @@ where
         evicted_count
     }
 
-    fn add_validated_transactions(
-        &self,
-        origin: TransactionOrigin,
-        transactions: Vec<TransactionValidationOutcome<TempoPooledTransaction>>,
-    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        if transactions.iter().any(|outcome| {
-            outcome
-                .as_valid_transaction()
-                .map(|tx| tx.transaction().is_aa_2d())
-                .unwrap_or(false)
-        }) {
-            // mixed or 2d only
-            let mut results = Vec::with_capacity(transactions.len());
-            for tx in transactions {
-                results.push(self.add_validated_transaction(origin, tx));
-            }
-            return results;
-        }
-
-        self.protocol_pool
-            .inner()
-            .add_transactions(origin, transactions)
-    }
-
     fn add_validated_transaction(
         &self,
         origin: TransactionOrigin,
@@ -593,13 +569,22 @@ where
         if transactions.is_empty() {
             return Vec::new();
         }
-        let validated = self
-            .protocol_pool
+
+        // Fully delegate to protocol pool for non-2D transactions
+        if !transactions.iter().any(|tx| tx.is_aa_2d()) {
+            return self
+                .protocol_pool
+                .add_transactions(origin, transactions)
+                .await;
+        }
+
+        self.protocol_pool
             .validator()
             .validate_transactions_with_origin(origin, transactions)
-            .await;
-
-        self.add_validated_transactions(origin, validated)
+            .await
+            .into_iter()
+            .map(|outcome| self.add_validated_transaction(origin, outcome))
+            .collect()
     }
 
     async fn add_transactions_with_origins(
@@ -609,17 +594,28 @@ where
         if transactions.is_empty() {
             return Vec::new();
         }
-        let validated = self
-            .protocol_pool
-            .validator()
-            .validate_transactions(transactions.iter().map(|(o, t)| (*o, t.clone())))
-            .await;
 
-        let mut results = Vec::with_capacity(validated.len());
-        for ((origin, _), outcome) in transactions.into_iter().zip(validated) {
-            results.push(self.add_validated_transaction(origin, outcome));
+        // Fully delegate to protocol pool for non-2D transactions
+        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
+            return self
+                .protocol_pool
+                .add_transactions_with_origins(transactions)
+                .await;
         }
-        results
+
+        let origins = transactions
+            .iter()
+            .map(|(origin, _)| *origin)
+            .collect::<Vec<_>>();
+
+        self.protocol_pool
+            .validator()
+            .validate_transactions(transactions)
+            .await
+            .into_iter()
+            .zip(origins)
+            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
+            .collect()
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
