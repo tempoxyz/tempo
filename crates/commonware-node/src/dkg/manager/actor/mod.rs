@@ -1616,7 +1616,7 @@ pub(crate) fn read_syncers_if_v2_not_initialized(
         }
     }
 
-    let raw_validators = read_validator_config_at_height(
+    let (_read_height, _read_hash, raw_validators) = read_validator_config_at_height(
         node,
         reference_header.number(),
         |config: &ValidatorConfig| {
@@ -1676,6 +1676,7 @@ fn determine_next_players(
             .wrap_err("contract contained validators with duplicate public keys")
         })
         .wrap_err("failed reading validator config v2")?
+        .2
     } else {
         state.syncers.clone()
     };

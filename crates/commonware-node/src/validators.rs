@@ -5,7 +5,7 @@ use std::{
 };
 
 use alloy_consensus::BlockHeader;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::types::Height;
 use commonware_cryptography::ed25519::PublicKey;
@@ -38,12 +38,14 @@ pub(crate) fn v2_activation_height(node: &TempoFullNode, height: u64) -> eyre::R
             .get_initialized_at_height()
             .map_err(eyre::Report::new)
     })
+    .map(|(_, _, activation_height)| activation_height)
 }
 
 pub(crate) fn is_v2_active(node: &TempoFullNode, height: u64) -> eyre::Result<bool> {
     read_validator_config_at_height(node, height, |config: &ValidatorConfigV2| {
         config.is_initialized().map_err(eyre::Report::new)
     })
+    .map(|(_, _, activated)| activated)
 }
 
 /// Reads the `nextFullDkgCeremony` epoch value from the ValidatorConfig precompile.
@@ -69,12 +71,14 @@ pub(crate) fn read_re_dkg_epoch(node: &TempoFullNode, at_height: u64) -> eyre::R
                 .get_next_full_dkg_ceremony()
                 .map_err(eyre::Report::new)
         })
+        .map(|(_, _, epoch)| epoch)
     } else {
         read_validator_config_at_height(node, at_height, |config: &ValidatorConfig| {
             config
                 .get_next_full_dkg_ceremony()
                 .map_err(eyre::Report::new)
         })
+        .map(|(_, _, epoch)| epoch)
     }
 }
 
@@ -93,7 +97,7 @@ pub(crate) async fn read_validator_config_with_retry(
     reference_header: &TempoHeader,
     target: ReadTarget,
     total_attempts: &Counter,
-) -> Validators {
+) -> (u64, B256, Validators) {
     let mut attempts = 0;
     const MIN_RETRY: Duration = Duration::from_secs(1);
     const MAX_RETRY: Duration = Duration::from_secs(30);
@@ -145,7 +149,7 @@ pub(crate) fn read_validator_config_at_height<C, T>(
     node: &TempoFullNode,
     height: u64,
     read_fn: impl FnOnce(&C) -> eyre::Result<T>,
-) -> eyre::Result<T>
+) -> eyre::Result<(u64, B256, T)>
 where
     C: Default,
 {
@@ -193,14 +197,18 @@ where
         .evm_for_block(db, block.header())
         .wrap_err("failed instantiating evm for block")?;
 
+    let height = block.number();
+    let hash = block.seal_slow().hash();
+
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
+    let res = StorageCtx::enter_evm(
         &mut ctx.journaled_state,
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
         || read_fn(&C::default()),
-    )
+    )?;
+    Ok((height, hash, res))
 }
 
 pub(crate) enum Validators {
@@ -227,14 +235,15 @@ pub(crate) fn read_from_contract_at_height(
     node: &TempoFullNode,
     height: u64,
     reference_header: &TempoHeader,
-) -> eyre::Result<Validators> {
+) -> eyre::Result<(u64, B256, Validators)> {
     let vals = if node
         .chain_spec()
         .is_t2_active_at_timestamp(reference_header.timestamp())
-        && is_v2_active(node, height).wrap_err(
-            "failed reading from validator config v2 activity state after hardfork activation",
-        )? {
-        let raw_validators =
+        && height
+            >= v2_activation_height(node, height).wrap_err(
+                "failed reading from validator config v2 activity state after hardfork activation",
+            )? {
+        let (read_height, hash, raw_validators) =
             read_validator_config_at_height(node, height, |config: &ValidatorConfigV2| {
                 config
                     .get_validators()
@@ -252,16 +261,20 @@ pub(crate) fn read_from_contract_at_height(
             .collect::<Result<Vec<_>, _>>()
             .wrap_err("failed an entry in the on-chain validator set")?;
 
-        Validators::V2(
-            ordered::Map::try_from_iter(
-                decoded_validators
-                    .into_iter()
-                    .map(|validator| (validator.public_key.clone(), validator)),
-            )
-            .wrap_err("contract contained validators with duplicate public keys")?,
+        (
+            read_height,
+            hash,
+            Validators::V2(
+                ordered::Map::try_from_iter(
+                    decoded_validators
+                        .into_iter()
+                        .map(|validator| (validator.public_key.clone(), validator)),
+                )
+                .wrap_err("contract contained validators with duplicate public keys")?,
+            ),
         )
     } else {
-        let raw_validators =
+        let (read_height, hash, raw_validators) =
             read_validator_config_at_height(node, height, |config: &ValidatorConfig| {
                 config
                     .get_validators()
@@ -271,7 +284,11 @@ pub(crate) fn read_from_contract_at_height(
             ?raw_validators,
             "read validators from validator config v1 contract",
         );
-        Validators::V1(decode_from_contract(raw_validators))
+        (
+            read_height,
+            hash,
+            Validators::V1(decode_from_contract(raw_validators)),
+        )
     };
     Ok(vals)
 }
