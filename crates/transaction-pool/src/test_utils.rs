@@ -15,7 +15,7 @@ use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
-        TempoSignedAuthorization, TempoTransaction,
+        SignedKeyAuthorization, TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
         tt_signature::{PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
@@ -61,6 +61,8 @@ pub(crate) struct TxBuilder {
     authorization_list: Option<Vec<TempoSignedAuthorization>>,
     /// Access list for AA transactions.
     access_list: AccessList,
+    /// Key authorization for AA transactions.
+    key_authorization: Option<SignedKeyAuthorization>,
 }
 
 impl Default for TxBuilder {
@@ -81,6 +83,7 @@ impl Default for TxBuilder {
             calls: None,
             authorization_list: None,
             access_list: Default::default(),
+            key_authorization: None,
         }
     }
 }
@@ -178,6 +181,12 @@ impl TxBuilder {
         self
     }
 
+    /// Set the key authorization for the AA transaction.
+    pub(crate) fn key_authorization(mut self, key_authorization: SignedKeyAuthorization) -> Self {
+        self.key_authorization = Some(key_authorization);
+        self
+    }
+
     /// Build an AA transaction.
     pub(crate) fn build(self) -> TempoPooledTransaction {
         let calls = self.calls.unwrap_or_else(|| {
@@ -202,7 +211,7 @@ impl TxBuilder {
             valid_before: self.valid_before,
             access_list: self.access_list,
             tempo_authorization_list: self.authorization_list.unwrap_or_default(),
-            key_authorization: None,
+            key_authorization: self.key_authorization,
         };
 
         let signature =
@@ -218,6 +227,7 @@ impl TxBuilder {
     pub(crate) fn build_eip1559(self) -> TempoPooledTransaction {
         let tx = TxEip1559 {
             chain_id: self.chain_id,
+            nonce: self.nonce,
             to: self.kind,
             gas_limit: self.gas_limit,
             value: self.value,

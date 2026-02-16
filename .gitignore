@@ -30,3 +30,4 @@ _
 .vercel
 .env*.local
 .worktrees/
+mutants.out/

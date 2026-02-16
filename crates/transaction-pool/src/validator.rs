@@ -4436,4 +4436,458 @@ mod tests {
             "Gas limit one below intrinsic gas should fail, got: {result:?}"
         );
     }
+
+    // ============================================
+    // Direct unit tests for mutation testing hardening
+    // ============================================
+
+    /// Tests that `ensure_authorization_list_size` returns Ok when count is below limit.
+    /// Kills mutant: "replace ensure_authorization_list_size -> Ok(()) with Err(..)"
+    #[test]
+    fn test_ensure_authorization_list_size_below_limit_ok() {
+        let transaction = create_aa_transaction_with_authorizations(0);
+        let validator = setup_validator(&transaction, 0);
+        assert!(
+            validator
+                .ensure_authorization_list_size(&transaction)
+                .is_ok(),
+            "0 authorizations should be accepted"
+        );
+    }
+
+    /// Tests that `ensure_authorization_list_size` returns Ok at exactly the limit.
+    /// Kills mutant: "replace > with >= in ensure_authorization_list_size"
+    #[test]
+    fn test_ensure_authorization_list_size_at_limit_ok_direct() {
+        let transaction =
+            create_aa_transaction_with_authorizations(DEFAULT_MAX_TEMPO_AUTHORIZATIONS);
+        let validator = setup_validator(&transaction, 0);
+        assert!(
+            validator
+                .ensure_authorization_list_size(&transaction)
+                .is_ok(),
+            "Exactly at limit should be accepted"
+        );
+    }
+
+    /// Tests that `ensure_authorization_list_size` rejects count above limit.
+    /// Kills mutant: "replace > with == in ensure_authorization_list_size"
+    #[test]
+    fn test_ensure_authorization_list_size_above_limit_rejected_direct() {
+        let transaction =
+            create_aa_transaction_with_authorizations(DEFAULT_MAX_TEMPO_AUTHORIZATIONS + 1);
+        let validator = setup_validator(&transaction, 0);
+        assert!(
+            matches!(
+                validator.ensure_authorization_list_size(&transaction),
+                Err(TempoPoolTransactionError::TooManyAuthorizations { .. })
+            ),
+            "Above limit should be rejected with TooManyAuthorizations"
+        );
+    }
+
+    /// Tests that `ensure_valid_conditionals` returns Ok for non-expiring AA tx in T1.
+    /// Kills mutant: "replace && with || in ensure_valid_conditionals" for is_expiring_nonce
+    #[test]
+    fn test_conditionals_non_expiring_in_t1_allows_missing_valid_before() {
+        let t1_time = MODERATO.info.t1_time().expect("MODERATO must have t1_time");
+        let tip = t1_time + 1;
+        // Non-expiring nonce (nonce_key=0), no valid_before set
+        let transaction = TxBuilder::aa(Address::random())
+            .nonce_key(U256::ZERO)
+            .build();
+        let validator = setup_validator(&transaction, tip);
+        let aa_tx = transaction.inner().as_aa().unwrap();
+        assert!(
+            validator.ensure_valid_conditionals(aa_tx.tx()).is_ok(),
+            "Non-expiring AA tx in T1 should not require valid_before"
+        );
+    }
+
+    /// Tests that expiring nonce tx without valid_before is rejected in T1.
+    /// Kills mutants: "ExpiringNonceMissingValidBefore" branch and "Ok return" mutant
+    #[test]
+    fn test_conditionals_expiring_nonce_missing_valid_before_rejected() {
+        let t1_time = MODERATO.info.t1_time().expect("MODERATO must have t1_time");
+        let tip = t1_time + 1;
+        // Expiring nonce (nonce_key=MAX), no valid_before
+        let transaction = TxBuilder::aa(Address::random())
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .nonce(0)
+            .build();
+        let validator = setup_validator(&transaction, tip);
+        let aa_tx = transaction.inner().as_aa().unwrap();
+        assert!(
+            matches!(
+                validator.ensure_valid_conditionals(aa_tx.tx()),
+                Err(TempoPoolTransactionError::ExpiringNonceMissingValidBefore)
+            ),
+            "Expiring nonce tx without valid_before should be rejected in T1"
+        );
+    }
+
+    /// Tests that expiring nonce tx with nonce != 0 is rejected in T1.
+    /// Kills mutant: "replace != with == in ensure_valid_conditionals" for nonce check
+    #[test]
+    fn test_conditionals_expiring_nonce_nonzero_nonce_rejected() {
+        let t1_time = MODERATO.info.t1_time().expect("MODERATO must have t1_time");
+        let tip = t1_time + 1;
+        let transaction = TxBuilder::aa(Address::random())
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .nonce(1)
+            .valid_before(tip + AA_VALID_BEFORE_MIN_SECS + TEST_VALIDITY_WINDOW)
+            .build();
+        let validator = setup_validator(&transaction, tip);
+        let aa_tx = transaction.inner().as_aa().unwrap();
+        assert!(
+            matches!(
+                validator.ensure_valid_conditionals(aa_tx.tx()),
+                Err(TempoPoolTransactionError::ExpiringNonceNonceNotZero)
+            ),
+            "Expiring nonce tx with nonce != 0 should be rejected in T1"
+        );
+    }
+
+    /// Tests that expiring nonce with nonce == 0 and valid valid_before is accepted.
+    /// Kills mutant: ensure_valid_conditionals Ok return replacement
+    #[test]
+    fn test_conditionals_expiring_nonce_valid_accepted() {
+        let t1_time = MODERATO.info.t1_time().expect("MODERATO must have t1_time");
+        let tip = t1_time + 1;
+        let transaction = TxBuilder::aa(Address::random())
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .nonce(0)
+            .valid_before(tip + AA_VALID_BEFORE_MIN_SECS + TEST_VALIDITY_WINDOW)
+            .build();
+        let validator = setup_validator(&transaction, tip);
+        let aa_tx = transaction.inner().as_aa().unwrap();
+        assert!(
+            validator.ensure_valid_conditionals(aa_tx.tx()).is_ok(),
+            "Valid expiring nonce tx should be accepted"
+        );
+    }
+
+    /// Tests that expiring nonce with valid_before too far in future is rejected.
+    /// Kills mutant: "replace > with <=/==/< in ensure_valid_conditionals" for max window
+    #[test]
+    fn test_conditionals_expiring_nonce_valid_before_too_far_rejected() {
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS;
+
+        let t1_time = MODERATO.info.t1_time().expect("MODERATO must have t1_time");
+        let tip = t1_time + 1;
+        let too_far = tip + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS + 1;
+        let transaction = TxBuilder::aa(Address::random())
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .nonce(0)
+            .valid_before(too_far)
+            .build();
+        let validator = setup_validator(&transaction, tip);
+        let aa_tx = transaction.inner().as_aa().unwrap();
+        assert!(
+            matches!(
+                validator.ensure_valid_conditionals(aa_tx.tx()),
+                Err(TempoPoolTransactionError::ExpiringNonceValidBeforeTooFar { .. })
+            ),
+            "Expiring nonce tx with valid_before too far should be rejected"
+        );
+    }
+
+    /// Tests that expiring nonce with valid_before at exactly max window is accepted.
+    /// Kills mutant: "replace > with >= in ensure_valid_conditionals" for max window
+    #[test]
+    fn test_conditionals_expiring_nonce_valid_before_at_max_window_accepted() {
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS;
+
+        let t1_time = MODERATO.info.t1_time().expect("MODERATO must have t1_time");
+        let tip = t1_time + 1;
+        // Exactly at max window boundary (not exceeding)
+        let at_max = tip + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS;
+        let transaction = TxBuilder::aa(Address::random())
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .nonce(0)
+            .valid_before(at_max)
+            .build();
+        let validator = setup_validator(&transaction, tip);
+        let aa_tx = transaction.inner().as_aa().unwrap();
+        assert!(
+            validator.ensure_valid_conditionals(aa_tx.tx()).is_ok(),
+            "Expiring nonce tx with valid_before at exactly max window should be accepted"
+        );
+    }
+
+    /// Tests ensure_min_base_fee returns Ok when fee meets minimum.
+    /// Kills mutant: "replace ensure_min_base_fee -> Ok(()) return"
+    #[test]
+    fn test_ensure_min_base_fee_ok_direct() {
+        let spec = TempoHardfork::T1;
+        let tx = TxBuilder::aa(Address::random())
+            .max_fee(spec.base_fee() as u128)
+            .build();
+        let validator = setup_validator(&tx, 0);
+        assert!(
+            validator.ensure_min_base_fee(&tx, spec).is_ok(),
+            "Fee at min base fee should be accepted"
+        );
+    }
+
+    /// Tests ensure_min_base_fee rejects fee below minimum.
+    /// Kills mutant: "replace < with <=/==/> in ensure_min_base_fee"
+    #[test]
+    fn test_ensure_min_base_fee_below_rejected_direct() {
+        let spec = TempoHardfork::T1;
+        let tx = TxBuilder::aa(Address::random())
+            .max_fee(spec.base_fee() as u128 - 1)
+            .build();
+        let validator = setup_validator(&tx, 0);
+        assert!(
+            matches!(
+                validator.ensure_min_base_fee(&tx, spec),
+                Err(TempoPoolTransactionError::FeeCapBelowMinBaseFee { .. })
+            ),
+            "Fee below min base fee should be rejected"
+        );
+    }
+
+    /// Tests ensure_aa_field_limits with key_authorization.limits = None passes.
+    /// Kills mutant: "replace && with || in ensure_aa_field_limits" for token limits
+    #[test]
+    fn test_aa_field_limits_key_auth_no_limits_ok() {
+        use tempo_primitives::transaction::{
+            KeyAuthorization, SignatureType, SignedKeyAuthorization,
+        };
+
+        let key_auth = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::Secp256k1,
+                key_id: Address::random(),
+                expiry: None,
+                limits: None,
+            },
+            signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
+        };
+
+        let transaction = TxBuilder::aa(Address::random())
+            .key_authorization(key_auth)
+            .build();
+        let validator = setup_validator(&transaction, 0);
+        assert!(
+            validator.ensure_aa_field_limits(&transaction).is_ok(),
+            "Key auth with no limits should be accepted"
+        );
+    }
+
+    /// Tests ensure_aa_field_limits with token limits at MAX_TOKEN_LIMITS passes.
+    /// Kills mutant: "replace > with >= in ensure_aa_field_limits" for token limits
+    #[test]
+    fn test_aa_field_limits_token_limits_at_max_ok() {
+        use tempo_primitives::transaction::{
+            KeyAuthorization, SignatureType, SignedKeyAuthorization, TokenLimit,
+        };
+
+        let limits: Vec<TokenLimit> = (0..MAX_TOKEN_LIMITS)
+            .map(|_| TokenLimit {
+                token: Address::random(),
+                limit: U256::from(1),
+            })
+            .collect();
+
+        let key_auth = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::Secp256k1,
+                key_id: Address::random(),
+                expiry: None,
+                limits: Some(limits),
+            },
+            signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
+        };
+
+        let transaction = TxBuilder::aa(Address::random())
+            .key_authorization(key_auth)
+            .build();
+        let validator = setup_validator(&transaction, 0);
+        assert!(
+            validator.ensure_aa_field_limits(&transaction).is_ok(),
+            "Token limits at exactly MAX_TOKEN_LIMITS should be accepted"
+        );
+    }
+
+    /// Tests ensure_aa_field_limits rejects token limits above MAX_TOKEN_LIMITS.
+    /// Kills mutant: "replace > with == in ensure_aa_field_limits" for token limits
+    #[test]
+    fn test_aa_field_limits_token_limits_too_many_rejected() {
+        use tempo_primitives::transaction::{
+            KeyAuthorization, SignatureType, SignedKeyAuthorization, TokenLimit,
+        };
+
+        let limits: Vec<TokenLimit> = (0..MAX_TOKEN_LIMITS + 1)
+            .map(|_| TokenLimit {
+                token: Address::random(),
+                limit: U256::from(1),
+            })
+            .collect();
+
+        let key_auth = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::Secp256k1,
+                key_id: Address::random(),
+                expiry: None,
+                limits: Some(limits),
+            },
+            signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
+        };
+
+        let transaction = TxBuilder::aa(Address::random())
+            .key_authorization(key_auth)
+            .build();
+        let validator = setup_validator(&transaction, 0);
+        assert!(
+            matches!(
+                validator.ensure_aa_field_limits(&transaction),
+                Err(TempoPoolTransactionError::TooManyTokenLimits { .. })
+            ),
+            "Token limits above MAX_TOKEN_LIMITS should be rejected"
+        );
+    }
+
+    /// Tests ensure_intrinsic_gas_tempo_tx on pre-T1 spec (T0) to kill && -> || mutant.
+    /// The T0 spec should NOT add new_account_cost for nonce==0.
+    #[test]
+    fn test_ensure_intrinsic_gas_tempo_tx_t0_nonce_zero_no_extra_gas() {
+        let spec = TempoHardfork::T0;
+        let gas_params = tempo_gas_params(spec);
+
+        // Calculate base intrinsic gas for T0
+        let gas = gas_params.initial_tx_gas(
+            &[], // empty input
+            false,
+            0,
+            0,
+            0,
+        );
+        let intrinsic = std::cmp::max(gas.initial_gas, gas.floor_gas);
+
+        // With T0 + nonce=0, there should be NO additional gas beyond base intrinsic
+        let tx_ok = TxBuilder::eip1559(Address::random())
+            .gas_limit(intrinsic)
+            .build_eip1559();
+
+        assert!(
+            ensure_intrinsic_gas_tempo_tx(&tx_ok, spec).is_ok(),
+            "T0 with nonce=0 should pass at base intrinsic gas (no new_account_cost)"
+        );
+
+        // One below should fail
+        if intrinsic > 0 {
+            let tx_fail = TxBuilder::eip1559(Address::random())
+                .gas_limit(intrinsic - 1)
+                .build_eip1559();
+
+            assert!(
+                matches!(
+                    ensure_intrinsic_gas_tempo_tx(&tx_fail, spec),
+                    Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
+                ),
+                "T0 one below intrinsic should fail"
+            );
+        }
+    }
+
+    /// Tests ensure_intrinsic_gas_tempo_tx on T1 with nonce > 0 doesn't add new_account_cost.
+    /// Kills mutant: "replace == with != in ensure_intrinsic_gas_tempo_tx" for nonce == 0
+    #[test]
+    fn test_ensure_intrinsic_gas_tempo_tx_t1_nonce_nonzero_no_extra() {
+        let spec = TempoHardfork::T1;
+        let gas_params = tempo_gas_params(spec);
+
+        let gas = gas_params.initial_tx_gas(
+            &[], // empty input
+            false,
+            0,
+            0,
+            0,
+        );
+        let intrinsic = std::cmp::max(gas.initial_gas, gas.floor_gas);
+
+        // With T1 + nonce>0, no new_account_cost should be added
+        let tx_ok = TxBuilder::eip1559(Address::random())
+            .nonce(5)
+            .gas_limit(intrinsic)
+            .build_eip1559();
+
+        assert!(
+            ensure_intrinsic_gas_tempo_tx(&tx_ok, spec).is_ok(),
+            "T1 with nonce>0 should pass at base intrinsic gas (no new_account_cost)"
+        );
+    }
+
+    /// Tests ensure_aa_field_limits returns Ok for valid single-call AA tx (no key_auth).
+    /// Kills mutant: "replace ensure_aa_field_limits -> Ok(()) return"
+    #[test]
+    fn test_ensure_aa_field_limits_valid_ok_direct() {
+        let transaction = TxBuilder::aa(Address::random()).build();
+        let validator = setup_validator(&transaction, 0);
+        assert!(
+            validator.ensure_aa_field_limits(&transaction).is_ok(),
+            "Valid single-call AA tx should pass ensure_aa_field_limits"
+        );
+    }
+
+    /// Tests that ensure_valid_conditionals returns Ok when no conditionals set.
+    /// Kills mutant: "replace ensure_valid_conditionals -> Ok(()) return"
+    #[test]
+    fn test_ensure_valid_conditionals_no_conditionals_ok_direct() {
+        let transaction = TxBuilder::aa(Address::random()).build();
+        let validator = setup_validator(&transaction, 0);
+        let aa_tx = transaction.inner().as_aa().unwrap();
+        assert!(
+            validator.ensure_valid_conditionals(aa_tx.tx()).is_ok(),
+            "AA tx with no conditionals should pass"
+        );
+    }
+
+    /// Test that multiple creates in an AA tx are rejected (CREATE not first).
+    /// Kills mutant: "replace != with == in ensure_aa_field_limits" for idx check
+    #[test]
+    fn test_ensure_aa_field_limits_create_not_first_rejected_direct() {
+        let calls = vec![
+            Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+            Call {
+                to: TxKind::Create,
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+        ];
+
+        let transaction = TxBuilder::aa(Address::random()).calls(calls).build();
+        let validator = setup_validator(&transaction, 0);
+        assert!(
+            matches!(
+                validator.ensure_aa_field_limits(&transaction),
+                Err(TempoPoolTransactionError::CreateCallNotFirst)
+            ),
+            "CREATE as second call should be rejected"
+        );
+    }
+
+    /// Test that empty calls are rejected directly.
+    /// Kills mutant: "delete ! in ensure_aa_field_limits" for is_empty
+    #[test]
+    fn test_ensure_aa_field_limits_empty_calls_rejected_direct() {
+        let transaction = TxBuilder::aa(Address::random()).calls(vec![]).build();
+        let validator = setup_validator(&transaction, 0);
+        assert!(
+            matches!(
+                validator.ensure_aa_field_limits(&transaction),
+                Err(TempoPoolTransactionError::NoCalls)
+            ),
+            "Empty calls should be rejected with NoCalls"
+        );
+    }
 }
