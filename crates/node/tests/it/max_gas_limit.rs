@@ -39,10 +39,10 @@ fn build_tx(
         .into()
 }
 
-/// Post-T1: tx at the Osaka limit (16M) should be accepted by the pool and
+/// Post-T1A: tx at the Osaka limit (16M) should be accepted by the pool and
 /// included in a block.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_at_osaka_limit() -> eyre::Result<()> {
+async fn test_post_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -67,10 +67,10 @@ async fn test_post_t1_tx_at_osaka_limit() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Post-T1: tx between the Osaka limit (16M) and Tempo's T1 cap (30M) should
+/// Post-T1A: tx between the Osaka limit (16M) and Tempo's T1A cap (30M) should
 /// be accepted by the pool and included in a block.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_above_osaka_below_tempo_cap() -> eyre::Result<()> {
+async fn test_post_t1a_tx_above_osaka_below_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -98,10 +98,10 @@ async fn test_post_t1_tx_above_osaka_below_tempo_cap() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Post-T1: tx at exactly the Tempo T1 cap (30M) should be accepted by the
+/// Post-T1A: tx at exactly the Tempo T1A cap (30M) should be accepted by the
 /// pool and included in a block.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_at_tempo_cap() -> eyre::Result<()> {
+async fn test_post_t1a_tx_at_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -129,9 +129,9 @@ async fn test_post_t1_tx_at_tempo_cap() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Post-T1: tx exceeding Tempo's 30M cap should be rejected by the pool.
+/// Post-T1A: tx exceeding Tempo's 30M cap should be rejected by the pool.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_exceeding_tempo_cap() -> eyre::Result<()> {
+async fn test_post_t1a_tx_exceeding_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -145,7 +145,7 @@ async fn test_post_t1_tx_exceeding_tempo_cap() -> eyre::Result<()> {
     let result = provider.send_raw_transaction(&raw_tx).await;
     assert!(
         result.is_err(),
-        "tx with gas_limit > 30M should be rejected post-T1"
+        "tx with gas_limit > 30M should be rejected post-T1A"
     );
 
     Ok(())
