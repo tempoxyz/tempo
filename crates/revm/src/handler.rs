@@ -2516,11 +2516,18 @@ mod tests {
             };
 
             let cases = if spec.is_t0() {
-                vec![
-                    (BASE_INTRINSIC_GAS + 10_000, 0u64, false), // Insufficient for nonce==0
+                let mut cases = vec![
                     (BASE_INTRINSIC_GAS + nonce_zero_gas, 0, true), // Exactly sufficient for nonce==0
                     (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Exactly sufficient for existing key
-                ]
+                ];
+                // Only test "insufficient" case when nonce_zero_gas > 10k (T1 has 250k, T2 has 5k)
+                if nonce_zero_gas > 10_000 {
+                    cases.push((BASE_INTRINSIC_GAS + 10_000, 0u64, false)); // Insufficient for nonce==0
+                } else {
+                    // T2: nonce_zero_gas is 5k, so BASE + nonce_zero_gas - 1 is insufficient
+                    cases.push((BASE_INTRINSIC_GAS + nonce_zero_gas - 1, 0u64, false));
+                }
+                cases
             } else {
                 // Genesis: nonce gas is added AFTER validation, so lower gas_limit still passes
                 vec![
