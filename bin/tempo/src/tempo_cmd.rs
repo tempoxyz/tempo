@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, path::PathBuf, sync::Arc};
+use std::{fs::OpenOptions, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use alloy_primitives::Address;
 use alloy_provider::Provider;
@@ -48,6 +48,8 @@ pub(crate) enum ConsensusSubcommand {
     CalculatePublicKey(CalculatePublicKey),
     /// Query validator info from the previous epoch's DKG outcome and current contract state.
     ValidatorsInfo(ValidatorsInfo),
+    /// Diagnose P2P connectivity to all validators in the active set.
+    CheckPeers(CheckPeers),
 }
 
 impl ConsensusSubcommand {
@@ -56,6 +58,7 @@ impl ConsensusSubcommand {
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
             Self::ValidatorsInfo(args) => args.run(),
+            Self::CheckPeers(args) => args.run(),
         }
     }
 }
@@ -300,5 +303,236 @@ impl ValidatorsInfo {
 
         println!("{}", serde_json::to_string_pretty(&output)?);
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// check-peers: P2P connectivity diagnostic
+// ---------------------------------------------------------------------------
+
+/// Per-validator connectivity result.
+#[derive(Debug, Serialize)]
+struct PeerCheckResult {
+    public_key: String,
+    inbound_address: String,
+    active: bool,
+    in_committee: bool,
+    tcp_reachable: bool,
+    tcp_latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Aggregate output of the check-peers command.
+#[derive(Debug, Serialize)]
+struct CheckPeersOutput {
+    chain: String,
+    current_epoch: u64,
+    total_validators: usize,
+    reachable: usize,
+    unreachable: usize,
+    peers: Vec<PeerCheckResult>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct CheckPeers {
+    /// Chain to query.
+    #[arg(
+        long,
+        short,
+        default_value = "mainnet",
+        value_parser = tempo_chainspec::spec::chain_value_parser,
+    )]
+    chain: Arc<TempoChainSpec>,
+
+    /// RPC URL to query for on-chain validator data.
+    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    rpc_url: String,
+
+    /// Timeout per TCP connection attempt.
+    #[arg(long, default_value_t = 5)]
+    timeout_secs: u64,
+
+    /// Only check a specific validator (hex-encoded ed25519 public key).
+    #[arg(long)]
+    validator: Option<String>,
+}
+
+impl CheckPeers {
+    fn run(self) -> eyre::Result<()> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .wrap_err("failed constructing async runtime")?
+            .block_on(self.run_async())
+    }
+
+    async fn run_async(self) -> eyre::Result<()> {
+        use alloy_consensus::BlockHeader;
+        use alloy_provider::ProviderBuilder;
+
+        let timeout = Duration::from_secs(self.timeout_secs);
+
+        // Resolve chain metadata.
+        let epoch_length = self
+            .chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?;
+
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect(&self.rpc_url)
+            .await
+            .wrap_err("failed to connect to RPC")?;
+
+        let latest_block_number = provider
+            .get_block_number()
+            .await
+            .wrap_err("failed to get latest block number")?;
+
+        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        let current_height = Height::new(latest_block_number);
+        let current_epoch_info = epoch_strategy
+            .containing(current_height)
+            .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
+        let current_epoch = current_epoch_info.epoch();
+
+        // Read DKG outcome from the boundary block.
+        let boundary_height = current_epoch
+            .previous()
+            .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
+            .unwrap_or_default();
+
+        let boundary_block = provider
+            .get_block_by_number(boundary_height.get().into())
+            .hashes()
+            .await
+            .wrap_err("failed to fetch boundary block")?
+            .ok_or_eyre("boundary block not found")?;
+
+        let extra_data = boundary_block.header.extra_data();
+        let dkg_outcome = if extra_data.is_empty() {
+            None
+        } else {
+            OnchainDkgOutcome::read(&mut extra_data.as_ref()).ok()
+        };
+
+        // Fetch on-chain validator set.
+        let validators_result = provider
+            .call(
+                TransactionRequest::default()
+                    .to(VALIDATOR_CONFIG_ADDRESS)
+                    .input(IValidatorConfig::getValidatorsCall {}.abi_encode().into())
+                    .into(),
+            )
+            .await
+            .wrap_err("failed to call getValidators")?;
+
+        let decoded =
+            IValidatorConfig::getValidatorsCall::abi_decode_returns(&validators_result)
+                .wrap_err("failed to decode getValidators response")?;
+
+        // Build the list of validators to check.
+        let mut targets: Vec<(String, String, bool, bool)> = Vec::new();
+        for v in decoded.into_iter() {
+            let key = PublicKey::decode(&mut &v.publicKey.0[..])
+                .wrap_err("failed decoding on-chain ed25519 key")?;
+            let key_hex = alloy_primitives::hex::encode(v.publicKey.0);
+
+            let in_committee = dkg_outcome
+                .as_ref()
+                .is_some_and(|o| o.players().position(&key).is_some());
+
+            // Skip inactive validators not in committee unless explicitly requested.
+            if !v.active && !in_committee {
+                continue;
+            }
+
+            // If a specific validator was requested, filter.
+            if let Some(ref filter) = self.validator {
+                if !key_hex.contains(filter.trim_start_matches("0x")) {
+                    continue;
+                }
+            }
+
+            targets.push((key_hex, v.inboundAddress, v.active, in_committee));
+        }
+
+        // Run connectivity checks concurrently.
+        let mut handles = Vec::with_capacity(targets.len());
+        for (key_hex, addr_str, active, in_committee) in &targets {
+            let addr_str = addr_str.clone();
+            let key_hex = key_hex.clone();
+            let active = *active;
+            let in_committee = *in_committee;
+            handles.push(tokio::spawn(async move {
+                check_tcp(&key_hex, &addr_str, active, in_committee, timeout).await
+            }));
+        }
+
+        let mut peers = Vec::with_capacity(handles.len());
+        for handle in handles {
+            peers.push(handle.await.wrap_err("task join error")?);
+        }
+
+        let reachable = peers.iter().filter(|p| p.tcp_reachable).count();
+        let unreachable = peers.len() - reachable;
+
+        let output = CheckPeersOutput {
+            chain: self.chain.info.chain_name().to_string(),
+            current_epoch: current_epoch.get(),
+            total_validators: peers.len(),
+            reachable,
+            unreachable,
+            peers,
+        };
+
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        Ok(())
+    }
+}
+
+/// Attempts a TCP connection to a validator's inbound address and measures
+/// latency.
+async fn check_tcp(
+    key_hex: &str,
+    addr_str: &str,
+    active: bool,
+    in_committee: bool,
+    timeout: Duration,
+) -> PeerCheckResult {
+    let result = async {
+        let addr: SocketAddr = addr_str
+            .parse()
+            .map_err(|e| eyre!("invalid address `{addr_str}`: {e}"))?;
+
+        let start = std::time::Instant::now();
+        tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr))
+            .await
+            .map_err(|_| eyre!("connection timed out after {timeout:?}"))?
+            .map_err(|e| eyre!("tcp connect failed: {e}"))?;
+        Ok::<_, Report>(start.elapsed())
+    }
+    .await;
+
+    match result {
+        Ok(elapsed) => PeerCheckResult {
+            public_key: key_hex.to_string(),
+            inbound_address: addr_str.to_string(),
+            active,
+            in_committee,
+            tcp_reachable: true,
+            tcp_latency_ms: Some(elapsed.as_millis() as u64),
+            error: None,
+        },
+        Err(e) => PeerCheckResult {
+            public_key: key_hex.to_string(),
+            inbound_address: addr_str.to_string(),
+            active,
+            in_committee,
+            tcp_reachable: false,
+            tcp_latency_ms: None,
+            error: Some(e.to_string()),
+        },
     }
 }
