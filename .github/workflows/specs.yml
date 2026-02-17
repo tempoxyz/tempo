@@ -85,10 +85,10 @@ jobs:
 
       - name: Install Foundry
         run: |
+          export FOUNDRY_DIR="$HOME/.foundry"
           curl -L https://foundry.paradigm.xyz | bash
-          export PATH="$HOME/.foundry/bin:$PATH"
-          foundryup --branch master
-          echo "$HOME/.foundry/bin" >> $GITHUB_PATH
+          "$FOUNDRY_DIR/bin/foundryup" --branch master
+          echo "$FOUNDRY_DIR/bin" >> $GITHUB_PATH
 
       - name: Run Forge build
         working-directory: tips/ref-impls
@@ -109,10 +109,10 @@ jobs:
 
       - name: Install Foundry
         run: |
+          export FOUNDRY_DIR="$HOME/.foundry"
           curl -L https://foundry.paradigm.xyz | bash
-          export PATH="$HOME/.foundry/bin:$PATH"
-          foundryup --branch master
-          echo "$HOME/.foundry/bin" >> $GITHUB_PATH
+          "$FOUNDRY_DIR/bin/foundryup" --branch master
+          echo "$FOUNDRY_DIR/bin" >> $GITHUB_PATH
 
       - name: Run Forge fmt check
         working-directory: tips/ref-impls
@@ -133,10 +133,10 @@ jobs:
 
       - name: Install Foundry
         run: |
+          export FOUNDRY_DIR="$HOME/.foundry"
           curl -L https://foundry.paradigm.xyz | bash
-          export PATH="$HOME/.foundry/bin:$PATH"
-          foundryup --branch master
-          echo "$HOME/.foundry/bin" >> $GITHUB_PATH
+          "$FOUNDRY_DIR/bin/foundryup" --branch master
+          echo "$FOUNDRY_DIR/bin" >> $GITHUB_PATH
 
       - name: Run Forge tests
         working-directory: tips/ref-impls
