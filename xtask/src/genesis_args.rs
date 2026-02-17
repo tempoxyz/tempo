@@ -151,9 +151,13 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value = "0")]
     t1_time: u64,
 
-    /// T1A hardfork activation time.
+    /// T1.A hardfork activation time.
     #[arg(long, default_value = "0")]
     t1a_time: u64,
+
+    /// T1.B hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t1b_time: u64,
 
     /// T2 hardfork activation time.
     #[arg(long, default_value = "0")]
@@ -499,6 +503,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t1aTime".to_string(), self.t1a_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t1bTime".to_string(), self.t1b_time)?;
         chain_config
             .extra_fields
             .insert_value("t2Time".to_string(), self.t2_time)?;
