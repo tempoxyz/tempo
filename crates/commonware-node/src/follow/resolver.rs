@@ -21,10 +21,7 @@ use commonware_utils::{
 use eyre::WrapErr as _;
 use reth_primitives_traits::Block as _;
 use reth_provider::{BlockReader as _, BlockSource};
-use tempo_node::{
-    TempoFullNode,
-    rpc::consensus::Query,
-};
+use tempo_node::{TempoFullNode, rpc::consensus::Query};
 use tokio::sync::Mutex;
 use tracing::{debug, warn, warn_span};
 
@@ -42,7 +39,9 @@ pub(crate) struct FollowResolver<TContext: Spawner + Clone + Send + 'static, U: 
     execution_node: TempoFullNode,
 }
 
-impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> Clone for FollowResolver<TContext, U> {
+impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> Clone
+    for FollowResolver<TContext, U>
+{
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
@@ -131,11 +130,7 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
         height: commonware_consensus::types::Height,
     ) -> eyre::Result<Option<Bytes>> {
         let h = height.get();
-        let Some(certified) = self
-            .upstream
-            .get_finalization(Query::Height(h))
-            .await?
-        else {
+        let Some(certified) = self.upstream.get_finalization(Query::Height(h)).await? else {
             return Ok(None);
         };
 
@@ -186,7 +181,9 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
 
 // ── Resolver trait impl ─────────────────────────────────────────────────────
 
-impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> Resolver for FollowResolver<TContext, U> {
+impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> Resolver
+    for FollowResolver<TContext, U>
+{
     type Key = Request;
     type PublicKey = PublicKey;
 

@@ -24,7 +24,10 @@ mod tempo_cmd;
 use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
 use eyre::{OptionExt, WrapErr as _};
-use futures::{FutureExt as _, future::Either, future::FusedFuture as _};
+use futures::{
+    FutureExt as _,
+    future::{Either, FusedFuture as _},
+};
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_ethereum_cli::Cli;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
@@ -245,7 +248,7 @@ fn main() -> eyre::Result<()> {
                         .map(|s| s.to_string())
                         .ok_or_eyre("No default follow URL for this chain")?
                 } else {
-                    follow.clone()
+                    follow
                 };
 
                 Either::Left(run_follow_stack(

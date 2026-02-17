@@ -29,9 +29,7 @@ use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tracing::{debug, debug_span, info, info_span, warn, warn_span};
 
 use super::upstream::UpstreamNode;
-use crate::{
-    alias::marshal, config::NAMESPACE, consensus::Digest, epoch::SchemeProvider, executor, feed,
-};
+use crate::{alias::marshal, config::NAMESPACE, consensus::Digest, epoch::SchemeProvider, feed};
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
@@ -39,7 +37,6 @@ pub(super) struct FollowDriver<C, U: UpstreamNode> {
     context: C,
     upstream: Arc<U>,
     scheme_provider: SchemeProvider,
-    _executor_mailbox: executor::Mailbox,
     marshal_mailbox: marshal::Mailbox,
     feed_mailbox: feed::Mailbox,
     epocher: FixedEpocher,
@@ -51,7 +48,6 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
         context: C,
         upstream: Arc<U>,
         scheme_provider: SchemeProvider,
-        executor_mailbox: executor::Mailbox,
         marshal_mailbox: marshal::Mailbox,
         feed_mailbox: feed::Mailbox,
         epocher: FixedEpocher,
@@ -61,7 +57,6 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
             context,
             upstream,
             scheme_provider,
-            _executor_mailbox: executor_mailbox,
             marshal_mailbox,
             feed_mailbox,
             epocher,

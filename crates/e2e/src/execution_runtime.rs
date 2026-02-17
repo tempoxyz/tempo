@@ -696,7 +696,7 @@ pub fn genesis() -> Genesis {
 /// The default 8 TB geometry exhausts process virtual-address space when
 /// many databases are open concurrently across parallel test threads.
 pub fn test_db_args() -> reth_db::mdbx::DatabaseArguments {
-    reth_db::mdbx::DatabaseArguments::default().with_geometry_max_size(Some(1 * GIGABYTE))
+    reth_db::mdbx::DatabaseArguments::default().with_geometry_max_size(Some(GIGABYTE))
 }
 
 /// Launches a tempo execution node.

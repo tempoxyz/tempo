@@ -377,7 +377,7 @@ pub async fn wait_for_height(context: &deterministic::Context, prefix: &str, tar
                 continue;
             }
             let mut parts = line.split_whitespace();
-            let metric= parts.next().unwrap();
+            let metric = parts.next().unwrap();
             let value = parts.next().unwrap();
             if metric.ends_with("_marshal_processed_height") {
                 let height = value.parse::<u64>().unwrap();

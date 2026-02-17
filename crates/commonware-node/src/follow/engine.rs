@@ -26,8 +26,7 @@ use commonware_utils::channel::mpsc;
 use eyre::{OptionExt as _, WrapErr as _};
 use rand_08::{CryptoRng, Rng};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_node::TempoFullNode;
-use tempo_node::rpc::consensus::Query;
+use tempo_node::{TempoFullNode, rpc::consensus::Query};
 use tracing::{info, info_span};
 
 use super::{driver, resolver::FollowResolver, stubs, upstream::UpstreamNode};
@@ -291,7 +290,6 @@ where
             self.context,
             self.upstream,
             self.scheme_provider,
-            self.executor_mailbox,
             self.marshal_mailbox,
             self.feed_mailbox,
             self.epoch_strategy,

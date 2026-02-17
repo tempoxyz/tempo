@@ -3,9 +3,13 @@
 //! These tests verify that a follower node can sync blocks from an upstream
 //! node (validator or another follower) using in-process direct access.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
 use crate::{
     CONSENSUS_NODE_PREFIX, Setup,
