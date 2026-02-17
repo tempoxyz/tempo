@@ -163,12 +163,12 @@ contract ValidatorConfigV2Test is BaseTest {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidPublicKey.selector));
         }
 
-        // 4. ValidatorAlreadyExists (setupVal1 already migrated)
+        // 4. AddressAlreadyHasValidator (setupVal1 already migrated)
         try validatorConfigV2.addValidator(setupVal1, PUB_KEY_1, ingress2, egress2, "") {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
-                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyExists.selector)
+                err, abi.encodeWithSelector(IValidatorConfigV2.AddressAlreadyHasValidator.selector)
             );
         }
 
@@ -504,12 +504,12 @@ contract ValidatorConfigV2Test is BaseTest {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.Unauthorized.selector));
         }
 
-        // 4. ValidatorAlreadyExists (target address occupied)
+        // 4. AddressAlreadyHasValidator (target address occupied)
         try validatorConfigV2.transferValidatorOwnership(validator1, validator2) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
-                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyExists.selector)
+                err, abi.encodeWithSelector(IValidatorConfigV2.AddressAlreadyHasValidator.selector)
             );
         }
 
@@ -966,7 +966,7 @@ contract ValidatorConfigV2Test is BaseTest {
         } catch (bytes memory err) {
             assertEq(
                 bytes4(err),
-                IValidatorConfigV2.ValidatorAlreadyExists.selector,
+                IValidatorConfigV2.AddressAlreadyHasValidator.selector,
                 "Should reject active address"
             );
         }

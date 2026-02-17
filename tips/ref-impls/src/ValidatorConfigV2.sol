@@ -215,7 +215,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert ValidatorNotFound();
         }
         if (addressToIndex[newAddress] != 0) {
-            revert ValidatorAlreadyExists();
+            revert AddressAlreadyHasValidator();
         }
 
         Validator storage v = validatorsArray[idx - 1];
@@ -385,7 +385,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         // Allow reusing addresses of deactivated validators
         uint256 idx1 = addressToIndex[validatorAddress];
         if (idx1 != 0 && validatorsArray[idx1 - 1].deactivatedAtHeight == 0) {
-            revert ValidatorAlreadyExists();
+            revert AddressAlreadyHasValidator();
         }
         _validateRotateParams(publicKey, ingress, egress);
     }

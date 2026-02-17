@@ -22,7 +22,7 @@ interface IValidatorConfigV2 {
     error Unauthorized();
 
     /// @notice Thrown when trying to add a validator with an address that already exists
-    error ValidatorAlreadyExists();
+    error AddressAlreadyHasValidator();
 
     /// @notice Thrown when trying to add a validator with a public key that already exists
     error PublicKeyAlreadyExists();
