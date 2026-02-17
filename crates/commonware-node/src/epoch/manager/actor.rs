@@ -59,7 +59,7 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
+    BufferPooler, Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
     telemetry::metrics::status::GaugeExt as _,
 };
 use commonware_utils::{Acknowledgement as _, vec::NonEmptyVec};
@@ -92,7 +92,8 @@ impl<TContext, TBlocker> Actor<TContext, TBlocker>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     // TODO(janis): are all of these bounds necessary?
-    TContext: Spawner
+    TContext: BufferPooler
+        + Spawner
         + commonware_runtime::Metrics
         + Rng
         + CryptoRng
@@ -322,7 +323,8 @@ where
         let engine = simplex::Engine::new(
             self.context
                 .with_label("simplex")
-                .with_attribute("epoch", epoch),
+                .with_attribute("epoch", epoch)
+                .with_scope(),
             simplex::Config {
                 scheme,
                 elector: elector::Random,

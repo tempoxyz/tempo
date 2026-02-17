@@ -20,9 +20,9 @@ use commonware_cryptography::{
     transcript::{Summary, Transcript},
 };
 use commonware_parallel::Strategy;
-use commonware_runtime::{Clock, Metrics, buffer::paged::CacheRef};
+use commonware_runtime::{BufferPooler, Clock, Metrics, buffer::paged::CacheRef};
 use commonware_storage::{
-    journal::{contiguous, segmented},
+    journal::{contiguous, contiguous::Reader as _, segmented},
     metadata,
 };
 use commonware_utils::{N3f1, NZU16, NZU32, NZU64, NZUsize, ordered};
@@ -495,7 +495,7 @@ impl Builder {
     #[instrument(skip_all, err)]
     pub(super) async fn init<TContext>(self, context: TContext) -> eyre::Result<Storage<TContext>>
     where
-        TContext: commonware_runtime::Storage + Clock + Metrics,
+        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         let Self {
             initial_state,
@@ -504,7 +504,7 @@ impl Builder {
         let partition_prefix =
             partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
 
-        let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+        let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
         let states_partition = format!("{partition_prefix}_states");
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
@@ -604,7 +604,7 @@ async fn migrate_journal_to_metadata_if_necessary<TContext>(
     page_cache: &CacheRef,
 ) -> eyre::Result<()>
 where
-    TContext: commonware_runtime::Storage + Clock + Metrics,
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
     if states.keys().next().is_some() {
         debug!("states already exists in new format; not migrating");
@@ -625,14 +625,15 @@ where
     .await
     .wrap_err("unable to initialize legacy DKG states journal for migration")?;
 
-    if let Some(latest_segment) = legacy_journal.size().checked_sub(1) {
+    if let Some(latest_segment) = legacy_journal.size().await.checked_sub(1) {
         info!(
             latest_segment,
             "legacy journal contains states; migrating last 2 segments",
         );
 
+        let reader = legacy_journal.reader().await;
         for segment in latest_segment.saturating_sub(1)..=latest_segment {
-            let legacy_state = legacy_journal
+            let legacy_state = reader
                 .read(segment)
                 .await
                 .wrap_err("unable to read state from legacy journal")?;
@@ -1413,7 +1414,7 @@ mod tests {
             let partition_prefix = "test_dkg";
             let states_partition = format!("{partition_prefix}_states");
             let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
             let ancient_legacy = make_legacy_state(&mut context, 1);
             let previous_legacy = make_legacy_state(&mut context, 2);
@@ -1490,7 +1491,8 @@ mod tests {
             )
             .await
             .unwrap();
-            assert_eq!(reopened.size(), 0);
+
+            assert_eq!(reopened.size().await, 0);
 
             // Metadata persists across reopens.
             drop(states);
@@ -1521,7 +1523,7 @@ mod tests {
             let partition_prefix = "test_dkg_single";
             let states_partition = format!("{partition_prefix}_states");
             let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
             let only_legacy = make_legacy_state(&mut context, 5);
             let only_expected: State = only_legacy.clone().into();
@@ -1581,7 +1583,7 @@ mod tests {
             let partition_prefix = "test_dkg_noop";
             let states_partition = format!("{partition_prefix}_states");
             let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
             let existing_state = make_test_state(&mut context, 10);
             let journal_legacy = make_legacy_state(&mut context, 20);
