@@ -6,8 +6,8 @@ on:
 
 jobs:
   changelog:
-    # Skip for fork PRs
-    if: github.repository == 'tempoxyz/tempo'
+    # Skip for forked repos and fork PRs
+    if: github.repository == 'tempoxyz/tempo' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: write
