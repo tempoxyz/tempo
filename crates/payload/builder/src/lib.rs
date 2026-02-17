@@ -665,8 +665,7 @@ mod tests {
     use reth_primitives_traits::{SealedBlock, SealedHeader};
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
-        TempoTransaction,
-        transaction::tempo_transaction::Call,
+        TempoTransaction, transaction::tempo_transaction::Call,
     };
 
     use reth_provider::test_utils::MockEthProvider;
@@ -705,12 +704,10 @@ mod tests {
 
     fn test_builder(provider: TestProvider) -> TempoPayloadBuilder<TestProvider> {
         let evm_config = test_evm_config();
-        let inner_validator = EthTransactionValidatorBuilder::new(
-            provider.clone(),
-            evm_config.clone(),
-        )
-        .disable_balance_check()
-        .build::<TempoPooledTransaction, _>(InMemoryBlobStore::default());
+        let inner_validator =
+            EthTransactionValidatorBuilder::new(provider.clone(), evm_config.clone())
+                .disable_balance_check()
+                .build::<TempoPooledTransaction, _>(InMemoryBlobStore::default());
 
         let amm_cache = AmmLiquidityCache::with_unique_tokens(vec![]);
         let validator = TempoTransactionValidator::new(
@@ -733,10 +730,7 @@ mod tests {
             PoolConfig::default(),
         );
 
-        let tempo_pool = TempoTransactionPool::new(
-            pool,
-            AA2dPool::default(),
-        );
+        let tempo_pool = TempoTransactionPool::new(pool, AA2dPool::default());
 
         TempoPayloadBuilder::new(tempo_pool, provider, evm_config, false, false)
     }
@@ -949,10 +943,8 @@ mod tests {
                 assert_eq!(legacy.value, U256::ZERO);
 
                 // Input should contain encoded subblock metadata + block number
-                let metadata: Vec<SubBlockMetadata> = subblocks
-                    .iter()
-                    .map(|s| s.metadata())
-                    .collect();
+                let metadata: Vec<SubBlockMetadata> =
+                    subblocks.iter().map(|s| s.metadata()).collect();
                 let expected_input: Vec<u8> = alloy_rlp::encode(&metadata)
                     .into_iter()
                     .chain(block_env.number.to_be_bytes_vec())
@@ -1068,7 +1060,10 @@ mod tests {
         let config = PayloadConfig::new(parent_header, attrs);
 
         let result = builder.build_empty_payload(config);
-        assert!(result.is_ok(), "build_empty_payload should succeed: {result:?}");
+        assert!(
+            result.is_ok(),
+            "build_empty_payload should succeed: {result:?}"
+        );
         let payload = result.unwrap();
 
         // Empty payload should have system txs only (1 seal tx)
@@ -1103,10 +1098,7 @@ mod tests {
         // Mutant line 264: / replaced with % → 500_000_000 % 10 = 0 (wrong)
         assert_ne!(block_gas_limit % TEMPO_SHARED_GAS_DIVISOR, shared_gas_limit);
         // Mutant line 264: / replaced with * → 500_000_000 * 10 = 5_000_000_000 (wrong)
-        assert_ne!(
-            block_gas_limit * TEMPO_SHARED_GAS_DIVISOR,
-            shared_gas_limit
-        );
+        assert_ne!(block_gas_limit * TEMPO_SHARED_GAS_DIVISOR, shared_gas_limit);
         // Mutant line 267: - replaced with + → 500_000_000 + 50_000_000 = 550_000_000 (wrong)
         assert_ne!(block_gas_limit + shared_gas_limit, non_shared_gas_limit);
         // Mutant line 267: - replaced with / → 500_000_000 / 50_000_000 = 10 (wrong)
@@ -1179,9 +1171,7 @@ mod tests {
 
         // Set highest_invalid_subblock to a value > parent_header.number()
         // parent number is 0 (default), so storing 1 means > 0 → true → skip subblocks
-        builder
-            .highest_invalid_subblock
-            .store(1, Ordering::Relaxed);
+        builder.highest_invalid_subblock.store(1, Ordering::Relaxed);
 
         let parent_header = Arc::new(SealedHeader::new(
             TempoHeader {
@@ -1556,7 +1546,7 @@ mod tests {
         // Line 277: block_size_used = attributes.withdrawals().length() + 1024
         use alloy_rlp::Encodable;
 
-        let withdrawals = alloy_consensus::constants::EMPTY_WITHDRAWALS.clone();
+        let withdrawals = alloy_consensus::constants::EMPTY_WITHDRAWALS;
         let base_size = withdrawals.length() + 1024;
 
         // With empty withdrawals, length should be small (just the empty list encoding)
