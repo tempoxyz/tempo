@@ -466,15 +466,6 @@ where
     fn finish(
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
-        if self.section
-            != (BlockSection::System {
-                seen_subblocks_signatures: true,
-            })
-        {
-            return Err(
-                BlockValidationError::msg("end-of-block system transactions not seen").into(),
-            );
-        }
         self.inner.finish()
     }
 
@@ -1103,28 +1094,9 @@ mod tests {
     fn test_finish() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-
-        // Set section to System with seen_subblocks_signatures
-        let executor = TestExecutorBuilder::default()
-            .with_section(BlockSection::System {
-                seen_subblocks_signatures: true,
-            })
-            .build(&mut db, &chainspec);
+        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let result = executor.finish();
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_finish_system_tx_not_seen() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-
-        // Section is StartOfBlock, so system tx not seen
-        let result = executor.finish();
-        assert!(result.is_err());
-        let err = result.err().unwrap();
-        assert_eq!(err.to_string(), "end-of-block system transactions not seen");
     }
 }
