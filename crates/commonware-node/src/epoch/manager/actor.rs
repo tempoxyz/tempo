@@ -320,7 +320,7 @@ where
         };
         self.config.scheme_provider.register(epoch, scheme.clone());
 
-        // Manage the context so we can explictly drop during cleanup, releasing
+        // Manage the context so we can explicitly drop during cleanup, releasing
         // all metrics associated with this context.
         let engine_ctx = self
             .context
