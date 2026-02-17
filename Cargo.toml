@@ -326,6 +326,7 @@ vergen-git2 = "9.1.0"
 # reth-trie-sparse-parallel = { path = "../reth/crates/trie/sparse-parallel" }
 
 [patch.crates-io]
+# Commonware right after after PR #3127 was merged
 commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "540b008ebeb2c94518d9d32adcb0c2a027bee66a" }
 commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "540b008ebeb2c94518d9d32adcb0c2a027bee66a" }
 commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "540b008ebeb2c94518d9d32adcb0c2a027bee66a" }
