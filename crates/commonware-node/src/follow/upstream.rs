@@ -26,7 +26,7 @@ use tempo_node::{
     rpc::consensus::{CertifiedBlock, ConsensusFeed as _, Event, Query, TempoConsensusApiClient},
 };
 use tempo_primitives::TempoTxEnvelope;
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 use tracing::{debug, warn, warn_span};
 
 use crate::{consensus::block::Block, feed::FeedStateHandle};
@@ -69,31 +69,19 @@ pub trait UpstreamNode: Send + Sync + 'static {
 /// transparent reconnection.
 pub struct WsUpstream {
     url: String,
-    client: Arc<RwLock<Option<Arc<WsClient>>>>,
+    client: Mutex<Option<Arc<WsClient>>>,
 }
 
 impl WsUpstream {
     pub fn new(url: String) -> Self {
         Self {
             url,
-            client: Arc::new(RwLock::new(None)),
+            client: Mutex::new(None),
         }
     }
 
     async fn client(&self) -> eyre::Result<Arc<WsClient>> {
-        {
-            let guard = self.client.read().await;
-            if let Some(c) = guard.as_ref()
-                && c.is_connected()
-            {
-                return Ok(c.clone());
-            }
-        }
-        self.reconnect().await
-    }
-
-    async fn reconnect(&self) -> eyre::Result<Arc<WsClient>> {
-        let mut guard = self.client.write().await;
+        let mut guard = self.client.lock().await;
         if let Some(c) = guard.as_ref()
             && c.is_connected()
         {
@@ -105,10 +93,11 @@ impl WsUpstream {
             match WsClientBuilder::default().build(&self.url).await {
                 Ok(c) => {
                     let c = Arc::new(c);
-                    *guard = Some(c.clone());
+                    guard.replace(c.clone());
                     if attempts > 0 {
                         debug!(attempts, "reconnected to upstream WebSocket");
                     }
+
                     return Ok(c);
                 }
                 Err(e) => {
