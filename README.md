@@ -136,6 +136,14 @@ Start a `localnet`:
 just localnet
 ```
 
+## Community Tools
+
+| Tool | Description | Link |
+| ---- | ----------- | ---- |
+| **Tempo Monitor** | Real-time network monitoring dashboard for Moderato (block latency, TPS, gas, validators) | [tempo.hedgequantx.com](https://tempo.hedgequantx.com) |
+
+> Want to list a community tool here? Open a PR adding it to the table above.
+
 ## Contributing
 
 Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
