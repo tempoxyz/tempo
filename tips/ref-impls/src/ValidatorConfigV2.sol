@@ -177,9 +177,12 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         string calldata egress
     )
         external
-        onlyInitialized
         onlyOwnerOrValidator(validatorAddress)
     {
+        if (msg.sender != validatorAddress && msg.sender != _owner) {
+            revert Unauthorized();
+        }
+
         uint64 idx = addressToIndex[validatorAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
