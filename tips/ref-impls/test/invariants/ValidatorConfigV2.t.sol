@@ -87,8 +87,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         // V2 owner starts as address(0) — auto-set from V1 on first migrateValidator call
         _ghostOwner = address(0);
-
-        _initLogFile("validator_config_v2.log", "ValidatorConfigV2 Invariant Test Log");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -410,17 +408,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 0,
                 "TEMPO-VALV2-4: deactivatedAtHeight should be 0 for new validator"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "ADD_VALIDATOR: ",
-                        vm.toString(validatorAddr),
-                        " index=",
-                        vm.toString(totalCountBefore)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             if (bytes4(reason) == IValidatorConfigV2.NotInitialized.selector) {
@@ -497,19 +484,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 uint64(block.number),
                 "TEMPO-VALV2-4: deactivatedAtHeight should match block.number"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "DEACTIVATE: ",
-                        vm.toString(validatorAddr),
-                        " by ",
-                        vm.toString(caller),
-                        " at height=",
-                        vm.toString(block.number)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(
@@ -537,14 +511,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             _ghostOwner = newOwner;
 
             assertEq(validatorConfigV2.owner(), newOwner, "TEMPO-VALV2-20: Owner should be updated");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TRANSFER_OWNERSHIP: ", vm.toString(oldOwner), " -> ", vm.toString(newOwner)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownV2Error(reason);
@@ -573,10 +539,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 epoch,
                 "TEMPO-VALV2-21: DKG epoch should be set"
             );
-
-            if (_loggingEnabled) {
-                _log(string.concat("SET_DKG: epoch=", vm.toString(epoch)));
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             if (bytes4(reason) == IValidatorConfigV2.NotInitialized.selector) {
@@ -629,14 +591,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 keccak256(bytes(newEgress)),
                 "TEMPO-VALV2-1: Egress should match"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "SET_IP: ", vm.toString(validatorAddr), " by ", vm.toString(caller)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             if (bytes4(reason) == IValidatorConfigV2.NotInitialized.selector) {
@@ -689,17 +643,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 _ghostPubKey[ghostIdx],
                 "TEMPO-VALV2-1: Public key preserved after transfer"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TRANSFER_VAL_OWNERSHIP: ",
-                        vm.toString(currentAddr),
-                        " -> ",
-                        vm.toString(newAddr)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             if (bytes4(reason) == IValidatorConfigV2.NotInitialized.selector) {
@@ -809,19 +752,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 "TEMPO-VALV2-4: New validator addedAtHeight should be current block"
             );
             assertEq(newV.deactivatedAtHeight, 0, "TEMPO-VALV2-4: New validator should be active");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "ROTATE: ",
-                        vm.toString(validatorAddr),
-                        " oldIdx=",
-                        vm.toString(oldGhostIdx),
-                        " newIdx=",
-                        vm.toString(newIdx)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             if (bytes4(reason) == IValidatorConfigV2.NotInitialized.selector) {
@@ -913,17 +843,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 v1Vals[idx].active,
                 "TEMPO-VALV2-25: Migrated validator activity must match V1"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "MIGRATE: idx=",
-                        vm.toString(idx),
-                        " addr=",
-                        vm.toString(v1Vals[idx].validatorAddress)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             if (bytes4(reason) == IValidatorConfigV2.AlreadyInitialized.selector) {
@@ -968,18 +887,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             _ghostInitialized = true;
             _ghostInitializedAtHeight = uint64(block.number);
             _ghostNextDkgCeremony = validatorConfig.getNextFullDkgCeremony();
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "INITIALIZED at height=",
-                        vm.toString(block.number),
-                        " with ",
-                        vm.toString(_ghostTotalCount),
-                        " validators"
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             if (bytes4(reason) == IValidatorConfigV2.AlreadyInitialized.selector) {
@@ -1335,6 +1242,19 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             // Note: We don't check address equality because transferValidatorOwnership
             // can legitimately change addresses post-migration
         }
+    }
+
+    /// @notice Regression test for fuzz sequence: migrate one validator then rotate it.
+    /// @dev Reproduces the shrunk sequence from invariant_globalInvariants failure.
+    function test_regression_migrateAndRotate() public {
+        // Step 1: migrate validator index 0 (exact args from shrunk sequence)
+        this.handler_migrateValidator(9080296786710, 1784051681589737187974002380956804009033174642466610043552828374103364850947);
+
+        // Step 2: rotate that validator (exact args from shrunk sequence)
+        this.handler_rotateValidator(10000000000, 900000000000000000000, 100000);
+
+        // Verify all global invariants hold
+        invariant_globalInvariants();
     }
 
     /// @dev Helper to extract and hash IP from ingress (ip:port -> keccak256(ip))

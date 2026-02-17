@@ -84,10 +84,11 @@ jobs:
           persist-credentials: false
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
-
-      - name: Show Forge version
-        run: forge --version
+        run: |
+          curl -L https://foundry.paradigm.xyz | bash
+          export PATH="$HOME/.foundry/bin:$PATH"
+          foundryup --branch master
+          echo "$HOME/.foundry/bin" >> $GITHUB_PATH
 
       - name: Run Forge build
         working-directory: tips/ref-impls
@@ -107,7 +108,11 @@ jobs:
           persist-credentials: false
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
+        run: |
+          curl -L https://foundry.paradigm.xyz | bash
+          export PATH="$HOME/.foundry/bin:$PATH"
+          foundryup --branch master
+          echo "$HOME/.foundry/bin" >> $GITHUB_PATH
 
       - name: Run Forge fmt check
         working-directory: tips/ref-impls
@@ -127,7 +132,11 @@ jobs:
           persist-credentials: false
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
+        run: |
+          curl -L https://foundry.paradigm.xyz | bash
+          export PATH="$HOME/.foundry/bin:$PATH"
+          foundryup --branch master
+          echo "$HOME/.foundry/bin" >> $GITHUB_PATH
 
       - name: Run Forge tests
         working-directory: tips/ref-impls
