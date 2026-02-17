@@ -1709,7 +1709,7 @@ mod tests {
         // + vs - kills
         assert_ne!(kc_sz, 1usize.wrapping_sub(20).wrapping_add(inner_size));
         // + vs * kills
-        assert_ne!(kc_sz, 1 * 20 + inner_size);
+        assert_ne!(kc_sz, 20 + inner_size);
     }
 
     #[test]

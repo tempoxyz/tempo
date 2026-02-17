@@ -2134,7 +2134,7 @@ mod tests {
         assert_eq!(tx.max_fee_per_blob_gas(), None);
         assert!(tx.is_dynamic_fee());
         assert_eq!(tx.kind(), TxKind::Call(Address::repeat_byte(0x42)));
-        assert!(tx.is_create() == false);
+        assert!(!tx.is_create());
         assert_eq!(tx.value(), U256::from(999));
         assert_eq!(tx.input(), &Bytes::from(vec![0xAB, 0xCD]));
         assert!(!tx.input().is_empty());
