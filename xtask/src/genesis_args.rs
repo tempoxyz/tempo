@@ -370,8 +370,6 @@ impl GenesisArgs {
                 validator_onchain_addresses,
                 self.no_dkg_in_genesis,
             )?;
-
-            deploy_validator_config_v2_bytecode(&mut evm);
         }
 
         println!("Initializing fee manager");
@@ -968,7 +966,7 @@ fn initialize_validator_config_v2(
         &ctx.tx,
         || {
             let mut v2 = ValidatorConfigV2::new();
-            v2.initialize(admin, false)
+            v2.initialize(admin)
                 .wrap_err("failed to initialize validator config v2")?;
 
             if no_dkg_in_genesis {
@@ -1034,20 +1032,6 @@ fn initialize_validator_config_v2(
             Ok(())
         },
     )
-}
-
-/// Deploys the `0xef` marker bytecode to the V2 precompile address so the EVM
-/// recognises it as a precompile, without initialising any storage.
-fn deploy_validator_config_v2_bytecode(evm: &mut TempoEvm<CacheDB<EmptyDB>>) {
-    println!("Deploying V2 marker bytecode at {VALIDATOR_CONFIG_V2_ADDRESS}");
-    evm.db_mut().insert_account_info(
-        VALIDATOR_CONFIG_V2_ADDRESS,
-        AccountInfo {
-            code: Some(Bytecode::new_legacy(Bytes::from_static(&[0xef]))),
-            nonce: 0,
-            ..Default::default()
-        },
-    );
 }
 
 /// Generates the consensus configs of the validators.
