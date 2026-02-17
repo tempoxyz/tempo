@@ -120,13 +120,25 @@ contract ValidatorConfigV2Test is BaseTest {
         _initializeV2();
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
         validatorConfigV2.addValidator(
-            validator3, PUB_KEY_2, ingress3, egress3, _signAdd(PRIV_KEY_2, validator3, ingress3, egress3)
+            validator3,
+            PUB_KEY_2,
+            ingress3,
+            egress3,
+            _signAdd(PRIV_KEY_2, validator3, ingress3, egress3)
         );
 
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
@@ -228,7 +240,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_deactivateValidator_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.deactivateValidator(validator1);
 
@@ -239,7 +255,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_deactivateValidator_passByValidator() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         vm.prank(validator1);
@@ -252,7 +272,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_deactivateValidator_fail() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         // 1. Unauthorized (third party, neither owner nor validator)
@@ -288,12 +312,20 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_rotateValidator_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         // Owner rotates
         validatorConfigV2.rotateValidator(
-            validator1, PUB_KEY_3, ingress2, egress2, _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
+            validator1,
+            PUB_KEY_3,
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
         );
 
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
@@ -308,12 +340,20 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_rotateValidator_passByValidator() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         vm.prank(validator1);
         validatorConfigV2.rotateValidator(
-            validator1, PUB_KEY_3, ingress2, egress2, _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
+            validator1,
+            PUB_KEY_3,
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
         );
 
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
@@ -324,10 +364,18 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_rotateValidator_fail() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
 
         // 1. Unauthorized
@@ -374,7 +422,11 @@ contract ValidatorConfigV2Test is BaseTest {
         if (isTempo) {
             // 6. InvalidSignatureFormat (short — wrong length)
             validatorConfigV2.addValidator(
-                validator3, PUB_KEY_2, ingress3, egress3, _signAdd(PRIV_KEY_2, validator3, ingress3, egress3)
+                validator3,
+                PUB_KEY_2,
+                ingress3,
+                egress3,
+                _signAdd(PRIV_KEY_2, validator3, ingress3, egress3)
             );
             try validatorConfigV2.rotateValidator(
                 validator3, PUB_KEY_3, ingress2, egress2, hex"0000"
@@ -393,7 +445,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_setIpAddresses_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         // Owner updates
@@ -425,7 +481,11 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         // 2. Unauthorized
@@ -454,7 +514,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_transferValidatorOwnership_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         // Owner transfers
@@ -474,7 +538,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_transferValidatorOwnership_passByValidator() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         vm.prank(validator1);
@@ -495,10 +563,18 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
 
         // 2. InvalidValidatorAddress (address(0))
@@ -610,10 +686,18 @@ contract ValidatorConfigV2Test is BaseTest {
         assertEq(vals[1].validatorAddress, setupVal2);
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
 
         vals = validatorConfigV2.getAllValidators();
@@ -625,10 +709,18 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_getActiveValidators_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
         validatorConfigV2.deactivateValidator(validator1);
 
@@ -644,12 +736,20 @@ contract ValidatorConfigV2Test is BaseTest {
         assertEq(validatorConfigV2.validatorCount(), 2); // 2 setup validators migrated
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         assertEq(validatorConfigV2.validatorCount(), 3);
 
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
         assertEq(validatorConfigV2.validatorCount(), 4);
 
@@ -664,7 +764,11 @@ contract ValidatorConfigV2Test is BaseTest {
         assertEq(v0.validatorAddress, setupVal1);
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         IValidatorConfigV2.Validator memory v2 = validatorConfigV2.validatorByIndex(2);
@@ -682,7 +786,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_validatorByAddress_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(validator1);
@@ -700,7 +808,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_validatorByPublicKey_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByPublicKey(PUB_KEY_0);
@@ -859,7 +971,10 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // Try to add validator with same ingress IP as setupVal1 (even with different port)
         try validatorConfigV2.addValidator(
-            newAddr, PUB_KEY_0, "10.0.0.100:9000", "10.0.0.200",
+            newAddr,
+            PUB_KEY_0,
+            "10.0.0.100:9000",
+            "10.0.0.200",
             _signAdd(PRIV_KEY_0, newAddr, "10.0.0.100:9000", "10.0.0.200")
         ) {
             revert CallShouldHaveReverted();
@@ -883,7 +998,10 @@ contract ValidatorConfigV2Test is BaseTest {
         // Should now allow reusing setupVal1's ingress IP
         address newAddr = address(0xDEAD);
         validatorConfigV2.addValidator(
-            newAddr, PUB_KEY_0, "10.0.0.100:9999", "10.0.0.200",
+            newAddr,
+            PUB_KEY_0,
+            "10.0.0.100:9999",
+            "10.0.0.200",
             _signAdd(PRIV_KEY_0, newAddr, "10.0.0.100:9999", "10.0.0.200")
         );
 
@@ -906,7 +1024,10 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // rotateValidator: Try to rotate setupVal1 to setupVal2's ingress IP
         try validatorConfigV2.rotateValidator(
-            setupVal1, PUB_KEY_0, "10.0.0.101:9999", "10.0.0.200",
+            setupVal1,
+            PUB_KEY_0,
+            "10.0.0.101:9999",
+            "10.0.0.200",
             _signRotate(PRIV_KEY_0, setupVal1, "10.0.0.101:9999", "10.0.0.200")
         ) {
             revert CallShouldHaveReverted();
@@ -956,7 +1077,10 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // Should allow reusing setupVal1's address with different IPs
         validatorConfigV2.addValidator(
-            setupVal1, PUB_KEY_0, "10.0.0.200:8000", "10.0.0.200",
+            setupVal1,
+            PUB_KEY_0,
+            "10.0.0.200:8000",
+            "10.0.0.200",
             _signAdd(PRIV_KEY_0, setupVal1, "10.0.0.200:8000", "10.0.0.200")
         );
 
@@ -976,7 +1100,10 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // Try to add with setupVal1's address (still active)
         try validatorConfigV2.addValidator(
-            setupVal1, PUB_KEY_0, "10.0.0.200:8000", "10.0.0.200",
+            setupVal1,
+            PUB_KEY_0,
+            "10.0.0.200:8000",
+            "10.0.0.200",
             _signAdd(PRIV_KEY_0, setupVal1, "10.0.0.200:8000", "10.0.0.200")
         ) {
             revert CallShouldHaveReverted();
