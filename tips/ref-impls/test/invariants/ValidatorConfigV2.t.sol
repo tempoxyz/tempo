@@ -60,7 +60,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @dev Number of V1 setup validators
     uint256 private constant V1_SETUP_COUNT = 15;
 
-
     /*//////////////////////////////////////////////////////////////
                                SETUP
     //////////////////////////////////////////////////////////////*/
@@ -79,12 +78,10 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         for (uint256 i = 0; i < V1_SETUP_COUNT; i++) {
             address addr = address(uint160(0xA000 + i));
             bytes32 pubKey = keccak256(abi.encode("v1_setup_pubkey", i));
-            string memory ingress = string(
-                abi.encodePacked("10.0.0.", _uint8ToString(uint8(100 + i)), ":8000")
-            );
-            string memory egress = string(
-                abi.encodePacked("10.0.0.", _uint8ToString(uint8(100 + i)), ":9000")
-            );
+            string memory ingress =
+                string(abi.encodePacked("10.0.0.", _uint8ToString(uint8(100 + i)), ":8000"));
+            string memory egress =
+                string(abi.encodePacked("10.0.0.", _uint8ToString(uint8(100 + i)), ":9000"));
             validatorConfig.addValidator(addr, pubKey, true, ingress, egress);
         }
 
@@ -738,8 +735,8 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         bytes32 oldIngressIpHash = _extractIngressIpHash(_ghostIngress[oldGhostIdx]);
         bytes32 newIngressIpHash = _extractIngressIpHash(ingress);
         // new IP == old IP is not a conflict: the old validator's IP is freed during rotation
-        bool ipUsed = newIngressIpHash != oldIngressIpHash
-            && _ghostActiveIngressIpHashes[newIngressIpHash];
+        bool ipUsed =
+            newIngressIpHash != oldIngressIpHash && _ghostActiveIngressIpHashes[newIngressIpHash];
 
         bytes memory sig = _signStub();
 
