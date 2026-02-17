@@ -1720,7 +1720,7 @@ mod tests {
     fn test_vec_max_index_unpacked() {
         // For U256 (32 bytes, unpacked), max_index = u32::MAX / 1 (SLOTS=1)
         let max = VecHandler::<U256>::max_index();
-        assert_eq!(max, u32::MAX as usize / 1);
+        assert_eq!(max, u32::MAX as usize);
     }
 
     #[test]
