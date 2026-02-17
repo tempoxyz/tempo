@@ -1024,7 +1024,7 @@ fn initialize_validator_config_v2(
                 println!(
                     "added validator (v2)\
                     \n\tpublic key: {public_key}\
-                    \n\tonchain address: {validatorAddress}\
+                    \n\tonchain address: {validator_address}\
                     \n\tnet address: {addr}"
                 );
             }
