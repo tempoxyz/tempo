@@ -1248,10 +1248,13 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @dev Reproduces the shrunk sequence from invariant_globalInvariants failure.
     function test_regression_migrateAndRotate() public {
         // Step 1: migrate validator index 0 (exact args from shrunk sequence)
-        this.handler_migrateValidator(9080296786710, 1784051681589737187974002380956804009033174642466610043552828374103364850947);
+        this.handler_migrateValidator(
+            9_080_296_786_710,
+            1_784_051_681_589_737_187_974_002_380_956_804_009_033_174_642_466_610_043_552_828_374_103_364_850_947
+        );
 
         // Step 2: rotate that validator (exact args from shrunk sequence)
-        this.handler_rotateValidator(10000000000, 900000000000000000000, 100000);
+        this.handler_rotateValidator(10_000_000_000, 900_000_000_000_000_000_000, 100_000);
 
         // Verify all global invariants hold
         invariant_globalInvariants();
