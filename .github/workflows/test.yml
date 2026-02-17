@@ -19,36 +19,6 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
-  check-precompiles:
-    name: Check precompiles changes
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      coverage: ${{ steps.check.outputs.coverage }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Check for precompiles changes
-        id: check
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          # Only run coverage on pull_request events when precompiles/contracts changed
-          if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            echo "coverage=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
-          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/ref-impls/)'; then
-            echo "coverage=true" >> "$GITHUB_OUTPUT"
-            echo "Running coverage: precompiles/contracts changed"
-          else
-            echo "coverage=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping coverage: no precompiles/contracts changes"
-          fi
-
   genesis:
     name: Genesis generation
     runs-on: depot-ubuntu-latest-4
@@ -80,9 +50,87 @@ jobs:
             echo "Generated genesis matches test-genesis.json"
           fi
 
-  test:
-    name: test
-    needs: check-precompiles
+  unit-test:
+    name: unit test (${{ matrix.partition }}/2)
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check for precompiles changes
+        id: check-precompiles
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "coverage=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
+          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/ref-impls/)'; then
+            echo "coverage=true" >> "$GITHUB_OUTPUT"
+            echo "Running coverage: precompiles/contracts changed"
+          else
+            echo "coverage=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping coverage: no precompiles/contracts changes"
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: ${{ steps.check-precompiles.outputs.coverage == 'true' && 'llvm-tools-preview' || '' }}
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28 # v2.67.19
+        with:
+          tool: nextest@0.9.124
+      # Build and run tests WITH coverage (only when precompiles changed)
+      - name: Build and compile tests with coverage
+        if: steps.check-precompiles.outputs.coverage == 'true'
+        run: cargo nextest run --profile ci -E 'not package(tempo-e2e)' --partition count:${{ matrix.partition }}/2 --no-run
+        env:
+          RUSTFLAGS: -C instrument-coverage
+      - name: Run tests with coverage
+        if: steps.check-precompiles.outputs.coverage == 'true'
+        run: |
+          mkdir -p coverage
+          cargo nextest run --profile ci -E 'not package(tempo-e2e)' --partition count:${{ matrix.partition }}/2
+        env:
+          RUSTFLAGS: -C instrument-coverage
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/cargo-%p-%m.profraw
+      # Build and run tests WITHOUT coverage (when precompiles not changed)
+      - name: Build and compile tests
+        if: steps.check-precompiles.outputs.coverage != 'true'
+        run: cargo nextest run --profile ci -E 'not package(tempo-e2e)' --partition count:${{ matrix.partition }}/2 --no-run
+      - name: Run tests
+        if: steps.check-precompiles.outputs.coverage != 'true'
+        run: cargo nextest run --profile ci -E 'not package(tempo-e2e)' --partition count:${{ matrix.partition }}/2
+      - name: Generate precompiles coverage profdata
+        if: steps.check-precompiles.outputs.coverage == 'true'
+        run: |
+          LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
+          "$LLVM_BIN/llvm-profdata" merge -sparse coverage/*.profraw -o coverage/cargo-test.profdata
+          mkdir -p coverage/precompiles-bin
+          # Copy precompiles and contracts test binaries
+          find target/debug/deps -name 'tempo_precompiles-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
+          find target/debug/deps -name 'tempo_contracts-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
+      - name: Upload precompiles coverage artifacts
+        if: steps.check-precompiles.outputs.coverage == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-test-coverage-${{ matrix.partition }}
+          path: |
+            coverage/cargo-test.profdata
+            coverage/precompiles-bin/
+          retention-days: 1
+
+  e2e-test:
+    name: e2e test
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
     permissions:
@@ -92,52 +140,15 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: ${{ needs.check-precompiles.outputs.coverage == 'true' && 'llvm-tools-preview' || '' }}
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28 # v2.67.19
         with:
           tool: nextest@0.9.124
-      # Build and run tests WITH coverage (only when precompiles changed)
-      - name: Build and compile tests with coverage
-        if: needs.check-precompiles.outputs.coverage == 'true'
-        run: cargo nextest run --profile ci --no-run
-        env:
-          RUSTFLAGS: -C instrument-coverage
-      - name: Run tests with coverage
-        if: needs.check-precompiles.outputs.coverage == 'true'
-        run: |
-          mkdir -p coverage
-          cargo nextest run --profile ci 
-        env:
-          RUSTFLAGS: -C instrument-coverage
-          LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/cargo-%p-%m.profraw
-      # Build and run tests WITHOUT coverage (when precompiles not changed)
-      - name: Build and compile tests
-        if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run --profile ci --no-run
-      - name: Run tests
-        if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run  --profile ci
-      - name: Generate precompiles coverage profdata
-        if: needs.check-precompiles.outputs.coverage == 'true'
-        run: |
-          LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
-          "$LLVM_BIN/llvm-profdata" merge -sparse coverage/*.profraw -o coverage/cargo-test.profdata
-          mkdir -p coverage/precompiles-bin
-          # Copy precompiles and contracts test binaries
-          find target/debug/deps -name 'tempo_precompiles-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
-          find target/debug/deps -name 'tempo_contracts-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
-      - name: Upload precompiles coverage artifacts
-        if: needs.check-precompiles.outputs.coverage == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: cargo-test-coverage
-          path: |
-            coverage/cargo-test.profdata
-            coverage/precompiles-bin/
-          retention-days: 1
+      - name: Build e2e tests
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --no-run
+      - name: Run e2e tests
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)'
 
   cli:
     name: CLI smoke tests
@@ -157,8 +168,39 @@ jobs:
       - name: Run CLI tests
         run: ./scripts/test-cli.sh
 
+  check-msrv:
+    name: Check MSRV changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      should-run: ${{ steps.check.outputs.should-run }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check for dependency changes
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "should-run=true" >> "$GITHUB_OUTPUT"
+            echo "Running MSRV: not a pull_request event"
+          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '(^Cargo\.(toml|lock)$|/Cargo\.toml$|rust-toolchain)'; then
+            echo "should-run=true" >> "$GITHUB_OUTPUT"
+            echo "Running MSRV: dependency/toolchain files changed"
+          else
+            echo "should-run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping MSRV: no dependency/toolchain changes"
+          fi
+
   msrv:
     name: MSRV
+    needs: check-msrv
+    if: needs.check-msrv.outputs.should-run == 'true'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -183,9 +225,10 @@ jobs:
     if: always()
     permissions: {}
     needs:
-      - check-precompiles
-      - test
+      - unit-test
+      - e2e-test
       - cli
+      - check-msrv
       - msrv
       - genesis
     timeout-minutes: 30
@@ -193,4 +236,5 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
+          allowed-skips: msrv
           jobs: ${{ toJSON(needs) }}
