@@ -1012,7 +1012,7 @@ fn initialize_validator_config_v2(
                 v2.add_validator(
                     admin,
                     IValidatorConfigV2::addValidatorCall {
-                        validator_address: validatorAddress,
+                        validatorAddress: validator_address,
                         publicKey: pubkey,
                         ingress: ingress.clone(),
                         egress: egress.clone(),
