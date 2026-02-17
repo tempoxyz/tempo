@@ -650,3 +650,236 @@ async fn check_handshake(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use commonware_codec::Encode as _;
+    use commonware_runtime::{Listener as _, Network as _, Runner as _, Spawner as _};
+    use commonware_stream::encrypted;
+
+    /// Spin up a real TCP listener that performs `encrypted::listen` with
+    /// `listener_key`, then run `check_handshake` against it using
+    /// `dialer_key`. Returns the `PeerCheckResult`.
+    fn run_handshake_test(
+        listener_key: PrivateKey,
+        dialer_key: PrivateKey,
+        expected_peer_key: &PublicKey,
+        accept_dialer: bool,
+    ) -> PeerCheckResult {
+        let namespace = stream_namespace();
+        let key_hex = alloy_primitives::hex::encode(expected_peer_key.encode());
+        let ns = namespace.clone();
+
+        commonware_runtime::tokio::Runner::default().start(|ctx| async move {
+            // Bind a TCP listener on an ephemeral port.
+            let mut tcp_listener = ctx
+                .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+                .await
+                .expect("bind failed");
+            let addr = tcp_listener.local_addr().expect("local_addr failed");
+            let addr_str = addr.to_string();
+
+            let listener_ns = ns.clone();
+            let dialer_pub = dialer_key.public_key();
+
+            // Spawn the listener side: accept one TCP connection, then run
+            // the encrypted handshake as if we were a validator node.
+            let listener_handle = ctx.clone().spawn(move |inner_ctx| async move {
+                let (_peer_addr, sink, stream) = tcp_listener.accept().await.unwrap();
+                let cfg = encrypted::Config {
+                    signing_key: listener_key,
+                    namespace: listener_ns,
+                    max_message_size: 16 * 1024 * 1024,
+                    synchrony_bound: Duration::from_secs(5),
+                    max_handshake_age: Duration::from_secs(10),
+                    handshake_timeout: Duration::from_secs(5),
+                };
+                let accept = accept_dialer;
+                let expected = dialer_pub;
+                encrypted::listen(
+                    inner_ctx,
+                    move |peer: PublicKey| {
+                        let expected = expected.clone();
+                        async move { accept && peer == expected }
+                    },
+                    cfg,
+                    stream,
+                    sink,
+                )
+                .await
+            });
+
+            // Run the dialer (our check_handshake function) against the listener.
+            let result = check_handshake(
+                ctx.clone(),
+                &dialer_key,
+                &namespace,
+                expected_peer_key,
+                &key_hex,
+                &addr_str,
+                true,  // active
+                true,  // in_committee
+                Duration::from_secs(5),
+            )
+            .await;
+
+            // Wait for listener to finish (ignore its result; we only care
+            // about the dialer's perspective).
+            let _ = listener_handle.await;
+
+            result
+        })
+    }
+
+    /// Happy path: the listener holds the expected key and accepts us.
+    /// The handshake must complete with `identity_verified = true`.
+    #[test]
+    fn test_handshake_success() {
+        let dialer_key = PrivateKey::from_seed(1);
+        let listener_key = PrivateKey::from_seed(2);
+        let listener_pub = listener_key.public_key();
+
+        let result = run_handshake_test(listener_key, dialer_key, &listener_pub, true);
+
+        assert!(result.reachable, "peer should be TCP-reachable");
+        assert!(
+            result.identity_verified,
+            "handshake should verify the listener's identity"
+        );
+        assert!(
+            result.handshake_latency_ms.is_some(),
+            "latency should be recorded on success"
+        );
+        assert!(result.error.is_none(), "no error expected on success");
+    }
+
+    /// The listener holds the expected key but its bouncer rejects us.
+    /// The dialer should report `reachable = true` (TCP connected) but
+    /// `identity_verified = false` (handshake rejected).
+    #[test]
+    fn test_handshake_rejected_by_bouncer() {
+        let dialer_key = PrivateKey::from_seed(3);
+        let listener_key = PrivateKey::from_seed(4);
+        let listener_pub = listener_key.public_key();
+
+        let result = run_handshake_test(listener_key, dialer_key, &listener_pub, false);
+
+        assert!(result.reachable, "peer should be TCP-reachable");
+        assert!(
+            !result.identity_verified,
+            "handshake should fail when bouncer rejects"
+        );
+        assert!(result.error.is_some(), "error expected when rejected");
+    }
+
+    /// The endpoint is completely unreachable (nothing listening).
+    /// Should report `reachable = false`, `identity_verified = false`.
+    #[test]
+    fn test_handshake_unreachable() {
+        let dialer_key = PrivateKey::from_seed(5);
+        let fake_peer_key = PrivateKey::from_seed(6).public_key();
+        let namespace = stream_namespace();
+        let key_hex = alloy_primitives::hex::encode(fake_peer_key.encode());
+        // Port 1 on localhost is almost certainly not listening.
+        let addr_str = "127.0.0.1:1".to_string();
+
+        let result =
+            commonware_runtime::tokio::Runner::default().start(|ctx| async move {
+                check_handshake(
+                    ctx,
+                    &dialer_key,
+                    &namespace,
+                    &fake_peer_key,
+                    &key_hex,
+                    &addr_str,
+                    true,
+                    false,
+                    Duration::from_secs(2),
+                )
+                .await
+            });
+
+        assert!(!result.reachable, "unreachable addr should not be reachable");
+        assert!(
+            !result.identity_verified,
+            "cannot verify identity of unreachable peer"
+        );
+        assert!(
+            result.error.as_ref().unwrap().contains("dial failed"),
+            "error should mention dial failure"
+        );
+    }
+
+    /// When the listener holds a DIFFERENT key than what the dialer expects,
+    /// the handshake should fail because the ed25519 signature in the SynAck
+    /// won't match the expected public key.
+    #[test]
+    fn test_handshake_wrong_key() {
+        let dialer_key = PrivateKey::from_seed(7);
+        let actual_listener_key = PrivateKey::from_seed(8);
+        // The dialer expects a different key than what the listener holds.
+        let wrong_expected_key = PrivateKey::from_seed(9).public_key();
+
+        let namespace = stream_namespace();
+        let key_hex = alloy_primitives::hex::encode(wrong_expected_key.encode());
+
+        let result =
+            commonware_runtime::tokio::Runner::default().start(|ctx| async move {
+                // Start a listener with actual_listener_key.
+                let mut tcp_listener = ctx
+                    .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+                    .await
+                    .expect("bind failed");
+                let addr = tcp_listener.local_addr().expect("local_addr failed");
+                let addr_str = addr.to_string();
+                let ns = namespace.clone();
+
+                let listener_handle =
+                    ctx.clone().spawn(move |inner_ctx| async move {
+                        let (_peer_addr, sink, stream) =
+                            tcp_listener.accept().await.unwrap();
+                        let cfg = encrypted::Config {
+                            signing_key: actual_listener_key,
+                            namespace: ns,
+                            max_message_size: 16 * 1024 * 1024,
+                            synchrony_bound: Duration::from_secs(5),
+                            max_handshake_age: Duration::from_secs(10),
+                            handshake_timeout: Duration::from_secs(5),
+                        };
+                        // Accept anyone at the bouncer level.
+                        encrypted::listen(
+                            inner_ctx,
+                            |_: PublicKey| async { true },
+                            cfg,
+                            stream,
+                            sink,
+                        )
+                        .await
+                    });
+
+                let result = check_handshake(
+                    ctx.clone(),
+                    &dialer_key,
+                    &namespace,
+                    &wrong_expected_key,
+                    &key_hex,
+                    &addr_str,
+                    true,
+                    true,
+                    Duration::from_secs(5),
+                )
+                .await;
+
+                let _ = listener_handle.await;
+                result
+            });
+
+        assert!(result.reachable, "TCP should connect fine");
+        assert!(
+            !result.identity_verified,
+            "wrong key should NOT verify identity"
+        );
+        assert!(result.error.is_some(), "should report handshake error");
+    }
+}
