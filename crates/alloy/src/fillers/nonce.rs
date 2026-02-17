@@ -171,8 +171,8 @@ mod tests {
     use crate::{TempoNetwork, fillers::Random2DNonceFiller, rpc::TempoTransactionRequest};
     use alloy_network::TransactionBuilder;
     use alloy_primitives::ruint::aliases::U256;
-    use alloy_provider::{ProviderBuilder, SendableTx, mock::Asserter};
     use alloy_provider::fillers::TxFiller;
+    use alloy_provider::{ProviderBuilder, SendableTx, mock::Asserter};
     use eyre;
 
     #[tokio::test]

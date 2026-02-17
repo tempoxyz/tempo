@@ -431,8 +431,8 @@ mod tests {
             ..Default::default()
         };
 
-        let envelope = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(req)
-            .expect("should produce sim tx");
+        let envelope =
+            TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(req).expect("should produce sim tx");
         // The envelope must be AA variant (mutant returns Ok(Default::default()))
         assert!(matches!(envelope, TempoTxEnvelope::AA(_)));
     }
@@ -603,12 +603,7 @@ mod tests {
 
     #[test]
     fn test_create_mock_tempo_signature_without_key_id() {
-        let sig = create_mock_tempo_signature(
-            &SignatureType::Secp256k1,
-            None,
-            None,
-            Address::ZERO,
-        );
+        let sig = create_mock_tempo_signature(&SignatureType::Secp256k1, None, None, Address::ZERO);
         match sig {
             TempoSignature::Primitive(_) => {}
             _ => panic!("Expected Primitive variant when key_id is None"),
@@ -619,12 +614,7 @@ mod tests {
     fn test_create_mock_tempo_signature_with_key_id() {
         let caller = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let key_id = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        let sig = create_mock_tempo_signature(
-            &SignatureType::P256,
-            None,
-            Some(key_id),
-            caller,
-        );
+        let sig = create_mock_tempo_signature(&SignatureType::P256, None, Some(key_id), caller);
         match sig {
             TempoSignature::Keychain(ks) => {
                 assert_eq!(ks.user_address, caller);
