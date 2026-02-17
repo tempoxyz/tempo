@@ -98,6 +98,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         external
         onlyOwnerOrValidator(validatorAddress)
     {
+        if (msg.sender != validatorAddress && msg.sender != _owner) {
+            revert Unauthorized();
+        }
+
         uint64 idx = addressToIndex[validatorAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
