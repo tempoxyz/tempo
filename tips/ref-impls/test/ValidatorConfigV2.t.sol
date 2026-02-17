@@ -52,7 +52,7 @@ contract ValidatorConfigV2Test is BaseTest {
     {
         bytes32 message = keccak256(
             abi.encodePacked(
-                block.chainid, address(validatorConfigV2), validatorAddress, ingress, egress
+                uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress
             )
         );
         return vm.signEd25519(
@@ -72,7 +72,7 @@ contract ValidatorConfigV2Test is BaseTest {
     {
         bytes32 message = keccak256(
             abi.encodePacked(
-                block.chainid, address(validatorConfigV2), validatorAddress, ingress, egress
+                uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress
             )
         );
         return vm.signEd25519(
