@@ -393,9 +393,10 @@ The ValidatorConfigV2 precompile replaces V1 with append-only, delete-once seman
   - `rotateValidator`: sets old validator's `deactivatedAtHeight = block.number`; sets new validator's `addedAtHeight = block.number`, `deactivatedAtHeight = 0`
   - `deactivateValidator`: sets validator's `deactivatedAtHeight = block.number`
   - `migrateValidator`: sets new validator's `addedAtHeight = block.number`, `deactivatedAtHeight = 0` (if V1 active) or `block.number` (if V1 inactive)
-- **TEMPO-VALV2-5**: Initialization-required functions blocked pre-init - functions adding validators are blocked pre-initialization (`addValidator`, `rotateValidator`, `transferValidatorOwnership`) fail when `isInitialized() == false`.
-- **TEMPO-VALV2-6**: Migration-only functions blocked post-init - `migrateValidator` fails when `isInitialized() == true`; migration is only allowed before initialization.
-- **TEMPO-VALV2-7**: Initialization requires complete migration - `initializeIfMigrated()` only succeeds when `validatorCount == V1.getAllValidators().length`; after successful initialization, all global invariants hold.
+- **TEMPO-VALV2-5**: Init gate enforcement - post-init functions (`addValidator`, `rotateValidator`, `setIpAddresses`, `transferValidatorOwnership`, `setNextDkgCeremony`) fail with `NotInitialized` when `isInitialized() == false`; pre-init functions (`migrateValidator`, `initializeIfMigrated`) fail with `AlreadyInitialized` when `isInitialized() == true`.
+- **TEMPO-VALV2-6**: Address uniqueness per-handler - `addValidator` rejects addresses already in use by an active validator; `rotateValidator` verifies address mapping points to the new entry after deactivating the old (per-handler supplement to global VALV2-11).
+- **TEMPO-VALV2-7**: Public key validation per-handler - `addValidator` and `rotateValidator` reject zero public keys and public keys already registered (per-handler supplement to global VALV2-12).
+- **TEMPO-VALV2-25**: Migration preserves v1 values - V2 active status matches V1 (`V1.active == true` ↔ `V2.deactivatedAtHeight == 0`) immediately after `migrateValidator`.
 
 ### Global Invariants
 
@@ -418,7 +419,6 @@ These are checked after every fuzz run:
 - **TEMPO-VALV2-22**: Initialization one-way - once `isInitialized() == true`, it remains true forever; `isInitialized()` only transitions from false to true, never back.
 - **TEMPO-VALV2-23**: Migration completeness - if `isInitialized() == false`, then `validatorCount <= V1.getAllValidators().length`; migration cannot exceed V1 validator count.
 - **TEMPO-VALV2-24**: Migration preserves identity - for each validator at index `i < V1.getAllValidators().length`: `V2.validator[i].publicKey == V1.validator[i].publicKey` and `V2.validator[i].validatorAddress == V1.validator[i].validatorAddress`.
-- **TEMPO-VALV2-25**: Migration preserves activity - for each validator at index `i < V1.getAllValidators().length`: if `V1.validator[i].active == true` then `V2.validator[i].deactivatedAtHeight == 0`, else `V2.validator[i].deactivatedAtHeight > 0`.
 
 ## AccountKeychain
 

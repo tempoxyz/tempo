@@ -84,17 +84,11 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validateAddParams(validatorAddress, publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(
-                "TEMPO",
-                "_VALIDATOR_CONFIG_V2_ADD_VALIDATOR",
-                block.chainid,
-                address(this),
-                validatorAddress,
-                ingress,
-                egress
-            )
+            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress)
         );
-        _verifyEd25519Signature(publicKey, message, signature);
+        _verifyEd25519Signature(
+            bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"), publicKey, message, signature
+        );
 
         _addValidator(validatorAddress, publicKey, ingress, egress, 0);
     }
@@ -160,17 +154,11 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validateRotateParams(publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(
-                "TEMPO",
-                "_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
-                block.chainid,
-                address(this),
-                validatorAddress,
-                ingress,
-                egress
-            )
+            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress)
         );
-        _verifyEd25519Signature(publicKey, message, signature);
+        _verifyEd25519Signature(
+            bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"), publicKey, message, signature
+        );
 
         _updateIngressIp(oldValidator.ingress, ingress);
 
@@ -454,6 +442,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     // Note: This is a stub implementation. The precompile implementation
     // would perform Ed25519 signature verification.
     function _verifyEd25519Signature(
+        bytes memory, /* namespace */
         bytes32, /* publicKey */
         bytes32, /* message */
         bytes calldata /* signature */
