@@ -12,8 +12,8 @@ use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::{Block as _, ConfigureEvm as _};
 use reth_provider::{
-    BlockHashReader as _, BlockIdReader as _, BlockReader as _, BlockSource,
-    StateProviderFactory as _,
+    BlockHashReader as _, BlockIdReader as _, BlockNumReader as _, BlockReader as _, BlockSource,
+    HeaderProvider as _, StateProviderFactory as _,
 };
 use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_node::TempoFullNode;
@@ -35,8 +35,30 @@ pub(crate) fn v2_initialization_height(node: &TempoFullNode, height: u64) -> eyr
     .map(|(_, _, activation_height)| activation_height)
 }
 
+pub(crate) fn v2_initialization_height_at_block_hash(
+    node: &TempoFullNode,
+    hash: B256,
+) -> eyre::Result<u64> {
+    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
+        config
+            .get_initialized_at_height()
+            .map_err(eyre::Report::new)
+    })
+    .map(|(_, _, activation_height)| activation_height)
+}
+
 pub(crate) fn is_v2_initialized(node: &TempoFullNode, height: u64) -> eyre::Result<bool> {
     read_validator_config_at_height(node, height, |config: &ValidatorConfigV2| {
+        config.is_initialized().map_err(eyre::Report::new)
+    })
+    .map(|(_, _, activated)| activated)
+}
+
+pub(crate) fn is_v2_initialized_at_block_hash(
+    node: &TempoFullNode,
+    hash: B256,
+) -> eyre::Result<bool> {
+    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
         config.is_initialized().map_err(eyre::Report::new)
     })
     .map(|(_, _, activated)| activated)
@@ -76,7 +98,52 @@ where
     let block = node
         .provider
         .find_block_by_hash(block_hash, BlockSource::Any)
-        .map_err(Into::<eyre::Report>::into)
+        .map_err(eyre::Report::new)
+        .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty block"))
+        .wrap_err_with(|| format!("failed reading block with hash `{block_hash}`"))?;
+
+    let db = State::builder()
+        .with_database(StateProviderDatabase::new(
+            node.provider
+                .state_by_block_hash(block_hash)
+                .wrap_err_with(|| {
+                    format!("failed to get state from node provider for hash `{block_hash}`")
+                })?,
+        ))
+        .build();
+
+    let mut evm = node
+        .evm_config
+        .evm_for_block(db, block.header())
+        .wrap_err("failed instantiating evm for block")?;
+
+    let height = block.number();
+    let hash = block.seal_slow().hash();
+
+    let ctx = evm.ctx_mut();
+    let res = StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || read_fn(&C::default()),
+    )?;
+    Ok((height, hash, res))
+}
+
+/// Reads the validator state at the given block hash.
+pub(crate) fn read_validator_config_at_block_hash<C, T>(
+    node: &TempoFullNode,
+    block_hash: B256,
+    read_fn: impl FnOnce(&C) -> eyre::Result<T>,
+) -> eyre::Result<(u64, B256, T)>
+where
+    C: Default,
+{
+    let block = node
+        .provider
+        .find_block_by_hash(block_hash, BlockSource::Any)
+        .map_err(eyre::Report::new)
         .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty block"))
         .wrap_err_with(|| format!("failed reading block with hash `{block_hash}`"))?;
 
@@ -114,6 +181,27 @@ pub(crate) enum Validators {
     V2(ordered::Map<PublicKey, DecodedValidatorV2>),
 }
 
+/// Returns if the validator config v2 is initialized at `height`.
+pub(crate) fn is_v2_initialized_at_height(node: &TempoFullNode, height: u64) -> eyre::Result<bool> {
+    let h = node
+        .provider
+        .best_block_number()
+        .wrap_err("failed reading best available block number from execution layer")?;
+    let hash = node
+        .provider
+        .block_hash(h)
+        .map_err(eyre::Report::new)
+        .and_then(|maybe| maybe.ok_or_eyre("header not known"))
+        .wrap_err("could not read hash for best available block number")?;
+    let initialization_height = v2_initialization_height_at_block_hash(node, hash)
+        .wrap_err("failed reading validator config v2 initialization height")?;
+    match initialization_height {
+        0 => is_v2_initialized_at_block_hash(node, hash)
+            .wrap_err("failed reading initialization flag"),
+        n => Ok(n <= height),
+    }
+}
+
 /// Returns if the validator config v2 can be used exactly at the heigth and
 /// timestamp of `header`.
 ///
@@ -130,6 +218,34 @@ pub(crate) fn can_use_v2(node: &TempoFullNode, header: &TempoHeader) -> eyre::Re
         && is_v2_initialized(node, header.number())
             .wrap_err("failed reading validator config v2 initialization flag")?
         && v2_initialization_height(node, header.number())
+            .wrap_err("failed reading validator config v2 initialization height")?
+            <= header.number())
+}
+
+/// Returns if the validator config v2 can be used exactly at the heigth and
+/// timestamp of `header`.
+///
+///
+/// Validator Config V2 can be used if:
+///
+/// 1. if `header.timestamp` is active at the hardfork timestamp.
+/// 2. if `header.number` is equal or greater than the contract initialization height.
+/// 3. if the contract initialization flag is set.
+pub(crate) fn can_use_v2_at_block_hash(node: &TempoFullNode, hash: B256) -> eyre::Result<bool> {
+    let header = node
+        .provider
+        .header(hash)
+        .map_err(eyre::Report::new)
+        .and_then(|maybe| maybe.ok_or_eyre("hash not known"))
+        .wrap_err_with(|| {
+            format!("failed reading header for block hash `{hash}` from execution layer")
+        })?;
+    Ok(node
+        .chain_spec()
+        .is_t2_active_at_timestamp(header.timestamp())
+        && is_v2_initialized_at_block_hash(node, hash)
+            .wrap_err("failed reading validator config v2 initialization flag")?
+        && v2_initialization_height_at_block_hash(node, hash)
             .wrap_err("failed reading validator config v2 initialization height")?
             <= header.number())
 }
