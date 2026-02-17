@@ -66,7 +66,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     function setUp() public override {
         super.setUp();
-        vm.skip(isTempo);
 
         targetContract(address(this));
 

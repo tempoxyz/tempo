@@ -78,7 +78,6 @@ contract ValidatorConfigV2Test is BaseTest {
 
     function setUp() public override {
         super.setUp();
-        vm.skip(isTempo);
         // Add two V1 validators so _initializeV2() has something to migrate.
         // Migration copies V1's owner to V2, so no direct storage writes needed.
         validatorConfig.addValidator(
