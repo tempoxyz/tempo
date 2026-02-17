@@ -2404,6 +2404,8 @@ mod tests {
             TempoHardfork::Genesis,
             TempoHardfork::T0,
             TempoHardfork::T1,
+            TempoHardfork::T1A,
+            TempoHardfork::T1B,
             TempoHardfork::T2,
         ] {
             let gas_params = tempo_gas_params(spec);
