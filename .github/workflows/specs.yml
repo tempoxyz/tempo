@@ -140,7 +140,8 @@ jobs:
   tempo-foundry-test:
     name: Forge Test (Rust Precompiles)
     needs: [check-specs-changes, check-precompiles]
-    if: needs.check-specs-changes.outputs.should_run == 'true' && github.repository == 'tempoxyz/tempo'
+    # Skip for forked repos
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
