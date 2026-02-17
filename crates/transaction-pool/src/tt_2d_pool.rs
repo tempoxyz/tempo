@@ -5356,7 +5356,7 @@ mod tests {
                 assert!(!p.promoted.is_empty(), "Should promote tx1");
                 assert_eq!(p.promoted.len(), 1);
             }
-            other => panic!("Expected Pending, got {:?}", other),
+            other => panic!("Expected Pending, got {other:?}"),
         }
 
         pool.assert_invariants();
@@ -5559,7 +5559,7 @@ mod tests {
             AddedTransaction::Parked { .. } => {
                 // Expected - the add succeeds but may trigger discard
             }
-            other => panic!("Expected Parked, got {:?}", other),
+            other => panic!("Expected Parked, got {other:?}"),
         }
 
         // Pool should have at most 1 queued tx after discard
@@ -5703,8 +5703,6 @@ mod tests {
 
     #[test]
     fn test_on_state_updates_processes_nonce_precompile_changes() {
-        use revm::database::BundleAccount;
-
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let nonce_key = U256::from(1);
@@ -5739,7 +5737,7 @@ mod tests {
 
         // Add two txs from same sender: nonce 0, nonce 1
         let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(0).build();
-        let tx0_hash = *tx0.hash();
+        let _tx0_hash = *tx0.hash();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
