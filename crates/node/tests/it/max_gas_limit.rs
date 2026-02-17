@@ -160,6 +160,7 @@ async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
     genesis["config"].as_object_mut().unwrap().remove("t1Time");
     genesis["config"].as_object_mut().unwrap().remove("t1aTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1bTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
     let pre_t1a_genesis = serde_json::to_string(&genesis)?;
 
@@ -198,6 +199,7 @@ async fn test_pre_t1a_tx_above_osaka_limit() -> eyre::Result<()> {
     let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
     genesis["config"].as_object_mut().unwrap().remove("t1Time");
     genesis["config"].as_object_mut().unwrap().remove("t1aTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1bTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
     let pre_t1a_genesis = serde_json::to_string(&genesis)?;
 

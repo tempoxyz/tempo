@@ -7,7 +7,7 @@ on:
 jobs:
   changelog:
     # Skip for fork PRs since they can't access secrets
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.repository == 'tempoxyz/tempo'
     runs-on: ubuntu-latest
     permissions:
       contents: write

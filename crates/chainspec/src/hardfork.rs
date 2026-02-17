@@ -46,8 +46,10 @@ hardfork!(
         T0,
         /// T1 hardfork - adds expiring nonce transactions
         T1,
-        /// T1A hardfork - removes EIP-7825 per-transaction gas limit
+        /// T1.A hardfork - removes EIP-7825 per-transaction gas limit
         T1A,
+        /// T1.B hardfork
+        T1B,
         /// T2 hardfork - adds compound transfer policies (TIP-1015)
         T2,
     }
@@ -64,9 +66,14 @@ impl TempoHardfork {
         *self >= Self::T1
     }
 
-    /// Returns true if this hardfork is T1A or later.
+    /// Returns true if this hardfork is T1.A or later.
     pub fn is_t1a(&self) -> bool {
         *self >= Self::T1A
+    }
+
+    /// Returns true if this hardfork is T1.B or later.
+    pub fn is_t1b(&self) -> bool {
+        *self >= Self::T1B
     }
 
     /// Returns true if this hardfork is T2 or later.
@@ -83,7 +90,7 @@ impl TempoHardfork {
     /// Economic conversion: ceil(basefee × gas_used / 10^12) = cost in microdollars (TIP-20 tokens)
     pub const fn base_fee(&self) -> u64 {
         match self {
-            Self::T1 | Self::T1A | Self::T2 => crate::spec::TEMPO_T1_BASE_FEE,
+            Self::T1 | Self::T1A | Self::T1B | Self::T2 => crate::spec::TEMPO_T1_BASE_FEE,
             Self::T0 | Self::Genesis => crate::spec::TEMPO_T0_BASE_FEE,
         }
     }
@@ -93,7 +100,9 @@ impl TempoHardfork {
     /// - T1+: 30M gas (fixed)
     pub const fn general_gas_limit(&self) -> Option<u64> {
         match self {
-            Self::T1 | Self::T1A | Self::T2 => Some(crate::spec::TEMPO_T1_GENERAL_GAS_LIMIT),
+            Self::T1 | Self::T1A | Self::T1B | Self::T2 => {
+                Some(crate::spec::TEMPO_T1_GENERAL_GAS_LIMIT)
+            }
             Self::T0 | Self::Genesis => None,
         }
     }
@@ -103,7 +112,7 @@ impl TempoHardfork {
     /// - T1A+: 30M gas (allows maximum-sized contract deployments under TIP-1000 state creation)
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
         match self {
-            Self::T1A | Self::T2 => Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
+            Self::T1A | Self::T1B | Self::T2 => Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
             Self::T0 | Self::Genesis | Self::T1 => Some(MAX_TX_GAS_LIMIT_OSAKA),
         }
     }
@@ -111,7 +120,7 @@ impl TempoHardfork {
     /// Gas cost for using an existing 2D nonce key
     pub const fn gas_existing_nonce_key(&self) -> u64 {
         match self {
-            Self::Genesis | Self::T0 | Self::T1 | Self::T1A => {
+            Self::Genesis | Self::T0 | Self::T1 | Self::T1A | Self::T1B => {
                 crate::spec::TEMPO_T1_EXISTING_NONCE_KEY_GAS
             }
             Self::T2 => crate::spec::TEMPO_T2_EXISTING_NONCE_KEY_GAS,
@@ -121,7 +130,7 @@ impl TempoHardfork {
     /// Gas cost for using a new 2D nonce key
     pub const fn gas_new_nonce_key(&self) -> u64 {
         match self {
-            Self::Genesis | Self::T0 | Self::T1 | Self::T1A => {
+            Self::Genesis | Self::T0 | Self::T1 | Self::T1A | Self::T1B => {
                 crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS
             }
             Self::T2 => crate::spec::TEMPO_T2_NEW_NONCE_KEY_GAS,
@@ -138,6 +147,9 @@ pub trait TempoHardforks: EthereumHardforks {
     fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
         if self.is_t2_active_at_timestamp(timestamp) {
             return TempoHardfork::T2;
+        }
+        if self.is_t1b_active_at_timestamp(timestamp) {
+            return TempoHardfork::T1B;
         }
         if self.is_t1a_active_at_timestamp(timestamp) {
             return TempoHardfork::T1A;
@@ -166,6 +178,12 @@ pub trait TempoHardforks: EthereumHardforks {
     /// Returns true if T1A is active at the given timestamp.
     fn is_t1a_active_at_timestamp(&self, timestamp: u64) -> bool {
         self.tempo_fork_activation(TempoHardfork::T1A)
+            .active_at_timestamp(timestamp)
+    }
+
+    /// Returns true if T1B is active at the given timestamp.
+    fn is_t1b_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::T1B)
             .active_at_timestamp(timestamp)
     }
 
@@ -209,6 +227,7 @@ impl From<SpecId> for TempoHardfork {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use TempoHardfork::*;
     use reth_chainspec::Hardfork;
 
     #[test]
@@ -217,49 +236,50 @@ mod tests {
         assert_eq!(TempoHardfork::T0.name(), "T0");
         assert_eq!(TempoHardfork::T1.name(), "T1");
         assert_eq!(TempoHardfork::T1A.name(), "T1A");
+        assert_eq!(TempoHardfork::T1B.name(), "T1B");
         assert_eq!(TempoHardfork::T2.name(), "T2");
+    }
+
+    /// Asserts that `check` returns true for `fork` and all `after` forks, and false for
+    /// all `before` forks.
+    fn assert_hardfork_activation(
+        check: fn(&TempoHardfork) -> bool,
+        fork: TempoHardfork,
+        before: &[TempoHardfork],
+        after: &[TempoHardfork],
+    ) {
+        assert!(check(&fork));
+        for f in before {
+            assert!(!check(f), "{f:?} should not satisfy check");
+        }
+        for f in after {
+            assert!(check(f), "{f:?} should satisfy check");
+        }
     }
 
     #[test]
     fn test_is_t0() {
-        assert!(!TempoHardfork::Genesis.is_t0());
-        assert!(TempoHardfork::T0.is_t0());
-        assert!(TempoHardfork::T1.is_t0());
-        assert!(TempoHardfork::T1A.is_t0());
-        assert!(TempoHardfork::T2.is_t0());
+        assert_hardfork_activation(TempoHardfork::is_t0, T0, &[Genesis], &[T1, T1A, T1B, T2]);
     }
 
     #[test]
     fn test_is_t1() {
-        assert!(!TempoHardfork::Genesis.is_t1());
-        assert!(!TempoHardfork::T0.is_t1());
-        assert!(TempoHardfork::T1.is_t1());
-        assert!(TempoHardfork::T1A.is_t1());
-        assert!(TempoHardfork::T2.is_t1());
+        assert_hardfork_activation(TempoHardfork::is_t1, T1, &[Genesis, T0], &[T1A, T1B, T2]);
     }
 
     #[test]
     fn test_is_t1a() {
-        assert!(!TempoHardfork::Genesis.is_t1a());
-        assert!(!TempoHardfork::T0.is_t1a());
-        assert!(!TempoHardfork::T1.is_t1a());
-        assert!(TempoHardfork::T1A.is_t1a());
-        assert!(TempoHardfork::T2.is_t1a());
+        assert_hardfork_activation(TempoHardfork::is_t1a, T1A, &[Genesis, T0, T1], &[T1B, T2]);
+    }
+
+    #[test]
+    fn test_is_t1b() {
+        assert_hardfork_activation(TempoHardfork::is_t1b, T1B, &[Genesis, T0, T1, T1A], &[T2]);
     }
 
     #[test]
     fn test_is_t2() {
-        assert!(!TempoHardfork::Genesis.is_t2());
-        assert!(!TempoHardfork::T0.is_t2());
-        assert!(!TempoHardfork::T1.is_t2());
-        assert!(!TempoHardfork::T1A.is_t2());
-        assert!(TempoHardfork::T2.is_t2());
-    }
-
-    #[test]
-    fn test_t1_hardfork_name() {
-        let fork = TempoHardfork::T1;
-        assert_eq!(fork.name(), "T1");
+        assert_hardfork_activation(TempoHardfork::is_t2, T2, &[Genesis, T0, T1, T1A, T1B], &[]);
     }
 
     #[test]
