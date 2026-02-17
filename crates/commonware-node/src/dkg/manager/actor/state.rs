@@ -1424,7 +1424,7 @@ mod tests {
 
             // Populate the legacy journal with three entries.
             {
-                let mut journal = contiguous::variable::Journal::<_, LegacyState>::init(
+                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
                     context.with_label("journal_setup"),
                     contiguous::variable::Config {
                         partition: states_partition.clone(),
@@ -1530,7 +1530,7 @@ mod tests {
 
             // Populate the legacy journal with a single entry.
             {
-                let mut journal = contiguous::variable::Journal::<_, LegacyState>::init(
+                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
                     context.with_label("journal_setup"),
                     contiguous::variable::Config {
                         partition: states_partition.clone(),
@@ -1604,7 +1604,7 @@ mod tests {
 
             // Populate a legacy journal with different data.
             {
-                let mut journal = contiguous::variable::Journal::<_, LegacyState>::init(
+                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
                     context.with_label("journal_setup"),
                     contiguous::variable::Config {
                         partition: states_partition.clone(),
