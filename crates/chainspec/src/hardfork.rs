@@ -290,12 +290,14 @@ mod tests {
         assert_eq!(TempoHardfork::T0.base_fee(), 10_000_000_000);
         // T1+ variants use T1 base fee (20 billion)
         assert_eq!(TempoHardfork::T1.base_fee(), 20_000_000_000);
+        assert_eq!(TempoHardfork::T1A.base_fee(), 20_000_000_000);
         assert_eq!(TempoHardfork::T2.base_fee(), 20_000_000_000);
         // Ensure no variant returns 0 or 1
         for fork in [
             TempoHardfork::Genesis,
             TempoHardfork::T0,
             TempoHardfork::T1,
+            TempoHardfork::T1A,
             TempoHardfork::T2,
         ] {
             assert!(fork.base_fee() > 1, "base_fee must not be 0 or 1");
@@ -309,6 +311,7 @@ mod tests {
         assert_eq!(TempoHardfork::T0.general_gas_limit(), None);
         // T1+ returns Some(30_000_000)
         assert_eq!(TempoHardfork::T1.general_gas_limit(), Some(30_000_000));
+        assert_eq!(TempoHardfork::T1A.general_gas_limit(), Some(30_000_000));
         assert_eq!(TempoHardfork::T2.general_gas_limit(), Some(30_000_000));
         // Ensure T1+ values are not 0 or 1
         assert_ne!(TempoHardfork::T1.general_gas_limit(), Some(0));
@@ -317,17 +320,28 @@ mod tests {
 
     #[test]
     fn test_tx_gas_limit_cap_values() {
-        // Pre-T1 returns Some(u64::MAX)
-        assert_eq!(TempoHardfork::Genesis.tx_gas_limit_cap(), Some(u64::MAX));
-        assert_eq!(TempoHardfork::T0.tx_gas_limit_cap(), Some(u64::MAX));
-        // T1+ returns Some(30_000_000)
-        assert_eq!(TempoHardfork::T1.tx_gas_limit_cap(), Some(30_000_000));
+        // Pre-T1A returns EIP-7825 Osaka limit (16,777,216)
+        assert_eq!(
+            TempoHardfork::Genesis.tx_gas_limit_cap(),
+            Some(MAX_TX_GAS_LIMIT_OSAKA)
+        );
+        assert_eq!(
+            TempoHardfork::T0.tx_gas_limit_cap(),
+            Some(MAX_TX_GAS_LIMIT_OSAKA)
+        );
+        assert_eq!(
+            TempoHardfork::T1.tx_gas_limit_cap(),
+            Some(MAX_TX_GAS_LIMIT_OSAKA)
+        );
+        // T1A+ returns Some(30_000_000)
+        assert_eq!(TempoHardfork::T1A.tx_gas_limit_cap(), Some(30_000_000));
         assert_eq!(TempoHardfork::T2.tx_gas_limit_cap(), Some(30_000_000));
         // All variants return Some (never None)
         for fork in [
             TempoHardfork::Genesis,
             TempoHardfork::T0,
             TempoHardfork::T1,
+            TempoHardfork::T1A,
             TempoHardfork::T2,
         ] {
             assert!(fork.tx_gas_limit_cap().is_some());
@@ -342,6 +356,7 @@ mod tests {
         assert_eq!(TempoHardfork::Genesis.gas_existing_nonce_key(), 5000);
         assert_eq!(TempoHardfork::T0.gas_existing_nonce_key(), 5000);
         assert_eq!(TempoHardfork::T1.gas_existing_nonce_key(), 5000);
+        assert_eq!(TempoHardfork::T1A.gas_existing_nonce_key(), 5000);
         // T2: 5000 + 2*WARM_SLOAD(100) = 5200
         assert_eq!(TempoHardfork::T2.gas_existing_nonce_key(), 5200);
         // Ensure no variant returns 0 or 1
@@ -349,6 +364,7 @@ mod tests {
             TempoHardfork::Genesis,
             TempoHardfork::T0,
             TempoHardfork::T1,
+            TempoHardfork::T1A,
             TempoHardfork::T2,
         ] {
             assert!(fork.gas_existing_nonce_key() > 1);
@@ -361,6 +377,7 @@ mod tests {
         assert_eq!(TempoHardfork::Genesis.gas_new_nonce_key(), 22100);
         assert_eq!(TempoHardfork::T0.gas_new_nonce_key(), 22100);
         assert_eq!(TempoHardfork::T1.gas_new_nonce_key(), 22100);
+        assert_eq!(TempoHardfork::T1A.gas_new_nonce_key(), 22100);
         // T2: 22100 + 2*WARM_SLOAD(100) = 22300
         assert_eq!(TempoHardfork::T2.gas_new_nonce_key(), 22300);
         // Ensure no variant returns 0 or 1
@@ -368,6 +385,7 @@ mod tests {
             TempoHardfork::Genesis,
             TempoHardfork::T0,
             TempoHardfork::T1,
+            TempoHardfork::T1A,
             TempoHardfork::T2,
         ] {
             assert!(fork.gas_new_nonce_key() > 1);
@@ -380,6 +398,7 @@ mod tests {
         assert_eq!(SpecId::from(TempoHardfork::Genesis), SpecId::OSAKA);
         assert_eq!(SpecId::from(TempoHardfork::T0), SpecId::OSAKA);
         assert_eq!(SpecId::from(TempoHardfork::T1), SpecId::OSAKA);
+        assert_eq!(SpecId::from(TempoHardfork::T1A), SpecId::OSAKA);
         assert_eq!(SpecId::from(TempoHardfork::T2), SpecId::OSAKA);
         // Ensure it doesn't return default (which would be FRONTIER = 0)
         assert_ne!(SpecId::from(TempoHardfork::Genesis), SpecId::default());
