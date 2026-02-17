@@ -55,8 +55,12 @@ contract ValidatorConfigV2Test is BaseTest {
                 uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress
             )
         );
+        // Forge's signEd25519 does simple concat(namespace, message), but the Rust
+        // precompile uses commonware's union_unique: varint(len) || namespace || message.
+        // Prepend uint8(len) to the namespace so Forge's concat matches commonware.
+        bytes memory ns = bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR");
         return vm.signEd25519(
-            bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"), abi.encodePacked(message), privateKey
+            abi.encodePacked(uint8(ns.length), ns), abi.encodePacked(message), privateKey
         );
     }
 
@@ -75,10 +79,9 @@ contract ValidatorConfigV2Test is BaseTest {
                 uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress
             )
         );
+        bytes memory ns = bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR");
         return vm.signEd25519(
-            bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"),
-            abi.encodePacked(message),
-            privateKey
+            abi.encodePacked(uint8(ns.length), ns), abi.encodePacked(message), privateKey
         );
     }
 
