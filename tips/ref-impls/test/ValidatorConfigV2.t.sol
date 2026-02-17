@@ -390,21 +390,39 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         // 2. ValidatorNotFound
-        try validatorConfigV2.rotateValidator(validator3, PUB_KEY_3, ingress2, egress2, "") {
+        try validatorConfigV2.rotateValidator(
+            validator3,
+            PUB_KEY_3,
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_3, validator3, ingress2, egress2)
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorNotFound.selector));
         }
 
         // 3. InvalidPublicKey (zero)
-        try validatorConfigV2.rotateValidator(validator1, bytes32(0), ingress2, egress2, "") {
+        try validatorConfigV2.rotateValidator(
+            validator1,
+            bytes32(0),
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidPublicKey.selector));
         }
 
         // 4. PublicKeyAlreadyExists
-        try validatorConfigV2.rotateValidator(validator1, PUB_KEY_1, ingress2, egress2, "") {
+        try validatorConfigV2.rotateValidator(
+            validator1,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_1, validator1, ingress2, egress2)
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
@@ -414,7 +432,13 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // 5. ValidatorAlreadyDeleted
         validatorConfigV2.deactivateValidator(validator1);
-        try validatorConfigV2.rotateValidator(validator1, PUB_KEY_3, ingress2, egress2, "") {
+        try validatorConfigV2.rotateValidator(
+            validator1,
+            PUB_KEY_3,
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
@@ -639,6 +663,7 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     function test_transferOwnership_fail() public {
+        _initializeV2();
         vm.prank(nonOwner);
         try validatorConfigV2.transferOwnership(alice) {
             revert CallShouldHaveReverted();
