@@ -73,6 +73,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T1 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t1_time: Option<u64>,
+    /// Activation timestamp for T1A hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t1a_time: Option<u64>,
     /// Activation timestamp for T2 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t2_time: Option<u64>,
@@ -98,6 +101,10 @@ impl TempoGenesisInfo {
 
     pub fn t1_time(&self) -> Option<u64> {
         self.t1_time
+    }
+
+    pub fn t1a_time(&self) -> Option<u64> {
+        self.t1a_time
     }
 
     pub fn t2_time(&self) -> Option<u64> {
@@ -193,6 +200,7 @@ impl TempoChainSpec {
         let info @ TempoGenesisInfo {
             t0_time,
             t1_time,
+            t1a_time,
             t2_time,
             ..
         } = TempoGenesisInfo::extract_from(&genesis);
@@ -204,6 +212,7 @@ impl TempoChainSpec {
             (TempoHardfork::Genesis, Some(0)),
             (TempoHardfork::T0, t0_time),
             (TempoHardfork::T1, t1_time),
+            (TempoHardfork::T1A, t1a_time),
             (TempoHardfork::T2, t2_time),
         ]
         .into_iter()
@@ -426,18 +435,37 @@ mod tests {
             TempoHardfork::T0
         );
 
-        // At and after T1 activation
+        // At and after T1/T1A activation (both activate at 1770908400)
+        assert!(mainnet_chainspec.is_t1_active_at_timestamp(1770908400));
+        assert!(mainnet_chainspec.is_t1a_active_at_timestamp(1770908400));
         assert_eq!(
             mainnet_chainspec.tempo_hardfork_at(1770908400),
-            TempoHardfork::T1
+            TempoHardfork::T1A
         );
         assert_eq!(
             mainnet_chainspec.tempo_hardfork_at(1770908401),
-            TempoHardfork::T1
+            TempoHardfork::T1A
+        );
+
+        // Before T2 activation (1771858800 = Feb 23rd 2026 16:00 CET)
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1771858799),
+            TempoHardfork::T1A
+        );
+
+        // At and after T2 activation
+        assert!(mainnet_chainspec.is_t2_active_at_timestamp(1771858800));
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1771858800),
+            TempoHardfork::T2
+        );
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1771858801),
+            TempoHardfork::T2
         );
         assert_eq!(
             mainnet_chainspec.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::T1
+            TempoHardfork::T2
         );
 
         let moderato_genesis = super::TempoChainSpecParser::parse("moderato")
@@ -453,7 +481,7 @@ mod tests {
             TempoHardfork::Genesis
         );
 
-        // At and after T0/T1 activation
+        // At and after T0/T1 activation (before T1A)
         assert_eq!(
             moderato_genesis.tempo_hardfork_at(1770303600),
             TempoHardfork::T1
@@ -462,15 +490,29 @@ mod tests {
             moderato_genesis.tempo_hardfork_at(1770303601),
             TempoHardfork::T1
         );
+
+        // Before T1A activation (1771513200 = Feb 19th 2026 16:00 CET)
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1771513199),
+            TempoHardfork::T1
+        );
+
+        // At and after T1A/T2 activation (both activate at 1771513200)
+        assert!(moderato_genesis.is_t1a_active_at_timestamp(1771513200));
+        assert!(moderato_genesis.is_t2_active_at_timestamp(1771513200));
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1771513200),
+            TempoHardfork::T2
+        );
         assert_eq!(
             moderato_genesis.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::T1
+            TempoHardfork::T2
         );
 
         let testnet_chainspec = super::TempoChainSpecParser::parse("testnet")
             .expect("the mainnet chainspec must always be well formed");
 
-        // Should always return Genesis
+        // Should always return Genesis (no T1A on testnet)
         assert_eq!(
             testnet_chainspec.tempo_hardfork_at(0),
             TempoHardfork::Genesis
@@ -501,6 +543,7 @@ mod tests {
                     "chainId": 1234,
                     "t0Time": 0,
                     "t1Time": 0,
+                    "t1aTime": 0,
                     "t2Time": 0
                 },
                 "alloc": {}
@@ -514,6 +557,8 @@ mod tests {
         assert!(chainspec.is_t0_active_at_timestamp(1000));
         assert!(chainspec.is_t1_active_at_timestamp(0));
         assert!(chainspec.is_t1_active_at_timestamp(1000));
+        assert!(chainspec.is_t1a_active_at_timestamp(0));
+        assert!(chainspec.is_t1a_active_at_timestamp(1000));
         assert!(chainspec.is_t2_active_at_timestamp(0));
         assert!(chainspec.is_t2_active_at_timestamp(1000));
 

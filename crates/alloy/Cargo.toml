@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 tempo-contracts = { workspace = true, features = ["rpc"] }
-tempo-primitives = { workspace = true, features = ["serde"] }
+tempo-primitives = { workspace = true, features = ["serde", "reth"] }
 tempo-evm = { workspace = true, optional = true }
 tempo-revm = { workspace = true, optional = true }
 
