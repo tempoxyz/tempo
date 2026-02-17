@@ -938,11 +938,13 @@ mod tests {
         use alloy_consensus::transaction::{SignerRecoverable, TxHashRef};
         use reth_primitives_traits::InMemorySize;
 
-        use crate::subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
-        use crate::transaction::{
-            TempoSignature,
-            tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
-            tt_signature::PrimitiveSignature,
+        use crate::{
+            subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX,
+            transaction::{
+                TempoSignature,
+                tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
+                tt_signature::PrimitiveSignature,
+            },
         };
 
         // Build an AA envelope with non-default values
