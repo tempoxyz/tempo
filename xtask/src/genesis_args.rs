@@ -990,8 +990,7 @@ fn initialize_validator_config_v2(
 
             println!("writing {num_validators} validators into v2 contract");
             for (i, validator) in consensus_config.validators.iter().enumerate() {
-                #[expect(non_snake_case, reason = "field of a snakeCase smart contract call")]
-                let validatorAddress = onchain_validator_addresses[i];
+                let validator_address = onchain_validator_addresses[i];
                 let public_key = validator.public_key();
                 let pubkey: B256 = public_key.encode().as_ref().try_into().unwrap();
                 let addr = validator.addr;
@@ -1002,7 +1001,7 @@ fn initialize_validator_config_v2(
                 let mut hasher = Keccak256::new();
                 hasher.update(chain_id.to_be_bytes());
                 hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-                hasher.update(validatorAddress.as_slice());
+                hasher.update(validator_address.as_slice());
                 hasher.update(ingress.as_bytes());
                 hasher.update(egress.as_bytes());
                 let message = hasher.finalize();
@@ -1013,7 +1012,7 @@ fn initialize_validator_config_v2(
                 v2.add_validator(
                     admin,
                     IValidatorConfigV2::addValidatorCall {
-                        validatorAddress,
+                        validator_address: validatorAddress,
                         publicKey: pubkey,
                         ingress: ingress.clone(),
                         egress: egress.clone(),
