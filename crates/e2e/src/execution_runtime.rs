@@ -55,10 +55,12 @@ use tempo_node::{
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
 };
 use tempo_precompiles::{
-    VALIDATOR_CONFIG_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
+    validator_config_v2::IValidatorConfigV2,
 };
+use tokio::sync::oneshot;
 
 const ADMIN_INDEX: u32 = 0;
 const VALIDATOR_START_INDEX: u32 = 1;
@@ -128,6 +130,10 @@ impl Builder {
             .wrap_err("failed to insert epoch length into genesis")?;
 
         genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
+
+        // TODO: Make this configurable so we can run tests that start with
+        // Validator Config V2 at genesis.
+        genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
 
         let mut evm = setup_tempo_evm();
 
@@ -392,6 +398,46 @@ impl ExecutionRuntime {
                                 .unwrap();
                             let _ = response.send(receipt);
                         }
+                        Message::InitializeIfMigrated(InitializeIfMigrated {
+                            http_url,
+                            response,
+                        }) => {
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config_v2 =
+                                IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            let receipt = validator_config_v2
+                                .initializeIfMigrated()
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
+                        Message::MigrateValidator(migrate_validator) => {
+                            let MigrateValidator {
+                                http_url,
+                                index,
+                                response,
+                            } = migrate_validator;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config_v2 =
+                                IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            let receipt = validator_config_v2
+                                .migrateValidator(index)
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
                         Message::SetNextFullDkgCeremony(set_next_full_dkg_ceremony) => {
                             let SetNextFullDkgCeremony {
                                 http_url,
@@ -467,7 +513,7 @@ impl ExecutionRuntime {
         public_key: PublicKey,
         addr: SocketAddr,
     ) -> eyre::Result<TransactionReceipt> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(
                 AddValidator {
@@ -490,7 +536,7 @@ impl ExecutionRuntime {
         index: u64,
         active: bool,
     ) -> eyre::Result<TransactionReceipt> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(
                 ChangeValidatorStatus {
@@ -506,12 +552,41 @@ impl ExecutionRuntime {
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
     }
 
+    pub async fn initialize_if_migrated(&self, http_url: Url) -> eyre::Result<TransactionReceipt> {
+        let (response, rx) = oneshot::channel();
+        self.to_runtime
+            .send(InitializeIfMigrated { http_url, response }.into())
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    pub async fn migrate_validator(
+        &self,
+        http_url: Url,
+        index: u64,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (response, rx) = oneshot::channel();
+        self.to_runtime
+            .send(
+                MigrateValidator {
+                    http_url,
+                    index,
+                    response,
+                }
+                .into(),
+            )
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
     pub async fn set_next_full_dkg_ceremony(
         &self,
         http_url: Url,
         epoch: u64,
     ) -> eyre::Result<TransactionReceipt> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(
                 SetNextFullDkgCeremony {
@@ -533,7 +608,7 @@ impl ExecutionRuntime {
         public_key: PublicKey,
         addr: SocketAddr,
     ) -> eyre::Result<TransactionReceipt> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(
                 AddValidator {
@@ -559,7 +634,7 @@ impl ExecutionRuntime {
         Fut: std::future::Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(Message::RunAsync(Box::pin(async move {
                 let result = fut.await;
@@ -604,7 +679,7 @@ impl ExecutionRuntimeHandle {
         config: ExecutionNodeConfig,
         database: DatabaseEnv,
     ) -> eyre::Result<ExecutionNode> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(Message::SpawnNode {
                 name: name.to_string(),
@@ -775,12 +850,14 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
 enum Message {
     AddValidator(Box<AddValidator>),
     ChangeValidatorStatus(Box<ChangeValidatorStatus>),
+    InitializeIfMigrated(InitializeIfMigrated),
+    MigrateValidator(MigrateValidator),
     SetNextFullDkgCeremony(Box<SetNextFullDkgCeremony>),
     SpawnNode {
         name: String,
         config: ExecutionNodeConfig,
         database: DatabaseEnv,
-        response: tokio::sync::oneshot::Sender<ExecutionNode>,
+        response: oneshot::Sender<ExecutionNode>,
     },
     RunAsync(BoxFuture<'static, ()>),
     Stop,
@@ -798,6 +875,18 @@ impl From<ChangeValidatorStatus> for Message {
     }
 }
 
+impl From<InitializeIfMigrated> for Message {
+    fn from(value: InitializeIfMigrated) -> Self {
+        Self::InitializeIfMigrated(value)
+    }
+}
+
+impl From<MigrateValidator> for Message {
+    fn from(value: MigrateValidator) -> Self {
+        Self::MigrateValidator(value)
+    }
+}
+
 impl From<SetNextFullDkgCeremony> for Message {
     fn from(value: SetNextFullDkgCeremony) -> Self {
         Self::SetNextFullDkgCeremony(value.into())
@@ -811,7 +900,7 @@ struct AddValidator {
     address: Address,
     public_key: PublicKey,
     addr: SocketAddr,
-    response: tokio::sync::oneshot::Sender<TransactionReceipt>,
+    response: oneshot::Sender<TransactionReceipt>,
 }
 
 #[derive(Debug)]
@@ -820,7 +909,22 @@ struct ChangeValidatorStatus {
     http_url: Url,
     index: u64,
     active: bool,
-    response: tokio::sync::oneshot::Sender<TransactionReceipt>,
+    response: oneshot::Sender<TransactionReceipt>,
+}
+
+#[derive(Debug)]
+struct InitializeIfMigrated {
+    /// URL of the node to send this to.
+    http_url: Url,
+    response: oneshot::Sender<TransactionReceipt>,
+}
+
+#[derive(Debug)]
+struct MigrateValidator {
+    /// URL of the node to send this to.
+    http_url: Url,
+    index: u64,
+    response: oneshot::Sender<TransactionReceipt>,
 }
 
 #[derive(Debug)]
@@ -828,7 +932,7 @@ struct SetNextFullDkgCeremony {
     /// URL of the node to send this to.
     http_url: Url,
     epoch: u64,
-    response: tokio::sync::oneshot::Sender<TransactionReceipt>,
+    response: oneshot::Sender<TransactionReceipt>,
 }
 
 pub fn admin() -> Address {

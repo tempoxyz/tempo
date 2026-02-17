@@ -1706,7 +1706,7 @@ fn determine_next_players(
     digest: Digest,
     read_v2: &Counter,
 ) -> eyre::Result<ordered::Set<PublicKey>> {
-    let syncers = if can_use_v2_at_block_hash(node, digest.0)
+    let next_players = if can_use_v2_at_block_hash(node, digest.0)
         .wrap_err("failed determining if validator config v2 can be used")?
     {
         read_v2.inc();
@@ -1736,8 +1736,8 @@ fn determine_next_players(
         state.syncers.clone()
     };
 
-    debug!(?syncers, "determined syncers");
-    Ok(syncers)
+    debug!(?next_players, "determined next players");
+    Ok(next_players)
 }
 
 /// Reads the `nextFullDkgCeremony` epoch value from one of the validator config contracts.

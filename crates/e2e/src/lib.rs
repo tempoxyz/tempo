@@ -176,10 +176,10 @@ pub async fn setup_validators(
         .collect::<Vec<_>>();
     verifier_keys.sort_by_key(|key| key.public_key());
 
-    // The port here does not matter because it will be ignored in simulated p2p.
-    // Still nice, because sometimes nodes can be better identified in logs.
+    // The network address itself is ignored in the simulated environment, but
+    // IP addresses can only be owned by one validator and so must be distinct.
     let network_addresses = (1..)
-        .map(|port| SocketAddr::from(([127, 0, 0, 1], port)))
+        .map(|i| SocketAddr::from(([127, 0, 0, i], 8000)))
         .take((how_many_signers + how_many_verifiers) as usize)
         .collect::<Vec<_>>();
     let chain_addresses = (0..)
