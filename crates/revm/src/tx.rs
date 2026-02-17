@@ -951,7 +951,7 @@ mod tests {
         }];
         let tx = super::TempoTxEnv {
             inner: revm::context::TxEnv {
-                access_list: AccessList(items.clone()),
+                access_list: AccessList(items),
                 ..Default::default()
             },
             ..Default::default()
@@ -966,8 +966,7 @@ mod tests {
 
     #[test]
     fn test_transaction_authorization_list() {
-        use revm::context::either::Either;
-        use revm::context::transaction::SignedAuthorization;
+        use revm::context::{either::Either, transaction::SignedAuthorization};
 
         let auth = SignedAuthorization::new_unchecked(
             alloy_eips::eip7702::Authorization {
