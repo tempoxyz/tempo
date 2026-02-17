@@ -982,7 +982,8 @@ where
 
     async fn validate_transactions(
         &self,
-        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
+        transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
+        + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
@@ -1005,7 +1006,7 @@ where
     async fn validate_transactions_with_origin(
         &self,
         origin: TransactionOrigin,
-        transactions: impl IntoIterator<Item = Self::Transaction> + Send,
+        transactions: impl IntoIterator<Item = Self::Transaction, IntoIter: Send> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
