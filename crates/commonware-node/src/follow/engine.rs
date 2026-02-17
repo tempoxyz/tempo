@@ -7,7 +7,7 @@
 //! - FollowResolver for marshal's gap-repair
 //! - Tip tracker for push-based finalization events
 //!
-//! The archive format is shared with the consensus engine (see [`crate::storage`])
+//! The archive format is shared with the consensus engine running in validator mode
 //! so nodes can switch between validator and follower modes without data migration.
 
 use std::{sync::Arc, time::Duration};

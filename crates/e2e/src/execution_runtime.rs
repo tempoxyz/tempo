@@ -691,7 +691,7 @@ pub fn genesis() -> Genesis {
     serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap()
 }
 
-/// Returns MDBX [`DatabaseArguments`] sized for tests (1 GB max instead of 8 TB).
+/// Returns MDBX DB args sized for tests (1 GB max instead of 8 TB).
 ///
 /// The default 8 TB geometry exhausts process virtual-address space when
 /// many databases are open concurrently across parallel test threads.
