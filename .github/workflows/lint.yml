@@ -133,7 +133,21 @@ jobs:
       - uses: crate-ci/typos@3a4d65230db538caabac6e156599c8ba8380ff07 # v1.43.1
 
   deny:
-    uses: ithacaxyz/ci/.github/workflows/deny.yml@main
+    name: deny
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28 # v2.67.19
+        with:
+          tool: cargo-deny
+      - run: cargo deny --all-features check all
 
   zepter:
     name: zepter

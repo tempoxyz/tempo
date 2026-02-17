@@ -6,8 +6,8 @@ on:
 
 jobs:
   changelog:
-    # Skip for fork PRs since they can't access secrets
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Skip for fork PRs
+    if: github.repository == 'tempoxyz/tempo'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,6 +20,6 @@ jobs:
       - run: npm install -g @anthropic-ai/claude-code
       - uses: wevm/changelogs/check@master
         with:
-          ai: 'claude -p'
+          ai: "claude -p"
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
