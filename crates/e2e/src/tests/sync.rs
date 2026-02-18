@@ -4,10 +4,9 @@
 //! assume that the node has never been run but been given a synced execution
 //! layer database./// Runs a validator restart test with the given configuration
 
-use std::{num::NonZeroU64, time::Duration};
+use std::time::Duration;
 
 use alloy::transports::http::reqwest::Url;
-use commonware_consensus::types::{Epocher, FixedEpocher, Height};
 use commonware_macros::test_traced;
 use commonware_runtime::{
     Clock as _, Metrics as _, Runner as _,
@@ -29,6 +28,7 @@ fn joins_from_snapshot() {
     let setup = Setup::new()
         .how_many_signers(4)
         .how_many_verifiers(1)
+        .connect_execution_layer_nodes(true)
         .epoch_length(epoch_length);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
@@ -105,39 +105,8 @@ fn joins_from_snapshot() {
 
         info!("new validator was added to the committee, but not started");
 
-        // Stop the validator that was originally removed. It should have
-        // remained in the peer set for a while and received many of the latest
-        // blocks without being a signer.
-
-        // TODO: remove this once the panic using `execution_provider_offline`
-        // works.
-        let last_epoch_before_stop = {
-            let provider = receiver.execution_provider();
-            let height = provider.best_block_number().unwrap();
-            FixedEpocher::new(NonZeroU64::new(epoch_length).unwrap())
-                .containing(Height::new(height))
-                .unwrap()
-                .epoch()
-        };
         receiver.stop().await;
-
-        // FIXME: This panics with, even though the docs suggest that this
-        // should work after stopping the node.
-        //
-        // > thread 'tests::sync::joins_from_snapshot' (1590206) panicked at crates/e2e/src/testing_node.rs:403:14:
-        // > failed to open execution node database: Could not open database at path: /var/folders/67/p5bqzp895gngs5k_dlth5w7w0000gn/T/tempo_e2e_testAbLHo5/execution-e0ac6b28476eac8c0ae43d327da5e77316f280f9c1c6b2bf5def422988d90597/db
-        //
-        // > Caused by:
-        // >     failed to open the database: unknown error code: 35 (35)
-        // let last_epoch_before_stop = {
-        //     let provider = receiver.execution_provider_offline();
-        //     let height = provider.best_block_number().unwrap();
-        //     FixedEpocher::new(NonZeroU64::new(epoch_length).unwrap())
-        //         .containing(Height::new(height))
-        //         .unwrap()
-        //         .epoch()
-        // };
-
+        let last_epoch_before_stop = latest_epoch_of_validator(&context, &receiver.uid);
         info!(%last_epoch_before_stop, "stopped the original validator");
 
         // Now turn the receiver into the donor - except for the database dir and
@@ -173,13 +142,20 @@ fn joins_from_snapshot() {
                 if metric.ends_with("_epoch_manager_latest_epoch") {
                     let epoch = value.parse::<u64>().unwrap();
 
-                    if epoch > last_epoch_before_stop.get() {
+                    assert!(
+                        epoch < last_epoch_before_stop + 4,
+                        "network advanced 4 epochs before without the new \
+                        validator catching up; there is likely a bug",
+                    );
+
+                    if epoch > last_epoch_before_stop {
                         validators_at_epoch += 1;
                     }
 
                     if metric.contains(&receiver.uid) {
+                        // -1 to account for stopping on boundaries.
                         assert!(
-                            epoch >= last_epoch_before_stop.get(),
+                            epoch >= last_epoch_before_stop.saturating_sub(1),
                             "when starting from snapshot, older epochs must never \
                             had consensus engines running"
                         );
@@ -203,7 +179,8 @@ fn can_restart_after_joining_from_snapshot() {
     let setup = Setup::new()
         .how_many_signers(4)
         .how_many_verifiers(1)
-        .epoch_length(epoch_length);
+        .epoch_length(epoch_length)
+        .connect_execution_layer_nodes(true);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
@@ -279,40 +256,15 @@ fn can_restart_after_joining_from_snapshot() {
 
         info!("new validator was added to the committee, but not started");
 
-        // Stop the validator that was originally removed. It should have
-        // remained in the peer set for a while and received many of the latest
-        // blocks without being a signer.
-
-        // TODO: remove this once the panic using `execution_provider_offline`
-        // works.
-        let last_epoch_before_stop = {
-            let provider = receiver.execution_provider();
-            let height = provider.best_block_number().unwrap();
-            FixedEpocher::new(NonZeroU64::new(epoch_length).unwrap())
-                .containing(Height::new(height))
-                .unwrap()
-                .epoch()
-        };
         receiver.stop().await;
 
-        // FIXME: This panics with, even though the docs suggest that this
-        // should work after stopping the node.
-        //
-        // > thread 'tests::sync::joins_from_snapshot' (1590206) panicked at crates/e2e/src/testing_node.rs:403:14:
-        // > failed to open execution node database: Could not open database at path: /var/folders/67/p5bqzp895gngs5k_dlth5w7w0000gn/T/tempo_e2e_testAbLHo5/execution-e0ac6b28476eac8c0ae43d327da5e77316f280f9c1c6b2bf5def422988d90597/db
-        //
-        // > Caused by:
-        // >     failed to open the database: unknown error code: 35 (35)
-        // let last_epoch_before_stop = {
-        //     let provider = receiver.execution_provider_offline();
-        //     let height = provider.best_block_number().unwrap();
-        //     FixedEpocher::new(NonZeroU64::new(epoch_length).unwrap())
-        //         .containing(Height::new(height))
-        //         .unwrap()
-        //         .epoch()
-        // };
+        let last_epoch_before_stop = latest_epoch_of_validator(&context, &receiver.uid);
 
-        info!(%last_epoch_before_stop, "stopped the original validator");
+        info!(
+            %last_epoch_before_stop,
+            id = %receiver.uid,
+            "stopped the original validator",
+        );
 
         // Now turn the receiver into the donor - except for the database dir and
         // env. This simulates a start from a snapshot.
@@ -343,23 +295,30 @@ fn can_restart_after_joining_from_snapshot() {
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
 
-                // Check if this is a height metric
                 if metric.ends_with("_epoch_manager_latest_epoch") {
                     let epoch = value.parse::<u64>().unwrap();
 
-                    if epoch > last_epoch_before_stop.get() {
+                    assert!(
+                        epoch < last_epoch_before_stop + 4,
+                        "network advanced 4 epochs before without the new \
+                        validator catching up; there is likely a bug",
+                    );
+
+                    if epoch > last_epoch_before_stop {
                         validators_at_epoch += 1;
                     }
 
                     if metric.contains(&receiver.uid) {
+                        // -1 to account for stopping on boundaries.
                         assert!(
-                            epoch >= last_epoch_before_stop.get(),
+                            epoch >= last_epoch_before_stop.saturating_sub(1),
                             "when starting from snapshot, older epochs must never \
                             had consensus engines running"
                         );
                     }
                 }
             }
+
             if validators_at_epoch == 4 {
                 break;
             }
@@ -428,4 +387,24 @@ async fn wait_for_participants(context: &Context, target: u32) {
         }
         context.sleep(Duration::from_secs(1)).await;
     }
+}
+
+fn latest_epoch_of_validator(context: &Context, id: &str) -> u64 {
+    let metrics = context.encode();
+
+    for line in metrics.lines() {
+        if !line.starts_with(CONSENSUS_NODE_PREFIX) {
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+        let metric = parts.next().unwrap();
+        let value = parts.next().unwrap();
+
+        if metric.ends_with("_epoch_manager_latest_epoch") && metric.contains(id) {
+            return value.parse::<u64>().unwrap();
+        }
+    }
+
+    panic!("validator had no entry for latest epoch");
 }

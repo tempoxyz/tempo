@@ -10,9 +10,6 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 /// @dev Tests invariants TEMPO-TIP1 through TEMPO-TIP29
 contract TIP20InvariantTest is InvariantBaseTest {
 
-    /// @dev Log file path for recording actions
-    string private constant LOG_FILE = "tip20.log";
-
     /// @dev Ghost variables for reward distribution tracking
     uint256 private _totalRewardsDistributed;
     uint256 private _totalRewardsClaimed;
@@ -79,8 +76,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             _registerHolder(tokenAddr, charlie);
             _registerHolder(tokenAddr, pathUSDAdmin);
         }
-
-        _initLogFile(LOG_FILE, "TIP20 Invariant Test Log");
 
         // One-time constant checks (immutable after deployment)
         for (uint256 i = 0; i < _tokens.length; i++) {
@@ -155,21 +150,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 totalSupplyBefore,
                 "TEMPO-TIP2: Total supply changed during transfer"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TRANSFER: ",
-                        _getActorIndex(actor),
-                        " -> ",
-                        _getActorIndex(recipient),
-                        " ",
-                        vm.toString(amount),
-                        " ",
-                        token.symbol()
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -216,19 +196,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertEq(
                 token.totalSupply(), totalSupplyBefore, "Total supply changed on zero transfer"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TRANSFER_ZERO: ",
-                        _getActorIndex(actor),
-                        " -> ",
-                        _getActorIndex(recipient),
-                        " 0 ",
-                        token.symbol()
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -296,23 +263,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 recipientBalanceBefore + amount,
                 "TEMPO-TIP3: Recipient balance not increased"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TRANSFER_FROM: ",
-                        _getActorIndex(owner),
-                        " -> ",
-                        _getActorIndex(recipient),
-                        " via ",
-                        _getActorIndex(spender),
-                        " ",
-                        vm.toString(amount),
-                        " ",
-                        token.symbol()
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -343,21 +293,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertEq(
                 token.allowance(actor, spender), amount, "TEMPO-TIP5: Allowance not set correctly"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "APPROVE: ",
-                        _getActorIndex(actor),
-                        " approved ",
-                        _getActorIndex(spender),
-                        " for ",
-                        vm.toString(amount),
-                        " ",
-                        token.symbol()
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -402,19 +337,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 recipientBalanceBefore + amount,
                 "TEMPO-TIP6: Recipient balance not increased"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "MINT: ",
-                        vm.toString(amount),
-                        " ",
-                        token.symbol(),
-                        " to ",
-                        _getActorIndex(recipient)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -451,10 +373,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 adminBalance - amount,
                 "TEMPO-TIP8: Admin balance not decreased"
             );
-
-            if (_loggingEnabled) {
-                _log(string.concat("BURN: ", vm.toString(amount), " ", token.symbol()));
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -504,21 +422,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 "TEMPO-TIP9: Recipient balance not increased"
             );
             assertEq(token.totalSupply(), totalSupplyBefore, "TEMPO-TIP9: Total supply changed");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TRANSFER_WITH_MEMO: ",
-                        _getActorIndex(actor),
-                        " -> ",
-                        _getActorIndex(recipient),
-                        " ",
-                        vm.toString(amount),
-                        " ",
-                        token.symbol()
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -590,23 +493,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                     "TEMPO-TIP3: Allowance not decreased correctly"
                 );
             }
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TRANSFER_FROM_MEMO: ",
-                        _getActorIndex(owner),
-                        " -> ",
-                        _getActorIndex(recipient),
-                        " via ",
-                        _getActorIndex(spender),
-                        " ",
-                        vm.toString(amount),
-                        " ",
-                        token.symbol()
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -646,7 +532,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
         (address currentRecipient,,) = token.userRewardInfo(actor);
         uint256 actorBalance = token.balanceOf(actor);
         uint128 optedInSupplyBefore = token.optedInSupply();
-        bool isDelegation = newRecipient != address(0) && newRecipient != actor;
 
         vm.startPrank(actor);
         try token.setRewardRecipient(newRecipient) {
@@ -675,34 +560,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                     optedInSupplyBefore - uint128(actorBalance),
                     "Opted-in supply not decreased"
                 );
-            }
-
-            if (isDelegation) {
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "DELEGATE_REWARDS: ",
-                            _getActorIndex(actor),
-                            " delegated to ",
-                            _getActorIndex(newRecipient),
-                            " on ",
-                            token.symbol()
-                        )
-                    );
-                }
-            } else {
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "SET_REWARD_RECIPIENT: ",
-                            _getActorIndex(actor),
-                            " -> ",
-                            newRecipient != address(0) ? _getActorIndex(newRecipient) : "NONE",
-                            " on ",
-                            token.symbol()
-                        )
-                    );
-                }
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
@@ -761,19 +618,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 tokenBalanceBefore + amount,
                 "TEMPO-TIP13: Tokens not transferred to contract"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "DISTRIBUTE_REWARD: ",
-                        _getActorIndex(actor),
-                        " distributed ",
-                        vm.toString(amount),
-                        " ",
-                        token.symbol()
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -822,18 +666,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 globalRPTBefore,
                 "TEMPO-TIP12: Zero-delta distribution should not change globalRewardPerToken"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "DISTRIBUTE_REWARD_TINY: ",
-                        _getActorIndex(actor),
-                        " distributed 1 ",
-                        token.symbol(),
-                        " (delta=0)"
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -866,17 +698,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 bytes4(reason),
                 ITIP20.NoOptedInSupply.selector,
                 "TEMPO-TIP12: Should revert with NoOptedInSupply when optedInSupply == 0"
-            );
-        }
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "DISTRIBUTE_REWARD_ZERO_OPTED: ",
-                    _getActorIndex(actor),
-                    " correctly rejected on ",
-                    token.symbol()
-                )
             );
         }
     }
@@ -924,21 +745,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertLe(
                 claimed, contractBalanceBefore, "TEMPO-TIP15: Claimed more than contract balance"
             );
-
-            if (claimed > 0) {
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "CLAIM_REWARDS: ",
-                            _getActorIndex(actor),
-                            " claimed ",
-                            vm.toString(claimed),
-                            " ",
-                            token.symbol()
-                        )
-                    );
-                }
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -994,23 +800,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 contractBalance - claimed,
                 "TEMPO-TIP14: Contract balance not decreased correctly"
             );
-
-            if (claimed > 0) {
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "CLAIM_VERIFIED: ",
-                            _getActorIndex(actor),
-                            " claimed ",
-                            vm.toString(claimed),
-                            "/",
-                            vm.toString(pendingRewards),
-                            " ",
-                            token.symbol()
-                        )
-                    );
-                }
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -1055,19 +844,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 totalSupplyBefore - amount,
                 "TEMPO-TIP23: Total supply not decreased"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "BURN_BLOCKED: ",
-                        vm.toString(amount),
-                        " ",
-                        token.symbol(),
-                        " from ",
-                        _getActorIndex(target)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -1221,26 +997,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
             newPolicyId = uint64(policySeed % 10) + 2;
         }
 
-        uint64 currentPolicyId = token.transferPolicyId();
-
         vm.startPrank(admin);
         try token.changeTransferPolicyId(newPolicyId) {
             vm.stopPrank();
 
             assertEq(token.transferPolicyId(), newPolicyId, "Transfer policy ID not updated");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CHANGE_POLICY: ",
-                        token.symbol(),
-                        " policy ",
-                        vm.toString(currentPolicyId),
-                        " -> ",
-                        vm.toString(newPolicyId)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             // Expected if policy doesn't exist
@@ -1301,10 +1062,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 assertEq(
                     address(token.quoteToken()), address(newQuoteToken), "Quote token not updated"
                 );
-
-                if (_loggingEnabled) {
-                    _log(string.concat("UPDATE_QUOTE_TOKEN: ", token.symbol(), " quote changed"));
-                }
             } catch (bytes memory reason) {
                 vm.stopPrank();
                 // Cycle detection may reject
@@ -1345,7 +1102,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
         TIP20 token = _selectBaseToken(tokenSeed);
 
         uint256 currentSupply = token.totalSupply();
-        uint256 currentCap = token.supplyCap();
 
         // Bound new cap between current supply and max uint128
         newCap = bound(newCap, currentSupply, type(uint128).max);
@@ -1361,19 +1117,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertGe(
                 token.supplyCap(), token.totalSupply(), "TEMPO-TIP22: Supply cap below total supply"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "SET_SUPPLY_CAP: ",
-                        token.symbol(),
-                        " cap ",
-                        vm.toString(currentCap),
-                        " -> ",
-                        vm.toString(newCap)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -1459,19 +1202,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertEq(
                 afterAuthorized, !blacklist, "TEMPO-TIP16: Blacklist status not updated correctly"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "TOGGLE_BLACKLIST: ",
-                        _getActorIndex(actor),
-                        " ",
-                        blacklist ? "BLACKLISTED" : "UNBLACKLISTED",
-                        " on ",
-                        token.symbol()
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -1495,12 +1225,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertFalse(token.paused(), "TEMPO-TIP17: Token should be unpaused");
         }
         vm.stopPrank();
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat("TOGGLE_PAUSE: ", token.symbol(), " ", pause ? "PAUSED" : "UNPAUSED")
-            );
-        }
     }
 
     /// @notice Handler that verifies paused tokens reject transfers with ContractPaused
@@ -1529,17 +1253,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
-        }
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_TRANSFER_PAUSED: ",
-                    _getActorIndex(actor),
-                    " blocked on paused ",
-                    token.symbol()
-                )
-            );
         }
     }
 

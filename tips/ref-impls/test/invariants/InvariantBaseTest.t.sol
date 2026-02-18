@@ -9,7 +9,7 @@ import { BaseTest } from "../BaseTest.t.sol";
 
 /// @title Invariant Base Test
 /// @notice Shared test infrastructure for invariant testing of Tempo precompiles
-/// @dev Provides common actor management, token selection, funding, and logging utilities
+/// @dev Provides common actor management, token selection, funding, and policy utilities
 abstract contract InvariantBaseTest is BaseTest {
 
     /*//////////////////////////////////////////////////////////////
@@ -31,12 +31,6 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @dev Additional tokens (token3, token4) - token1/token2 from BaseTest
     TIP20 public token3;
     TIP20 public token4;
-
-    /// @dev Log file path - must be set by child contract
-    string internal _logFile;
-
-    /// @dev Whether logging is enabled (set once from INVARIANT_LOG env var)
-    bool internal _loggingEnabled;
 
     /// @dev All addresses that may hold token balances (for invariant checks)
     address[] internal _balanceHolders;
@@ -93,26 +87,6 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @dev Registers an address as a potential balance holder
     function _registerBalanceHolder(address holder) internal {
         _balanceHolders.push(holder);
-    }
-
-    /// @notice Initialize log file with header
-    /// @param logFile The log file path
-    /// @param title The title for the log header
-    /// @dev Logging is only enabled if INVARIANT_LOG=true env var is set
-    function _initLogFile(string memory logFile, string memory title) internal {
-        // Read env var once during setup (default to false if not set)
-        _loggingEnabled = vm.envOr("INVARIANT_LOG", false);
-
-        if (!_loggingEnabled) return;
-
-        _logFile = logFile;
-        try vm.removeFile(_logFile) { } catch { }
-        _log("================================================================================");
-        _log(string.concat("                         ", title));
-        _log("================================================================================");
-        _log(string.concat("Actors: ", vm.toString(_actors.length), " | Tokens: T1, T2, T3, T4"));
-        _log("--------------------------------------------------------------------------------");
-        _log("");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -256,21 +230,6 @@ abstract contract InvariantBaseTest is BaseTest {
         return authorized[bound(seed, 0, count - 1)];
     }
 
-    /// @dev Gets token symbol for logging
-    /// @param token Token address
-    /// @return Symbol string
-    function _getTokenSymbol(address token) internal view returns (string memory) {
-        if (token == address(pathUSD)) {
-            return "pathUSD";
-        }
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            if (address(_tokens[i]) == token) {
-                return _tokens[i].symbol();
-            }
-        }
-        return vm.toString(token);
-    }
-
     /*//////////////////////////////////////////////////////////////
                           FUNDING HELPERS
     //////////////////////////////////////////////////////////////*/
@@ -329,48 +288,6 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @return True if authorized
     function _isAuthorized(address token, address actor) internal view returns (bool) {
         return registry.isAuthorized(_getPolicyId(token), actor);
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                              LOGGING
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Logs a message to the log file (no-op if logging disabled)
-    function _log(string memory message) internal {
-        if (!_loggingEnabled) return;
-        vm.writeLine(_logFile, message);
-    }
-
-    /// @dev Gets actor index from address for logging
-    function _getActorIndex(address actor) internal view returns (string memory) {
-        for (uint256 i = 0; i < _actors.length; i++) {
-            if (_actors[i] == actor) {
-                return string.concat("Actor", vm.toString(i));
-            }
-        }
-        if (actor == admin) return "Admin";
-        if (actor == address(0)) return "ZERO";
-        return vm.toString(actor);
-    }
-
-    /// @dev Logs contract balances for all tokens (no-op if logging disabled)
-    /// @param contractAddr Contract address to check
-    /// @param contractName Name for logging
-    function _logContractBalances(address contractAddr, string memory contractName) internal {
-        if (!_loggingEnabled) return;
-        string memory balanceStr = string.concat(
-            contractName, " balances: pathUSD=", vm.toString(pathUSD.balanceOf(contractAddr))
-        );
-        for (uint256 t = 0; t < _tokens.length; t++) {
-            balanceStr = string.concat(
-                balanceStr,
-                ", ",
-                _tokens[t].symbol(),
-                "=",
-                vm.toString(_tokens[t].balanceOf(contractAddr))
-            );
-        }
-        _log(balanceStr);
     }
 
     /*//////////////////////////////////////////////////////////////

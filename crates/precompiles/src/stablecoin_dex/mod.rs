@@ -721,6 +721,7 @@ impl StablecoinDEX {
                 order.tick(),
                 true,
             ) && e.is_system_error()
+                && self.storage.spec().is_t2()
             {
                 return Err(e);
             }
@@ -4277,59 +4278,187 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_flip_order_fill_reverts_on_system_error() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+    /// Common state produced by [`setup_flip_order_test`].
+    struct FlipOrderTestCtx {
+        exchange: StablecoinDEX,
+        alice: Address,
+        bob: Address,
+        admin: Address,
+        base_token: Address,
+        quote_token: Address,
+        book_key: B256,
+        amount: u128,
+        flip_tick: i16,
+    }
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
-            let amount = MIN_ORDER_AMOUNT;
-            let tick = 100i16;
-            let flip_tick = 200i16;
+    /// Sets up a [`StablecoinDEX`] with a flip bid order ready to be filled.
+    fn setup_flip_order_test() -> eyre::Result<FlipOrderTestCtx> {
+        let mut exchange = StablecoinDEX::new();
+        exchange.initialize()?;
 
-            let price = orderbook::tick_to_price(tick);
-            let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+        let alice = Address::random();
+        let bob = Address::random();
+        let admin = Address::random();
+        let amount = MIN_ORDER_AMOUNT;
+        let tick = 100i16;
+        let flip_tick = 200i16;
 
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
-            exchange.create_pair(base_token)?;
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
 
-            let book_key = compute_book_key(base_token, quote_token);
+        let (base_token, quote_token) =
+            setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
+        exchange.create_pair(base_token)?;
 
-            // Place a flip bid order: when filled, it should flip to an ask at flip_tick
-            exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
+        let book_key = compute_book_key(base_token, quote_token);
 
-            let alice_quote_before = exchange.balance_of(alice, quote_token)?;
+        // Place a flip bid order: when filled, it should flip to an ask at flip_tick
+        exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
 
-            // Poison the flip target tick so commit_order_to_book overflows on checked_add
-            let poisoned_level = TickLevel::with_values(0, 0, u128::MAX);
-            exchange.books[book_key]
-                .tick_level_handler_mut(flip_tick, false)
-                .write(poisoned_level)?;
-
-            // Fund bob to fill the order
-            exchange.set_balance(bob, base_token, amount)?;
-
-            // The swap must revert because place_flip hits a Panic(UnderOverflow)
-            let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
-            assert!(
-                result.is_err(),
-                "Swap should revert when flip placement hits a system error"
-            );
-            assert!(
-                result.unwrap_err().is_system_error(),
-                "Error must be classified as a system error",
-            );
-
-            // Maker balance must be unchanged — no funds lost
-            let alice_quote_after = exchange.balance_of(alice, quote_token)?;
-            assert_eq!(alice_quote_before, alice_quote_after);
-
-            Ok(())
+        Ok(FlipOrderTestCtx {
+            exchange,
+            alice,
+            bob,
+            admin,
+            base_token,
+            quote_token,
+            book_key,
+            amount,
+            flip_tick,
         })
+    }
+
+    #[test]
+    fn test_flip_order_fill_ignores_business_logic_error() -> eyre::Result<()> {
+        // Business logic errors during flip are silently ignored (always).
+        for spec in [TempoHardfork::T1, TempoHardfork::T2] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let FlipOrderTestCtx {
+                    mut exchange,
+                    alice,
+                    bob,
+                    admin,
+                    base_token,
+                    quote_token,
+                    book_key,
+                    amount,
+                    flip_tick,
+                } = setup_flip_order_test()?;
+
+                // Blacklist alice on the base token AFTER order placement.
+                // When the flip (ask) is placed during fill, ensure_transfer_authorized(alice, dex)
+                // on the base token will fail with PolicyForbids — a business logic error.
+                let mut registry = TIP403Registry::new();
+                let policy_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                    },
+                )?;
+
+                let mut base = TIP20Token::from_address(base_token)?;
+                base.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy_id,
+                    },
+                )?;
+
+                registry.modify_policy_blacklist(
+                    admin,
+                    ITIP403Registry::modifyPolicyBlacklistCall {
+                        policyId: policy_id,
+                        account: alice,
+                        restricted: true,
+                    },
+                )?;
+
+                // Fund bob to fill the order
+                exchange.set_balance(bob, base_token, amount)?;
+
+                // The swap must succeed — PolicyForbids is not a system error, so it's ignored
+                let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
+                assert!(
+                    result.is_ok(),
+                    "[{spec:?}] Swap should succeed when flip hits a business logic error"
+                );
+
+                // Alice keeps the fill proceeds (base tokens credited during fill, not escrowed)
+                assert_eq!(exchange.balance_of(alice, base_token)?, amount);
+
+                // No flipped order exists — the ask tick level at flip_tick is empty
+                let level = exchange.books[book_key]
+                    .tick_level_handler(flip_tick, false)
+                    .read()?;
+                assert_eq!(
+                    level.total_liquidity, 0,
+                    "[{spec:?}] No flipped order should exist"
+                );
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_flip_order_fill_reverts_on_system_error_post_t2() -> eyre::Result<()> {
+        // System errors during flip propagate only on T2+. Pre-T2 all errors are ignored.
+        for spec in [TempoHardfork::T1, TempoHardfork::T2] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let FlipOrderTestCtx {
+                    mut exchange,
+                    alice,
+                    bob,
+                    base_token,
+                    quote_token,
+                    book_key,
+                    amount,
+                    flip_tick,
+                    ..
+                } = setup_flip_order_test()?;
+
+                let alice_quote_before = exchange.balance_of(alice, quote_token)?;
+
+                // Poison the flip target tick so commit_order_to_book overflows on checked_add
+                let poisoned_level = TickLevel::with_values(0, 0, u128::MAX);
+                exchange.books[book_key]
+                    .tick_level_handler_mut(flip_tick, false)
+                    .write(poisoned_level)?;
+
+                // Fund bob to fill the order
+                exchange.set_balance(bob, base_token, amount)?;
+
+                let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
+
+                if spec.is_t2() {
+                    // T2: system errors propagate — swap must revert
+                    assert!(
+                        result.is_err(),
+                        "Swap should revert when flip hits a system error"
+                    );
+                    assert!(
+                        result.unwrap_err().is_system_error(),
+                        "Error must be classified as a system error",
+                    );
+
+                    // Maker balance must be unchanged — no funds lost
+                    let alice_quote_after = exchange.balance_of(alice, quote_token)?;
+                    assert_eq!(alice_quote_before, alice_quote_after);
+                } else {
+                    // Pre-T2: all flip errors are ignored — swap succeeds
+                    assert!(
+                        result.is_ok(),
+                        "[{spec:?}] Swap should succeed when system error is pre-T2"
+                    );
+                }
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
     }
 }

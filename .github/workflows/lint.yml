@@ -133,7 +133,9 @@ jobs:
       - uses: crate-ci/typos@3a4d65230db538caabac6e156599c8ba8380ff07 # v1.43.1
 
   deny:
-    uses: ithacaxyz/ci/.github/workflows/deny.yml@main
+    permissions:
+      contents: read
+    uses: tempoxyz/ci/.github/workflows/deny.yml@main
 
   zepter:
     name: zepter
