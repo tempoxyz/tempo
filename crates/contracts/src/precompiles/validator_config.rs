@@ -1,4 +1,5 @@
 use alloc::string::String;
+
 pub use IValidatorConfig::IValidatorConfigErrors as ValidatorConfigError;
 
 crate::sol! {
