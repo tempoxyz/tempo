@@ -1,6 +1,6 @@
 //! Tempo predeployed contracts and bindings.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -94,9 +94,12 @@ mod tests {
     //!
     //! Optionally set `ETH_RPC_URL` to use a custom RPC endpoint.
 
+    extern crate std;
+
     use super::*;
     use alloy_primitives::{B256, keccak256};
     use alloy_provider::{Provider, ProviderBuilder};
+    use std::string::{String, ToString};
 
     /// Default public RPC URL for Ethereum mainnet.
     const DEFAULT_ETH_RPC_URL: &str = "https://eth.llamarpc.com";

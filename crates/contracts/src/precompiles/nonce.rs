@@ -1,5 +1,4 @@
 use alloc::string::String;
-
 pub use INonce::{INonceErrors as NonceError, INonceEvents as NonceEvent};
 
 crate::sol! {

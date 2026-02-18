@@ -21,6 +21,5 @@ alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [features]
-default = ["std", "rpc"]
-std = ["alloy-primitives/std", "alloy-sol-types/std"]
-rpc = ["std", "dep:alloy-contract"]
+default = ["rpc"]
+rpc = ["alloy-primitives/std", "alloy-sol-types/std", "dep:alloy-contract"]

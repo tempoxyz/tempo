@@ -1,5 +1,4 @@
 use alloc::string::String;
-
 pub use ITIP20Factory::{
     ITIP20FactoryErrors as TIP20FactoryError, ITIP20FactoryEvents as TIP20FactoryEvent,
 };
