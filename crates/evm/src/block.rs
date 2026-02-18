@@ -477,9 +477,9 @@ where
                     self.seen_subblocks.last_mut().unwrap()
                 };
 
-                last_subblock
-                    .1
-                    .push(tx.expect("always Some for subblock transactions"));
+                last_subblock.1.push(tx.ok_or_else(|| {
+                    BlockExecutionError::msg("missing tx for subblock transaction")
+                })?);
             }
             BlockSection::GasIncentive => {
                 self.incentive_gas_used += gas_used;
