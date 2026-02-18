@@ -369,9 +369,8 @@ where
 
         let execution_start = Instant::now();
         while let Some(pool_tx) = best_txs.next() {
-            // TIP-1016: For T2+ transactions, use execution_gas_limit (gas_limit minus state gas)
-            // for protocol limit checks. State gas does NOT count against protocol limits.
-            // For pre-T2, execution_gas_limit() == gas_limit() (state gas is 0).
+            // TIP-1016: State gas does not count toward block gas capacity, so use
+            // execution_gas_limit (= gas_limit - state_gas) for the block-level checks below.
             let tx_execution_gas_limit = pool_tx.transaction.execution_gas_limit();
 
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
