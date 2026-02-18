@@ -560,7 +560,7 @@ impl TIP20Token {
             .concat(),
         );
 
-        // 5. Validate signature (EOA only, no EIP-1271)
+        // 5. Validate ECDSA signature
         let parity = call.v.wrapping_sub(27) != 0;
         let sig = Signature::from_scalars_and_parity(call.r, call.s, parity);
         let recovered = sig
