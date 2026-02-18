@@ -7,6 +7,8 @@ import { BaseTest } from "./BaseTest.t.sol";
 
 contract ValidatorConfigV2Test is BaseTest {
 
+    error InvalidSignatureFormat();
+
     address public validator1 = address(0x2000);
     address public validator2 = address(0x3000);
     address public validator3 = address(0x4000);
@@ -15,20 +17,21 @@ contract ValidatorConfigV2Test is BaseTest {
     // setUp V1 validators (distinct from test fixtures to avoid collisions)
     address public setupVal1 = address(0xA000);
     address public setupVal2 = address(0xB000);
-    bytes32 internal constant SETUP_PUB_KEY_A =
-        0x1111111111111111111111111111111111111111111111111111111111111111;
-    bytes32 internal constant SETUP_PUB_KEY_B =
-        0x2222222222222222222222222222222222222222222222222222222222222222;
 
-    // Ed25519 public keys (deterministic, generated from sha256("test_key_N"))
-    bytes32 internal constant PUB_KEY_0 =
-        0xa6bcfb0a1c59cdea9b11d8857640350701eced80c3963ad6da42f8b227e7f5f7;
-    bytes32 internal constant PUB_KEY_1 =
-        0xe3f90db26854cc1c62c992fd1b402ccbf2eec2999e7ffd2a89766ba8d278bfc2;
-    bytes32 internal constant PUB_KEY_2 =
-        0x039abc7f554e4c872330720f75245b9a7c542b07cd8fd3792e54bbf6920bdf8b;
-    bytes32 internal constant PUB_KEY_3 =
-        0xd7038bea905041c2fec655d2295087aee137e0c8468f15a7f125b75576beabb2;
+    // Ed25519 keypairs — generated dynamically in setUp() via vm.createEd25519Key()
+    bytes32 internal SETUP_PUB_KEY_A;
+    bytes32 internal SETUP_PRIV_KEY_A;
+    bytes32 internal SETUP_PUB_KEY_B;
+    bytes32 internal SETUP_PRIV_KEY_B;
+
+    bytes32 internal PUB_KEY_0;
+    bytes32 internal PRIV_KEY_0;
+    bytes32 internal PUB_KEY_1;
+    bytes32 internal PRIV_KEY_1;
+    bytes32 internal PUB_KEY_2;
+    bytes32 internal PRIV_KEY_2;
+    bytes32 internal PUB_KEY_3;
+    bytes32 internal PRIV_KEY_3;
 
     string public ingress1 = "192.168.1.1:8000";
     string public egress1 = "192.168.1.1";
@@ -37,48 +40,62 @@ contract ValidatorConfigV2Test is BaseTest {
     string public ingress3 = "10.0.0.1:8000";
     string public egress3 = "10.0.0.1";
 
-    struct Signatures {
-        bytes testnet;
-        bytes mainnet;
-    }
-
-    function _sigAddV1() internal pure returns (Signatures memory) {
-        return Signatures(
-            hex"6d9e5fd9bb0322f54a1d4acfd0261b4a7a09f5edc32267595bfcc80b5d236960c1a6732f18b3b0dbca30b888c918f8ed9adf47cced0db3f1bd708cdf14406f01",
-            hex"bcf2e30eb13e696a7778291b7362023b76270c091e37fe66846457c3f25d2463de991f32b69ca63906ee88d76f72b1f94cf65383f4ed186d64392638f1198108"
+    function _signAdd(
+        bytes32 privateKey,
+        address validatorAddress,
+        string memory ingress,
+        string memory egress
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 message = keccak256(
+            abi.encodePacked(
+                uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress
+            )
+        );
+        // Forge's signEd25519 does simple concat(namespace, message), but the Rust
+        // precompile uses commonware's union_unique: varint(len) || namespace || message.
+        // Prepend uint8(len) to the namespace so Forge's concat matches commonware.
+        bytes memory ns = bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR");
+        return vm.signEd25519(
+            abi.encodePacked(uint8(ns.length), ns), abi.encodePacked(message), privateKey
         );
     }
 
-    function _sigAddV2() internal pure returns (Signatures memory) {
-        return Signatures(
-            hex"d27c0cc4ecef21d5bf7219c379dc89f0eabea7caef6728e2eecae183549b7cbe215ec3ad52fcaa7277cbd154713b9874d683d14916ac58a9d727099c452c7305",
-            hex"0c2b08217f2c629c64b43b5446576a05c591110c39c9e0d60a00f6ba023de808e1dd68872b39b7c4346c1f0794c307460f5448af5486635a625bdd4028adb805"
+    function _signRotate(
+        bytes32 privateKey,
+        address validatorAddress,
+        string memory ingress,
+        string memory egress
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 message = keccak256(
+            abi.encodePacked(
+                uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress
+            )
         );
-    }
-
-    function _sigAddV3() internal pure returns (Signatures memory) {
-        return Signatures(
-            hex"ad692cdbdcebcdb0b91b178b7639218ca71384408c029ae5826298393f4ffc071afd160f3c02f2777845158c5be348428a6bafd7ba1dc15acf8e5c7f5b68f607",
-            hex"8d82b037fdb41fd7cc6312aca687abf31f30e0929af321befe33a5952eb36f7dfe2210e83506f6d126670c822d4bc89fe4dd7734dfacfd8e455b030522c73a0a"
+        bytes memory ns = bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR");
+        return vm.signEd25519(
+            abi.encodePacked(uint8(ns.length), ns), abi.encodePacked(message), privateKey
         );
-    }
-
-    function _sigRotateV1() internal pure returns (Signatures memory) {
-        return Signatures(
-            hex"e7e14eb6759c5a6cb713eb88910c40fdd8d239b8629fdfef795a93e2303d3d1da3d3a6cfbebb05635843c621198db356052ca67917cb26d61718ea05f3bb6a0f",
-            hex"be8f83b8ba49e1d0f461a22ec8d1506b2fb6205b1387f18b3fcc2b5cef0c9e10aba796dcb9e0075c78be56664b7573df749d428dba8513c08442d5b36dd99a0e"
-        );
-    }
-
-    function _getSignature(Signatures memory sigs) internal view returns (bytes memory) {
-        if (block.chainid == 42_431) return sigs.testnet;
-        if (block.chainid == 62_321) return sigs.mainnet;
-        return "";
     }
 
     function setUp() public override {
         super.setUp();
-        vm.skip(isTempo);
+
+        // Generate Ed25519 keypairs deterministically
+        (SETUP_PUB_KEY_A, SETUP_PRIV_KEY_A) = vm.createEd25519Key(keccak256("setup_key_a"));
+        (SETUP_PUB_KEY_B, SETUP_PRIV_KEY_B) = vm.createEd25519Key(keccak256("setup_key_b"));
+        (PUB_KEY_0, PRIV_KEY_0) = vm.createEd25519Key(keccak256("test_key_0"));
+        (PUB_KEY_1, PRIV_KEY_1) = vm.createEd25519Key(keccak256("test_key_1"));
+        (PUB_KEY_2, PRIV_KEY_2) = vm.createEd25519Key(keccak256("test_key_2"));
+        (PUB_KEY_3, PRIV_KEY_3) = vm.createEd25519Key(keccak256("test_key_3"));
+
         // Add two V1 validators so _initializeV2() has something to migrate.
         // Migration copies V1's owner to V2, so no direct storage writes needed.
         validatorConfig.addValidator(
@@ -106,13 +123,25 @@ contract ValidatorConfigV2Test is BaseTest {
         _initializeV2();
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _getSignature(_sigAddV2())
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
         validatorConfigV2.addValidator(
-            validator3, PUB_KEY_2, ingress3, egress3, _getSignature(_sigAddV3())
+            validator3,
+            PUB_KEY_2,
+            ingress3,
+            egress3,
+            _signAdd(PRIV_KEY_2, validator3, ingress3, egress3)
         );
 
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
@@ -182,16 +211,16 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         if (isTempo) {
-            // 6. InvalidSignature (short)
+            // 6. InvalidSignatureFormat (short — wrong length)
             try validatorConfigV2.addValidator(
                 validator1, PUB_KEY_0, ingress1, egress1, hex"0000"
             ) {
                 revert CallShouldHaveReverted();
             } catch (bytes memory err) {
-                assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidSignature.selector));
+                assertEq(err, abi.encodeWithSelector(InvalidSignatureFormat.selector));
             }
 
-            // 7. InvalidSignature (wrong sig data)
+            // 7. InvalidSignature (valid length, wrong sig data)
             try validatorConfigV2.addValidator(
                 validator1,
                 PUB_KEY_0,
@@ -214,7 +243,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_deactivateValidator_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.deactivateValidator(validator1);
 
@@ -225,7 +258,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_deactivateValidator_passByValidator() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         vm.prank(validator1);
@@ -238,7 +275,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_deactivateValidator_fail() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         // 1. Unauthorized (third party, neither owner nor validator)
@@ -274,12 +315,20 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_rotateValidator_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         // Owner rotates
         validatorConfigV2.rotateValidator(
-            validator1, PUB_KEY_3, ingress2, egress2, _getSignature(_sigRotateV1())
+            validator1,
+            PUB_KEY_3,
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
         );
 
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
@@ -294,12 +343,20 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_rotateValidator_passByValidator() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         vm.prank(validator1);
         validatorConfigV2.rotateValidator(
-            validator1, PUB_KEY_3, ingress2, egress2, _getSignature(_sigRotateV1())
+            validator1,
+            PUB_KEY_3,
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
         );
 
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
@@ -310,10 +367,18 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_rotateValidator_fail() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _getSignature(_sigAddV2())
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
 
         // 1. Unauthorized
@@ -325,21 +390,39 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         // 2. ValidatorNotFound
-        try validatorConfigV2.rotateValidator(validator3, PUB_KEY_3, ingress2, egress2, "") {
+        try validatorConfigV2.rotateValidator(
+            validator3,
+            PUB_KEY_3,
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_3, validator3, ingress2, egress2)
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorNotFound.selector));
         }
 
         // 3. InvalidPublicKey (zero)
-        try validatorConfigV2.rotateValidator(validator1, bytes32(0), ingress2, egress2, "") {
+        try validatorConfigV2.rotateValidator(
+            validator1,
+            bytes32(0),
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidPublicKey.selector));
         }
 
         // 4. PublicKeyAlreadyExists
-        try validatorConfigV2.rotateValidator(validator1, PUB_KEY_1, ingress2, egress2, "") {
+        try validatorConfigV2.rotateValidator(
+            validator1,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_1, validator1, ingress2, egress2)
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
@@ -349,7 +432,13 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // 5. ValidatorAlreadyDeleted
         validatorConfigV2.deactivateValidator(validator1);
-        try validatorConfigV2.rotateValidator(validator1, PUB_KEY_3, ingress2, egress2, "") {
+        try validatorConfigV2.rotateValidator(
+            validator1,
+            PUB_KEY_3,
+            ingress2,
+            egress2,
+            _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
@@ -358,16 +447,20 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         if (isTempo) {
-            // 6. InvalidSignature (short)
+            // 6. InvalidSignatureFormat (short — wrong length)
             validatorConfigV2.addValidator(
-                validator3, PUB_KEY_2, ingress3, egress3, _getSignature(_sigAddV3())
+                validator3,
+                PUB_KEY_2,
+                ingress3,
+                egress3,
+                _signAdd(PRIV_KEY_2, validator3, ingress3, egress3)
             );
             try validatorConfigV2.rotateValidator(
                 validator3, PUB_KEY_3, ingress2, egress2, hex"0000"
             ) {
                 revert CallShouldHaveReverted();
             } catch (bytes memory err) {
-                assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidSignature.selector));
+                assertEq(err, abi.encodeWithSelector(InvalidSignatureFormat.selector));
             }
         }
     }
@@ -379,7 +472,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_setIpAddresses_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         // Owner updates
@@ -411,7 +508,11 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         // 2. Unauthorized
@@ -440,7 +541,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_transferValidatorOwnership_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         // Owner transfers
@@ -460,7 +565,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_transferValidatorOwnership_passByValidator() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         vm.prank(validator1);
@@ -481,10 +590,18 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _getSignature(_sigAddV2())
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
 
         // 2. InvalidValidatorAddress (address(0))
@@ -546,6 +663,7 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     function test_transferOwnership_fail() public {
+        _initializeV2();
         vm.prank(nonOwner);
         try validatorConfigV2.transferOwnership(alice) {
             revert CallShouldHaveReverted();
@@ -596,10 +714,18 @@ contract ValidatorConfigV2Test is BaseTest {
         assertEq(vals[1].validatorAddress, setupVal2);
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _getSignature(_sigAddV2())
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
 
         vals = validatorConfigV2.getAllValidators();
@@ -611,10 +737,18 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_getActiveValidators_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _getSignature(_sigAddV2())
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
         validatorConfigV2.deactivateValidator(validator1);
 
@@ -630,12 +764,20 @@ contract ValidatorConfigV2Test is BaseTest {
         assertEq(validatorConfigV2.validatorCount(), 2); // 2 setup validators migrated
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
         assertEq(validatorConfigV2.validatorCount(), 3);
 
         validatorConfigV2.addValidator(
-            validator2, PUB_KEY_1, ingress2, egress2, _getSignature(_sigAddV2())
+            validator2,
+            PUB_KEY_1,
+            ingress2,
+            egress2,
+            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
         );
         assertEq(validatorConfigV2.validatorCount(), 4);
 
@@ -650,7 +792,11 @@ contract ValidatorConfigV2Test is BaseTest {
         assertEq(v0.validatorAddress, setupVal1);
 
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         IValidatorConfigV2.Validator memory v2 = validatorConfigV2.validatorByIndex(2);
@@ -668,7 +814,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_validatorByAddress_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(validator1);
@@ -686,7 +836,11 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_validatorByPublicKey_pass() public {
         _initializeV2();
         validatorConfigV2.addValidator(
-            validator1, PUB_KEY_0, ingress1, egress1, _getSignature(_sigAddV1())
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
         );
 
         IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByPublicKey(PUB_KEY_0);
@@ -842,11 +996,14 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.initializeIfMigrated();
 
         address newAddr = address(0xDEAD);
-        bytes32 newPubKey = bytes32(uint256(0x9999));
 
         // Try to add validator with same ingress IP as setupVal1 (even with different port)
         try validatorConfigV2.addValidator(
-            newAddr, newPubKey, "10.0.0.100:9000", "10.0.0.200", ""
+            newAddr,
+            PUB_KEY_0,
+            "10.0.0.100:9000",
+            "10.0.0.200",
+            _signAdd(PRIV_KEY_0, newAddr, "10.0.0.100:9000", "10.0.0.200")
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
@@ -868,8 +1025,13 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // Should now allow reusing setupVal1's ingress IP
         address newAddr = address(0xDEAD);
-        bytes32 newPubKey = bytes32(uint256(0x9999));
-        validatorConfigV2.addValidator(newAddr, newPubKey, "10.0.0.100:9999", "10.0.0.200", "");
+        validatorConfigV2.addValidator(
+            newAddr,
+            PUB_KEY_0,
+            "10.0.0.100:9999",
+            "10.0.0.200",
+            _signAdd(PRIV_KEY_0, newAddr, "10.0.0.100:9999", "10.0.0.200")
+        );
 
         // Verify new validator has the reused ingress IP (different port is ok)
         IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(newAddr);
@@ -881,8 +1043,6 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.migrateValidator(1);
         validatorConfigV2.initializeIfMigrated();
 
-        bytes32 newPubKey = bytes32(uint256(0x9999));
-
         // setIpAddresses: Try to set setupVal1's ingress IP to setupVal2's ingress IP
         try validatorConfigV2.setIpAddresses(setupVal1, "10.0.0.101:9999", "10.0.0.200") {
             revert CallShouldHaveReverted();
@@ -892,7 +1052,11 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // rotateValidator: Try to rotate setupVal1 to setupVal2's ingress IP
         try validatorConfigV2.rotateValidator(
-            setupVal1, newPubKey, "10.0.0.101:9999", "10.0.0.200", ""
+            setupVal1,
+            PUB_KEY_0,
+            "10.0.0.101:9999",
+            "10.0.0.200",
+            _signRotate(PRIV_KEY_0, setupVal1, "10.0.0.101:9999", "10.0.0.200")
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
@@ -940,15 +1104,20 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.deactivateValidator(setupVal1);
 
         // Should allow reusing setupVal1's address with different IPs
-        bytes32 newPubKey = bytes32(uint256(0x9999));
-        validatorConfigV2.addValidator(setupVal1, newPubKey, "10.0.0.200:8000", "10.0.0.200", "");
+        validatorConfigV2.addValidator(
+            setupVal1,
+            PUB_KEY_0,
+            "10.0.0.200:8000",
+            "10.0.0.200",
+            _signAdd(PRIV_KEY_0, setupVal1, "10.0.0.200:8000", "10.0.0.200")
+        );
 
         // Should have 3 validators total (2 original + 1 new)
         assertEq(validatorConfigV2.validatorCount(), 3);
 
         // Address lookup should return the NEW active validator
         IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
-        assertEq(v.publicKey, newPubKey, "Should return new validator's pubkey");
+        assertEq(v.publicKey, PUB_KEY_0, "Should return new validator's pubkey");
         assertEq(v.deactivatedAtHeight, 0, "New validator should be active");
     }
 
@@ -958,9 +1127,12 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.initializeIfMigrated();
 
         // Try to add with setupVal1's address (still active)
-        bytes32 newPubKey = bytes32(uint256(0x9999));
         try validatorConfigV2.addValidator(
-            setupVal1, newPubKey, "10.0.0.200:8000", "10.0.0.200", ""
+            setupVal1,
+            PUB_KEY_0,
+            "10.0.0.200:8000",
+            "10.0.0.200",
+            _signAdd(PRIV_KEY_0, setupVal1, "10.0.0.200:8000", "10.0.0.200")
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {

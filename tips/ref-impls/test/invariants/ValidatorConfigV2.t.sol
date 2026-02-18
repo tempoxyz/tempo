@@ -66,7 +66,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     function setUp() public override {
         super.setUp();
-        vm.skip(isTempo);
 
         targetContract(address(this));
 
@@ -106,8 +105,46 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         (pubKey, privKey) = vm.createEd25519Key(salt);
     }
 
-    function _signStub() internal pure returns (bytes memory) {
-        return hex"";
+    function _signAdd(
+        bytes32 privateKey,
+        address validatorAddress,
+        string memory ingress,
+        string memory egress
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 message = keccak256(
+            abi.encodePacked(
+                uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress
+            )
+        );
+        bytes memory ns = bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR");
+        return vm.signEd25519(
+            abi.encodePacked(uint8(ns.length), ns), abi.encodePacked(message), privateKey
+        );
+    }
+
+    function _signRotate(
+        bytes32 privateKey,
+        address validatorAddress,
+        string memory ingress,
+        string memory egress
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 message = keccak256(
+            abi.encodePacked(
+                uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress
+            )
+        );
+        bytes memory ns = bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR");
+        return vm.signEd25519(
+            abi.encodePacked(uint8(ns.length), ns), abi.encodePacked(message), privateKey
+        );
     }
 
     function _generateIngress(uint256 seed) internal pure returns (string memory) {
@@ -344,7 +381,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         }
         bytes32 ingressIpHash = _extractIngressIpHash(ingress);
 
-        bytes memory sig = _signStub();
+        bytes memory sig = _signAdd(privKey, validatorAddr, ingress, egress);
 
         // Determine expected outcome based on ghost state
         bool pubKeyZero = (pubKey == bytes32(0));
@@ -681,7 +718,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         bool ipUsed =
             newIngressIpHash != oldIngressIpHash && _ghostActiveIngressIpHashes[newIngressIpHash];
 
-        bytes memory sig = _signStub();
+        bytes memory sig = _signRotate(newPrivKey, validatorAddr, ingress, egress);
 
         uint256 activeCountBefore = _countActiveValidators();
         uint256 totalCountBefore = _ghostTotalCount;
