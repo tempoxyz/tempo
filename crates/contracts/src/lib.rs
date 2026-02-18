@@ -1,6 +1,6 @@
 //! Tempo predeployed contracts and bindings.
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -36,8 +36,6 @@ macro_rules! sol {
 pub(crate) use sol;
 
 pub mod contracts {
-    #[allow(unused_imports)]
-    use alloc::string::String;
     use alloy_primitives::{B256, Bytes, b256, bytes};
 
     sol!(
