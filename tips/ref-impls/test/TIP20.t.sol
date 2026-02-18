@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { TIP20 } from "../src/TIP20.sol";
-import { TIP20Factory } from "../src/TIP20Factory.sol";
-import { TIP403Registry } from "../src/TIP403Registry.sol";
-import { ITIP20 } from "../src/interfaces/ITIP20.sol";
-import { ITIP20RolesAuth } from "../src/interfaces/ITIP20RolesAuth.sol";
-import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
-import { BaseTest } from "./BaseTest.t.sol";
+import {TIP20} from "../src/TIP20.sol";
+import {TIP20Factory} from "../src/TIP20Factory.sol";
+import {TIP403Registry} from "../src/TIP403Registry.sol";
+import {ITIP20} from "../src/interfaces/ITIP20.sol";
+import {ITIP20RolesAuth} from "../src/interfaces/ITIP20RolesAuth.sol";
+import {ITIP403Registry} from "../src/interfaces/ITIP403Registry.sol";
+import {BaseTest} from "./BaseTest.t.sol";
 
 contract TIP20Test is BaseTest {
-
     TIP20 token;
     TIP20 linkedToken;
     TIP20 anotherToken;
@@ -22,9 +21,7 @@ contract TIP20Test is BaseTest {
     uint256 internal constant SIGNER_KEY = 0xA11CE;
     uint256 internal constant WRONG_KEY = 0xB0B;
 
-    event TransferWithMemo(
-        address indexed from, address indexed to, uint256 amount, bytes32 indexed memo
-    );
+    event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 indexed memo);
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
     event Mint(address indexed to, uint256 amount);
@@ -37,19 +34,11 @@ contract TIP20Test is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        linkedToken = TIP20(
-            factory.createToken(
-                "Linked Token", "LINK", "USD", TIP20(_PATH_USD), admin, bytes32("linked")
-            )
-        );
-        anotherToken = TIP20(
-            factory.createToken(
-                "Another Token", "OTHER", "USD", TIP20(_PATH_USD), admin, bytes32("another")
-            )
-        );
-        token = TIP20(
-            factory.createToken("Test Token", "TST", "USD", linkedToken, admin, bytes32("token"))
-        );
+        linkedToken =
+            TIP20(factory.createToken("Linked Token", "LINK", "USD", TIP20(_PATH_USD), admin, bytes32("linked")));
+        anotherToken =
+            TIP20(factory.createToken("Another Token", "OTHER", "USD", TIP20(_PATH_USD), admin, bytes32("another")));
+        token = TIP20(factory.createToken("Test Token", "TST", "USD", linkedToken, admin, bytes32("token")));
 
         // Setup roles and mint tokens
         vm.startPrank(admin);
@@ -337,9 +326,7 @@ contract TIP20Test is BaseTest {
         uint256 allowanceAmount,
         uint256 transferAmount,
         bytes32 memo
-    )
-        public
-    {
+    ) public {
         // Avoid invalid addresses
         vm.assume(spender != address(0) && to != address(0));
         vm.assume((uint160(to) >> 64) != 0x20C000000000000000000000);
@@ -457,10 +444,7 @@ contract TIP20Test is BaseTest {
             assertEq(
                 err,
                 abi.encodeWithSelector(
-                    ITIP20.InsufficientBalance.selector,
-                    token.balanceOf(admin),
-                    100e18,
-                    address(token)
+                    ITIP20.InsufficientBalance.selector, token.balanceOf(admin), 100e18, address(token)
                 )
             );
         }
@@ -487,9 +471,7 @@ contract TIP20Test is BaseTest {
         // Create a policy that blocks alice
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 blockingPolicy = registry.createPolicyWithAccounts(
-            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
-        );
+        uint64 blockingPolicy = registry.createPolicyWithAccounts(admin, ITIP403Registry.PolicyType.BLACKLIST, accounts);
 
         vm.prank(admin);
         token.changeTransferPolicyId(blockingPolicy);
@@ -746,17 +728,11 @@ contract TIP20Test is BaseTest {
     }
 
     function testSetNextQuoteTokenUsdRequiresUsdQuote() public {
-        TIP20 usdToken = TIP20(
-            factory.createToken(
-                "USD Token", "USD", "USD", TIP20(_PATH_USD), admin, bytes32("usdtoken")
-            )
-        );
+        TIP20 usdToken =
+            TIP20(factory.createToken("USD Token", "USD", "USD", TIP20(_PATH_USD), admin, bytes32("usdtoken")));
 
-        TIP20 nonUsdToken = TIP20(
-            factory.createToken(
-                "Euro Token", "EUR", "EUR", TIP20(_PATH_USD), admin, bytes32("eurotok")
-            )
-        );
+        TIP20 nonUsdToken =
+            TIP20(factory.createToken("Euro Token", "EUR", "EUR", TIP20(_PATH_USD), admin, bytes32("eurotok")));
 
         vm.prank(admin);
         try usdToken.setNextQuoteToken(nonUsdToken) {
@@ -825,12 +801,7 @@ contract TIP20Test is BaseTest {
         try token.burn(100e18) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(
-                err,
-                abi.encodeWithSelector(
-                    ITIP20.InsufficientBalance.selector, 0, 100e18, address(token)
-                )
-            );
+            assertEq(err, abi.encodeWithSelector(ITIP20.InsufficientBalance.selector, 0, 100e18, address(token)));
         }
     }
 
@@ -858,9 +829,7 @@ contract TIP20Test is BaseTest {
         // Create a policy that blocks alice
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 blockingPolicy = registry.createPolicyWithAccounts(
-            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
-        );
+        uint64 blockingPolicy = registry.createPolicyWithAccounts(admin, ITIP403Registry.PolicyType.BLACKLIST, accounts);
 
         // Change to a policy where alice is blocked
         vm.startPrank(admin);
@@ -884,9 +853,7 @@ contract TIP20Test is BaseTest {
         // Create a policy that blocks alice
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 blockingPolicy = registry.createPolicyWithAccounts(
-            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
-        );
+        uint64 blockingPolicy = registry.createPolicyWithAccounts(admin, ITIP403Registry.PolicyType.BLACKLIST, accounts);
 
         vm.prank(admin);
         token.changeTransferPolicyId(blockingPolicy);
@@ -925,12 +892,7 @@ contract TIP20Test is BaseTest {
         try token.transfer(bob, 2000e18) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(
-                err,
-                abi.encodeWithSelector(
-                    ITIP20.InsufficientBalance.selector, 1000e18, 2000e18, address(token)
-                )
-            );
+            assertEq(err, abi.encodeWithSelector(ITIP20.InsufficientBalance.selector, 1000e18, 2000e18, address(token)));
         }
     }
 
@@ -1058,9 +1020,7 @@ contract TIP20Test is BaseTest {
     }
 
     function testCompleteQuoteTokenUpdateCannotCreateIndirectLoop() public {
-        TIP20 newToken = TIP20(
-            factory.createToken("New Token", "NEW", "USD", token, admin, bytes32("newtoken"))
-        );
+        TIP20 newToken = TIP20(factory.createToken("New Token", "NEW", "USD", token, admin, bytes32("newtoken")));
 
         // Try to set token's quote token to newToken (which would create a loop)
         vm.startPrank(admin);
@@ -1081,8 +1041,7 @@ contract TIP20Test is BaseTest {
     function testCompleteQuoteTokenUpdateCannotCreateLongerLoop() public {
         // Create a longer chain: pathUSD -> linkedToken -> token -> token2 -> token3
 
-        TIP20 token3 =
-            TIP20(factory.createToken("Token 3", "TK2", "USD", token, admin, bytes32("token3")));
+        TIP20 token3 = TIP20(factory.createToken("Token 3", "TK2", "USD", token, admin, bytes32("token3")));
 
         // Try to set linkedToken's quote token to token3 (would create loop)
         vm.startPrank(admin);
@@ -1555,13 +1514,7 @@ contract TIP20Test is BaseTest {
         }
     }
 
-    function testFuzzRewardDistribution(
-        uint256 aliceBalance,
-        uint256 bobBalance,
-        uint256 rewardAmount
-    )
-        public
-    {
+    function testFuzzRewardDistribution(uint256 aliceBalance, uint256 bobBalance, uint256 rewardAmount) public {
         // Bound inputs
         aliceBalance = bound(aliceBalance, 1e18, 1000e18);
         bobBalance = bound(bobBalance, 1e18, 1000e18);
@@ -1694,12 +1647,7 @@ contract TIP20Test is BaseTest {
         assertEq(token.totalSupply(), totalSupplyBefore);
     }
 
-    function testFuzz_transferFrom(
-        address spender,
-        address to,
-        uint256 allowanceAmount,
-        uint256 transferAmount
-    )
+    function testFuzz_transferFrom(address spender, address to, uint256 allowanceAmount, uint256 transferAmount)
         public
     {
         vm.assume(spender != address(0) && to != address(0));
@@ -1741,14 +1689,7 @@ contract TIP20Test is BaseTest {
         assertEq(token.balanceOf(alice), 1000e18);
     }
 
-    function testFuzz_multipleApprovals(
-        address spender,
-        uint256 amount1,
-        uint256 amount2,
-        uint256 amount3
-    )
-        public
-    {
+    function testFuzz_multipleApprovals(address spender, uint256 amount1, uint256 amount2, uint256 amount3) public {
         vm.assume(spender != address(0));
         amount1 = bound(amount1, 0, type(uint128).max);
         amount2 = bound(amount2, 0, type(uint128).max);
@@ -1804,14 +1745,7 @@ contract TIP20Test is BaseTest {
         vm.stopPrank();
     }
 
-    function testFuzz_mintBurnSequence(
-        uint256 mint1,
-        uint256 mint2,
-        uint256 burn1,
-        uint256 mint3
-    )
-        public
-    {
+    function testFuzz_mintBurnSequence(uint256 mint1, uint256 mint2, uint256 burn1, uint256 mint3) public {
         mint1 = bound(mint1, 1e18, type(uint128).max / 5);
         mint2 = bound(mint2, 1e18, type(uint128).max / 5);
         burn1 = bound(burn1, 0, mint1 + mint2);
@@ -1877,13 +1811,7 @@ contract TIP20Test is BaseTest {
         }
     }
 
-    function testFuzz_rewardDistributionAlt(
-        uint256 aliceBalance,
-        uint256 bobBalance,
-        uint256 rewardAmount
-    )
-        public
-    {
+    function testFuzz_rewardDistributionAlt(uint256 aliceBalance, uint256 bobBalance, uint256 rewardAmount) public {
         aliceBalance = bound(aliceBalance, 1e18, 1000e18);
         bobBalance = bound(bobBalance, 1e18, 1000e18);
         rewardAmount = bound(rewardAmount, 1e18, 500e18);
@@ -1941,12 +1869,7 @@ contract TIP20Test is BaseTest {
         assertApproxEqAbs(token.balanceOf(bob), bobBalance + bobExpected, 1000);
     }
 
-    function testFuzz_optedInSupplyConsistency(
-        uint256 aliceAmount,
-        uint256 bobAmount,
-        bool aliceOpts,
-        bool bobOpts
-    )
+    function testFuzz_optedInSupplyConsistency(uint256 aliceAmount, uint256 bobAmount, bool aliceOpts, bool bobOpts)
         public
     {
         aliceAmount = bound(aliceAmount, 1e18, type(uint128).max / 4);
@@ -2042,9 +1965,7 @@ contract TIP20Test is BaseTest {
 
     /// @notice INVARIANT: OptedInSupply never exceeds totalSupply
     function test_INVARIANT_optedInSupplyBounds() public view {
-        assertLe(
-            token.optedInSupply(), token.totalSupply(), "CRITICAL: OptedInSupply > totalSupply"
-        );
+        assertLe(token.optedInSupply(), token.totalSupply(), "CRITICAL: OptedInSupply > totalSupply");
     }
 
     /// @notice INVARIANT: Total supply never exceeds supply cap
@@ -2274,9 +2195,8 @@ contract TIP20Test is BaseTest {
     function test_ClaimRewards_RevertsIf_UserUnauthorized() public {
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 blacklistPolicy = registry.createPolicyWithAccounts(
-            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
-        );
+        uint64 blacklistPolicy =
+            registry.createPolicyWithAccounts(admin, ITIP403Registry.PolicyType.BLACKLIST, accounts);
 
         vm.prank(admin);
         token.changeTransferPolicyId(blacklistPolicy);
@@ -2293,18 +2213,14 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 recipientWhitelist =
-            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
         uint64 mintWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
 
         registry.modifyPolicyWhitelist(mintWhitelist, charlie, true);
 
-        uint64 compound =
-            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
+        uint64 compound = registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
 
-        TIP20 compoundToken = TIP20(
-            factory.createToken("COMPOUND", "CMP", "USD", pathUSD, admin, bytes32("compound"))
-        );
+        TIP20 compoundToken = TIP20(factory.createToken("COMPOUND", "CMP", "USD", pathUSD, admin, bytes32("compound")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.changeTransferPolicyId(compound);
 
@@ -2318,18 +2234,15 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 recipientWhitelist =
-            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
         uint64 mintWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
 
         // charlie is NOT in mintWhitelist
 
-        uint64 compound =
-            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
+        uint64 compound = registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
 
-        TIP20 compoundToken = TIP20(
-            factory.createToken("COMPOUND2", "CMP2", "USD", pathUSD, admin, bytes32("compound2"))
-        );
+        TIP20 compoundToken =
+            TIP20(factory.createToken("COMPOUND2", "CMP2", "USD", pathUSD, admin, bytes32("compound2")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.changeTransferPolicyId(compound);
 
@@ -2347,17 +2260,15 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 recipientWhitelist =
-            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
 
         registry.modifyPolicyWhitelist(senderWhitelist, alice, true);
         registry.modifyPolicyWhitelist(recipientWhitelist, bob, true);
 
         uint64 compound = registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, 1);
 
-        TIP20 compoundToken = TIP20(
-            factory.createToken("COMPOUND3", "CMP3", "USD", pathUSD, admin, bytes32("compound3"))
-        );
+        TIP20 compoundToken =
+            TIP20(factory.createToken("COMPOUND3", "CMP3", "USD", pathUSD, admin, bytes32("compound3")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
         compoundToken.mint(alice, 1000);
@@ -2380,9 +2291,8 @@ contract TIP20Test is BaseTest {
 
         uint64 compound = registry.createCompoundPolicy(senderWhitelist, 1, 1);
 
-        TIP20 compoundToken = TIP20(
-            factory.createToken("COMPOUND4", "CMP4", "USD", pathUSD, admin, bytes32("compound4"))
-        );
+        TIP20 compoundToken =
+            TIP20(factory.createToken("COMPOUND4", "CMP4", "USD", pathUSD, admin, bytes32("compound4")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
         compoundToken.mint(alice, 1000);
@@ -2402,15 +2312,13 @@ contract TIP20Test is BaseTest {
     function test_Transfer_Fails_RecipientUnauthorized_CompoundPolicy() public {
         vm.startPrank(admin);
 
-        uint64 recipientWhitelist =
-            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
         // bob is NOT in recipientWhitelist
 
         uint64 compound = registry.createCompoundPolicy(1, recipientWhitelist, 1);
 
-        TIP20 compoundToken = TIP20(
-            factory.createToken("COMPOUND5", "CMP5", "USD", pathUSD, admin, bytes32("compound5"))
-        );
+        TIP20 compoundToken =
+            TIP20(factory.createToken("COMPOUND5", "CMP5", "USD", pathUSD, admin, bytes32("compound5")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
         compoundToken.mint(alice, 1000);
@@ -2436,8 +2344,7 @@ contract TIP20Test is BaseTest {
         // charlie blocked from sending, but anyone can receive
         uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
 
-        TIP20 compoundToken =
-            TIP20(factory.createToken("ASYM", "ASY", "USD", pathUSD, admin, bytes32("asym")));
+        TIP20 compoundToken = TIP20(factory.createToken("ASYM", "ASY", "USD", pathUSD, admin, bytes32("asym")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
         compoundToken.mint(alice, 1000);
@@ -2469,8 +2376,7 @@ contract TIP20Test is BaseTest {
 
         uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
 
-        TIP20 compoundToken =
-            TIP20(factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1")));
+        TIP20 compoundToken = TIP20(factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
@@ -2491,8 +2397,7 @@ contract TIP20Test is BaseTest {
 
         uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
 
-        TIP20 compoundToken =
-            TIP20(factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2")));
+        TIP20 compoundToken = TIP20(factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
@@ -2513,14 +2418,12 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         // Create compound where only recipient is blocked, sender is allowed
-        uint64 recipientBlacklist =
-            registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        uint64 recipientBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
         registry.modifyPolicyBlacklist(recipientBlacklist, charlie, true);
 
         uint64 recipientBlockedCompound = registry.createCompoundPolicy(1, recipientBlacklist, 1);
 
-        TIP20 compoundToken =
-            TIP20(factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3")));
+        TIP20 compoundToken = TIP20(factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3")));
         compoundToken.grantRole(_ISSUER_ROLE, admin);
         compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
         compoundToken.changeTransferPolicyId(1);
@@ -2543,20 +2446,12 @@ contract TIP20Test is BaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @dev Helper to build the EIP-712 digest for a permit call
-    function _permitDigest(
-        address owner_,
-        address spender_,
-        uint256 value_,
-        uint256 nonce_,
-        uint256 deadline_
-    )
+    function _permitDigest(address owner_, address spender_, uint256 value_, uint256 nonce_, uint256 deadline_)
         internal
         view
         returns (bytes32)
     {
-        bytes32 structHash = keccak256(
-            abi.encode(token.PERMIT_TYPEHASH(), owner_, spender_, value_, nonce_, deadline_)
-        );
+        bytes32 structHash = keccak256(abi.encode(token.PERMIT_TYPEHASH(), owner_, spender_, value_, nonce_, deadline_));
         return keccak256(abi.encodePacked("\x19\x01", token.DOMAIN_SEPARATOR(), structHash));
     }
 
@@ -2700,9 +2595,7 @@ contract TIP20Test is BaseTest {
         vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
         bytes32 expected = keccak256(
             abi.encode(
-                keccak256(
-                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
-                ),
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
                 keccak256(bytes(token.name())),
                 keccak256(bytes("1")),
                 block.chainid,
@@ -2711,5 +2604,4 @@ contract TIP20Test is BaseTest {
         );
         assertEq(token.DOMAIN_SEPARATOR(), expected);
     }
-
 }
