@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import {TIP20} from "../../src/TIP20.sol";
-import {ITIP20} from "../../src/interfaces/ITIP20.sol";
-import {InvariantBaseTest} from "./InvariantBaseTest.t.sol";
+import { TIP20 } from "../../src/TIP20.sol";
+import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
+import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title TIP20 Invariant Tests
 /// @notice Fuzz-based invariant tests for the TIP20 token implementation
 /// @dev Tests invariants TEMPO-TIP1 through TEMPO-TIP29
 contract TIP20InvariantTest is InvariantBaseTest {
+
     /// @dev Ghost variables for reward distribution tracking
     uint256 private _totalRewardsDistributed;
     uint256 private _totalRewardsClaimed;
@@ -105,7 +106,14 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for token transfers
     /// @dev Tests TEMPO-TIP1 (balance conservation), TEMPO-TIP2 (total supply unchanged)
-    function transfer(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed, uint256 amount) external {
+    function transfer(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
         TIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
         address recipient = _selectActorExcluding(recipientSeed, actor);
@@ -129,7 +137,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
             // TEMPO-TIP1: Balance conservation
             assertEq(
-                token.balanceOf(actor), actorBalance - amount, "TEMPO-TIP1: Sender balance not decreased correctly"
+                token.balanceOf(actor),
+                actorBalance - amount,
+                "TEMPO-TIP1: Sender balance not decreased correctly"
             );
             assertEq(
                 token.balanceOf(recipient),
@@ -138,7 +148,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
 
             // TEMPO-TIP2: Total supply unchanged
-            assertEq(token.totalSupply(), totalSupplyBefore, "TEMPO-TIP2: Total supply changed during transfer");
+            assertEq(
+                token.totalSupply(),
+                totalSupplyBefore,
+                "TEMPO-TIP2: Total supply changed during transfer"
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -147,7 +161,13 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for zero-amount transfer edge case
     /// @dev Tests that zero-amount transfers are handled correctly
-    function transferZeroAmount(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed) external {
+    function transferZeroAmount(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed
+    )
+        external
+    {
         TIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
         address recipient = _selectActorExcluding(recipientSeed, actor);
@@ -166,9 +186,19 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertTrue(success, "Zero transfer should return true");
 
             // Balances should remain unchanged
-            assertEq(token.balanceOf(actor), actorBalanceBefore, "Sender balance changed on zero transfer");
-            assertEq(token.balanceOf(recipient), recipientBalanceBefore, "Recipient balance changed on zero transfer");
-            assertEq(token.totalSupply(), totalSupplyBefore, "Total supply changed on zero transfer");
+            assertEq(
+                token.balanceOf(actor),
+                actorBalanceBefore,
+                "Sender balance changed on zero transfer"
+            );
+            assertEq(
+                token.balanceOf(recipient),
+                recipientBalanceBefore,
+                "Recipient balance changed on zero transfer"
+            );
+            assertEq(
+                token.totalSupply(), totalSupplyBefore, "Total supply changed on zero transfer"
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -183,7 +213,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 ownerSeed,
         uint256 recipientSeed,
         uint256 amount
-    ) external {
+    )
+        external
+    {
         TIP20 token = _selectBaseToken(tokenSeed);
         address owner = _selectAuthorizedActor(ownerSeed, address(token));
         address spender = _selectActorExcluding(actorSeed, owner);
@@ -218,11 +250,17 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 );
             } else {
                 assertEq(
-                    token.allowance(owner, spender), allowance - amount, "TEMPO-TIP3: Allowance not decreased correctly"
+                    token.allowance(owner, spender),
+                    allowance - amount,
+                    "TEMPO-TIP3: Allowance not decreased correctly"
                 );
             }
 
-            assertEq(token.balanceOf(owner), ownerBalance - amount, "TEMPO-TIP3: Owner balance not decreased");
+            assertEq(
+                token.balanceOf(owner),
+                ownerBalance - amount,
+                "TEMPO-TIP3: Owner balance not decreased"
+            );
             assertEq(
                 token.balanceOf(recipient),
                 recipientBalanceBefore + amount,
@@ -236,7 +274,14 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for approvals
     /// @dev Tests TEMPO-TIP5 (allowance setting)
-    function approve(uint256 actorSeed, uint256 tokenSeed, uint256 spenderSeed, uint256 amount) external {
+    function approve(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 spenderSeed,
+        uint256 amount
+    )
+        external
+    {
         address actor = _selectActor(actorSeed);
         address spender = _selectActor(spenderSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
@@ -248,7 +293,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
             vm.stopPrank();
             assertTrue(success, "TEMPO-TIP5: Approve should return true");
 
-            assertEq(token.allowance(actor, spender), amount, "TEMPO-TIP5: Allowance not set correctly");
+            assertEq(
+                token.allowance(actor, spender), amount, "TEMPO-TIP5: Allowance not set correctly"
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -279,7 +326,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
             _tokenMintSum[address(token)] += amount;
 
             // TEMPO-TIP6: Total supply should increase
-            assertEq(token.totalSupply(), currentSupply + amount, "TEMPO-TIP6: Total supply not increased correctly");
+            assertEq(
+                token.totalSupply(),
+                currentSupply + amount,
+                "TEMPO-TIP6: Total supply not increased correctly"
+            );
 
             // TEMPO-TIP7: Total supply should not exceed cap
             assertLe(token.totalSupply(), supplyCap, "TEMPO-TIP7: Total supply exceeds supply cap");
@@ -315,10 +366,16 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
             // TEMPO-TIP8: Total supply should decrease
             assertEq(
-                token.totalSupply(), totalSupplyBefore - amount, "TEMPO-TIP8: Total supply not decreased correctly"
+                token.totalSupply(),
+                totalSupplyBefore - amount,
+                "TEMPO-TIP8: Total supply not decreased correctly"
             );
 
-            assertEq(token.balanceOf(admin), adminBalance - amount, "TEMPO-TIP8: Admin balance not decreased");
+            assertEq(
+                token.balanceOf(admin),
+                adminBalance - amount,
+                "TEMPO-TIP8: Admin balance not decreased"
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -327,7 +384,13 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for transfer with memo
     /// @dev Tests TEMPO-TIP9 (memo transfers work like regular transfers)
-    function transferWithMemo(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed, uint256 amount, bytes32 memo)
+    function transferWithMemo(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed,
+        uint256 amount,
+        bytes32 memo
+    )
         external
     {
         TIP20 token = _selectBaseToken(tokenSeed);
@@ -351,7 +414,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
             vm.stopPrank();
 
             // TEMPO-TIP9: Balance changes same as regular transfer
-            assertEq(token.balanceOf(actor), actorBalance - amount, "TEMPO-TIP9: Sender balance not decreased");
+            assertEq(
+                token.balanceOf(actor),
+                actorBalance - amount,
+                "TEMPO-TIP9: Sender balance not decreased"
+            );
             assertEq(
                 token.balanceOf(recipient),
                 recipientBalanceBefore + amount,
@@ -373,7 +440,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 recipientSeed,
         uint256 amount,
         bytes32 memo
-    ) external {
+    )
+        external
+    {
         TIP20 token = _selectBaseToken(tokenSeed);
         address owner = _selectAuthorizedActor(ownerSeed, address(token));
         address spender = _selectActorExcluding(actorSeed, owner);
@@ -401,7 +470,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertTrue(success, "TEMPO-TIP9: TransferFromWithMemo should return true");
 
             // Balance changes same as regular transferFrom
-            assertEq(token.balanceOf(owner), ownerBalance - amount, "TEMPO-TIP9: Owner balance not decreased");
+            assertEq(
+                token.balanceOf(owner),
+                ownerBalance - amount,
+                "TEMPO-TIP9: Owner balance not decreased"
+            );
             assertEq(
                 token.balanceOf(recipient),
                 recipientBalanceBefore + amount,
@@ -418,7 +491,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 );
             } else {
                 assertEq(
-                    token.allowance(owner, spender), allowance - amount, "TEMPO-TIP3: Allowance not decreased correctly"
+                    token.allowance(owner, spender),
+                    allowance - amount,
+                    "TEMPO-TIP3: Allowance not decreased correctly"
                 );
             }
         } catch (bytes memory reason) {
@@ -429,7 +504,13 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for setting reward recipient (opt-in, opt-out, or delegate)
     /// @dev Tests TEMPO-TIP10 (opted-in supply), TEMPO-TIP11 (supply updates), TEMPO-TIP25 (delegation)
-    function setRewardRecipient(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed) external {
+    function setRewardRecipient(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed
+    )
+        external
+    {
         TIP20 token = _selectBaseToken(tokenSeed);
         address actor = _selectAuthorizedActor(actorSeed, address(token));
 
@@ -472,11 +553,15 @@ contract TIP20InvariantTest is InvariantBaseTest {
             uint128 optedInSupplyAfter = token.optedInSupply();
             if (currentRecipient == address(0) && newRecipient != address(0)) {
                 assertEq(
-                    optedInSupplyAfter, optedInSupplyBefore + uint128(actorBalance), "Opted-in supply not increased"
+                    optedInSupplyAfter,
+                    optedInSupplyBefore + uint128(actorBalance),
+                    "Opted-in supply not increased"
                 );
             } else if (currentRecipient != address(0) && newRecipient == address(0)) {
                 assertEq(
-                    optedInSupplyAfter, optedInSupplyBefore - uint128(actorBalance), "Opted-in supply not decreased"
+                    optedInSupplyAfter,
+                    optedInSupplyBefore - uint128(actorBalance),
+                    "Opted-in supply not decreased"
                 );
             }
         } catch (bytes memory reason) {
@@ -660,7 +745,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
 
             // TEMPO-TIP15: Claimed amount should not exceed available
-            assertLe(claimed, contractBalanceBefore, "TEMPO-TIP15: Claimed more than contract balance");
+            assertLe(
+                claimed, contractBalanceBefore, "TEMPO-TIP15: Claimed more than contract balance"
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -748,10 +835,18 @@ contract TIP20InvariantTest is InvariantBaseTest {
             _tokenBurnSum[address(token)] += amount;
 
             // TEMPO-TIP23: Balance should decrease
-            assertEq(token.balanceOf(target), targetBalance - amount, "TEMPO-TIP23: Target balance not decreased");
+            assertEq(
+                token.balanceOf(target),
+                targetBalance - amount,
+                "TEMPO-TIP23: Target balance not decreased"
+            );
 
             // TEMPO-TIP23: Total supply should decrease
-            assertEq(token.totalSupply(), totalSupplyBefore - amount, "TEMPO-TIP23: Total supply not decreased");
+            assertEq(
+                token.totalSupply(),
+                totalSupplyBefore - amount,
+                "TEMPO-TIP23: Total supply not decreased"
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -860,7 +955,12 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for unauthorized burnBlocked attempts
     /// @dev Tests TEMPO-TIP29 (only BURN_BLOCKED_ROLE can call burnBlocked)
-    function burnBlockedUnauthorized(uint256 actorSeed, uint256 tokenSeed, uint256 targetSeed, uint256 amount)
+    function burnBlockedUnauthorized(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 targetSeed,
+        uint256 amount
+    )
         external
     {
         address attacker = _selectActor(actorSeed);
@@ -953,20 +1053,25 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.startPrank(admin);
         try token.setNextQuoteToken(ITIP20(address(newQuoteToken))) {
             // Next quote token should be set
-            assertEq(address(token.nextQuoteToken()), address(newQuoteToken), "Next quote token not set");
+            assertEq(
+                address(token.nextQuoteToken()), address(newQuoteToken), "Next quote token not set"
+            );
 
             // Try to complete the update
             try token.completeQuoteTokenUpdate() {
                 vm.stopPrank();
 
                 // Quote token should be updated
-                assertEq(address(token.quoteToken()), address(newQuoteToken), "Quote token not updated");
+                assertEq(
+                    address(token.quoteToken()), address(newQuoteToken), "Quote token not updated"
+                );
             } catch (bytes memory reason) {
                 vm.stopPrank();
                 // Cycle detection may reject
                 bytes4 selector = bytes4(reason);
                 assertTrue(
-                    selector == ITIP20.InvalidQuoteToken.selector, "Unexpected error on completeQuoteTokenUpdate"
+                    selector == ITIP20.InvalidQuoteToken.selector,
+                    "Unexpected error on completeQuoteTokenUpdate"
                 );
             }
         } catch (bytes memory reason) {
@@ -1012,7 +1117,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertEq(token.supplyCap(), newCap, "TEMPO-TIP22: Supply cap not updated");
 
             // TEMPO-TIP22: Cap must be >= current supply
-            assertGe(token.supplyCap(), token.totalSupply(), "TEMPO-TIP22: Supply cap below total supply");
+            assertGe(
+                token.supplyCap(), token.totalSupply(), "TEMPO-TIP22: Supply cap below total supply"
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -1021,7 +1128,13 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @notice Handler for unauthorized supply cap change attempts
     /// @dev Tests that non-admin cannot change supply cap
-    function setSupplyCapUnauthorized(uint256 actorSeed, uint256 tokenSeed, uint256 newCap) external {
+    function setSupplyCapUnauthorized(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 newCap
+    )
+        external
+    {
         address attacker = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
 
@@ -1054,7 +1167,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertEq(
-                bytes4(reason), ITIP20.InvalidSupplyCap.selector, "TEMPO-TIP22: Should revert with InvalidSupplyCap"
+                bytes4(reason),
+                ITIP20.InvalidSupplyCap.selector,
+                "TEMPO-TIP22: Should revert with InvalidSupplyCap"
             );
         }
     }
@@ -1087,7 +1202,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
             vm.stopPrank();
             // TEMPO-TIP16: Authorization status should be updated
             bool afterAuthorized = _isAuthorized(address(token), actor);
-            assertEq(afterAuthorized, !blacklist, "TEMPO-TIP16: Blacklist status not updated correctly");
+            assertEq(
+                afterAuthorized, !blacklist, "TEMPO-TIP16: Blacklist status not updated correctly"
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -1123,7 +1240,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         bytes32 r,
         bytes32 s,
         uint256 resultSeed
-    ) external {
+    )
+        external
+    {
         vm.assume(!isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
         address actor = _selectActor(actorSeed);
         address recipient = _selectActorExcluding(recipientSeed, actor);
@@ -1133,7 +1252,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         // build permit digest
         bytes32 digest = keccak256(
             abi.encodePacked(
-                "\x19\x01", token.DOMAIN_SEPARATOR(), keccak256(abi.encodePacked(actor, recipient, amount, deadline))
+                "\x19\x01",
+                token.DOMAIN_SEPARATOR(),
+                keccak256(abi.encodePacked(actor, recipient, amount, deadline))
             )
         );
 
@@ -1155,29 +1276,47 @@ contract TIP20InvariantTest is InvariantBaseTest {
             // If permit passes, check invariants
 
             // **TEMPO-TIP29**: Permit should set correct allowance
-            assertEq(token.allowance(actor, recipient), amount, "TEMPO-TIP29: Permit did not set correct allowance");
+            assertEq(
+                token.allowance(actor, recipient),
+                amount,
+                "TEMPO-TIP29: Permit did not set correct allowance"
+            );
 
             // **TEMPO-TIP32**: Nonce should be incremented
-            assertEq(token.nonces(actor), actorNonce + 1, "TEMPO-TIP32: Permit did not increment nonce");
+            assertEq(
+                token.nonces(actor), actorNonce + 1, "TEMPO-TIP32: Permit did not increment nonce"
+            );
 
             // **TEMPO-TIP34**: A permit with a deadline in the past must always revert.
-            assertGe(deadline, block.timestamp, "TEMPO-TIP34: Permit should revert if deadline is past");
+            assertGe(
+                deadline, block.timestamp, "TEMPO-TIP34: Permit should revert if deadline is past"
+            );
 
             // **TEMPO-TIP35**: The recovered signer from a valid permit signature must exactly match the `owner` parameter.
-            assertEq(ecrecover(digest, v, r, s), signer, "TEMPO-TIP35: Recovered signer does not match expected");
+            assertEq(
+                ecrecover(digest, v, r, s),
+                signer,
+                "TEMPO-TIP35: Recovered signer does not match expected"
+            );
 
             // Occasionally try 2nd permit. Use prime modulo to test all cases of seed % 4 between [0, 3]
             if (resultSeed % 7 == 0) {
                 try token.permit(actor, recipient, amount, deadline, v, r, s) {
                     revert("TEMPO-TIP33: Permit should not be reusable");
-                } catch (bytes memory) {}
+                } catch (bytes memory) { }
             }
-        } catch (bytes memory) {}
+        } catch (bytes memory) { }
     }
 
     /// @notice Handler that verifies paused tokens reject transfers with ContractPaused
     /// @dev Tests TEMPO-TIP17: pause enforcement - transfers revert with ContractPaused
-    function tryTransferWhilePaused(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed) external {
+    function tryTransferWhilePaused(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 recipientSeed
+    )
+        external
+    {
         address actor = _selectActor(actorSeed);
         address recipient = _selectActorExcluding(recipientSeed, actor);
         TIP20 token = _selectBaseToken(tokenSeed);
@@ -1212,7 +1351,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
             uint256 totalSupply = token.totalSupply();
 
             // TEMPO-TIP19: Opted-in supply <= total supply
-            assertLe(token.optedInSupply(), totalSupply, "TEMPO-TIP19: Opted-in supply exceeds total supply");
+            assertLe(
+                token.optedInSupply(),
+                totalSupply,
+                "TEMPO-TIP19: Opted-in supply exceeds total supply"
+            );
 
             // TEMPO-TIP22: Supply cap is enforced
             assertLe(totalSupply, token.supplyCap(), "TEMPO-TIP22: Total supply exceeds supply cap");
@@ -1238,10 +1381,15 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 uint256 contractBalance = token.balanceOf(tokenAddr);
                 uint256 expectedUnclaimed = distributed - claimed;
                 uint256 holderCount = holders.length;
-                uint256 maxDust = _tokenDistributionCount[tokenAddr] * (holderCount > 0 ? holderCount : 1);
+                uint256 maxDust =
+                    _tokenDistributionCount[tokenAddr] * (holderCount > 0 ? holderCount : 1);
 
                 if (expectedUnclaimed > maxDust) {
-                    assertGe(contractBalance, expectedUnclaimed - maxDust, "Reward dust exceeds theoretical bound");
+                    assertGe(
+                        contractBalance,
+                        expectedUnclaimed - maxDust,
+                        "Reward dust exceeds theoretical bound"
+                    );
                 }
             }
         }
@@ -1251,4 +1399,5 @@ contract TIP20InvariantTest is InvariantBaseTest {
     function _selectActorKey(uint256 seed) internal view returns (uint256) {
         return _keys[seed % _keys.length];
     }
+
 }

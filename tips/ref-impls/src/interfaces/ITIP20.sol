@@ -4,6 +4,7 @@ pragma solidity >=0.8.13 <0.9.0;
 /// @title The interface for TIP-20 compliant tokens
 /// @notice A token standard that extends ERC-20 with additional features including transfer policies, memo support, and pause functionality
 interface ITIP20 {
+
     /// @notice Error when attempting an operation while the contract is paused.
     error ContractPaused();
 
@@ -84,7 +85,9 @@ interface ITIP20 {
     /// @param to The address tokens were transferred to.
     /// @param amount The amount of tokens transferred.
     /// @param memo The memo attached to the transfer.
-    event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 indexed memo);
+    event TransferWithMemo(
+        address indexed from, address indexed to, uint256 amount, bytes32 indexed memo
+    );
 
     /// @notice Returns the role identifier for burning tokens from blocked accounts.
     /// @return The burn blocked role identifier.
@@ -212,7 +215,14 @@ interface ITIP20 {
     /// @param amount The amount of tokens to transfer.
     /// @param memo The memo to attach to the transfer.
     /// @return success True if the transfer was successful.
-    function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
+    function transferFromWithMemo(
+        address from,
+        address to,
+        uint256 amount,
+        bytes32 memo
+    )
+        external
+        returns (bool);
 
     /// @notice Returns the current transfer policy identifier.
     /// @return The active transfer policy ID.
@@ -247,7 +257,15 @@ interface ITIP20 {
     error InvalidSignature();
 
     /// @notice Approves `spender` to spend `value` tokens on behalf of `owner` via a signed permit
-    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    )
         external;
 
     /// @notice Returns the current nonce for an address
@@ -255,4 +273,5 @@ interface ITIP20 {
 
     /// @notice Returns the EIP-712 domain separator for this token
     function DOMAIN_SEPARATOR() external view returns (bytes32);
+
 }
