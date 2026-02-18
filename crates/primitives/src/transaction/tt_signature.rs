@@ -681,12 +681,103 @@ impl From<Signature> for TempoSignature {
 // Helper Functions for Signature Verification
 // ============================================================================
 
-/// Derives a P256 address from public key coordinates
+/// Derives a v1 P256 address from public key coordinates (legacy derivation).
+///
+/// Formula: `keccak256(pubKeyX || pubKeyY)[12:]`
+///
+/// This is the original Tempo address derivation for P256/WebAuthn accounts.
+/// It produces addresses that are only meaningful on the Tempo chain.
 pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
     let hash = keccak256([pub_key_x.as_slice(), pub_key_y.as_slice()].concat());
 
     // Take last 20 bytes as address
     Address::from_slice(&hash[12..])
+}
+
+/// Derives a v2 CREATE2-based address from public key coordinates (TIP-1018).
+///
+/// Formula: `keccak256(0xff ++ factory ++ salt ++ initCodeHash)[12:]`
+/// where `salt = keccak256(pubKeyX || pubKeyY || index)`
+///
+/// This derivation produces addresses that are identical across all EVM chains,
+/// enabling cross-chain fund recovery by deploying a smart wallet at the
+/// counterfactual address.
+///
+/// # Arguments
+/// * `pub_key_x` - The x-coordinate of the P-256 public key
+/// * `pub_key_y` - The y-coordinate of the P-256 public key
+/// * `index` - Account index (default 0), allows multiple wallets per passkey
+/// * `factory` - The CrossChainAccountFactory address (must be identical on all chains)
+/// * `init_code_hash` - The keccak256 hash of the CrossChainAccount creation code
+pub fn derive_v2_address(
+    pub_key_x: &B256,
+    pub_key_y: &B256,
+    index: U256,
+    factory: &Address,
+    init_code_hash: &B256,
+) -> Address {
+    // salt = keccak256(pubKeyX || pubKeyY || index)
+    let salt = keccak256(
+        [
+            pub_key_x.as_slice(),
+            pub_key_y.as_slice(),
+            &index.to_be_bytes::<32>(),
+        ]
+        .concat(),
+    );
+
+    // address = keccak256(0xff ++ factory ++ salt ++ initCodeHash)[12:]
+    let data = [
+        &[0xff],
+        factory.as_slice(),
+        salt.as_slice(),
+        init_code_hash.as_slice(),
+    ]
+    .concat();
+
+    Address::from_slice(&keccak256(data)[12..])
+}
+
+/// Derives a v2 address using the canonical protocol constants (TIP-1018).
+///
+/// Convenience wrapper around [`derive_v2_address`] that uses the protocol-level
+/// factory address and init code hash from `tempo_contracts`.
+pub fn derive_v2_address_default(pub_key_x: &B256, pub_key_y: &B256) -> Address {
+    derive_v2_address(
+        pub_key_x,
+        pub_key_y,
+        U256::ZERO,
+        &tempo_contracts::CROSS_CHAIN_ACCOUNT_FACTORY_ADDRESS,
+        &tempo_contracts::CROSS_CHAIN_ACCOUNT_INIT_CODE_HASH,
+    )
+}
+
+/// Given a P256/WebAuthn signature's public key coordinates, recover the signer
+/// address with support for both v1 (legacy) and v2 (CREATE2) derivation.
+///
+/// If `from_hint` is provided (from the transaction's `from` field), it is used
+/// to disambiguate between v1 and v2 addresses. If neither matches, returns an error.
+/// If `from_hint` is `None`, defaults to v1 derivation (backward compatible).
+pub fn recover_p256_address(
+    pub_key_x: &B256,
+    pub_key_y: &B256,
+    from_hint: Option<Address>,
+) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+    let v1_addr = derive_p256_address(pub_key_x, pub_key_y);
+
+    match from_hint {
+        Some(hint) if hint == v1_addr => Ok(v1_addr),
+        Some(hint) => {
+            let v2_addr = derive_v2_address_default(pub_key_x, pub_key_y);
+            if hint == v2_addr {
+                Ok(v2_addr)
+            } else {
+                Err(alloy_consensus::crypto::RecoveryError::new())
+            }
+        }
+        // No hint: default to v1 for backward compatibility
+        None => Ok(v1_addr),
+    }
 }
 
 /// Verifies a P256 signature using the provided components
@@ -1647,5 +1738,157 @@ mod tests {
         let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
         let sig = TempoSignature::Keychain(KeychainSignature::new(Address::ZERO, inner));
         assert!(sig.is_keychain());
+    }
+
+    // ========================================================================
+    // TIP-1018: v2 CREATE2 address derivation tests
+    // ========================================================================
+
+    #[test]
+    fn test_derive_v2_address_deterministic() {
+        let pub_key_x = B256::from([0x11; 32]);
+        let pub_key_y = B256::from([0x22; 32]);
+        let factory = Address::repeat_byte(0xAA);
+        let init_code_hash = B256::from([0xBB; 32]);
+
+        let addr1 = derive_v2_address(&pub_key_x, &pub_key_y, U256::ZERO, &factory, &init_code_hash);
+        let addr2 = derive_v2_address(&pub_key_x, &pub_key_y, U256::ZERO, &factory, &init_code_hash);
+
+        assert_eq!(addr1, addr2, "Same inputs must produce same address");
+    }
+
+    #[test]
+    fn test_derive_v2_address_differs_from_v1() {
+        let pub_key_x = B256::from([0x11; 32]);
+        let pub_key_y = B256::from([0x22; 32]);
+        let factory = Address::repeat_byte(0xAA);
+        let init_code_hash = B256::from([0xBB; 32]);
+
+        let v1 = derive_p256_address(&pub_key_x, &pub_key_y);
+        let v2 = derive_v2_address(&pub_key_x, &pub_key_y, U256::ZERO, &factory, &init_code_hash);
+
+        assert_ne!(v1, v2, "v1 and v2 addresses must differ");
+    }
+
+    #[test]
+    fn test_derive_v2_address_different_index() {
+        let pub_key_x = B256::from([0x11; 32]);
+        let pub_key_y = B256::from([0x22; 32]);
+        let factory = Address::repeat_byte(0xAA);
+        let init_code_hash = B256::from([0xBB; 32]);
+
+        let addr0 = derive_v2_address(&pub_key_x, &pub_key_y, U256::ZERO, &factory, &init_code_hash);
+        let addr1 = derive_v2_address(&pub_key_x, &pub_key_y, U256::from(1), &factory, &init_code_hash);
+        let addr2 = derive_v2_address(&pub_key_x, &pub_key_y, U256::from(2), &factory, &init_code_hash);
+
+        assert_ne!(addr0, addr1, "Different index must produce different address");
+        assert_ne!(addr1, addr2, "Different index must produce different address");
+        assert_ne!(addr0, addr2, "Different index must produce different address");
+    }
+
+    #[test]
+    fn test_derive_v2_address_different_factory() {
+        let pub_key_x = B256::from([0x11; 32]);
+        let pub_key_y = B256::from([0x22; 32]);
+        let init_code_hash = B256::from([0xBB; 32]);
+
+        let factory_a = Address::repeat_byte(0xAA);
+        let factory_b = Address::repeat_byte(0xBB);
+
+        let addr_a = derive_v2_address(&pub_key_x, &pub_key_y, U256::ZERO, &factory_a, &init_code_hash);
+        let addr_b = derive_v2_address(&pub_key_x, &pub_key_y, U256::ZERO, &factory_b, &init_code_hash);
+
+        assert_ne!(addr_a, addr_b, "Different factory must produce different address");
+    }
+
+    #[test]
+    fn test_derive_v2_address_different_init_code_hash() {
+        let pub_key_x = B256::from([0x11; 32]);
+        let pub_key_y = B256::from([0x22; 32]);
+        let factory = Address::repeat_byte(0xAA);
+
+        let hash_a = B256::from([0xBB; 32]);
+        let hash_b = B256::from([0xCC; 32]);
+
+        let addr_a = derive_v2_address(&pub_key_x, &pub_key_y, U256::ZERO, &factory, &hash_a);
+        let addr_b = derive_v2_address(&pub_key_x, &pub_key_y, U256::ZERO, &factory, &hash_b);
+
+        assert_ne!(addr_a, addr_b, "Different init code hash must produce different address");
+    }
+
+    #[test]
+    fn test_derive_v2_address_matches_create2_spec() {
+        // Manually compute CREATE2 to verify our implementation matches the spec:
+        // address = keccak256(0xff ++ factory ++ salt ++ initCodeHash)[12:]
+        let pub_key_x = B256::from([0x11; 32]);
+        let pub_key_y = B256::from([0x22; 32]);
+        let factory = Address::repeat_byte(0xAA);
+        let init_code_hash = B256::from([0xBB; 32]);
+        let index = U256::ZERO;
+
+        // Compute salt manually
+        let salt = keccak256(
+            [
+                pub_key_x.as_slice(),
+                pub_key_y.as_slice(),
+                &index.to_be_bytes::<32>(),
+            ]
+            .concat(),
+        );
+
+        // Compute CREATE2 address manually
+        let mut create2_input = Vec::with_capacity(1 + 20 + 32 + 32);
+        create2_input.push(0xff);
+        create2_input.extend_from_slice(factory.as_slice());
+        create2_input.extend_from_slice(salt.as_slice());
+        create2_input.extend_from_slice(init_code_hash.as_slice());
+        let expected = Address::from_slice(&keccak256(&create2_input)[12..]);
+
+        let actual = derive_v2_address(&pub_key_x, &pub_key_y, index, &factory, &init_code_hash);
+        assert_eq!(actual, expected, "Must match manual CREATE2 computation");
+    }
+
+    #[test]
+    fn test_recover_p256_address_v1_hint() {
+        let pub_key_x = B256::from([0x11; 32]);
+        let pub_key_y = B256::from([0x22; 32]);
+
+        let v1_addr = derive_p256_address(&pub_key_x, &pub_key_y);
+        let result = recover_p256_address(&pub_key_x, &pub_key_y, Some(v1_addr));
+
+        assert_eq!(result.unwrap(), v1_addr, "Should return v1 address when hint matches v1");
+    }
+
+    #[test]
+    fn test_recover_p256_address_v2_hint() {
+        let pub_key_x = B256::from([0x11; 32]);
+        let pub_key_y = B256::from([0x22; 32]);
+
+        let v2_addr = derive_v2_address_default(&pub_key_x, &pub_key_y);
+        let result = recover_p256_address(&pub_key_x, &pub_key_y, Some(v2_addr));
+
+        assert_eq!(result.unwrap(), v2_addr, "Should return v2 address when hint matches v2");
+    }
+
+    #[test]
+    fn test_recover_p256_address_bad_hint() {
+        let pub_key_x = B256::from([0x11; 32]);
+        let pub_key_y = B256::from([0x22; 32]);
+
+        let bad_addr = Address::repeat_byte(0xFF);
+        let result = recover_p256_address(&pub_key_x, &pub_key_y, Some(bad_addr));
+
+        assert!(result.is_err(), "Should fail when hint matches neither v1 nor v2");
+    }
+
+    #[test]
+    fn test_recover_p256_address_no_hint_defaults_v1() {
+        let pub_key_x = B256::from([0x11; 32]);
+        let pub_key_y = B256::from([0x22; 32]);
+
+        let v1_addr = derive_p256_address(&pub_key_x, &pub_key_y);
+        let result = recover_p256_address(&pub_key_x, &pub_key_y, None);
+
+        assert_eq!(result.unwrap(), v1_addr, "No hint should default to v1 for backward compatibility");
     }
 }
