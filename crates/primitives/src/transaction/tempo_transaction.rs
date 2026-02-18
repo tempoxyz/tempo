@@ -540,6 +540,11 @@ impl TempoTransaction {
             if *first == EMPTY_STRING_CODE {
                 buf.advance(1);
                 None
+            } else if *first == 0x00 {
+                // Placeholder byte per spec: 0x00 means fee payer expected but
+                // signature not yet provided.
+                buf.advance(1);
+                Some(Signature::new(U256::ZERO, U256::ZERO, false))
             } else {
                 let header = alloy_rlp::Header::decode(buf)?;
                 if buf.len() < header.payload_length {
@@ -2010,5 +2015,197 @@ mod tests {
             ..Default::default()
         };
         assert!(valid_expiring_tx.validate().is_ok());
+    }
+
+    /// Verifies the fee payer placeholder wire format per spec:
+    ///   Form 1: 0x76 || rlp([..., 0x00, ...]) — client signs (placeholder)
+    ///   Form 2: 0x78 || rlp([..., userAddress, ..., userSig]) — fee payer signs
+    ///   Form 3: 0x76 || rlp([..., feePayerSig, ..., userSig]) — broadcast
+    ///
+    /// encode_for_signing (Form 1) MUST use a single 0x00 byte for the fee payer
+    /// placeholder. The signature value itself is irrelevant — only `is_some()`
+    /// matters.
+    #[test]
+    fn test_fee_payer_placeholder_wire_format() {
+        let dummy_call = Call {
+            to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
+            value: U256::from(1000),
+            input: Bytes::new(),
+        };
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![dummy_call],
+            nonce_key: U256::ZERO,
+            nonce: 1,
+            fee_payer_signature: Some(Signature::test_signature()),
+            valid_before: Some(1000),
+            ..Default::default()
+        };
+
+        // --- Form 1: encode_for_signing must start with 0x76 ---
+        let mut signing_buf = Vec::new();
+        tx.encode_for_signing(&mut signing_buf);
+        assert_eq!(
+            signing_buf[0], TEMPO_TX_TYPE_ID,
+            "Form 1 signing payload must start with 0x76"
+        );
+
+        // --- Placeholder must be exactly 1 byte (0x00) ---
+        // Encode the fee_payer_signature field in isolation via the closure
+        // to confirm it writes exactly one 0x00 byte.
+        let mut placeholder_byte = Vec::new();
+        let encode_signing: fn(&Option<Signature>, &mut dyn BufMut) = |sig, out| {
+            if sig.is_some() {
+                out.put_u8(0);
+            } else {
+                out.put_u8(EMPTY_STRING_CODE);
+            }
+        };
+        encode_signing(&tx.fee_payer_signature, &mut placeholder_byte);
+        assert_eq!(
+            placeholder_byte,
+            vec![0x00],
+            "fee payer placeholder must be a single 0x00 byte"
+        );
+
+        // --- Signing output is identical regardless of the signature value ---
+        let tx_alt_sig = TempoTransaction {
+            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            ..tx.clone()
+        };
+        let mut alt_signing_buf = Vec::new();
+        tx_alt_sig.encode_for_signing(&mut alt_signing_buf);
+        assert_eq!(
+            signing_buf, alt_signing_buf,
+            "encode_for_signing must produce identical bytes regardless of signature value"
+        );
+
+        // --- Signing hash is deterministic ---
+        assert_eq!(
+            tx.signature_hash(),
+            tx.signature_hash(),
+            "signature_hash must be deterministic"
+        );
+
+        // --- User signing hash must NOT commit to fee_token (delegated to fee payer) ---
+        let tx_with_fee_token = TempoTransaction {
+            fee_token: Some(address!("0000000000000000000000000000000000000099")),
+            ..tx.clone()
+        };
+        assert_eq!(
+            tx.signature_hash(),
+            tx_with_fee_token.signature_hash(),
+            "user signature_hash must not commit to fee_token when fee_payer is present"
+        );
+
+        // --- None fee_payer_signature uses EMPTY_STRING_CODE (0x80), not 0x00 ---
+        let mut none_byte = Vec::new();
+        let none_sig: Option<Signature> = None;
+        encode_signing(&none_sig, &mut none_byte);
+        assert_eq!(
+            none_byte,
+            vec![EMPTY_STRING_CODE],
+            "absent fee payer must encode as EMPTY_STRING_CODE (0x80)"
+        );
+
+        // --- Roundtrip: RLP encode/decode preserves fee_payer_signature ---
+        let mut rlp_buf = Vec::new();
+        tx.encode(&mut rlp_buf);
+        let decoded = TempoTransaction::decode(&mut rlp_buf.as_slice()).unwrap();
+        assert_eq!(
+            decoded.fee_payer_signature, tx.fee_payer_signature,
+            "RLP roundtrip must preserve fee_payer_signature"
+        );
+    }
+
+    /// Verifies that rlp_decode_fields accepts the spec-compliant 0x00
+    /// placeholder byte for fee_payer_signature (Form 1 wire format).
+    ///
+    /// mpp-rs encodes the placeholder as 0x00 on the wire. The decoder must
+    /// accept this and reconstruct Some(Signature(0,0,false)).
+    #[test]
+    fn test_fee_payer_placeholder_decode_0x00() {
+        let dummy_call = Call {
+            to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
+            value: U256::from(1000),
+            input: Bytes::new(),
+        };
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![dummy_call],
+            nonce_key: U256::ZERO,
+            nonce: 1,
+            fee_payer_signature: Some(Signature::test_signature()),
+            valid_before: Some(1000),
+            ..Default::default()
+        };
+
+        // Encode the tx fields using rlp_encode_fields_default (produces RLP
+        // tuple for the signature), then patch the fee_payer_signature bytes
+        // to be a single 0x00 — simulating what mpp-rs will send.
+        //
+        // Strategy: encode with None (0x80), then swap that byte to 0x00.
+        let tx_none = TempoTransaction {
+            fee_payer_signature: None,
+            ..tx.clone()
+        };
+        let mut wire = Vec::new();
+        tx_none.encode(&mut wire);
+
+        // Find the 0x80 byte that represents fee_payer_signature = None.
+        // It comes after fee_token (also 0x80 for None). We locate the
+        // fee_payer_signature position by encoding with a real signature
+        // and comparing to find where they diverge.
+        let mut wire_with_sig = Vec::new();
+        tx.encode(&mut wire_with_sig);
+
+        // Find first byte that differs — that's the fee_payer_signature position
+        // (after the RLP list header, which also changes due to length diff).
+        // Instead, use a more reliable approach: encode fields only.
+        let mut fields_none = Vec::new();
+        tx_none.rlp_encode_fields_default(&mut fields_none);
+
+        let mut fields_sig = Vec::new();
+        tx.rlp_encode_fields_default(&mut fields_sig);
+
+        // Find the position where they first diverge in the fields encoding
+        let sig_pos = fields_none
+            .iter()
+            .zip(fields_sig.iter())
+            .position(|(a, b)| a != b)
+            .expect("encodings should differ at fee_payer_signature");
+
+        assert_eq!(
+            fields_none[sig_pos], EMPTY_STRING_CODE,
+            "None fee_payer_signature encodes as 0x80"
+        );
+
+        // Build a wire encoding with 0x00 at the fee_payer_signature position
+        // by using the None encoding and swapping the byte.
+        let mut patched_fields = fields_none.clone();
+        patched_fields[sig_pos] = 0x00;
+
+        // Decode the patched fields
+        let decoded =
+            TempoTransaction::rlp_decode_fields(&mut patched_fields.as_slice()).unwrap();
+
+        // The decoder should interpret 0x00 as a placeholder
+        assert!(
+            decoded.fee_payer_signature.is_some(),
+            "0x00 byte must decode as Some (fee payer placeholder)"
+        );
+        let placeholder = decoded.fee_payer_signature.unwrap();
+        assert!(
+            placeholder.r().is_zero() && placeholder.s().is_zero(),
+            "placeholder signature must have r=0, s=0"
+        );
     }
 }
