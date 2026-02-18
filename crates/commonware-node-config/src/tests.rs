@@ -45,3 +45,35 @@ fn signing_share_roundtrip() {
         SigningShare::try_from_hex(&signing_share.to_string()).unwrap(),
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn signing_share_write_to_file_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut rng = rand_08::rngs::StdRng::seed_from_u64(99);
+    let (_, mut shares) =
+        dkg::deal_anonymous::<MinSig, N3f1>(&mut rng, Default::default(), NZU32!(1));
+    let signing_share: SigningShare = shares.remove(0).into();
+
+    let path =
+        std::env::temp_dir().join(format!("tempo_signing_share_perms_{}", std::process::id()));
+
+    signing_share
+        .write_to_file(&path)
+        .expect("write_to_file must succeed");
+
+    let mode = std::fs::metadata(&path)
+        .expect("metadata must be readable")
+        .permissions()
+        .mode()
+        & 0o777;
+
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(
+        mode, 0o600,
+        "signing share file must be owner-only (0600), got {:04o}",
+        mode
+    );
+}

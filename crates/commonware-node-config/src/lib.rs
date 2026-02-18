@@ -102,7 +102,25 @@ impl SigningShare {
     }
 
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningShareError> {
-        std::fs::write(path, self.to_string()).map_err(SigningShareErrorKind::Write)?;
+        let content = self.to_string();
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(SigningShareErrorKind::Write)?;
+            file.write_all(content.as_bytes())
+                .map_err(SigningShareErrorKind::Write)?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, content).map_err(SigningShareErrorKind::Write)?;
+        }
         Ok(())
     }
 }
