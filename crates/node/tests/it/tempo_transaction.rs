@@ -6411,9 +6411,50 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     Ok(())
 }
 
-// ============================================================================
-// Expiring Nonce Tests
-// ============================================================================
+#[tokio::test(flavor = "multi_thread")]
+async fn test_estimate_gas_expiring_nonce_tx() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing eth_estimateGas for Expiring Nonce TX ===\n");
+
+    let setup = TestNodeBuilder::new().build_with_node_access().await?;
+
+    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let signer_addr = signer.address();
+
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(signer)
+        .connect_http(setup.node.rpc_url());
+
+    let recipient = Address::random();
+
+    // Get current block timestamp so valid_before is within the 30s expiry window
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let valid_before = block.header.timestamp() + 20;
+
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(signer_addr),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Call(recipient),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: Some(TEMPO_EXPIRING_NONCE_KEY),
+        valid_before: Some(valid_before),
+        ..Default::default()
+    };
+
+    let gas = provider.estimate_gas(request).await?;
+    assert!(gas > 0, "gas estimate should be non-zero");
+
+    Ok(())
+}
 
 /// Test basic expiring nonce flow - submit transaction with expiring nonce, verify it executes
 #[tokio::test(flavor = "multi_thread")]
@@ -6473,6 +6514,159 @@ async fn test_aa_expiring_nonce_basic_flow() -> eyre::Result<()> {
         "Protocol nonce should remain 0 for expiring nonce transactions"
     );
     println!("✓ Protocol nonce unchanged (still 0)");
+
+    Ok(())
+}
+
+/// Test that a different fee payer CANNOT replay a user's expiring-nonce sponsored transaction
+/// by signing as an alternate fee payer.
+///
+/// Replay protection uses `expiring_nonce_hash = keccak256(encode_for_signing || sender)`,
+/// which is invariant to fee payer signature changes. Even though different fee payer signatures
+/// produce different `tx_hash` values, the `expiring_nonce_hash` is identical, so the second
+/// submission is rejected.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_expiring_nonce_fee_payer_signature_malleability() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing Expiring Nonce Fee Payer Signature Malleability ===\n");
+
+    let (mut setup, provider, _funder_signer, _funder_addr) =
+        setup_test_with_funded_account().await?;
+
+    let chain_id = provider.get_chain_id().await?;
+
+    // Fee payer 1 is the funded TEST_MNEMONIC account
+    let fee_payer_1_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+
+    // Fee payer 2 is a separate account (attacker / alternate relayer)
+    // Fund it so the replay rejection is driven by expiring nonce dedup, not balance checks.
+    let fee_payer_2_signer = alloy::signers::local::PrivateKeySigner::random();
+    fund_address_with_fee_tokens(
+        &mut setup,
+        &provider,
+        &fee_payer_1_signer,
+        fee_payer_1_signer.address(),
+        fee_payer_2_signer.address(),
+        U256::from(1_000_000_000_000_000_000u128),
+        chain_id,
+    )
+    .await?;
+
+    // User is a fresh random account
+    let user_signer = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = user_signer.address();
+
+    // Advance blocks to get a meaningful timestamp
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    let valid_before = current_timestamp + 25;
+
+    // Create a sponsored expiring-nonce transaction with a benign call.
+    // The user has no balance — the fee payer covers gas. Any call from the user
+    // demonstrates the replay: if executed twice, the user's intent runs twice.
+    let recipient = Address::random();
+
+    let mut tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
+        calls: vec![Call {
+            to: recipient.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+        nonce: 0,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        valid_before: Some(valid_before),
+        // Presence of fee_payer_signature indicates a fee-payer-sponsored tx
+        fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+        ..Default::default()
+    };
+
+    // Step 1: User signs the transaction (signature_hash excludes fee payer sig)
+    let user_sig_hash = tx.signature_hash();
+    let user_signature = user_signer.sign_hash_sync(&user_sig_hash)?;
+    println!("User signature_hash: {user_sig_hash}");
+
+    // Step 2: Fee payer 1 signs the fee payer hash
+    let fee_payer_sig_hash = tx.fee_payer_signature_hash(user_addr);
+    let fee_payer_sig_1 = fee_payer_1_signer.sign_hash_sync(&fee_payer_sig_hash)?;
+    tx.fee_payer_signature = Some(fee_payer_sig_1);
+
+    // Build and submit the first version (fee payer 1)
+    let aa_sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(user_signature));
+    let envelope_1: TempoTxEnvelope = tx.clone().into_signed(aa_sig.clone()).into();
+    let tx_hash_1 = *envelope_1.tx_hash();
+    let encoded_1 = envelope_1.encoded_2718();
+    println!("First tx_hash (fee payer 1):  {tx_hash_1}");
+
+    setup.node.rpc.inject_tx(encoded_1.into()).await?;
+    setup.node.advance_block().await?;
+
+    let receipt_1: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash_1])
+        .await?;
+    assert!(receipt_1.is_some(), "First transaction should be mined");
+    let receipt_1_json = receipt_1.unwrap();
+    let status_1 = receipt_1_json["status"]
+        .as_str()
+        .map(|s| s == "0x1")
+        .unwrap_or(false);
+    assert!(status_1, "First transaction should succeed");
+    println!("✓ First submission succeeded");
+
+    // Step 3: Fee payer 2 (attacker) signs the SAME user intent as a different fee payer.
+    // The user's signature remains valid because signature_hash is invariant to fee payer sig.
+    let fee_payer_sig_2 = fee_payer_2_signer.sign_hash_sync(&fee_payer_sig_hash)?;
+    assert_ne!(
+        fee_payer_sig_1, fee_payer_sig_2,
+        "Different fee payer keys must produce different signatures"
+    );
+    tx.fee_payer_signature = Some(fee_payer_sig_2);
+
+    // The user's signature_hash should be identical (invariant to fee payer sig)
+    assert_eq!(
+        tx.signature_hash(),
+        user_sig_hash,
+        "User signature_hash must be invariant to fee payer signature changes"
+    );
+
+    // Build the second version — different fee payer sig means different tx_hash
+    let envelope_2: TempoTxEnvelope = tx.into_signed(aa_sig).into();
+    let tx_hash_2 = *envelope_2.tx_hash();
+    let encoded_2 = envelope_2.encoded_2718();
+    println!("Second tx_hash (fee payer 2): {tx_hash_2}");
+
+    assert_ne!(
+        tx_hash_1, tx_hash_2,
+        "Different fee payer signatures must produce different tx hashes"
+    );
+
+    // Step 4: Submit the replay — this is rejected because replay protection uses
+    // expiring_nonce_hash (keccak256(encode_for_signing || sender)), which is invariant
+    // to fee payer changes.
+    let replay_result = setup.node.rpc.inject_tx(encoded_2.into()).await;
+
+    let error_msg = replay_result
+        .expect_err("Replay with different fee payer signature must be rejected")
+        .to_string();
+
+    assert!(
+        error_msg
+            .contains("Expiring nonce transaction replay: tx hash already seen and not expired"),
+        "Rejection must be due to expiring nonce replay protection, got: {error_msg}"
+    );
+    println!("✓ Replay with different fee payer correctly rejected: {error_msg}");
 
     Ok(())
 }

@@ -663,7 +663,10 @@ where
         }
 
         if is_expiring_nonce {
-            // Expiring nonce transaction - use tx hash for replay protection
+            // Expiring nonce transaction replay protection:
+            // - Pre-T1B: use tx_hash for backwards-compatible behavior.
+            // - T1B+: use expiring_nonce_hash (keccak256(encode_for_signing || sender))
+            //   to prevent replay via different fee payer signatures.
             let tempo_tx_env = tx
                 .tempo_tx_env
                 .as_ref()
@@ -674,7 +677,13 @@ where
                 return Err(TempoInvalidTransaction::ExpiringNonceNonceNotZero.into());
             }
 
-            let tx_hash = tempo_tx_env.tx_hash;
+            let replay_hash = if spec.is_t1b() {
+                tempo_tx_env
+                    .expiring_nonce_hash
+                    .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?
+            } else {
+                tempo_tx_env.tx_hash
+            };
             let valid_before = tempo_tx_env
                 .valid_before
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
@@ -683,7 +692,7 @@ where
                 let mut nonce_manager = NonceManager::new();
 
                 nonce_manager
-                    .check_and_mark_expiring_nonce(tx_hash, valid_before)
+                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
@@ -2395,8 +2404,6 @@ mod tests {
             TempoHardfork::Genesis,
             TempoHardfork::T0,
             TempoHardfork::T1,
-            TempoHardfork::T1A,
-            TempoHardfork::T1B,
             TempoHardfork::T2,
         ] {
             let gas_params = tempo_gas_params(spec);

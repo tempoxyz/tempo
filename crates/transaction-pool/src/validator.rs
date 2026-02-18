@@ -395,6 +395,9 @@ where
             key_authorization: tx.key_authorization.clone(),
             signature_hash: aa_tx.signature_hash(),
             tx_hash: *aa_tx.hash(),
+            expiring_nonce_hash: tx
+                .is_expiring_nonce_tx()
+                .then(|| aa_tx.expiring_nonce_hash(sender)),
             override_key_id: None,
         };
 
@@ -842,20 +845,38 @@ where
                         .is_t1_active_at_timestamp(current_time);
 
                     if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-                        // Expiring nonce transaction - check if tx hash is already seen
-                        let tx_hash = *transaction.hash();
-                        let seen_slot = NonceManager::new().expiring_seen_slot(tx_hash);
+                        // Expiring nonce transaction - check if the replay hash is already seen.
+                        //
+                        // Pre-T1B: use tx_hash to match handler behavior (handler writes seen[tx_hash]).
+                        // T1B+: use expiring_nonce_hash (invariant to fee payer changes) to match
+                        //        the updated handler replay protection.
+                        //
+                        // TODO: Remove the tx_hash path after T1B is active on mainnet.
+                        let replay_hash = if spec.is_t1b() {
+                            transaction
+                                .transaction()
+                                .inner()
+                                .as_aa()
+                                .expect("expiring nonce tx must be AA")
+                                .expiring_nonce_hash(transaction.transaction().sender())
+                        } else {
+                            *transaction.hash()
+                        };
+                        let seen_slot = NonceManager::new().expiring_seen_slot(replay_hash);
 
                         let seen_expiry: u64 = match state_provider
                             .storage(NONCE_PRECOMPILE_ADDRESS, seen_slot.into())
                         {
                             Ok(val) => val.unwrap_or_default().saturating_to(),
                             Err(err) => {
-                                return TransactionValidationOutcome::Error(tx_hash, Box::new(err));
+                                return TransactionValidationOutcome::Error(
+                                    *transaction.hash(),
+                                    Box::new(err),
+                                );
                             }
                         };
 
-                        // If expiry is non-zero and in the future, tx hash is still valid (replay).
+                        // If expiry is non-zero and in the future, the replay hash is still active.
                         // Note: This is also enforced at the protocol level in handler.rs via
                         // `check_and_mark_expiring_nonce`, so even if a tx bypasses pool validation
                         // (e.g., injected directly into a block), execution will still reject it.
