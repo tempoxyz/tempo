@@ -189,7 +189,7 @@ impl TxBuilder {
         });
 
         let tx = TempoTransaction {
-            chain_id: 1,
+            chain_id: self.chain_id,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
             max_fee_per_gas: self.max_fee_per_gas,
             gas_limit: self.gas_limit,

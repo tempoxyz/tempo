@@ -935,7 +935,7 @@ mod tests {
             .build();
 
         // Test various Transaction trait methods
-        assert_eq!(tx.chain_id(), Some(1));
+        assert_eq!(tx.chain_id(), Some(42431));
         assert_eq!(tx.nonce(), 0);
         assert_eq!(tx.gas_limit(), 1_000_000);
         assert_eq!(tx.max_fee_per_gas(), 20_000_000_000);
@@ -953,6 +953,33 @@ mod tests {
 
         // PoolTransaction::cost() returns &U256::ZERO for Tempo
         assert_eq!(*tx.cost(), U256::ZERO);
+    }
+
+    #[test]
+    fn test_aa_tx_build_respects_chain_id() {
+        // build() must use the builder's chain_id field, not a hardcoded value.
+        // The default chain_id is 42431 (MODERATO).
+        let sender = Address::random();
+        let tx = TxBuilder::aa(sender).build();
+        assert_eq!(
+            tx.chain_id(),
+            Some(42431),
+            "AA build() should use the builder's chain_id"
+        );
+    }
+
+    #[test]
+    fn test_aa_and_eip1559_tx_chain_ids_match() {
+        // Both AA (build) and EIP-1559 (build_eip1559) paths must produce
+        // transactions with the same chain_id when using the same TxBuilder defaults.
+        let aa_chain_id = TxBuilder::aa(Address::random()).build().chain_id();
+        let eip_chain_id = TxBuilder::eip1559(Address::random())
+            .build_eip1559()
+            .chain_id();
+        assert_eq!(
+            aa_chain_id, eip_chain_id,
+            "AA and EIP-1559 builders must produce matching chain_id"
+        );
     }
 }
 
