@@ -120,7 +120,13 @@ impl StablecoinDEX {
     /// Subtract from user's balance
     fn sub_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current = self.balance_of(user, token)?;
-        self.set_balance(user, token, current.saturating_sub(amount))
+        self.set_balance(
+            user,
+            token,
+            current
+                .checked_sub(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )
     }
 
     /// Emit the appropriate OrderFilled event
@@ -4460,5 +4466,61 @@ mod tests {
             })?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_sub_balance_insufficient_returns_error() -> eyre::Result<()> {
+        // sub_balance must return an error when the amount exceeds the user's balance,
+        // matching the error-propagating behavior of increment_balance.
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let user = Address::random();
+            let admin = Address::random();
+            let (token, _) = setup_test_tokens(admin, user, exchange.address, 0)?;
+
+            assert_eq!(exchange.balance_of(user, token)?, 0);
+
+            let result = exchange.sub_balance(user, token, 1);
+            assert!(
+                result.is_err(),
+                "sub_balance must return Err when amount exceeds balance"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_sub_balance_and_increment_balance_boundary_behavior() -> eyre::Result<()> {
+        // Both sub_balance and increment_balance must return errors at their
+        // respective arithmetic boundaries (underflow and overflow).
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let user = Address::random();
+            let admin = Address::random();
+            let (token, _) = setup_test_tokens(admin, user, exchange.address, 0)?;
+
+            // increment_balance errors on overflow
+            exchange.set_balance(user, token, u128::MAX)?;
+            assert!(
+                exchange.increment_balance(user, token, 1).is_err(),
+                "increment_balance must error on overflow"
+            );
+
+            // sub_balance must symmetrically error on underflow
+            exchange.set_balance(user, token, 0)?;
+            assert!(
+                exchange.sub_balance(user, token, 1).is_err(),
+                "sub_balance must error on underflow"
+            );
+
+            Ok(())
+        })
     }
 }
