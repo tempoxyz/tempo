@@ -74,8 +74,7 @@ pub struct TIP20Token {
     total_supply: U256,
     balances: Mapping<Address, U256>,
     allowances: Mapping<Address, Mapping<Address, U256>>,
-    // EIP-2612 permit nonces
-    permit_nonces: Mapping<Address, U256>,
+    nonces: Mapping<Address, U256>,
     paused: bool,
     supply_cap: U256,
     // Unused slot, kept for storage layout compatibility
@@ -94,9 +93,7 @@ pub static PERMIT_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
 
 /// EIP-712 domain separator typehash
 pub static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(
-        b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
-    )
+    keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 });
 
 /// EIP-712 version hash: keccak256("1")
@@ -497,7 +494,7 @@ impl TIP20Token {
 
     /// Returns the current nonce for an address (EIP-2612)
     pub fn nonces(&self, call: ITIP20::noncesCall) -> Result<U256> {
-        self.permit_nonces[call.owner].read()
+        self.nonces[call.owner].read()
     }
 
     /// Returns the EIP-712 domain separator, computed dynamically
@@ -532,8 +529,8 @@ impl TIP20Token {
         }
 
         // 2. Read current nonce and increment BEFORE validation (reentrancy protection)
-        let nonce = self.permit_nonces[call.owner].read()?;
-        self.permit_nonces[call.owner].write(
+        let nonce = self.nonces[call.owner].read()?;
+        self.nonces[call.owner].write(
             nonce
                 .checked_add(U256::from(1))
                 .ok_or(TempoPrecompileError::under_overflow())?,
@@ -555,7 +552,12 @@ impl TIP20Token {
         // 4. Construct EIP-712 digest
         let domain_separator = self.domain_separator()?;
         let digest = keccak256(
-            [&[0x19, 0x01], domain_separator.as_slice(), struct_hash.as_slice()].concat(),
+            [
+                &[0x19, 0x01],
+                domain_separator.as_slice(),
+                struct_hash.as_slice(),
+            ]
+            .concat(),
         );
 
         // 5. Validate signature (EOA only, no EIP-1271)
@@ -2198,7 +2200,12 @@ pub(crate) mod tests {
                     .abi_encode(),
             );
             let digest = keccak256(
-                [&[0x19, 0x01], domain_separator.as_slice(), struct_hash.as_slice()].concat(),
+                [
+                    &[0x19, 0x01],
+                    domain_separator.as_slice(),
+                    struct_hash.as_slice(),
+                ]
+                .concat(),
             );
 
             let sig = signer.sign_hash_sync(&digest).unwrap();
@@ -2451,10 +2458,7 @@ pub(crate) mod tests {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
                 // Initial nonce should be 0
-                assert_eq!(
-                    token.nonces(ITIP20::noncesCall { owner })?,
-                    U256::ZERO
-                );
+                assert_eq!(token.nonces(ITIP20::noncesCall { owner })?, U256::ZERO);
 
                 // Do 3 permits, each with correct nonce
                 for i in 0u64..3 {

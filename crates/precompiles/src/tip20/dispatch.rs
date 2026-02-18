@@ -6,7 +6,10 @@ use crate::{
     tip20::{ITIP20, TIP20Token},
     unknown_selector, view,
 };
-use alloy::{primitives::Address, sol_types::{SolCall, SolInterface}};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
@@ -166,19 +169,13 @@ impl Precompile for TIP20Token {
 
             TIP20Call::TIP20(ITIP20Calls::permit(call)) => {
                 if !self.storage.spec().is_t2() {
-                    return unknown_selector(
-                        ITIP20::permitCall::SELECTOR,
-                        self.storage.gas_used(),
-                    );
+                    return unknown_selector(ITIP20::permitCall::SELECTOR, self.storage.gas_used());
                 }
                 mutate_void(call, msg_sender, |_s, c| self.permit(c))
             }
             TIP20Call::TIP20(ITIP20Calls::nonces(call)) => {
                 if !self.storage.spec().is_t2() {
-                    return unknown_selector(
-                        ITIP20::noncesCall::SELECTOR,
-                        self.storage.gas_used(),
-                    );
+                    return unknown_selector(ITIP20::noncesCall::SELECTOR, self.storage.gas_used());
                 }
                 view(call, |c| self.nonces(c))
             }
