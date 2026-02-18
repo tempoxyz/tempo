@@ -22,4 +22,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [features]
 default = ["rpc"]
-rpc = ["alloy-primitives/std", "alloy-sol-types/std", "dep:alloy-contract"]
+rpc = ["dep:alloy-contract"]
