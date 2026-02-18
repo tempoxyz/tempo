@@ -4,7 +4,7 @@ pub mod dispatch;
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
+    tip_fee_manager::amm::{Pool, PoolKey},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
@@ -161,18 +161,12 @@ impl TipFeeManager {
         // Execute fee swap and track collected fees
         let validator_token = self.get_validator_token(beneficiary)?;
 
-        if fee_token != validator_token {
-            // Record the pool if there was a non-zero swap
-            if !actual_spending.is_zero() {
-                // Execute fee swap immediately and accumulate fees
-                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
-            }
-        }
-
         let amount = if fee_token == validator_token {
             actual_spending
+        } else if actual_spending.is_zero() {
+            U256::ZERO
         } else {
-            compute_amount_out(actual_spending)?
+            self.execute_fee_swap(fee_token, validator_token, actual_spending)?
         };
 
         self.increment_collected_fees(beneficiary, validator_token, amount)?;
