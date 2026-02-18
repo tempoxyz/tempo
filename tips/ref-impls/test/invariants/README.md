@@ -495,7 +495,7 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 ### Approval Invariants
 
 - **TEMPO-TIP5**: Allowance setting - `approve` sets exact allowance amount, returns `true`.
-- **TEMPO-TIP29**: A valid permit sets allowance to the `value` in the permit struct.
+- **TEMPO-TIP36**: A valid permit sets allowance to the `value` in the permit struct.
 
 ### Mint/Burn Invariants
 

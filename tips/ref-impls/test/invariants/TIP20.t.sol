@@ -7,7 +7,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title TIP20 Invariant Tests
 /// @notice Fuzz-based invariant tests for the TIP20 token implementation
-/// @dev Tests invariants TEMPO-TIP1 through TEMPO-TIP29
+/// @dev Tests invariants TEMPO-TIP1 through TEMPO-TIP36
 contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @dev Ghost variables for reward distribution tracking
@@ -36,6 +36,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @dev Constants
     uint256 internal constant ACC_PRECISION = 1e18;
+    bytes32 internal constant PERMIT_TYPEHASH = keccak256(
+        "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+    );
 
     /// @dev Register an address as a potential token holder
     function _registerHolder(address token, address holder) internal {
@@ -1254,7 +1257,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
             abi.encodePacked(
                 "\x19\x01",
                 token.DOMAIN_SEPARATOR(),
-                keccak256(abi.encodePacked(actor, recipient, amount, deadline))
+                keccak256(
+                    abi.encode(PERMIT_TYPEHASH, actor, recipient, amount, actorNonce, deadline)
+                )
             )
         );
 
@@ -1262,12 +1267,12 @@ contract TIP20InvariantTest is InvariantBaseTest {
         address signer;
         if (resultSeed % 4 == 0) {
             signer = actor;
-            (v, r, s) = vm.sign(_selectActorKey(actorSeed), digest);
+            (v, r, s) = vm.sign(signer, digest);
         } else if (resultSeed % 4 == 1) {
             // Sign with a random key
             resultSeed = resultSeed >> 1;
             signer = _selectActorExcluding(resultSeed, actor);
-            (v, r, s) = vm.sign(_selectActorKey(actorSeed), digest);
+            (v, r, s) = vm.sign(signer, digest);
         } else if (resultSeed % 4 == 2) {
             digest = keccak256(abi.encodePacked(digest, resultSeed)); // corrupt the digest unpredictably
         } // else use the random bytes entirely
@@ -1275,11 +1280,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
         try token.permit(actor, recipient, amount, deadline, v, r, s) {
             // If permit passes, check invariants
 
-            // **TEMPO-TIP29**: Permit should set correct allowance
+            // **TEMPO-TIP36**: Permit should set correct allowance
             assertEq(
                 token.allowance(actor, recipient),
                 amount,
-                "TEMPO-TIP29: Permit did not set correct allowance"
+                "TEMPO-TIP36: Permit did not set correct allowance"
             );
 
             // **TEMPO-TIP32**: Nonce should be incremented

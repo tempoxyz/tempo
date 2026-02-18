@@ -520,23 +520,13 @@ impl TIP20Token {
     /// Does NOT take msg_sender — the owner is validated from the signature.
     /// Follows same pause behavior as approve() (allowed when paused).
     pub fn permit(&mut self, call: ITIP20::permitCall) -> Result<()> {
-        let timestamp = self.storage.timestamp();
-        let deadline = U256::from(call.deadline);
-
         // 1. Check deadline
-        if timestamp > deadline {
+        if self.storage.timestamp() > call.deadline {
             return Err(TIP20Error::permit_expired().into());
         }
 
-        // 2. Read current nonce and increment BEFORE validation (reentrancy protection)
+        // 2. Construct EIP-712 struct hash
         let nonce = self.permit_nonces[call.owner].read()?;
-        self.permit_nonces[call.owner].write(
-            nonce
-                .checked_add(U256::from(1))
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
-
-        // 3. Construct EIP-712 struct hash
         let struct_hash = keccak256(
             (
                 *PERMIT_TYPEHASH,
@@ -549,7 +539,7 @@ impl TIP20Token {
                 .abi_encode(),
         );
 
-        // 4. Construct EIP-712 digest
+        // 3. Construct EIP-712 digest
         let domain_separator = self.domain_separator()?;
         let digest = keccak256(
             [
@@ -560,8 +550,11 @@ impl TIP20Token {
             .concat(),
         );
 
-        // 5. Validate ECDSA signature
-        let parity = call.v.wrapping_sub(27) != 0;
+        // 4. Validate ECDSA signature
+        if call.v != 27 && call.v != 28 {
+            return Err(TIP20Error::invalid_signature().into());
+        }
+        let parity = call.v == 28;
         let sig = Signature::from_scalars_and_parity(call.r, call.s, parity);
         let recovered = sig
             .recover_address_from_prehash(&digest)
@@ -569,6 +562,13 @@ impl TIP20Token {
         if recovered != call.owner {
             return Err(TIP20Error::invalid_signature().into());
         }
+
+        // 5. Increment nonce
+        self.permit_nonces[call.owner].write(
+            nonce
+                .checked_add(U256::from(1))
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )?;
 
         // 6. Set allowance
         self.set_allowance(call.owner, call.spender, call.value)?;
@@ -2228,38 +2228,68 @@ pub(crate) mod tests {
             )
         }
 
+        struct PermitFixture {
+            storage: HashMapStorageProvider,
+            admin: Address,
+            signer: PrivateKeySigner,
+            spender: Address,
+        }
+
+        impl PermitFixture {
+            fn new() -> Self {
+                Self {
+                    storage: setup_t2_storage(),
+                    admin: Address::random(),
+                    signer: PrivateKeySigner::random(),
+                    spender: Address::random(),
+                }
+            }
+        }
+
+        fn make_permit_call(
+            signer: &PrivateKeySigner,
+            spender: Address,
+            token_address: Address,
+            value: U256,
+            nonce: U256,
+            deadline: U256,
+        ) -> ITIP20::permitCall {
+            let (v, r, s) = sign_permit(
+                signer,
+                "Test",
+                token_address,
+                spender,
+                value,
+                nonce,
+                deadline,
+            );
+            ITIP20::permitCall {
+                owner: signer.address(),
+                spender,
+                value,
+                deadline,
+                v,
+                r,
+                s,
+            }
+        }
+
         #[test]
         fn test_permit_happy_path() -> eyre::Result<()> {
-            let mut storage = setup_t2_storage();
-            let admin = Address::random();
-            let signer = PrivateKeySigner::random();
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
             let owner = signer.address();
-            let spender = Address::random();
             let value = U256::from(1000);
-            let deadline = U256::MAX;
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-                let (v, r, s) = sign_permit(
-                    &signer,
-                    "Test",
-                    token.address,
-                    spender,
-                    value,
-                    U256::ZERO,
-                    deadline,
-                );
-
-                token.permit(ITIP20::permitCall {
-                    owner,
-                    spender,
-                    value,
-                    deadline,
-                    v,
-                    r,
-                    s,
-                })?;
+                let call =
+                    make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
+                token.permit(call)?;
 
                 // Verify allowance was set
                 let allowance = token.allowance(ITIP20::allowanceCall { owner, spender })?;
@@ -2275,37 +2305,22 @@ pub(crate) mod tests {
 
         #[test]
         fn test_permit_expired() -> eyre::Result<()> {
-            let mut storage = setup_t2_storage();
-            let admin = Address::random();
-            let signer = PrivateKeySigner::random();
-            let owner = signer.address();
-            let spender = Address::random();
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
             let value = U256::from(1000);
             // Deadline in the past
             let deadline = U256::ZERO;
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+                let call =
+                    make_permit_call(signer, spender, token.address, value, U256::ZERO, deadline);
 
-                let (v, r, s) = sign_permit(
-                    &signer,
-                    "Test",
-                    token.address,
-                    spender,
-                    value,
-                    U256::ZERO,
-                    deadline,
-                );
-
-                let result = token.permit(ITIP20::permitCall {
-                    owner,
-                    spender,
-                    value,
-                    deadline,
-                    v,
-                    r,
-                    s,
-                });
+                let result = token.permit(call);
 
                 assert!(matches!(
                     result,
@@ -2350,11 +2365,13 @@ pub(crate) mod tests {
 
         #[test]
         fn test_permit_wrong_signer() -> eyre::Result<()> {
-            let mut storage = setup_t2_storage();
-            let admin = Address::random();
-            let signer = PrivateKeySigner::random();
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
             let wrong_owner = Address::random(); // Not the signer's address
-            let spender = Address::random();
             let value = U256::from(1000);
             let deadline = U256::MAX;
 
@@ -2363,7 +2380,7 @@ pub(crate) mod tests {
 
                 // Sign with signer but claim wrong_owner
                 let (v, r, s) = sign_permit(
-                    &signer,
+                    signer,
                     "Test",
                     token.address,
                     spender,
@@ -2393,48 +2410,26 @@ pub(crate) mod tests {
 
         #[test]
         fn test_permit_replay_protection() -> eyre::Result<()> {
-            let mut storage = setup_t2_storage();
-            let admin = Address::random();
-            let signer = PrivateKeySigner::random();
-            let owner = signer.address();
-            let spender = Address::random();
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
             let value = U256::from(1000);
-            let deadline = U256::MAX;
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-                let (v, r, s) = sign_permit(
-                    &signer,
-                    "Test",
-                    token.address,
-                    spender,
-                    value,
-                    U256::ZERO, // nonce 0
-                    deadline,
-                );
+                let call1 =
+                    make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
+                let call2 =
+                    make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
 
                 // First use should succeed
-                token.permit(ITIP20::permitCall {
-                    owner,
-                    spender,
-                    value,
-                    deadline,
-                    v,
-                    r,
-                    s,
-                })?;
+                token.permit(call1)?;
 
                 // Second use of same signature should fail (nonce incremented)
-                let result = token.permit(ITIP20::permitCall {
-                    owner,
-                    spender,
-                    value,
-                    deadline,
-                    v,
-                    r,
-                    s,
-                });
+                let result = token.permit(call2);
 
                 assert!(matches!(
                     result,
@@ -2447,12 +2442,13 @@ pub(crate) mod tests {
 
         #[test]
         fn test_permit_nonce_tracking() -> eyre::Result<()> {
-            let mut storage = setup_t2_storage();
-            let admin = Address::random();
-            let signer = PrivateKeySigner::random();
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
             let owner = signer.address();
-            let spender = Address::random();
-            let deadline = U256::MAX;
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
@@ -2464,26 +2460,9 @@ pub(crate) mod tests {
                 for i in 0u64..3 {
                     let nonce = U256::from(i);
                     let value = U256::from(100 * (i + 1));
-
-                    let (v, r, s) = sign_permit(
-                        &signer,
-                        "Test",
-                        token.address,
-                        spender,
-                        value,
-                        nonce,
-                        deadline,
-                    );
-
-                    token.permit(ITIP20::permitCall {
-                        owner,
-                        spender,
-                        value,
-                        deadline,
-                        v,
-                        r,
-                        s,
-                    })?;
+                    let call =
+                        make_permit_call(signer, spender, token.address, value, nonce, U256::MAX);
+                    token.permit(call)?;
 
                     assert_eq!(
                         token.nonces(ITIP20::noncesCall { owner })?,
@@ -2497,13 +2476,14 @@ pub(crate) mod tests {
 
         #[test]
         fn test_permit_works_when_paused() -> eyre::Result<()> {
-            let mut storage = setup_t2_storage();
-            let admin = Address::random();
-            let signer = PrivateKeySigner::random();
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
             let owner = signer.address();
-            let spender = Address::random();
             let value = U256::from(1000);
-            let deadline = U256::MAX;
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
@@ -2514,26 +2494,11 @@ pub(crate) mod tests {
                 token.pause(admin, ITIP20::pauseCall {})?;
                 assert!(token.paused()?);
 
-                let (v, r, s) = sign_permit(
-                    &signer,
-                    "Test",
-                    token.address,
-                    spender,
-                    value,
-                    U256::ZERO,
-                    deadline,
-                );
+                let call =
+                    make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
 
                 // Permit should work even when paused
-                token.permit(ITIP20::permitCall {
-                    owner,
-                    spender,
-                    value,
-                    deadline,
-                    v,
-                    r,
-                    s,
-                })?;
+                token.permit(call)?;
 
                 assert_eq!(
                     token.allowance(ITIP20::allowanceCall { owner, spender })?,
@@ -2546,8 +2511,9 @@ pub(crate) mod tests {
 
         #[test]
         fn test_permit_domain_separator() -> eyre::Result<()> {
-            let mut storage = setup_t2_storage();
-            let admin = Address::random();
+            let PermitFixture {
+                mut storage, admin, ..
+            } = PermitFixture::new();
 
             StorageCtx::enter(&mut storage, || {
                 let token = TIP20Setup::create("Test", "TST", admin).apply()?;
@@ -2562,36 +2528,25 @@ pub(crate) mod tests {
 
         #[test]
         fn test_permit_max_allowance() -> eyre::Result<()> {
-            let mut storage = setup_t2_storage();
-            let admin = Address::random();
-            let signer = PrivateKeySigner::random();
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
             let owner = signer.address();
-            let spender = Address::random();
-            let value = U256::MAX;
-            let deadline = U256::MAX;
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-                let (v, r, s) = sign_permit(
-                    &signer,
-                    "Test",
+                let call = make_permit_call(
+                    signer,
+                    spender,
                     token.address,
-                    spender,
-                    value,
+                    U256::MAX,
                     U256::ZERO,
-                    deadline,
+                    U256::MAX,
                 );
-
-                token.permit(ITIP20::permitCall {
-                    owner,
-                    spender,
-                    value,
-                    deadline,
-                    v,
-                    r,
-                    s,
-                })?;
+                token.permit(call)?;
 
                 assert_eq!(
                     token.allowance(ITIP20::allowanceCall { owner, spender })?,
@@ -2604,59 +2559,42 @@ pub(crate) mod tests {
 
         #[test]
         fn test_permit_allowance_override() -> eyre::Result<()> {
-            let mut storage = setup_t2_storage();
-            let admin = Address::random();
-            let signer = PrivateKeySigner::random();
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
             let owner = signer.address();
-            let spender = Address::random();
-            let deadline = U256::MAX;
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
                 // First permit: set allowance to 1000
-                let (v, r, s) = sign_permit(
-                    &signer,
-                    "Test",
-                    token.address,
+                let call = make_permit_call(
+                    signer,
                     spender,
+                    token.address,
                     U256::from(1000),
                     U256::ZERO,
-                    deadline,
+                    U256::MAX,
                 );
-                token.permit(ITIP20::permitCall {
-                    owner,
-                    spender,
-                    value: U256::from(1000),
-                    deadline,
-                    v,
-                    r,
-                    s,
-                })?;
+                token.permit(call)?;
                 assert_eq!(
                     token.allowance(ITIP20::allowanceCall { owner, spender })?,
                     U256::from(1000)
                 );
 
                 // Second permit: override to 0
-                let (v, r, s) = sign_permit(
-                    &signer,
-                    "Test",
+                let call = make_permit_call(
+                    signer,
+                    spender,
                     token.address,
-                    spender,
                     U256::ZERO,
-                    U256::from(1), // nonce 1
-                    deadline,
+                    U256::from(1),
+                    U256::MAX,
                 );
-                token.permit(ITIP20::permitCall {
-                    owner,
-                    spender,
-                    value: U256::ZERO,
-                    deadline,
-                    v,
-                    r,
-                    s,
-                })?;
+                token.permit(call)?;
                 assert_eq!(
                     token.allowance(ITIP20::allowanceCall { owner, spender })?,
                     U256::ZERO
