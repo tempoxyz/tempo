@@ -4331,7 +4331,7 @@ mod tests {
     #[test]
     fn test_flip_order_fill_ignores_business_logic_error() -> eyre::Result<()> {
         // Business logic errors during flip are silently ignored (always).
-        for spec in [TempoHardfork::T1, TempoHardfork::T2] {
+        for spec in [TempoHardfork::T1, TempoHardfork::T1A, TempoHardfork::T2] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let FlipOrderTestCtx {
@@ -4404,9 +4404,9 @@ mod tests {
     }
 
     #[test]
-    fn test_flip_order_fill_reverts_on_system_error_post_t2() -> eyre::Result<()> {
-        // System errors during flip propagate only on T2+. Pre-T2 all errors are ignored.
-        for spec in [TempoHardfork::T1, TempoHardfork::T2] {
+    fn test_flip_order_fill_reverts_on_system_error_post_t1a() -> eyre::Result<()> {
+        // System errors during flip propagate only on T1A+. Pre-T1A all errors are ignored.
+        for spec in [TempoHardfork::T1, TempoHardfork::T1A, TempoHardfork::T2] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let FlipOrderTestCtx {
