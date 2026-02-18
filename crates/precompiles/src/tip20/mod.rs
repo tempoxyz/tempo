@@ -556,8 +556,7 @@ impl TIP20Token {
         }
         let parity = call.v == 28;
         let sig = Signature::from_scalars_and_parity(call.r, call.s, parity);
-        let recovered = sig
-            .recover_address_from_prehash(&digest)
+        let recovered = alloy::consensus::crypto::secp256k1::recover_signer(&sig, digest)
             .map_err(|_| TIP20Error::invalid_signature())?;
         if recovered != call.owner {
             return Err(TIP20Error::invalid_signature().into());
