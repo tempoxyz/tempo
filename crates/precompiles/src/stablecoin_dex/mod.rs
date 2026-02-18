@@ -117,7 +117,9 @@ impl StablecoinDEX {
         )
     }
 
-    /// Subtract from user's balance
+    /// Subtract from user's balance.
+    ///
+    /// The *CALLER* is responsible for ensuring `amount <= token.balanceOf(user)`.
     fn sub_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current = self.balance_of(user, token)?;
         self.set_balance(user, token, current.saturating_sub(amount))
