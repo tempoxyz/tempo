@@ -1243,6 +1243,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     )
         external
     {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
         address actor = _selectActor(actorSeed);
         address recipient = _selectActorExcluding(recipientSeed, actor);
         TIP20 token = _selectBaseToken(tokenSeed);
@@ -1276,17 +1277,34 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
             // **TEMPO-TIP29**: Permit should set correct allowance
             assertEq(
-                token.allowance(actor, recipient), amount, "Permit did not set correct allowance"
+                token.allowance(actor, recipient),
+                amount,
+                "TEMPO-TIP29: Permit did not set correct allowance"
             );
 
             // **TEMPO-TIP32**: Nonce should be incremented
-            assertEq(token.nonces(actor), actorNonce + 1, "Permit did not increment nonce");
+            assertEq(
+                token.nonces(actor), actorNonce + 1, "TEMPO-TIP32: Permit did not increment nonce"
+            );
 
             // **TEMPO-TIP34**: A permit with a deadline in the past must always revert.
-            assertGe(deadline, block.timestamp, "Permit should revert if deadline is past");
+            assertGe(
+                deadline, block.timestamp, "TEMPO-TIP34: Permit should revert if deadline is past"
+            );
 
             // **TEMPO-TIP35**: The recovered signer from a valid permit signature must exactly match the `owner` parameter.
-            assertEq(ecrecover(digest, v, r, s), signer, "Recovered signer does not match expected");
+            assertEq(
+                ecrecover(digest, v, r, s),
+                signer,
+                "TEMPO-TIP35: Recovered signer does not match expected"
+            );
+
+            // Occasionally try 2nd permit. Use prime modulo to test all cases of seed % 4 between [0, 3]
+            if (resultSeed % 7 == 0) {
+                try token.permit(actor, recipient, amount, deadline, v, r, s) {
+                    revert("TEMPO-TIP33: Permit should not be reusable");
+                } catch (bytes memory) { }
+            }
         } catch (bytes memory) { }
     }
 
