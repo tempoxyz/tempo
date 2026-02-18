@@ -284,7 +284,7 @@ pub(crate) fn read_from_contract_at_height(
 
         let decoded_validators = raw_validators
             .into_iter()
-            .map(|raw| DecodedValidatorV2::decode_from_contract(raw))
+            .map(DecodedValidatorV2::decode_from_contract)
             .collect::<Result<Vec<_>, _>>()
             .wrap_err("failed an entry in the on-chain validator set")?;
 
@@ -350,7 +350,7 @@ pub(crate) fn read_from_contract_at_block_hash(
 
         let decoded_validators = raw_validators
             .into_iter()
-            .map(|raw| DecodedValidatorV2::decode_from_contract(raw))
+            .map(DecodedValidatorV2::decode_from_contract)
             .collect::<Result<Vec<_>, _>>()
             .wrap_err("failed an entry in the on-chain validator set")?;
 

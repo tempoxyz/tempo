@@ -5,7 +5,9 @@
 
 use std::{net::SocketAddr, time::Duration};
 
-use super::dkg::common::{assert_no_dkg_failures, wait_for_validators_to_reach_epoch, wait_for_outcome};
+use super::dkg::common::{
+    assert_no_dkg_failures, wait_for_outcome, wait_for_validators_to_reach_epoch,
+};
 use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 use alloy::transports::http::reqwest::Url;
 use alloy_primitives::hex;

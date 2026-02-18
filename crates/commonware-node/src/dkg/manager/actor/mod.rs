@@ -1144,7 +1144,7 @@ where
         );
 
         let next_players = determine_next_players(
-            &state,
+            state,
             &self.config.execution_node,
             request.digest,
             &self.metrics.read_players_from_v2_contract,
@@ -1247,7 +1247,7 @@ where
     let syncers = if node
         .chain_spec()
         .is_t2_active_at_timestamp(header.timestamp())
-        && is_v2_initialized_at_height(&node, header.number())
+        && is_v2_initialized_at_height(node, header.number())
             .wrap_err("unable to determine if v2 contract is already initialized")?
     {
         ordered::Set::default()
@@ -1721,7 +1721,7 @@ fn determine_next_players(
 
         let decoded_validators = raw_validators
             .into_iter()
-            .map(|raw| DecodedValidatorV2::decode_from_contract(raw))
+            .map(DecodedValidatorV2::decode_from_contract)
             .collect::<Result<Vec<_>, _>>()
             .wrap_err("failed decoding an entry in v2 on-chain validator set")?;
 
