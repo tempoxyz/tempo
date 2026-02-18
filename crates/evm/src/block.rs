@@ -411,9 +411,8 @@ where
         let TempoTxResult { inner, tx } = output;
         let next_section = self.validate_tx(&tx, inner.result.result.gas_used())?;
 
-        // TODO(TIP-1016): extract storage creation gas from EVM context once
-        // the EVM-level tracking is implemented.
-        let storage_creation_gas: u64 = 0;
+        // Extract storage creation gas tracked by the EVM (TIP-1016).
+        let storage_creation_gas = inner.result.result.gas().state_gas_spent();
 
         let total_gas_used = self.inner.commit_transaction(inner)?;
         self.cumulative_total_gas_used += total_gas_used;
