@@ -148,6 +148,14 @@ pub struct MaxTpsArgs {
     #[arg(long, default_value_t = 0.0)]
     erc20_weight: f64,
 
+    /// Send transfers to existing signer accounts instead of random new addresses.
+    ///
+    /// When enabled, TIP-20 and ERC-20 transfers are sent to the bench's own signer addresses
+    /// (which already exist on-chain), avoiding cold SSTORE for account creation. This tests
+    /// pure transfer throughput without state growth.
+    #[arg(long)]
+    existing_recipients: bool,
+
     /// An amount of receipts to wait for after sending all the transactions.
     #[arg(long, default_value_t = 100)]
     sample_size: usize,
@@ -375,6 +383,20 @@ impl MaxTpsArgs {
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let erc20_weight = (self.erc20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
 
+        let recipients = if self.existing_recipients {
+            let addrs: Vec<Address> = signer_providers
+                .iter()
+                .map(|(signer, _)| signer.address())
+                .collect();
+            info!(
+                recipients = addrs.len(),
+                "Using existing signer addresses as recipients"
+            );
+            Some(addrs)
+        } else {
+            None
+        };
+
         let gen_input = GenerateTransactionsInput {
             total_txs,
             accounts,
@@ -387,6 +409,7 @@ impl MaxTpsArgs {
             quote_token,
             user_tokens,
             erc20_tokens,
+            recipients,
         };
 
         // For expiring nonces, we need to generate/sign/send in batches to avoid
@@ -742,6 +765,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         quote_token,
         user_tokens,
         erc20_tokens,
+        recipients,
     } = input;
 
     let txs_per_sender = total_txs / accounts;
@@ -780,6 +804,11 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                 .choose_weighted(&mut rand::rng(), |(_, weight)| *weight)?
                 .0;
 
+            let recipient = match &recipients {
+                Some(addrs) => *addrs.choose(&mut rand::rng()).unwrap(),
+                None => Address::random(),
+            };
+
             let mut tx = match tx_index {
                 0 => {
                     tip20_transfers.fetch_add(1, Ordering::Relaxed);
@@ -787,7 +816,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
                     // Transfer minimum possible amount
                     token
-                        .transfer(Address::random(), U256::ONE)
+                        .transfer(recipient, U256::ONE)
                         .into_transaction_request()
                 }
                 1 => {
@@ -820,7 +849,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
                     // Transfer minimum possible amount
                     token
-                        .transfer(Address::random(), U256::ONE)
+                        .transfer(recipient, U256::ONE)
                         .into_transaction_request()
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
@@ -1163,4 +1192,6 @@ struct GenerateTransactionsInput<F: TxFiller<TempoNetwork>> {
     quote_token: Address,
     user_tokens: Vec<Address>,
     erc20_tokens: Vec<Address>,
+    /// When set, transfers go to these existing addresses instead of `Address::random()`.
+    recipients: Option<Vec<Address>>,
 }
