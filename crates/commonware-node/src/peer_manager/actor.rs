@@ -186,7 +186,7 @@ where
             read_height,
             %read_hash,
             ?peers,
-            "bootstrapped initial peer set from last boundary block and best execution layer bock",
+            "bootstrapped initial peer set from last boundary block and best execution layer block",
         );
 
         let header = self
@@ -195,17 +195,17 @@ where
             .header(read_hash)
             .expect("must be access execution layer to get header - just read validator config for")
             .expect("execution layer must have the header - just read validator config for it");
-        let last_tracked_peer_seet = LastTrackedPeerSet {
+        let last_tracked_peer_set = LastTrackedPeerSet {
             height: header.number(),
             peers,
         };
         self.oracle
             .track(
-                last_tracked_peer_seet.height,
-                last_tracked_peer_seet.peers.clone(),
+                last_tracked_peer_set.height,
+                last_tracked_peer_set.peers.clone(),
             )
             .await;
-        self.last_tracked_peer_set = Some(last_tracked_peer_seet);
+        self.last_tracked_peer_set = Some(last_tracked_peer_set);
 
         Ok(())
     }
