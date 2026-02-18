@@ -2420,16 +2420,14 @@ pub(crate) mod tests {
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-                let call1 =
-                    make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
-                let call2 =
+                let call =
                     make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
 
                 // First use should succeed
-                token.permit(call1)?;
+                token.permit(call.clone())?;
 
                 // Second use of same signature should fail (nonce incremented)
-                let result = token.permit(call2);
+                let result = token.permit(call);
 
                 assert!(matches!(
                     result,

@@ -1267,12 +1267,12 @@ contract TIP20InvariantTest is InvariantBaseTest {
         address signer;
         if (resultSeed % 4 == 0) {
             signer = actor;
-            (v, r, s) = vm.sign(signer, digest);
+            (v, r, s) = vm.sign(_selectActorKey(actorSeed), digest);
         } else if (resultSeed % 4 == 1) {
             // Sign with a random key
-            resultSeed = resultSeed >> 1;
-            signer = _selectActorExcluding(resultSeed, actor);
-            (v, r, s) = vm.sign(signer, digest);
+            uint256 wrongKey = _selectActorKeyExcluding(recipientSeed, actor);
+            signer = vm.addr(wrongKey);
+            (v, r, s) = vm.sign(wrongKey, digest);
         } else if (resultSeed % 4 == 2) {
             digest = keccak256(abi.encodePacked(digest, resultSeed)); // corrupt the digest unpredictably
         } // else use the random bytes entirely
@@ -1403,6 +1403,24 @@ contract TIP20InvariantTest is InvariantBaseTest {
     // Helper function to select key associated with seed
     function _selectActorKey(uint256 seed) internal view returns (uint256) {
         return _keys[seed % _keys.length];
+    }
+
+    function _selectActorKeyExcluding(
+        uint256 seed,
+        address exclude
+    )
+        internal
+        view
+        returns (uint256)
+    {
+        uint256 key;
+        address actor;
+        do {
+            key = _selectActorKey(seed);
+            actor = vm.addr(key);
+            seed++;
+        } while (actor == exclude);
+        return key;
     }
 
 }
