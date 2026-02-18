@@ -223,10 +223,12 @@ mod tests {
     };
     use alloy::{
         primitives::{Bytes, U256, address},
-        sol_types::{SolCall, SolInterface, SolValue},
+        sol_types::{SolCall, SolError, SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{IRolesAuth, RolesAuthError, TIP20Error};
+    use tempo_contracts::precompiles::{
+        IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
+    };
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
@@ -771,9 +773,6 @@ mod tests {
 
     #[test]
     fn test_permit_selectors_gated_behind_t2() -> eyre::Result<()> {
-        use alloy::sol_types::SolError;
-        use tempo_contracts::precompiles::UnknownFunctionSelector;
-
         // Pre-T2: permit/nonces/DOMAIN_SEPARATOR should return unknown selector
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         let admin = Address::random();
