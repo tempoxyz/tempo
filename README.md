@@ -110,7 +110,7 @@ git clone https://github.com/tempoxyz/tempo
 cd tempo
 ```
 
-Next, install [`just`](https://github.com/casey/just?tab=readme-ov-file#packages).
+Next, install [`just`](https://github.com/casey/just?tab=readme-file#packages).
 
 Install the dependencies:
 
