@@ -517,8 +517,8 @@ impl Inner<Init> {
                 %outcome.epoch,
                 outcome.network_identity = %outcome.network_identity(),
                 outcome.dealers = ?outcome.dealers(),
-                outcome.dealers = ?outcome.players(),
-                outcome.dealers = ?outcome.next_players(),
+                outcome.players = ?outcome.players(),
+                outcome.next_players = ?outcome.next_players(),
                 "received DKG outcome; will include in payload builder attributes",
             );
             outcome.encode().into()
