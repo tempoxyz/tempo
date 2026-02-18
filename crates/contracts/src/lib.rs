@@ -94,6 +94,8 @@ mod tests {
     //!
     //! Optionally set `ETH_RPC_URL` to use a custom RPC endpoint.
 
+    extern crate std;
+
     use super::*;
     use alloc::string::{String, ToString};
     use alloy_primitives::{B256, keccak256};
