@@ -95,9 +95,9 @@ mod tests {
     //! Optionally set `ETH_RPC_URL` to use a custom RPC endpoint.
 
     use super::*;
+    use alloc::string::{String, ToString};
     use alloy_primitives::{B256, keccak256};
     use alloy_provider::{Provider, ProviderBuilder};
-    use alloc::string::{String, ToString};
 
     /// Default public RPC URL for Ethereum mainnet.
     const DEFAULT_ETH_RPC_URL: &str = "https://eth.llamarpc.com";
