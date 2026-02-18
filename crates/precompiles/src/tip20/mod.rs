@@ -74,7 +74,7 @@ pub struct TIP20Token {
     total_supply: U256,
     balances: Mapping<Address, U256>,
     allowances: Mapping<Address, Mapping<Address, U256>>,
-    nonces: Mapping<Address, U256>,
+    permit_nonces: Mapping<Address, U256>,
     paused: bool,
     supply_cap: U256,
     // Unused slot, kept for storage layout compatibility
@@ -494,7 +494,7 @@ impl TIP20Token {
 
     /// Returns the current nonce for an address (EIP-2612)
     pub fn nonces(&self, call: ITIP20::noncesCall) -> Result<U256> {
-        self.nonces[call.owner].read()
+        self.permit_nonces[call.owner].read()
     }
 
     /// Returns the EIP-712 domain separator, computed dynamically
@@ -529,8 +529,8 @@ impl TIP20Token {
         }
 
         // 2. Read current nonce and increment BEFORE validation (reentrancy protection)
-        let nonce = self.nonces[call.owner].read()?;
-        self.nonces[call.owner].write(
+        let nonce = self.permit_nonces[call.owner].read()?;
+        self.permit_nonces[call.owner].write(
             nonce
                 .checked_add(U256::from(1))
                 .ok_or(TempoPrecompileError::under_overflow())?,
