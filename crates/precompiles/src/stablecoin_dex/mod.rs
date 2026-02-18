@@ -721,7 +721,7 @@ impl StablecoinDEX {
                 order.tick(),
                 true,
             ) && e.is_system_error()
-                && self.storage.spec().is_t2()
+                && self.storage.spec().is_t1a()
             {
                 return Err(e);
             }
