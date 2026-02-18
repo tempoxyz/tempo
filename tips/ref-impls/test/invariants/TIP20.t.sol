@@ -31,6 +31,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
     mapping(address => mapping(address => bool)) private _tokenHolderSeen;
     mapping(address => address[]) private _tokenHolders;
 
+    /// @dev Private keys associated with actor addresses
+    uint256[] private _keys;
+
     /// @dev Constants
     uint256 internal constant ACC_PRECISION = 1e18;
 
@@ -49,7 +52,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         _setupInvariantBase();
-        _actors = _buildActors(20);
+        (_actors, _keys) = _buildActors(20);
 
         // Snapshot initial supply after _buildActors mints tokens to actors
         for (uint256 i = 0; i < _tokens.length; i++) {
@@ -1227,6 +1230,66 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.stopPrank();
     }
 
+    function permit(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 tokenSeed,
+        uint128 amount,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s,
+        uint256 resultSeed
+    )
+        external
+    {
+        address actor = _selectActor(actorSeed);
+        address recipient = _selectActorExcluding(recipientSeed, actor);
+        TIP20 token = _selectBaseToken(tokenSeed);
+        uint256 actorNonce = token.nonces(actor);
+
+        // build permit digest
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                token.DOMAIN_SEPARATOR(),
+                keccak256(abi.encodePacked(actor, recipient, amount, deadline))
+            )
+        );
+
+        // alternate between: correct sig, random sig, corrupted digest, and fully random sig
+        address signer;
+        if (resultSeed % 4 == 0) {
+            signer = actor;
+            (v, r, s) = vm.sign(_selectActorKey(actorSeed), digest);
+        } else if (resultSeed % 4 == 1) {
+            // Sign with a random key
+            resultSeed = resultSeed >> 1;
+            signer = _selectActorExcluding(resultSeed, actor);
+            (v, r, s) = vm.sign(_selectActorKey(actorSeed), digest);
+        } else if (resultSeed % 4 == 2) {
+            digest = keccak256(abi.encodePacked(digest, resultSeed)); // corrupt the digest unpredictably
+        } // else use the random bytes entirely
+
+        try token.permit(actor, recipient, amount, deadline, v, r, s) {
+            // If permit passes, check invariants
+
+            // **TEMPO-TIP29**: Permit should set correct allowance
+            assertEq(
+                token.allowance(actor, recipient), amount, "Permit did not set correct allowance"
+            );
+
+            // **TEMPO-TIP32**: Nonce should be incremented
+            assertEq(token.nonces(actor), actorNonce + 1, "Permit did not increment nonce");
+
+            // **TEMPO-TIP34**: A permit with a deadline in the past must always revert.
+            assertGe(deadline, block.timestamp, "Permit should revert if deadline is past");
+
+            // **TEMPO-TIP35**: The recovered signer from a valid permit signature must exactly match the `owner` parameter.
+            assertEq(ecrecover(digest, v, r, s), signer, "Recovered signer does not match expected");
+        } catch (bytes memory) { }
+    }
+
     /// @notice Handler that verifies paused tokens reject transfers with ContractPaused
     /// @dev Tests TEMPO-TIP17: pause enforcement - transfers revert with ContractPaused
     function tryTransferWhilePaused(
@@ -1312,6 +1375,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 }
             }
         }
+    }
+
+    // Helper function to select key associated with seed
+    function _selectActorKey(uint256 seed) internal view returns (uint256) {
+        return _keys[seed % _keys.length];
     }
 
 }
