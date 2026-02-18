@@ -120,8 +120,8 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
 
         if header.timestamp_millis() <= parent.timestamp_millis() {
             return Err(ConsensusError::TimestampIsInPast {
-                parent_timestamp: parent.timestamp_millis(),
-                timestamp: header.timestamp_millis(),
+                parent_timestamp: parent.timestamp(),
+                timestamp: header.timestamp(),
             });
         }
 
@@ -858,5 +858,47 @@ mod tests {
             err.to_string()
                 .contains("Invalid end-of-block system tx order")
         );
+    }
+
+    #[test]
+    fn test_validate_header_against_parent_timestamp_in_past_error_contains_seconds() {
+        // TimestampIsInPast and TimestampIsInFuture error fields must use the same
+        // unit (seconds) so callers can interpret them consistently.
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let ts = current_timestamp();
+
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(ts)
+            .timestamp_millis_part(500)
+            .number(1)
+            .build();
+        let parent_sealed = SealedHeader::seal_slow(parent);
+
+        // Child with same second-timestamp but lower ms part → timestamp_millis is in the past
+        let child = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(ts)
+            .timestamp_millis_part(100)
+            .number(2)
+            .parent_hash(parent_sealed.hash())
+            .build();
+        let child_sealed = SealedHeader::seal_slow(child);
+
+        let err = consensus
+            .validate_header_against_parent(&child_sealed, &parent_sealed)
+            .expect_err("should fail: child timestamp_millis is before parent");
+
+        match err {
+            ConsensusError::TimestampIsInPast {
+                parent_timestamp,
+                timestamp,
+            } => {
+                // Fields must contain seconds (like TimestampIsInFuture), not milliseconds.
+                assert_eq!(parent_timestamp, ts, "parent_timestamp must be in seconds");
+                assert_eq!(timestamp, ts, "timestamp must be in seconds");
+            }
+            other => panic!("expected TimestampIsInPast, got: {other:?}"),
+        }
     }
 }
