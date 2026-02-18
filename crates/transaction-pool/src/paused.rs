@@ -119,7 +119,7 @@ impl PausedFeeTokenPool {
             .iter()
             .map(|(addr, meta)| (*addr, meta.paused_at))
             .collect();
-        tokens_by_age.sort_by_key(|(_, paused_at)| *paused_at);
+        tokens_by_age.sort_unstable_by_key(|(_, paused_at)| *paused_at);
 
         let mut evicted = 0;
         for (token, _) in tokens_by_age {
