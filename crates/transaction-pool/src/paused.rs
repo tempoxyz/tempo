@@ -98,16 +98,14 @@ impl PausedFeeTokenPool {
             entries
         };
 
-        if !to_insert.is_empty() {
-            self.by_token
-                .entry(fee_token)
-                .or_insert_with(|| PausedTokenMeta {
-                    paused_at: Instant::now(),
-                    entries: Vec::new(),
-                })
-                .entries
-                .extend(to_insert);
-        }
+        self.by_token
+            .entry(fee_token)
+            .or_insert_with(|| PausedTokenMeta {
+                paused_at: Instant::now(),
+                entries: Vec::new(),
+            })
+            .entries
+            .extend(to_insert);
 
         evicted
     }
