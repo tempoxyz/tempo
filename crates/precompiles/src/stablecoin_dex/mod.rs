@@ -118,11 +118,15 @@ impl StablecoinDEX {
     }
 
     /// Subtract from user's balance.
-    ///
-    /// The *CALLER* is responsible for ensuring `amount <= token.balanceOf(user)`.
     fn sub_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current = self.balance_of(user, token)?;
-        self.set_balance(user, token, current.saturating_sub(amount))
+        self.set_balance(
+            user,
+            token,
+            current
+                .checked_sub(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )
     }
 
     /// Emit the appropriate OrderFilled event
@@ -4658,6 +4662,40 @@ mod tests {
                 Err(StablecoinDEXError::insufficient_liquidity().into()),
                 "swap against cancelled book must fail"
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_sub_balance_errors_on_underflow() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let user = Address::random();
+            let admin = Address::random();
+
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .apply()?;
+            let token = base.address();
+
+            // Set a balance of 100
+            exchange.set_balance(user, token, 100)?;
+            assert_eq!(exchange.balance_of(user, token)?, 100);
+
+            // Subtracting more than the balance should error, not silently clamp to 0
+            let result = exchange.sub_balance(user, token, 101);
+            assert_eq!(
+                result,
+                Err(TempoPrecompileError::under_overflow()),
+                "sub_balance should error on underflow instead of saturating"
+            );
+
+            // Balance should be unchanged
+            assert_eq!(exchange.balance_of(user, token)?, 100);
 
             Ok(())
         })
