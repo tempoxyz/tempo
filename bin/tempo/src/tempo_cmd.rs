@@ -3,9 +3,9 @@ use std::{fs::OpenOptions, path::PathBuf, sync::Arc};
 use alloy_primitives::Address;
 use alloy_provider::Provider;
 
+use crate::p2p_proxy::P2pProxyArgs;
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_sol_types::SolCall;
-use crate::p2p_proxy::P2pProxyArgs;
 use clap::Subcommand;
 use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
@@ -315,19 +315,23 @@ mod tests {
     use reth_rpc_server_types::DefaultRpcModuleValidator;
     use tempo_chainspec::spec::TempoChainSpecParser;
 
-    type TempoCli = Cli<TempoChainSpecParser, crate::TempoArgs, DefaultRpcModuleValidator, TempoSubcommand>;
+    type TempoCli =
+        Cli<TempoChainSpecParser, crate::TempoArgs, DefaultRpcModuleValidator, TempoSubcommand>;
 
     #[test]
     fn parse_p2p_proxy_defaults() {
         let cli = TempoCli::try_parse_from([
             "tempo",
             "p2p-proxy",
-            "--rpc-url", "https://rpc.moderato.tempo.xyz",
-        ]).unwrap();
+            "--rpc-url",
+            "https://rpc.moderato.tempo.xyz",
+        ])
+        .unwrap();
 
-        assert!(
-            matches!(cli.command, reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_)))
-        );
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
+        ));
     }
 
     #[test]
@@ -335,17 +339,25 @@ mod tests {
         let cli = TempoCli::try_parse_from([
             "tempo",
             "p2p-proxy",
-            "--rpc-url", "ws://localhost:8546",
-            "--chain", "moderato",
-            "--port", "9999",
-            "--discovery-port", "9998",
-            "--max-inbound", "50",
-            "--max-concurrent-inbound", "10",
-        ]).unwrap();
+            "--rpc-url",
+            "ws://localhost:8546",
+            "--chain",
+            "moderato",
+            "--port",
+            "9999",
+            "--discovery-port",
+            "9998",
+            "--max-inbound",
+            "50",
+            "--max-concurrent-inbound",
+            "10",
+        ])
+        .unwrap();
 
-        assert!(
-            matches!(cli.command, reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_)))
-        );
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
+        ));
     }
 
     #[test]

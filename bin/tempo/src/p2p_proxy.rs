@@ -10,12 +10,11 @@ use eyre::{Context, Result};
 use futures::StreamExt;
 use reth_chainspec::Head;
 use reth_eth_wire_types::{
-    HeadersDirection, PooledTransactions,
-    primitives::BasicNetworkPrimitives,
+    HeadersDirection, PooledTransactions, primitives::BasicNetworkPrimitives,
 };
 use reth_ethereum::network::{
-    eth_requests::IncomingEthRequest, NetworkConfig, NetworkEventListenerProvider, NetworkInfo,
-    NetworkManager, PeersConfig, PeersInfo, transactions::NetworkTransactionEvent,
+    NetworkConfig, NetworkEventListenerProvider, NetworkInfo, NetworkManager, PeersConfig,
+    PeersInfo, eth_requests::IncomingEthRequest, transactions::NetworkTransactionEvent,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -27,7 +26,7 @@ use std::{
 };
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser};
-use tempo_primitives::{TempoPrimitives, TempoHeader, TempoTxEnvelope};
+use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
@@ -38,7 +37,9 @@ type TempoNetPrimitives = BasicNetworkPrimitives<TempoPrimitives, TempoTxEnvelop
 const CACHE_CAPACITY: u64 = 2 * 60 * 60 * 24; // 172_800
 
 #[derive(Parser, Debug)]
-#[command(about = "Run a proxy P2P node that serves cached block data fetched from an RPC endpoint")]
+#[command(
+    about = "Run a proxy P2P node that serves cached block data fetched from an RPC endpoint"
+)]
 pub(crate) struct P2pProxyArgs {
     /// RPC endpoint to fetch blocks from (HTTP or WebSocket).
     #[arg(long, required = true)]
@@ -156,8 +157,15 @@ impl BlockCache {
         }
     }
 
-    fn insert(&mut self, number: u64, hash: B256, header: TempoHeader, body: tempo_primitives::BlockBody) {
-        self.by_number.insert(number, CachedBlock { header, body, hash });
+    fn insert(
+        &mut self,
+        number: u64,
+        hash: B256,
+        header: TempoHeader,
+        body: tempo_primitives::BlockBody,
+    ) {
+        self.by_number
+            .insert(number, CachedBlock { header, body, hash });
         self.by_hash.insert(hash, number);
         self.evict();
     }
@@ -177,7 +185,9 @@ impl BlockCache {
     }
 
     fn get_by_hash(&self, hash: &B256) -> Option<&CachedBlock> {
-        self.by_hash.get(hash).and_then(|num| self.by_number.get(num))
+        self.by_hash
+            .get(hash)
+            .and_then(|num| self.by_number.get(num))
     }
 }
 
@@ -201,7 +211,10 @@ async fn run_fetcher_service(
     let mut cache = BlockCache::new(CACHE_CAPACITY);
 
     // Backfill: fetch latest block number and work backwards to fill the cache
-    let latest = provider.get_block_number().await.context("failed to get latest block number")?;
+    let latest = provider
+        .get_block_number()
+        .await
+        .context("failed to get latest block number")?;
     let start = latest.saturating_sub(CACHE_CAPACITY.saturating_sub(1));
     info!(latest, start, "backfilling block cache");
 
@@ -315,29 +328,53 @@ async fn run_p2p_network(
     // Handle incoming eth requests
     while let Some(eth_request) = requests_rx.recv().await {
         match eth_request {
-            IncomingEthRequest::GetBlockHeaders { peer_id, request, response } => {
+            IncomingEthRequest::GetBlockHeaders {
+                peer_id,
+                request,
+                response,
+            } => {
                 debug!(%peer_id, ?request, "received GetBlockHeaders");
                 stats.headers.fetch_add(1, Ordering::Relaxed);
                 let fetch_tx = fetch_tx.clone();
                 tokio::spawn(async move {
                     let headers = async {
                         let (tx, rx) = oneshot::channel();
-                        fetch_tx.send(FetchRequest::GetHeaders { request, response: tx }).await.ok()?;
+                        fetch_tx
+                            .send(FetchRequest::GetHeaders {
+                                request,
+                                response: tx,
+                            })
+                            .await
+                            .ok()?;
                         rx.await.ok()
-                    }.await.unwrap_or_default();
+                    }
+                    .await
+                    .unwrap_or_default();
                     let _ = response.send(Ok(headers.into()));
                 });
             }
-            IncomingEthRequest::GetBlockBodies { peer_id, request, response } => {
+            IncomingEthRequest::GetBlockBodies {
+                peer_id,
+                request,
+                response,
+            } => {
                 debug!(%peer_id, ?request, "received GetBlockBodies");
                 stats.bodies.fetch_add(1, Ordering::Relaxed);
                 let fetch_tx = fetch_tx.clone();
                 tokio::spawn(async move {
                     let bodies = async {
                         let (tx, rx) = oneshot::channel();
-                        fetch_tx.send(FetchRequest::GetBodies { hashes: request.0, response: tx }).await.ok()?;
+                        fetch_tx
+                            .send(FetchRequest::GetBodies {
+                                hashes: request.0,
+                                response: tx,
+                            })
+                            .await
+                            .ok()?;
                         rx.await.ok()
-                    }.await.unwrap_or_default();
+                    }
+                    .await
+                    .unwrap_or_default();
                     let _ = response.send(Ok(bodies.into()));
                 });
             }
@@ -406,9 +443,7 @@ async fn resolve_headers(
     // Resolve start block number
     let start_num = match request.start_block {
         BlockHashOrNumber::Number(n) => Some(n),
-        BlockHashOrNumber::Hash(h) => {
-            cache.get_by_hash(&h).map(|block| block.header.number())
-        }
+        BlockHashOrNumber::Hash(h) => cache.get_by_hash(&h).map(|block| block.header.number()),
     };
 
     let Some(mut current) = start_num else {
@@ -419,7 +454,10 @@ async fn resolve_headers(
         let block = if let Some(b) = cache.get_by_number(current) {
             Some(b.clone())
         } else {
-            if fetch_and_cache_block(provider, cache, current).await.is_ok() {
+            if fetch_and_cache_block(provider, cache, current)
+                .await
+                .is_ok()
+            {
                 cache.get_by_number(current).cloned()
             } else {
                 None
@@ -436,12 +474,10 @@ async fn resolve_headers(
             HeadersDirection::Rising => {
                 current = current.saturating_add(1 + request.skip as u64);
             }
-            HeadersDirection::Falling => {
-                match current.checked_sub(1 + request.skip as u64) {
-                    Some(n) => current = n,
-                    None => break,
-                }
-            }
+            HeadersDirection::Falling => match current.checked_sub(1 + request.skip as u64) {
+                Some(n) => current = n,
+                None => break,
+            },
         }
     }
 
@@ -540,12 +576,17 @@ mod tests {
 
         // Learn a hash, then clear cache to force RPC fetch
         let latest = provider.get_block_number().await.unwrap();
-        fetch_and_cache_block(&provider, &mut cache, latest).await.unwrap();
+        fetch_and_cache_block(&provider, &mut cache, latest)
+            .await
+            .unwrap();
         let hash = cache.get_by_number(latest).unwrap().hash;
         cache = BlockCache::new(100);
 
         let bodies = resolve_bodies(&provider, &mut cache, &[hash]).await;
         assert_eq!(bodies.len(), 1);
-        assert!(cache.get_by_hash(&hash).is_some(), "should be cached after fetch");
+        assert!(
+            cache.get_by_hash(&hash).is_some(),
+            "should be cached after fetch"
+        );
     }
 }

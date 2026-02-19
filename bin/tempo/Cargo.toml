@@ -83,6 +83,7 @@ path = "src/main.rs"
 default = ["asm-keccak", "jemalloc", "otlp"]
 
 asm-keccak = [
+	"alloy/asm-keccak",
 	"alloy-primitives/asm-keccak",
 	"tempo-alloy/asm-keccak",
 	"tempo-node/asm-keccak",
