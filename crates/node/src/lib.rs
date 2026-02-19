@@ -4,6 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub use tempo_payload_types::{TempoExecutionData, TempoPayloadTypes};
+pub use defaults::init_defaults;
 pub use version::{init_version_metadata, version_metadata};
 
 use crate::node::{TempoAddOns, TempoNode};
@@ -12,6 +13,7 @@ use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
 pub use tempo_transaction_pool::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS;
 
+pub mod defaults;
 pub mod engine;
 pub mod node;
 pub mod rpc;
