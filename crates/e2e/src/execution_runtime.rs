@@ -158,6 +158,7 @@ impl Builder {
 
         // Just remove whatever is already written into chainspec.
         genesis.alloc.remove(&VALIDATOR_CONFIG_ADDRESS);
+        tracing::error!(VALIDATOR_CONFIG_V2_ADDRESS = ?genesis.alloc.get(&VALIDATOR_CONFIG_V2_ADDRESS), "val config v2 genesis entry");
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
 
         let mut evm = setup_tempo_evm(genesis.config.chain_id);
@@ -171,15 +172,14 @@ impl Builder {
                     .wrap_err("failed to initialize validator config v1")
                     .unwrap();
 
-                let mut validator_config_v2 = (t2_time == 0).then(|| {
-                    let mut cfg = ValidatorConfigV2::new();
-                    cfg.initialize(admin())
+                let mut validator_config_v2 = ValidatorConfigV2::new();
+                if t2_time == 0 {
+                    validator_config_v2
+                        .initialize(admin())
                         .wrap_err("failed to initialize validator config v2")
                         .unwrap();
-                    cfg
-                });
+                }
 
-                let mut i = 0;
                 for (public_key, validator) in validators {
                     if let ConsensusNodeConfig {
                         address,
@@ -189,8 +189,6 @@ impl Builder {
                         share: Some(_),
                     } = validator
                     {
-                        tracing::error!(i, "adding validator",);
-                        i += 1;
                         validator_config
                             .add_validator(
                                 admin(),
@@ -204,27 +202,28 @@ impl Builder {
                             )
                             .unwrap();
 
-                        if let Some(v2) = &mut validator_config_v2 {
-                            v2.add_validator(
-                                admin(),
-                                IValidatorConfigV2::addValidatorCall {
-                                    validatorAddress: address,
-                                    publicKey: public_key.encode().as_ref().try_into().unwrap(),
-                                    ingress: ingress.to_string(),
-                                    egress: egress.ip().to_string(),
-                                    signature: sign_add_validator_args(
-                                        genesis.config.chain_id,
-                                        &private_key,
-                                        address,
-                                        ingress,
-                                        egress.ip(),
-                                    )
-                                    .encode()
-                                    .to_vec()
-                                    .into(),
-                                },
-                            )
-                            .unwrap()
+                        if t2_time == 0 {
+                            validator_config_v2
+                                .add_validator(
+                                    admin(),
+                                    IValidatorConfigV2::addValidatorCall {
+                                        validatorAddress: address,
+                                        publicKey: public_key.encode().as_ref().try_into().unwrap(),
+                                        ingress: ingress.to_string(),
+                                        egress: egress.ip().to_string(),
+                                        signature: sign_add_validator_args(
+                                            genesis.config.chain_id,
+                                            &private_key,
+                                            address,
+                                            ingress,
+                                            egress.ip(),
+                                        )
+                                        .encode()
+                                        .to_vec()
+                                        .into(),
+                                    },
+                                )
+                                .unwrap()
                         }
                     }
                 }
@@ -254,6 +253,8 @@ impl Builder {
                 },
             );
         }
+
+        tracing::error!(VALIDATOR_CONFIG_V2_ADDRESS = ?genesis.alloc.get(&VALIDATOR_CONFIG_V2_ADDRESS), "val config v2 genesis entry");
 
         Ok(ExecutionRuntime::with_chain_spec(
             TempoChainSpec::from_genesis(genesis),

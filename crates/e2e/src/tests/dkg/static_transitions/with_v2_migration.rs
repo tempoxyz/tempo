@@ -32,7 +32,7 @@ fn single_node_transitions_twice() {
 }
 
 #[test_traced]
-fn two_nodes_transitions_once() {
+fn two_nodes_transition_once() {
     AssertTransition {
         how_many_signers: 2,
         epoch_length: 10,
@@ -42,7 +42,7 @@ fn two_nodes_transitions_once() {
 }
 
 #[test_traced]
-fn two_nodes_transitions_twice() {
+fn two_nodes_transition_twice() {
     AssertTransition {
         how_many_signers: 2,
         epoch_length: 10,
@@ -67,7 +67,7 @@ fn four_nodes_transition_once() {
 }
 
 #[test_traced]
-fn four_nodes_transitions_twice() {
+fn four_nodes_transition_twice() {
     AssertTransition {
         how_many_signers: 4,
         epoch_length: 20,
@@ -127,10 +127,10 @@ impl AssertTransition {
                         .block_number,
                     "migrateValidator returned receipt",
                 );
-                tracing::warn!(
-                    validators = ?execution_runtime.get_v2_validators(http_url.clone()).await.unwrap(),
-                    "ValidatorConfigV2.getAllValidators returned response",
-                );
+                // tracing::warn!(
+                //     validators = ?execution_runtime.get_v2_validators(http_url.clone()).await.unwrap(),
+                //     "ValidatorConfigV2.getAllValidators returned response",
+                // );
             }
             tracing::debug!(
                 block.number = execution_runtime
