@@ -912,52 +912,6 @@ where
     }
 }
 
-/// Ensures that gas limit of the transaction exceeds the intrinsic gas of the transaction.
-pub fn ensure_intrinsic_gas_tempo_tx(
-    tx: &TempoPooledTransaction,
-    spec: TempoHardfork,
-) -> Result<(), InvalidPoolTransactionError> {
-    let gas_params = tempo_gas_params(spec);
-
-    let mut gas = gas_params.initial_tx_gas(
-        tx.input(),
-        tx.is_create(),
-        tx.access_list().map(|l| l.len()).unwrap_or_default() as u64,
-        tx.access_list()
-            .map(|l| l.iter().map(|i| i.storage_keys.len()).sum::<usize>())
-            .unwrap_or_default() as u64,
-        tx.authorization_list().map(|l| l.len()).unwrap_or_default() as u64,
-    );
-
-    // TIP-1000: Storage pricing updates for launch
-    // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
-    // no need for v1 fork check as gas_params would be zero
-    for auth in tx.authorization_list().unwrap_or_default() {
-        if auth.nonce == 0 {
-            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
-        }
-    }
-
-    // TIP-1000: Storage pricing updates for launch
-    // Tempo transactions with `nonce == 0` require additional gas, but the amount depends on nonce type:
-    // - Expiring nonce (nonce_key == MAX): EXPIRING_NONCE_GAS (13k) for ring buffer operations
-    // - Regular/2D nonce with nonce == 0: new_account_cost (250k) for potential account creation
-    if spec.is_t1() && tx.nonce() == 0 {
-        if tx.nonce_key() == Some(TEMPO_EXPIRING_NONCE_KEY) {
-            gas.initial_gas += EXPIRING_NONCE_GAS;
-        } else {
-            gas.initial_gas += gas_params.get(GasId::new_account_cost());
-        }
-    }
-
-    let gas_limit = tx.gas_limit();
-    if gas_limit < gas.initial_gas || gas_limit < gas.floor_gas {
-        Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
-    } else {
-        Ok(())
-    }
-}
-
 impl<Client> TransactionValidator for TempoTransactionValidator<Client>
 where
     Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
@@ -1028,6 +982,52 @@ where
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
         self.inner.on_new_head_block(new_tip_block)
+    }
+}
+
+/// Ensures that gas limit of the transaction exceeds the intrinsic gas of the transaction.
+pub fn ensure_intrinsic_gas_tempo_tx(
+    tx: &TempoPooledTransaction,
+    spec: TempoHardfork,
+) -> Result<(), InvalidPoolTransactionError> {
+    let gas_params = tempo_gas_params(spec);
+
+    let mut gas = gas_params.initial_tx_gas(
+        tx.input(),
+        tx.is_create(),
+        tx.access_list().map(|l| l.len()).unwrap_or_default() as u64,
+        tx.access_list()
+            .map(|l| l.iter().map(|i| i.storage_keys.len()).sum::<usize>())
+            .unwrap_or_default() as u64,
+        tx.authorization_list().map(|l| l.len()).unwrap_or_default() as u64,
+    );
+
+    // TIP-1000: Storage pricing updates for launch
+    // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+    // no need for v1 fork check as gas_params would be zero
+    for auth in tx.authorization_list().unwrap_or_default() {
+        if auth.nonce == 0 {
+            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+        }
+    }
+
+    // TIP-1000: Storage pricing updates for launch
+    // Tempo transactions with `nonce == 0` require additional gas, but the amount depends on nonce type:
+    // - Expiring nonce (nonce_key == MAX): EXPIRING_NONCE_GAS (13k) for ring buffer operations
+    // - Regular/2D nonce with nonce == 0: new_account_cost (250k) for potential account creation
+    if spec.is_t1() && tx.nonce() == 0 {
+        if tx.nonce_key() == Some(TEMPO_EXPIRING_NONCE_KEY) {
+            gas.initial_gas += EXPIRING_NONCE_GAS;
+        } else {
+            gas.initial_gas += gas_params.get(GasId::new_account_cost());
+        }
+    }
+
+    let gas_limit = tx.gas_limit();
+    if gas_limit < gas.initial_gas || gas_limit < gas.floor_gas {
+        Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
+    } else {
+        Ok(())
     }
 }
 
