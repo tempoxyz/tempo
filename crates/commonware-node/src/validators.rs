@@ -140,11 +140,11 @@ pub(crate) fn read_validator_config_at_block_hash<C, T>(
 where
     C: Default,
 {
-    let block = node
+    let header = node
         .provider
-        .find_block_by_hash(block_hash, BlockSource::Any)
+        .header(block_hash)
         .map_err(eyre::Report::new)
-        .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty block"))
+        .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty header"))
         .wrap_err_with(|| format!("failed reading block with hash `{block_hash}`"))?;
 
     let db = State::builder()
@@ -159,11 +159,8 @@ where
 
     let mut evm = node
         .evm_config
-        .evm_for_block(db, block.header())
+        .evm_for_block(db, &header)
         .wrap_err("failed instantiating evm for block")?;
-
-    let height = block.number();
-    let hash = block.seal_slow().hash();
 
     let ctx = evm.ctx_mut();
     let res = StorageCtx::enter_evm(
@@ -173,7 +170,7 @@ where
         &ctx.tx,
         || read_fn(&C::default()),
     )?;
-    Ok((height, hash, res))
+    Ok((header.number(), block_hash, res))
 }
 
 pub(crate) enum Validators {
@@ -202,9 +199,8 @@ pub(crate) fn is_v2_initialized_at_height(node: &TempoFullNode, height: u64) -> 
     }
 }
 
-/// Returns if the validator config v2 can be used exactly at the heigth and
+/// Returns if the validator config v2 can be used exactly at the height and
 /// timestamp of `header`.
-///
 ///
 /// Validator Config V2 can be used if:
 ///
@@ -222,9 +218,8 @@ pub(crate) fn can_use_v2(node: &TempoFullNode, header: &TempoHeader) -> eyre::Re
             <= header.number())
 }
 
-/// Returns if the validator config v2 can be used exactly at the heigth and
-/// timestamp of `header`.
-///
+/// Returns if the validator config v2 can be used exactly at `hash` and the
+/// timestamp of the corresponding `header`.
 ///
 /// Validator Config V2 can be used if:
 ///
@@ -287,7 +282,7 @@ pub(crate) fn read_from_contract_at_height(
 
         let decoded_validators = raw_validators
             .into_iter()
-            .map(|raw| DecodedValidatorV2::decode_from_contract(raw))
+            .map(DecodedValidatorV2::decode_from_contract)
             .collect::<Result<Vec<_>, _>>()
             .wrap_err("failed an entry in the on-chain validator set")?;
 
@@ -306,6 +301,72 @@ pub(crate) fn read_from_contract_at_height(
     } else {
         let (read_height, hash, raw_validators) =
             read_validator_config_at_height(node, read_height, |config: &ValidatorConfig| {
+                config
+                    .get_validators()
+                    .wrap_err("failed to query contract for validator config")
+            })?;
+        info!(
+            ?raw_validators,
+            "read validators from validator config v1 contract",
+        );
+        (
+            read_height,
+            hash,
+            Validators::V1(decode_from_contract(raw_validators)),
+        )
+    };
+    Ok(vals)
+}
+
+#[instrument(
+    skip_all,
+    fields(
+        attempt = _attempt,
+        %block_hash,
+    ),
+    err(level = Level::WARN),
+)]
+pub(crate) fn read_from_contract_at_block_hash(
+    _attempt: u32,
+    node: &TempoFullNode,
+    block_hash: B256,
+) -> eyre::Result<(u64, B256, Validators)> {
+    let vals = if can_use_v2_at_block_hash(node, block_hash)
+        .wrap_err("failed to determine if the v2 validator config contract can be used")?
+    {
+        let (read_height, hash, raw_validators) =
+            read_validator_config_at_block_hash(node, block_hash, |config: &ValidatorConfigV2| {
+                config
+                    .get_validators()
+                    .wrap_err("failed to query contract for validator config")
+            })?;
+
+        info!(
+            ?raw_validators,
+            "read validators from validator config v2 contract",
+        );
+
+        let decoded_validators = raw_validators
+            .into_iter()
+            .map(DecodedValidatorV2::decode_from_contract)
+            .collect::<Result<Vec<_>, _>>()
+            .wrap_err("failed an entry in the on-chain validator set")?;
+
+        (
+            read_height,
+            hash,
+            Validators::V2(
+                ordered::Map::try_from_iter(
+                    decoded_validators
+                        .into_iter()
+                        .map(|validator| (validator.public_key.clone(), validator)),
+                )
+                .wrap_err("contract contained validators with duplicate public keys")?,
+            ),
+        )
+    } else {
+        let (read_height, hash, raw_validators) =
+            read_validator_config_at_block_hash(node, block_hash, |config: &ValidatorConfig| {
                 config
                     .get_validators()
                     .wrap_err("failed to query contract for validator config")

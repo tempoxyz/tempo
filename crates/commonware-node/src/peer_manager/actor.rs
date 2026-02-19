@@ -22,7 +22,7 @@ use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tempo_primitives::TempoHeader;
-use tracing::{Level, Span, error, info, info_span, instrument, warn};
+use tracing::{Level, Span, debug, error, info, info_span, instrument, warn};
 
 use crate::{
     consensus::block::Block,
@@ -39,6 +39,7 @@ where
 
     oracle: TPeerManager,
     execution_node: TempoFullNode,
+    executor: crate::executor::Mailbox,
     epoch_strategy: FixedEpocher,
     last_finalized_height: Height,
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
@@ -58,6 +59,7 @@ where
         super::Config {
             oracle,
             execution_node,
+            executor,
             epoch_strategy,
             last_finalized_height,
         }: super::Config<TPeerManager>,
@@ -73,6 +75,7 @@ where
             context: ContextCell::new(context),
             oracle,
             execution_node,
+            executor,
             epoch_strategy,
             last_finalized_height,
             mailbox,
@@ -175,6 +178,11 @@ where
             read_validator_config(&self.execution_node, &header)
                 .wrap_err("unable to read initial peer set from execution layer")?;
 
+        let source = match &all_validators {
+            Validators::V1(_) => "Validator Config V1",
+            Validators::V2(_) => "Validator Config V2",
+        };
+        debug!(source, "read validators from chain");
         let peers = construct_peer_set(&onchain_outcome, &all_validators);
         self.peers.set(peers.len() as i64);
 
@@ -292,11 +300,20 @@ where
             let onchain_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
                 .wrap_err("could not read DKG outcome from boundary block")?;
 
+            if let Err(reason) = self.executor.subscribe_finalized(block.height()).await {
+                warn!(
+                    %reason,
+                    "unable to clarify whether the finalized block was already \
+                    forwarded to execution layer; will try to read validator \
+                    config contract, but it will likely fail",
+                );
+            }
+
             let (_read_height, _read_hash, all_validators) =
-                match read_validator_config(&self.execution_node, block.header()) {
+                match read_validator_config_at_hash(&self.execution_node, block.hash()) {
                     Ok(ret) => ret,
                     Err(reason) => {
-                        info!(
+                        warn!(
                             %reason,
                             execution_layer.status = self.execution_node.network.is_syncing(),
                             "unable to read validator config; will retry on next block",
@@ -370,7 +387,7 @@ pub(crate) fn construct_peer_set(
                 vals.get_value(key)
                     .expect(
                         "all DKG participants must have an entry in the \
-                 unfiltered, contract validator set",
+                         unfiltered, contract validator set",
                     )
                     .outbound,
             ),
@@ -415,5 +432,14 @@ fn read_validator_config(
     );
 
     validators::read_from_contract_at_height(1, node, best_block_number, reference_header)
+        .wrap_err("unable to read validators from best block")
+}
+
+#[instrument(skip_all, err(level = Level::INFO))]
+fn read_validator_config_at_hash(
+    node: &TempoFullNode,
+    block_hash: B256,
+) -> eyre::Result<(u64, B256, Validators)> {
+    validators::read_from_contract_at_block_hash(1, node, block_hash)
         .wrap_err("unable to read validators from best block")
 }

@@ -1144,7 +1144,7 @@ where
         );
 
         let next_players = determine_next_players(
-            &state,
+            state,
             &self.config.execution_node,
             request.digest,
             &self.metrics.read_players_from_v2_contract,
@@ -1247,7 +1247,7 @@ where
     let syncers = if node
         .chain_spec()
         .is_t2_active_at_timestamp(header.timestamp())
-        && is_v2_initialized_at_height(&node, header.number())
+        && is_v2_initialized_at_height(node, header.number())
             .wrap_err("unable to determine if v2 contract is already initialized")?
     {
         ordered::Set::default()
@@ -1649,7 +1649,7 @@ async fn read_syncers_if_v2_not_initialized_with_retry(
 /// boundary).
 ///
 /// The implementation reads the immutable v2 initialization height to avoid
-/// having to read a state at a specific block: if the initializaton has already
+/// having to read a state at a specific block: if the initialization has already
 /// happened, `initialization_height <= height`, then reading validator v1
 /// is skipped and an empty list returned.
 #[instrument(
@@ -1706,7 +1706,7 @@ fn determine_next_players(
     digest: Digest,
     read_v2: &Counter,
 ) -> eyre::Result<ordered::Set<PublicKey>> {
-    let syncers = if can_use_v2_at_block_hash(node, digest.0)
+    let next_players = if can_use_v2_at_block_hash(node, digest.0)
         .wrap_err("failed determining if validator config v2 can be used")?
     {
         read_v2.inc();
@@ -1721,7 +1721,7 @@ fn determine_next_players(
 
         let decoded_validators = raw_validators
             .into_iter()
-            .map(|raw| DecodedValidatorV2::decode_from_contract(raw))
+            .map(DecodedValidatorV2::decode_from_contract)
             .collect::<Result<Vec<_>, _>>()
             .wrap_err("failed decoding an entry in v2 on-chain validator set")?;
 
@@ -1736,8 +1736,8 @@ fn determine_next_players(
         state.syncers.clone()
     };
 
-    debug!(?syncers, "determined syncers");
-    Ok(syncers)
+    debug!(?next_players, "determined next players");
+    Ok(next_players)
 }
 
 /// Reads the `nextFullDkgCeremony` epoch value from one of the validator config contracts.
