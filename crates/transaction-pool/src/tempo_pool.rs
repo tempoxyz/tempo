@@ -869,6 +869,9 @@ where
 
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
         self.protocol_pool.retain_unknown(announcement);
+        if announcement.is_empty() {
+            return;
+        }
         let aa_pool = self.aa_2d_pool.read();
         announcement.retain_by_hash(|tx| !aa_pool.contains(tx))
     }
