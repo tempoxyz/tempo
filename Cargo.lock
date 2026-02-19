@@ -11685,6 +11685,7 @@ dependencies = [
 name = "tempo"
 version = "1.2.0"
 dependencies = [
+ "alloy",
  "alloy-consensus",
  "alloy-primitives",
  "alloy-provider",
@@ -11704,9 +11705,11 @@ dependencies = [
  "pyroscope",
  "pyroscope_pprofrs",
  "rand 0.8.5",
+ "reth-chainspec",
  "reth-cli-commands",
  "reth-cli-runner",
  "reth-cli-util",
+ "reth-eth-wire-types",
  "reth-ethereum",
  "reth-ethereum-cli",
  "reth-node-builder",
@@ -11725,6 +11728,7 @@ dependencies = [
  "tempo-eyre",
  "tempo-faucet",
  "tempo-node",
+ "tempo-primitives",
  "tokio",
  "tokio-util",
  "tracing",
