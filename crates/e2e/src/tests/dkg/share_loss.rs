@@ -57,7 +57,7 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
 
-                if metrics.ends_with("_peers_blocked") {
+                if metric.ends_with("_peers_blocked") {
                     let value = value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }

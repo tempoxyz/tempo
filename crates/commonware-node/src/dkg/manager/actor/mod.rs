@@ -1454,7 +1454,7 @@ impl Metrics {
         let read_players_from_v2_contract = Counter::default();
         context.register(
             "read_players_from_v2_contract",
-            "the number of times the players were read from the validator config v1 contract",
+            "the number of times the players were read from the validator config v2 contract",
             read_players_from_v2_contract.clone(),
         );
 
