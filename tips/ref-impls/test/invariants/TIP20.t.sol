@@ -1300,7 +1300,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             // **TEMPO-TIP35**: The recovered signer from a valid permit signature must exactly match the `owner` parameter.
             assertEq(
                 ecrecover(digest, v, r, s),
-                signer,
+                actor,
                 "TEMPO-TIP35: Recovered signer does not match expected"
             );
 
