@@ -1,0 +1,22 @@
+name: PR Checks
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Dispatch
+        run: |
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            -H "Content-Type: application/json" \
+            -d '{
+              "repository": "${{ github.repository }}",
+              "event": "pr_review",
+              "data": {
+                "pr_number": ${{ github.event.pull_request.number }},
+                "head_sha": "${{ github.event.pull_request.head.sha }}",
+                "head_ref": "${{ github.event.pull_request.head.ref }}"
+              }
+            }'
