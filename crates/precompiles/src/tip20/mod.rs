@@ -2641,14 +2641,21 @@ pub(crate) mod tests {
                 HashMapStorageProvider::new_with_spec(CHAIN_ID + 1, TempoHardfork::T2);
 
             let ds_a = StorageCtx::enter(&mut storage_a, || {
-                TIP20Setup::create("Test", "TST", admin).apply()?.domain_separator()
+                TIP20Setup::create("Test", "TST", admin)
+                    .apply()?
+                    .domain_separator()
             })?;
 
             let ds_b = StorageCtx::enter(&mut storage_b, || {
-                TIP20Setup::create("Test", "TST", admin).apply()?.domain_separator()
+                TIP20Setup::create("Test", "TST", admin)
+                    .apply()?
+                    .domain_separator()
             })?;
 
-            assert_ne!(ds_a, ds_b, "domain separator must change when chainId changes");
+            assert_ne!(
+                ds_a, ds_b,
+                "domain separator must change when chainId changes"
+            );
 
             Ok(())
         }
