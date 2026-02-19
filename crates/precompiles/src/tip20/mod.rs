@@ -551,6 +551,7 @@ impl TIP20Token {
         );
 
         // 4. Validate ECDSA signature
+        // Only v=27/28 is accepted; v=0/1 is intentionally NOT normalized (see TIP-1004 spec).
         if call.v != 27 && call.v != 28 {
             return Err(TIP20Error::invalid_signature().into());
         }
