@@ -6,8 +6,6 @@ use commonware_macros::test_traced;
 
 use crate::{Setup, run};
 
-mod with_v2_migration;
-
 #[test_traced]
 fn single_validator_can_transition_once() {
     AssertStaticTransitions {

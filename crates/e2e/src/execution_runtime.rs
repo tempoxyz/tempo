@@ -1,6 +1,6 @@
 //! The environment to launch tempo execution nodes in.
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -14,9 +14,12 @@ use alloy::{
 };
 use alloy_evm::{EvmFactory as _, revm::inspector::JournalExt as _};
 use alloy_genesis::{Genesis, GenesisAccount};
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, Keccak256, U256};
 use commonware_codec::Encode;
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{
+    Signer,
+    ed25519::{PrivateKey, PublicKey, Signature},
+};
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt, future::BoxFuture};
@@ -55,10 +58,14 @@ use tempo_node::{
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
 };
 use tempo_precompiles::{
-    VALIDATOR_CONFIG_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
+    validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD, ValidatorConfigV2},
 };
+use tokio::sync::oneshot;
+
+use crate::ConsensusNodeConfig;
 
 const ADMIN_INDEX: u32 = 0;
 const VALIDATOR_START_INDEX: u32 = 1;
@@ -70,7 +77,8 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 pub struct Builder {
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
-    validators: Option<ordered::Map<PublicKey, (SocketAddr, Address)>>,
+    t2_time: Option<u64>,
+    validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
 }
 
 impl Builder {
@@ -78,6 +86,7 @@ impl Builder {
         Self {
             epoch_length: None,
             initial_dkg_outcome: None,
+            t2_time: None,
             validators: None,
         }
     }
@@ -96,12 +105,16 @@ impl Builder {
         }
     }
 
-    pub fn with_validators(
-        self,
-        validators: ordered::Map<PublicKey, (SocketAddr, Address)>,
-    ) -> Self {
+    pub fn with_validators(self, validators: ordered::Map<PublicKey, ConsensusNodeConfig>) -> Self {
         Self {
             validators: Some(validators),
+            ..self
+        }
+    }
+
+    pub fn with_t2_time(self, t2_time: u64) -> Self {
+        Self {
+            t2_time: Some(t2_time),
             ..self
         }
     }
@@ -110,27 +123,44 @@ impl Builder {
         let Self {
             epoch_length,
             initial_dkg_outcome,
+            t2_time,
             validators,
         } = self;
 
         let epoch_length = epoch_length.ok_or_eyre("must specify epoch length")?;
         let initial_dkg_outcome =
             initial_dkg_outcome.ok_or_eyre("must specify initial DKG outcome")?;
+        let t2_time = t2_time.ok_or_eyre("must specify t2 time")?;
         let validators = validators.ok_or_eyre("must specify validators")?;
 
-        assert!(initial_dkg_outcome.next_players() == validators.keys(),);
+        assert_eq!(
+            initial_dkg_outcome.next_players(),
+            &ordered::Set::from_iter_dedup(
+                validators
+                    .iter_pairs()
+                    .filter_map(|(key, val)| val.share.is_some().then_some(key.clone()))
+            )
+        );
 
         let mut genesis = genesis();
         genesis
             .config
             .extra_fields
             .insert_value("epochLength".to_string(), epoch_length)
-            .wrap_err("failed to insert epoch length into genesis")?;
+            .unwrap();
+        genesis
+            .config
+            .extra_fields
+            .insert_value("t2Time".to_string(), t2_time)
+            .unwrap();
 
         genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
 
-        let mut evm = setup_tempo_evm();
+        // Just remove whatever is already written into chainspec.
+        genesis.alloc.remove(&VALIDATOR_CONFIG_ADDRESS);
+        genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
 
+        let mut evm = setup_tempo_evm(genesis.config.chain_id);
         {
             let cx = evm.ctx_mut();
             StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, &cx.tx, || {
@@ -138,22 +168,65 @@ impl Builder {
                 let mut validator_config = ValidatorConfig::new();
                 validator_config
                     .initialize(admin())
-                    .wrap_err("Failed to initialize validator config")
+                    .wrap_err("failed to initialize validator config v1")
                     .unwrap();
 
-                for (peer, (net_addr, chain_addr)) in validators.iter_pairs() {
-                    validator_config
-                        .add_validator(
-                            admin(),
-                            IValidatorConfig::addValidatorCall {
-                                newValidatorAddress: *chain_addr,
-                                publicKey: peer.encode().as_ref().try_into().unwrap(),
-                                active: true,
-                                inboundAddress: net_addr.to_string(),
-                                outboundAddress: net_addr.to_string(),
-                            },
-                        )
+                let mut validator_config_v2 = (t2_time == 0).then(|| {
+                    let mut cfg = ValidatorConfigV2::new();
+                    cfg.initialize(admin())
+                        .wrap_err("failed to initialize validator config v2")
                         .unwrap();
+                    cfg
+                });
+
+                let mut i = 0;
+                for (public_key, validator) in validators {
+                    if let ConsensusNodeConfig {
+                        address,
+                        ingress,
+                        egress,
+                        private_key,
+                        share: Some(_),
+                    } = validator
+                    {
+                        tracing::error!(i, "adding validator",);
+                        i += 1;
+                        validator_config
+                            .add_validator(
+                                admin(),
+                                IValidatorConfig::addValidatorCall {
+                                    newValidatorAddress: address,
+                                    publicKey: public_key.encode().as_ref().try_into().unwrap(),
+                                    active: true,
+                                    inboundAddress: ingress.to_string(),
+                                    outboundAddress: egress.to_string(),
+                                },
+                            )
+                            .unwrap();
+
+                        if let Some(v2) = &mut validator_config_v2 {
+                            v2.add_validator(
+                                admin(),
+                                IValidatorConfigV2::addValidatorCall {
+                                    validatorAddress: address,
+                                    publicKey: public_key.encode().as_ref().try_into().unwrap(),
+                                    ingress: ingress.to_string(),
+                                    egress: egress.ip().to_string(),
+                                    signature: sign_add_validator_args(
+                                        genesis.config.chain_id,
+                                        &private_key,
+                                        address,
+                                        ingress,
+                                        egress.ip(),
+                                    )
+                                    .encode()
+                                    .to_vec()
+                                    .into(),
+                                },
+                            )
+                            .unwrap()
+                        }
+                    }
                 }
             })
         }
@@ -392,6 +465,68 @@ impl ExecutionRuntime {
                                 .unwrap();
                             let _ = response.send(receipt);
                         }
+                        Message::GetV1Validators(get_v1_validators) => {
+                            let GetV1Validators { http_url, response } = get_v1_validators;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config =
+                                IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
+                            let validators = validator_config.getValidators().call().await.unwrap();
+                            let _ = response.send(validators);
+                        }
+                        Message::GetV2Validators(get_v2_validators) => {
+                            let GetV2Validators { http_url, response } = get_v2_validators;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config =
+                                IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            let validators =
+                                validator_config.getAllValidators().call().await.unwrap();
+                            let _ = response.send(validators);
+                        }
+                        Message::InitializeIfMigrated(InitializeIfMigrated {
+                            http_url,
+                            response,
+                        }) => {
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config_v2 =
+                                IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            let receipt = validator_config_v2
+                                .initializeIfMigrated()
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
+                        Message::MigrateValidator(migrate_validator) => {
+                            let MigrateValidator {
+                                http_url,
+                                index,
+                                response,
+                            } = migrate_validator;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config_v2 =
+                                IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            tracing::error!("calling migration with index `{index}`");
+                            let receipt = validator_config_v2
+                                .migrateValidator(index)
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
                         Message::SetNextFullDkgCeremony(set_next_full_dkg_ceremony) => {
                             let SetNextFullDkgCeremony {
                                 http_url,
@@ -467,7 +602,7 @@ impl ExecutionRuntime {
         public_key: PublicKey,
         addr: SocketAddr,
     ) -> eyre::Result<TransactionReceipt> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(
                 AddValidator {
@@ -490,7 +625,7 @@ impl ExecutionRuntime {
         index: u64,
         active: bool,
     ) -> eyre::Result<TransactionReceipt> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(
                 ChangeValidatorStatus {
@@ -506,12 +641,77 @@ impl ExecutionRuntime {
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
     }
 
+    pub async fn get_v1_validators(
+        &self,
+        http_url: Url,
+    ) -> eyre::Result<Vec<IValidatorConfig::Validator>> {
+        let (tx, rx) = oneshot::channel();
+        self.to_runtime
+            .send(
+                GetV1Validators {
+                    http_url,
+                    response: tx,
+                }
+                .into(),
+            )
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    pub async fn get_v2_validators(
+        &self,
+        http_url: Url,
+    ) -> eyre::Result<Vec<IValidatorConfigV2::Validator>> {
+        let (tx, rx) = oneshot::channel();
+        self.to_runtime
+            .send(
+                GetV2Validators {
+                    http_url,
+                    response: tx,
+                }
+                .into(),
+            )
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    pub async fn initialize_if_migrated(&self, http_url: Url) -> eyre::Result<TransactionReceipt> {
+        let (response, rx) = oneshot::channel();
+        self.to_runtime
+            .send(InitializeIfMigrated { http_url, response }.into())
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    pub async fn migrate_validator(
+        &self,
+        http_url: Url,
+        index: u64,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (response, rx) = oneshot::channel();
+        self.to_runtime
+            .send(
+                MigrateValidator {
+                    http_url,
+                    index,
+                    response,
+                }
+                .into(),
+            )
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
     pub async fn set_next_full_dkg_ceremony(
         &self,
         http_url: Url,
         epoch: u64,
     ) -> eyre::Result<TransactionReceipt> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(
                 SetNextFullDkgCeremony {
@@ -533,7 +733,7 @@ impl ExecutionRuntime {
         public_key: PublicKey,
         addr: SocketAddr,
     ) -> eyre::Result<TransactionReceipt> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(
                 AddValidator {
@@ -559,7 +759,7 @@ impl ExecutionRuntime {
         Fut: std::future::Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(Message::RunAsync(Box::pin(async move {
                 let result = fut.await;
@@ -604,7 +804,7 @@ impl ExecutionRuntimeHandle {
         config: ExecutionNodeConfig,
         database: DatabaseEnv,
     ) -> eyre::Result<ExecutionNode> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         self.to_runtime
             .send(Message::SpawnNode {
                 name: name.to_string(),
@@ -775,12 +975,16 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
 enum Message {
     AddValidator(Box<AddValidator>),
     ChangeValidatorStatus(Box<ChangeValidatorStatus>),
+    GetV1Validators(GetV1Validators),
+    GetV2Validators(GetV2Validators),
+    InitializeIfMigrated(InitializeIfMigrated),
+    MigrateValidator(MigrateValidator),
     SetNextFullDkgCeremony(Box<SetNextFullDkgCeremony>),
     SpawnNode {
         name: String,
         config: ExecutionNodeConfig,
         database: DatabaseEnv,
-        response: tokio::sync::oneshot::Sender<ExecutionNode>,
+        response: oneshot::Sender<ExecutionNode>,
     },
     RunAsync(BoxFuture<'static, ()>),
     Stop,
@@ -798,6 +1002,30 @@ impl From<ChangeValidatorStatus> for Message {
     }
 }
 
+impl From<GetV1Validators> for Message {
+    fn from(value: GetV1Validators) -> Self {
+        Self::GetV1Validators(value)
+    }
+}
+
+impl From<GetV2Validators> for Message {
+    fn from(value: GetV2Validators) -> Self {
+        Self::GetV2Validators(value)
+    }
+}
+
+impl From<InitializeIfMigrated> for Message {
+    fn from(value: InitializeIfMigrated) -> Self {
+        Self::InitializeIfMigrated(value)
+    }
+}
+
+impl From<MigrateValidator> for Message {
+    fn from(value: MigrateValidator) -> Self {
+        Self::MigrateValidator(value)
+    }
+}
+
 impl From<SetNextFullDkgCeremony> for Message {
     fn from(value: SetNextFullDkgCeremony) -> Self {
         Self::SetNextFullDkgCeremony(value.into())
@@ -811,7 +1039,7 @@ struct AddValidator {
     address: Address,
     public_key: PublicKey,
     addr: SocketAddr,
-    response: tokio::sync::oneshot::Sender<TransactionReceipt>,
+    response: oneshot::Sender<TransactionReceipt>,
 }
 
 #[derive(Debug)]
@@ -820,7 +1048,32 @@ struct ChangeValidatorStatus {
     http_url: Url,
     index: u64,
     active: bool,
-    response: tokio::sync::oneshot::Sender<TransactionReceipt>,
+    response: oneshot::Sender<TransactionReceipt>,
+}
+
+struct GetV1Validators {
+    http_url: Url,
+    response: oneshot::Sender<Vec<IValidatorConfig::Validator>>,
+}
+
+struct GetV2Validators {
+    http_url: Url,
+    response: oneshot::Sender<Vec<IValidatorConfigV2::Validator>>,
+}
+
+#[derive(Debug)]
+struct InitializeIfMigrated {
+    /// URL of the node to send this to.
+    http_url: Url,
+    response: oneshot::Sender<TransactionReceipt>,
+}
+
+#[derive(Debug)]
+struct MigrateValidator {
+    /// URL of the node to send this to.
+    http_url: Url,
+    index: u64,
+    response: oneshot::Sender<TransactionReceipt>,
 }
 
 #[derive(Debug)]
@@ -828,7 +1081,7 @@ struct SetNextFullDkgCeremony {
     /// URL of the node to send this to.
     http_url: Url,
     epoch: u64,
-    response: tokio::sync::oneshot::Sender<TransactionReceipt>,
+    response: oneshot::Sender<TransactionReceipt>,
 }
 
 pub fn admin() -> Address {
@@ -843,9 +1096,29 @@ pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
 }
 
-fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
+fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
     let db = CacheDB::default();
-    let env = EvmEnv::default();
+    // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
+    let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
+    env.cfg_env.chain_id = chain_id;
+
     let factory = TempoEvmFactory::default();
     factory.create_evm(db, env)
+}
+
+fn sign_add_validator_args(
+    chain_id: u64,
+    key: &PrivateKey,
+    address: Address,
+    ingress: SocketAddr,
+    egress: IpAddr,
+) -> Signature {
+    let mut hasher = Keccak256::new();
+    hasher.update(chain_id.to_be_bytes());
+    hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+    hasher.update(address.as_slice());
+    hasher.update(ingress.to_string().as_bytes());
+    hasher.update(egress.to_string().as_bytes());
+    let msg = hasher.finalize();
+    key.sign(VALIDATOR_NS_ADD, msg.as_slice())
 }
