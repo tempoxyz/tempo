@@ -1,22 +1,24 @@
-name: PR Checks
+name: Pull request audit
+
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [labeled]
+
 jobs:
-  notify:
+  publish:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false
+    if: github.event.pull_request.draft == false && contains(github.event.pull_request.labels.*.name, 'agentic-audit')
     steps:
-      - name: Dispatch
+      - name: Publish event
         run: |
+          set -euo pipefail
           curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
             -H "Content-Type: application/json" \
             -d '{
               "repository": "${{ github.repository }}",
-              "event": "pr_review",
+              "event": "pr_audit",
               "data": {
                 "pr_number": ${{ github.event.pull_request.number }},
-                "head_sha": "${{ github.event.pull_request.head.sha }}",
-                "head_ref": "${{ github.event.pull_request.head.ref }}"
+                "sha": "${{ github.event.pull_request.head.sha }}"
               }
             }'
