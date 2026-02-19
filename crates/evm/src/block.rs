@@ -53,7 +53,7 @@ pub(crate) enum BlockSection {
 /// Builder for [`TempoReceipt`].
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
-pub(crate) struct TempoReceiptBuilder;
+pub struct TempoReceiptBuilder;
 
 impl ReceiptBuilder for TempoReceiptBuilder {
     type Transaction = TempoTxEnvelope;
