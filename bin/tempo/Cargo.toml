@@ -45,6 +45,7 @@ serde_json.workspace = true
 tempo-alloy.workspace = true
 tempo-contracts.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
+tempo-precompiles.workspace = true
 reth-cli-commands.workspace = true
 reth-cli-runner.workspace = true
 reth-cli-util.workspace = true

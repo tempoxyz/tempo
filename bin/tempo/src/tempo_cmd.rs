@@ -1,12 +1,17 @@
-use std::{fs::OpenOptions, path::PathBuf, sync::Arc};
+use std::{
+    fs::OpenOptions,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+};
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, Keccak256};
 use alloy_provider::Provider;
 
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
-use commonware_codec::{DecodeExt as _, ReadExt as _};
+use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{
     Signer as _,
@@ -21,8 +26,11 @@ use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_commonware_node_config::SigningKey;
-use tempo_contracts::precompiles::{IValidatorConfig, VALIDATOR_CONFIG_ADDRESS};
+use tempo_contracts::precompiles::{
+    IValidatorConfig, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
@@ -42,10 +50,14 @@ impl ExtendedCommand for TempoSubcommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ConsensusSubcommand {
-    /// Generates an ed25519 signing key pair to be used in consensus.
-    GeneratePrivateKey(GeneratePrivateKey),
     /// Calculates the public key from an ed25519 signing key.
     CalculatePublicKey(CalculatePublicKey),
+    /// Creating signatures to pass to ValidatorConfigV2.addValidator and
+    /// ValidatorConfigV2.rotateValidator contract calls.
+    #[command(subcommand)]
+    CreateCallSignature(CreateCallSignature),
+    /// Generates an ed25519 signing key pair to be used in consensus.
+    GeneratePrivateKey(GeneratePrivateKey),
     /// Query validator info from the previous epoch's DKG outcome and current contract state.
     ValidatorsInfo(ValidatorsInfo),
 }
@@ -53,10 +65,128 @@ pub(crate) enum ConsensusSubcommand {
 impl ConsensusSubcommand {
     fn run(self) -> eyre::Result<()> {
         match self {
-            Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
+            Self::CreateCallSignature(args) => args.run(),
+            Self::GeneratePrivateKey(args) => args.run(),
             Self::ValidatorsInfo(args) => args.run(),
         }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum CreateCallSignature {
+    /// Returns the signature argument to pass to the addValidator call.
+    AddValidator(AddValidator),
+    /// Returns the signature argument to pass to the rotateValidator call.
+    RotateValidator(RotateValidator),
+}
+
+impl CreateCallSignature {
+    fn run(self) -> eyre::Result<()> {
+        match self {
+            Self::AddValidator(args) => args.run(),
+            Self::RotateValidator(args) => args.run(),
+        }
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct AddValidator {
+    /// The path to the file holding the ed25519 signing key holding used for
+    /// creating the signfature.
+    #[arg(long, value_name = "FILE")]
+    private_key: PathBuf,
+    /// The chain ID of the chain that the add validator call will be sent to.
+    #[arg(long)]
+    chain_id: u64,
+    /// The owner of the validator entry in the add validator call.
+    #[arg(long, value_name = "ETHEREUM ADDRESS")]
+    address: Address,
+    /// The socket address that will be used for ingress in the add validator call.
+    #[arg(long, value_name = "IP:PORT>")]
+    ingress: SocketAddr,
+    /// The ip address that will be used for egress in the add validator call.
+    #[arg(long, value_name = "IP")]
+    egress: IpAddr,
+}
+
+impl AddValidator {
+    fn run(self) -> eyre::Result<()> {
+        let Self {
+            private_key,
+            chain_id,
+            address,
+            ingress,
+            egress,
+        } = self;
+        let private_key = SigningKey::read_from_file(&private_key).wrap_err_with(|| {
+            format!(
+                "failed reading private key from `{}`",
+                private_key.display()
+            )
+        })?;
+        let mut hasher = Keccak256::new();
+        hasher.update(chain_id.to_be_bytes());
+        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        hasher.update(address.as_slice());
+        hasher.update(ingress.to_string().as_bytes());
+        hasher.update(egress.to_string().as_bytes());
+        let msg = hasher.finalize();
+        let signature = private_key
+            .into_inner()
+            .sign(VALIDATOR_NS_ADD, msg.as_slice());
+        println!("{:x}", signature.encode());
+        Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct RotateValidator {
+    /// The path to the file holding the ed25519 signing key holding used for
+    /// creating the signfature.
+    #[arg(long, value_name = "FILE")]
+    private_key: PathBuf,
+    /// The chain ID of the chain that the rotate validator call will be sent to.
+    #[arg(long)]
+    chain_id: u64,
+    /// The owner of the validator entry in the rotate validator call.
+    #[arg(long, value_name = "ETHEREUM ADDRESS")]
+    address: Address,
+    /// The socket address that will be used for ingress in the rotate validator call.
+    #[arg(long, value_name = "IP:PORT>")]
+    ingress: SocketAddr,
+    /// The ip address that will be used for egress in the rotate validator call.
+    #[arg(long, value_name = "IP")]
+    egress: IpAddr,
+}
+
+impl RotateValidator {
+    fn run(self) -> eyre::Result<()> {
+        let Self {
+            private_key,
+            chain_id,
+            address,
+            ingress,
+            egress,
+        } = self;
+        let private_key = SigningKey::read_from_file(&private_key).wrap_err_with(|| {
+            format!(
+                "failed reading private key from `{}`",
+                private_key.display()
+            )
+        })?;
+        let mut hasher = Keccak256::new();
+        hasher.update(chain_id.to_be_bytes());
+        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        hasher.update(address.as_slice());
+        hasher.update(ingress.to_string().as_bytes());
+        hasher.update(egress.to_string().as_bytes());
+        let msg = hasher.finalize();
+        let signature = private_key
+            .into_inner()
+            .sign(VALIDATOR_NS_ROTATE, msg.as_slice());
+        println!("{:x}", signature.encode());
+        Ok(())
     }
 }
 

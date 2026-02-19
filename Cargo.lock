@@ -11725,6 +11725,7 @@ dependencies = [
  "tempo-eyre",
  "tempo-faucet",
  "tempo-node",
+ "tempo-precompiles",
  "tokio",
  "tokio-util",
  "tracing",
