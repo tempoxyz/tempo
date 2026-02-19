@@ -787,6 +787,9 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
     let erc20_transfers = Arc::new(AtomicUsize::new(0));
+    // Global tx counter used to bump priority fee, ensuring unique tx hashes
+    // when using expiring nonces (which share nonce=0).
+    let tx_id = Arc::new(AtomicUsize::new(0));
 
     let builders = ProgressBar::new(total_txs)
         .wrap_stream(stream::iter(
@@ -811,13 +814,12 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
             let mut tx = match tx_index {
                 0 => {
-                    let count = tip20_transfers.fetch_add(1, Ordering::Relaxed);
+                    tip20_transfers.fetch_add(1, Ordering::Relaxed);
                     let token = ITIP20Instance::new(token, provider.clone());
 
-                    // Use an incrementing amount to ensure unique tx hashes when
-                    // using expiring nonces (which share nonce=0).
+                    // Transfer minimum possible amount
                     token
-                        .transfer(recipient, U256::from(count))
+                        .transfer(recipient, U256::ONE)
                         .into_transaction_request()
                 }
                 1 => {
@@ -844,14 +846,13 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         .into_transaction_request()
                 }
                 3 => {
-                    let count = erc20_transfers.fetch_add(1, Ordering::Relaxed);
+                    erc20_transfers.fetch_add(1, Ordering::Relaxed);
                     let token_address = erc20_tokens.choose(&mut rand::rng()).copied().unwrap();
                     let token = erc20::MockERC20::new(token_address, provider.clone());
 
-                    // Use an incrementing amount to ensure unique tx hashes when
-                    // using expiring nonces (which share nonce=0).
+                    // Transfer minimum possible amount
                     token
-                        .transfer(recipient, U256::from(count))
+                        .transfer(recipient, U256::ONE)
                         .into_transaction_request()
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
@@ -901,7 +902,19 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                 });
             }
 
-            eyre::Ok((tx.try_into_request()?, signer))
+            let mut req = tx.try_into_request()?;
+
+            // Bump priority fee by a unique counter to ensure unique tx hashes
+            // when using expiring nonces (which share nonce=0).
+            let id = tx_id.fetch_add(1, Ordering::Relaxed) as u128;
+            if let Some(fee) = req.max_priority_fee_per_gas() {
+                req.inner.set_max_priority_fee_per_gas(fee + id);
+            }
+            if let Some(fee) = req.max_fee_per_gas() {
+                req.inner.set_max_fee_per_gas(fee + id);
+            }
+
+            eyre::Ok((req, signer))
         })
         .buffer_unordered(max_concurrent_requests)
         .try_collect::<Vec<_>>()
