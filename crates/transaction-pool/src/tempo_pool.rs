@@ -908,11 +908,18 @@ where
 
     fn get_pending_transactions_with_predicate(
         &self,
-        predicate: impl FnMut(&ValidPoolTransaction<Self::Transaction>) -> bool,
+        mut predicate: impl FnMut(&ValidPoolTransaction<Self::Transaction>) -> bool,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // TODO: support 2d pool
-        self.protocol_pool
-            .get_pending_transactions_with_predicate(predicate)
+        let mut txs = self
+            .protocol_pool
+            .get_pending_transactions_with_predicate(&mut predicate);
+        txs.extend(
+            self.aa_2d_pool
+                .read()
+                .pending_transactions()
+                .filter(|tx| predicate(tx)),
+        );
+        txs
     }
 
     fn get_pending_transactions_by_sender(
