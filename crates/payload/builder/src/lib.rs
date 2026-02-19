@@ -369,16 +369,20 @@ where
 
         let execution_start = Instant::now();
         while let Some(pool_tx) = best_txs.next() {
+            // TIP-1016: State gas does not count toward block gas capacity, so use
+            // execution_gas_limit (= gas_limit - state_gas) for the block-level checks below.
+            let tx_execution_gas_limit = pool_tx.transaction.execution_gas_limit();
+
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
-            if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
+            if cumulative_gas_used + tx_execution_gas_limit > non_shared_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
                     &InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
+                        tx_execution_gas_limit,
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
@@ -388,7 +392,7 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !pool_tx.transaction.is_payment()
-                && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
+                && non_payment_gas_used + tx_execution_gas_limit > general_gas_limit
             {
                 best_txs.mark_invalid(
                     &pool_tx,

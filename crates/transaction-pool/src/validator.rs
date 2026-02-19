@@ -415,6 +415,9 @@ where
                 // TIP-1000: Storage pricing updates for launch
                 // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
                 init_and_floor_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
+                // TIP-1016: Track state gas for new account creation
+                init_and_floor_gas.initial_state_gas +=
+                    gas_params.get(GasId::new_account_state_gas());
             } else if !tx.nonce_key.is_zero() {
                 // Existing 2D nonce key (nonce > 0): cold SLOAD + warm SSTORE reset
                 // TIP-1000 Invariant 3: existing state updates charge 5,000 gas
@@ -433,6 +436,9 @@ where
                     == 0
             {
                 init_and_floor_gas.initial_total_gas += gas_params.get(GasId::new_account_cost());
+                // TIP-1016: Track state gas for caller account creation
+                init_and_floor_gas.initial_state_gas +=
+                    gas_params.get(GasId::new_account_state_gas());
             }
         } else if !tx.nonce_key.is_zero() {
             // Pre-T1: Add 2D nonce gas if nonce_key is non-zero
@@ -445,14 +451,26 @@ where
             }
         }
 
+        // TIP-1016: Cache intrinsic state gas for T2+ transactions.
+        // init_and_floor_gas.initial_state_gas accumulates state gas from:
+        // - calculate_aa_batch_intrinsic_gas (CREATE calls, auth list)
+        // - nonce=0 new account creation (above)
+        // - 2D nonce + CREATE caller account creation (above)
+        // For pre-T2, initial_state_gas is 0 (state gas GasIds are not overridden).
+        if spec.is_t2() {
+            transaction.set_intrinsic_state_gas(init_and_floor_gas.initial_state_gas);
+        }
+
         let gas_limit = tx.gas_limit;
 
-        // Check if gas limit is sufficient for initial gas
-        if gas_limit < init_and_floor_gas.initial_total_gas {
+        // Check if gas limit is sufficient for initial gas (execution + state)
+        let total_intrinsic =
+            init_and_floor_gas.initial_total_gas + init_and_floor_gas.initial_state_gas;
+        if gas_limit < total_intrinsic {
             return Err(
                 TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost {
                     gas_limit,
-                    intrinsic_gas: init_and_floor_gas.initial_total_gas,
+                    intrinsic_gas: total_intrinsic,
                 },
             );
         }
@@ -679,7 +697,9 @@ where
                 );
             }
         } else {
-            // validate intrinsic gas with additional TIP-1000 and T1 checks
+            // validate intrinsic gas with additional TIP-1000 and T1 checks.
+            // For T2+, this also computes/caches intrinsic state gas and validates that
+            // gas_limit covers both execution gas and state gas.
             if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
                 return TransactionValidationOutcome::Invalid(transaction, err);
             }
@@ -913,6 +933,9 @@ where
 }
 
 /// Ensures that gas limit of the transaction exceeds the intrinsic gas of the transaction.
+///
+/// For T2+ transactions, also computes and caches the intrinsic state gas, and validates
+/// that gas_limit covers both execution gas and state gas.
 pub fn ensure_intrinsic_gas_tempo_tx(
     tx: &TempoPooledTransaction,
     spec: TempoHardfork,
@@ -950,10 +973,36 @@ pub fn ensure_intrinsic_gas_tempo_tx(
         }
     }
 
+    // TIP-1016: For T2+, compute state gas and validate gas_limit covers both execution + state gas.
+    // State gas is tracked separately via initial_state_gas and does not count against protocol
+    // limits, but must still fit within gas_limit.
+    // For pre-T2, state gas is bundled into initial_total_gas (no split), so we clear
+    // initial_state_gas to avoid double-counting from upstream defaults in initial_tx_gas.
+    if !spec.is_t2() {
+        gas.initial_state_gas = 0;
+    } else {
+        // nonce == 0 with non-expiring nonce: potential new account creation
+        if tx.nonce() == 0 && tx.nonce_key() != Some(TEMPO_EXPIRING_NONCE_KEY) {
+            gas.initial_state_gas += gas_params.get(GasId::new_account_state_gas());
+        }
+        // EIP-7702 auth list account creation state gas
+        for auth in tx.authorization_list().unwrap_or_default() {
+            if auth.nonce == 0 {
+                gas.initial_state_gas += gas_params.tx_tip1000_auth_account_creation_state_gas();
+            }
+        }
+    }
+
     let gas_limit = tx.gas_limit();
-    if gas_limit < gas.initial_total_gas || gas_limit < gas.floor_gas {
+    // TIP-1016: gas_limit must cover both execution gas and state gas
+    let total_intrinsic = gas.initial_total_gas + gas.initial_state_gas;
+    if gas_limit < total_intrinsic || gas_limit < gas.floor_gas {
         Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
     } else {
+        // TIP-1016: Cache intrinsic state gas for T2+ transactions
+        if spec.is_t2() {
+            tx.set_intrinsic_state_gas(gas.initial_state_gas);
+        }
         Ok(())
     }
 }
@@ -1055,7 +1104,7 @@ mod tests {
         PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
     };
     use std::sync::Arc;
-    use tempo_chainspec::spec::{MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP};
+    use tempo_chainspec::spec::{DEV, MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP};
     use tempo_evm::TempoEvmConfig;
     use tempo_precompiles::{
         PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -1063,7 +1112,7 @@ mod tests {
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
     use tempo_primitives::{
-        Block, TempoHeader, TempoTxEnvelope,
+        Block, TempoHeader, TempoTxEnvelope, TempoTxType,
         transaction::{
             TempoTransaction,
             envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -1170,6 +1219,8 @@ mod tests {
         let evm_config = TempoEvmConfig::new_with_default_factory(MODERATO.clone());
         let inner = EthTransactionValidatorBuilder::new(provider.clone(), evm_config)
             .disable_balance_check()
+            .with_custom_tx_type(TempoTxType::AA as u8)
+            .no_eip4844()
             .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
@@ -1181,6 +1232,76 @@ mod tests {
         );
 
         // Set the tip timestamp by simulating a new head block
+        let mock_block = create_mock_block(tip_timestamp);
+        validator.on_new_head_block(&mock_block);
+
+        validator
+    }
+
+    /// Like `setup_validator` but uses the DEV chain spec (which has T2 active at timestamp 0).
+    fn setup_validator_dev(
+        transaction: &TempoPooledTransaction,
+        tip_timestamp: u64,
+    ) -> TempoTransactionValidator<
+        MockEthProvider<tempo_primitives::TempoPrimitives, TempoChainSpec>,
+        TempoEvmConfig,
+    > {
+        let chain_spec = DEV.clone();
+        let provider =
+            MockEthProvider::<tempo_primitives::TempoPrimitives, reth_chainspec::ChainSpec>::new()
+                .with_chain_spec(Arc::unwrap_or_clone(chain_spec.clone()));
+        provider.add_account(
+            transaction.sender(),
+            ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
+        );
+        let block_with_gas = Block {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        };
+        provider.add_block(B256::random(), block_with_gas);
+
+        let usd_currency_value =
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+        let transfer_policy_id_packed =
+            uint!(0x0000000000000000000000010000000000000000000000000000000000000000_U256);
+        let balance_slot = TIP20Token::from_address(PATH_USD_ADDRESS)
+            .expect("PATH_USD_ADDRESS is a valid TIP20 token")
+            .balances[transaction.sender()]
+        .slot();
+        let fee_payer_balance = U256::from(1_000_000_000_000u64);
+        provider.add_account(
+            PATH_USD_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (tip20_slots::CURRENCY.into(), usd_currency_value),
+                (
+                    tip20_slots::TRANSFER_POLICY_ID.into(),
+                    transfer_policy_id_packed,
+                ),
+                (balance_slot.into(), fee_payer_balance),
+            ]),
+        );
+
+        let evm_config = TempoEvmConfig::new_with_default_factory(chain_spec);
+        let inner = EthTransactionValidatorBuilder::new(provider.clone(), evm_config)
+            .disable_balance_check()
+            .with_custom_tx_type(TempoTxType::AA as u8)
+            .no_eip4844()
+            .build(InMemoryBlobStore::default());
+        let amm_cache =
+            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+        let validator = TempoTransactionValidator::new(
+            inner,
+            DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+
         let mock_block = create_mock_block(tip_timestamp);
         validator.on_new_head_block(&mock_block);
 
@@ -4473,5 +4594,70 @@ mod tests {
             matches!(result, Err(InvalidPoolTransactionError::IntrinsicGasTooLow)),
             "Gas limit one below intrinsic gas should fail, got: {result:?}"
         );
+    }
+
+    /// Test that T2 validation caches intrinsic state gas on the pooled transaction.
+    #[tokio::test]
+    async fn test_t2_intrinsic_state_gas_cached_on_aa_tx() {
+        // DEV chain spec has T2 active at timestamp 0, chain_id=1337
+        let pooled = TxBuilder::aa(Address::random())
+            .chain_id(1337)
+            .fee_token(PATH_USD_ADDRESS)
+            .gas_limit(1_000_000)
+            .build();
+
+        let validator = setup_validator_dev(&pooled, 100);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, pooled)
+            .await;
+
+        match &outcome {
+            TransactionValidationOutcome::Valid { transaction, .. } => {
+                let state_gas = transaction.transaction().intrinsic_state_gas();
+                assert_eq!(
+                    state_gas, 245_000,
+                    "state gas should be 245k for nonce=0 T2 tx"
+                );
+                assert_eq!(
+                    transaction.transaction().execution_gas_limit(),
+                    1_000_000 - 245_000,
+                    "execution gas limit should be gas_limit - state_gas"
+                );
+            }
+            other => panic!("Expected Valid outcome, got: {other:?}"),
+        }
+    }
+
+    /// Test that T1 validation does NOT set intrinsic state gas (remains 0).
+    #[tokio::test]
+    async fn test_t1_no_intrinsic_state_gas() {
+        // MODERATO has T1 active but no T2
+        let t1_timestamp = 1770303600u64 + 100;
+
+        let pooled = TxBuilder::aa(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .gas_limit(1_000_000)
+            .build();
+
+        let validator = setup_validator(&pooled, t1_timestamp);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, pooled)
+            .await;
+
+        match &outcome {
+            TransactionValidationOutcome::Valid { transaction, .. } => {
+                assert_eq!(
+                    transaction.transaction().intrinsic_state_gas(),
+                    0,
+                    "T1 should not set state gas"
+                );
+                assert_eq!(
+                    transaction.transaction().execution_gas_limit(),
+                    1_000_000,
+                    "T1 execution_gas_limit should equal gas_limit"
+                );
+            }
+            other => panic!("Expected Valid outcome, got: {other:?}"),
+        }
     }
 }
