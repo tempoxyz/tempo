@@ -88,7 +88,11 @@ pub(crate) fn count_validators_at_epoch(context: &Context, target_epoch: u64) ->
 }
 
 /// Waits until at least `min_validators` have reached the target epoch.
-pub(crate) async fn wait_for_epoch(context: &Context, target_epoch: u64, min_validators: u32) {
+pub(crate) async fn wait_for_validators_to_reach_epoch(
+    context: &Context,
+    target_epoch: u64,
+    min_validators: u32,
+) {
     tracing::info!(target_epoch, min_validators, "Waiting for epoch");
 
     loop {
@@ -102,6 +106,7 @@ pub(crate) async fn wait_for_epoch(context: &Context, target_epoch: u64, min_val
 }
 
 /// Asserts that no DKG ceremony failures have occurred.
+#[track_caller]
 pub(crate) fn assert_no_dkg_failures(context: &Context) {
     let metrics = context.encode();
 
@@ -117,6 +122,7 @@ pub(crate) fn assert_no_dkg_failures(context: &Context) {
 }
 
 /// Asserts that at least one validator has skipped rounds (indicating sync occurred).
+#[track_caller]
 pub(crate) fn assert_skipped_rounds(context: &Context) {
     let metrics = context.encode();
 

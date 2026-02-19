@@ -8,7 +8,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use super::common::{assert_no_dkg_failures, wait_for_epoch, wait_for_outcome};
+use super::common::{assert_no_dkg_failures, wait_for_validators_to_reach_epoch, wait_for_outcome};
 use crate::{Setup, setup_validators};
 
 #[test_traced]
@@ -77,7 +77,7 @@ impl FullDkgTest {
             tracing::info!(?pubkey_before, "Group public key BEFORE full DKG");
 
             // Step 2: Wait for full DKG to complete (epoch N+1)
-            wait_for_epoch(&context, self.full_dkg_epoch + 1, self.how_many_signers).await;
+            wait_for_validators_to_reach_epoch(&context, self.full_dkg_epoch + 1, self.how_many_signers).await;
             assert_no_dkg_failures(&context);
 
             // Step 3: Verify full DKG created a NEW polynomial (different public key)
@@ -99,7 +99,7 @@ impl FullDkgTest {
             tracing::info!("Verified: full DKG created independent polynomial");
 
             // Step 4: Wait for reshare (epoch N+2) and verify it PRESERVES the public key
-            wait_for_epoch(&context, self.full_dkg_epoch + 2, self.how_many_signers).await;
+            wait_for_validators_to_reach_epoch(&context, self.full_dkg_epoch + 2, self.how_many_signers).await;
             assert_no_dkg_failures(&context);
 
             let outcome_after_reshare = wait_for_outcome(

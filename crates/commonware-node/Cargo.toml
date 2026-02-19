@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 tempo-alloy.workspace = true
+tempo-chainspec.workspace = true
 tempo-commonware-node-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-node.workspace = true
@@ -45,8 +46,10 @@ eyre.workspace = true
 futures.workspace = true
 governor.workspace = true
 indexmap.workspace = true
+itertools.workspace = true
 jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
+pin-project = "1.1.10"
 prometheus-client.workspace = true
 rand_08.workspace = true
 
@@ -63,4 +66,3 @@ reth-rpc-convert.workspace = true
 
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true
-pin-project = "1.1.10"

@@ -279,10 +279,22 @@ where
         )
         .await;
 
+        let (executor, executor_mailbox) = crate::executor::init(
+            context.with_label("executor"),
+            crate::executor::Config {
+                execution_node: execution_node.clone(),
+                last_finalized_height,
+                marshal: marshal_mailbox.clone(),
+                fcu_heartbeat_interval: self.fcu_heartbeat_interval,
+            },
+        )
+        .wrap_err("failed initialization executor actor")?;
+
         let (peer_manager, peer_manager_mailbox) = peer_manager::init(
             context.with_label("peer_manager"),
             peer_manager::Config {
                 execution_node: execution_node.clone(),
+                executor: executor_mailbox.clone(),
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 last_finalized_height,
@@ -321,17 +333,6 @@ where
             epoch_strategy.clone(),
             self.feed_state,
         );
-
-        let (executor, executor_mailbox) = crate::executor::init(
-            context.with_label("executor"),
-            crate::executor::Config {
-                execution_node: execution_node.clone(),
-                last_finalized_height,
-                marshal: marshal_mailbox.clone(),
-                fcu_heartbeat_interval: self.fcu_heartbeat_interval,
-            },
-        )
-        .wrap_err("failed initialization executor actor")?;
 
         let (application, application_mailbox) = application::init(super::application::Config {
             context: context.with_label("application"),

@@ -5,7 +5,7 @@
 
 use std::{net::SocketAddr, time::Duration};
 
-use super::dkg::common::{assert_no_dkg_failures, wait_for_epoch, wait_for_outcome};
+use super::dkg::common::{assert_no_dkg_failures, wait_for_validators_to_reach_epoch, wait_for_outcome};
 use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 use alloy::transports::http::reqwest::Url;
 use alloy_primitives::hex;
@@ -193,7 +193,7 @@ fn get_identity_transition_proof_after_full_dkg() {
         let pubkey_before = *outcome_before.sharing().public();
 
         // Wait for full DKG to complete
-        wait_for_epoch(&context, full_dkg_epoch + 1, how_many_signers).await;
+        wait_for_validators_to_reach_epoch(&context, full_dkg_epoch + 1, how_many_signers).await;
         assert_no_dkg_failures(&context);
 
         // Verify the full DKG created a new public key
