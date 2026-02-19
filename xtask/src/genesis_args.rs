@@ -163,8 +163,9 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value = "0")]
     t1b_time: u64,
 
-    /// T2 hardfork activation time.
-    #[arg(long, default_value = "0")]
+    /// T2 hardfork activation time. Defaults to far future (disabled).
+    /// Set to 0 to enable at genesis.
+    #[arg(long, default_value = "4102444800")]
     t2_time: u64,
 
     /// Whether to skip initializing validator config v1

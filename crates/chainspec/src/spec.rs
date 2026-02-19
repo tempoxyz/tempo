@@ -513,11 +513,11 @@ mod tests {
             TempoHardfork::Genesis
         );
 
-        // Dev chainspec should return T2 (all hardforks active at 0)
+        // Dev chainspec should return T1B at timestamp 0 (T2 is far future)
         let dev_chainspec = super::TempoChainSpecParser::parse("dev")
             .expect("the dev chainspec must always be well formed");
-        assert_eq!(dev_chainspec.tempo_hardfork_at(0), TempoHardfork::T2);
-        assert_eq!(dev_chainspec.tempo_hardfork_at(1000), TempoHardfork::T2);
+        assert_eq!(dev_chainspec.tempo_hardfork_at(0), TempoHardfork::T1B);
+        assert_eq!(dev_chainspec.tempo_hardfork_at(1000), TempoHardfork::T1B);
     }
 
     #[test]
