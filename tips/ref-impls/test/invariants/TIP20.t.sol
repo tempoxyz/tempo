@@ -1418,7 +1418,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         do {
             key = _selectActorKey(seed);
             actor = vm.addr(key);
-            unchecked { seed++; }
+            unchecked {
+                seed++;
+            }
         } while (actor == exclude);
         return key;
     }
