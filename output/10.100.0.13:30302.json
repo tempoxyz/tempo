@@ -1,0 +1,18 @@
+{
+  "devmode": false,
+  "consensus_on_disk_signing_key": "0x7f6f2ccdb23f2abb7b69278e947c01c6160a31cf02c19d06d0f6e5ab1d768b95",
+  "consensus_on_disk_signing_share": "0x0313a293ef5c1ee72cd3bcfb2d8f905c7937eb5a002a353139682cf75448573577",
+  "consensus_p2p_port": 30302,
+  "consensus_fee_recipient": "0x0000000000000000000000000000000000000000",
+  "consensus_metrics_port": 30304,
+  "node_image_tag": "nightly",
+  "execution_genesis_url": "genesis.json",
+  "execution_p2p_port": 30303,
+  "execution_peers": [
+    "enode://1ea7f6c7a924a1e722c09301a826cfd95b21b23a294cec5da3c0b5908e62e0c798bd2feddfb16ca36912d1f25b741e823b1edd50ed1ef4b9ac22c2a89584b9d2@10.100.0.15:30303",
+    "enode://7059c6edad7d930f0ba2d2e490367050dacaece7220470d4c92cbffa792cd719265d388e82510bf97d0a89d61bfbfada3dc567f493366af870c5f7771c7f7dc8@10.100.0.12:30303",
+    "enode://68b20e366dc165f2ea47cd2afa2b882caed47eca09b56666b653de224509ad3ec7d74fe1c98384b5356c00503545e46cbc75629bd853f5a748ce5a44ac0a791a@10.100.0.14:30303",
+    "enode://1f0bd43f5f1c65626dea1736459bbd2341fe49aa5d7adcdaba6a3535c3aa3870c88749ea9a3278c9fa7e28a6590f2ee133cfdba300ba054018d0d333e230da29@10.100.0.13:30303"
+  ],
+  "execution_p2p_disc_key": "bbb7d40b7bb8e41c550696fdef78fff6f013bb34627ba50ca2d63b6e84cffa6c"
+}
