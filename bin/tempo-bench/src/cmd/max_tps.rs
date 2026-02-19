@@ -811,12 +811,13 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
             let mut tx = match tx_index {
                 0 => {
-                    tip20_transfers.fetch_add(1, Ordering::Relaxed);
+                    let count = tip20_transfers.fetch_add(1, Ordering::Relaxed);
                     let token = ITIP20Instance::new(token, provider.clone());
 
-                    // Transfer minimum possible amount
+                    // Use an incrementing amount to ensure unique tx hashes when
+                    // using expiring nonces (which share nonce=0).
                     token
-                        .transfer(recipient, U256::ONE)
+                        .transfer(recipient, U256::from(count))
                         .into_transaction_request()
                 }
                 1 => {
@@ -843,13 +844,14 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         .into_transaction_request()
                 }
                 3 => {
-                    erc20_transfers.fetch_add(1, Ordering::Relaxed);
+                    let count = erc20_transfers.fetch_add(1, Ordering::Relaxed);
                     let token_address = erc20_tokens.choose(&mut rand::rng()).copied().unwrap();
                     let token = erc20::MockERC20::new(token_address, provider.clone());
 
-                    // Transfer minimum possible amount
+                    // Use an incrementing amount to ensure unique tx hashes when
+                    // using expiring nonces (which share nonce=0).
                     token
-                        .transfer(recipient, U256::ONE)
+                        .transfer(recipient, U256::from(count))
                         .into_transaction_request()
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
