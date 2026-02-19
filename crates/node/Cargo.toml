@@ -21,10 +21,9 @@ tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["default"] }
 
-base64.workspace = true
-reth-cli-commands.workspace = true
 thiserror.workspace = true
 
+reth-cli-commands.workspace = true
 reth-errors.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
