@@ -534,6 +534,9 @@ impl TIP20Token {
         Ok(true)
     }
 
+    /// NOTE: Access key spending limits are intentionally NOT enforced here.
+    /// `transferFrom` is gated by the ERC-20 allowance mechanism, and `approve()` already
+    /// deducts from spending limits, so limits are enforced at approval time. (ref: TMPO2-39)
     fn _transfer_from(
         &mut self,
         msg_sender: Address,
