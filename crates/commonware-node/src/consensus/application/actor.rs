@@ -23,8 +23,9 @@ use commonware_consensus::{
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_runtime::{
-    ContextCell, FutureExt as _, Handle, Metrics, Pacer, Spawner, Storage, spawn_cell,
+    ContextCell, FutureExt as _, Handle, Metrics as _, Pacer, Spawner, Storage, spawn_cell,
 };
+use prometheus_client::metrics::counter::Counter;
 
 use commonware_utils::{SystemTimeExt, channel::oneshot};
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
@@ -70,11 +71,19 @@ impl<TContext, TState> Actor<TContext, TState> {
 
 impl<TContext> Actor<TContext, Uninit>
 where
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer
+        + governor::clock::Clock
+        + Rng
+        + CryptoRng
+        + Spawner
+        + Storage
+        + commonware_runtime::Metrics,
 {
     pub(super) async fn init(config: super::Config<TContext>) -> eyre::Result<Self> {
         let (tx, rx) = mpsc::channel(config.mailbox_size);
         let my_mailbox = Mailbox::from_sender(tx);
+
+        let metrics = Metrics::init(&config.context);
 
         Ok(Self {
             context: ContextCell::new(config.context),
@@ -96,6 +105,8 @@ where
                 subblocks: config.subblocks,
 
                 scheme_provider: config.scheme_provider,
+
+                metrics,
 
                 state: Uninit(()),
             },
@@ -135,7 +146,13 @@ where
 
 impl<TContext> Actor<TContext, Init>
 where
-    TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    TContext: Pacer
+        + governor::clock::Clock
+        + Rng
+        + CryptoRng
+        + Spawner
+        + Storage
+        + commonware_runtime::Metrics,
 {
     async fn run_until_stopped(mut self) {
         while let Some(msg) = self.mailbox.next().await {
@@ -197,6 +214,8 @@ struct Inner<TState> {
     executor: crate::executor::Mailbox,
     subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
+
+    metrics: Metrics,
 
     state: TState,
 }
@@ -522,10 +541,13 @@ impl Inner<Init> {
         };
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
-        let timestamp_millis = std::cmp::max(
-            context.current().epoch_millis(),
-            parent.timestamp_millis() + 1,
-        );
+        let current_timestamp = context.current().epoch_millis();
+        let timestamp_millis = if current_timestamp <= parent.timestamp_millis() {
+            self.metrics.parent_ahead_of_local_time.inc();
+            parent.timestamp_millis() + 1
+        } else {
+            current_timestamp
+        };
 
         let attrs = TempoPayloadBuilderAttributes::new(
             // XXX: derives the payload ID from the parent so that
@@ -722,6 +744,7 @@ impl Inner<Uninit> {
             },
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
+            metrics: self.metrics,
         };
 
         Ok(initialized)
@@ -974,5 +997,28 @@ async fn get_parent(
             .await
             .await
             .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
+    }
+}
+
+#[derive(Clone)]
+struct Metrics {
+    parent_ahead_of_local_time: Counter,
+}
+
+impl Metrics {
+    fn init<TContext>(context: &TContext) -> Self
+    where
+        TContext: commonware_runtime::Metrics,
+    {
+        let parent_ahead_of_local_time = Counter::default();
+        context.register(
+            "parent_ahead_of_local_time",
+            "number of times the parent block timestamp was ahead of local time",
+            parent_ahead_of_local_time.clone(),
+        );
+
+        Self {
+            parent_ahead_of_local_time,
+        }
     }
 }
