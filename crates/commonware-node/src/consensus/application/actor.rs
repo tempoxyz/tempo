@@ -521,6 +521,12 @@ impl Inner<Init> {
             }
         };
 
+        /// Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
+        let timestamp_millis = std::cmp::max(
+            context.current().epoch_millis(),
+            parent.timestamp_millis() + 1,
+        );
+
         let attrs = TempoPayloadBuilderAttributes::new(
             // XXX: derives the payload ID from the parent so that
             // overlong payload builds will eventually succeed on the
@@ -532,7 +538,7 @@ impl Inner<Init> {
             payload_id_from_block_hash(&parent.block_hash()),
             parent.block_hash(),
             self.fee_recipient,
-            context.current().epoch_millis(),
+            timestamp_millis,
             extra_data,
             move || {
                 self.subblocks
