@@ -521,7 +521,7 @@ impl Inner<Init> {
             }
         };
 
-        /// Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
+        // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
         let timestamp_millis = std::cmp::max(
             context.current().epoch_millis(),
             parent.timestamp_millis() + 1,
