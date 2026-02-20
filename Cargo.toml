@@ -176,7 +176,7 @@ revm-inspectors = "0.34.2"
 alloy-genesis = "1.6.1"
 alloy-hardforks = "0.4.7"
 alloy-network = { version = "1.6.1", default-features = false }
-alloy-primitives = { version = "1.5.6", default-features = false }
+alloy-primitives = { version = "1.5.7", default-features = false }
 alloy-provider = { version = "1.6.1", default-features = false }
 alloy-rlp = "0.3.13"
 alloy-rpc-types-engine = "1.6.1"
@@ -184,7 +184,7 @@ alloy-rpc-types-eth = { version = "1.6.1" }
 alloy-serde = "1.6.1"
 alloy-signer = "1.6.1"
 alloy-signer-local = "1.6.1"
-alloy-sol-types = "1.5.4"
+alloy-sol-types = { version = "1.5.7", default-features = false }
 alloy-transport = "1.6.1"
 
 commonware-broadcast = "2026.2.0"
