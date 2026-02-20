@@ -38,6 +38,9 @@ pub enum SignatureType {
     Secp256k1 = 0,
     P256 = 1,
     WebAuthn = 2,
+    /// M-of-N threshold multisig signature as primary account key (TIP-1012).
+    /// Account address is derived from MultisigID (hash of genesis config).
+    Multisig = 3,
 }
 
 impl From<SignatureType> for u8 {
@@ -46,6 +49,7 @@ impl From<SignatureType> for u8 {
             SignatureType::Secp256k1 => 0,
             SignatureType::P256 => 1,
             SignatureType::WebAuthn => 2,
+            SignatureType::Multisig => 3,
         }
     }
 }
@@ -67,6 +71,7 @@ impl alloy_rlp::Decodable for SignatureType {
             0 => Ok(Self::Secp256k1),
             1 => Ok(Self::P256),
             2 => Ok(Self::WebAuthn),
+            3 => Ok(Self::Multisig),
             _ => Err(alloy_rlp::Error::Custom("Invalid signature type")),
         }
     }

@@ -29,6 +29,7 @@ alloy-rlp.workspace = true
 alloy-serde = { workspace = true, optional = true }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 alloy-network = { workspace = true, optional = true }
+alloy-sol-types.workspace = true
 
 # Utils
 arbitrary = { workspace = true, features = ["derive"], optional = true }

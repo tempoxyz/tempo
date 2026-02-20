@@ -108,6 +108,11 @@ fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
             let tokens = get_tokens_in_calldata_istanbul(&webauthn_sig.webauthn_data);
             P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
         }
+        PrimitiveSignature::Multisig(multisig_sig) => {
+            // Base cost + 3000 gas per signature for ecrecover
+            const ECRECOVER_GAS: u64 = 3000;
+            ECRECOVER_GAS * multisig_sig.signature_count() as u64
+        }
     }
 }
 
@@ -876,6 +881,7 @@ where
                     SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
                     SignatureType::P256 => PrecompileSignatureType::P256,
                     SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+                    SignatureType::Multisig => PrecompileSignatureType::Multisig,
                 };
 
                 // Handle expiry: None means never expires (store as u64::MAX)
