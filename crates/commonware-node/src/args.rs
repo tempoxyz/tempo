@@ -75,7 +75,7 @@ pub struct Args {
 
     /// Amount of time to wait to receive a proposal from the leader of the
     /// current view.
-    #[arg(long = "consensus.wait-for-proposal", default_value = "2s")]
+    #[arg(long = "consensus.wait-for-proposal", default_value = "1200ms")]
     pub wait_for_proposal: PositiveDuration,
 
     /// The amount of time to wait before retrying a nullify broadcast if stuck
