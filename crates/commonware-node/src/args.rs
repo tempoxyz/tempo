@@ -101,7 +101,7 @@ pub struct Args {
     /// This value should be well below `consensus.wait-for-proposal` to account
     /// for the leader to enter the view, build and broadcast the proposal, and
     /// have the other peers receive the proposal.
-    #[arg(long = "consensus.time-to-build-proposal", default_value = "500ms")]
+    #[arg(long = "consensus.time-to-build-proposal", default_value = "200ms")]
     pub time_to_build_proposal: PositiveDuration,
 
     /// The amount of time this node will use to construct a subblock before
