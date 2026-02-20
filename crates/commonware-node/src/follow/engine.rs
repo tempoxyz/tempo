@@ -40,7 +40,7 @@ use crate::{
     epoch::SchemeProvider,
     executor, feed,
     feed::FeedStateHandle,
-    storage::{self, REPLAY_BUFFER, WRITE_BUFFER},
+    storage::{self, MAX_REPAIR, REPLAY_BUFFER, WRITE_BUFFER},
 };
 
 /// Builder for the follow engine.
@@ -115,7 +115,7 @@ impl<U: UpstreamNode> Builder<U> {
                 replay_buffer: REPLAY_BUFFER,
                 key_write_buffer: WRITE_BUFFER,
                 value_write_buffer: WRITE_BUFFER,
-                max_repair: storage::MAX_REPAIR,
+                max_repair: MAX_REPAIR,
                 block_codec_config: (),
                 strategy: Sequential,
             },
@@ -267,11 +267,9 @@ where
 
                 eyre::ensure!(certified.digest == block.block_hash());
 
-                let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)
-                    .map_err(|e| eyre::eyre!("failed to decode certificate hex: {e}"))?;
+                let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)?;
                 let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
-                    Finalization::read(&mut &cert_bytes[..])
-                        .map_err(|e| eyre::eyre!("failed to decode finalization: {e:?}"))?;
+                    Finalization::read(&mut &cert_bytes[..])?;
 
                 // Process the boundary block & finalization
                 let round = Round::new(Epoch::new(certified.epoch), View::new(certified.view));

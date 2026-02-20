@@ -31,7 +31,7 @@ use crate::{
     dkg,
     epoch::{self, SchemeProvider},
     peer_manager,
-    storage::{self, REPLAY_BUFFER, WRITE_BUFFER},
+    storage::{self, MAX_REPAIR, REPLAY_BUFFER, WRITE_BUFFER},
     subblocks,
 };
 
@@ -200,7 +200,7 @@ where
                 replay_buffer: REPLAY_BUFFER,
                 key_write_buffer: WRITE_BUFFER,
                 value_write_buffer: WRITE_BUFFER,
-                max_repair: storage::MAX_REPAIR,
+                max_repair: MAX_REPAIR,
                 block_codec_config: (),
 
                 strategy: Sequential,

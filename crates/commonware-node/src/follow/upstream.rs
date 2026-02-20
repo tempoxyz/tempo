@@ -149,9 +149,7 @@ impl UpstreamNode for WsUpstream {
     async fn subscribe_events(&self) -> eyre::Result<BoxStream<'static, eyre::Result<Event>>> {
         let client = self.client().await?;
         let sub = client.subscribe_events().await.wrap_err("rpc error")?;
-        Ok(sub
-            .map(|item| item.map_err(|e| eyre::eyre!("subscription error: {e}")))
-            .boxed())
+        Ok(sub.map(|item| item.wrap_err("subscription error")).boxed())
     }
 
     async fn get_finalization(&self, query: Query) -> eyre::Result<Option<CertifiedBlock>> {
@@ -260,7 +258,7 @@ impl UpstreamNode for LocalUpstream {
             .execution_node
             .provider
             .block_by_number(height)
-            .map_err(|e| eyre::eyre!("provider error: {e}"))?
+            .wrap_err("provider error")?
             .map(|b| Block::from_execution_block(b.seal()));
 
         Ok(block)
@@ -271,7 +269,7 @@ impl UpstreamNode for LocalUpstream {
             .execution_node
             .provider
             .find_block_by_hash(hash, BlockSource::Any)
-            .map_err(|e| eyre::eyre!("provider error: {e}"))?
+            .wrap_err("provider error")?
             .map(|b| Block::from_execution_block(b.seal()));
 
         Ok(block)

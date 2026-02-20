@@ -81,11 +81,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
     }
 
     async fn run_subscription(&mut self) -> eyre::Result<()> {
-        let mut sub = self
-            .upstream
-            .subscribe_events()
-            .await
-            .map_err(|e| eyre::eyre!("{e}"))?;
+        let mut sub = self.upstream.subscribe_events().await?;
 
         info_span!("follow_driver").in_scope(|| info!("subscribed to consensus events"));
         while let Some(event) = sub.next().await {
@@ -132,18 +128,15 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
             let (block, certified) = self
                 .upstream
                 .get_block_and_finalization_by_number(height.get())
-                .await
-                .map_err(|e| eyre::eyre!("{e}"))?
+                .await?
                 .ok_or_eyre(format!(
                     "block and finalization at height {} not found on upstream",
                     height.get()
                 ))?;
 
-            let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)
-                .map_err(|e| eyre::eyre!("failed to decode certificate hex: {e}"))?;
+            let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)?;
             let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
-                Finalization::read(&mut &cert_bytes[..])
-                    .map_err(|e| eyre::eyre!("failed to decode finalization: {e:?}"))?;
+                Finalization::read(&mut &cert_bytes[..])?;
 
             let scheme = self
                 .scheme_provider
@@ -154,10 +147,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
             eyre::ensure!(finalization.verify(&mut self.context, scheme.as_ref(), &Sequential));
 
             let extra_data = block.header().inner.extra_data.as_ref();
-            let outcome = OnchainDkgOutcome::read(&mut &extra_data[..]).map_err(|e| {
-                eyre::eyre!("failed to decode DKG outcome at height {height}: {e:?}")
-            })?;
-
+            let outcome = OnchainDkgOutcome::read(&mut &extra_data[..])?;
             let outcome_scheme: Scheme<PublicKey, MinSig> = Scheme::verifier(
                 NAMESPACE,
                 outcome.players().clone(),
@@ -186,17 +176,14 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
         let block = self
             .upstream
             .get_block_by_number(height.get())
-            .await
-            .map_err(|e| eyre::eyre!("{e}"))?
+            .await?
             .ok_or_eyre("block not found on upstream")?;
 
         eyre::ensure!(certified.digest == block.block_hash());
 
-        let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)
-            .map_err(|e| eyre::eyre!("failed to decode certificate hex: {e}"))?;
+        let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)?;
         let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
-            Finalization::read(&mut &cert_bytes[..])
-                .map_err(|e| eyre::eyre!("failed to decode finalization: {e:?}"))?;
+            Finalization::read(&mut &cert_bytes[..])?;
 
         let epoch = finalization.proposal.round.epoch();
         let scheme = self
