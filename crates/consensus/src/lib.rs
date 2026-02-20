@@ -47,21 +47,19 @@ impl TempoConsensus {
                 .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE),
         }
     }
-}
 
-impl HeaderValidator<TempoHeader> for TempoConsensus {
-    fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
+    /// Validates the given header against common consensus rules and the given millisecond timestamp.
+    fn validate_header_with_timestamp_millis(
+        &self,
+        header: &SealedHeader<TempoHeader>,
+        present_timestamp_millis: u64,
+    ) -> Result<(), ConsensusError> {
         self.inner.validate_header(header)?;
 
-        let present_timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .expect("system time should never be before UNIX EPOCH")
-            .as_millis() as u64;
-
-        if header.timestamp_millis() > present_timestamp + ALLOWED_FUTURE_BLOCK_TIME_MILLIS {
+        if header.timestamp_millis() > present_timestamp_millis + ALLOWED_FUTURE_BLOCK_TIME_MILLIS {
             return Err(ConsensusError::TimestampIsInFuture {
                 timestamp: header.timestamp_millis(),
-                present_timestamp,
+                present_timestamp: present_timestamp_millis,
             });
         }
 
@@ -93,6 +91,16 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
         }
 
         Ok(())
+    }
+}
+
+impl HeaderValidator<TempoHeader> for TempoConsensus {
+    fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
+        let current_timestamp_millis = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("system time should never be before UNIX EPOCH")
+            .as_millis() as u64;
+        self.validate_header_with_timestamp_millis(header, current_timestamp_millis)
     }
 
     fn validate_header_against_parent(
@@ -514,15 +522,18 @@ mod tests {
     fn test_validate_header_timestamp_milli_gte_1000() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
 
+        let current_timestamp_millis = 1000000999;
+
         // Test timestamp equal to 1000
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp_millis(current_timestamp_millis())
+            .timestamp_millis(current_timestamp_millis)
             .timestamp_millis_part(1000)
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
-        let result = consensus.validate_header(&sealed);
+        let result =
+            consensus.validate_header_with_timestamp_millis(&sealed, current_timestamp_millis);
         let err = result.unwrap_err();
         assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
@@ -533,11 +544,12 @@ mod tests {
         // Test timestamp > 1000
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp_millis(current_timestamp_millis())
+            .timestamp_millis(current_timestamp_millis)
             .timestamp_millis_part(1001)
             .build();
         let sealed = SealedHeader::seal_slow(header);
-        let result = consensus.validate_header(&sealed);
+        let result =
+            consensus.validate_header_with_timestamp_millis(&sealed, current_timestamp_millis);
         let err = result.unwrap_err();
         assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
