@@ -1091,9 +1091,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         _invariantPoolInitializationShape();
     }
 
-    /// @notice Unified pool state checks - single loop for AMM13, AMM14, AMM15, AMM20, FEE5
+    /// @notice Unified pool state checks - single loop for AMM13, AMM14, AMM15, AMM20, AMM35, FEE5
     /// @dev Combines _invariantPoolSolvency, _invariantLiquidityAccounting, _invariantMinLiquidityLocked,
-    ///      _invariantReservesBoundedByU128, and _invariantCollectedFeesNotExceedBalance
+    ///      _invariantReservesBoundedByU128, _invariantCollectedFeesNotExceedBalance,
+    ///      and combined solvency (balance >= reserves + collectedFees)
     function _invariantPoolStateChecks() internal view {
         uint256 MAX_U128 = type(uint128).max;
         uint256 numTokens = _tokens.length;
@@ -1107,14 +1108,15 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 ammPathUsdBalance = pathUSD.balanceOf(address(amm));
 
         // Check collected fees for all tokens (FEE5) - O(tokens × actors)
+        uint256[] memory totalCollectedPerToken = new uint256[](numTokens);
         for (uint256 i = 0; i < numTokens; i++) {
             address token = address(_tokens[i]);
-            uint256 totalCollected = 0;
             for (uint256 j = 0; j < numActors; j++) {
-                totalCollected += amm.collectedFees(_actors[j], token);
+                totalCollectedPerToken[i] += amm.collectedFees(_actors[j], token);
             }
             assertTrue(
-                totalCollected <= ammBalances[i], "TEMPO-FEE5: Collected fees exceed AMM balance"
+                totalCollectedPerToken[i] <= ammBalances[i],
+                "TEMPO-FEE5: Collected fees exceed AMM balance"
             );
         }
         // Check pathUSD collected fees
@@ -1128,6 +1130,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         );
 
         // Check all token pairs - single O(n²) loop for AMM13, AMM14, AMM15, AMM20
+        uint256[] memory totalReservesPerToken = new uint256[](numTokens);
+        uint256 pathUsdReserves = 0;
         for (uint256 i = 0; i < numTokens; i++) {
             for (uint256 j = 0; j < numTokens; j++) {
                 if (i == j) continue;
@@ -1138,6 +1142,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
                 bytes32 poolId = amm.getPoolId(userToken, validatorToken);
                 uint256 totalSupply = amm.totalSupply(poolId);
+
+                // Accumulate reserves per token for combined solvency check (TEMPO-AMM35)
+                totalReservesPerToken[i] += uint256(pool.reserveUserToken);
+                totalReservesPerToken[j] += uint256(pool.reserveValidatorToken);
 
                 // TEMPO-AMM13: Pool solvency - use cached balances
                 assertTrue(
@@ -1193,13 +1201,30 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 ammPathUsdBalance >= pool1.reserveUserToken,
                 "TEMPO-AMM13: AMM pathUSD balance < reserve (as user)"
             );
+            pathUsdReserves += uint256(pool1.reserveUserToken);
+            totalReservesPerToken[i] += uint256(pool1.reserveValidatorToken);
 
             IFeeAMM.Pool memory pool2 = amm.getPool(token, address(pathUSD));
             assertTrue(
                 ammPathUsdBalance >= pool2.reserveValidatorToken,
                 "TEMPO-AMM13: AMM pathUSD balance < reserve (as validator)"
             );
+            totalReservesPerToken[i] += uint256(pool2.reserveUserToken);
+            pathUsdReserves += uint256(pool2.reserveValidatorToken);
         }
+
+        // TEMPO-AMM35: Combined solvency - balance must cover both reserves and collected fees
+        for (uint256 i = 0; i < numTokens; i++) {
+            uint256 totalObligations = totalReservesPerToken[i] + totalCollectedPerToken[i];
+            assertTrue(
+                ammBalances[i] >= totalObligations,
+                "TEMPO-AMM35: Token balance < total reserves + collected fees"
+            );
+        }
+        assertTrue(
+            ammPathUsdBalance >= pathUsdReserves + totalPathUsdCollected,
+            "TEMPO-AMM35: PathUSD balance < total reserves + collected fees"
+        );
     }
 
     /// @notice TEMPO-AMM22: Rebalance swap rounding always favors the pool
