@@ -566,7 +566,6 @@ impl ValidatorConfigV2 {
         let block_height = self.storage.block_number();
 
         let current_count = self.validator_count()?;
-        tracing::error!(current_count, call.idx, "args",);
         if call.idx != current_count {
             Err(ValidatorConfigV2Error::invalid_migration_index())?
         }
@@ -602,11 +601,6 @@ impl ValidatorConfigV2 {
         if deactivated_at_height == 0 {
             self.active_ingress_ips[ingress_hash].write(true)?;
         }
-
-        tracing::error!(
-            current_count = self.validator_count().unwrap(),
-            "count after all was run",
-        );
         Ok(())
     }
 

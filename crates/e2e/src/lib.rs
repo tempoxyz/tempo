@@ -294,7 +294,7 @@ pub async fn setup_validators(
 
         nodes.push(TestingNode::new(
             uid,
-            private_key.public_key(),
+            private_key,
             oracle.clone(),
             engine_config,
             execution_runtime.handle(),

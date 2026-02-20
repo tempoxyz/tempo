@@ -20,9 +20,11 @@ use commonware_cryptography::{
     Signer,
     ed25519::{PrivateKey, PublicKey, Signature},
 };
+use commonware_runtime::Clock;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt, future::BoxFuture};
+use reth_chainspec::EthChainSpec;
 use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
     evm::{
@@ -61,11 +63,13 @@ use tempo_precompiles::{
     VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
-    validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD, ValidatorConfigV2},
+    validator_config_v2::{
+        IValidatorConfigV2, VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE, ValidatorConfigV2,
+    },
 };
 use tokio::sync::oneshot;
 
-use crate::ConsensusNodeConfig;
+use crate::{ConsensusNodeConfig, TestingNode};
 
 const ADMIN_INDEX: u32 = 0;
 const VALIDATOR_START_INDEX: u32 = 1;
@@ -158,7 +162,6 @@ impl Builder {
 
         // Just remove whatever is already written into chainspec.
         genesis.alloc.remove(&VALIDATOR_CONFIG_ADDRESS);
-        tracing::error!(VALIDATOR_CONFIG_V2_ADDRESS = ?genesis.alloc.get(&VALIDATOR_CONFIG_V2_ADDRESS), "val config v2 genesis entry");
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
 
         let mut evm = setup_tempo_evm(genesis.config.chain_id);
@@ -253,8 +256,6 @@ impl Builder {
                 },
             );
         }
-
-        tracing::error!(VALIDATOR_CONFIG_V2_ADDRESS = ?genesis.alloc.get(&VALIDATOR_CONFIG_V2_ADDRESS), "val config v2 genesis entry");
 
         Ok(ExecutionRuntime::with_chain_spec(
             TempoChainSpec::from_genesis(genesis),
@@ -422,7 +423,7 @@ impl ExecutionRuntime {
                                 public_key,
                                 addr,
                                 response,
-                            } = *add_validator;
+                            } = add_validator;
                             let provider = ProviderBuilder::new()
                                 .wallet(wallet.clone())
                                 .connect_http(http_url);
@@ -444,13 +445,57 @@ impl ExecutionRuntime {
                                 .unwrap();
                             let _ = response.send(receipt);
                         }
+                        Message::AddValidatorV2(add_validator_v2) => {
+                            let AddValidatorV2 {
+                                http_url,
+                                private_key,
+                                address,
+                                ingress,
+                                egress,
+                                response,
+                            } = add_validator_v2;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config =
+                                IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            let receipt = validator_config
+                                .addValidator(
+                                    address,
+                                    private_key
+                                        .public_key()
+                                        .encode()
+                                        .as_ref()
+                                        .try_into()
+                                        .unwrap(),
+                                    ingress.to_string(),
+                                    egress.to_string(),
+                                    sign_add_validator_args(
+                                        EthChainSpec::chain(&chain_spec).id(),
+                                        &private_key,
+                                        address,
+                                        ingress,
+                                        egress,
+                                    )
+                                    .encode()
+                                    .to_vec()
+                                    .into(),
+                                )
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
                         Message::ChangeValidatorStatus(change_validator_status) => {
                             let ChangeValidatorStatus {
                                 http_url,
                                 active,
                                 index,
                                 response,
-                            } = *change_validator_status;
+                            } = change_validator_status;
                             let provider = ProviderBuilder::new()
                                 .wallet(wallet.clone())
                                 .connect_http(http_url);
@@ -458,6 +503,27 @@ impl ExecutionRuntime {
                                 IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
                             let receipt = validator_config
                                 .changeValidatorStatusByIndex(index, active)
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
+                        Message::DeactivateValidatorV2(deacivate_validator_v2) => {
+                            let DeactivateValidatorV2 {
+                                http_url,
+                                address,
+                                response,
+                            } = deacivate_validator_v2;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config_v2 =
+                                IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            let receipt = validator_config_v2
+                                .deactivateValidator(address)
                                 .send()
                                 .await
                                 .unwrap()
@@ -517,9 +583,52 @@ impl ExecutionRuntime {
                                 .connect_http(http_url);
                             let validator_config_v2 =
                                 IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
-                            tracing::error!("calling migration with index `{index}`");
                             let receipt = validator_config_v2
                                 .migrateValidator(index)
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
+                        Message::RotateValidator(rotate_validator) => {
+                            let RotateValidator {
+                                http_url,
+                                private_key,
+                                address,
+                                ingress,
+                                egress,
+                                response,
+                            } = rotate_validator;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config =
+                                IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
+                            let receipt = validator_config
+                                .rotateValidator(
+                                    address,
+                                    private_key
+                                        .public_key()
+                                        .encode()
+                                        .as_ref()
+                                        .try_into()
+                                        .unwrap(),
+                                    ingress.to_string(),
+                                    egress.to_string(),
+                                    sign_rotate_validator_args(
+                                        EthChainSpec::chain(&chain_spec).id(),
+                                        &private_key,
+                                        address,
+                                        ingress,
+                                        egress,
+                                    )
+                                    .encode()
+                                    .to_vec()
+                                    .into(),
+                                )
                                 .send()
                                 .await
                                 .unwrap()
@@ -533,12 +642,33 @@ impl ExecutionRuntime {
                                 http_url,
                                 epoch,
                                 response,
-                            } = *set_next_full_dkg_ceremony;
+                            } = set_next_full_dkg_ceremony;
                             let provider = ProviderBuilder::new()
                                 .wallet(wallet.clone())
                                 .connect_http(http_url);
                             let validator_config =
                                 IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
+                            let receipt = validator_config
+                                .setNextFullDkgCeremony(epoch)
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
+                        Message::SetNextFullDkgCeremonyV2(set_next_full_dkg_ceremony_v2) => {
+                            let SetNextFullDkgCeremonyV2 {
+                                http_url,
+                                epoch,
+                                response,
+                            } = set_next_full_dkg_ceremony_v2;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config =
+                                IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
                             let receipt = validator_config
                                 .setNextFullDkgCeremony(epoch)
                                 .send()
@@ -620,6 +750,29 @@ impl ExecutionRuntime {
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
     }
 
+    pub async fn add_validator_v2<C: Clock>(
+        &self,
+        http_url: Url,
+        validator: &TestingNode<C>,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (tx, rx) = oneshot::channel();
+        self.to_runtime
+            .send(
+                AddValidatorV2 {
+                    http_url,
+                    private_key: validator.private_key().clone(),
+                    address: validator.chain_address,
+                    ingress: validator.ingress(),
+                    egress: validator.egress(),
+                    response: tx,
+                }
+                .into(),
+            )
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
     pub async fn change_validator_status(
         &self,
         http_url: Url,
@@ -633,6 +786,26 @@ impl ExecutionRuntime {
                     index,
                     active,
                     http_url,
+                    response: tx,
+                }
+                .into(),
+            )
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    pub async fn deactivate_validator_v2<C: Clock>(
+        &self,
+        http_url: Url,
+        validator: &TestingNode<C>,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (tx, rx) = oneshot::channel();
+        self.to_runtime
+            .send(
+                DeactivateValidatorV2 {
+                    http_url,
+                    address: validator.chain_address,
                     response: tx,
                 }
                 .into(),
@@ -707,6 +880,29 @@ impl ExecutionRuntime {
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
     }
 
+    pub async fn rotate_validator<C: Clock>(
+        &self,
+        http_url: Url,
+        validator: &TestingNode<C>,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (response, rx) = oneshot::channel();
+        self.to_runtime
+            .send(
+                RotateValidator {
+                    http_url,
+                    private_key: validator.private_key().clone(),
+                    address: validator.chain_address,
+                    ingress: validator.ingress(),
+                    egress: validator.egress(),
+                    response,
+                }
+                .into(),
+            )
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
     pub async fn set_next_full_dkg_ceremony(
         &self,
         http_url: Url,
@@ -716,6 +912,26 @@ impl ExecutionRuntime {
         self.to_runtime
             .send(
                 SetNextFullDkgCeremony {
+                    http_url,
+                    epoch,
+                    response: tx,
+                }
+                .into(),
+            )
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    pub async fn set_next_full_dkg_ceremony_v2(
+        &self,
+        http_url: Url,
+        epoch: u64,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (tx, rx) = oneshot::channel();
+        self.to_runtime
+            .send(
+                SetNextFullDkgCeremonyV2 {
                     http_url,
                     epoch,
                     response: tx,
@@ -974,13 +1190,17 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
 }
 
 enum Message {
-    AddValidator(Box<AddValidator>),
-    ChangeValidatorStatus(Box<ChangeValidatorStatus>),
+    AddValidator(AddValidator),
+    AddValidatorV2(AddValidatorV2),
+    ChangeValidatorStatus(ChangeValidatorStatus),
+    DeactivateValidatorV2(DeactivateValidatorV2),
     GetV1Validators(GetV1Validators),
     GetV2Validators(GetV2Validators),
     InitializeIfMigrated(InitializeIfMigrated),
     MigrateValidator(MigrateValidator),
-    SetNextFullDkgCeremony(Box<SetNextFullDkgCeremony>),
+    RotateValidator(RotateValidator),
+    SetNextFullDkgCeremony(SetNextFullDkgCeremony),
+    SetNextFullDkgCeremonyV2(SetNextFullDkgCeremonyV2),
     SpawnNode {
         name: String,
         config: ExecutionNodeConfig,
@@ -993,13 +1213,25 @@ enum Message {
 
 impl From<AddValidator> for Message {
     fn from(value: AddValidator) -> Self {
-        Self::AddValidator(value.into())
+        Self::AddValidator(value)
+    }
+}
+
+impl From<AddValidatorV2> for Message {
+    fn from(value: AddValidatorV2) -> Self {
+        Self::AddValidatorV2(value)
     }
 }
 
 impl From<ChangeValidatorStatus> for Message {
     fn from(value: ChangeValidatorStatus) -> Self {
         Self::ChangeValidatorStatus(value.into())
+    }
+}
+
+impl From<DeactivateValidatorV2> for Message {
+    fn from(value: DeactivateValidatorV2) -> Self {
+        Self::DeactivateValidatorV2(value)
     }
 }
 
@@ -1027,9 +1259,21 @@ impl From<MigrateValidator> for Message {
     }
 }
 
+impl From<RotateValidator> for Message {
+    fn from(value: RotateValidator) -> Self {
+        Self::RotateValidator(value)
+    }
+}
+
 impl From<SetNextFullDkgCeremony> for Message {
     fn from(value: SetNextFullDkgCeremony) -> Self {
-        Self::SetNextFullDkgCeremony(value.into())
+        Self::SetNextFullDkgCeremony(value)
+    }
+}
+
+impl From<SetNextFullDkgCeremonyV2> for Message {
+    fn from(value: SetNextFullDkgCeremonyV2) -> Self {
+        Self::SetNextFullDkgCeremonyV2(value)
     }
 }
 
@@ -1044,11 +1288,30 @@ struct AddValidator {
 }
 
 #[derive(Debug)]
+struct AddValidatorV2 {
+    /// URL of the node to send this to.
+    http_url: Url,
+    private_key: PrivateKey,
+    address: Address,
+    ingress: SocketAddr,
+    egress: IpAddr,
+    response: oneshot::Sender<TransactionReceipt>,
+}
+
+#[derive(Debug)]
 struct ChangeValidatorStatus {
     /// URL of the node to send this to.
     http_url: Url,
     index: u64,
     active: bool,
+    response: oneshot::Sender<TransactionReceipt>,
+}
+
+#[derive(Debug)]
+struct DeactivateValidatorV2 {
+    /// URL of the node to send this to.
+    http_url: Url,
+    address: Address,
     response: oneshot::Sender<TransactionReceipt>,
 }
 
@@ -1078,7 +1341,26 @@ struct MigrateValidator {
 }
 
 #[derive(Debug)]
+struct RotateValidator {
+    /// URL of the node to send this to.
+    http_url: Url,
+    private_key: PrivateKey,
+    address: Address,
+    ingress: SocketAddr,
+    egress: IpAddr,
+    response: oneshot::Sender<TransactionReceipt>,
+}
+
+#[derive(Debug)]
 struct SetNextFullDkgCeremony {
+    /// URL of the node to send this to.
+    http_url: Url,
+    epoch: u64,
+    response: oneshot::Sender<TransactionReceipt>,
+}
+
+#[derive(Debug)]
+struct SetNextFullDkgCeremonyV2 {
     /// URL of the node to send this to.
     http_url: Url,
     epoch: u64,
@@ -1122,4 +1404,21 @@ fn sign_add_validator_args(
     hasher.update(egress.to_string().as_bytes());
     let msg = hasher.finalize();
     key.sign(VALIDATOR_NS_ADD, msg.as_slice())
+}
+
+fn sign_rotate_validator_args(
+    chain_id: u64,
+    key: &PrivateKey,
+    address: Address,
+    ingress: SocketAddr,
+    egress: IpAddr,
+) -> Signature {
+    let mut hasher = Keccak256::new();
+    hasher.update(chain_id.to_be_bytes());
+    hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+    hasher.update(address.as_slice());
+    hasher.update(ingress.to_string().as_bytes());
+    hasher.update(egress.to_string().as_bytes());
+    let msg = hasher.finalize();
+    key.sign(VALIDATOR_NS_ROTATE, msg.as_slice())
 }
