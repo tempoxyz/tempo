@@ -19,6 +19,7 @@
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
 mod defaults;
+mod p2p_proxy;
 mod tempo_cmd;
 
 use clap::Parser;

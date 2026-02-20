@@ -3,6 +3,7 @@ use std::{fs::OpenOptions, path::PathBuf, sync::Arc};
 use alloy_primitives::Address;
 use alloy_provider::Provider;
 
+use crate::p2p_proxy::P2pProxyArgs;
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
@@ -30,12 +31,15 @@ pub(crate) enum TempoSubcommand {
     /// Consensus-related commands.
     #[command(subcommand)]
     Consensus(ConsensusSubcommand),
+    /// Run a proxy P2P node that serves cached block data fetched from an RPC endpoint.
+    P2pProxy(P2pProxyArgs),
 }
 
 impl ExtendedCommand for TempoSubcommand {
-    fn execute(self, _runner: CliRunner) -> eyre::Result<()> {
+    fn execute(self, runner: CliRunner) -> eyre::Result<()> {
         match self {
             Self::Consensus(cmd) => cmd.run(),
+            Self::P2pProxy(cmd) => runner.run_command_until_exit(|_| cmd.run()),
         }
     }
 }
@@ -300,5 +304,67 @@ impl ValidatorsInfo {
 
         println!("{}", serde_json::to_string_pretty(&output)?);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use reth_ethereum_cli::Cli;
+    use reth_rpc_server_types::DefaultRpcModuleValidator;
+    use tempo_chainspec::spec::TempoChainSpecParser;
+
+    type TempoCli =
+        Cli<TempoChainSpecParser, crate::TempoArgs, DefaultRpcModuleValidator, TempoSubcommand>;
+
+    #[test]
+    fn parse_p2p_proxy_defaults() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "p2p-proxy",
+            "--rpc-url",
+            "https://rpc.moderato.tempo.xyz",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
+        ));
+    }
+
+    #[test]
+    fn parse_p2p_proxy_all_args() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "p2p-proxy",
+            "--rpc-url",
+            "ws://localhost:8546",
+            "--chain",
+            "moderato",
+            "--port",
+            "9999",
+            "--discovery-port",
+            "9998",
+            "--max-inbound",
+            "50",
+            "--max-concurrent-inbound",
+            "10",
+            "--backfill-blocks",
+            "1000",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
+        ));
+    }
+
+    #[test]
+    fn parse_p2p_proxy_missing_rpc_url_fails() {
+        let result = TempoCli::try_parse_from(["tempo", "p2p-proxy"]);
+        assert!(result.is_err());
     }
 }
