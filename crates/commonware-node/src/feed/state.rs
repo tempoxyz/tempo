@@ -15,8 +15,9 @@ use std::sync::{Arc, OnceLock};
 use tempo_alloy::rpc::TempoHeaderResponse;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::{
-    CertifiedBlock, ConsensusFeed, ConsensusState, Event, IdentityProofError, IdentityTransition,
-    IdentityTransitionResponse, Query, TransitionProofData,
+    CertifiedBlock, ConsensusFeed, ConsensusState, DkgOutcomeError, DkgOutcomeQuery,
+    DkgOutcomeResponse, Event, IdentityProofError, IdentityTransition, IdentityTransitionResponse,
+    Query, TransitionProofData,
 };
 use tokio::sync::broadcast;
 
@@ -449,6 +450,64 @@ impl ConsensusFeed for FeedStateHandle {
         Ok(IdentityTransitionResponse {
             identity,
             transitions,
+        })
+    }
+
+    async fn get_dkg_outcome(
+        &self,
+        query: DkgOutcomeQuery,
+    ) -> Result<DkgOutcomeResponse, DkgOutcomeError> {
+        let Some((mut marshal, epocher)) = self.marshal().zip(self.epocher()) else {
+            return Err(DkgOutcomeError::NotReady);
+        };
+
+        let epoch = match query {
+            DkgOutcomeQuery::Latest => marshal
+                .get_info(Identifier::Latest)
+                .await
+                .and_then(|(h, _)| epocher.containing(h))
+                .ok_or(DkgOutcomeError::NotReady)?
+                .epoch()
+                .get(),
+            DkgOutcomeQuery::Epoch(epoch) => epoch,
+        };
+
+        let height = epocher
+            .last(Epoch::new(epoch))
+            .expect("fixed epocher is valid for all epochs");
+        let block = marshal
+            .get_block(height)
+            .await
+            .ok_or(DkgOutcomeError::PrunedData(height.get()))?;
+        let outcome = OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref())
+            .map_err(|_| DkgOutcomeError::MalformedData(height.get()))?;
+        let sharing = outcome.sharing();
+
+        Ok(DkgOutcomeResponse {
+            epoch,
+            height: height.get(),
+            digest: block.block_hash(),
+            outcome: tempo_node::rpc::consensus::DkgOutcomeData {
+                dealers: outcome
+                    .dealers()
+                    .iter()
+                    .map(|pk| hex::encode_prefixed(pk.as_ref()))
+                    .collect(),
+                players: outcome
+                    .players()
+                    .iter()
+                    .map(|pk| hex::encode_prefixed(pk.as_ref()))
+                    .collect(),
+                next_players: outcome
+                    .next_players()
+                    .iter()
+                    .map(|pk| hex::encode_prefixed(pk.as_ref()))
+                    .collect(),
+                is_next_full_dkg: outcome.is_next_full_dkg,
+                network_identity: hex::encode_prefixed(sharing.public().encode().as_ref()),
+                threshold: sharing.required::<commonware_utils::N3f1>(),
+                total_participants: sharing.total().get(),
+            },
         })
     }
 }
