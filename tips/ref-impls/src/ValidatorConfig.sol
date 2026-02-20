@@ -21,6 +21,9 @@ contract ValidatorConfig is IValidatorConfig {
     /// @notice Mapping from validator address to validator info
     mapping(address => Validator) public validators;
 
+    /// @notice Mapping from current or historical validator address to validator index + 1
+    mapping(address => uint256) private validatorIndexByAddress;
+
     /// @notice The epoch at which a fresh DKG ceremony will be triggered
     uint64 private nextDkgCeremony;
 
@@ -85,6 +88,9 @@ contract ValidatorConfig is IValidatorConfig {
             outboundAddress: outboundAddress
         });
 
+        // Track the validator index for address lookups
+        validatorIndexByAddress[newValidatorAddress] = uint256(validatorCount) + 1;
+
         // Add to array
         validatorsArray.push(newValidatorAddress);
 
@@ -132,6 +138,9 @@ contract ValidatorConfig is IValidatorConfig {
         _validateHostPort(inboundAddress, "inboundAddress");
         _validateIpPort(outboundAddress, "outboundAddress");
 
+        // Track the validator index for address lookups
+        validatorIndexByAddress[newValidatorAddress] = uint256(oldValidator.index) + 1;
+
         // Store updated validator
         validators[newValidatorAddress] = Validator({
             publicKey: publicKey,
@@ -147,7 +156,23 @@ contract ValidatorConfig is IValidatorConfig {
     function changeValidatorStatus(address validator, bool active) external onlyOwner {
         // Check if validator exists
         if (validators[validator].publicKey == bytes32(0)) {
-            revert ValidatorNotFound();
+            uint256 indexPlusOne = validatorIndexByAddress[validator];
+            if (indexPlusOne == 0) {
+                revert ValidatorNotFound();
+            }
+
+            uint64 index = uint64(indexPlusOne - 1);
+            if (index >= validatorsArray.length) {
+                revert ValidatorNotFound();
+            }
+
+            address validatorAddress = validatorsArray[index];
+            if (validators[validatorAddress].publicKey == bytes32(0)) {
+                revert ValidatorNotFound();
+            }
+
+            validators[validatorAddress].active = active;
+            return;
         }
 
         validators[validator].active = active;
