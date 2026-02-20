@@ -249,10 +249,14 @@ pub enum FeePaymentError {
     ///
     /// This indicates the user's fee token cannot be swapped for the native token
     /// because there's insufficient liquidity in the AMM pool.
-    #[error("insufficient liquidity in FeeAMM pool to swap fee tokens (required: {fee})")]
+    #[error("insufficient liquidity in FeeAMM pool to swap fee tokens (required: {fee}, user_token: {user_token}, validator_token: {validator_token})")]
     InsufficientAmmLiquidity {
         /// The required fee amount that couldn't be swapped.
         fee: U256,
+        /// The user's fee token address.
+        user_token: Address,
+        /// The validator's preferred token address.
+        validator_token: Address,
     },
 
     /// Insufficient fee token balance to pay for transaction fees.
@@ -317,6 +321,8 @@ mod tests {
 
         let err = FeePaymentError::InsufficientAmmLiquidity {
             fee: U256::from(1000),
+            user_token: Address::ZERO,
+            validator_token: Address::ZERO,
         };
         assert!(
             err.to_string()
@@ -358,6 +364,8 @@ mod tests {
     fn test_fee_payment_error() {
         let _: EVMError<(), TempoInvalidTransaction> = FeePaymentError::InsufficientAmmLiquidity {
             fee: U256::from(1000),
+            user_token: Address::ZERO,
+            validator_token: Address::ZERO,
         }
         .into();
     }
