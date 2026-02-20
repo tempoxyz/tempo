@@ -545,18 +545,24 @@ where
         );
         let tx = evm.tx();
 
-        eprintln!(
-            "[GAS_DEBUG] execution: gas_limit={} init_and_floor_gas=(total={}, state={}, floor={}) evm.initial_gas={} evm.initial_state_gas={} adjusted_gas=(total={}, state={}, floor={})",
-            tx.gas_limit(),
-            init_and_floor_gas.initial_total_gas,
-            init_and_floor_gas.initial_state_gas,
-            init_and_floor_gas.floor_gas,
-            evm.initial_gas,
-            evm.initial_state_gas,
-            adjusted_gas.initial_total_gas,
-            adjusted_gas.initial_state_gas,
-            adjusted_gas.floor_gas,
-        );
+        // Only log for non-system txs (system txs have gas_limit=250M and init_gas=0)
+        let is_debug = init_and_floor_gas.initial_total_gas > 0;
+        if is_debug {
+            eprintln!(
+                "[GAS_DEBUG] execution: gas_limit={} init_and_floor_gas=(total={}, state={}, floor={}) evm.initial_gas={} evm.initial_state_gas={} adjusted_gas=(total={}, state={}, floor={}) is_aa={} block={}",
+                tx.gas_limit(),
+                init_and_floor_gas.initial_total_gas,
+                init_and_floor_gas.initial_state_gas,
+                init_and_floor_gas.floor_gas,
+                evm.initial_gas,
+                evm.initial_state_gas,
+                adjusted_gas.initial_total_gas,
+                adjusted_gas.initial_state_gas,
+                adjusted_gas.floor_gas,
+                tx.tempo_tx_env.is_some(),
+                evm.ctx_ref().block().number(),
+            );
+        }
 
         if let Some(oog) = check_gas_limit(*spec, tx, &adjusted_gas) {
             return Ok(oog);
@@ -569,12 +575,14 @@ where
             self.execute_single_call(evm, &adjusted_gas)
         };
 
-        if let Ok(ref frame_result) = result {
-            let gas = frame_result.gas();
-            eprintln!(
-                "[GAS_DEBUG] execution result: limit={} spent={} remaining={} refunded={} reservoir={} state_gas_spent={}",
-                gas.limit(), gas.spent(), gas.remaining(), gas.refunded(), gas.reservoir(), gas.state_gas_spent(),
-            );
+        if is_debug {
+            if let Ok(ref frame_result) = result {
+                let gas = frame_result.gas();
+                eprintln!(
+                    "[GAS_DEBUG] execution result: limit={} spent={} remaining={} refunded={} reservoir={} state_gas_spent={}",
+                    gas.limit(), gas.spent(), gas.remaining(), gas.refunded(), gas.reservoir(), gas.state_gas_spent(),
+                );
+            }
         }
 
         result
@@ -588,10 +596,12 @@ where
         result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
         result_gas: ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        eprintln!(
-            "[GAS_DEBUG] execution_result: result_gas=(limit={}, spent={}, refunded={}, floor={}, intrinsic={}, state_gas_spent={}, used={})",
-            result_gas.limit(), result_gas.spent(), result_gas.inner_refunded(), result_gas.floor_gas(), result_gas.intrinsic_gas(), result_gas.state_gas_spent(), result_gas.used(),
-        );
+        if result_gas.intrinsic_gas() > 0 {
+            eprintln!(
+                "[GAS_DEBUG] execution_result: result_gas=(limit={}, spent={}, refunded={}, floor={}, intrinsic={}, state_gas_spent={}, used={})",
+                result_gas.limit(), result_gas.spent(), result_gas.inner_refunded(), result_gas.floor_gas(), result_gas.intrinsic_gas(), result_gas.state_gas_spent(), result_gas.used(),
+            );
+        }
 
         evm.logs.clear();
         if !result.instruction_result().is_ok() {
