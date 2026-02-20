@@ -8,6 +8,8 @@ related: <links or IDs>
 protocolVersion: <version at which TIP is scheduled to be included/was included>
 ---
 
+<!-- Save as tips/draft-<slug>.md. On merge, CI assigns TIP number from PR. -->
+
 # TIP-XXXX: TIP Title
 
 ## Abstract
