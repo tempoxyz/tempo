@@ -481,6 +481,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             bytes32 key = keccak256(abi.encodePacked(actualSender, uint256(currentNonce)));
             ghost_createAddresses[key] = expectedAddress;
             ghost_createCount[actualSender]++;
+            ghost_createNonces[actualSender].push(uint256(currentNonce));
         } catch {
             _handleRevertProtocol(actualSender);
         }
@@ -1664,20 +1665,21 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @dev Helper to verify CREATE addresses for a given account
     function _verifyCreateAddresses(address account) internal view {
-        uint256 createCount = ghost_createCount[account];
+        uint256[] storage nonces = ghost_createNonces[account];
 
-        for (uint256 n = 0; n < createCount; n++) {
+        assertEq(nonces.length, ghost_createCount[account], "C5: create nonce list/count mismatch");
+
+        for (uint256 i = 0; i < nonces.length; i++) {
+            uint256 n = nonces[i];
             bytes32 key = keccak256(abi.encodePacked(account, n));
             address recorded = ghost_createAddresses[key];
 
-            if (recorded != address(0)) {
-                // Verify the recorded address matches the computed address
-                address computed = TxBuilder.computeCreateAddress(account, n);
-                assertEq(recorded, computed, "C5: Recorded address doesn't match computed");
+            assertTrue(recorded != address(0), "C5: missing recorded CREATE address");
 
-                // Verify code exists at the address (CREATE succeeded)
-                assertTrue(recorded.code.length > 0, "C5: No code at CREATE address");
-            }
+            address computed = TxBuilder.computeCreateAddress(account, n);
+            assertEq(recorded, computed, "C5: Recorded address doesn't match computed");
+
+            assertTrue(recorded.code.length > 0, "C5: No code at CREATE address");
         }
     }
 
@@ -3699,6 +3701,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             address expectedAddress = TxBuilder.computeCreateAddress(sender, currentNonce);
             ghost_createAddresses[key] = expectedAddress;
             ghost_createCount[sender]++;
+            ghost_createNonces[sender].push(uint256(currentNonce));
             _recordGasTrackingCreate();
         } catch {
             _handleRevertProtocol(sender);
