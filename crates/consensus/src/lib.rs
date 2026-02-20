@@ -23,7 +23,7 @@ use tempo_primitives::{
 };
 
 /// How far in the future the block timestamp can be.
-pub const ALLOWED_FUTURE_BLOCK_TIME_MILLIS: u64 = 3000;
+pub const ALLOWED_FUTURE_BLOCK_TIME_MILLIS: u64 = 500;
 
 /// Divisor for calculating shared gas limit (payment lane capacity).
 /// shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR
