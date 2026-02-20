@@ -80,12 +80,42 @@ impl Read for Block {
             commonware_codec::Error::Wrapped("reading RLP header", rlp_err.into())
         })?;
 
-        if header.length_with_payload() > buf.remaining() {
+        let total_len = header.length_with_payload();
+        if total_len > buf.remaining() {
             // TODO: it would be nice to report more information here, but commonware_codex::Error does not
             // have the fidelity for it (outside abusing Error::Wrapped).
             return Err(commonware_codec::Error::EndOfBuffer);
         }
-        let bytes = buf.copy_to_bytes(header.length_with_payload());
+
+        // Fast path: when the full RLP item is contiguous in the first chunk,
+        // decode directly from the slice to avoid a full memcpy via copy_to_bytes.
+        if buf.chunk().len() >= total_len {
+            let inner = {
+                let mut slice: &[u8] = &buf.chunk()[..total_len];
+
+                // TODO: decode straight to a reth SealedBlock once released:
+                // https://github.com/paradigmxyz/reth/pull/18003
+                // For now relies on `Decodable for alloy_consensus::Block`.
+                let decoded = alloy_rlp::Decodable::decode(&mut slice).map_err(|rlp_err| {
+                    commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
+                })?;
+
+                if !slice.is_empty() {
+                    return Err(commonware_codec::Error::Wrapped(
+                        "reading RLP encoded block",
+                        alloy_rlp::Error::UnexpectedLength.into(),
+                    ));
+                }
+
+                decoded
+            };
+
+            buf.advance(total_len);
+            return Ok(Self::from_execution_block(inner));
+        }
+
+        // Fallback for fragmented buffers: copy into a contiguous allocation.
+        let bytes = buf.copy_to_bytes(total_len);
 
         // TODO: decode straight to a reth SealedBlock once released:
         // https://github.com/paradigmxyz/reth/pull/18003
