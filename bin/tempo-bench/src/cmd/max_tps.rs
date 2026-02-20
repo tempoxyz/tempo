@@ -191,14 +191,6 @@ pub struct MaxTpsArgs {
     #[arg(long)]
     use_standard_nonces: bool,
 
-    /// Batch size for signing transactions when using expiring nonces.
-    ///
-    /// Since expiring nonces have a 25-second validity window, transactions must be signed
-    /// in batches close to when they're sent. This controls how many transactions to
-    /// generate/sign before sending. Default is 15 seconds worth of transactions at the
-    /// target TPS (e.g., 75,000 at 5,000 TPS).
-    #[arg(long)]
-    expiring_batch_secs: Option<u64>,
 }
 
 impl MaxTpsArgs {
@@ -418,16 +410,14 @@ impl MaxTpsArgs {
         // with sending to avoid gaps that would cause empty blocks.
         let use_expiring_nonces = !self.use_2d_nonces && !self.use_standard_nonces;
         let mut pending_txs = if use_expiring_nonces {
-            let batch_secs = self.expiring_batch_secs.unwrap_or(15);
-            let batch_size = self.tps * batch_secs;
-            let num_batches = total_txs.div_ceil(batch_size);
+            let expiry_secs = ExpiringNonceFiller::DEFAULT_EXPIRY_SECS;
+            let buffer_size = self.max_concurrent_requests;
 
             info!(
                 total_txs,
-                batch_size,
-                num_batches,
-                batch_secs,
-                "Generating and sending transactions in batches (expiring nonces, pipelined)"
+                buffer_size,
+                expiry_secs,
+                "Generating and sending transactions continuously (expiring nonces)"
             );
 
             let tx_counter = Arc::new(AtomicUsize::new(0));
@@ -437,78 +427,87 @@ impl MaxTpsArgs {
             let success_counter_clone = success_counter.clone();
             let failed_counter_clone = failed_counter.clone();
             let target_count = total_txs as usize;
-            let token = CancellationToken::new();
-            let token_clone = token.clone();
+            let cancel_token = CancellationToken::new();
+            let cancel_token_clone = cancel_token.clone();
 
             // Start TPS monitor
             tokio::spawn(async move {
-                monitor_tps(tx_counter_clone, target_count, token_clone).await;
+                monitor_tps(tx_counter_clone, target_count, cancel_token_clone).await;
             });
 
-            let mut all_pending_txs = VecDeque::new();
-            let start_time = std::time::Instant::now();
-            let total_duration = Duration::from_secs(self.duration);
+            // Channel: producer generates txs continuously, consumer sends them.
+            // Buffer size = sending concurrency so there's always a tx ready to send.
+            let (tx_sender, tx_receiver) =
+                tokio::sync::mpsc::channel::<Vec<u8>>(buffer_size);
 
-            // Generate first batch before starting the send loop
-            let first_batch_size = batch_size.min(total_txs);
-            let batch_input = GenerateTransactionsInput {
-                total_txs: first_batch_size,
-                ..gen_input.clone()
-            };
-            let mut current_batch = Some(
-                generate_transactions(batch_input)
-                    .await
-                    .context("Failed to generate first batch")?,
+            // Spawn producer: generates, signs, and encodes transactions continuously
+            let producer_spm = signer_provider_manager.clone();
+            let producer = tokio::spawn(async move {
+                if let Err(e) = generate_transactions_to_channel(
+                    tx_sender,
+                    producer_spm,
+                    gen_input,
+                    expiry_secs,
+                )
+                .await
+                {
+                    error!(?e, "Transaction producer failed");
+                }
+            });
+
+            // Consumer: drain channel, rate-limit, send with concurrency
+            let rate_limiter = RateLimiter::direct(
+                Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap()),
             );
 
-            for batch_idx in 0..num_batches {
-                let elapsed = start_time.elapsed();
-                let remaining_duration = total_duration.saturating_sub(elapsed);
-                let batch_duration = Duration::from_secs(batch_secs).min(remaining_duration);
-
-                if batch_duration.is_zero() {
-                    info!(batch_idx, "Time expired, stopping");
-                    break;
+            let all_pending_txs = stream::unfold(tx_receiver, |mut rx| async move {
+                rx.recv().await.map(|item| (item, rx))
+            })
+            .boxed()
+            .ratelimit_stream(&rate_limiter)
+            .zip(stream::repeat_with(|| {
+                signer_provider_manager.random_unsigned_provider()
+            }))
+            .map(|(bytes, provider)| {
+                async move {
+                    tokio::time::timeout(
+                        Duration::from_secs(1),
+                        provider.send_raw_transaction(&bytes),
+                    )
+                    .await
                 }
-
-                let batch_to_send = current_batch.take().expect("batch should exist");
-
-                // Send current batch while generating next batch in parallel
-                let send_fut = send_transactions_with_counters(
-                    batch_to_send,
-                    signer_provider_manager.clone(),
-                    self.max_concurrent_requests,
-                    self.tps,
-                    sleep(batch_duration),
-                    tx_counter.clone(),
-                    success_counter.clone(),
-                    failed_counter.clone(),
-                );
-
-                if batch_idx + 1 < num_batches {
-                    let remaining_txs = total_txs - ((batch_idx + 1) * batch_size);
-                    let next_batch_size = remaining_txs.min(batch_size);
-                    let batch_input = GenerateTransactionsInput {
-                        total_txs: next_batch_size,
-                        ..gen_input.clone()
-                    };
-                    // Run send and generate concurrently
-                    let (batch_pending, next) =
-                        tokio::join!(send_fut, generate_transactions(batch_input));
-                    all_pending_txs.extend(batch_pending);
-                    current_batch = Some(next.context("Failed to generate next batch")?);
-                } else {
-                    // Last batch - just send
-                    let batch_pending = send_fut.await;
-                    all_pending_txs.extend(batch_pending);
+            })
+            .buffer_unordered(self.max_concurrent_requests)
+            .filter_map(|result| async {
+                match result {
+                    Ok(Ok(pending_tx)) => {
+                        tx_counter.fetch_add(1, Ordering::Relaxed);
+                        success_counter.fetch_add(1, Ordering::Relaxed);
+                        Some(pending_tx)
+                    }
+                    Ok(Err(err)) => {
+                        failed_counter.fetch_add(1, Ordering::Relaxed);
+                        debug!(?err, "Failed to send transaction");
+                        None
+                    }
+                    Err(_) => {
+                        failed_counter.fetch_add(1, Ordering::Relaxed);
+                        debug!("Transaction sending timed out");
+                        None
+                    }
                 }
-            }
+            })
+            .take_until(sleep(Duration::from_secs(self.duration)))
+            .collect::<VecDeque<_>>()
+            .await;
 
-            token.cancel();
+            // Stop the producer and TPS monitor
+            producer.abort();
+            cancel_token.cancel();
+
             info!(
                 success = success_counter_clone.load(Ordering::Relaxed),
                 failed = failed_counter_clone.load(Ordering::Relaxed),
-                timeout = 0,
                 "Finished sending transactions"
             );
 
@@ -697,58 +696,6 @@ async fn send_transactions<F: TxFiller<TempoNetwork> + 'static>(
     );
 
     transactions
-}
-
-/// Same as `send_transactions` but uses external counters for batch mode.
-#[allow(clippy::too_many_arguments)]
-async fn send_transactions_with_counters<F: TxFiller<TempoNetwork> + 'static>(
-    transactions: Vec<Vec<u8>>,
-    signer_provider_manager: SignerProviderManager<F>,
-    max_concurrent_requests: usize,
-    tps: u64,
-    deadline: Sleep,
-    tx_counter: Arc<AtomicUsize>,
-    success_counter: Arc<AtomicUsize>,
-    failed_counter: Arc<AtomicUsize>,
-) -> VecDeque<PendingTransactionBuilder<TempoNetwork>> {
-    // Create a rate limiter
-    let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(tps as u32).unwrap()));
-
-    stream::iter(transactions)
-        .ratelimit_stream(&rate_limiter)
-        .zip(stream::repeat_with(|| {
-            signer_provider_manager.random_unsigned_provider()
-        }))
-        .map(|(bytes, provider)| async move {
-            tokio::time::timeout(
-                Duration::from_secs(1),
-                provider.send_raw_transaction(&bytes),
-            )
-            .await
-        })
-        .buffer_unordered(max_concurrent_requests)
-        .filter_map(|result| async {
-            match result {
-                Ok(Ok(pending_tx)) => {
-                    tx_counter.fetch_add(1, Ordering::Relaxed);
-                    success_counter.fetch_add(1, Ordering::Relaxed);
-                    Some(pending_tx)
-                }
-                Ok(Err(err)) => {
-                    failed_counter.fetch_add(1, Ordering::Relaxed);
-                    debug!(?err, "Failed to send transaction");
-                    None
-                }
-                Err(_) => {
-                    failed_counter.fetch_add(1, Ordering::Relaxed);
-                    debug!("Transaction sending timed out");
-                    None
-                }
-            }
-        })
-        .take_until(deadline)
-        .collect()
-        .await
 }
 
 async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
@@ -943,6 +890,141 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         .collect::<eyre::Result<Vec<_>>>()?;
 
     Ok(transactions)
+}
+
+/// Continuously generates, signs, and encodes transactions, sending them to a channel.
+/// The channel provides backpressure: when the buffer is full, generation pauses.
+/// This keeps `valid_before` fresh since each transaction is signed just before sending.
+async fn generate_transactions_to_channel<F: TxFiller<TempoNetwork> + 'static>(
+    tx_sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+    signer_provider_manager: SignerProviderManager<F>,
+    input: GenerateTransactionsInput<F>,
+    expiry_secs: u64,
+) -> eyre::Result<()> {
+    let GenerateTransactionsInput {
+        tip20_weight,
+        place_order_weight,
+        swap_weight,
+        erc20_weight,
+        quote_token,
+        user_tokens,
+        erc20_tokens,
+        recipients,
+        tx_id,
+        ..
+    } = input;
+
+    const TX_TYPES: usize = 4;
+    let tx_weights: [u64; TX_TYPES] =
+        [tip20_weight, swap_weight, place_order_weight, erc20_weight];
+    let gas_estimates: [Arc<OnceLock<(u128, u128, u64)>>; TX_TYPES] = Default::default();
+
+    loop {
+        let provider = signer_provider_manager.random_unsigned_provider();
+        let signer = signer_provider_manager.random_signer();
+        let token = user_tokens.choose(&mut rand::rng()).copied().unwrap();
+
+        let tx_index = tx_weights
+            .iter()
+            .enumerate()
+            .collect::<Vec<_>>()
+            .choose_weighted(&mut rand::rng(), |(_, weight)| *weight)?
+            .0;
+
+        let recipient = match &recipients {
+            Some(addrs) => *addrs.choose(&mut rand::rng()).unwrap(),
+            None => Address::random(),
+        };
+
+        let mut tx = match tx_index {
+            0 => {
+                let token = ITIP20Instance::new(token, provider.clone());
+                token.transfer(recipient, U256::ONE).into_transaction_request()
+            }
+            1 => {
+                let exchange =
+                    IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
+                exchange
+                    .quoteSwapExactAmountIn(token, quote_token, 1)
+                    .into_transaction_request()
+            }
+            2 => {
+                let exchange =
+                    IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
+                let tick = rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
+                    * TICK_SPACING;
+                exchange
+                    .place(token, MIN_ORDER_AMOUNT, true, tick)
+                    .into_transaction_request()
+            }
+            3 => {
+                let token_address = erc20_tokens.choose(&mut rand::rng()).copied().unwrap();
+                let token = erc20::MockERC20::new(token_address, provider.clone());
+                token.transfer(recipient, U256::ONE).into_transaction_request()
+            }
+            _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
+        };
+
+        tx.inner.set_from(signer.address());
+
+        let gas = &gas_estimates[tx_index];
+        if let Some((max_fee_per_gas, max_priority_fee_per_gas, gas_limit)) = gas.get() {
+            tx.inner.set_max_fee_per_gas(*max_fee_per_gas);
+            tx.inner.set_max_priority_fee_per_gas(*max_priority_fee_per_gas);
+            tx.inner.set_gas_limit(*gas_limit);
+        }
+
+        let filled = provider.fill(tx).await?;
+
+        if gas.get().is_none() {
+            let _ = gas.set(match &filled {
+                SendableTx::Builder(builder) => (
+                    builder.max_fee_per_gas().ok_or_eyre("max fee per gas should be filled")?,
+                    builder
+                        .max_priority_fee_per_gas()
+                        .ok_or_eyre("max priority fee per gas should be filled")?,
+                    builder.gas_limit().ok_or_eyre("gas limit should be filled")?,
+                ),
+                SendableTx::Envelope(envelope) => (
+                    envelope.max_fee_per_gas(),
+                    envelope
+                        .max_priority_fee_per_gas()
+                        .ok_or_eyre("max priority fee per gas should be filled")?,
+                    envelope.gas_limit(),
+                ),
+            });
+        }
+
+        let mut req = filled.try_into_request()?;
+
+        // Bump priority fee to ensure unique tx hashes (expiring nonces share nonce=0)
+        let id = tx_id.fetch_add(1, Ordering::Relaxed) as u128;
+        if let Some(fee) = req.max_priority_fee_per_gas() {
+            req.inner.set_max_priority_fee_per_gas(fee + id);
+        }
+        if let Some(fee) = req.max_fee_per_gas() {
+            req.inner.set_max_fee_per_gas(fee + id);
+        }
+
+        // Set valid_before right before signing to keep it fresh
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        req.set_valid_before(now + expiry_secs);
+
+        // Sign and encode
+        let mut unsigned = req.build_unsigned()?;
+        let sig = signer.sign_transaction_sync(unsigned.as_dyn_signable_mut())?;
+        let bytes = unsigned.into_envelope(sig).encoded_2718();
+
+        // Send to channel; returns Err if receiver is dropped (consumer stopped)
+        if tx_sender.send(bytes).await.is_err() {
+            break;
+        }
+    }
+
+    Ok(())
 }
 
 /// Funds accounts from the faucet using `temp_fundAddress` RPC.
