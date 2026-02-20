@@ -12138,7 +12138,7 @@ dependencies = [
  "derive_more",
  "eyre",
  "proptest",
- "rand 0.8.5",
+ "rand 0.9.2",
  "revm",
  "scoped-tls",
  "serde",
