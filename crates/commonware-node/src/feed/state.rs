@@ -1,4 +1,43 @@
 //! Shared state for the feed module.
+//!
+//! # Identity Transition Proof Invariants
+//!
+//! The `consensus_getIdentityTransitionProof` RPC method walks the chain
+//! backwards to build a proof of how the network's BLS identity evolved.
+//! The following invariants must hold for both the cached and uncached paths:
+//!
+//! 1. **Epoch-to-identity correctness**: For any queried epoch N, the returned
+//!    `identity` must be the one *active during* epoch N. Identity active at
+//!    epoch N is set by the last block of epoch N-1, so a DKG transition
+//!    recorded at epoch E produces a key that becomes active at epoch E+1.
+//!
+//! 2. **Transition filter boundary**: Returned transitions must have
+//!    `transition_epoch < start_epoch` (strict). The non-cached walk starts at
+//!    `start_epoch - 1`, so it can never discover a transition at exactly
+//!    `start_epoch`. The cache filter must match this to ensure consistency.
+//!
+//! 3. **Cache-uncache equivalence**: The response for a given `(from_epoch, full)`
+//!    must be identical regardless of whether it is served from cache or computed
+//!    from scratch.
+//!
+//! 4. **Cache connect direction**: The cache connect optimization (stitching a
+//!    fresh walk onto existing cached data) must only activate when the query
+//!    epoch is *newer* than the cached range. Connecting when the query is older
+//!    would inject transitions from future epochs into the response.
+//!
+//! 5. **Cache boundary completeness**: When connecting to cached data, use
+//!    strict `<` comparison (`search_epoch < connect_epoch`) so the walk still
+//!    processes the epoch at the cache boundary. The cache was built starting at
+//!    `connect_epoch` and walked from `connect_epoch - 1`, so it does not
+//!    contain any transition at exactly `connect_epoch`.
+//!
+//! 6. **`full=false` cardinality**: When `full=false`, at most one transition
+//!    is returned, including when the response is partially served from cache
+//!    via the connect path.
+//!
+//! 7. **No panics on user input**: User-supplied `from_epoch` values must not
+//!    cause panics. Large values that overflow epoch-to-height arithmetic are
+//!    rejected with `IdentityProofError::InvalidEpoch`.
 
 use crate::{alias::marshal, consensus::Digest};
 use alloy_consensus::BlockHeader as _;
@@ -137,27 +176,34 @@ impl FeedStateHandle {
         start_epoch: u64,
         full: bool,
     ) -> IdentityTransitionResponse {
-        // Filter transitions to only include those at or before start_epoch
+        // Filter transitions to only include those strictly before start_epoch.
+        // A transition at epoch E means the DKG at E produced a new key that
+        // becomes active at E+1, so only transitions at epochs < start_epoch
+        // are relevant history. This matches the non-cached walk which starts
+        // at search_epoch = start_epoch - 1.
         let transitions: Vec<_> = cache
             .transitions
             .iter()
-            .filter(|t| t.transition_epoch <= start_epoch)
+            .filter(|t| t.transition_epoch < start_epoch)
             .cloned()
             .collect();
 
         // Determine identity at start_epoch:
         // - If start_epoch == from_epoch, use cached identity
-        // - Otherwise, find the first transition AFTER start_epoch and use its old_identity
-        //   (that was the identity at start_epoch before that transition happened)
-        // - If no transition after start_epoch, identity hasn't changed since from_epoch
+        // - Otherwise, find the first transition AT OR AFTER start_epoch and use
+        //   its old_identity (that was the identity active during start_epoch,
+        //   before the transition took effect at transition_epoch + 1)
+        // - If no such transition, identity hasn't changed since from_epoch
         let identity = if start_epoch == cache.from_epoch {
             cache.identity.clone()
         } else {
-            // Find first transition that happened AFTER start_epoch
+            // Find the immediate next transition at or after start_epoch.
+            // Transitions are stored in descending order, so we use rfind
+            // to get the smallest epoch >= start_epoch.
             cache
                 .transitions
                 .iter()
-                .find(|t| t.transition_epoch > start_epoch)
+                .rfind(|t| t.transition_epoch >= start_epoch)
                 .map(|t| t.old_identity.clone())
                 .unwrap_or_else(|| cache.identity.clone())
         };
@@ -249,6 +295,11 @@ impl ConsensusFeed for FeedStateHandle {
             return Err(IdentityProofError::NotReady);
         };
 
+        // Validate user-supplied epoch won't overflow before doing any work
+        if let Some(epoch) = from_epoch {
+            validate_epoch(&epocher, epoch)?;
+        }
+
         // Determine starting epoch (from param, or latest finalized)
         let start_epoch = if let Some(epoch) = from_epoch {
             epoch
@@ -285,17 +336,38 @@ impl ConsensusFeed for FeedStateHandle {
         let mut search_epoch = start_epoch.saturating_sub(1);
         let mut reached_genesis = start_epoch == 0;
 
-        // If we have a cache, try to connect to it instead of walking all the way
-        let cache_connect_epoch = cached.as_ref().map(|c| c.from_epoch);
+        // If we have a cache, try to connect to it instead of walking all the way.
+        // Only connect when walking from a newer epoch towards the cache; if the
+        // query is older than the cache start, connecting would inject transitions
+        // from future epochs into the response.
+        let cache_connect_epoch = cached
+            .as_ref()
+            .filter(|c| start_epoch > c.from_epoch)
+            .map(|c| c.from_epoch);
 
         while search_epoch > 0 {
-            // Check if we can connect to cached data
+            // Check if we can connect to cached data.
+            // Use strict < so we still process search_epoch == connect_epoch
+            // before connecting — the cache was built starting at connect_epoch
+            // and walked from connect_epoch - 1, so it doesn't contain any
+            // transition at exactly connect_epoch.
             if let Some(connect_epoch) = cache_connect_epoch
-                && search_epoch <= connect_epoch
+                && search_epoch < connect_epoch
                 && let Some(ref cache) = cached
             {
-                // Append cached transitions and stop walking
-                transitions.extend(cache.transitions.iter().cloned());
+                // Append cached transitions and stop walking.
+                // When full=false, only take the most recent applicable cached
+                // transition to honour the "return at most 1" contract.
+                if full {
+                    transitions.extend(cache.transitions.iter().cloned());
+                } else if let Some(t) = cache
+                    .transitions
+                    .iter()
+                    .find(|t| t.transition_epoch < start_epoch)
+                    .cloned()
+                {
+                    transitions.push(t);
+                }
                 search_epoch = cache.to_epoch;
                 reached_genesis = cache.to_epoch == 0;
                 break;
@@ -318,9 +390,14 @@ impl ConsensusFeed for FeedStateHandle {
             // If keys differ, there was a full DKG at search_epoch
             if curr_pubkey != prev_pubkey {
                 // Fetch the block and certificate that committed the new identity
-                let proof_height = epocher
-                    .last(Epoch::new(search_epoch))
-                    .expect("fixed epocher is valid for all epochs");
+                let Some(proof_height) = epocher.last(Epoch::new(search_epoch)) else {
+                    tracing::info!(
+                        start_epoch,
+                        search_epoch,
+                        "stopping identity transition walk early (invalid epoch)"
+                    );
+                    break;
+                };
 
                 let Some(proof_block) = marshal.get_block(proof_height).await else {
                     tracing::info!(
@@ -453,6 +530,14 @@ impl ConsensusFeed for FeedStateHandle {
     }
 }
 
+/// Validate that a from_epoch value won't cause overflow in epoch-to-height conversion.
+fn validate_epoch(epocher: &FixedEpocher, epoch: u64) -> Result<(), IdentityProofError> {
+    epocher
+        .last(Epoch::new(epoch))
+        .map(|_| ())
+        .ok_or(IdentityProofError::InvalidEpoch(epoch))
+}
+
 /// Fetch last block of epoch and decode DKG outcome.
 async fn get_outcome(
     marshal: &mut marshal::Mailbox,
@@ -461,11 +546,319 @@ async fn get_outcome(
 ) -> Result<OnchainDkgOutcome, IdentityProofError> {
     let height = epocher
         .last(Epoch::new(epoch))
-        .expect("fixed epocher is valid for all epochs");
+        .ok_or(IdentityProofError::InvalidEpoch(epoch))?;
     let block = marshal
         .get_block(height)
         .await
         .ok_or(IdentityProofError::PrunedData(height.get()))?;
     OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref())
         .map_err(|_| IdentityProofError::MalformedData(height.get()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::num::NonZeroU64;
+
+    fn make_transition(epoch: u64, old: &str, new: &str) -> IdentityTransition {
+        IdentityTransition {
+            transition_epoch: epoch,
+            old_identity: old.to_string(),
+            new_identity: new.to_string(),
+            proof: None,
+        }
+    }
+
+    fn make_cache(
+        from_epoch: u64,
+        to_epoch: u64,
+        identity: &str,
+        transitions: Vec<IdentityTransition>,
+    ) -> IdentityTransitionCache {
+        IdentityTransitionCache {
+            from_epoch,
+            to_epoch,
+            identity: identity.to_string(),
+            transitions: Arc::new(transitions),
+        }
+    }
+
+    /// Invariant: serve_from_cache must return the identity active at the queried
+    /// epoch, which is the identity set by the most recent DKG at or before that epoch.
+    #[test]
+    fn serve_from_cache_returns_correct_identity_for_intermediate_epochs() {
+        let handle = FeedStateHandle::new();
+
+        // DKG transitions at epochs 100, 50, 25 (stored descending)
+        // | Epoch Range | Active Identity |
+        // | 0–24        | key_genesis     |
+        // | 25–49       | key_25          |
+        // | 50–99       | key_50          |
+        // | 100+        | key_100         |
+        let cache = make_cache(
+            120,
+            0,
+            "key_100",
+            vec![
+                make_transition(100, "key_50", "key_100"),
+                make_transition(50, "key_25", "key_50"),
+                make_transition(25, "key_genesis", "key_25"),
+            ],
+        );
+
+        // Query epoch 30: should get key_25 (active from epoch 25–49)
+        let resp = handle.serve_from_cache(&cache, 30, true);
+        assert_eq!(
+            resp.identity, "key_25",
+            "epoch 30 should return key_25, the identity active at that epoch"
+        );
+
+        // Query epoch 60: should get key_50 (active from epoch 50–99)
+        let resp = handle.serve_from_cache(&cache, 60, true);
+        assert_eq!(
+            resp.identity, "key_50",
+            "epoch 60 should return key_50, the identity active at that epoch"
+        );
+
+        // Query epoch 10: should get key_genesis (active from epoch 0–24)
+        let resp = handle.serve_from_cache(&cache, 10, true);
+        assert_eq!(
+            resp.identity, "key_genesis",
+            "epoch 10 should return key_genesis, the identity active at that epoch"
+        );
+
+        // Query epoch 120 (== from_epoch): should get key_100
+        let resp = handle.serve_from_cache(&cache, 120, true);
+        assert_eq!(resp.identity, "key_100");
+
+        // Query epoch 105: should get key_100 (active from epoch 100+)
+        let resp = handle.serve_from_cache(&cache, 105, true);
+        assert_eq!(
+            resp.identity, "key_100",
+            "epoch 105 should return key_100, the identity active at that epoch"
+        );
+    }
+
+    /// Invariant: serve_from_cache must filter transitions to only those strictly
+    /// before the queried epoch, matching the non-cached walk semantics.
+    #[test]
+    fn serve_from_cache_filters_transitions_strictly_before_start_epoch() {
+        let handle = FeedStateHandle::new();
+
+        let cache = make_cache(
+            120,
+            0,
+            "key_100",
+            vec![
+                make_transition(100, "key_50", "key_100"),
+                make_transition(50, "key_25", "key_50"),
+                make_transition(25, "key_genesis", "key_25"),
+            ],
+        );
+
+        // Query epoch 60: should only include transitions at epochs < 60
+        let resp = handle.serve_from_cache(&cache, 60, true);
+        let epochs: Vec<u64> = resp
+            .transitions
+            .iter()
+            .map(|t| t.transition_epoch)
+            .collect();
+        assert_eq!(epochs, vec![50, 25]);
+
+        // Query at exactly a transition epoch (50): transition at 50 should NOT
+        // be in the returned list (it's the one that *set* the identity for this
+        // epoch, not a prior transition)
+        let resp = handle.serve_from_cache(&cache, 50, true);
+        let epochs: Vec<u64> = resp
+            .transitions
+            .iter()
+            .map(|t| t.transition_epoch)
+            .collect();
+        assert_eq!(
+            epochs,
+            vec![25],
+            "transition at exactly start_epoch should be excluded"
+        );
+
+        // Non-full query should return at most 1 transition
+        let resp = handle.serve_from_cache(&cache, 60, false);
+        assert!(resp.transitions.len() <= 1);
+    }
+
+    /// Invariant: when querying at exactly a transition epoch, the returned identity
+    /// must be the OLD identity (the one active during that epoch), not the new one.
+    #[test]
+    fn serve_from_cache_at_transition_epoch_returns_old_identity() {
+        let handle = FeedStateHandle::new();
+
+        let cache = make_cache(
+            120,
+            0,
+            "key_100",
+            vec![
+                make_transition(100, "key_50", "key_100"),
+                make_transition(50, "key_25", "key_50"),
+                make_transition(25, "key_genesis", "key_25"),
+            ],
+        );
+
+        // Query at epoch 50 (exactly where a DKG happened):
+        // The DKG at epoch 50 produced key_50, but it becomes active at epoch 51.
+        // During epoch 50, the active identity is still key_25.
+        let resp = handle.serve_from_cache(&cache, 50, true);
+        assert_eq!(
+            resp.identity, "key_25",
+            "at exactly transition_epoch=50, the active identity is key_25 (old)"
+        );
+
+        // Query at epoch 100:
+        let resp = handle.serve_from_cache(&cache, 100, true);
+        assert_eq!(
+            resp.identity, "key_50",
+            "at exactly transition_epoch=100, the active identity is key_50 (old)"
+        );
+
+        // Query at epoch 25:
+        let resp = handle.serve_from_cache(&cache, 25, true);
+        assert_eq!(
+            resp.identity, "key_genesis",
+            "at exactly transition_epoch=25, the active identity is key_genesis (old)"
+        );
+    }
+
+    /// Invariant: when full=false and the walk connects to cached data, at most
+    /// one transition should be appended (the most recent applicable one).
+    #[test]
+    fn cache_connect_respects_full_false_limit() {
+        // Simulate what the connect path produces: when full=false, only the
+        // most recent cached transition before start_epoch should be taken.
+        let cache = make_cache(
+            80,
+            0,
+            "key_80",
+            vec![
+                make_transition(60, "key_40", "key_60"),
+                make_transition(40, "key_20", "key_40"),
+                make_transition(20, "key_genesis", "key_20"),
+            ],
+        );
+
+        let start_epoch: u64 = 100;
+        let full = false;
+
+        // Replicate the connect logic for full=false
+        let mut transitions = Vec::new();
+        if full {
+            transitions.extend(cache.transitions.iter().cloned());
+        } else if let Some(t) = cache
+            .transitions
+            .iter()
+            .find(|t| t.transition_epoch < start_epoch)
+            .cloned()
+        {
+            transitions.push(t);
+        }
+
+        assert_eq!(
+            transitions.len(),
+            1,
+            "full=false cache connect must append at most 1 transition"
+        );
+        assert_eq!(
+            transitions[0].transition_epoch, 60,
+            "should pick the most recent transition before start_epoch"
+        );
+    }
+
+    /// Invariant: cache connect must use strict < to avoid skipping a transition
+    /// at exactly the cache boundary. The cache built from epoch E walked from
+    /// E-1, so it doesn't contain transition at epoch E itself.
+    #[test]
+    fn cache_connect_uses_strict_less_than() {
+        // Cache built from epoch 80 down to 0
+        let cache = make_cache(
+            80,
+            0,
+            "key_80",
+            vec![make_transition(60, "key_40", "key_60")],
+        );
+
+        // When search_epoch == connect_epoch (80), we must NOT connect yet
+        // because we haven't checked whether there's a transition at epoch 80.
+        let search_epoch: u64 = 80;
+        let connect_epoch = cache.from_epoch;
+
+        // With strict <, this should NOT connect
+        let should_connect_strict = search_epoch < connect_epoch;
+        assert!(
+            !should_connect_strict,
+            "must not connect at search_epoch == connect_epoch (would skip transition at boundary)"
+        );
+
+        // search_epoch = 79 should connect
+        let search_epoch: u64 = 79;
+        let should_connect = search_epoch < connect_epoch;
+        assert!(
+            should_connect,
+            "should connect when search_epoch < connect_epoch"
+        );
+    }
+
+    /// Invariant: cache connect must only trigger when the query epoch is newer
+    /// than the cached range. If the query is older, connecting would inject
+    /// transitions from future epochs.
+    #[test]
+    fn cache_connect_epoch_guards_against_future_injection() {
+        // Cache built from epoch 100 down to 50
+        let cache = make_cache(
+            100,
+            50,
+            "key_100",
+            vec![
+                make_transition(80, "key_60", "key_80"),
+                make_transition(60, "key_50", "key_60"),
+            ],
+        );
+
+        // Query from epoch 40 (older than cache): connect should NOT activate
+        let start_epoch: u64 = 40;
+        let connect = if start_epoch > cache.from_epoch {
+            Some(cache.from_epoch)
+        } else {
+            None
+        };
+        assert!(
+            connect.is_none(),
+            "cache connect must not activate when query (40) < cache.from_epoch (100)"
+        );
+
+        // Query from epoch 150 (newer than cache): connect SHOULD activate
+        let start_epoch: u64 = 150;
+        let connect = if start_epoch > cache.from_epoch {
+            Some(cache.from_epoch)
+        } else {
+            None
+        };
+        assert_eq!(
+            connect,
+            Some(100),
+            "cache connect should activate when query (150) > cache.from_epoch (100)"
+        );
+    }
+
+    #[test]
+    fn validate_epoch_rejects_overflow() {
+        let epocher = FixedEpocher::new(NonZeroU64::new(10).unwrap());
+
+        // u64::MAX should overflow the epoch-to-height multiplication
+        let result = validate_epoch(&epocher, u64::MAX);
+        assert!(
+            matches!(result, Err(IdentityProofError::InvalidEpoch(e)) if e == u64::MAX),
+            "u64::MAX epoch should be rejected as invalid"
+        );
+
+        // Normal epoch should be fine
+        let result = validate_epoch(&epocher, 5);
+        assert!(result.is_ok(), "normal epoch should be valid");
+    }
 }
