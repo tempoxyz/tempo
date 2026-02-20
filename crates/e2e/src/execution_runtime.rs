@@ -1225,7 +1225,7 @@ impl From<AddValidatorV2> for Message {
 
 impl From<ChangeValidatorStatus> for Message {
     fn from(value: ChangeValidatorStatus) -> Self {
-        Self::ChangeValidatorStatus(value.into())
+        Self::ChangeValidatorStatus(value)
     }
 }
 

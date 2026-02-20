@@ -14,7 +14,7 @@ fn single_node() {
         .epoch_length(100)
         .t2_time(0)
         .seed(0);
-    let _first = run(setup.clone(), |metric, value| {
+    let _first = run(setup, |metric, value| {
         assert_no_v1(metric, value);
         if metric.ends_with("_marshal_processed_height") {
             let value = value.parse::<u64>().unwrap();
@@ -30,7 +30,7 @@ fn only_good_links() {
     let _ = tempo_eyre::install();
 
     let setup = Setup::new().epoch_length(100).t2_time(0).seed(42);
-    let _first = run(setup.clone(), |metric, value| {
+    let _first = run(setup, |metric, value| {
         assert_no_v1(metric, value);
         if metric.ends_with("_marshal_processed_height") {
             let value = value.parse::<u64>().unwrap();
@@ -55,9 +55,9 @@ fn many_bad_links() {
         .seed(42)
         .epoch_length(100)
         .t2_time(0)
-        .linkage(link.clone());
+        .linkage(link);
 
-    let _first = run(setup.clone(), |metric, value| {
+    let _first = run(setup, |metric, value| {
         assert_no_v1(metric, value);
         if metric.ends_with("_marshal_processed_height") {
             let value = value.parse::<u64>().unwrap();

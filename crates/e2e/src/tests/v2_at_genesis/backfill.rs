@@ -89,7 +89,7 @@ impl AssertJoinsLate {
                 context.sleep(Duration::from_secs(1)).await;
             }
 
-            last.start(&mut context).await;
+            last.start(&context).await;
             assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
 
             tracing::debug!("last node started");

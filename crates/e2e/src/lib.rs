@@ -92,7 +92,7 @@ fn generate_consensus_node_config(
                     ingress: SocketAddr::from(([127, 0, 0, (i + 1) as u8], 8000)),
                     egress: SocketAddr::from(([127, 0, 0, (i + 1) as u8], 0)),
                     private_key,
-                    share: shares.get_value(&&public_key).cloned(),
+                    share: shares.get_value(&public_key).cloned(),
                 };
                 (public_key, config)
             }),

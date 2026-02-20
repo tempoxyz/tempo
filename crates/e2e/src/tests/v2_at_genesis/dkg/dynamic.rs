@@ -270,7 +270,7 @@ impl AssertValidatorIsRemoved {
                         entered_removed_epoch |= epoch >= removed_epoch.get();
                     }
 
-                    if entered_removal_epoch && !entered_removal_epoch {
+                    if entered_removal_epoch && !entered_removed_epoch {
                         if key.ends_with("_dkg_manager_ceremony_players") {
                             assert_eq!(how_many_initial - 1, value.parse::<u32>().unwrap(),)
                         }

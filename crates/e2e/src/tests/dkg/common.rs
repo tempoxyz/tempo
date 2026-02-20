@@ -1,6 +1,6 @@
 //! Common helpers for DKG tests.
 
-use std::{num::NonZeroU64, time::Duration};
+use std::time::Duration;
 
 use commonware_codec::ReadExt as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
