@@ -192,13 +192,15 @@ abstract contract HandlerBase is InvariantBase {
         internal
     {
         uint64 actualNonce = nonce.getNonce(account, nonceKey);
-        if (actualNonce > previousNonce) {
-            ghost_2dNonce[account][nonceKey] = actualNonce;
-            _mark2dNonceKeyUsed(account, nonceKey);
-            ghost_totalTxExecuted++;
-            ghost_totalCallsExecuted++;
-            ghost_total2dNonceTxs++;
-        }
+
+        // NON1: Nonce must increment by exactly 1
+        assertEq(actualNonce, previousNonce + 1, "NON1: 2D nonce should increment by exactly 1");
+
+        ghost_2dNonce[account][nonceKey] = actualNonce;
+        _mark2dNonceKeyUsed(account, nonceKey);
+        ghost_totalTxExecuted++;
+        ghost_totalCallsExecuted++;
+        ghost_total2dNonceTxs++;
     }
 
     /// @notice Update ghost state after successful protocol nonce transaction
@@ -377,17 +379,10 @@ abstract contract HandlerBase is InvariantBase {
     }
 
     /// @notice Simplified record helper for 2D nonce success (overload without previousNonce)
-    /// @dev Reads current nonce from ghost state
+    /// @dev Reads previous nonce from ghost state, then delegates to 3-arg overload
     function _record2dNonceTxSuccess(address account, uint64 nonceKey) internal {
         uint64 previousNonce = uint64(ghost_2dNonce[account][nonceKey]);
-        uint64 actualNonce = nonce.getNonce(account, nonceKey);
-        if (actualNonce > previousNonce) {
-            ghost_2dNonce[account][nonceKey] = actualNonce;
-            _mark2dNonceKeyUsed(account, nonceKey);
-            ghost_totalTxExecuted++;
-            ghost_totalCallsExecuted++;
-            ghost_total2dNonceTxs++;
-        }
+        _record2dNonceTxSuccess(account, nonceKey, previousNonce);
     }
 
     // ============ Nonce Sync Helpers for Catch Blocks ============
@@ -502,28 +497,32 @@ abstract contract HandlerBase is InvariantBase {
     {
         uint64 previousNonce = uint64(ghost_2dNonce[sender][nonceKey]);
         uint64 actualNonce = nonce.getNonce(sender, nonceKey);
-        if (actualNonce > previousNonce) {
-            ghost_2dNonce[sender][nonceKey] = actualNonce;
-            _mark2dNonceKeyUsed(sender, nonceKey);
-            ghost_totalTxExecuted++;
-            ghost_totalCreatesExecuted++;
-            ghost_total2dNonceTxs++;
 
-            // CREATE also consumes protocol nonce for address derivation
-            // Verify on-chain protocol nonce actually changed
-            uint256 actualProtocolNonce = vm.getNonce(sender);
-            if (actualProtocolNonce > ghost_protocolNonce[sender]) {
-                ghost_protocolNonce[sender] = actualProtocolNonce;
-                ghost_totalProtocolNonceTxs++;
-            }
+        // NON1: 2D nonce must increment by exactly 1
+        assertEq(
+            actualNonce, previousNonce + 1, "NON1: 2D nonce should increment by exactly 1 (CREATE)"
+        );
 
-            // Only record CREATE address tracking if code was actually deployed
-            if (expectedAddress.code.length > 0) {
-                ghost_total2dNonceCreates++;
-                bytes32 key = keccak256(abi.encodePacked(sender, uint256(protocolNonce)));
-                ghost_createAddresses[key] = expectedAddress;
-                ghost_createCount[sender]++;
-            }
+        ghost_2dNonce[sender][nonceKey] = actualNonce;
+        _mark2dNonceKeyUsed(sender, nonceKey);
+        ghost_totalTxExecuted++;
+        ghost_totalCreatesExecuted++;
+        ghost_total2dNonceTxs++;
+
+        // CREATE also consumes protocol nonce for address derivation
+        // Verify on-chain protocol nonce actually changed
+        uint256 actualProtocolNonce = vm.getNonce(sender);
+        if (actualProtocolNonce > ghost_protocolNonce[sender]) {
+            ghost_protocolNonce[sender] = actualProtocolNonce;
+            ghost_totalProtocolNonceTxs++;
+        }
+
+        // Only record CREATE address tracking if code was actually deployed
+        if (expectedAddress.code.length > 0) {
+            ghost_total2dNonceCreates++;
+            bytes32 key = keccak256(abi.encodePacked(sender, uint256(protocolNonce)));
+            ghost_createAddresses[key] = expectedAddress;
+            ghost_createCount[sender]++;
         }
     }
 
