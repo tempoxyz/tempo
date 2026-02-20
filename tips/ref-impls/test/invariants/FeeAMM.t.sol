@@ -150,11 +150,49 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         return (holders[idx], balances[idx]);
     }
 
-    /// @dev Selects a token pair from pools with reserveUserToken > 0 (initialized pools)
+    /// @dev Selects a token pair from initialized pools (totalSupply > 0)
     /// @param seed Random seed for selection
     /// @return userToken First token of the initialized pool
     /// @return validatorToken Second token of the initialized pool
     function _selectInitializedPoolPair(uint256 seed)
+        internal
+        view
+        returns (address userToken, address validatorToken)
+    {
+        uint256 totalTokens = _tokens.length + 1;
+        uint256 maxPairs = totalTokens * (totalTokens - 1);
+
+        address[] memory validUserTokens = new address[](maxPairs);
+        address[] memory validValidatorTokens = new address[](maxPairs);
+        uint256 count = 0;
+
+        for (uint256 i = 0; i < totalTokens; i++) {
+            for (uint256 j = 0; j < totalTokens; j++) {
+                if (i == j) continue;
+
+                address ut = i == 0 ? address(pathUSD) : address(_tokens[i - 1]);
+                address vt = j == 0 ? address(pathUSD) : address(_tokens[j - 1]);
+
+                bytes32 poolId = amm.getPoolId(ut, vt);
+                if (amm.totalSupply(poolId) > 0) {
+                    validUserTokens[count] = ut;
+                    validValidatorTokens[count] = vt;
+                    count++;
+                }
+            }
+        }
+
+        vm.assume(count > 0);
+        uint256 idx = bound(seed, 0, count - 1);
+        userToken = validUserTokens[idx];
+        validatorToken = validValidatorTokens[idx];
+    }
+
+    /// @dev Selects a token pair from pools with reserveUserToken > 0 (rebalanceable pools)
+    /// @param seed Random seed for selection
+    /// @return userToken First token of the rebalanceable pool
+    /// @return validatorToken Second token of the rebalanceable pool
+    function _selectRebalanceablePoolPair(uint256 seed)
         internal
         view
         returns (address userToken, address validatorToken)
@@ -471,7 +509,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param amountOutRaw Amount of user tokens to receive
     function rebalanceSwap(uint256 actorSeed, uint256 pairSeed, uint256 amountOutRaw) external {
         RebalanceContext memory ctx;
-        (ctx.userToken, ctx.validatorToken) = _selectInitializedPoolPair(pairSeed);
+        (ctx.userToken, ctx.validatorToken) = _selectRebalanceablePoolPair(pairSeed);
         ctx.actor = _selectAuthorizedActor(actorSeed, ctx.validatorToken);
 
         IFeeAMM.Pool memory poolBefore = amm.getPool(ctx.userToken, ctx.validatorToken);
@@ -649,7 +687,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param actorSeed Seed for selecting actor
     /// @param pairSeed Seed for selecting token pair
     function smallRebalanceSwap(uint256 actorSeed, uint256 pairSeed) external {
-        (address userToken, address validatorToken) = _selectInitializedPoolPair(pairSeed);
+        (address userToken, address validatorToken) = _selectRebalanceablePoolPair(pairSeed);
         address actor = _selectAuthorizedActor(actorSeed, validatorToken);
 
         IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
@@ -736,7 +774,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param pairSeed Seed for selecting token pair
     /// @dev Converted to invariant handler since it requires initialized pools
     function handler_exactDivisionRebalance(uint256 actorSeed, uint256 pairSeed) external {
-        (address userToken, address validatorToken) = _selectInitializedPoolPair(pairSeed);
+        (address userToken, address validatorToken) = _selectRebalanceablePoolPair(pairSeed);
         address actor = _selectAuthorizedActor(actorSeed, validatorToken);
 
         IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
