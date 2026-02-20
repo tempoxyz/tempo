@@ -1755,8 +1755,8 @@ fn determine_next_players(
     fields(
         %digest,
     ),
-    err,
-    ret(level = Level::WARN)
+    err(level = Level::WARN)
+    ret,
 )]
 pub(crate) fn read_re_dkg_epoch(
     node: &TempoFullNode,

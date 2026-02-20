@@ -2,7 +2,10 @@
 
 use crate::execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, ExecutionRuntimeHandle};
 use alloy_primitives::Address;
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{
+    Signer as _,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
 use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
@@ -14,7 +17,11 @@ use reth_ethereum::{
     storage::BlockNumReader,
 };
 use reth_node_builder::NodeTypesWithDBAdapter;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+};
 use tempo_commonware_node::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
@@ -32,7 +39,7 @@ where
     /// Unique identifier for this node
     pub uid: String,
     /// Public key of the validator
-    pub public_key: PublicKey,
+    pub private_key: PrivateKey,
     /// Simulated network oracle for test environments
     pub oracle: Oracle<PublicKey, TClock>,
     /// Consensus configuration used to start the consensus engine
@@ -76,7 +83,7 @@ where
     #[expect(clippy::too_many_arguments, reason = "quickly threw this together")]
     pub fn new(
         uid: String,
-        public_key: PublicKey,
+        private_key: PrivateKey,
         oracle: Oracle<PublicKey, TClock>,
         consensus_config: consensus::Builder<
             Control<PublicKey, TClock>,
@@ -87,6 +94,7 @@ where
         network_address: SocketAddr,
         chain_address: Address,
     ) -> Self {
+        let public_key = private_key.public_key();
         let execution_node_datadir = execution_runtime
             .nodes_dir()
             .join(execution_runtime::execution_node_name(&public_key));
@@ -94,7 +102,7 @@ where
         let execution_node_name = execution_runtime::execution_node_name(&public_key);
         Self {
             uid,
-            public_key,
+            private_key,
             oracle,
             consensus_config,
             consensus_handle: None,
@@ -112,9 +120,13 @@ where
         }
     }
 
+    pub fn private_key(&self) -> &PrivateKey {
+        &self.private_key
+    }
+
     /// Get the validator public key of this node.
-    pub fn public_key(&self) -> &PublicKey {
-        &self.public_key
+    pub fn public_key(&self) -> PublicKey {
+        self.private_key.public_key()
     }
 
     /// Get the unique identifier of this node.
@@ -139,6 +151,24 @@ where
     /// Get a reference to the oracle.
     pub fn oracle(&self) -> &Oracle<PublicKey, TClock> {
         &self.oracle
+    }
+
+    pub fn ingress(&self) -> SocketAddr {
+        self.network_address
+    }
+
+    pub fn egress(&self) -> IpAddr {
+        self.network_address.ip()
+    }
+
+    /// A verifier is a node that has a share.
+    pub fn is_signer(&self) -> bool {
+        self.consensus_config.share.is_some()
+    }
+
+    /// A verifier is a node that has no share.
+    pub fn is_verifier(&self) -> bool {
+        self.consensus_config.share.is_none()
     }
 
     /// Start both consensus and execution layers.
@@ -225,43 +255,43 @@ where
 
         let votes = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(VOTES_CHANNEL_IDENT, VOTES_LIMIT)
             .await
             .unwrap();
         let certificates = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT)
             .await
             .unwrap();
         let resolver = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT)
             .await
             .unwrap();
         let broadcast = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT)
             .await
             .unwrap();
         let marshal = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT)
             .await
             .unwrap();
         let dkg = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(DKG_CHANNEL_IDENT, DKG_LIMIT)
             .await
             .unwrap();
         let subblocks = self
             .oracle
-            .control(self.public_key.clone())
+            .control(self.public_key())
             .register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT)
             .await
             .unwrap();

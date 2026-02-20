@@ -35,10 +35,7 @@ async fn consensus_subscribe_and_query_finalization() {
     let _ = tempo_eyre::install();
 
     let initial_height = 3;
-    let setup = Setup::new()
-        .how_many_signers(1)
-        .t2_time(0)
-        .epoch_length(100);
+    let setup = Setup::new().how_many_signers(1).epoch_length(100);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let (addr_tx, addr_rx) = oneshot::channel::<(SocketAddr, SocketAddr)>();
@@ -161,7 +158,6 @@ fn get_identity_transition_proof_after_full_dkg() {
 
     let setup = Setup::new()
         .how_many_signers(how_many_signers)
-        .t2_time(0)
         .epoch_length(epoch_length);
 
     let seed = setup.seed;

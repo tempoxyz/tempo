@@ -33,6 +33,7 @@ impl FullDkgTest {
 
         let setup = Setup::new()
             .how_many_signers(self.how_many_signers)
+            .t2_time(0)
             .epoch_length(self.epoch_length);
 
         let cfg = Config::default().with_seed(setup.seed);
@@ -53,7 +54,7 @@ impl FullDkgTest {
                 .unwrap();
 
             execution_runtime
-                .set_next_full_dkg_ceremony(http_url, self.full_dkg_epoch)
+                .set_next_full_dkg_ceremony_v2(http_url, self.full_dkg_epoch)
                 .await
                 .unwrap();
 

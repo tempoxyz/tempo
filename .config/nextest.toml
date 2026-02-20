@@ -19,11 +19,6 @@ threads-required = 8
 filter = "package(tempo-node) & binary(it)"
 threads-required = 4
 
-[[profile.ci.overrides]]
-filter = "test(sync::can_restart_after_joining_from_snapshot)"
-slow-timeout = { period = "60s", terminate-after = 4, on-timeout = "pass" }
-success-output = "final"
-
 # Local development defaults (same constraints apply)
 [[profile.default.overrides]]
 filter = "package(tempo-e2e)"
@@ -32,8 +27,3 @@ threads-required = 8
 [[profile.default.overrides]]
 filter = "package(tempo-node) & binary(it)"
 threads-required = 4
-
-[[profile.default.overrides]]
-filter = "test(sync::can_restart_after_joining_from_snapshot)"
-slow-timeout = { period = "60s", terminate-after = 4, on-timeout = "pass" }
-success-output = "final"

@@ -601,7 +601,6 @@ impl ValidatorConfigV2 {
         if deactivated_at_height == 0 {
             self.active_ingress_ips[ingress_hash].write(true)?;
         }
-
         Ok(())
     }
 

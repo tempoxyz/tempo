@@ -32,6 +32,7 @@ commonware-utils.workspace = true
 itertools.workspace = true
 
 eyre.workspace = true
+reth-chainspec.workspace = true
 reth-db.workspace = true
 reth-ethereum = { workspace = true, features = [
   "node",

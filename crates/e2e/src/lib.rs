@@ -12,10 +12,15 @@
 
 use std::{iter::repeat_with, net::SocketAddr, time::Duration};
 
+use alloy::signers::k256::schnorr::CryptoRngCore;
+use alloy_primitives::Address;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
-    bls12381::{dkg, primitives::sharing::Mode},
+    bls12381::{
+        dkg::{self},
+        primitives::{group::Share, sharing::Mode},
+    },
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
@@ -45,6 +50,68 @@ mod tests;
 pub const CONSENSUS_NODE_PREFIX: &str = "consensus";
 pub const EXECUTION_NODE_PREFIX: &str = "execution";
 
+fn generate_consensus_node_config(
+    rng: &mut impl CryptoRngCore,
+    signers: u32,
+    verifiers: u32,
+) -> (
+    OnchainDkgOutcome,
+    ordered::Map<PublicKey, ConsensusNodeConfig>,
+) {
+    let signer_keys = repeat_with(|| PrivateKey::random(&mut *rng))
+        .take(signers as usize)
+        .collect::<Vec<_>>();
+
+    let (initial_dkg_outcome, shares) = dkg::deal::<_, _, N3f1>(
+        &mut *rng,
+        Mode::NonZeroCounter,
+        ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),
+    )
+    .unwrap();
+
+    let onchain_dkg_outcome = OnchainDkgOutcome {
+        epoch: Epoch::zero(),
+        output: initial_dkg_outcome,
+        next_players: shares.keys().clone(),
+        is_next_full_dkg: false,
+    };
+
+    let verifier_keys = repeat_with(|| PrivateKey::random(&mut *rng))
+        .take(verifiers as usize)
+        .collect::<Vec<_>>();
+
+    let validators = ordered::Map::try_from_iter(
+        signer_keys
+            .into_iter()
+            .chain(verifier_keys)
+            .enumerate()
+            .map(|(i, private_key)| {
+                let public_key = private_key.public_key();
+                let config = ConsensusNodeConfig {
+                    address: crate::execution_runtime::validator(i as u32),
+                    ingress: SocketAddr::from(([127, 0, 0, (i + 1) as u8], 8000)),
+                    egress: SocketAddr::from(([127, 0, 0, (i + 1) as u8], 0)),
+                    private_key,
+                    share: shares.get_value(&public_key).cloned(),
+                };
+                (public_key, config)
+            }),
+    )
+    .unwrap();
+
+    (onchain_dkg_outcome, validators)
+}
+
+/// Configuration for a validator.
+#[derive(Clone, Debug)]
+pub struct ConsensusNodeConfig {
+    pub address: Address,
+    pub ingress: SocketAddr,
+    pub egress: SocketAddr,
+    pub private_key: PrivateKey,
+    pub share: Option<Share>,
+}
+
 /// The test setup run by [`run`].
 #[derive(Clone)]
 pub struct Setup {
@@ -66,6 +133,13 @@ pub struct Setup {
 
     /// Whether to connect execution layer nodes directly.
     pub connect_execution_layer_nodes: bool,
+
+    /// The t2 hardfork time.
+    ///
+    /// Validators will only be written into the V2 contract if t2_time == 0.
+    ///
+    /// Default: 1.
+    pub t2_time: u64,
 }
 
 impl Setup {
@@ -81,6 +155,7 @@ impl Setup {
             },
             epoch_length: 20,
             connect_execution_layer_nodes: false,
+            t2_time: 1,
         }
     }
 
@@ -119,6 +194,10 @@ impl Setup {
             ..self
         }
     }
+
+    pub fn t2_time(self, t2_time: u64) -> Self {
+        Self { t2_time, ..self }
+    }
 }
 
 impl Default for Setup {
@@ -141,6 +220,7 @@ pub async fn setup_validators(
         connect_execution_layer_nodes,
         linkage,
         epoch_length,
+        t2_time,
         ..
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
@@ -154,52 +234,14 @@ pub async fn setup_validators(
     );
     network.start();
 
-    let mut signer_keys = repeat_with(|| PrivateKey::random(&mut *context))
-        .take(how_many_signers as usize)
-        .collect::<Vec<_>>();
-    signer_keys.sort_by_key(|key| key.public_key());
-    let (initial_dkg_outcome, shares) = dkg::deal::<_, _, N3f1>(
-        &mut *context,
-        Mode::NonZeroCounter,
-        ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),
-    )
-    .unwrap();
-
-    let onchain_dkg_outcome = OnchainDkgOutcome {
-        epoch: Epoch::zero(),
-        output: initial_dkg_outcome,
-        next_players: shares.keys().clone(),
-        is_next_full_dkg: false,
-    };
-    let mut verifier_keys = repeat_with(|| PrivateKey::random(&mut *context))
-        .take(how_many_verifiers as usize)
-        .collect::<Vec<_>>();
-    verifier_keys.sort_by_key(|key| key.public_key());
-
-    // The port here does not matter because it will be ignored in simulated p2p.
-    // Still nice, because sometimes nodes can be better identified in logs.
-    let network_addresses = (1..)
-        .map(|port| SocketAddr::from(([127, 0, 0, 1], port)))
-        .take((how_many_signers + how_many_verifiers) as usize)
-        .collect::<Vec<_>>();
-    let chain_addresses = (0..)
-        .map(crate::execution_runtime::validator)
-        .take((how_many_signers + how_many_verifiers) as usize)
-        .collect::<Vec<_>>();
-
-    let validators = ordered::Map::try_from_iter(
-        shares
-            .iter()
-            .zip(&network_addresses)
-            .zip(&chain_addresses)
-            .map(|((key, net_addr), chain_addr)| (key.clone(), (*net_addr, *chain_addr))),
-    )
-    .unwrap();
+    let (onchain_dkg_outcome, validators) =
+        generate_consensus_node_config(context, how_many_signers, how_many_verifiers);
 
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
         .with_initial_dkg_outcome(onchain_dkg_outcome)
-        .with_validators(validators)
+        .with_t2_time(t2_time)
+        .with_validators(validators.clone())
         .launch()
         .unwrap();
 
@@ -209,31 +251,22 @@ pub async fn setup_validators(
         .generate();
 
     let mut nodes = vec![];
-    for ((((private_key, share), mut execution_config), network_address), chain_address) in
-        signer_keys
-            .into_iter()
-            .zip_eq(shares)
-            .map(|(signing_key, (verifying_key, share))| {
-                assert_eq!(signing_key.public_key(), verifying_key);
-                (signing_key, Some(share))
-            })
-            .chain(verifier_keys.into_iter().map(|key| (key, None)))
-            .zip_eq(execution_configs)
-            .zip_eq(network_addresses)
-            .zip_eq(chain_addresses)
+
+    for ((public_key, consensus_node_config), mut execution_config) in
+        validators.into_iter().zip_eq(execution_configs)
     {
+        let ConsensusNodeConfig {
+            address,
+            ingress,
+            private_key,
+            share,
+            ..
+        } = consensus_node_config;
         let oracle = oracle.clone();
-        let uid = format!("{CONSENSUS_NODE_PREFIX}_{}", private_key.public_key());
+        let uid = format!("{CONSENSUS_NODE_PREFIX}_{public_key}");
         let feed_state = FeedStateHandle::new();
 
-        execution_config.validator_key = Some(
-            private_key
-                .public_key()
-                .encode()
-                .as_ref()
-                .try_into()
-                .unwrap(),
-        );
+        execution_config.validator_key = Some(public_key.encode().as_ref().try_into().unwrap());
         execution_config.feed_state = Some(feed_state.clone());
 
         let engine_config = consensus::Builder {
@@ -261,13 +294,13 @@ pub async fn setup_validators(
 
         nodes.push(TestingNode::new(
             uid,
-            private_key.public_key(),
+            private_key,
             oracle.clone(),
             engine_config,
             execution_runtime.handle(),
             execution_config,
-            network_address,
-            chain_address,
+            ingress,
+            address,
         ));
     }
 
@@ -283,7 +316,7 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
 
     executor.start(|mut context| async move {
         // Setup and run all validators.
-        let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup).await;
+        let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
 
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
@@ -303,6 +336,18 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
                 if metrics.ends_with("_peers_blocked") {
                     let value = value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
+                }
+
+                if setup.t2_time == 0 {
+                    if metric.ends_with("_dkg_manager_read_players_from_v1_contract_total") {
+                        assert_eq!(0, value.parse::<u64>().unwrap());
+                    }
+                    if metric.ends_with("_dkg_manager_syncing_players") {
+                        assert_eq!(0, value.parse::<u64>().unwrap());
+                    }
+                    if metric.ends_with("_dkg_manager_read_re_dkg_epoch_from_v1_contract_total") {
+                        assert_eq!(0, value.parse::<u64>().unwrap());
+                    }
                 }
 
                 if stop_condition(metric, value) {
