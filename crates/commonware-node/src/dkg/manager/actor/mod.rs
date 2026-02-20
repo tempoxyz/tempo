@@ -125,8 +125,12 @@ where
 
 impl<TContext, TPeerManager> Actor<TContext, TPeerManager>
 where
-    TContext:
-        Clock + CryptoRngCore + commonware_runtime::Metrics + Spawner + commonware_runtime::Storage,
+    TContext: commonware_runtime::BufferPooler
+        + Clock
+        + CryptoRngCore
+        + commonware_runtime::Metrics
+        + Spawner
+        + commonware_runtime::Storage,
     TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
     pub(super) async fn new(

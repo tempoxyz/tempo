@@ -3,7 +3,7 @@ use commonware_cryptography::{
     bls12381::primitives::group::Share,
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_runtime::{Clock, Metrics, Spawner, Storage};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
 use rand_core::CryptoRngCore;
@@ -25,7 +25,7 @@ pub(crate) async fn init<TContext, TPeerManager>(
     config: Config<TPeerManager>,
 ) -> eyre::Result<(Actor<TContext, TPeerManager>, Mailbox)>
 where
-    TContext: Clock + CryptoRngCore + Metrics + Spawner + Storage,
+    TContext: BufferPooler + Clock + CryptoRngCore + Metrics + Spawner + Storage,
     TPeerManager: commonware_p2p::AddressableManager<PublicKey = PublicKey> + Sync,
 {
     let (tx, rx) = mpsc::unbounded();
