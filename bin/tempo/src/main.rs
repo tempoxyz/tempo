@@ -131,7 +131,7 @@ fn main() -> eyre::Result<()> {
     }
 
     tempo_node::init_version_metadata();
-    defaults::init_defaults();
+    tempo_node::init_defaults();
 
     let mut cli = Cli::<
         TempoChainSpecParser,
