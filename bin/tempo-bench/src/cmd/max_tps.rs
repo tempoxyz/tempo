@@ -410,6 +410,7 @@ impl MaxTpsArgs {
             user_tokens,
             erc20_tokens,
             recipients,
+            tx_id: Arc::new(AtomicUsize::new(0)),
         };
 
         // For expiring nonces, we need to generate/sign/send in batches to avoid
@@ -766,6 +767,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         user_tokens,
         erc20_tokens,
         recipients,
+        tx_id,
     } = input;
 
     let txs_per_sender = total_txs / accounts;
@@ -787,9 +789,8 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
     let erc20_transfers = Arc::new(AtomicUsize::new(0));
-    // Global tx counter used to bump priority fee, ensuring unique tx hashes
-    // when using expiring nonces (which share nonce=0).
-    let tx_id = Arc::new(AtomicUsize::new(0));
+    // `tx_id` is shared across batches via `GenerateTransactionsInput` to ensure
+    // unique tx hashes across all batches when using expiring nonces.
 
     let builders = ProgressBar::new(total_txs)
         .wrap_stream(stream::iter(
@@ -1209,4 +1210,7 @@ struct GenerateTransactionsInput<F: TxFiller<TempoNetwork>> {
     erc20_tokens: Vec<Address>,
     /// When set, transfers go to these existing addresses instead of `Address::random()`.
     recipients: Option<Vec<Address>>,
+    /// Shared counter used to bump priority fee, ensuring unique tx hashes across batches
+    /// when using expiring nonces (which share nonce=0).
+    tx_id: Arc<AtomicUsize>,
 }
