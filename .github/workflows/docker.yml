@@ -47,15 +47,6 @@ jobs:
             ${{ env.REGISTRY }}/tempo
             docker.io/tempoxyz/tempo
           bake-target: tempo
-          labels: |
-            org.opencontainers.image.created=
-            org.opencontainers.image.description=
-            org.opencontainers.image.licenses=
-            org.opencontainers.image.revision=
-            org.opencontainers.image.source=
-            org.opencontainers.image.title=
-            org.opencontainers.image.url=
-            org.opencontainers.image.version=
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
@@ -76,15 +67,6 @@ jobs:
             ${{ env.REGISTRY }}/tempo-bench
             docker.io/tempoxyz/tempo-bench
           bake-target: tempo-bench
-          labels: |
-            org.opencontainers.image.created=
-            org.opencontainers.image.description=
-            org.opencontainers.image.licenses=
-            org.opencontainers.image.revision=
-            org.opencontainers.image.source=
-            org.opencontainers.image.title=
-            org.opencontainers.image.url=
-            org.opencontainers.image.version=
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
@@ -105,15 +87,6 @@ jobs:
             ${{ env.REGISTRY }}/tempo-sidecar
             docker.io/tempoxyz/tempo-sidecar
           bake-target: tempo-sidecar
-          labels: |
-            org.opencontainers.image.created=
-            org.opencontainers.image.description=
-            org.opencontainers.image.licenses=
-            org.opencontainers.image.revision=
-            org.opencontainers.image.source=
-            org.opencontainers.image.title=
-            org.opencontainers.image.url=
-            org.opencontainers.image.version=
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
@@ -134,15 +107,6 @@ jobs:
             ${{ env.REGISTRY }}/tempo-xtask
             docker.io/tempoxyz/tempo-xtask
           bake-target: tempo-xtask
-          labels: |
-            org.opencontainers.image.created=
-            org.opencontainers.image.description=
-            org.opencontainers.image.licenses=
-            org.opencontainers.image.revision=
-            org.opencontainers.image.source=
-            org.opencontainers.image.title=
-            org.opencontainers.image.url=
-            org.opencontainers.image.version=
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}

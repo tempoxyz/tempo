@@ -449,10 +449,6 @@ impl PoolTransaction for TempoPooledTransaction {
     type Consensus = TempoTxEnvelope;
     type Pooled = TempoTxEnvelope;
 
-    fn consensus_ref(&self) -> Recovered<&Self::Consensus> {
-        Recovered::new_unchecked(&*self.inner.transaction, self.inner.transaction.signer())
-    }
-
     fn clone_into_consensus(&self) -> Recovered<Self::Consensus> {
         self.inner.transaction.clone()
     }
