@@ -15,6 +15,24 @@ pub const PERMIT2_SALT: B256 =
 pub const ARACHNID_CREATE2_FACTORY_ADDRESS: Address =
     address!("0x4e59b44847b379578588920cA78FbF26c0B4956C");
 
+/// TIP-1018: Cross-chain deterministic account factory address.
+/// Deployed via the Arachnid CREATE2 factory at an identical address on all EVM chains.
+/// This address is used to compute CREATE2-based v2 account addresses from passkey coordinates.
+///
+/// NOTE: This is a placeholder until the factory is deployed. The real address will be
+/// determined by deploying `CrossChainAccountFactory` via `ARACHNID_CREATE2_FACTORY_ADDRESS`.
+pub const CROSS_CHAIN_ACCOUNT_FACTORY_ADDRESS: Address =
+    address!("0xCC0A000000000000000000000000000000001018");
+
+/// TIP-1018: The keccak256 hash of the `CrossChainAccount` creation code (no constructor args).
+/// This MUST be frozen — any change produces different addresses and breaks cross-chain identity.
+///
+/// Computed from: `keccak256(type(CrossChainAccount).creationCode)` with solc 0.8.28, via_ir, 200 runs.
+///
+/// NOTE: This is a placeholder until the contract bytecode is finalized and audited.
+pub const CROSS_CHAIN_ACCOUNT_INIT_CODE_HASH: B256 =
+    b256!("0x0000000000000000000000000000000000000000000000000000000000000000");
+
 /// Helper macro to allow feature-gating rpc implementations behind the `rpc` feature.
 macro_rules! sol {
     ($($input:tt)*) => {

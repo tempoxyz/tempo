@@ -37,6 +37,9 @@ modular-bitfield = { version = "0.13.1", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
+# Tempo
+tempo-contracts.workspace = true
+
 # Cryptography for P256 and WebAuthn signature verification
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2.workspace = true
