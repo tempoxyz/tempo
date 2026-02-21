@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
+use alloy_consensus::{BlockHeader, Transaction, TxReceipt, transaction::TxHashRef};
 use alloy_evm::block::BlockExecutionResult;
 use reth_chainspec::EthChainSpec;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
@@ -12,7 +12,7 @@ use reth_consensus_common::validation::{
     validate_against_parent_gas_limit, validate_against_parent_hash_number,
 };
 use reth_ethereum_consensus::EthBeaconConsensus;
-use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
+use reth_primitives_traits::{GotExpected, RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::{
     hardfork::TempoHardforks,
@@ -190,10 +190,39 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
         result: &BlockExecutionResult<TempoReceipt>,
         receipt_root_bloom: Option<reth_consensus::ReceiptRootBloom>,
     ) -> Result<(), ConsensusError> {
+        // TIP-1016: block header gas_used tracks execution gas only, while receipt
+        // cumulative_gas_used tracks total gas (execution + storage creation). The
+        // standard Ethereum check requires strict equality, but TIP-1016 allows
+        // header gas_used <= last receipt cumulative_gas_used.
+        let cumulative_gas_used = result
+            .receipts
+            .last()
+            .map(|r| r.cumulative_gas_used())
+            .unwrap_or(0);
+        if block.header().gas_used() > cumulative_gas_used {
+            return Err(ConsensusError::BlockGasUsed {
+                gas: GotExpected {
+                    got: cumulative_gas_used,
+                    expected: block.header().gas_used(),
+                },
+                gas_spent_by_tx: reth_primitives_traits::receipt::gas_spent_by_transactions(
+                    &result.receipts,
+                ),
+            });
+        }
+
+        // Delegate receipt root, logs bloom, and requests hash validation to the
+        // inner Ethereum consensus. We construct a temporary result with gas_used
+        // matching the header so the inner gas check passes, while the actual
+        // TIP-1016 gas invariant (header <= receipts) is checked above.
+        let mut patched_result = result.clone();
+        if let Some(last) = patched_result.receipts.last_mut() {
+            last.cumulative_gas_used = block.header().gas_used();
+        }
         FullConsensus::<TempoPrimitives>::validate_block_post_execution(
             &self.inner,
             block,
-            result,
+            &patched_result,
             receipt_root_bloom,
         )
     }
