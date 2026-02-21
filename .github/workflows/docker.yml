@@ -47,6 +47,7 @@ jobs:
             ${{ env.REGISTRY }}/tempo
             docker.io/tempoxyz/tempo
           bake-target: tempo
+          labels: ""
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
@@ -67,6 +68,7 @@ jobs:
             ${{ env.REGISTRY }}/tempo-bench
             docker.io/tempoxyz/tempo-bench
           bake-target: tempo-bench
+          labels: ""
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
@@ -87,6 +89,7 @@ jobs:
             ${{ env.REGISTRY }}/tempo-sidecar
             docker.io/tempoxyz/tempo-sidecar
           bake-target: tempo-sidecar
+          labels: ""
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
@@ -107,6 +110,7 @@ jobs:
             ${{ env.REGISTRY }}/tempo-xtask
             docker.io/tempoxyz/tempo-xtask
           bake-target: tempo-xtask
+          labels: ""
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
