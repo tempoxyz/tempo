@@ -113,7 +113,11 @@ fn joins_from_snapshot() {
         // env. This simulates a start from a snapshot.
         receiver.uid = donor.uid;
         receiver.public_key = donor.public_key;
-        receiver.consensus_config = donor.consensus_config;
+        {
+            let peer_manager = receiver.consensus_config.peer_manager.clone();
+            receiver.consensus_config = donor.consensus_config;
+            receiver.consensus_config.peer_manager = peer_manager;
+        }
         receiver.network_address = donor.network_address;
         receiver.chain_address = donor.chain_address;
         receiver.start(&context).await;
@@ -270,7 +274,11 @@ fn can_restart_after_joining_from_snapshot() {
         // env. This simulates a start from a snapshot.
         receiver.uid = donor.uid;
         receiver.public_key = donor.public_key;
-        receiver.consensus_config = donor.consensus_config;
+        {
+            let peer_manager = receiver.consensus_config.peer_manager.clone();
+            receiver.consensus_config = donor.consensus_config;
+            receiver.consensus_config.peer_manager = peer_manager;
+        }
         receiver.network_address = donor.network_address;
         receiver.chain_address = donor.chain_address;
         receiver.start(&context).await;
