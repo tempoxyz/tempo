@@ -634,11 +634,14 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let tx_weights: [u64; TX_TYPES] = [tip20_weight, swap_weight, place_order_weight, erc20_weight];
     // Cached gas estimates for each transaction type
     let gas_estimates: [Arc<OnceLock<(u128, u128, u64)>>; TX_TYPES] = Default::default();
+    // Global tx counter used to bump priority fee, ensuring unique tx hashes
+    // when using expiring nonces (which share nonce=0).
+    let tx_id = Arc::new(AtomicUsize::new(0));
 
     stream::repeat_with(move || {
         let signer_provider_manager = signer_provider_manager.clone();
         let gas_estimates = gas_estimates.clone();
-        let tx_id = Arc::new(AtomicUsize::new(0));
+        let tx_id = tx_id.clone();
         let recipients = recipients.clone();
         let user_tokens = user_tokens.clone();
         let erc20_tokens = erc20_tokens.clone();
