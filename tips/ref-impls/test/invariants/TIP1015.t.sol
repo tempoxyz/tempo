@@ -65,7 +65,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         targetContract(address(this));
         _setupInvariantBase();
 
-        _actors = _buildActors(NUM_ACTORS);
+        (_actors,) = _buildActors(NUM_ACTORS);
 
         vm.startPrank(admin);
 

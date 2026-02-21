@@ -64,7 +64,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         _setupInvariantBase();
-        _actors = _buildActors(10);
+        (_actors,) = _buildActors(10);
         _potentialKeyIds = _buildAddressPool(20, KEY_ID_POOL_OFFSET);
 
         // Seed each actor with an initial key to ensure handlers have keys to work with

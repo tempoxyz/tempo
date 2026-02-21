@@ -38,7 +38,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         _setupInvariantBase();
-        _actors = _buildActors(10);
+        (_actors,) = _buildActors(10);
 
         // One-time constant checks (immutable after deployment)
         // TEMPO-FAC8: isTIP20 consistency for system contracts

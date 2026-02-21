@@ -136,7 +136,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         _setupInvariantBase();
         _basePoliciesCreated = registry.policyIdCounter() - counterBefore;
 
-        _actors = _buildActors(10);
+        (_actors,) = _buildActors(10);
 
         // One-time constant checks (immutable after deployment)
         // TEMPO-REG13: Special policies 0 and 1 always exist
