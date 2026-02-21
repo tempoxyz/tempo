@@ -58,7 +58,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](70);
+        bytes4[] memory selectors = new bytes4[](71);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -118,11 +118,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         selectors[44] = this.handler_insufficientLiquidity.selector;
         // 2D nonce gas tracking (N10/N11)
         selectors[45] = this.handler_2dNonceGasCost.selector;
-        // Time window handlers (T1-T4)
+        // Time window handlers (T1-T5)
         selectors[46] = this.handler_timeBoundValidAfter.selector;
         selectors[47] = this.handler_timeBoundValidBefore.selector;
         selectors[48] = this.handler_timeBoundValid.selector;
         selectors[49] = this.handler_timeBoundOpen.selector;
+        selectors[70] = this.handler_timeBoundZeroWidth.selector;
         // Transaction type handlers (TX4-TX7, TX10)
         selectors[50] = this.handler_eip1559Transfer.selector;
         selectors[51] = this.handler_eip1559BaseFeeRejection.selector;
@@ -217,6 +218,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_timeBoundValidBeforeAllowed,
             0,
             "T2: Tx with past validBefore unexpectedly allowed"
+        );
+        assertEq(
+            ghost_timeBoundZeroWidthAllowed,
+            0,
+            "T5: Tx with validBefore == validAfter unexpectedly allowed"
         );
     }
 
@@ -3149,6 +3155,38 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
         } catch {
             _handleRevert2d(ctx.sender, ctx.nonceKey);
+        }
+    }
+
+    /// @notice Handler T5: Tx rejected if validBefore == validAfter (zero-width window)
+    /// @dev Creates a Tempo tx with validAfter == validBefore, expects rejection
+    function handler_timeBoundZeroWidth(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        TxContext memory ctx =
+            _setup2dNonceTransferContext(actorSeed, recipientSeed, amount, 5, 0, 1e6, 100e6);
+        ctx.nonceKey = 5;
+        ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
+
+        // Must be non-zero or _buildTempoWithTimeBounds will omit the field
+        uint64 t = uint64(block.timestamp);
+        if (t == 0) t = 1;
+
+        (bytes memory signedTx,) = _buildTempoWithTimeBounds(
+            ctx.senderIdx, ctx.recipient, ctx.amount, ctx.nonceKey, ctx.currentNonce, t, t
+        );
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            // T5 VIOLATION: Tx with validBefore == validAfter should have been rejected!
+            ghost_timeBoundZeroWidthAllowed++;
+            _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
+        } catch {
+            _handleExpectedReject(_noop);
         }
     }
 
