@@ -94,6 +94,11 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 
+[profile.maxperf-symbols]
+inherits = "maxperf"
+debug = "full"
+strip = "none"
+
 [workspace.dependencies]
 tempo-alloy = { path = "crates/alloy" }
 tempo-node = { path = "crates/node" }
