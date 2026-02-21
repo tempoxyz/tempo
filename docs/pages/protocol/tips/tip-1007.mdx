@@ -1,0 +1,150 @@
+---
+title: "TIP-1007: Temporary Nonce Storage"
+description: Reduced gas costs for 2D nonce keys by leveraging transaction validity windows and block hash availability.
+---
+
+# TIP-1007: Temporary Nonce Storage
+
+This document defines reduced gas costs for 2D nonce key creation by treating nonce storage as temporary when bounded by transaction validity windows.
+
+- **TIP ID**: TIP-1007
+- **Authors/Owners**: Georgios Konstantopoulos @gakonst
+- **Status**: Draft
+- **Related Specs/TIPs**: [TIP-1000](/protocol/tips/tip-1000)
+- **Protocol Version**: TBD
+
+---
+
+# Overview
+
+## Abstract
+
+This TIP introduces a temporary storage pricing model for 2D nonce keys (keys 1-N) in the Nonce precompile. When a transaction's `validBefore` timestamp falls within a 256-block window, the nonce key storage can be priced as temporary rather than permanent, significantly reducing the gas cost from 250,000 gas ([TIP-1000](/protocol/tips/tip-1000)) to 20,000 gas. This makes parallel transaction execution via 2D nonces economically viable without contributing to long-term state growth.
+
+## Motivation
+
+[TIP-1000](/protocol/tips/tip-1000) increases the cost of creating new state elements to 250,000 gas to protect against state growth attacks. While this is appropriate for permanent state, 2D nonce keys have a unique property: they are only useful within a transaction's validity window. Once a transaction expires (its `validBefore` timestamp passes), the nonce key storage serves no purpose.
+
+Currently, every parallel transaction using a new nonce key pays the full 250,000 gas "new state" cost (~0.5 cents). For applications requiring high parallelism (batch payments, market makers, high-frequency trading), this creates prohibitive costs.
+
+### The Insight
+
+Nonce keys don't need permanent storage. The only requirement is:
+1. **Replay protection**: The nonce key must be tracked until the transaction's validity window expires
+2. **Availability**: Block hashes are available for the last 256 blocks via `BLOCKHASH`
+
+If a transaction's `validBefore` is within 256 blocks of the current block, we can guarantee that:
+- The nonce key only needs to exist until `validBefore` passes
+- Any replay attempt after expiry is invalid regardless of nonce state
+- The storage can be safely pruned after the validity window
+
+### Alternatives Considered
+
+1. **Separate temporary storage trie**: Adds implementation complexity and consensus changes
+2. **Duration-based pricing tiers**: Complicates gas estimation and pricing logic
+3. **No change**: Makes parallel transactions prohibitively expensive under TIP-1000
+
+---
+
+# Specification
+
+## Eligibility for Temporary Nonce Pricing
+
+A nonce key creation qualifies for temporary storage pricing when ALL of the following conditions are met:
+
+1. **Non-zero nonce key**: The `nonce_key` field in the Tempo transaction is greater than 0 (user nonces, not protocol nonce)
+2. **Valid transaction window**: The transaction includes a `validBefore` timestamp
+3. **Window constraint**: `validBefore` is at most 256 blocks from the current block (approximately 51 minutes at 12-second blocks)
+4. **First use**: The nonce key is being used for the first time (nonce value is 0)
+
+## Gas Cost Changes
+
+### Temporary Nonce Key Creation
+
+**Current Behavior (with TIP-1000):**
+- Creating a new nonce key (first use of nonce key > 0) costs 250,000 gas
+
+**Proposed Behavior:**
+- If eligible for temporary storage: 20,000 gas
+- If not eligible (no `validBefore` or `validBefore` > 256 blocks): 250,000 gas (unchanged)
+
+### Gas Schedule Summary
+
+| Operation | Standard Cost (TIP-1000) | Temporary Cost (TIP-1007) | Savings |
+|-----------|--------------------------|---------------------------|---------|
+| New nonce key (eligible) | 250,000 | 20,000 | 230,000 |
+| New nonce key (not eligible) | 250,000 | 250,000 | 0 |
+| Existing nonce key update | 5,000 | 5,000 | 0 |
+
+## Validity Window Calculation
+
+The 256-block constraint is derived from:
+
+1. **Block hash availability**: The EVM `BLOCKHASH` opcode provides hashes for the last 256 blocks
+2. **Pruning safety**: After 256 blocks, the transaction validity can be verified without nonce state
+3. **Practical window**: 256 blocks × 12 seconds = ~51 minutes, sufficient for most parallel transaction use cases
+
+### Block-Based Constraint
+
+```
+eligible = (validBefore_block - current_block) <= 256
+```
+
+Where `validBefore_block` is derived from `validBefore` timestamp using block time estimation.
+
+## Implementation Requirements
+
+### Transaction Validation
+
+During transaction execution:
+
+1. **Check nonce key eligibility**: If `nonce_key > 0` and `nonce == 0` (new key):
+   - If `validBefore` is set AND within 256 blocks: charge 20,000 gas
+   - Otherwise: charge 250,000 gas (TIP-1000 behavior)
+
+2. **Store nonce as normal**: The nonce key is stored in the Nonce precompile at `0x4E4F4E4345000000000000000000000000000000` using the existing storage layout:
+   - Storage key: `keccak256(abi.encode(account_address, nonce_key))`
+   - Storage value: `nonce` (uint64)
+
+### Node Implementation
+
+The node implementation must:
+
+1. **Detect temporary nonce eligibility**: Check `validBefore` constraint at transaction execution time
+2. **Apply correct gas pricing**: 20,000 gas for eligible temporary nonces, 250,000 for permanent
+3. **No storage changes**: The actual storage mechanism remains unchanged; only gas pricing differs
+
+### State Pruning (Future Consideration)
+
+While not part of this TIP, nodes MAY implement pruning of expired nonce keys:
+- Nonce keys created with temporary pricing can be pruned after `validBefore` + 256 blocks
+- Pruning is optional and does not affect consensus
+- Archive nodes may retain all nonce state
+
+---
+
+# Invariants
+
+The following invariants must always hold:
+
+1. **Eligibility Invariant**: Temporary nonce pricing (20,000 gas) MUST only apply when `nonce_key > 0`, `nonce == 0`, `validBefore` is set, and `validBefore` is within 256 blocks.
+
+2. **Fallback Invariant**: Any nonce key creation that does not meet temporary eligibility MUST charge 250,000 gas per TIP-1000.
+
+3. **Replay Protection Invariant**: The combination of nonce key + validity window MUST provide equivalent replay protection to permanent nonce storage.
+
+4. **Consensus Invariant**: Gas pricing is deterministic based on transaction fields; all nodes MUST agree on eligibility.
+
+5. **Storage Invariant**: The storage layout and mechanism for nonce keys is unchanged; only gas pricing differs.
+
+## Critical Test Cases
+
+1. **Temporary nonce eligible**: Transaction with `nonce_key=1`, `nonce=0`, `validBefore` within 256 blocks charges 20,000 gas
+2. **No validBefore**: Transaction with `nonce_key=1`, `nonce=0`, no `validBefore` charges 250,000 gas
+3. **validBefore too far**: Transaction with `nonce_key=1`, `nonce=0`, `validBefore` > 256 blocks charges 250,000 gas
+4. **Protocol nonce**: Transaction with `nonce_key=0` is not eligible for temporary pricing
+5. **Existing nonce key**: Transaction with `nonce_key=1`, `nonce=5` charges standard 5,000 gas (no new state)
+6. **Mixed transaction**: Batch with multiple new nonce keys, some eligible, some not, charges correctly for each
+7. **Boundary conditions**: `validBefore` at exactly 256 blocks is eligible; 257 blocks is not
+8. **Multiple parallel txs**: Multiple transactions using different temporary nonce keys each pay 20,000 gas
+9. **Replay after expiry**: Transaction replay after `validBefore` fails regardless of nonce state
