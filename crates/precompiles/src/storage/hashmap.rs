@@ -11,6 +11,7 @@ pub struct HashMapStorageProvider {
     accounts: HashMap<Address, AccountInfo>,
     pub events: HashMap<Address, Vec<LogData>>,
     chain_id: u64,
+    block_number: u64,
     timestamp: U256,
     beneficiary: Address,
     block_number: u64,
@@ -30,6 +31,7 @@ impl HashMapStorageProvider {
             accounts: HashMap::new(),
             events: HashMap::new(),
             chain_id,
+            block_number: 0,
             #[expect(clippy::disallowed_methods)]
             timestamp: U256::from(
                 std::time::SystemTime::now()
@@ -53,6 +55,10 @@ impl HashMapStorageProvider {
 impl PrecompileStorageProvider for HashMapStorageProvider {
     fn chain_id(&self) -> u64 {
         self.chain_id
+    }
+
+    fn block_number(&self) -> u64 {
+        self.block_number
     }
 
     fn timestamp(&self) -> U256 {
@@ -168,6 +174,10 @@ impl HashMapStorageProvider {
 
     pub fn set_timestamp(&mut self, timestamp: U256) {
         self.timestamp = timestamp;
+    }
+
+    pub fn set_block_number(&mut self, block_number: u64) {
+        self.block_number = block_number;
     }
 
     pub fn set_beneficiary(&mut self, beneficiary: Address) {
