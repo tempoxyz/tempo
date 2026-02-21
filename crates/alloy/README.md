@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let receipt = token 
         .transfer( 
             address!("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb"), 
-            U256::from(100).pow(U256::from(10e6)), // 100 tokens (6 decimals) 
+            U256::from(100_000_000), // 100 tokens (6 decimals) 
         ) 
         .send() 
         .await?
