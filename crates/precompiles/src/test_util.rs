@@ -448,3 +448,54 @@ pub fn gen_word_from(values: &[&str]) -> U256 {
 
     U256::from_be_bytes(slot_bytes)
 }
+
+/// Captures `tracing::error!` log output produced by the given closure.
+///
+/// Returns a tuple of the closure's return value and the captured log output
+/// as a `String`. Useful for asserting that overflow/underflow error paths
+/// produce structured, contextual log messages.
+#[cfg(test)]
+pub fn capture_error_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct SharedTestWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Write for SharedTestWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let mut guard = self
+                .buffer
+                .lock()
+                .map_err(|_| std::io::Error::other("log buffer lock poisoned"))?;
+            guard.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let make_writer = {
+        let buffer = Arc::clone(&buffer);
+        move || SharedTestWriter {
+            buffer: Arc::clone(&buffer),
+        }
+    };
+
+    let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+        .with_max_level(tracing::Level::ERROR)
+        .without_time()
+        .with_target(false)
+        .with_ansi(false)
+        .with_writer(make_writer)
+        .finish();
+
+    let result = tracing::subscriber::with_default(subscriber, f);
+    let logs = String::from_utf8(buffer.lock().expect("log buffer lock poisoned").clone())
+        .expect("captured logs must be valid UTF-8");
+    (result, logs)
+}
