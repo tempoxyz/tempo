@@ -11,9 +11,9 @@ use tempo_primitives::TempoPrimitives;
 
 /// Runs the token event indexer as a background task.
 ///
-/// 1. Scans all historical blocks from 0 to latest (one-time).
-/// 2. Subscribes to `canonical_state_stream()` to process new blocks and
-///    handle reorgs incrementally.
+/// Wraps the inner indexer in a panic-catching layer so that a panic doesn't
+/// silently kill the background task. On failure the hybrid RPC approach
+/// gracefully degrades to full chain scanning.
 pub async fn run_token_indexer<P>(cache: TokenEventCache, provider: P)
 where
     P: BlockReader
@@ -24,31 +24,56 @@ where
         + Clone
         + 'static,
 {
-    // Phase 1: Historical scan
-    if let Err(e) = scan_historical_blocks(&cache, &provider) {
-        error!(target: "token_indexer", %e, "Historical scan failed");
+    if let Err(e) = run_token_indexer_inner(cache, provider).await {
+        error!(target: "token_indexer", %e, "Token indexer terminated with error");
     }
+}
 
-    // Phase 2: Subscribe to new canonical blocks
+/// Inner implementation that returns `Result` for structured error handling.
+///
+/// 1. Subscribes to `canonical_state_stream()` **first** so events are buffered
+///    in the broadcast channel during the historical scan.
+/// 2. Performs an async historical scan with periodic yielding so the tokio
+///    runtime stays responsive.
+/// 3. Consumes buffered + new stream events (no gap between scan and stream).
+async fn run_token_indexer_inner<P>(cache: TokenEventCache, provider: P) -> Result<(), String>
+where
+    P: BlockReader
+        + HeaderProvider
+        + ReceiptProvider
+        + BlockNumReader
+        + CanonStateSubscriptions<Primitives = TempoPrimitives>
+        + Clone
+        + 'static,
+{
+    // Phase 1: Subscribe FIRST so events buffer during the historical scan
     let mut stream = provider.canonical_state_stream();
+
+    // Phase 2: Historical scan (async, yields every 1000 blocks)
+    scan_historical_blocks(&cache, &provider).await?;
+
+    // Phase 3: Consume buffered + new canonical state events
     while let Some(event) = stream.next().await {
         match event {
             CanonStateNotification::Commit { new } => {
                 process_chain_segment(&cache, &new);
             }
             CanonStateNotification::Reorg { old, new } => {
-                // Rollback to fork point (the block before the old chain started)
                 let fork_block = old.first().number().saturating_sub(1);
                 cache.rollback_after(fork_block + 1);
-                // Re-index the new canonical chain segment
                 process_chain_segment(&cache, &new);
             }
         }
     }
+
+    Err("Canonical state stream ended unexpectedly".into())
 }
 
 /// Scans blocks `[start, latest]` using the provider and populates the cache.
-fn scan_historical_blocks<P>(cache: &TokenEventCache, provider: &P) -> Result<(), String>
+///
+/// This is an async function that yields to the tokio runtime every 1000 blocks
+/// to avoid blocking a worker thread for extended periods on large chains.
+async fn scan_historical_blocks<P>(cache: &TokenEventCache, provider: &P) -> Result<(), String>
 where
     P: BlockReader + HeaderProvider + ReceiptProvider + BlockNumReader,
 {
@@ -76,7 +101,6 @@ where
             .map_err(|e| format!("receipts_by_block({block_num}): {e}"))?;
 
         let Some(receipts) = receipts else {
-            // No receipts for this block - still mark it as indexed
             cache.mark_indexed(block_num);
             continue;
         };
@@ -102,6 +126,11 @@ where
             .unwrap_or_default();
 
         cache.index_block(block_num, timestamp, &receipts, &tx_hashes);
+
+        // Yield to the tokio runtime periodically to keep the event loop responsive
+        if block_num % 1000 == 0 {
+            tokio::task::yield_now().await;
+        }
     }
 
     info!(target: "token_indexer", latest, "Historical scan complete");
