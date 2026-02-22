@@ -17,10 +17,10 @@ pub struct TransactionsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct TransactionsFilter {
     /// Filter by sender address (from)
-    from: Option<Address>,
+    pub from: Option<Address>,
     /// Filter by recipient address (to)
-    to: Option<Address>,
+    pub to: Option<Address>,
     /// Transaction type
     #[serde(rename = "type")]
-    type_: Option<TempoTxType>,
+    pub type_: Option<TempoTxType>,
 }

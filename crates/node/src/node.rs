@@ -190,7 +190,7 @@ where
     PVB: Send + PayloadValidatorBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
     EthB::EthApi:
-        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
+        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader, SignedTx = TempoTxEnvelope>>,
 {
     type Handle = <RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB> as NodeAddOns<N>>::Handle;
 
@@ -227,7 +227,7 @@ where
     PVB: PayloadValidatorBuilder<N>,
     EVB: EngineValidatorBuilder<N>,
     EthB::EthApi:
-        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
+        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader, SignedTx = TempoTxEnvelope>>,
 {
     type EthApi = EthB::EthApi;
 
