@@ -96,72 +96,75 @@ where
         let mut next_cursor: Option<String> = None;
 
         // Macro-like closure to process a single block
-        let mut process_block =
-            |block_num: u64, start_tx: usize, end_tx_exclusive: usize, ascending: bool| -> Result<bool, jsonrpsee::types::ErrorObject<'static>> {
-                let block = provider
-                    .recovered_block(block_num.into(), TransactionVariant::WithHash)
-                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+        let mut process_block = |block_num: u64,
+                                 start_tx: usize,
+                                 end_tx_exclusive: usize,
+                                 ascending: bool|
+         -> Result<bool, jsonrpsee::types::ErrorObject<'static>> {
+            let block = provider
+                .recovered_block(block_num.into(), TransactionVariant::WithHash)
+                .map_err(|e| internal_rpc_err(e.to_string()))?;
 
-                let Some(block) = block else {
-                    return Ok(false);
-                };
+            let Some(block) = block else {
+                return Ok(false);
+            };
 
-                let block_hash = block.sealed_block().hash();
-                let base_fee = block.header().base_fee_per_gas().unwrap_or(0);
+            let block_hash = block.sealed_block().hash();
+            let base_fee = block.header().base_fee_per_gas().unwrap_or(0);
 
-                let txs_with_senders: Vec<_> =
-                    block.clone_transactions_recovered().enumerate().collect();
-                let tx_count = txs_with_senders.len();
-                let end = end_tx_exclusive.min(tx_count);
+            let txs_with_senders: Vec<_> =
+                block.clone_transactions_recovered().enumerate().collect();
+            let tx_count = txs_with_senders.len();
+            let end = end_tx_exclusive.min(tx_count);
 
-                let indices: Vec<usize> = if ascending {
-                    (start_tx..end).collect()
-                } else {
-                    (start_tx..end).rev().collect()
-                };
+            let indices: Vec<usize> = if ascending {
+                (start_tx..end).collect()
+            } else {
+                (start_tx..end).rev().collect()
+            };
 
-                for tx_idx in indices {
-                    let (_, recovered_tx) = &txs_with_senders[tx_idx];
+            for tx_idx in indices {
+                let (_, recovered_tx) = &txs_with_senders[tx_idx];
 
-                    // Apply filters
-                    if let Some(from_filter) = filters.from {
-                        if recovered_tx.signer() != from_filter {
-                            continue;
-                        }
+                // Apply filters
+                if let Some(from_filter) = filters.from {
+                    if recovered_tx.signer() != from_filter {
+                        continue;
                     }
-                    if let Some(to_filter) = filters.to {
-                        if recovered_tx.to() != Some(to_filter) {
-                            continue;
-                        }
+                }
+                if let Some(to_filter) = filters.to {
+                    if recovered_tx.to() != Some(to_filter) {
+                        continue;
                     }
-                    if let Some(type_filter) = filters.type_ {
-                        let filter_type: u8 = type_filter.into();
-                        if recovered_tx.ty() != filter_type {
-                            continue;
-                        }
+                }
+                if let Some(type_filter) = filters.type_ {
+                    let filter_type: u8 = type_filter.into();
+                    if recovered_tx.ty() != filter_type {
+                        continue;
                     }
-
-                    if results.len() >= limit {
-                        next_cursor = Some(format!("{}:{}", block_num, tx_idx));
-                        return Ok(true);
-                    }
-
-                    let rpc_tx = Transaction {
-                        inner: Recovered::new_unchecked(
-                            recovered_tx.inner().clone(),
-                            recovered_tx.signer(),
-                        ),
-                        block_hash: Some(block_hash),
-                        block_number: Some(block_num),
-                        transaction_index: Some(tx_idx as u64),
-                        effective_gas_price: Some(base_fee as u128),
-                    };
-
-                    results.push(rpc_tx);
                 }
 
-                Ok(false)
-            };
+                if results.len() >= limit {
+                    next_cursor = Some(format!("{}:{}", block_num, tx_idx));
+                    return Ok(true);
+                }
+
+                let rpc_tx = Transaction {
+                    inner: Recovered::new_unchecked(
+                        recovered_tx.inner().clone(),
+                        recovered_tx.signer(),
+                    ),
+                    block_hash: Some(block_hash),
+                    block_number: Some(block_num),
+                    transaction_index: Some(tx_idx as u64),
+                    effective_gas_price: Some(base_fee as u128),
+                };
+
+                results.push(rpc_tx);
+            }
+
+            Ok(false)
+        };
 
         if desc {
             let start_block = cursor_block.unwrap_or(latest);

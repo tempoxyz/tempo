@@ -3,6 +3,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
 };
+use tempo_alloy::rpc::pagination::{FilterRange, PaginationParams, Sort, SortOrder};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::IRolesAuth;
 use tempo_node::rpc::{
@@ -13,7 +14,6 @@ use tempo_node::rpc::{
         tokens_by_address::{TokensByAddressParams, TokensByAddressResponse},
     },
 };
-use tempo_alloy::rpc::pagination::{FilterRange, PaginationParams, Sort, SortOrder};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     tip20::{ISSUER_ROLE, PAUSE_ROLE, roles::DEFAULT_ADMIN_ROLE},
@@ -35,9 +35,7 @@ async fn test_get_tokens_basic() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Create 2 tokens
     let _token1 = setup_test_token(provider.clone(), caller).await?;
@@ -80,9 +78,7 @@ async fn test_get_tokens_with_filters() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Create a token with known name
     let _token = setup_test_token(provider.clone(), caller).await?;
@@ -143,9 +139,7 @@ async fn test_get_tokens_pagination() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Create 3 tokens
     let _t1 = setup_test_token(provider.clone(), caller).await?;
@@ -218,9 +212,7 @@ async fn test_get_role_history_basic() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // setup_test_token creates a token AND grants ISSUER_ROLE to caller
     let token = setup_test_token(provider.clone(), caller).await?;
@@ -266,9 +258,7 @@ async fn test_get_role_history_with_filters() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let token = setup_test_token(provider.clone(), caller).await?;
 
@@ -378,9 +368,7 @@ async fn test_get_tokens_by_address_basic() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Create a token - caller gets DEFAULT_ADMIN_ROLE and ISSUER_ROLE
     let token = setup_test_token(provider.clone(), caller).await?;
@@ -444,9 +432,7 @@ async fn test_get_tokens_by_address_no_association() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Create a token so there's something in the chain
     let _token = setup_test_token(provider.clone(), caller).await?;
@@ -488,9 +474,7 @@ async fn test_get_transactions_basic() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Create a token (generates transactions)
     let token = setup_test_token(provider.clone(), caller).await?;
@@ -540,9 +524,7 @@ async fn test_get_transactions_with_from_filter() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Create token and mint
     let token = setup_test_token(provider.clone(), caller).await?;
@@ -591,9 +573,7 @@ async fn test_get_transactions_pagination() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Create a token and mint a few times to generate transactions
     let token = setup_test_token(provider.clone(), caller).await?;
@@ -691,9 +671,7 @@ async fn test_get_tokens_filter_currency() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let _token = setup_test_token(provider.clone(), caller).await?;
 
@@ -752,9 +730,7 @@ async fn test_get_tokens_filter_name() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let _token = setup_test_token(provider.clone(), caller).await?;
 
@@ -907,9 +883,7 @@ async fn test_get_tokens_filter_quote_token() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // setup_test_token sets quote_token to PATH_USD_ADDRESS
     let _token = setup_test_token(provider.clone(), caller).await?;
@@ -969,9 +943,7 @@ async fn test_get_tokens_filter_supply_ranges() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let token = setup_test_token(provider.clone(), caller).await?;
 
@@ -1081,9 +1053,7 @@ async fn test_get_tokens_filter_created_at() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let _token = setup_test_token(provider.clone(), caller).await?;
 
@@ -1150,9 +1120,7 @@ async fn test_get_role_history_filter_role() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let token = setup_test_token(provider.clone(), caller).await?;
 
@@ -1237,9 +1205,7 @@ async fn test_get_role_history_filter_sender() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let token = setup_test_token(provider.clone(), caller).await?;
 
@@ -1300,9 +1266,7 @@ async fn test_get_role_history_pagination() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let token = setup_test_token(provider.clone(), caller).await?;
 
@@ -1391,9 +1355,7 @@ async fn test_get_tokens_by_address_only_balance() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let token = setup_test_token(provider.clone(), caller).await?;
 
@@ -1448,9 +1410,7 @@ async fn test_get_tokens_by_address_only_roles() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let token = setup_test_token(provider.clone(), caller).await?;
 
@@ -1484,17 +1444,10 @@ async fn test_get_tokens_by_address_only_roles() -> eyre::Result<()> {
         .tokens
         .iter()
         .find(|at| at.token.address == *token.address());
-    assert!(
-        our_token.is_some(),
-        "target with role should see the token"
-    );
+    assert!(our_token.is_some(), "target with role should see the token");
 
     let at = our_token.unwrap();
-    assert_eq!(
-        at.balance,
-        U256::ZERO,
-        "target should have zero balance"
-    );
+    assert_eq!(at.balance, U256::ZERO, "target should have zero balance");
     assert!(
         at.roles.contains(&*ISSUER_ROLE),
         "target should have ISSUER_ROLE"
@@ -1512,9 +1465,7 @@ async fn test_get_tokens_by_address_pagination() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Create 3 tokens and mint to the same holder
     let holder = Address::random();
@@ -1593,9 +1544,7 @@ async fn test_get_transactions_filter_to() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let token = setup_test_token(provider.clone(), caller).await?;
 
@@ -1666,9 +1615,7 @@ async fn test_get_transactions_filter_type() -> eyre::Result<()> {
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url);
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let _token = setup_test_token(provider.clone(), caller).await?;
 

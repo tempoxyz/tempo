@@ -11,7 +11,9 @@ use alloy_primitives::{Address, B256};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_core::rpc::result::internal_rpc_err;
 use reth_primitives_traits::{AlloyBlockHeader, Block, BlockBody};
-use reth_provider::{BlockNumReader, BlockReader, HeaderProvider, ReceiptProvider, StateProviderFactory};
+use reth_provider::{
+    BlockNumReader, BlockReader, HeaderProvider, ReceiptProvider, StateProviderFactory,
+};
 use reth_rpc_eth_api::RpcNodeCore;
 use tempo_alloy::rpc::pagination::PaginationParams;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -86,7 +88,9 @@ fn resolve_limit(limit: Option<usize>) -> usize {
 fn parse_cursor(cursor: &str) -> Result<(u64, usize), jsonrpsee::types::ErrorObject<'static>> {
     let parts: Vec<&str> = cursor.split(':').collect();
     if parts.len() != 2 {
-        return Err(internal_rpc_err("invalid cursor format, expected 'block_number:log_index'"));
+        return Err(internal_rpc_err(
+            "invalid cursor format, expected 'block_number:log_index'",
+        ));
     }
     let block_number = parts[0]
         .parse::<u64>()
@@ -177,10 +181,7 @@ where
     EthApi::Provider:
         BlockReader + HeaderProvider + StateProviderFactory + ReceiptProvider + BlockNumReader,
 {
-    async fn tokens(
-        &self,
-        params: PaginationParams<TokensFilters>,
-    ) -> RpcResult<TokensResponse> {
+    async fn tokens(&self, params: PaginationParams<TokensFilters>) -> RpcResult<TokensResponse> {
         let provider = self.provider();
         let limit = resolve_limit(params.limit);
         let filters = params.filters.unwrap_or_default();
@@ -272,8 +273,7 @@ where
 
                     if matches_token_filters(&token, &filters) {
                         if results.len() >= limit {
-                            next_cursor =
-                                Some(format!("{}:{}", block_num, global_log_idx));
+                            next_cursor = Some(format!("{}:{}", block_num, global_log_idx));
                             break 'outer;
                         }
                         results.push(token);
@@ -375,9 +375,7 @@ where
                     // Determine transaction hash
                     let tx_hash = block
                         .as_ref()
-                        .and_then(|b| {
-                            b.body().transactions().get(tx_idx).map(|tx| *tx.tx_hash())
-                        })
+                        .and_then(|b| b.body().transactions().get(tx_idx).map(|tx| *tx.tx_hash()))
                         .unwrap_or_default();
 
                     let role_change = RoleChange {
@@ -522,8 +520,15 @@ where
                         })
                         .map_err(|e| internal_rpc_err(e.to_string()))?;
 
-                    let (balance, account_roles, paused, quote_token, supply_cap, total_supply, transfer_policy_id) =
-                        read_result;
+                    let (
+                        balance,
+                        account_roles,
+                        paused,
+                        quote_token,
+                        supply_cap,
+                        total_supply,
+                        transfer_policy_id,
+                    ) = read_result;
 
                     // Only include if account has balance or roles
                     if balance.is_zero() && account_roles.is_empty() {
