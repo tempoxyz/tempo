@@ -4,6 +4,7 @@ use crate::{
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer,
         TempoToken, TempoTokenApiServer,
+        token::{cache::TokenEventCache, indexer::run_token_indexer},
     },
 };
 use alloy_primitives::B256;
@@ -200,6 +201,14 @@ where
         let eth_config =
             EthConfigHandler::new(ctx.node.provider().clone(), ctx.node.evm_config().clone());
 
+        // Create token event cache and spawn background indexer
+        let cache = TokenEventCache::new();
+        let indexer_cache = cache.clone();
+        let indexer_provider = ctx.node.provider().clone();
+        tokio::spawn(async move {
+            run_token_indexer(indexer_cache, indexer_provider).await;
+        });
+
         self.inner
             .launch_add_ons_with(ctx, move |container| {
                 let reth_node_builder::rpc::RpcModuleContainer {
@@ -207,7 +216,7 @@ where
                 } = container;
 
                 let eth_api = registry.eth_api().clone();
-                let token = TempoToken::new(eth_api.clone());
+                let token = TempoToken::new(eth_api.clone(), cache);
                 let eth_ext = TempoEthExt::new(eth_api);
                 let admin = TempoAdminApi::new(self.validator_key);
 

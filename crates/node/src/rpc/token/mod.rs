@@ -28,6 +28,8 @@ use tempo_precompiles::{
     tip20_factory::ITIP20Factory,
 };
 
+pub mod cache;
+pub mod indexer;
 pub mod role_history;
 pub mod tokens;
 pub mod tokens_by_address;
@@ -64,14 +66,15 @@ pub trait TempoTokenApi {
 }
 
 /// The JSON-RPC handlers for the `token_` namespace.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TempoToken<EthApi> {
     eth_api: EthApi,
+    cache: cache::TokenEventCache,
 }
 
 impl<EthApi> TempoToken<EthApi> {
-    pub fn new(eth_api: EthApi) -> Self {
-        Self { eth_api }
+    pub fn new(eth_api: EthApi, cache: cache::TokenEventCache) -> Self {
+        Self { eth_api, cache }
     }
 }
 
@@ -190,97 +193,109 @@ where
             .best_block_number()
             .map_err(|e| internal_rpc_err(e.to_string()))?;
 
-        let (start_block, start_log_idx) = match params.cursor {
+        let (cursor_block, cursor_log_idx) = match params.cursor {
             Some(ref c) => parse_cursor(c)?,
             None => (0, 0),
         };
 
+        // Snapshot cached tokens and determine the scan gap
+        let (cached_tokens, last_cached) = self.cache.snapshot_tokens();
+        let scan_start = last_cached.map(|b| b + 1).unwrap_or(0);
+
+        // Collect all token creation events: cached + scanned gap
+        let mut all_events: Vec<cache::CachedToken> = cached_tokens;
+
+        // Scan any remaining blocks the cache hasn't indexed yet
+        if scan_start <= latest {
+            for block_num in scan_start..=latest {
+                let receipts = provider
+                    .receipts_by_block(block_num.into())
+                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+
+                let Some(receipts) = receipts else {
+                    continue;
+                };
+
+                let header = provider
+                    .header_by_number(block_num)
+                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+                let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
+
+                let mut global_log_idx = 0usize;
+                for receipt in &receipts {
+                    for log in receipt.logs() {
+                        if log.address == TIP20_FACTORY_ADDRESS
+                            && let Ok(event) = ITIP20Factory::TokenCreated::decode_log(log)
+                        {
+                            all_events.push(cache::CachedToken {
+                                address: event.token,
+                                name: event.name.clone(),
+                                symbol: event.symbol.clone(),
+                                currency: event.currency.clone(),
+                                creator: event.admin,
+                                created_at: timestamp,
+                                token_id: token_id_from_address(event.token),
+                                block_number: block_num,
+                                log_index: global_log_idx,
+                            });
+                        }
+                        global_log_idx += 1;
+                    }
+                }
+            }
+        }
+
+        // Apply cursor: skip events before cursor position
         let mut results: Vec<Token> = Vec::new();
         let mut next_cursor: Option<String> = None;
 
-        'outer: for block_num in start_block..=latest {
-            let receipts = provider
-                .receipts_by_block(block_num.into())
+        for cached in &all_events {
+            // Skip events before cursor position
+            if (cached.block_number, cached.log_index) < (cursor_block, cursor_log_idx) {
+                continue;
+            }
+
+            // Read dynamic state from provider
+            let mut state = provider
+                .latest()
+                .map_err(|e| internal_rpc_err(e.to_string()))?;
+            let token_data = state
+                .with_read_only_storage_ctx(TempoHardfork::default(), || {
+                    let t = TIP20Token::from_address(cached.address)?;
+                    Ok::<_, tempo_precompiles::error::TempoPrecompileError>((
+                        t.paused()?,
+                        t.quote_token()?,
+                        t.supply_cap()?,
+                        t.total_supply()?,
+                        t.transfer_policy_id()?,
+                    ))
+                })
                 .map_err(|e| internal_rpc_err(e.to_string()))?;
 
-            let Some(receipts) = receipts else {
-                continue;
+            let (paused, quote_token, supply_cap, total_supply, transfer_policy_id) = token_data;
+
+            let token = Token {
+                address: cached.address,
+                created_at: cached.created_at,
+                creator: cached.creator,
+                currency: cached.currency.clone(),
+                decimals: 6,
+                name: cached.name.clone(),
+                paused,
+                quote_token,
+                supply_cap: supply_cap.try_into().unwrap_or(u128::MAX),
+                symbol: cached.symbol.clone(),
+                token_id: cached.token_id,
+                total_supply: total_supply.try_into().unwrap_or(u128::MAX),
+                transfer_policy_id,
             };
 
-            let header = provider
-                .header_by_number(block_num)
-                .map_err(|e| internal_rpc_err(e.to_string()))?;
-            let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
-
-            let mut global_log_idx = 0usize;
-            for receipt in &receipts {
-                for log in receipt.logs() {
-                    // Skip logs before cursor position
-                    if block_num == start_block && global_log_idx < start_log_idx {
-                        global_log_idx += 1;
-                        continue;
-                    }
-
-                    // Only look at logs from the factory
-                    if log.address != TIP20_FACTORY_ADDRESS {
-                        global_log_idx += 1;
-                        continue;
-                    }
-
-                    // Try to decode as TokenCreated
-                    let Ok(event) = ITIP20Factory::TokenCreated::decode_log(log) else {
-                        global_log_idx += 1;
-                        continue;
-                    };
-
-                    let token_address = event.token;
-
-                    // Read current state
-                    let mut state = provider
-                        .latest()
-                        .map_err(|e| internal_rpc_err(e.to_string()))?;
-                    let token_data = state
-                        .with_read_only_storage_ctx(TempoHardfork::default(), || {
-                            let t = TIP20Token::from_address(token_address)?;
-                            Ok::<_, tempo_precompiles::error::TempoPrecompileError>((
-                                t.paused()?,
-                                t.quote_token()?,
-                                t.supply_cap()?,
-                                t.total_supply()?,
-                                t.transfer_policy_id()?,
-                            ))
-                        })
-                        .map_err(|e| internal_rpc_err(e.to_string()))?;
-
-                    let (paused, quote_token, supply_cap, total_supply, transfer_policy_id) =
-                        token_data;
-
-                    let token = Token {
-                        address: token_address,
-                        created_at: timestamp,
-                        creator: event.admin,
-                        currency: event.currency.clone(),
-                        decimals: 6,
-                        name: event.name.clone(),
-                        paused,
-                        quote_token,
-                        supply_cap: supply_cap.try_into().unwrap_or(u128::MAX),
-                        symbol: event.symbol.clone(),
-                        token_id: token_id_from_address(token_address),
-                        total_supply: total_supply.try_into().unwrap_or(u128::MAX),
-                        transfer_policy_id,
-                    };
-
-                    if matches_token_filters(&token, &filters) {
-                        if results.len() >= limit {
-                            next_cursor = Some(format!("{block_num}:{global_log_idx}"));
-                            break 'outer;
-                        }
-                        results.push(token);
-                    }
-
-                    global_log_idx += 1;
+            if matches_token_filters(&token, &filters) {
+                if results.len() >= limit {
+                    next_cursor = Some(format!("{}:{}", cached.block_number, cached.log_index));
+                    break;
                 }
+                results.push(token);
             }
         }
 
@@ -302,130 +317,144 @@ where
             .best_block_number()
             .map_err(|e| internal_rpc_err(e.to_string()))?;
 
-        let (start_block, start_log_idx) = match params.cursor {
+        let (cursor_block, cursor_log_idx) = match params.cursor {
             Some(ref c) => parse_cursor(c)?,
             None => (0, 0),
         };
 
+        // Snapshot cached role changes and determine the scan gap
+        let (cached_changes, last_cached) = self.cache.snapshot_role_changes();
+        let scan_start = last_cached.map(|b| b + 1).unwrap_or(0);
+
+        // Collect all role change events: cached + scanned gap
+        let mut all_events: Vec<cache::CachedRoleChange> = cached_changes;
+
+        // Scan any remaining blocks the cache hasn't indexed yet
+        if scan_start <= latest {
+            for block_num in scan_start..=latest {
+                let receipts = provider
+                    .receipts_by_block(block_num.into())
+                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+
+                let Some(receipts) = receipts else {
+                    continue;
+                };
+
+                let header = provider
+                    .header_by_number(block_num)
+                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+                let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
+
+                let block = provider
+                    .block_by_number(block_num)
+                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+
+                let mut global_log_idx = 0usize;
+
+                for (tx_idx, receipt) in receipts.iter().enumerate() {
+                    for log in receipt.logs() {
+                        if is_tip20_prefix(log.address)
+                            && let Ok(event) = IRolesAuth::RoleMembershipUpdated::decode_log(log)
+                        {
+                            let tx_hash = block
+                                .as_ref()
+                                .and_then(|b| {
+                                    b.body().transactions().get(tx_idx).map(|tx| *tx.tx_hash())
+                                })
+                                .unwrap_or_default();
+
+                            all_events.push(cache::CachedRoleChange {
+                                role: event.role,
+                                account: event.account,
+                                sender: event.sender,
+                                granted: event.hasRole,
+                                token: log.address,
+                                block_number: block_num,
+                                timestamp,
+                                transaction_hash: tx_hash,
+                                log_index: global_log_idx,
+                            });
+                        }
+                        global_log_idx += 1;
+                    }
+                }
+            }
+        }
+
+        // Apply cursor and filters, then paginate
         let mut results: Vec<RoleChange> = Vec::new();
         let mut next_cursor: Option<String> = None;
 
-        'outer: for block_num in start_block..=latest {
-            // Apply block_number range filter early
+        for cached in &all_events {
+            // Skip events before cursor position
+            if (cached.block_number, cached.log_index) < (cursor_block, cursor_log_idx) {
+                continue;
+            }
+
+            // Apply block_number range filter
             if let Some(ref block_range) = filters.block_number
-                && !block_range.in_range(block_num)
+                && !block_range.in_range(cached.block_number)
             {
                 continue;
             }
 
-            let receipts = provider
-                .receipts_by_block(block_num.into())
-                .map_err(|e| internal_rpc_err(e.to_string()))?;
-
-            let Some(receipts) = receipts else {
-                continue;
-            };
-
-            let header = provider
-                .header_by_number(block_num)
-                .map_err(|e| internal_rpc_err(e.to_string()))?;
-            let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
-
-            // Apply timestamp range filter early
+            // Apply timestamp range filter
             if let Some(ref ts_range) = filters.timestamp
-                && !ts_range.in_range(timestamp)
+                && !ts_range.in_range(cached.timestamp)
             {
                 continue;
             }
 
-            // Get the block to access transaction hashes
-            let block = provider
-                .block_by_number(block_num)
-                .map_err(|e| internal_rpc_err(e.to_string()))?;
-
-            let mut global_log_idx = 0usize;
-            let mut tx_idx = 0usize;
-
-            for receipt in &receipts {
-                for log in receipt.logs() {
-                    if block_num == start_block && global_log_idx < start_log_idx {
-                        global_log_idx += 1;
-                        continue;
-                    }
-
-                    // Filter by token address if specified
-                    if let Some(token_filter) = filters.token {
-                        if log.address != token_filter {
-                            global_log_idx += 1;
-                            continue;
-                        }
-                    } else {
-                        // Only check logs from TIP20 addresses
-                        if !is_tip20_prefix(log.address) {
-                            global_log_idx += 1;
-                            continue;
-                        }
-                    }
-
-                    let Ok(event) = IRolesAuth::RoleMembershipUpdated::decode_log(log) else {
-                        global_log_idx += 1;
-                        continue;
-                    };
-
-                    // Determine transaction hash
-                    let tx_hash = block
-                        .as_ref()
-                        .and_then(|b| b.body().transactions().get(tx_idx).map(|tx| *tx.tx_hash()))
-                        .unwrap_or_default();
-
-                    let role_change = RoleChange {
-                        account: event.account,
-                        block_number: block_num,
-                        granted: event.hasRole,
-                        role: event.role,
-                        sender: event.sender,
-                        timestamp,
-                        token: log.address,
-                        transaction_hash: tx_hash,
-                    };
-
-                    // Apply remaining filters
-                    if let Some(account) = filters.account
-                        && role_change.account != account
-                    {
-                        global_log_idx += 1;
-                        continue;
-                    }
-                    if let Some(granted) = filters.granted
-                        && role_change.granted != granted
-                    {
-                        global_log_idx += 1;
-                        continue;
-                    }
-                    if let Some(role) = filters.role
-                        && role_change.role != role
-                    {
-                        global_log_idx += 1;
-                        continue;
-                    }
-                    if let Some(sender) = filters.sender
-                        && role_change.sender != sender
-                    {
-                        global_log_idx += 1;
-                        continue;
-                    }
-
-                    if results.len() >= limit {
-                        next_cursor = Some(format!("{block_num}:{global_log_idx}"));
-                        break 'outer;
-                    }
-                    results.push(role_change);
-
-                    global_log_idx += 1;
-                }
-
-                tx_idx += 1;
+            // Apply token filter
+            if let Some(token_filter) = filters.token
+                && cached.token != token_filter
+            {
+                continue;
             }
+
+            // Apply account filter
+            if let Some(account) = filters.account
+                && cached.account != account
+            {
+                continue;
+            }
+
+            // Apply granted filter
+            if let Some(granted) = filters.granted
+                && cached.granted != granted
+            {
+                continue;
+            }
+
+            // Apply role filter
+            if let Some(role) = filters.role
+                && cached.role != role
+            {
+                continue;
+            }
+
+            // Apply sender filter
+            if let Some(sender) = filters.sender
+                && cached.sender != sender
+            {
+                continue;
+            }
+
+            if results.len() >= limit {
+                next_cursor = Some(format!("{}:{}", cached.block_number, cached.log_index));
+                break;
+            }
+
+            results.push(RoleChange {
+                account: cached.account,
+                block_number: cached.block_number,
+                granted: cached.granted,
+                role: cached.role,
+                sender: cached.sender,
+                timestamp: cached.timestamp,
+                token: cached.token,
+                transaction_hash: cached.transaction_hash,
+            });
         }
 
         Ok(RoleHistoryResponse {
@@ -447,130 +476,146 @@ where
             .best_block_number()
             .map_err(|e| internal_rpc_err(e.to_string()))?;
 
-        let (start_block, start_log_idx) = match params.params.cursor {
+        let (cursor_block, cursor_log_idx) = match params.params.cursor {
             Some(ref c) => parse_cursor(c)?,
             None => (0, 0),
         };
 
         let roles_to_check = known_roles();
 
+        // Snapshot cached tokens and determine the scan gap
+        let (cached_tokens, last_cached) = self.cache.snapshot_tokens();
+        let scan_start = last_cached.map(|b| b + 1).unwrap_or(0);
+
+        // Collect all token creation events: cached + scanned gap
+        let mut all_events: Vec<cache::CachedToken> = cached_tokens;
+
+        // Scan any remaining blocks the cache hasn't indexed yet
+        if scan_start <= latest {
+            for block_num in scan_start..=latest {
+                let receipts = provider
+                    .receipts_by_block(block_num.into())
+                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+
+                let Some(receipts) = receipts else {
+                    continue;
+                };
+
+                let header = provider
+                    .header_by_number(block_num)
+                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+                let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
+
+                let mut global_log_idx = 0usize;
+                for receipt in &receipts {
+                    for log in receipt.logs() {
+                        if log.address == TIP20_FACTORY_ADDRESS
+                            && let Ok(event) = ITIP20Factory::TokenCreated::decode_log(log)
+                        {
+                            all_events.push(cache::CachedToken {
+                                address: event.token,
+                                name: event.name.clone(),
+                                symbol: event.symbol.clone(),
+                                currency: event.currency.clone(),
+                                creator: event.admin,
+                                created_at: timestamp,
+                                token_id: token_id_from_address(event.token),
+                                block_number: block_num,
+                                log_index: global_log_idx,
+                            });
+                        }
+                        global_log_idx += 1;
+                    }
+                }
+            }
+        }
+
+        // Apply cursor, read state, filter, and paginate
         let mut results: Vec<AccountToken> = Vec::new();
         let mut next_cursor: Option<String> = None;
 
-        'outer: for block_num in start_block..=latest {
-            let receipts = provider
-                .receipts_by_block(block_num.into())
-                .map_err(|e| internal_rpc_err(e.to_string()))?;
-
-            let Some(receipts) = receipts else {
+        for cached in &all_events {
+            // Skip events before cursor position
+            if (cached.block_number, cached.log_index) < (cursor_block, cursor_log_idx) {
                 continue;
-            };
+            }
 
-            let header = provider
-                .header_by_number(block_num)
+            let token_address = cached.address;
+
+            // Read state: balance + roles + dynamic token data
+            let mut state = provider
+                .latest()
                 .map_err(|e| internal_rpc_err(e.to_string()))?;
-            let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
 
-            let mut global_log_idx = 0usize;
-            for receipt in &receipts {
-                for log in receipt.logs() {
-                    if block_num == start_block && global_log_idx < start_log_idx {
-                        global_log_idx += 1;
-                        continue;
+            let read_result = state
+                .with_read_only_storage_ctx(TempoHardfork::default(), || {
+                    let t = TIP20Token::from_address(token_address)?;
+                    let balance = t.balances[account].read()?;
+
+                    let mut account_roles = Vec::new();
+                    for &role in &roles_to_check {
+                        if t.roles[account][role].read()? {
+                            account_roles.push(role);
+                        }
                     }
 
-                    if log.address != TIP20_FACTORY_ADDRESS {
-                        global_log_idx += 1;
-                        continue;
-                    }
-
-                    let Ok(event) = ITIP20Factory::TokenCreated::decode_log(log) else {
-                        global_log_idx += 1;
-                        continue;
-                    };
-
-                    let token_address = event.token;
-
-                    // Read state: balance + roles + token data
-                    let mut state = provider
-                        .latest()
-                        .map_err(|e| internal_rpc_err(e.to_string()))?;
-
-                    let read_result = state
-                        .with_read_only_storage_ctx(TempoHardfork::default(), || {
-                            let t = TIP20Token::from_address(token_address)?;
-                            let balance = t.balances[account].read()?;
-
-                            let mut account_roles = Vec::new();
-                            for &role in &roles_to_check {
-                                if t.roles[account][role].read()? {
-                                    account_roles.push(role);
-                                }
-                            }
-
-                            Ok::<_, tempo_precompiles::error::TempoPrecompileError>((
-                                balance,
-                                account_roles,
-                                t.paused()?,
-                                t.quote_token()?,
-                                t.supply_cap()?,
-                                t.total_supply()?,
-                                t.transfer_policy_id()?,
-                            ))
-                        })
-                        .map_err(|e| internal_rpc_err(e.to_string()))?;
-
-                    let (
+                    Ok::<_, tempo_precompiles::error::TempoPrecompileError>((
                         balance,
                         account_roles,
-                        paused,
-                        quote_token,
-                        supply_cap,
-                        total_supply,
-                        transfer_policy_id,
-                    ) = read_result;
+                        t.paused()?,
+                        t.quote_token()?,
+                        t.supply_cap()?,
+                        t.total_supply()?,
+                        t.transfer_policy_id()?,
+                    ))
+                })
+                .map_err(|e| internal_rpc_err(e.to_string()))?;
 
-                    // Only include if account has balance or roles
-                    if balance.is_zero() && account_roles.is_empty() {
-                        global_log_idx += 1;
-                        continue;
-                    }
+            let (
+                balance,
+                account_roles,
+                paused,
+                quote_token,
+                supply_cap,
+                total_supply,
+                transfer_policy_id,
+            ) = read_result;
 
-                    let token = Token {
-                        address: token_address,
-                        created_at: timestamp,
-                        creator: event.admin,
-                        currency: event.currency.clone(),
-                        decimals: 6,
-                        name: event.name.clone(),
-                        paused,
-                        quote_token,
-                        supply_cap: supply_cap.try_into().unwrap_or(u128::MAX),
-                        symbol: event.symbol.clone(),
-                        token_id: token_id_from_address(token_address),
-                        total_supply: total_supply.try_into().unwrap_or(u128::MAX),
-                        transfer_policy_id,
-                    };
-
-                    if !matches_token_filters(&token, &filters) {
-                        global_log_idx += 1;
-                        continue;
-                    }
-
-                    if results.len() >= limit {
-                        next_cursor = Some(format!("{block_num}:{global_log_idx}"));
-                        break 'outer;
-                    }
-
-                    results.push(AccountToken {
-                        balance,
-                        roles: account_roles,
-                        token,
-                    });
-
-                    global_log_idx += 1;
-                }
+            // Only include if account has balance or roles
+            if balance.is_zero() && account_roles.is_empty() {
+                continue;
             }
+
+            let token = Token {
+                address: token_address,
+                created_at: cached.created_at,
+                creator: cached.creator,
+                currency: cached.currency.clone(),
+                decimals: 6,
+                name: cached.name.clone(),
+                paused,
+                quote_token,
+                supply_cap: supply_cap.try_into().unwrap_or(u128::MAX),
+                symbol: cached.symbol.clone(),
+                token_id: cached.token_id,
+                total_supply: total_supply.try_into().unwrap_or(u128::MAX),
+                transfer_policy_id,
+            };
+
+            if !matches_token_filters(&token, &filters) {
+                continue;
+            }
+
+            if results.len() >= limit {
+                next_cursor = Some(format!("{}:{}", cached.block_number, cached.log_index));
+                break;
+            }
+
+            results.push(AccountToken {
+                balance,
+                roles: account_roles,
+                token,
+            });
         }
 
         Ok(TokensByAddressResponse {
