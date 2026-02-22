@@ -22,10 +22,6 @@ use tempo_primitives::TempoTxType;
 
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, setup_test_token};
 
-// ---------------------------------------------------------------------------
-// token_getTokens
-// ---------------------------------------------------------------------------
-
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_tokens_basic() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -199,10 +195,6 @@ async fn test_get_tokens_pagination() -> eyre::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// token_getRoleHistory
-// ---------------------------------------------------------------------------
-
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_role_history_basic() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -355,10 +347,6 @@ async fn test_get_role_history_with_filters() -> eyre::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// token_getTokensByAddress
-// ---------------------------------------------------------------------------
-
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_tokens_by_address_basic() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -460,10 +448,6 @@ async fn test_get_tokens_by_address_no_association() -> eyre::Result<()> {
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// eth_getTransactions
-// ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_transactions_basic() -> eyre::Result<()> {
@@ -653,14 +637,6 @@ async fn test_get_transactions_pagination() -> eyre::Result<()> {
 
     Ok(())
 }
-
-// ===========================================================================
-// Additional coverage tests
-// ===========================================================================
-
-// ---------------------------------------------------------------------------
-// token_getTokens - remaining filters
-// ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_tokens_filter_currency() -> eyre::Result<()> {
@@ -1107,10 +1083,6 @@ async fn test_get_tokens_filter_created_at() -> eyre::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// token_getRoleHistory - remaining filters
-// ---------------------------------------------------------------------------
-
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_role_history_filter_role() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -1342,10 +1314,6 @@ async fn test_get_role_history_pagination() -> eyre::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// token_getTokensByAddress - remaining scenarios
-// ---------------------------------------------------------------------------
-
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_tokens_by_address_only_balance() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -1530,10 +1498,6 @@ async fn test_get_tokens_by_address_pagination() -> eyre::Result<()> {
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// eth_getTransactions - remaining filters
-// ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_transactions_filter_to() -> eyre::Result<()> {

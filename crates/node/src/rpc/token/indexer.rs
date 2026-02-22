@@ -11,9 +11,8 @@ use tempo_primitives::TempoPrimitives;
 
 /// Runs the token event indexer as a background task.
 ///
-/// Wraps the inner indexer in a panic-catching layer so that a panic doesn't
-/// silently kill the background task. On failure the hybrid RPC approach
-/// gracefully degrades to full chain scanning.
+/// On failure the hybrid RPC approach gracefully degrades to full chain
+/// scanning, so a dead indexer does not break correctness.
 pub async fn run_token_indexer<P>(cache: TokenEventCache, provider: P)
 where
     P: BlockReader
@@ -29,13 +28,8 @@ where
     }
 }
 
-/// Inner implementation that returns `Result` for structured error handling.
-///
-/// 1. Subscribes to `canonical_state_stream()` **first** so events are buffered
-///    in the broadcast channel during the historical scan.
-/// 2. Performs an async historical scan with periodic yielding so the tokio
-///    runtime stays responsive.
-/// 3. Consumes buffered + new stream events (no gap between scan and stream).
+/// Subscribes to the canonical state stream **before** scanning history so that
+/// blocks committed during the scan are buffered and not lost.
 async fn run_token_indexer_inner<P>(cache: TokenEventCache, provider: P) -> Result<(), String>
 where
     P: BlockReader
@@ -46,13 +40,10 @@ where
         + Clone
         + 'static,
 {
-    // Phase 1: Subscribe FIRST so events buffer during the historical scan
     let mut stream = provider.canonical_state_stream();
 
-    // Phase 2: Historical scan (async, yields every 1000 blocks)
     scan_historical_blocks(&cache, &provider).await?;
 
-    // Phase 3: Consume buffered + new canonical state events
     while let Some(event) = stream.next().await {
         match event {
             CanonStateNotification::Commit { new } => {
@@ -71,8 +62,8 @@ where
 
 /// Scans blocks `[start, latest]` using the provider and populates the cache.
 ///
-/// This is an async function that yields to the tokio runtime every 1000 blocks
-/// to avoid blocking a worker thread for extended periods on large chains.
+/// Yields to the tokio runtime every 1000 blocks to avoid blocking a worker
+/// thread for extended periods on large chains.
 async fn scan_historical_blocks<P>(cache: &TokenEventCache, provider: &P) -> Result<(), String>
 where
     P: BlockReader + HeaderProvider + ReceiptProvider + BlockNumReader,
@@ -127,7 +118,6 @@ where
 
         cache.index_block(block_num, timestamp, &receipts, &tx_hashes);
 
-        // Yield to the tokio runtime periodically to keep the event loop responsive
         if block_num % 1000 == 0 {
             tokio::task::yield_now().await;
         }

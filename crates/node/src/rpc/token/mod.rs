@@ -78,10 +78,6 @@ impl<EthApi> TempoToken<EthApi> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Resolves pagination limit, default 10, max 100.
 fn resolve_limit(limit: Option<usize>) -> usize {
     limit.unwrap_or(10).min(100)
@@ -172,10 +168,6 @@ fn known_roles() -> [B256; 5] {
         *BURN_BLOCKED_ROLE,
     ]
 }
-
-// ---------------------------------------------------------------------------
-// TempoTokenApiServer impl
-// ---------------------------------------------------------------------------
 
 #[async_trait::async_trait]
 impl<EthApi> TempoTokenApiServer for TempoToken<EthApi>
