@@ -15,6 +15,7 @@ use reth_provider::{
     BlockNumReader, BlockReader, HeaderProvider, ReceiptProvider, StateProviderFactory,
 };
 use reth_rpc_eth_api::RpcNodeCore;
+use reth_tracing::tracing::warn;
 use tempo_alloy::rpc::pagination::PaginationParams;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoStateAccess;
@@ -77,6 +78,11 @@ impl<EthApi> TempoToken<EthApi> {
         Self { eth_api, cache }
     }
 }
+
+/// Maximum number of blocks to scan in the fallback gap.
+/// Matches the typical reorg depth limit. Beyond this, the indexer is assumed
+/// to be too far behind and only cached data is returned.
+const MAX_FALLBACK_SCAN_BLOCKS: u64 = 64;
 
 /// Resolves pagination limit, default 10, max 100.
 fn resolve_limit(limit: Option<usize>) -> usize {
@@ -197,49 +203,62 @@ where
         // Collect all token creation events: cached + scanned gap
         let mut all_events: Vec<cache::CachedToken> = cached_tokens;
 
-        // Scan any remaining blocks the cache hasn't indexed yet
+        // Scan any remaining blocks the cache hasn't indexed yet (capped)
         if scan_start <= latest {
-            for block_num in scan_start..=latest {
-                let receipts = provider
-                    .receipts_by_block(block_num.into())
-                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+            let gap = latest - scan_start + 1;
+            if gap <= MAX_FALLBACK_SCAN_BLOCKS {
+                for block_num in scan_start..=latest {
+                    let receipts = provider
+                        .receipts_by_block(block_num.into())
+                        .map_err(|e| internal_rpc_err(e.to_string()))?;
 
-                let Some(receipts) = receipts else {
-                    continue;
-                };
+                    let Some(receipts) = receipts else {
+                        continue;
+                    };
 
-                let header = provider
-                    .header_by_number(block_num)
-                    .map_err(|e| internal_rpc_err(e.to_string()))?;
-                let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
+                    let header = provider
+                        .header_by_number(block_num)
+                        .map_err(|e| internal_rpc_err(e.to_string()))?;
+                    let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
 
-                let mut global_log_idx = 0usize;
-                for receipt in &receipts {
-                    for log in receipt.logs() {
-                        if log.address == TIP20_FACTORY_ADDRESS
-                            && let Ok(event) = ITIP20Factory::TokenCreated::decode_log(log)
-                        {
-                            all_events.push(cache::CachedToken {
-                                address: event.token,
-                                name: event.name.clone(),
-                                symbol: event.symbol.clone(),
-                                currency: event.currency.clone(),
-                                creator: event.admin,
-                                created_at: timestamp,
-                                token_id: token_id_from_address(event.token),
-                                block_number: block_num,
-                                log_index: global_log_idx,
-                            });
+                    let mut global_log_idx = 0usize;
+                    for receipt in &receipts {
+                        for log in receipt.logs() {
+                            if log.address == TIP20_FACTORY_ADDRESS
+                                && let Ok(event) = ITIP20Factory::TokenCreated::decode_log(log)
+                            {
+                                all_events.push(cache::CachedToken {
+                                    address: event.token,
+                                    name: event.name.clone(),
+                                    symbol: event.symbol.clone(),
+                                    currency: event.currency.clone(),
+                                    creator: event.admin,
+                                    created_at: timestamp,
+                                    token_id: token_id_from_address(event.token),
+                                    block_number: block_num,
+                                    log_index: global_log_idx,
+                                });
+                            }
+                            global_log_idx += 1;
                         }
-                        global_log_idx += 1;
                     }
                 }
+            } else {
+                warn!(
+                    target: "token_rpc",
+                    gap,
+                    "Cache is behind, skipping fallback scan"
+                );
             }
         }
 
         // Apply cursor: skip events before cursor position
         let mut results: Vec<Token> = Vec::new();
         let mut next_cursor: Option<String> = None;
+
+        let mut state = provider
+            .latest()
+            .map_err(|e| internal_rpc_err(e.to_string()))?;
 
         for cached in &all_events {
             // Skip events before cursor position
@@ -248,9 +267,6 @@ where
             }
 
             // Read dynamic state from provider
-            let mut state = provider
-                .latest()
-                .map_err(|e| internal_rpc_err(e.to_string()))?;
             let token_data = state
                 .with_read_only_storage_ctx(TempoHardfork::default(), || {
                     let t = TIP20Token::from_address(cached.address)?;
@@ -321,55 +337,65 @@ where
         // Collect all role change events: cached + scanned gap
         let mut all_events: Vec<cache::CachedRoleChange> = cached_changes;
 
-        // Scan any remaining blocks the cache hasn't indexed yet
+        // Scan any remaining blocks the cache hasn't indexed yet (capped)
         if scan_start <= latest {
-            for block_num in scan_start..=latest {
-                let receipts = provider
-                    .receipts_by_block(block_num.into())
-                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+            let gap = latest - scan_start + 1;
+            if gap <= MAX_FALLBACK_SCAN_BLOCKS {
+                for block_num in scan_start..=latest {
+                    let receipts = provider
+                        .receipts_by_block(block_num.into())
+                        .map_err(|e| internal_rpc_err(e.to_string()))?;
 
-                let Some(receipts) = receipts else {
-                    continue;
-                };
+                    let Some(receipts) = receipts else {
+                        continue;
+                    };
 
-                let header = provider
-                    .header_by_number(block_num)
-                    .map_err(|e| internal_rpc_err(e.to_string()))?;
-                let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
+                    let header = provider
+                        .header_by_number(block_num)
+                        .map_err(|e| internal_rpc_err(e.to_string()))?;
+                    let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
 
-                let block = provider
-                    .block_by_number(block_num)
-                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+                    let block = provider
+                        .block_by_number(block_num)
+                        .map_err(|e| internal_rpc_err(e.to_string()))?;
 
-                let mut global_log_idx = 0usize;
+                    let mut global_log_idx = 0usize;
 
-                for (tx_idx, receipt) in receipts.iter().enumerate() {
-                    for log in receipt.logs() {
-                        if is_tip20_prefix(log.address)
-                            && let Ok(event) = IRolesAuth::RoleMembershipUpdated::decode_log(log)
-                        {
-                            let tx_hash = block
-                                .as_ref()
-                                .and_then(|b| {
-                                    b.body().transactions().get(tx_idx).map(|tx| *tx.tx_hash())
-                                })
-                                .unwrap_or_default();
+                    for (tx_idx, receipt) in receipts.iter().enumerate() {
+                        for log in receipt.logs() {
+                            if is_tip20_prefix(log.address)
+                                && let Ok(event) =
+                                    IRolesAuth::RoleMembershipUpdated::decode_log(log)
+                            {
+                                let tx_hash = block
+                                    .as_ref()
+                                    .and_then(|b| {
+                                        b.body().transactions().get(tx_idx).map(|tx| *tx.tx_hash())
+                                    })
+                                    .unwrap_or_default();
 
-                            all_events.push(cache::CachedRoleChange {
-                                role: event.role,
-                                account: event.account,
-                                sender: event.sender,
-                                granted: event.hasRole,
-                                token: log.address,
-                                block_number: block_num,
-                                timestamp,
-                                transaction_hash: tx_hash,
-                                log_index: global_log_idx,
-                            });
+                                all_events.push(cache::CachedRoleChange {
+                                    role: event.role,
+                                    account: event.account,
+                                    sender: event.sender,
+                                    granted: event.hasRole,
+                                    token: log.address,
+                                    block_number: block_num,
+                                    timestamp,
+                                    transaction_hash: tx_hash,
+                                    log_index: global_log_idx,
+                                });
+                            }
+                            global_log_idx += 1;
                         }
-                        global_log_idx += 1;
                     }
                 }
+            } else {
+                warn!(
+                    target: "token_rpc",
+                    gap,
+                    "Cache is behind, skipping fallback scan"
+                );
             }
         }
 
@@ -482,49 +508,62 @@ where
         // Collect all token creation events: cached + scanned gap
         let mut all_events: Vec<cache::CachedToken> = cached_tokens;
 
-        // Scan any remaining blocks the cache hasn't indexed yet
+        // Scan any remaining blocks the cache hasn't indexed yet (capped)
         if scan_start <= latest {
-            for block_num in scan_start..=latest {
-                let receipts = provider
-                    .receipts_by_block(block_num.into())
-                    .map_err(|e| internal_rpc_err(e.to_string()))?;
+            let gap = latest - scan_start + 1;
+            if gap <= MAX_FALLBACK_SCAN_BLOCKS {
+                for block_num in scan_start..=latest {
+                    let receipts = provider
+                        .receipts_by_block(block_num.into())
+                        .map_err(|e| internal_rpc_err(e.to_string()))?;
 
-                let Some(receipts) = receipts else {
-                    continue;
-                };
+                    let Some(receipts) = receipts else {
+                        continue;
+                    };
 
-                let header = provider
-                    .header_by_number(block_num)
-                    .map_err(|e| internal_rpc_err(e.to_string()))?;
-                let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
+                    let header = provider
+                        .header_by_number(block_num)
+                        .map_err(|e| internal_rpc_err(e.to_string()))?;
+                    let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
 
-                let mut global_log_idx = 0usize;
-                for receipt in &receipts {
-                    for log in receipt.logs() {
-                        if log.address == TIP20_FACTORY_ADDRESS
-                            && let Ok(event) = ITIP20Factory::TokenCreated::decode_log(log)
-                        {
-                            all_events.push(cache::CachedToken {
-                                address: event.token,
-                                name: event.name.clone(),
-                                symbol: event.symbol.clone(),
-                                currency: event.currency.clone(),
-                                creator: event.admin,
-                                created_at: timestamp,
-                                token_id: token_id_from_address(event.token),
-                                block_number: block_num,
-                                log_index: global_log_idx,
-                            });
+                    let mut global_log_idx = 0usize;
+                    for receipt in &receipts {
+                        for log in receipt.logs() {
+                            if log.address == TIP20_FACTORY_ADDRESS
+                                && let Ok(event) = ITIP20Factory::TokenCreated::decode_log(log)
+                            {
+                                all_events.push(cache::CachedToken {
+                                    address: event.token,
+                                    name: event.name.clone(),
+                                    symbol: event.symbol.clone(),
+                                    currency: event.currency.clone(),
+                                    creator: event.admin,
+                                    created_at: timestamp,
+                                    token_id: token_id_from_address(event.token),
+                                    block_number: block_num,
+                                    log_index: global_log_idx,
+                                });
+                            }
+                            global_log_idx += 1;
                         }
-                        global_log_idx += 1;
                     }
                 }
+            } else {
+                warn!(
+                    target: "token_rpc",
+                    gap,
+                    "Cache is behind, skipping fallback scan"
+                );
             }
         }
 
         // Apply cursor, read state, filter, and paginate
         let mut results: Vec<AccountToken> = Vec::new();
         let mut next_cursor: Option<String> = None;
+
+        let mut state = provider
+            .latest()
+            .map_err(|e| internal_rpc_err(e.to_string()))?;
 
         for cached in &all_events {
             // Skip events before cursor position
@@ -535,10 +574,6 @@ where
             let token_address = cached.address;
 
             // Read state: balance + roles + dynamic token data
-            let mut state = provider
-                .latest()
-                .map_err(|e| internal_rpc_err(e.to_string()))?;
-
             let read_result = state
                 .with_read_only_storage_ctx(TempoHardfork::default(), || {
                     let t = TIP20Token::from_address(token_address)?;
