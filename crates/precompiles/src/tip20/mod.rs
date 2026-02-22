@@ -777,7 +777,7 @@ impl TIP20Token {
         let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
         let new_to_balance = to_balance
             .checked_add(amount)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
     }
 
@@ -833,7 +833,7 @@ impl TIP20Token {
         let to_balance = self.get_balance(to)?;
         let new_to_balance = to_balance
             .checked_add(refund)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_balance(to, new_to_balance)
     }
 }
