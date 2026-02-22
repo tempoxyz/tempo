@@ -103,50 +103,50 @@ fn parse_cursor(cursor: &str) -> Result<(u64, usize), jsonrpsee::types::ErrorObj
 
 /// Checks if a token matches the given filters.
 fn matches_token_filters(token: &Token, filters: &TokensFilters) -> bool {
-    if let Some(ref currency) = filters.currency {
-        if !token.currency.eq_ignore_ascii_case(currency) {
-            return false;
-        }
+    if let Some(ref currency) = filters.currency
+        && !token.currency.eq_ignore_ascii_case(currency)
+    {
+        return false;
     }
-    if let Some(creator) = filters.creator {
-        if token.creator != creator {
-            return false;
-        }
+    if let Some(creator) = filters.creator
+        && token.creator != creator
+    {
+        return false;
     }
-    if let Some(ref created_at) = filters.created_at {
-        if !created_at.in_range(token.created_at) {
-            return false;
-        }
+    if let Some(ref created_at) = filters.created_at
+        && !created_at.in_range(token.created_at)
+    {
+        return false;
     }
-    if let Some(ref name) = filters.name {
-        if !token.name.to_lowercase().contains(&name.to_lowercase()) {
-            return false;
-        }
+    if let Some(ref name) = filters.name
+        && !token.name.to_lowercase().contains(&name.to_lowercase())
+    {
+        return false;
     }
-    if let Some(paused) = filters.paused {
-        if token.paused != paused {
-            return false;
-        }
+    if let Some(paused) = filters.paused
+        && token.paused != paused
+    {
+        return false;
     }
-    if let Some(quote_token) = filters.quote_token {
-        if token.quote_token != quote_token {
-            return false;
-        }
+    if let Some(quote_token) = filters.quote_token
+        && token.quote_token != quote_token
+    {
+        return false;
     }
-    if let Some(ref supply_cap) = filters.supply_cap {
-        if !supply_cap.in_range(token.supply_cap) {
-            return false;
-        }
+    if let Some(ref supply_cap) = filters.supply_cap
+        && !supply_cap.in_range(token.supply_cap)
+    {
+        return false;
     }
-    if let Some(ref symbol) = filters.symbol {
-        if !token.symbol.eq_ignore_ascii_case(symbol) {
-            return false;
-        }
+    if let Some(ref symbol) = filters.symbol
+        && !token.symbol.eq_ignore_ascii_case(symbol)
+    {
+        return false;
     }
-    if let Some(ref total_supply) = filters.total_supply {
-        if !total_supply.in_range(token.total_supply) {
-            return false;
-        }
+    if let Some(ref total_supply) = filters.total_supply
+        && !total_supply.in_range(token.total_supply)
+    {
+        return false;
     }
     true
 }
@@ -273,7 +273,7 @@ where
 
                     if matches_token_filters(&token, &filters) {
                         if results.len() >= limit {
-                            next_cursor = Some(format!("{}:{}", block_num, global_log_idx));
+                            next_cursor = Some(format!("{block_num}:{global_log_idx}"));
                             break 'outer;
                         }
                         results.push(token);
@@ -312,10 +312,10 @@ where
 
         'outer: for block_num in start_block..=latest {
             // Apply block_number range filter early
-            if let Some(ref block_range) = filters.block_number {
-                if !block_range.in_range(block_num) {
-                    continue;
-                }
+            if let Some(ref block_range) = filters.block_number
+                && !block_range.in_range(block_num)
+            {
+                continue;
             }
 
             let receipts = provider
@@ -332,10 +332,10 @@ where
             let timestamp = header.map(|h| h.timestamp()).unwrap_or(0);
 
             // Apply timestamp range filter early
-            if let Some(ref ts_range) = filters.timestamp {
-                if !ts_range.in_range(timestamp) {
-                    continue;
-                }
+            if let Some(ref ts_range) = filters.timestamp
+                && !ts_range.in_range(timestamp)
+            {
+                continue;
             }
 
             // Get the block to access transaction hashes
@@ -390,33 +390,33 @@ where
                     };
 
                     // Apply remaining filters
-                    if let Some(account) = filters.account {
-                        if role_change.account != account {
-                            global_log_idx += 1;
-                            continue;
-                        }
+                    if let Some(account) = filters.account
+                        && role_change.account != account
+                    {
+                        global_log_idx += 1;
+                        continue;
                     }
-                    if let Some(granted) = filters.granted {
-                        if role_change.granted != granted {
-                            global_log_idx += 1;
-                            continue;
-                        }
+                    if let Some(granted) = filters.granted
+                        && role_change.granted != granted
+                    {
+                        global_log_idx += 1;
+                        continue;
                     }
-                    if let Some(role) = filters.role {
-                        if role_change.role != role {
-                            global_log_idx += 1;
-                            continue;
-                        }
+                    if let Some(role) = filters.role
+                        && role_change.role != role
+                    {
+                        global_log_idx += 1;
+                        continue;
                     }
-                    if let Some(sender) = filters.sender {
-                        if role_change.sender != sender {
-                            global_log_idx += 1;
-                            continue;
-                        }
+                    if let Some(sender) = filters.sender
+                        && role_change.sender != sender
+                    {
+                        global_log_idx += 1;
+                        continue;
                     }
 
                     if results.len() >= limit {
-                        next_cursor = Some(format!("{}:{}", block_num, global_log_idx));
+                        next_cursor = Some(format!("{block_num}:{global_log_idx}"));
                         break 'outer;
                     }
                     results.push(role_change);
@@ -558,7 +558,7 @@ where
                     }
 
                     if results.len() >= limit {
-                        next_cursor = Some(format!("{}:{}", block_num, global_log_idx));
+                        next_cursor = Some(format!("{block_num}:{global_log_idx}"));
                         break 'outer;
                     }
 

@@ -127,15 +127,15 @@ where
                 let (_, recovered_tx) = &txs_with_senders[tx_idx];
 
                 // Apply filters
-                if let Some(from_filter) = filters.from {
-                    if recovered_tx.signer() != from_filter {
-                        continue;
-                    }
+                if let Some(from_filter) = filters.from
+                    && recovered_tx.signer() != from_filter
+                {
+                    continue;
                 }
-                if let Some(to_filter) = filters.to {
-                    if recovered_tx.to() != Some(to_filter) {
-                        continue;
-                    }
+                if let Some(to_filter) = filters.to
+                    && recovered_tx.to() != Some(to_filter)
+                {
+                    continue;
                 }
                 if let Some(type_filter) = filters.type_ {
                     let filter_type: u8 = type_filter.into();
@@ -145,7 +145,7 @@ where
                 }
 
                 if results.len() >= limit {
-                    next_cursor = Some(format!("{}:{}", block_num, tx_idx));
+                    next_cursor = Some(format!("{block_num}:{tx_idx}"));
                     return Ok(true);
                 }
 
