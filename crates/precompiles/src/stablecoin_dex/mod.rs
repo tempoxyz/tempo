@@ -891,6 +891,11 @@ impl StablecoinDEX {
                 base_out.min(order.remaining())
             };
 
+            // Remaining amount_in is too small to produce any base tokens at this tick
+            if fill_amount == 0 {
+                break;
+            }
+
             if fill_amount < order.remaining() {
                 let amount_out =
                     self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
