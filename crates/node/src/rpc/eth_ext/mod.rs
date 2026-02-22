@@ -11,6 +11,11 @@ use tempo_primitives::TempoTxEnvelope;
 pub mod transactions;
 pub use transactions::TransactionsFilter;
 
+/// Maximum number of blocks to scan per RPC call.
+/// Prevents unbounded chain traversal when filters match no transactions.
+/// Clients can continue scanning via the returned cursor.
+const MAX_SCAN_BLOCKS: u64 = 10_000;
+
 #[rpc(server, namespace = "eth")]
 pub trait TempoEthExtApi {
     /// Gets paginated transactions on Tempo with flexible filtering and sorting.
@@ -168,8 +173,9 @@ where
 
         if desc {
             let start_block = cursor_block.unwrap_or(latest);
+            let scan_floor = start_block.saturating_sub(MAX_SCAN_BLOCKS - 1);
 
-            for block_num in (0..=start_block).rev() {
+            for block_num in (scan_floor..=start_block).rev() {
                 let tx_count_hint = 1000; // Upper bound, actual count is checked inside
                 let end_tx = if cursor_block == Some(block_num) {
                     cursor_tx_idx.map(|i| i + 1).unwrap_or(tx_count_hint)
@@ -181,10 +187,16 @@ where
                     break;
                 }
             }
+
+            // Scan window exhausted but limit not reached — set continuation cursor
+            if next_cursor.is_none() && scan_floor > 0 {
+                next_cursor = Some(format!("{}:{}", scan_floor - 1, usize::MAX));
+            }
         } else {
             let start_block = cursor_block.unwrap_or(0);
+            let scan_ceiling = start_block.saturating_add(MAX_SCAN_BLOCKS - 1).min(latest);
 
-            for block_num in start_block..=latest {
+            for block_num in start_block..=scan_ceiling {
                 let start_tx = if cursor_block == Some(block_num) {
                     cursor_tx_idx.unwrap_or(0)
                 } else {
@@ -194,6 +206,11 @@ where
                 if process_block(block_num, start_tx, usize::MAX, true)? {
                     break;
                 }
+            }
+
+            // Scan window exhausted but limit not reached — set continuation cursor
+            if next_cursor.is_none() && scan_ceiling < latest {
+                next_cursor = Some(format!("{}:0", scan_ceiling + 1));
             }
         }
 
