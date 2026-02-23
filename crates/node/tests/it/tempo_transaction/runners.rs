@@ -1960,9 +1960,9 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
 pub(super) async fn run_send_negative_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     println!("\n=== Send negative scenario ===\n");
 
-    let (signing_key, pub_key_x, pub_key_y, signer_addr) = generate_p256_access_key();
+    let (_signing_key, _pub_key_x, _pub_key_y, signer_addr) = generate_p256_access_key();
     let _ = env.fund_account(signer_addr).await?;
-    let chain_id = env.chain_id();
+    let _chain_id = env.chain_id();
 
     // Case 1: Empty calls
     {
