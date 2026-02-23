@@ -30,6 +30,9 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
         with:
+          # Pin nightly to avoid breakage from str::as_str() stabilization
+          # which breaks shellexpand 3.1.1 method resolution.
+          toolchain: nightly-2026-02-21
           components: clippy
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
@@ -50,6 +53,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
         with:
+          toolchain: nightly-2026-02-21
           components: rustfmt
       - run: cargo fmt --all --check
 
@@ -88,6 +92,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-21
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: Build documentation
