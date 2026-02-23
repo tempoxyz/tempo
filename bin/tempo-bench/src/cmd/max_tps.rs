@@ -406,21 +406,18 @@ impl MaxTpsArgs {
 
         info!(total_txs, "Generating and sending transactions");
 
-        let tx_counters = TransactionCounters::default();
-        let tx_counter = Arc::new(AtomicUsize::new(0));
-        let success_counter = Arc::new(AtomicUsize::new(0));
-        let failed_counter = Arc::new(AtomicUsize::new(0));
-        let tx_counter_clone = tx_counter.clone();
-        let success_counter_clone = success_counter.clone();
-        let failed_counter_clone = failed_counter.clone();
+        let counters = TransactionCounters::default();
         let target_count = total_txs as usize;
         let cancel_token = CancellationToken::new();
-        let cancel_token_clone = cancel_token.clone();
 
         // Start TPS monitor
-        tokio::spawn(async move {
-            monitor_tps(tx_counter_clone, target_count, cancel_token_clone).await;
-        });
+        {
+            let counters = counters.clone();
+            let cancel_token = cancel_token.clone();
+            tokio::spawn(async move {
+                monitor_tps(&counters, target_count, cancel_token).await;
+            });
+        }
 
         let rate_limiter =
             RateLimiter::direct(Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap()));
@@ -428,7 +425,7 @@ impl MaxTpsArgs {
         let mut pending_txs = generate_transactions(
             signer_provider_manager.clone(),
             gen_input,
-            tx_counters.clone(),
+            counters.clone(),
         )
         .buffer_unordered(self.max_concurrent_requests)
         .filter_map(|result| async {
@@ -453,22 +450,30 @@ impl MaxTpsArgs {
             .await
         })
         .buffer_unordered(self.max_concurrent_requests)
-        .filter_map(|result| async {
-            match result {
-                Ok(Ok(pending_tx)) => {
-                    tx_counter.fetch_add(1, Ordering::Relaxed);
-                    success_counter.fetch_add(1, Ordering::Relaxed);
-                    Some(pending_tx)
-                }
-                Ok(Err(err)) => {
-                    failed_counter.fetch_add(1, Ordering::Relaxed);
-                    debug!(?err, "Failed to send transaction");
-                    None
-                }
-                Err(_) => {
-                    failed_counter.fetch_add(1, Ordering::Relaxed);
-                    debug!("Transaction sending timed out");
-                    None
+        .filter_map({
+            let counters = counters.clone();
+            move |result| {
+                let counters = counters.clone();
+                async move {
+                    match result {
+                        Ok(Ok(pending_tx)) => {
+                            counters.sent.fetch_add(1, Ordering::Relaxed);
+                            counters.success.fetch_add(1, Ordering::Relaxed);
+                            Some(pending_tx)
+                        }
+                        Ok(Err(err)) => {
+                            counters.sent.fetch_add(1, Ordering::Relaxed);
+                            counters.failed.fetch_add(1, Ordering::Relaxed);
+                            debug!(?err, "Failed to send transaction");
+                            None
+                        }
+                        Err(_) => {
+                            counters.sent.fetch_add(1, Ordering::Relaxed);
+                            counters.failed.fetch_add(1, Ordering::Relaxed);
+                            debug!("Transaction sending timed out");
+                            None
+                        }
+                    }
                 }
             }
         })
@@ -479,16 +484,16 @@ impl MaxTpsArgs {
         cancel_token.cancel();
 
         info!(
-            tip20_transfers = tx_counters.tip20_transfers.load(Ordering::Relaxed),
-            swaps = tx_counters.swaps.load(Ordering::Relaxed),
-            orders = tx_counters.orders.load(Ordering::Relaxed),
-            erc20_transfers = tx_counters.erc20_transfers.load(Ordering::Relaxed),
+            tip20_transfers = counters.tip20_transfers.load(Ordering::Relaxed),
+            swaps = counters.swaps.load(Ordering::Relaxed),
+            orders = counters.orders.load(Ordering::Relaxed),
+            erc20_transfers = counters.erc20_transfers.load(Ordering::Relaxed),
             "Generated transactions",
         );
 
         info!(
-            success = success_counter_clone.load(Ordering::Relaxed),
-            failed = failed_counter_clone.load(Ordering::Relaxed),
+            success = counters.success.load(Ordering::Relaxed),
+            failed = counters.failed.load(Ordering::Relaxed),
             "Finished sending transactions"
         );
 
@@ -589,10 +594,15 @@ impl MnemonicArg {
 
 #[derive(Clone, Default)]
 struct TransactionCounters {
+    /// Per-type generation counters
     tip20_transfers: Arc<AtomicUsize>,
     swaps: Arc<AtomicUsize>,
     orders: Arc<AtomicUsize>,
     erc20_transfers: Arc<AtomicUsize>,
+    /// Sending counters
+    sent: Arc<AtomicUsize>,
+    success: Arc<AtomicUsize>,
+    failed: Arc<AtomicUsize>,
 }
 
 #[derive(Clone)]
@@ -960,14 +970,14 @@ pub async fn generate_report(
     Ok(())
 }
 
-async fn monitor_tps(tx_counter: Arc<AtomicUsize>, target_count: usize, token: CancellationToken) {
+async fn monitor_tps(counters: &TransactionCounters, target_count: usize, token: CancellationToken) {
     let mut last_count = 0;
     let mut ticker = interval(Duration::from_secs(1));
 
     loop {
         select! {
             _ = ticker.tick() => {
-                let current_count = tx_counter.load(Ordering::Relaxed);
+                let current_count = counters.sent.load(Ordering::Relaxed);
                 let tps = current_count - last_count;
                 last_count = current_count;
 
