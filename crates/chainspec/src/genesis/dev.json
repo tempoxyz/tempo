@@ -24,8 +24,12 @@
     "t1Time": 0,
     "t1aTime": 0,
     "t1bTime": 0,
+<<<<<<< HEAD
     "t2Time": 0,
     "depositContractAddress": "0x0000000000000000000000000000000000000000"
+=======
+    "t2Time": 0
+>>>>>>> private-fork/main
   },
   "nonce": "0x42",
   "timestamp": "0x0",

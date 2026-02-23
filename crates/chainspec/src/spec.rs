@@ -456,11 +456,32 @@ mod tests {
             TempoHardfork::T1A
         );
 
+<<<<<<< HEAD
+=======
+        // Before T1B activation (1771858800 = Feb 23rd 2026 16:00 CET)
+        assert!(!mainnet_chainspec.is_t1b_active_at_timestamp(1771858799));
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1771858799),
+            TempoHardfork::T1A
+        );
+
+        // At and after T1B activation
+        assert!(mainnet_chainspec.is_t1b_active_at_timestamp(1771858800));
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1771858800),
+            TempoHardfork::T1B
+        );
+
+>>>>>>> private-fork/main
         // T2 not yet scheduled on mainnet
         assert!(!mainnet_chainspec.is_t2_active_at_timestamp(u64::MAX));
         assert_eq!(
             mainnet_chainspec.tempo_hardfork_at(u64::MAX),
+<<<<<<< HEAD
             TempoHardfork::T1A
+=======
+            TempoHardfork::T1B
+>>>>>>> private-fork/main
         );
 
         let moderato_genesis = super::TempoChainSpecParser::parse("moderato")
@@ -486,20 +507,41 @@ mod tests {
             TempoHardfork::T1
         );
 
+<<<<<<< HEAD
         // T1A not scheduled on moderato
         assert!(!moderato_genesis.is_t1a_active_at_timestamp(u64::MAX));
 
+=======
+        // Before T1A/T1B activation (1771858800 = Feb 23rd 2026 16:00 CET)
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1771858799),
+            TempoHardfork::T1
+        );
+
+        // At and after T1A/T1B activation (both activate at 1771858800)
+        assert!(moderato_genesis.is_t1a_active_at_timestamp(1771858800));
+        assert!(moderato_genesis.is_t1b_active_at_timestamp(1771858800));
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1771858800),
+            TempoHardfork::T1B
+        );
+
+>>>>>>> private-fork/main
         // T2 not yet scheduled on moderato
         assert!(!moderato_genesis.is_t2_active_at_timestamp(u64::MAX));
         assert_eq!(
             moderato_genesis.tempo_hardfork_at(u64::MAX),
+<<<<<<< HEAD
             TempoHardfork::T1
+=======
+            TempoHardfork::T1B
+>>>>>>> private-fork/main
         );
 
         let testnet_chainspec = super::TempoChainSpecParser::parse("testnet")
-            .expect("the mainnet chainspec must always be well formed");
+            .expect("the testnet chainspec must always be well formed");
 
-        // Should always return Genesis (no T1A on testnet)
+        // Should always return Genesis (no hardfork timestamps on andantino)
         assert_eq!(
             testnet_chainspec.tempo_hardfork_at(0),
             TempoHardfork::Genesis

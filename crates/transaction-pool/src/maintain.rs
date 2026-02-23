@@ -720,8 +720,8 @@ where
                 pool.notify_aa_pool_on_state_updates(bundle_state);
 
                 // 7. Remove included expiring nonce transactions
-                // Expiring nonce txs use tx hash for replay protection rather than sequential nonces,
-                // so we need to remove them on inclusion rather than relying on nonce changes.
+                // Expiring nonce txs don't have sequential nonces, so we need to remove them
+                // on inclusion rather than relying on nonce changes.
                 pool.remove_included_expiring_nonce_txs(mined_tx_hashes.iter());
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 

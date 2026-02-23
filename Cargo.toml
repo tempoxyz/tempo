@@ -1,5 +1,5 @@
 [workspace.package]
-version = "1.2.0"
+version = "1.3.0"
 edition = "2024"
 rust-version = "1.93.0"
 license = "MIT OR Apache-2.0"
@@ -176,7 +176,11 @@ revm-inspectors = "0.34.2"
 alloy-genesis = "1.6.1"
 alloy-hardforks = "0.4.7"
 alloy-network = { version = "1.6.1", default-features = false }
+<<<<<<< HEAD
 alloy-primitives = { version = "1.5.7", default-features = false }
+=======
+alloy-primitives = { version = "1.5.6", default-features = false }
+>>>>>>> private-fork/main
 alloy-provider = { version = "1.6.1", default-features = false }
 alloy-rlp = "0.3.13"
 alloy-rpc-types-engine = "1.6.1"

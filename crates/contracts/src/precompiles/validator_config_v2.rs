@@ -1,5 +1,8 @@
+<<<<<<< HEAD
 use alloc::string::String;
 
+=======
+>>>>>>> private-fork/main
 pub use IValidatorConfigV2::IValidatorConfigV2Errors as ValidatorConfigV2Error;
 
 crate::sol! {
