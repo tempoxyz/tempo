@@ -411,13 +411,11 @@ impl MaxTpsArgs {
         let cancel_token = CancellationToken::new();
 
         // Start TPS monitor
-        {
-            let counters = counters.clone();
-            let cancel_token = cancel_token.clone();
-            tokio::spawn(async move {
-                monitor_tps(&counters, target_count, cancel_token).await;
-            });
-        }
+        tokio::spawn(monitor_tps(
+            counters.clone(),
+            target_count,
+            cancel_token.clone(),
+        ));
 
         let rate_limiter =
             RateLimiter::direct(Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap()));
@@ -970,7 +968,7 @@ pub async fn generate_report(
     Ok(())
 }
 
-async fn monitor_tps(counters: &TransactionCounters, target_count: usize, token: CancellationToken) {
+async fn monitor_tps(counters: TransactionCounters, target_count: usize, token: CancellationToken) {
     let mut last_count = 0;
     let mut ticker = interval(Duration::from_secs(1));
 
