@@ -76,16 +76,19 @@ pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
-/// Returns the base Ethereum precompiles for the given Tempo hardfork.
+/// Returns the full Tempo precompiles for the given config.
 ///
 /// Pre-T2 hardforks use Prague precompiles, T2+ uses Osaka precompiles.
-pub fn tempo_precompiles(hardfork: TempoHardfork) -> PrecompilesMap {
-    let spec = if hardfork.is_t2() {
+/// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
+pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
+    let spec = if cfg.spec.is_t2() {
         SpecId::OSAKA
     } else {
         SpecId::PRAGUE
     };
-    PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles)
+    let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
+    extend_tempo_precompiles(&mut precompiles, cfg);
+    precompiles
 }
 
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
@@ -541,9 +544,7 @@ mod tests {
     #[test]
     fn test_extend_tempo_precompiles_registers_precompiles() {
         let cfg = CfgEnv::<TempoHardfork>::default();
-        let mut precompiles = tempo_precompiles(cfg.spec);
-
-        extend_tempo_precompiles(&mut precompiles, &cfg);
+        let precompiles = tempo_precompiles(&cfg);
 
         // TIP20Factory should be registered
         let factory_precompile = precompiles.get(&TIP20_FACTORY_ADDRESS);
