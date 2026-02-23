@@ -38,8 +38,7 @@ pub(super) struct FeedState {
 struct IdentityTransitionCache {
     /// The epoch from which the chain was built (inclusive).
     from_epoch: u64,
-    /// The earliest epoch we walked to. When 0, the cache covers all the way
-    /// back to genesis and `full=true` requests can be served entirely from cache.
+    /// The earliest epoch we walked to (0 if we reached genesis).
     to_epoch: u64,
     /// Identity at `from_epoch`.
     identity: String,
@@ -173,15 +172,15 @@ impl FeedStateHandle {
         let mut pubkey = epoch_pubkey;
         let mut search_epoch = start_epoch.saturating_sub(1);
         while search_epoch > 0 {
-            // Absorb cached transitions and continue walking past cache.to_epoch.
+            // Absorb cached transitions and stop.
             if let Some(ref cache) = cached
                 && search_epoch <= cache.from_epoch
             {
                 transitions.extend(cache.transitions.iter().cloned());
                 search_epoch = cache.to_epoch;
                 // We dont continue downwards past to_epoch since the walk only stops if
-                // DKG parsing fails (Err state) or data is unavailable (Pruned). Both which
-                // are not recoverable in the same runtime.
+                // DKG parsing fails (Internal Error state) or data is unavailable (Pruned).
+                // Both which are not recoverable in the current runtime.
                 break;
             }
 
@@ -258,8 +257,7 @@ impl FeedStateHandle {
             }
         }
 
-        // Build updated cache. The walk absorbs cached transitions via
-        // cache-connect, so transitions is already complete and ordered.
+        // Build updated cache. The walk absorbs cached transitions in the correct order
         let new_cache = if let Some(ref c) = cached {
             IdentityTransitionCache {
                 from_epoch: start_epoch.max(c.from_epoch),
