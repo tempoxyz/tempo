@@ -540,10 +540,8 @@ mod tests {
 
     #[test]
     fn test_extend_tempo_precompiles_registers_precompiles() {
-        use revm::handler::EthPrecompiles;
-
         let cfg = CfgEnv::<TempoHardfork>::default();
-        let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
+        let mut precompiles = tempo_precompiles(cfg.spec);
 
         extend_tempo_precompiles(&mut precompiles, &cfg);
 
