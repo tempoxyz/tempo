@@ -639,6 +639,97 @@ async fn test_get_transactions_pagination() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_get_transactions_desc_pagination() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url;
+
+    let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Create a token and mint a few times to generate transactions
+    let token = setup_test_token(provider.clone(), caller).await?;
+    for i in 0..3 {
+        token
+            .mint(caller, U256::from(100u64 + i))
+            .gas(1_000_000)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+    }
+
+    // Use DESC order and limit=1 so we can paginate
+    let params = PaginationParams {
+        cursor: None,
+        filters: Some(TransactionsFilter {
+            from: Some(caller),
+            to: None,
+            type_: None,
+        }),
+        limit: Some(1),
+        sort: Some(Sort {
+            on: "blockNumber".to_string(),
+            order: SortOrder::Desc,
+        }),
+    };
+
+    let page1: TransactionsResponse = provider
+        .raw_request("eth_getTransactions".into(), (params,))
+        .await?;
+
+    assert_eq!(
+        page1.transactions.len(),
+        1,
+        "first page should have 1 transaction"
+    );
+    assert!(
+        page1.next_cursor.is_some(),
+        "should have next_cursor for more results"
+    );
+
+    // Fetch second page
+    let params2 = PaginationParams {
+        cursor: page1.next_cursor.clone(),
+        filters: Some(TransactionsFilter {
+            from: Some(caller),
+            to: None,
+            type_: None,
+        }),
+        limit: Some(1),
+        sort: Some(Sort {
+            on: "blockNumber".to_string(),
+            order: SortOrder::Desc,
+        }),
+    };
+
+    let page2: TransactionsResponse = provider
+        .raw_request("eth_getTransactions".into(), (params2,))
+        .await?;
+
+    assert_eq!(
+        page2.transactions.len(),
+        1,
+        "second page should have 1 transaction"
+    );
+
+    // In DESC order, second page block should be <= first page
+    let block1 = page1.transactions[0].block_number;
+    let block2 = page2.transactions[0].block_number;
+    assert!(
+        block2 <= block1,
+        "descending: second page block {:?} should be <= first {:?}",
+        block2,
+        block1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_get_tokens_filter_currency() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 

@@ -16,6 +16,10 @@ pub use transactions::TransactionsFilter;
 /// Clients can continue scanning via the returned cursor.
 const MAX_SCAN_BLOCKS: u64 = 10_000;
 
+/// Sentinel tx index for continuation cursors that covers all transactions
+/// in a block. Uses u32::MAX to ensure platform-independent cursor parsing.
+const TX_INDEX_ALL: usize = u32::MAX as usize;
+
 #[rpc(server, namespace = "eth")]
 pub trait TempoEthExtApi {
     /// Gets paginated transactions on Tempo with flexible filtering and sorting.
@@ -190,7 +194,7 @@ where
 
             // Scan window exhausted but limit not reached — set continuation cursor
             if next_cursor.is_none() && scan_floor > 0 {
-                next_cursor = Some(format!("{}:{}", scan_floor - 1, usize::MAX));
+                next_cursor = Some(format!("{}:{}", scan_floor - 1, TX_INDEX_ALL));
             }
         } else {
             let start_block = cursor_block.unwrap_or(0);
