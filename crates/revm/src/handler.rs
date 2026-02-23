@@ -1283,10 +1283,18 @@ where
             }
 
             // Validate gas limit is sufficient for initial gas
-            if gas_limit < init_gas.initial_total_gas {
+            // State gas is only included in the intrinsic check for T2+, since pre-T2
+            // transactions were never validated against state gas.
+            let total_intrinsic = init_gas.initial_total_gas
+                + if spec.is_t2() {
+                    init_gas.initial_state_gas
+                } else {
+                    0
+                };
+            if gas_limit < total_intrinsic {
                 return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
                     gas_limit,
-                    intrinsic_gas: init_gas.initial_total_gas,
+                    intrinsic_gas: total_intrinsic,
                 }
                 .into());
             }
@@ -1536,10 +1544,18 @@ where
     }
 
     // Validate gas limit is sufficient for initial gas
-    if gas_limit < batch_gas.initial_total_gas {
+    // State gas is only included in the intrinsic check for T2+, since pre-T2
+    // transactions were never validated against state gas.
+    let total_intrinsic = batch_gas.initial_total_gas
+        + if spec.is_t2() {
+            batch_gas.initial_state_gas
+        } else {
+            0
+        };
+    if gas_limit < total_intrinsic {
         return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
             gas_limit,
-            intrinsic_gas: batch_gas.initial_total_gas,
+            intrinsic_gas: total_intrinsic,
         }
         .into());
     }
@@ -2546,19 +2562,21 @@ mod tests {
             } else {
                 spec.gas_new_nonce_key()
             };
+            // TIP-1016: For T2+, state gas must also fit within gas_limit
+            let nonce_zero_state_gas = if spec.is_t2() {
+                gas_params.new_account_state_gas()
+            } else {
+                0
+            };
+            let nonce_zero_total = nonce_zero_gas + nonce_zero_state_gas;
 
             let cases = if spec.is_t0() {
                 let mut cases = vec![
-                    (BASE_INTRINSIC_GAS + nonce_zero_gas, 0, true), // Exactly sufficient for nonce==0
+                    (BASE_INTRINSIC_GAS + nonce_zero_total, 0, true), // Exactly sufficient for nonce==0 (exec + state)
                     (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Exactly sufficient for existing key
                 ];
-                // Only test "insufficient" case when nonce_zero_gas > 10k (T1 has 250k, T2 has 5k)
-                if nonce_zero_gas > 10_000 {
-                    cases.push((BASE_INTRINSIC_GAS + 10_000, 0u64, false)); // Insufficient for nonce==0
-                } else {
-                    // T2: nonce_zero_gas is 5k, so BASE + nonce_zero_gas - 1 is insufficient
-                    cases.push((BASE_INTRINSIC_GAS + nonce_zero_gas - 1, 0u64, false));
-                }
+                // Insufficient: below total required for nonce==0
+                cases.push((BASE_INTRINSIC_GAS + nonce_zero_total - 1, 0u64, false));
                 cases
             } else {
                 // Genesis: nonce gas is added AFTER validation, so lower gas_limit still passes
