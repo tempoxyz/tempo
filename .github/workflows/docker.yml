@@ -39,6 +39,25 @@ jobs:
 
       - uses: depot/setup-action@15c09a5f77a0840ad4bce955686522a257853461 # v1.7.1
 
+      - name: Determine Docker labels
+        id: docker-labels
+        shell: bash
+        run: |
+          if [[ "${{ github.repository }}" != "tempoxyz/tempo" ]]; then
+            cat <<'LABELS' >> "$GITHUB_OUTPUT"
+          value<<EOF
+          org.opencontainers.image.created=
+          org.opencontainers.image.description=
+          org.opencontainers.image.licenses=
+          org.opencontainers.image.revision=
+          org.opencontainers.image.source=
+          org.opencontainers.image.title=
+          org.opencontainers.image.url=
+          org.opencontainers.image.version=
+          EOF
+          LABELS
+          fi
+
       - name: Docker metadata for tempo
         id: meta-tempo
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
@@ -47,6 +66,7 @@ jobs:
             ${{ env.REGISTRY }}/tempo
             docker.io/tempoxyz/tempo
           bake-target: tempo
+          labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
@@ -67,6 +87,7 @@ jobs:
             ${{ env.REGISTRY }}/tempo-bench
             docker.io/tempoxyz/tempo-bench
           bake-target: tempo-bench
+          labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
@@ -87,6 +108,7 @@ jobs:
             ${{ env.REGISTRY }}/tempo-sidecar
             docker.io/tempoxyz/tempo-sidecar
           bake-target: tempo-sidecar
+          labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
@@ -107,6 +129,7 @@ jobs:
             ${{ env.REGISTRY }}/tempo-xtask
             docker.io/tempoxyz/tempo-xtask
           bake-target: tempo-xtask
+          labels: ${{ steps.docker-labels.outputs.value }}
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
