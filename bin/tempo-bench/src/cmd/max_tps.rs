@@ -420,64 +420,61 @@ impl MaxTpsArgs {
         let rate_limiter =
             RateLimiter::direct(Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap()));
 
-        let mut pending_txs = generate_transactions(
-            signer_provider_manager.clone(),
-            gen_input,
-            counters.clone(),
-        )
-        .buffer_unordered(self.max_concurrent_requests)
-        .filter_map(|result| async {
-            match result {
-                Ok(bytes) => Some(bytes),
-                Err(e) => {
-                    debug!(?e, "Transaction generation failed");
-                    None
-                }
-            }
-        })
-        .boxed()
-        .ratelimit_stream(&rate_limiter)
-        .zip(stream::repeat_with(|| {
-            signer_provider_manager.random_unsigned_provider()
-        }))
-        .map(|(bytes, provider)| async move {
-            tokio::time::timeout(
-                Duration::from_secs(1),
-                provider.send_raw_transaction(&bytes),
-            )
-            .await
-        })
-        .buffer_unordered(self.max_concurrent_requests)
-        .filter_map({
-            let counters = counters.clone();
-            move |result| {
-                let counters = counters.clone();
-                async move {
+        let mut pending_txs =
+            generate_transactions(signer_provider_manager.clone(), gen_input, counters.clone())
+                .buffer_unordered(self.max_concurrent_requests)
+                .filter_map(|result| async {
                     match result {
-                        Ok(Ok(pending_tx)) => {
-                            counters.sent.fetch_add(1, Ordering::Relaxed);
-                            counters.success.fetch_add(1, Ordering::Relaxed);
-                            Some(pending_tx)
-                        }
-                        Ok(Err(err)) => {
-                            counters.sent.fetch_add(1, Ordering::Relaxed);
-                            counters.failed.fetch_add(1, Ordering::Relaxed);
-                            debug!(?err, "Failed to send transaction");
-                            None
-                        }
-                        Err(_) => {
-                            counters.sent.fetch_add(1, Ordering::Relaxed);
-                            counters.failed.fetch_add(1, Ordering::Relaxed);
-                            debug!("Transaction sending timed out");
+                        Ok(bytes) => Some(bytes),
+                        Err(e) => {
+                            debug!(?e, "Transaction generation failed");
                             None
                         }
                     }
-                }
-            }
-        })
-        .take_until(sleep(Duration::from_secs(self.duration)))
-        .collect::<VecDeque<_>>()
-        .await;
+                })
+                .boxed()
+                .ratelimit_stream(&rate_limiter)
+                .zip(stream::repeat_with(|| {
+                    signer_provider_manager.random_unsigned_provider()
+                }))
+                .map(|(bytes, provider)| async move {
+                    tokio::time::timeout(
+                        Duration::from_secs(1),
+                        provider.send_raw_transaction(&bytes),
+                    )
+                    .await
+                })
+                .buffer_unordered(self.max_concurrent_requests)
+                .filter_map({
+                    let counters = counters.clone();
+                    move |result| {
+                        let counters = counters.clone();
+                        async move {
+                            match result {
+                                Ok(Ok(pending_tx)) => {
+                                    counters.sent.fetch_add(1, Ordering::Relaxed);
+                                    counters.success.fetch_add(1, Ordering::Relaxed);
+                                    Some(pending_tx)
+                                }
+                                Ok(Err(err)) => {
+                                    counters.sent.fetch_add(1, Ordering::Relaxed);
+                                    counters.failed.fetch_add(1, Ordering::Relaxed);
+                                    debug!(?err, "Failed to send transaction");
+                                    None
+                                }
+                                Err(_) => {
+                                    counters.sent.fetch_add(1, Ordering::Relaxed);
+                                    counters.failed.fetch_add(1, Ordering::Relaxed);
+                                    debug!("Transaction sending timed out");
+                                    None
+                                }
+                            }
+                        }
+                    }
+                })
+                .take_until(sleep(Duration::from_secs(self.duration)))
+                .collect::<VecDeque<_>>()
+                .await;
 
         cancel_token.cancel();
 
