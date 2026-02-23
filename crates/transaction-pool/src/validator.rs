@@ -1056,8 +1056,6 @@ pub fn ensure_intrinsic_gas_tempo_tx(
     }
 }
 
-<<<<<<< HEAD
-=======
 impl<Client> TransactionValidator for TempoTransactionValidator<Client>
 where
     Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
@@ -1131,7 +1129,6 @@ where
     }
 }
 
->>>>>>> private-fork/main
 #[cfg(test)]
 mod tests {
     use super::*;
