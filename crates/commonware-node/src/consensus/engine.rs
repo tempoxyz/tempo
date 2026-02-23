@@ -22,8 +22,8 @@ use commonware_cryptography::{
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::paged::CacheRef,
-    spawn_cell,
+    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
+    buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_storage::archive::immutable;
 use commonware_utils::NZU64;
@@ -118,7 +118,8 @@ where
             + Spawner
             + Storage
             + Metrics
-            + Network,
+            + Network
+            + BufferPooler,
     {
         let execution_node = self
             .execution_node
@@ -149,7 +150,8 @@ where
             },
         );
 
-        let page_cache_ref = CacheRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+        let page_cache_ref =
+            CacheRef::from_pooler(&context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
         let scheme_provider = SchemeProvider::new();
 
@@ -420,7 +422,8 @@ where
 
 pub struct Engine<TContext, TBlocker, TPeerManager>
 where
-    TContext: Clock
+    TContext: BufferPooler
+        + Clock
         + governor::clock::Clock
         + Rng
         + CryptoRng
@@ -472,7 +475,8 @@ where
 
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
 where
-    TContext: Clock
+    TContext: BufferPooler
+        + Clock
         + governor::clock::Clock
         + Rng
         + CryptoRng
