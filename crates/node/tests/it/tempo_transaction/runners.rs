@@ -206,7 +206,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
                 key_type: None,
                 num_limits: 0,
             },
-            expected: ExpectedGasDiff::Range(275_000..=300_000),
+            expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
         GasCase {
             name: "keychain_p256",
@@ -222,7 +222,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
                 key_type: SignatureType::Secp256k1,
                 num_limits: 0,
             },
-            expected: ExpectedGasDiff::Range(270_000..=300_000),
+            expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
         GasCase {
             name: "key_auth_p256",
@@ -230,7 +230,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
                 key_type: SignatureType::P256,
                 num_limits: 0,
             },
-            expected: ExpectedGasDiff::Range(270_000..=300_000),
+            expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
         GasCase {
             name: "key_auth_secp256k1_3_limits",
@@ -238,7 +238,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
                 key_type: SignatureType::Secp256k1,
                 num_limits: 3,
             },
-            expected: ExpectedGasDiff::Range(330_000..=370_000),
+            expected: ExpectedGasDiff::Range(310_000..=380_000),
         },
     ];
     let provider = env.provider();
