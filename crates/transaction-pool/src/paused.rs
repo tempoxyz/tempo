@@ -344,7 +344,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
     fn test_evict_invalidated_with_spending_limit_spends() {
         let mut pool = PausedFeeTokenPool::new();
         let user_address = Address::random();
@@ -394,8 +393,6 @@ mod tests {
     }
 
     #[test]
-=======
->>>>>>> private-fork/main
     fn test_contains() {
         let mut pool = PausedFeeTokenPool::new();
         let fee_token = Address::random();

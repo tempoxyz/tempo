@@ -392,15 +392,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-json-abi"
-<<<<<<< HEAD
 version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9dbe713da0c737d9e5e387b0ba790eb98b14dd207fe53eef50e19a5a8ec3dac"
-=======
-version = "1.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e414aa37b335ad2acb78a95814c59d137d53139b412f87aed1e10e2d862cd49"
->>>>>>> private-fork/main
 dependencies = [
  "alloy-primitives",
  "alloy-sol-type-parser",
@@ -464,15 +458,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-primitives"
-<<<<<<< HEAD
 version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de3b431b4e72cd8bd0ec7a50b4be18e73dab74de0dba180eef171055e5d5926e"
-=======
-version = "1.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66b1483f8c2562bf35f0270b697d5b5fe8170464e935bd855a4c5eaf6f89b354"
->>>>>>> private-fork/main
 dependencies = [
  "alloy-rlp",
  "arbitrary",
@@ -831,15 +819,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-macro"
-<<<<<<< HEAD
 version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab81bab693da9bb79f7a95b64b394718259fdd7e41dceeced4cad57cb71c4f6a"
-=======
-version = "1.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c4b64c8146291f750c3f391dff2dd40cf896f7e2b253417a31e342aa7265baa"
->>>>>>> private-fork/main
 dependencies = [
  "alloy-sol-macro-expander",
  "alloy-sol-macro-input",
@@ -851,15 +833,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-macro-expander"
-<<<<<<< HEAD
 version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "489f1620bb7e2483fb5819ed01ab6edc1d2f93939dce35a5695085a1afd1d699"
-=======
-version = "1.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9df903674682f9bae8d43fdea535ab48df2d6a8cb5104ca29c58ada22ef67b3"
->>>>>>> private-fork/main
 dependencies = [
  "alloy-json-abi",
  "alloy-sol-macro-input",
@@ -876,15 +852,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-macro-input"
-<<<<<<< HEAD
 version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56cef806ad22d4392c5fc83cf8f2089f988eb99c7067b4e0c6f1971fc1cca318"
-=======
-version = "1.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "737b8a959f527a86e07c44656db237024a32ae9b97d449f788262a547e8aa136"
->>>>>>> private-fork/main
 dependencies = [
  "alloy-json-abi",
  "const-hex",
@@ -900,15 +870,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-type-parser"
-<<<<<<< HEAD
 version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6df77fea9d6a2a75c0ef8d2acbdfd92286cc599983d3175ccdc170d3433d249"
-=======
-version = "1.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b28e6e86c6d2db52654b65a5a76b4f57eae5a32a7f0aa2222d1dbdb74e2cb8e0"
->>>>>>> private-fork/main
 dependencies = [
  "serde",
  "winnow",
@@ -916,15 +880,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-types"
-<<<<<<< HEAD
 version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64612d29379782a5dde6f4b6570d9c756d734d760c0c94c254d361e678a6591f"
-=======
-version = "1.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdf7effe4ab0a4f52c865959f790036e61a7983f68b13b75d7fbcedf20b753ce"
->>>>>>> private-fork/main
 dependencies = [
  "alloy-json-abi",
  "alloy-primitives",
@@ -3298,11 +3256,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
-<<<<<<< HEAD
  "syn 1.0.109",
-=======
- "syn 2.0.116",
->>>>>>> private-fork/main
 ]
 
 [[package]]
@@ -3503,7 +3457,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3801,11 +3755,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
-<<<<<<< HEAD
  "windows-sys 0.52.0",
-=======
- "windows-sys 0.61.2",
->>>>>>> private-fork/main
 ]
 
 [[package]]
@@ -4265,11 +4215,7 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
-<<<<<<< HEAD
  "windows-link 0.1.3",
-=======
- "windows-link 0.2.1",
->>>>>>> private-fork/main
  "windows-result 0.4.1",
 ]
 
@@ -6171,7 +6117,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10822,11 +10768,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
-<<<<<<< HEAD
  "windows-sys 0.52.0",
-=======
- "windows-sys 0.61.2",
->>>>>>> private-fork/main
 ]
 
 [[package]]
@@ -10906,11 +10848,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs 1.0.6",
-<<<<<<< HEAD
  "windows-sys 0.52.0",
-=======
- "windows-sys 0.61.2",
->>>>>>> private-fork/main
 ]
 
 [[package]]
@@ -11629,15 +11567,9 @@ dependencies = [
 
 [[package]]
 name = "syn-solidity"
-<<<<<<< HEAD
 version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "53f425ae0b12e2f5ae65542e00898d500d4d318b4baf09f40fd0d410454e9947"
-=======
-version = "1.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8658017776544996edc21c8c7cc8bb4f13db60955382f4bac25dc6303b38438"
->>>>>>> private-fork/main
 dependencies = [
  "paste",
  "proc-macro2",
@@ -11732,11 +11664,7 @@ dependencies = [
  "getrandom 0.4.1",
  "once_cell",
  "rustix",
-<<<<<<< HEAD
  "windows-sys 0.52.0",
-=======
- "windows-sys 0.61.2",
->>>>>>> private-fork/main
 ]
 
 [[package]]
@@ -13613,7 +13541,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
