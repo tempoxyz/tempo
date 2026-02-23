@@ -1,4 +1,7 @@
-use crate::rpc::eth_ext::transactions::{Transaction, TransactionsResponse};
+use crate::rpc::{
+    eth_ext::transactions::{Transaction, TransactionsResponse},
+    helpers::{parse_cursor, resolve_limit},
+};
 use alloy::consensus::Typed2718;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_core::rpc::result::internal_rpc_err;
@@ -44,28 +47,6 @@ impl<EthApi> TempoEthExt<EthApi> {
     }
 }
 
-/// Parses a cursor string of the form "block_number:tx_index".
-fn parse_tx_cursor(cursor: &str) -> Result<(u64, usize), jsonrpsee::types::ErrorObject<'static>> {
-    let parts: Vec<&str> = cursor.split(':').collect();
-    if parts.len() != 2 {
-        return Err(internal_rpc_err(
-            "invalid cursor format, expected 'block_number:tx_index'",
-        ));
-    }
-    let block_number = parts[0]
-        .parse::<u64>()
-        .map_err(|_| internal_rpc_err("invalid cursor: bad block_number"))?;
-    let tx_index = parts[1]
-        .parse::<usize>()
-        .map_err(|_| internal_rpc_err("invalid cursor: bad tx_index"))?;
-    Ok((block_number, tx_index))
-}
-
-/// Resolves pagination limit, default 10, max 100.
-fn resolve_limit(limit: Option<usize>) -> usize {
-    limit.unwrap_or(10).min(100)
-}
-
 #[async_trait::async_trait]
 impl<EthApi> TempoEthExtApiServer for TempoEthExt<EthApi>
 where
@@ -95,7 +76,7 @@ where
 
         let (cursor_block, cursor_tx_idx) = match params.cursor {
             Some(ref c) => {
-                let (b, t) = parse_tx_cursor(c)?;
+                let (b, t) = parse_cursor(c)?;
                 (Some(b), Some(t))
             }
             None => (None, None),
@@ -166,7 +147,7 @@ where
                     block_hash: Some(block_hash),
                     block_number: Some(block_num),
                     transaction_index: Some(tx_idx as u64),
-                    effective_gas_price: Some(base_fee as u128),
+                    effective_gas_price: Some(recovered_tx.effective_gas_price(Some(base_fee))),
                 };
 
                 results.push(rpc_tx);

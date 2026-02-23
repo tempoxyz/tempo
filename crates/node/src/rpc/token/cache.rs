@@ -10,6 +10,11 @@ use tempo_precompiles::{
 
 use super::token_id_from_address;
 
+/// Maximum number of role change events to keep in memory.
+/// Oldest entries are evicted when this limit is exceeded.
+/// 100K events at ~200 bytes each ≈ 20 MB.
+const MAX_CACHED_ROLE_CHANGES: usize = 100_000;
+
 /// In-memory cache for `TokenCreated` and `RoleMembershipUpdated` events.
 ///
 /// Stores immutable event data extracted from block receipts. Dynamic token
@@ -130,6 +135,13 @@ impl TokenEventCache {
         let mut inner = self.inner.write();
         inner.tokens.extend(new_tokens);
         inner.role_changes.extend(new_role_changes);
+
+        // Evict oldest role changes if cache exceeds capacity
+        if inner.role_changes.len() > MAX_CACHED_ROLE_CHANGES {
+            let excess = inner.role_changes.len() - MAX_CACHED_ROLE_CHANGES;
+            inner.role_changes.drain(..excess);
+        }
+
         inner.last_indexed_block = Some(block_number);
     }
 

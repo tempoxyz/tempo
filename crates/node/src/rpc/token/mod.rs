@@ -1,7 +1,10 @@
-use crate::rpc::token::{
-    role_history::{RoleChange, RoleHistoryFilters, RoleHistoryResponse},
-    tokens::{Token, TokensFilters, TokensResponse},
-    tokens_by_address::{AccountToken, TokensByAddressParams, TokensByAddressResponse},
+use crate::rpc::{
+    helpers::{parse_cursor, resolve_limit},
+    token::{
+        role_history::{RoleChange, RoleHistoryFilters, RoleHistoryResponse},
+        tokens::{Token, TokensFilters, TokensResponse},
+        tokens_by_address::{AccountToken, TokensByAddressParams, TokensByAddressResponse},
+    },
 };
 use alloy::{
     consensus::{TxReceipt, transaction::TxHashRef},
@@ -84,50 +87,42 @@ impl<EthApi> TempoToken<EthApi> {
 /// to be too far behind and only cached data is returned.
 const MAX_FALLBACK_SCAN_BLOCKS: u64 = 64;
 
-/// Resolves pagination limit, default 10, max 100.
-fn resolve_limit(limit: Option<usize>) -> usize {
-    limit.unwrap_or(10).min(100)
-}
-
-/// Parses a cursor string of the form "block_number:log_index".
-fn parse_cursor(cursor: &str) -> Result<(u64, usize), jsonrpsee::types::ErrorObject<'static>> {
-    let parts: Vec<&str> = cursor.split(':').collect();
-    if parts.len() != 2 {
-        return Err(internal_rpc_err(
-            "invalid cursor format, expected 'block_number:log_index'",
-        ));
-    }
-    let block_number = parts[0]
-        .parse::<u64>()
-        .map_err(|_| internal_rpc_err("invalid cursor: bad block_number"))?;
-    let log_index = parts[1]
-        .parse::<usize>()
-        .map_err(|_| internal_rpc_err("invalid cursor: bad log_index"))?;
-    Ok((block_number, log_index))
-}
-
-/// Checks if a token matches the given filters.
-fn matches_token_filters(token: &Token, filters: &TokensFilters) -> bool {
+/// Checks filters that can be evaluated from cached event data alone,
+/// without reading on-chain state. Returns false if the token definitely
+/// does not match, allowing us to skip the expensive state read.
+fn matches_cached_filters(cached: &cache::CachedToken, filters: &TokensFilters) -> bool {
     if let Some(ref currency) = filters.currency
-        && !token.currency.eq_ignore_ascii_case(currency)
+        && !cached.currency.eq_ignore_ascii_case(currency)
     {
         return false;
     }
     if let Some(creator) = filters.creator
-        && token.creator != creator
+        && cached.creator != creator
     {
         return false;
     }
     if let Some(ref created_at) = filters.created_at
-        && !created_at.in_range(token.created_at)
+        && !created_at.in_range(cached.created_at)
     {
         return false;
     }
     if let Some(ref name) = filters.name
-        && !token.name.to_lowercase().contains(&name.to_lowercase())
+        && !cached.name.to_lowercase().contains(&name.to_lowercase())
     {
         return false;
     }
+    if let Some(ref symbol) = filters.symbol
+        && !cached.symbol.eq_ignore_ascii_case(symbol)
+    {
+        return false;
+    }
+    true
+}
+
+/// Checks filters that require on-chain state (paused, quote_token,
+/// supply_cap, total_supply). Called only after `matches_cached_filters`
+/// passes to avoid unnecessary state reads.
+fn matches_state_filters(token: &Token, filters: &TokensFilters) -> bool {
     if let Some(paused) = filters.paused
         && token.paused != paused
     {
@@ -140,11 +135,6 @@ fn matches_token_filters(token: &Token, filters: &TokensFilters) -> bool {
     }
     if let Some(ref supply_cap) = filters.supply_cap
         && !supply_cap.in_range(token.supply_cap)
-    {
-        return false;
-    }
-    if let Some(ref symbol) = filters.symbol
-        && !token.symbol.eq_ignore_ascii_case(symbol)
     {
         return false;
     }
@@ -363,6 +353,11 @@ where
                 continue;
             }
 
+            // Pre-filter on cached fields to avoid expensive state reads
+            if !matches_cached_filters(cached, &filters) {
+                continue;
+            }
+
             let token_data = state
                 .with_read_only_storage_ctx(TempoHardfork::default(), || {
                     let t = TIP20Token::from_address(cached.address)?;
@@ -394,13 +389,15 @@ where
                 transfer_policy_id,
             };
 
-            if matches_token_filters(&token, &filters) {
-                if results.len() >= limit {
-                    next_cursor = Some(format!("{}:{}", cached.block_number, cached.log_index));
-                    break;
-                }
-                results.push(token);
+            if !matches_state_filters(&token, &filters) {
+                continue;
             }
+
+            if results.len() >= limit {
+                next_cursor = Some(format!("{}:{}", cached.block_number, cached.log_index));
+                break;
+            }
+            results.push(token);
         }
 
         Ok(TokensResponse {
@@ -581,6 +578,11 @@ where
                 continue;
             }
 
+            // Pre-filter on cached fields to avoid expensive state reads
+            if !matches_cached_filters(cached, &filters) {
+                continue;
+            }
+
             let token_address = cached.address;
 
             let read_result = state
@@ -637,7 +639,7 @@ where
                 transfer_policy_id,
             };
 
-            if !matches_token_filters(&token, &filters) {
+            if !matches_state_filters(&token, &filters) {
                 continue;
             }
 
