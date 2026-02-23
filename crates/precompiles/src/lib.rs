@@ -71,6 +71,15 @@ pub trait Precompile {
 }
 
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
+    // Override MODEXP (0x05) to use Berlin pricing instead of Osaka (EIP-7883).
+    // Tempo maps all hardforks to SpecId::OSAKA, which would use the Osaka MODEXP
+    // with a higher minimum gas (500 vs 200). This override keeps Berlin pricing
+    // for all current Tempo hardforks.
+    let berlin_modexp = revm::precompile::modexp::BERLIN;
+    let modexp_dyn: DynPrecompile =
+        (berlin_modexp.id().clone(), *berlin_modexp.precompile()).into();
+    precompiles.extend_precompiles([(*berlin_modexp.address(), modexp_dyn)]);
+
     let cfg = cfg.clone();
 
     precompiles.set_precompile_lookup(move |address: &Address| {
