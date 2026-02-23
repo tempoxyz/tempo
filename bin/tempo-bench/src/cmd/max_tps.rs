@@ -191,12 +191,12 @@ pub struct MaxTpsArgs {
     #[arg(long)]
     use_standard_nonces: bool,
 
-    /// Batch size for signing transactions when using expiring nonces.
+    /// Batch duration in seconds for generating/signing transactions when using expiring nonces.
     ///
     /// Since expiring nonces have a 25-second validity window, transactions must be signed
-    /// in batches close to when they're sent. This controls how many transactions to
-    /// generate/sign before sending. Default is 15 seconds worth of transactions at the
-    /// target TPS (e.g., 75,000 at 5,000 TPS).
+    /// in batches close to when they're sent. This controls how many seconds worth of
+    /// transactions to generate/sign before sending. Default is 5 seconds worth of
+    /// transactions at the target TPS (e.g., 25,000 at 5,000 TPS).
     #[arg(long)]
     expiring_batch_secs: Option<u64>,
 }
@@ -397,6 +397,11 @@ impl MaxTpsArgs {
             None
         };
 
+        // For expiring nonces, we need to generate/sign/send in batches to avoid
+        // transactions expiring before they're sent. We pipeline batch generation
+        // with sending to avoid gaps that would cause empty blocks.
+        let use_expiring_nonces = !self.use_2d_nonces && !self.use_standard_nonces;
+
         let gen_input = GenerateTransactionsInput {
             total_txs,
             accounts,
@@ -411,14 +416,14 @@ impl MaxTpsArgs {
             erc20_tokens,
             recipients,
             tx_id: Arc::new(AtomicUsize::new(0)),
+            expiry_secs: if use_expiring_nonces {
+                Some(ExpiringNonceFiller::DEFAULT_EXPIRY_SECS)
+            } else {
+                None
+            },
         };
-
-        // For expiring nonces, we need to generate/sign/send in batches to avoid
-        // transactions expiring before they're sent. We pipeline batch generation
-        // with sending to avoid gaps that would cause empty blocks.
-        let use_expiring_nonces = !self.use_2d_nonces && !self.use_standard_nonces;
         let mut pending_txs = if use_expiring_nonces {
-            let batch_secs = self.expiring_batch_secs.unwrap_or(15);
+            let batch_secs = self.expiring_batch_secs.unwrap_or(5);
             let batch_size = self.tps * batch_secs;
             let num_batches = total_txs.div_ceil(batch_size);
 
@@ -768,6 +773,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         erc20_tokens,
         recipients,
         tx_id,
+        expiry_secs,
     } = input;
 
     let txs_per_sender = total_txs / accounts;
@@ -934,7 +940,16 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let transactions = builders
         .into_par_iter()
         .progress()
-        .map(|(tx, signer)| -> eyre::Result<TempoTxEnvelope> {
+        .map(|(mut tx, signer)| -> eyre::Result<TempoTxEnvelope> {
+            // Re-stamp valid_before right before signing so it's as fresh as possible.
+            // The filler sets it during generation, but signing may happen much later.
+            if let Some(expiry) = expiry_secs {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock before UNIX_EPOCH")
+                    .as_secs();
+                tx.set_valid_before(now + expiry);
+            }
             let mut tx = tx.build_unsigned()?;
             let sig = signer.sign_transaction_sync(tx.as_dyn_signable_mut())?;
             Ok(tx.into_envelope(sig))
@@ -1213,4 +1228,6 @@ struct GenerateTransactionsInput<F: TxFiller<TempoNetwork>> {
     /// Shared counter used to bump priority fee, ensuring unique tx hashes across batches
     /// when using expiring nonces (which share nonce=0).
     tx_id: Arc<AtomicUsize>,
+    /// If set, re-stamp `valid_before` at sign time for freshness.
+    expiry_secs: Option<u64>,
 }

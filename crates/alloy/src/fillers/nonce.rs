@@ -94,8 +94,7 @@ impl ExpiringNonceFiller {
 
     /// Create a new filler with a custom expiry window.
     ///
-    /// For benchmarking purposes, use a large value (e.g., 3600 for 1 hour) to avoid
-    /// transactions expiring before they're sent.
+    /// The protocol enforces a maximum of 30 seconds. The default is 25 seconds.
     pub fn with_expiry_secs(expiry_secs: u64) -> Self {
         Self { expiry_secs }
     }
