@@ -14,6 +14,7 @@ pub mod feed;
 pub mod metrics;
 pub(crate) mod peer_manager;
 pub(crate) mod utils;
+pub(crate) mod validators;
 
 pub(crate) mod subblocks;
 
