@@ -178,7 +178,7 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 
 /// Development chainspec with funded dev accounts and activated tempo hardforks
 ///
-/// `cargo x generate-genesis -o dev.json --accounts 10`
+/// `cargo x generate-genesis -o dev.json --accounts 10 --no-dkg-in-genesis`
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/dev.json"))
         .expect("`./genesis/dev.json` must be present and deserializable");

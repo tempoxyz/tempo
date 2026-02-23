@@ -1,9 +1,6 @@
 use commonware_consensus::types::FixedEpocher;
-use commonware_cryptography::{
-    bls12381::primitives::group::Share,
-    ed25519::{PrivateKey, PublicKey},
-};
-use commonware_runtime::{Clock, Metrics, Spawner, Storage};
+use commonware_cryptography::{bls12381::primitives::group::Share, ed25519::PrivateKey};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
 use rand_core::CryptoRngCore;
@@ -16,17 +13,16 @@ mod validators;
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
-use ingress::{Command, Message};
-
 use crate::epoch;
 
-pub(crate) async fn init<TContext, TPeerManager>(
+use ingress::{Command, Message};
+
+pub(crate) async fn init<TContext>(
     context: TContext,
-    config: Config<TPeerManager>,
-) -> eyre::Result<(Actor<TContext, TPeerManager>, Mailbox)>
+    config: Config,
+) -> eyre::Result<(Actor<TContext>, Mailbox)>
 where
-    TContext: Clock + CryptoRngCore + Metrics + Spawner + Storage,
-    TPeerManager: commonware_p2p::AddressableManager<PublicKey = PublicKey> + Sync,
+    TContext: BufferPooler + Clock + CryptoRngCore + Metrics + Spawner + Storage,
 {
     let (tx, rx) = mpsc::unbounded();
 
@@ -37,7 +33,7 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Config<TPeerManager> {
+pub(crate) struct Config {
     pub(crate) epoch_strategy: FixedEpocher,
 
     pub(crate) epoch_manager: epoch::manager::Mailbox,
@@ -67,8 +63,4 @@ pub(crate) struct Config<TPeerManager> {
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,
-
-    /// The peer manager on which the dkg actor will register new peers for a
-    /// given epoch after reading them from the smart contract.
-    pub(crate) peer_manager: TPeerManager,
 }
