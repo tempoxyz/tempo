@@ -28,9 +28,7 @@ pub(super) struct Testnet {
 impl Testnet {
     pub(super) async fn new() -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
-        let rpc_url =
-            std::env::var("TEMPO_TESTNET_RPC_URL").unwrap_or_else(|_| TESTNET_RPC_URL.to_string());
-        let provider = alloy::providers::RootProvider::new_http(rpc_url.parse()?);
+        let provider = alloy::providers::RootProvider::new_http(TESTNET_RPC_URL.parse()?);
         let chain_id = provider.get_chain_id().await?;
         Ok(Self { provider, chain_id })
     }

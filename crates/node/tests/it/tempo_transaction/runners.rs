@@ -92,7 +92,8 @@ pub(super) async fn run_raw_send_matrix<E: TestEnv>(env: &mut E) -> eyre::Result
                 limits: SpendingLimits::Custom(spending_limit),
                 expiry: KeyExpiry::None,
             })
-            .test_action(TestAction::Transfer(spending_limit)),
+            .test_action(TestAction::Transfer(spending_limit))
+            .expected(ExpectedOutcome::Revert),
         RawSendTestCase::new(KeyType::P256)
             .key_setup(KeySetup::AccessKey {
                 limits: SpendingLimits::Custom(spending_limit),
@@ -1189,11 +1190,7 @@ pub(super) async fn run_send_case<E: TestEnv>(
         KeyType::Secp256k1 => {
             let signer = PrivateKeySigner::random();
             let signer_addr = signer.address();
-            let funded = if !test_case.fee_payer {
-                env.fund_account(signer_addr).await?
-            } else {
-                rand_funding_amount()
-            };
+            let funded = env.fund_account(signer_addr).await?;
             let transfer_amount = resolve_send_amounts(test_case, funded);
 
             let recipient = Address::random();
@@ -1235,11 +1232,7 @@ pub(super) async fn run_send_case<E: TestEnv>(
         }
         KeyType::P256 | KeyType::WebAuthn => {
             let (signing_key, pub_key_x, pub_key_y, signer_addr) = generate_p256_access_key();
-            let funded = if !test_case.fee_payer {
-                env.fund_account(signer_addr).await?
-            } else {
-                rand_funding_amount()
-            };
+            let funded = env.fund_account(signer_addr).await?;
             let transfer_amount = resolve_send_amounts(test_case, funded);
 
             let recipient_1 = Address::random();

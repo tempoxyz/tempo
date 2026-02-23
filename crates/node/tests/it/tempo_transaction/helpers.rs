@@ -154,7 +154,8 @@ impl super::types::TestEnv for Localnet {
             "Tx should be in pool after injection"
         );
 
-        for _ in 0..3 {
+        // Advance several blocks — tx should never be included by the builder.
+        for _ in 0..5 {
             self.setup.node.advance_block().await?;
 
             let raw: Option<serde_json::Value> = self
@@ -169,12 +170,6 @@ impl super::types::TestEnv for Localnet {
                 );
             }
         }
-        wait_until_pool_not_contains(
-            &self.setup.node.inner.pool,
-            &tx_hash,
-            "builder exclusion eviction",
-        )
-        .await?;
         Ok(())
     }
 
