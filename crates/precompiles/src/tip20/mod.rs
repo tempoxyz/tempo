@@ -2603,6 +2603,42 @@ pub(crate) mod tests {
         }
 
         #[test]
+        fn test_permit_invalid_v_values() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                spender,
+                ..
+            } = PermitFixture::new();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+                for v in [0u8, 1] {
+                    let result = token.permit(ITIP20::permitCall {
+                        owner: admin,
+                        spender,
+                        value: U256::from(1000),
+                        deadline: U256::MAX,
+                        v,
+                        r: B256::ZERO,
+                        s: B256::ZERO,
+                    });
+
+                    assert!(
+                        matches!(
+                            result,
+                            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidSignature(_)))
+                        ),
+                        "v={v} should revert with InvalidSignature"
+                    );
+                }
+
+                Ok(())
+            })
+        }
+
+        #[test]
         fn test_permit_zero_address_recovery_reverts() -> eyre::Result<()> {
             let PermitFixture {
                 mut storage,
