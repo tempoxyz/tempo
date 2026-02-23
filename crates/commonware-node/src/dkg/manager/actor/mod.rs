@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, num::NonZeroU32, task::Poll, time::Duration};
+use std::{collections::BTreeMap, num::NonZeroU32, task::Poll};
 
 use alloy_consensus::BlockHeader as _;
 use bytes::{Buf, BufMut};
@@ -20,7 +20,7 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_p2p::{
-    AddressableManager, Receiver, Recipients, Sender,
+    Receiver, Recipients, Sender,
     utils::mux::{self, MuxHandle},
 };
 use commonware_parallel::Sequential;
@@ -33,7 +33,6 @@ use futures::{
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
-use reth_ethereum::network::NetworkInfo;
 use reth_provider::{BlockNumReader, HeaderProvider};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
@@ -41,15 +40,17 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn, warn_span};
 
 use crate::{
     consensus::{Digest, block::Block},
-    dkg::manager::{
-        Command,
-        ingress::{GetDkgOutcome, VerifyDealerLog},
-        validators::{self, DecodedValidator},
-    },
+    validators::read_validator_config_with_retry,
 };
 
 mod state;
 use state::State;
+
+use super::{
+    Command,
+    ingress::{GetDkgOutcome, VerifyDealerLog},
+    validators,
+};
 
 /// Wire message type for DKG protocol communication.
 pub(crate) enum Message {
@@ -104,13 +105,12 @@ impl Read for Message {
     }
 }
 
-pub(crate) struct Actor<TContext, TPeerManager>
+pub(crate) struct Actor<TContext>
 where
     TContext: Clock + commonware_runtime::Metrics + commonware_runtime::Storage,
-    TPeerManager: AddressableManager,
 {
     /// The actor configuration passed in when constructing the actor.
-    config: super::Config<TPeerManager>,
+    config: super::Config,
 
     /// The runtime context passed in when constructing the actor.
     context: ContextCell<TContext>,
@@ -123,14 +123,17 @@ where
     metrics: Metrics,
 }
 
-impl<TContext, TPeerManager> Actor<TContext, TPeerManager>
+impl<TContext> Actor<TContext>
 where
-    TContext:
-        Clock + CryptoRngCore + commonware_runtime::Metrics + Spawner + commonware_runtime::Storage,
-    TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
+    TContext: commonware_runtime::BufferPooler
+        + Clock
+        + CryptoRngCore
+        + commonware_runtime::Metrics
+        + Spawner
+        + commonware_runtime::Storage,
 {
     pub(super) async fn new(
-        config: super::Config<TPeerManager>,
+        config: super::Config,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
@@ -235,26 +238,6 @@ where
                 format!("unable to prune storage before up until epoch `{previous}`",)
             })?;
         }
-
-        // Makes use of the on-chain validator config being append only: as long
-        // as the best available block exceeds the boundary of the parent epoch,
-        // all validators will be present and their sockete addresses be read.
-        let all_validators = read_validator_config_with_retry(
-            &self.context,
-            &self.config.execution_node,
-            Target::Best {
-                min_height: state.boundary_of_parent_epoch(&self.config.epoch_strategy),
-            },
-            &self.metrics.attempts_to_read_validator_contract,
-        )
-        .await;
-
-        let all_peers = construct_peer_set(&state, &all_validators);
-        self.metrics.peers.set(all_peers.len() as i64);
-        self.config
-            .peer_manager
-            .track(state.epoch.get(), all_peers)
-            .await;
 
         self.enter_epoch(&state)
             .wrap_err("could not instruct epoch manager to enter a new epoch")?;
@@ -716,12 +699,13 @@ where
         let all_validators = read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
-            Target::Block(
-                self.config
+            crate::validators::ReadTarget::Exact {
+                height: self
+                    .config
                     .epoch_strategy
                     .last(round.epoch())
                     .expect("epoch strategy is valid for all epochs"),
-            ),
+            },
             &self.metrics.attempts_to_read_validator_contract,
         )
         .await;
@@ -864,12 +848,13 @@ where
         let all_validators = read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
-            Target::Block(
-                self.config
+            crate::validators::ReadTarget::Exact {
+                height: self
+                    .config
                     .epoch_strategy
                     .last(round.epoch())
                     .expect("epoch strategy is valid for all epochs"),
-            ),
+            },
             &self.metrics.attempts_to_read_validator_contract,
         )
         .await;
@@ -1313,8 +1298,6 @@ where
 
 #[derive(Clone)]
 struct Metrics {
-    peers: Gauge,
-
     shares_distributed: Gauge,
     shares_received: Gauge,
     acks_received: Gauge,
@@ -1346,13 +1329,6 @@ impl Metrics {
             "syncing_players",
             "how many syncing players were registered; these will become players in the next ceremony",
             syncing_players.clone(),
-        );
-
-        let peers = Gauge::default();
-        context.register(
-            "peers",
-            "how many peers are registered overall for the latest epoch",
-            peers.clone(),
         );
 
         let failures = Counter::default();
@@ -1452,7 +1428,6 @@ impl Metrics {
         );
 
         Self {
-            peers,
             syncing_players,
             shares_distributed,
             shares_received,
@@ -1479,92 +1454,6 @@ impl Metrics {
         self.dealings_read.set(0);
         self.bad_dealings.set(0);
     }
-}
-
-enum Target {
-    Best { min_height: Height },
-    Block(Height),
-}
-
-/// Attempts to read the validator config from the smart contract, retrying
-/// until the required block height is available.
-///
-/// With [`Target::Best`], reads from the best available block as long as it is
-/// at least `min_height`. With [`Target::Block`], reads from exactly the
-/// specified block height.
-async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
-    context: &C,
-    node: &TempoFullNode,
-    target: Target,
-    metric: &Counter,
-) -> ordered::Map<PublicKey, DecodedValidator> {
-    let mut attempts = 0;
-    const MIN_RETRY: Duration = Duration::from_secs(1);
-    const MAX_RETRY: Duration = Duration::from_secs(30);
-
-    'read_contract: loop {
-        metric.inc();
-        attempts += 1;
-
-        let target_height = match target {
-            Target::Block(height) => height,
-            Target::Best { min_height } => node
-                .provider
-                .best_block_number()
-                .ok()
-                .map(Height::new)
-                .filter(|best| best >= &min_height)
-                .unwrap_or(min_height),
-        };
-
-        if let Ok(validators) =
-            validators::read_from_contract_at_height(attempts, node, target_height).await
-        {
-            break 'read_contract validators;
-        }
-
-        let retry_after = MIN_RETRY.saturating_mul(attempts).min(MAX_RETRY);
-        let is_syncing = node.network.is_syncing();
-        let best_block = node.provider.best_block_number();
-        let blocks_behind = best_block
-            .as_ref()
-            .ok()
-            .map(|best| target_height.get().saturating_sub(*best));
-        tracing::warn_span!("read_validator_config_with_retry").in_scope(|| {
-            warn!(
-                attempts,
-                retry_after = %tempo_telemetry_util::display_duration(retry_after),
-                is_syncing,
-                best_block = %tempo_telemetry_util::display_result(&best_block),
-                %target_height,
-                blocks_behind = %tempo_telemetry_util::display_option(&blocks_behind),
-                "reading validator config from contract failed; will retry",
-            );
-        });
-        context.sleep(retry_after).await;
-    }
-}
-
-fn construct_peer_set(
-    state: &State,
-    validators: &ordered::Map<PublicKey, DecodedValidator>,
-) -> ordered::Map<PublicKey, commonware_p2p::Address> {
-    let all_keys = state
-        .dealers()
-        .iter()
-        .chain(state.players().iter())
-        .chain(state.syncers.iter());
-
-    ordered::Map::from_iter_dedup(all_keys.map(|key| {
-        let addr = validators
-            .get_value(key)
-            .expect(
-                "all DKG participants must have an entry in the \
-                 unfiltered, contract validator set",
-            )
-            .outbound;
-        (key.clone(), commonware_p2p::Address::Symmetric(addr))
-    }))
 }
 
 /// A wrapper around [`marshal::ingress::mailbox::AncestorStream`] wrapped in
