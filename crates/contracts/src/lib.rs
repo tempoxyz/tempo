@@ -1,7 +1,10 @@
 //! Tempo predeployed contracts and bindings.
 
+#![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+
+extern crate alloc;
 
 use alloy_primitives::{Address, B256, address, b256};
 
@@ -91,7 +94,10 @@ mod tests {
     //!
     //! Optionally set `ETH_RPC_URL` to use a custom RPC endpoint.
 
+    extern crate std;
+
     use super::*;
+    use alloc::string::{String, ToString};
     use alloy_primitives::{B256, keccak256};
     use alloy_provider::{Provider, ProviderBuilder};
 
