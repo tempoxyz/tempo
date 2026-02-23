@@ -40,16 +40,17 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn, warn_span};
 
 use crate::{
     consensus::{Digest, block::Block},
-    dkg::manager::{
-        Command,
-        ingress::{GetDkgOutcome, VerifyDealerLog},
-        validators,
-    },
     validators::read_validator_config_with_retry,
 };
 
 mod state;
 use state::State;
+
+use super::{
+    Command,
+    ingress::{GetDkgOutcome, VerifyDealerLog},
+    validators,
+};
 
 /// Wire message type for DKG protocol communication.
 pub(crate) enum Message {
@@ -124,8 +125,12 @@ where
 
 impl<TContext> Actor<TContext>
 where
-    TContext:
-        Clock + CryptoRngCore + commonware_runtime::Metrics + Spawner + commonware_runtime::Storage,
+    TContext: commonware_runtime::BufferPooler
+        + Clock
+        + CryptoRngCore
+        + commonware_runtime::Metrics
+        + Spawner
+        + commonware_runtime::Storage,
 {
     pub(super) async fn new(
         config: super::Config,
