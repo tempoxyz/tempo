@@ -74,6 +74,20 @@ pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
+/// Returns the base Ethereum precompiles for the given Tempo hardfork.
+///
+/// Pre-T2 hardforks use Prague precompiles, T2+ uses Osaka precompiles.
+pub fn tempo_precompiles(hardfork: TempoHardfork) -> PrecompilesMap {
+    use revm::{handler::EthPrecompiles, primitives::hardfork::SpecId};
+
+    let spec = if hardfork.is_t2() {
+        SpecId::OSAKA
+    } else {
+        SpecId::PRAGUE
+    };
+    PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles)
+}
+
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
     let cfg = cfg.clone();
 

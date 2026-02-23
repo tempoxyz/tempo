@@ -5,12 +5,11 @@ use revm::{
     Context, Inspector,
     context::{CfgEnv, ContextError, Evm, FrameStack},
     handler::{
-        EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult,
+        EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult,
         instructions::EthInstructions,
     },
     inspector::InspectorEvmTr,
     interpreter::interpreter::EthInterpreter,
-    primitives::hardfork::SpecId,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::extend_tempo_precompiles;
@@ -45,8 +44,7 @@ pub struct TempoEvm<DB: Database, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        let spec = SpecId::from(ctx.cfg.spec);
-        let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
+        let mut precompiles = tempo_precompiles::tempo_precompiles(ctx.cfg.spec);
         extend_tempo_precompiles(&mut precompiles, &ctx.cfg);
 
         Self::new_inner(Evm {

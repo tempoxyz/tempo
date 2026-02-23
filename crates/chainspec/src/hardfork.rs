@@ -204,12 +204,8 @@ pub trait TempoHardforks: EthereumHardforks {
 }
 
 impl From<TempoHardfork> for SpecId {
-    fn from(value: TempoHardfork) -> Self {
-        if value.is_t2() {
-            Self::OSAKA
-        } else {
-            Self::PRAGUE
-        }
+    fn from(_value: TempoHardfork) -> Self {
+        Self::OSAKA
     }
 }
 
