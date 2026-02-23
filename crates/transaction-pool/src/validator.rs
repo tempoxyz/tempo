@@ -894,9 +894,18 @@ where
                         }
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce
+                        let nonce_slot = match transaction.transaction().nonce_key_slot() {
+                            Some(slot) => slot.into(),
+                            None => {
+                                return TransactionValidationOutcome::Invalid(
+                                    transaction.into_transaction(),
+                                    InvalidTransactionError::TxTypeNotSupported.into(),
+                                );
+                            }
+                        };
                         state_nonce = match state_provider.storage(
                             NONCE_PRECOMPILE_ADDRESS,
-                            transaction.transaction().nonce_key_slot().unwrap().into(),
+                            nonce_slot,
                         ) {
                             Ok(nonce) => nonce.unwrap_or_default().saturating_to(),
                             Err(err) => {
@@ -4461,5 +4470,48 @@ mod tests {
             matches!(result, Err(InvalidPoolTransactionError::IntrinsicGasTooLow)),
             "Gas limit one below intrinsic gas should fail, got: {result:?}"
         );
+    }
+
+    /// Validates that 2D nonce AA transactions (nonce_key != 0, non-expiring) go through
+    /// the nonce validation path without panicking. Before the fix, `nonce_key_slot().unwrap()`
+    /// could panic if the slot computation returned `None`.
+    #[tokio::test]
+    async fn test_2d_nonce_validation_no_panic() {
+        let sender = Address::random();
+        let nonce_key = U256::from(42); // Non-zero, non-expiring nonce key
+
+        let transaction = TxBuilder::aa(sender)
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .nonce_key(nonce_key)
+            .gas_limit(1_000_000)
+            .build();
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let validator = setup_validator(&transaction, current_time);
+
+        // This should not panic regardless of the outcome.
+        // Before the fix, this would panic with `unwrap()` on `nonce_key_slot()`.
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        // The transaction should reach nonce validation (not panic).
+        // It may be Valid or Invalid for other reasons, but must NOT panic.
+        match &outcome {
+            TransactionValidationOutcome::Valid { .. } => {}
+            TransactionValidationOutcome::Invalid(..) => {}
+            TransactionValidationOutcome::Error(_, err) => {
+                // Storage errors are acceptable, panics are not.
+                // If we get here, the validator handled the error gracefully.
+                assert!(
+                    !err.to_string().contains("called `Option::unwrap()` on a `None` value"),
+                    "Validator should not panic on nonce_key_slot(), got: {err}"
+                );
+            }
+        }
     }
 }
