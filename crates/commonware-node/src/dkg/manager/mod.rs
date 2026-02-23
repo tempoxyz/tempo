@@ -1,6 +1,6 @@
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::{bls12381::primitives::group::Share, ed25519::PrivateKey};
-use commonware_runtime::{Clock, Metrics, Spawner, Storage};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
 use rand_core::CryptoRngCore;
@@ -13,16 +13,16 @@ mod validators;
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
-use ingress::{Command, Message};
-
 use crate::epoch;
+
+use ingress::{Command, Message};
 
 pub(crate) async fn init<TContext>(
     context: TContext,
     config: Config,
 ) -> eyre::Result<(Actor<TContext>, Mailbox)>
 where
-    TContext: Clock + CryptoRngCore + Metrics + Spawner + Storage,
+    TContext: BufferPooler + Clock + CryptoRngCore + Metrics + Spawner + Storage,
 {
     let (tx, rx) = mpsc::unbounded();
 
