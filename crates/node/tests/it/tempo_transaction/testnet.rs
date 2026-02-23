@@ -10,8 +10,7 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use reth_primitives_traits::transaction::TxHashRef;
-use tempo_primitives::TempoTxEnvelope;
-use tempo_primitives::transaction::tempo_transaction::Call;
+use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use super::helpers::*;
 
@@ -29,8 +28,8 @@ pub(super) struct Testnet {
 impl Testnet {
     pub(super) async fn new() -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
-        let rpc_url = std::env::var("TEMPO_TESTNET_RPC_URL")
-            .unwrap_or_else(|_| TESTNET_RPC_URL.to_string());
+        let rpc_url =
+            std::env::var("TEMPO_TESTNET_RPC_URL").unwrap_or_else(|_| TESTNET_RPC_URL.to_string());
         let provider = alloy::providers::RootProvider::new_http(rpc_url.parse()?);
         let chain_id = provider.get_chain_id().await?;
         Ok(Self { provider, chain_id })
@@ -108,10 +107,7 @@ impl super::types::TestEnv for Testnet {
         );
 
         // Record the starting block to prove liveness (blocks are advancing).
-        let start_block: u64 = self
-            .provider
-            .get_block_number()
-            .await?;
+        let start_block: u64 = self.provider.get_block_number().await?;
 
         // Poll — tx should never be included
         for _ in 0..RPC_POLL_RETRIES {
@@ -130,10 +126,7 @@ impl super::types::TestEnv for Testnet {
         }
 
         // Confirm blocks actually advanced (liveness check).
-        let end_block: u64 = self
-            .provider
-            .get_block_number()
-            .await?;
+        let end_block: u64 = self.provider.get_block_number().await?;
         assert!(
             end_block > start_block,
             "Blocks did not advance during polling ({start_block} → {end_block}); \

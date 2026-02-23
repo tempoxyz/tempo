@@ -3,21 +3,23 @@ use alloy::{
     providers::Provider,
     rpc::types::TransactionRequest,
     signers::{SignerSync, local::PrivateKeySigner},
+    sol_types::SolCall,
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
 use reth_primitives_traits::transaction::TxHashRef;
-use alloy::sol_types::SolCall;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
-use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
-use tempo_primitives::transaction::tempo_transaction::Call;
-use tempo_primitives::{SignatureType, TempoTransaction, TempoTxEnvelope};
-use tempo_primitives::transaction::{KeyAuthorization, TokenLimit};
-use tempo_primitives::transaction::tt_signature::{PrimitiveSignature, TempoSignature};
+use tempo_primitives::{
+    SignatureType, TempoTransaction, TempoTxEnvelope,
+    transaction::{
+        KeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
+        tempo_transaction::Call,
+        tt_signature::{PrimitiveSignature, TempoSignature},
+    },
+};
 
-use super::helpers::*;
-use super::types::*;
+use super::{helpers::*, types::*};
 
 // ===========================================================================
 // Matrix runners
@@ -49,7 +51,9 @@ pub(super) async fn run_raw_send_matrix<E: TestEnv>(env: &mut E) -> eyre::Result
         RawSendTestCase::new(KeyType::P256),
         RawSendTestCase::new(KeyType::P256).fee_payer(),
         RawSendTestCase::new(KeyType::P256).key_setup(access_key()),
-        RawSendTestCase::new(KeyType::P256).fee_payer().key_setup(access_key()),
+        RawSendTestCase::new(KeyType::P256)
+            .fee_payer()
+            .key_setup(access_key()),
         RawSendTestCase::new(KeyType::WebAuthn),
         RawSendTestCase::new(KeyType::WebAuthn).fee_payer(),
         RawSendTestCase::new(KeyType::WebAuthn).key_setup(access_key()),
@@ -110,11 +114,10 @@ pub(super) async fn run_raw_send_matrix<E: TestEnv>(env: &mut E) -> eyre::Result
             .test_action(TestAction::Transfer(transfer_small))
             .expected(ExpectedOutcome::ExcludedByBuilder),
         // --- expiry ---
-        RawSendTestCase::new(KeyType::P256)
-            .key_setup(KeySetup::AccessKey {
-                limits: SpendingLimits::Default,
-                expiry: KeyExpiry::Past,
-            }),
+        RawSendTestCase::new(KeyType::P256).key_setup(KeySetup::AccessKey {
+            limits: SpendingLimits::Default,
+            expiry: KeyExpiry::Past,
+        }),
         // --- RPC validation cases (folded from scenario runner) ---
         RawSendTestCase::new(KeyType::P256).key_setup(KeySetup::UnauthorizedKey),
         RawSendTestCase::new(KeyType::P256).key_setup(KeySetup::InvalidAuthSignature),
@@ -298,7 +301,8 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
                 println!("  ✓ diff {diff} in {range:?}");
             }
             ExpectedGasDiff::GreaterThan(ref_name) => {
-                let ref_gas = *results.get(ref_name)
+                let ref_gas = *results
+                    .get(ref_name)
                     .unwrap_or_else(|| panic!("missing reference gas case '{ref_name}'"));
                 assert!(
                     gas > ref_gas,
@@ -491,7 +495,11 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             input: alloy_primitives::bytes!("ef"),
         }],
         TestAction::Transfer(amount) => {
-            vec![create_transfer_call(DEFAULT_FEE_TOKEN, Address::random(), *amount)]
+            vec![create_transfer_call(
+                DEFAULT_FEE_TOKEN,
+                Address::random(),
+                *amount,
+            )]
         }
         TestAction::AdminCall => vec![Call {
             to: tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS.into(),
@@ -520,9 +528,9 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             // Sign with root key directly (handled below)
         }
         KeySetup::ZeroPubKey => {
-            use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
-            use tempo_precompiles::account_keychain::{
-                SignatureType as KCSignatureType, authorizeKeyCall,
+            use tempo_precompiles::{
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                account_keychain::{SignatureType as KCSignatureType, authorizeKeyCall},
             };
 
             let authorize_call = authorizeKeyCall {
@@ -660,12 +668,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
 
             // Now sign tx with the unauthorized key
             let new_nonce = env.provider().get_transaction_count(root_addr).await?;
-            tx = create_basic_aa_tx(
-                chain_id,
-                new_nonce,
-                tx.calls.clone(),
-                2_000_000,
-            );
+            tx = create_basic_aa_tx(chain_id, new_nonce, tx.calls.clone(), 2_000_000);
 
             let sig = sign_aa_tx_with_p256_access_key(
                 &tx,
@@ -675,7 +678,8 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                 root_addr,
             )?;
             let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
-            env.submit_tx_expecting_rejection(envelope.encoded_2718(), None).await?;
+            env.submit_tx_expecting_rejection(envelope.encoded_2718(), None)
+                .await?;
             return Ok(());
         }
         KeySetup::InvalidAuthSignature => {
@@ -780,7 +784,14 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             let signature = sign_aa_tx_secp256k1(&tx, &root_signer)?;
             let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
 
-            submit_expecting(env, envelope, test_case.expected, test_case.sync, fee_payer_ctx).await?;
+            submit_expecting(
+                env,
+                envelope,
+                test_case.expected,
+                test_case.sync,
+                fee_payer_ctx,
+            )
+            .await?;
 
             if matches!(test_case.expected, ExpectedOutcome::Revert) {
                 let nonce_after = env.provider().get_transaction_count(root_addr).await?;
@@ -831,7 +842,14 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
 
             let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
 
-            submit_expecting(env, envelope, test_case.expected, test_case.sync, fee_payer_ctx).await?;
+            submit_expecting(
+                env,
+                envelope,
+                test_case.expected,
+                test_case.sync,
+                fee_payer_ctx,
+            )
+            .await?;
         }
     }
 
@@ -890,12 +908,7 @@ async fn run_raw_access_key_case<E: TestEnv>(
                         .await?;
 
                     let new_nonce = env.provider().get_transaction_count(root_addr).await?;
-                    *tx = create_basic_aa_tx(
-                        chain_id,
-                        new_nonce,
-                        tx.calls.clone(),
-                        2_000_000,
-                    );
+                    *tx = create_basic_aa_tx(chain_id, new_nonce, tx.calls.clone(), 2_000_000);
                     tx.key_authorization = Some(key_auth);
                 }
                 Some(AccessKeyPreStep::UnauthorizedAuthorize) => {
@@ -918,7 +931,14 @@ async fn run_raw_access_key_case<E: TestEnv>(
             let sig = sign_aa_tx_with_secp256k1_access_key(tx, &access_signer, root_addr)?;
             let envelope: TempoTxEnvelope = tx.clone().into_signed(sig).into();
 
-            submit_expecting(env, envelope, test_case.expected, test_case.sync, fee_payer_ctx).await?;
+            submit_expecting(
+                env,
+                envelope,
+                test_case.expected,
+                test_case.sync,
+                fee_payer_ctx,
+            )
+            .await?;
             Ok(())
         }
         KeyType::P256 | KeyType::WebAuthn => {
@@ -1000,12 +1020,7 @@ async fn run_raw_access_key_case<E: TestEnv>(
                         .await?;
 
                     let new_nonce = env.provider().get_transaction_count(root_addr).await?;
-                    *tx = create_basic_aa_tx(
-                        chain_id,
-                        new_nonce,
-                        tx.calls.clone(),
-                        2_000_000,
-                    );
+                    *tx = create_basic_aa_tx(chain_id, new_nonce, tx.calls.clone(), 2_000_000);
                     tx.key_authorization = Some(key_auth);
                 }
                 None => {
@@ -1043,7 +1058,14 @@ async fn run_raw_access_key_case<E: TestEnv>(
 
             let envelope: TempoTxEnvelope = tx.clone().into_signed(sig).into();
 
-            submit_expecting(env, envelope, test_case.expected, test_case.sync, fee_payer_ctx).await?;
+            submit_expecting(
+                env,
+                envelope,
+                test_case.expected,
+                test_case.sync,
+                fee_payer_ctx,
+            )
+            .await?;
             Ok(())
         }
     }
@@ -1459,7 +1481,9 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
         let nonce_key_str = tx_data["nonceKey"]
             .as_str()
             .expect("nonceKey field should be present in transaction response");
-        let actual_nonce_key: U256 = nonce_key_str.parse().expect("nonceKey should be valid U256");
+        let actual_nonce_key: U256 = nonce_key_str
+            .parse()
+            .expect("nonceKey should be valid U256");
         assert_eq!(
             actual_nonce_key, expected_nonce_key,
             "nonceKey mismatch: expected {expected_nonce_key}, got {actual_nonce_key}"
@@ -1476,9 +1500,7 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
 // ===========================================================================
 
 /// Multi-party fee payer cosign: encode → decode → cosign → submit.
-pub(super) async fn run_fee_payer_cosign_scenario<E: TestEnv>(
-    env: &mut E,
-) -> eyre::Result<()> {
+pub(super) async fn run_fee_payer_cosign_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     println!("\n=== Fee payer cosign scenario ===\n");
 
     let chain_id = env.chain_id();
@@ -1490,13 +1512,11 @@ pub(super) async fn run_fee_payer_cosign_scenario<E: TestEnv>(
     let user_signer = PrivateKeySigner::random();
     let user_addr = user_signer.address();
 
-    let fee_payer_balance_before = tempo_precompiles::tip20::ITIP20::new(
-        DEFAULT_FEE_TOKEN,
-        env.provider(),
-    )
-    .balanceOf(fee_payer_addr)
-    .call()
-    .await?;
+    let fee_payer_balance_before =
+        tempo_precompiles::tip20::ITIP20::new(DEFAULT_FEE_TOKEN, env.provider())
+            .balanceOf(fee_payer_addr)
+            .call()
+            .await?;
 
     let mut tx = create_basic_aa_tx(
         chain_id,
@@ -1508,8 +1528,11 @@ pub(super) async fn run_fee_payer_cosign_scenario<E: TestEnv>(
         }],
         2_000_000,
     );
-    tx.fee_payer_signature =
-        Some(alloy::primitives::Signature::new(U256::ZERO, U256::ZERO, false));
+    tx.fee_payer_signature = Some(alloy::primitives::Signature::new(
+        U256::ZERO,
+        U256::ZERO,
+        false,
+    ));
 
     let user_signature = sign_aa_tx_secp256k1(&tx, &user_signer)?;
     let sign_only_envelope: TempoTxEnvelope = tx.into_signed(user_signature).into();
@@ -1549,9 +1572,7 @@ pub(super) async fn run_fee_payer_cosign_scenario<E: TestEnv>(
 }
 
 /// EIP-7702 authorization list with 3 key types.
-pub(super) async fn run_authorization_list_scenario<E: TestEnv>(
-    env: &mut E,
-) -> eyre::Result<()> {
+pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     use tempo_primitives::transaction::TempoSignedAuthorization;
 
     println!("\n=== Authorization list scenario ===\n");
@@ -1628,13 +1649,21 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(
 
     // Verify AFTER state: delegation code
     let auth1_code_after = env.provider().get_code_at(auth1_addr).await?;
-    verify_delegation_code(&auth1_code_after, delegate_address, "Authority 1 (Secp256k1)");
+    verify_delegation_code(
+        &auth1_code_after,
+        delegate_address,
+        "Authority 1 (Secp256k1)",
+    );
 
     let auth2_code_after = env.provider().get_code_at(auth2_addr).await?;
     verify_delegation_code(&auth2_code_after, delegate_address, "Authority 2 (P256)");
 
     let auth3_code_after = env.provider().get_code_at(auth3_addr).await?;
-    verify_delegation_code(&auth3_code_after, delegate_address, "Authority 3 (WebAuthn)");
+    verify_delegation_code(
+        &auth3_code_after,
+        delegate_address,
+        "Authority 3 (WebAuthn)",
+    );
 
     println!("✓ Authorization list scenario passed");
     Ok(())
@@ -1644,8 +1673,9 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(
 pub(super) async fn run_keychain_auth_list_skipped_scenario<E: TestEnv>(
     env: &mut E,
 ) -> eyre::Result<()> {
-    use tempo_primitives::transaction::TempoSignedAuthorization;
-    use tempo_primitives::transaction::tt_signature::KeychainSignature;
+    use tempo_primitives::transaction::{
+        TempoSignedAuthorization, tt_signature::KeychainSignature,
+    };
 
     println!("\n=== Keychain auth list skipped scenario ===\n");
 
@@ -1709,10 +1739,14 @@ pub(super) async fn run_keychain_auth_list_skipped_scenario<E: TestEnv>(
     let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
     let tx_hash = *envelope.tx_hash();
 
-    let receipt = env.submit_tx_unchecked(envelope.encoded_2718(), tx_hash)
+    let receipt = env
+        .submit_tx_unchecked(envelope.encoded_2718(), tx_hash)
         .await?;
     let status = receipt["status"].as_str().unwrap_or("0x0");
-    assert_eq!(status, "0x1", "Keychain-auth-list tx should succeed (auth skipped, not rejected)");
+    assert_eq!(
+        status, "0x1",
+        "Keychain-auth-list tx should succeed (auth skipped, not rejected)"
+    );
     let sender_nonce_after = env.provider().get_transaction_count(sender_addr).await?;
     assert_eq!(
         sender_nonce_after,
@@ -1732,9 +1766,7 @@ pub(super) async fn run_keychain_auth_list_skipped_scenario<E: TestEnv>(
 }
 
 /// Key expiry: never-expires → short-expiry → advance time → expired → past-expiry.
-pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(
-    env: &mut E,
-) -> eyre::Result<()> {
+pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     println!("\n=== Keychain expiry scenario ===\n");
 
     let chain_id = env.chain_id();
@@ -1777,7 +1809,11 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(
     let transfer_tx = create_basic_aa_tx(
         chain_id,
         nonce,
-        vec![create_transfer_call(DEFAULT_FEE_TOKEN, recipient1, transfer_amount)],
+        vec![create_transfer_call(
+            DEFAULT_FEE_TOKEN,
+            recipient1,
+            transfer_amount,
+        )],
         2_000_000,
     );
     let never_sig = sign_aa_tx_with_p256_access_key(
@@ -1832,7 +1868,11 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(
     let before_tx = create_basic_aa_tx(
         chain_id,
         nonce,
-        vec![create_transfer_call(DEFAULT_FEE_TOKEN, recipient2, transfer_amount)],
+        vec![create_transfer_call(
+            DEFAULT_FEE_TOKEN,
+            recipient2,
+            transfer_amount,
+        )],
         2_000_000,
     );
     let short_sig = sign_aa_tx_with_p256_access_key(
@@ -1871,7 +1911,11 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(
     let after_tx = create_basic_aa_tx(
         chain_id,
         nonce,
-        vec![create_transfer_call(DEFAULT_FEE_TOKEN, Address::random(), transfer_amount)],
+        vec![create_transfer_call(
+            DEFAULT_FEE_TOKEN,
+            Address::random(),
+            transfer_amount,
+        )],
         2_000_000,
     );
     let expired_sig = sign_aa_tx_with_p256_access_key(
@@ -1913,14 +1957,12 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(
 }
 
 /// Negative eth_sendTransaction cases: empty calls, key_type mismatch.
-pub(super) async fn run_send_negative_scenario<E: TestEnv>(
-    env: &mut E,
-) -> eyre::Result<()> {
+pub(super) async fn run_send_negative_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     println!("\n=== Send negative scenario ===\n");
 
-    let (signing_key, pub_key_x, pub_key_y, signer_addr) = generate_p256_access_key();
+    let (_signing_key, _pub_key_x, _pub_key_y, signer_addr) = generate_p256_access_key();
     let _ = env.fund_account(signer_addr).await?;
-    let chain_id = env.chain_id();
+    let _chain_id = env.chain_id();
 
     // Case 1: Empty calls
     {
@@ -1963,7 +2005,10 @@ pub(super) async fn run_send_negative_scenario<E: TestEnv>(
             .provider()
             .raw_request("eth_sendTransaction".into(), [request])
             .await;
-        assert!(result.is_err(), "WebAuthn without key_data should be rejected");
+        assert!(
+            result.is_err(),
+            "WebAuthn without key_data should be rejected"
+        );
     }
 
     println!("✓ Send negative scenario passed");
@@ -1971,9 +2016,7 @@ pub(super) async fn run_send_negative_scenario<E: TestEnv>(
 }
 
 /// Fee payer signature negative cases: wrong signer, missing sig, placeholder sig.
-pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(
-    env: &mut E,
-) -> eyre::Result<()> {
+pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     println!("\n=== Fee payer negative scenario ===\n");
 
     let chain_id = env.chain_id();
@@ -2018,8 +2061,11 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(
             }],
             2_000_000,
         );
-        tx.fee_payer_signature =
-            Some(alloy::primitives::Signature::new(U256::ZERO, U256::ZERO, false));
+        tx.fee_payer_signature = Some(alloy::primitives::Signature::new(
+            U256::ZERO,
+            U256::ZERO,
+            false,
+        ));
         let sig = sign_aa_tx_secp256k1(&tx, &user_signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
         env.submit_tx_expecting_rejection(envelope.encoded_2718(), None)
@@ -2031,9 +2077,7 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(
 }
 
 /// Nonce rejection: protocol nonce too low and 2D nonce replay.
-pub(super) async fn run_nonce_rejection_scenario<E: TestEnv>(
-    env: &mut E,
-) -> eyre::Result<()> {
+pub(super) async fn run_nonce_rejection_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     println!("\n=== Nonce rejection scenario ===\n");
 
     let chain_id = env.chain_id();
@@ -2125,9 +2169,7 @@ pub(super) async fn run_nonce_rejection_scenario<E: TestEnv>(
 }
 
 /// Gas/fee boundary rejections: gas too low, max_fee < base_fee, priority > max_fee.
-pub(super) async fn run_gas_fee_boundary_scenario<E: TestEnv>(
-    env: &mut E,
-) -> eyre::Result<()> {
+pub(super) async fn run_gas_fee_boundary_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     println!("\n=== Gas/fee boundary scenario ===\n");
 
     let chain_id = env.chain_id();
@@ -2142,7 +2184,10 @@ pub(super) async fn run_gas_fee_boundary_scenario<E: TestEnv>(
         println!("  Case 1: Gas limit too low");
         let signer = PrivateKeySigner::random();
         let _ = env.fund_account(signer.address()).await?;
-        let nonce = env.provider().get_transaction_count(signer.address()).await?;
+        let nonce = env
+            .provider()
+            .get_transaction_count(signer.address())
+            .await?;
         let tx = create_basic_aa_tx(chain_id, nonce, calls.clone(), 1);
         let sig = sign_aa_tx_secp256k1(&tx, &signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
@@ -2155,7 +2200,10 @@ pub(super) async fn run_gas_fee_boundary_scenario<E: TestEnv>(
         println!("  Case 2: max_fee_per_gas < base_fee");
         let signer = PrivateKeySigner::random();
         let _ = env.fund_account(signer.address()).await?;
-        let nonce = env.provider().get_transaction_count(signer.address()).await?;
+        let nonce = env
+            .provider()
+            .get_transaction_count(signer.address())
+            .await?;
         let mut tx = create_basic_aa_tx(chain_id, nonce, calls.clone(), 2_000_000);
         tx.max_fee_per_gas = 1;
         tx.max_priority_fee_per_gas = 0;
@@ -2170,7 +2218,10 @@ pub(super) async fn run_gas_fee_boundary_scenario<E: TestEnv>(
         println!("  Case 3: max_priority > max_fee");
         let signer = PrivateKeySigner::random();
         let _ = env.fund_account(signer.address()).await?;
-        let nonce = env.provider().get_transaction_count(signer.address()).await?;
+        let nonce = env
+            .provider()
+            .get_transaction_count(signer.address())
+            .await?;
         let mut tx = create_basic_aa_tx(chain_id, nonce, calls.clone(), 2_000_000);
         tx.max_priority_fee_per_gas = tx.max_fee_per_gas + 1;
         let sig = sign_aa_tx_secp256k1(&tx, &signer)?;

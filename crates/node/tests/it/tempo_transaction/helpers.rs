@@ -5,7 +5,10 @@ use alloy::{
     primitives::{Address, B256, Bytes, Signature, U256, keccak256},
     providers::Provider,
     rpc::types::TransactionRequest,
-    signers::{SignerSync, local::MnemonicBuilder, local::PrivateKeySigner},
+    signers::{
+        SignerSync,
+        local::{MnemonicBuilder, PrivateKeySigner},
+    },
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
@@ -16,7 +19,6 @@ use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::tip20::ITIP20::{self, transferCall};
-use tempo_primitives::transaction::tt_signature::normalize_p256_s;
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
@@ -25,7 +27,7 @@ use tempo_primitives::{
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
-            WebAuthnSignature,
+            WebAuthnSignature, normalize_p256_s,
         },
     },
 };
@@ -205,7 +207,12 @@ impl super::types::TestEnv for Localnet {
                 .inject_tx(envelope.encoded_2718().into())
                 .await?;
             self.setup.node.advance_block().await?;
-            wait_until_pool_not_contains(&self.setup.node.inner.pool, &tx_hash, "bump_protocol_nonce").await?;
+            wait_until_pool_not_contains(
+                &self.setup.node.inner.pool,
+                &tx_hash,
+                "bump_protocol_nonce",
+            )
+            .await?;
         }
 
         let final_nonce = self.provider.get_transaction_count(signer_addr).await?;
@@ -249,7 +256,9 @@ impl super::types::TestEnv for Localnet {
                 return Ok(receipt);
             }
         }
-        Err(eyre::eyre!("Transaction receipt not found for {tx_hash} after 3 blocks"))
+        Err(eyre::eyre!(
+            "Transaction receipt not found for {tx_hash} after 3 blocks"
+        ))
     }
 
     async fn submit_tx_sync(
@@ -1204,9 +1213,7 @@ pub(crate) fn build_fill_request_context(
         NonceMode::ExpiringExceedsBoundary => {
             Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS + 3600)
         }
-        NonceMode::ExpiringInPast => {
-            Some(current_timestamp.saturating_sub(1))
-        }
+        NonceMode::ExpiringInPast => Some(current_timestamp.saturating_sub(1)),
         _ => None,
     });
 

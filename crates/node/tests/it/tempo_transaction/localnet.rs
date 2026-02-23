@@ -34,7 +34,13 @@ use super::helpers::*;
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     let localnet = super::helpers::Localnet::new().await?;
-    let super::helpers::Localnet { mut setup, provider, chain_id, funder_signer: alice_signer, funder_addr: alice_addr } = localnet;
+    let super::helpers::Localnet {
+        mut setup,
+        provider,
+        chain_id,
+        funder_signer: alice_signer,
+        funder_addr: alice_addr,
+    } = localnet;
 
     println!("\n=== Comprehensive 2D Nonce Pool Test ===\n");
     println!("Alice address: {alice_addr}");
@@ -391,7 +397,12 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
 
     wait_until_pool_not_contains(&setup.node.inner.pool, &pending, "scenario 3 pending").await?;
     wait_until_pool_not_contains(&setup.node.inner.pool, &queued, "scenario 3 queued").await?;
-    wait_until_pool_not_contains(&setup.node.inner.pool, &new_pending, "scenario 3 new_pending").await?;
+    wait_until_pool_not_contains(
+        &setup.node.inner.pool,
+        &new_pending,
+        "scenario 3 new_pending",
+    )
+    .await?;
 
     Ok(())
 }
@@ -423,7 +434,11 @@ async fn send_tx(
     let signature = sign_aa_tx_secp256k1(&tx, signer)?;
     let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
     let tx_hash = *envelope.tx_hash();
-    setup.node.rpc.inject_tx(envelope.encoded_2718().into()).await?;
+    setup
+        .node
+        .rpc
+        .inject_tx(envelope.encoded_2718().into())
+        .await?;
     println!(
         "  ✓ Sent tx: nonce_key={nonce_key}, nonce={nonce}, priority_fee={} gwei",
         priority_fee / 1_000_000_000
@@ -433,7 +448,12 @@ async fn send_tx(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_2d_nonce_out_of_order_arrival() -> eyre::Result<()> {
-    let super::helpers::Localnet { mut setup, chain_id, funder_signer: alice_signer, .. } = super::helpers::Localnet::new().await?;
+    let super::helpers::Localnet {
+        mut setup,
+        chain_id,
+        funder_signer: alice_signer,
+        ..
+    } = super::helpers::Localnet::new().await?;
 
     let recipient = Address::random();
 
@@ -965,7 +985,6 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     Ok(())
 }
 
-
 /// Test that verifies that we can propagate 2d transactions
 #[tokio::test(flavor = "multi_thread")]
 async fn test_propagate_2d_transactions() -> eyre::Result<()> {
@@ -1023,13 +1042,11 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     let _ = provider1.send_raw_transaction(&encoded).await.unwrap();
 
     // ensure we see it as pending from the first peer
-    let pending_hash1 = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        tx_listener1.recv(),
-    )
-    .await
-    .expect("timed out waiting for tx on node1")
-    .expect("tx listener1 channel closed");
+    let pending_hash1 =
+        tokio::time::timeout(std::time::Duration::from_secs(30), tx_listener1.recv())
+            .await
+            .expect("timed out waiting for tx on node1")
+            .expect("tx listener1 channel closed");
     assert_eq!(pending_hash1, *envelope.tx_hash());
     let _rpc_tx = provider1
         .get_transaction_by_hash(pending_hash1)
@@ -1037,13 +1054,11 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
         .unwrap();
 
     // ensure we see it as pending on the second peer as well (should be broadcasted from first to second)
-    let pending_hash2 = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        tx_listener2.recv(),
-    )
-    .await
-    .expect("timed out waiting for tx on node2")
-    .expect("tx listener2 channel closed");
+    let pending_hash2 =
+        tokio::time::timeout(std::time::Duration::from_secs(30), tx_listener2.recv())
+            .await
+            .expect("timed out waiting for tx on node2")
+            .expect("tx listener2 channel closed");
     assert_eq!(pending_hash2, *envelope.tx_hash());
 
     // check we can fetch it from the second peer now
@@ -1056,7 +1071,6 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
 
     Ok(())
 }
-
 
 /// Verifies that transactions signed with a revoked access key cannot be executed.
 #[tokio::test]
@@ -1228,7 +1242,12 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     // Advance another block to trigger the commit notification
     setup.node.advance_block().await?;
 
-    wait_until_pool_not_contains(&setup.node.inner.pool, &delayed_tx_hash, "keychain eviction").await?;
+    wait_until_pool_not_contains(
+        &setup.node.inner.pool,
+        &delayed_tx_hash,
+        "keychain eviction",
+    )
+    .await?;
 
     // ========================================
     // STEP 4: Verify transaction is evicted from the pool
@@ -1283,7 +1302,13 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
 async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     println!("\n=== Testing Expiring Nonce Replay Protection ===\n");
 
-    let super::helpers::Localnet { mut setup, provider, chain_id, funder_signer: alice_signer, .. } = super::helpers::Localnet::new().await?;
+    let super::helpers::Localnet {
+        mut setup,
+        provider,
+        chain_id,
+        funder_signer: alice_signer,
+        ..
+    } = super::helpers::Localnet::new().await?;
 
     let recipient = Address::random();
 
@@ -1509,7 +1534,12 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     // Advance another block to trigger the commit notification
     setup.node.advance_block().await?;
 
-    wait_until_pool_not_contains(&setup.node.inner.pool, &delayed_tx_hash, "spending limit eviction").await?;
+    wait_until_pool_not_contains(
+        &setup.node.inner.pool,
+        &delayed_tx_hash,
+        "spending limit eviction",
+    )
+    .await?;
 
     // ========================================
     // STEP 4: Verify transaction is evicted from the pool

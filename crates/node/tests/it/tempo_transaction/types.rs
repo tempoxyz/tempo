@@ -310,7 +310,10 @@ impl RawSendTestCase {
         match &self.key_setup {
             KeySetup::ZeroPubKey => outcome = ExpectedOutcome::Revert,
             KeySetup::DuplicateAuth => outcome = ExpectedOutcome::ExcludedByBuilder,
-            KeySetup::AccessKey { expiry: KeyExpiry::Past, .. }
+            KeySetup::AccessKey {
+                expiry: KeyExpiry::Past,
+                ..
+            }
             | KeySetup::UnauthorizedAuthorize
             | KeySetup::UnauthorizedKey
             | KeySetup::InvalidAuthSignature => outcome = ExpectedOutcome::Rejection,
