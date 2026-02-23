@@ -551,6 +551,7 @@ impl TIP20Token {
         );
 
         // 4. Validate ECDSA signature
+        // Only v=27/28 is accepted; v=0/1 is intentionally NOT normalized (see TIP-1004 spec).
         if call.v != 27 && call.v != 28 {
             return Err(TIP20Error::invalid_signature().into());
         }
@@ -558,7 +559,7 @@ impl TIP20Token {
         let sig = Signature::from_scalars_and_parity(call.r, call.s, parity);
         let recovered = alloy::consensus::crypto::secp256k1::recover_signer(&sig, digest)
             .map_err(|_| TIP20Error::invalid_signature())?;
-        if recovered != call.owner {
+        if recovered.is_zero() || recovered != call.owner {
             return Err(TIP20Error::invalid_signature().into());
         }
 
@@ -2599,6 +2600,101 @@ pub(crate) mod tests {
 
                 Ok(())
             })
+        }
+
+        #[test]
+        fn test_permit_invalid_v_values() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                spender,
+                ..
+            } = PermitFixture::new();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+                for v in [0u8, 1] {
+                    let result = token.permit(ITIP20::permitCall {
+                        owner: admin,
+                        spender,
+                        value: U256::from(1000),
+                        deadline: U256::MAX,
+                        v,
+                        r: B256::ZERO,
+                        s: B256::ZERO,
+                    });
+
+                    assert!(
+                        matches!(
+                            result,
+                            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidSignature(_)))
+                        ),
+                        "v={v} should revert with InvalidSignature"
+                    );
+                }
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_zero_address_recovery_reverts() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                spender,
+                ..
+            } = PermitFixture::new();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+                let result = token.permit(ITIP20::permitCall {
+                    owner: Address::ZERO,
+                    spender,
+                    value: U256::from(1000),
+                    deadline: U256::MAX,
+                    v: 27,
+                    r: B256::ZERO,
+                    s: B256::ZERO,
+                });
+
+                assert!(matches!(
+                    result,
+                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidSignature(_)))
+                ));
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_domain_separator_changes_with_chain_id() -> eyre::Result<()> {
+            let PermitFixture { admin, .. } = PermitFixture::new();
+
+            let mut storage_a = setup_t2_storage();
+            let mut storage_b =
+                HashMapStorageProvider::new_with_spec(CHAIN_ID + 1, TempoHardfork::T2);
+
+            let ds_a = StorageCtx::enter(&mut storage_a, || {
+                TIP20Setup::create("Test", "TST", admin)
+                    .apply()?
+                    .domain_separator()
+            })?;
+
+            let ds_b = StorageCtx::enter(&mut storage_b, || {
+                TIP20Setup::create("Test", "TST", admin)
+                    .apply()?
+                    .domain_separator()
+            })?;
+
+            assert_ne!(
+                ds_a, ds_b,
+                "domain separator must change when chainId changes"
+            );
+
+            Ok(())
         }
     }
 }
