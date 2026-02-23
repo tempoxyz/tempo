@@ -38,7 +38,7 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
-    nonce::{INonce::getNonceCall, NonceManager},
+    nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, INonce::getNonceCall, NonceManager},
     storage::{PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider},
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, is_tip20_prefix},
@@ -679,6 +679,7 @@ where
                 .valid_before
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
+            let block_timestamp = block.timestamp().saturating_to::<u64>();
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
@@ -686,6 +687,23 @@ where
                     .check_and_mark_expiring_nonce(tx_hash, valid_before)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                        TempoPrecompileError::NonceError(
+                            tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
+                        ) => {
+                            let max_allowed =
+                                block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
+                            if valid_before <= block_timestamp {
+                                TempoInvalidTransaction::NonceManagerError(format!(
+                                    "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
+                                ))
+                                .into()
+                            } else {
+                                TempoInvalidTransaction::NonceManagerError(format!(
+                                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
+                                ))
+                                .into()
+                            }
+                        }
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
                     })?;
 

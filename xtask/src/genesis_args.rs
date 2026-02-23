@@ -166,6 +166,10 @@ pub(crate) struct GenesisArgs {
     /// T2 hardfork activation time.
     #[arg(long, default_value = "0")]
     t2_time: u64,
+
+    /// Whether to skip initializing validator config v1
+    #[arg(long)]
+    no_initialize_validator_config_v1: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -350,8 +354,7 @@ impl GenesisArgs {
             &self.validator_addresses[0..self.validators.len()]
         };
 
-        let t2_active_at_genesis = self.t2_time == 0;
-        if t2_active_at_genesis {
+        if self.t2_time == 0 {
             println!("Initializing validator config v2 (T2 active at genesis)");
             initialize_validator_config_v2(
                 validator_admin,
@@ -361,7 +364,9 @@ impl GenesisArgs {
                 self.no_dkg_in_genesis,
                 self.chain_id,
             )?;
-        } else {
+        }
+
+        if !self.no_initialize_validator_config_v1 {
             println!("Initializing validator config v1");
             initialize_validator_config(
                 validator_admin,
@@ -370,6 +375,8 @@ impl GenesisArgs {
                 validator_onchain_addresses,
                 self.no_dkg_in_genesis,
             )?;
+        } else {
+            println!("flag specified; skipping initialization of validator config v1");
         }
 
         println!("Initializing fee manager");

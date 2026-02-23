@@ -594,8 +594,16 @@ where
                                 })
                                 .collect();
 
-                            state.paused_pool.insert_batch(token, entries);
+                            let cap_evicted = state.paused_pool.insert_batch(token, entries);
                             metrics.transactions_paused.increment(count as u64);
+                            if cap_evicted > 0 {
+                                metrics.paused_pool_cap_evicted.increment(cap_evicted as u64);
+                                debug!(
+                                    target: "txpool",
+                                    cap_evicted,
+                                    "Evicted oldest paused transactions due to global cap"
+                                );
+                            }
                             debug!(
                                 target: "txpool",
                                 %token,
