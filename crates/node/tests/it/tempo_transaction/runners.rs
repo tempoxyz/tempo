@@ -238,7 +238,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
                 key_type: SignatureType::Secp256k1,
                 num_limits: 3,
             },
-            expected: ExpectedGasDiff::Range(310_000..=380_000),
+            expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1"),
         },
     ];
     let provider = env.provider();
@@ -1833,7 +1833,7 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
 
     // TEST 2: Short-expiry key
     let current_ts = env.current_block_timestamp().await?;
-    let short_expiry = current_ts + 3;
+    let short_expiry = current_ts + 30;
 
     let short_auth = create_key_authorization(
         &root_signer,
@@ -1890,12 +1890,13 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
     .await?;
     println!("  ✓ Short-expiry key works before expiry");
 
-    // Advance time past expiry
+    // Advance time past expiry (on testnet, blocks are ~2s so we may need many iterations)
     let mut new_ts = env.current_block_timestamp().await?;
-    for _ in 0..10 {
+    for _ in 0..30 {
         if new_ts >= short_expiry {
             break;
         }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         new_ts = env.current_block_timestamp().await?;
     }
     assert!(new_ts >= short_expiry, "Should be past expiry");

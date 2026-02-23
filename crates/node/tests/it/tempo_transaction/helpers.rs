@@ -14,6 +14,7 @@ use alloy::{
 use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
 use reth_primitives_traits::transaction::TxHashRef;
+use reth_node_api::BuiltPayload;
 use reth_transaction_pool::TransactionPool;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
