@@ -97,7 +97,9 @@ impl TempoHardfork {
     /// Economic conversion: ceil(basefee × gas_used / 10^12) = cost in microdollars (TIP-20 tokens)
     pub const fn base_fee(&self) -> u64 {
         match self {
-            Self::T1 | Self::T1A | Self::T1B | Self::T1C | Self::T2 => crate::spec::TEMPO_T1_BASE_FEE,
+            Self::T1 | Self::T1A | Self::T1B | Self::T1C | Self::T2 => {
+                crate::spec::TEMPO_T1_BASE_FEE
+            }
             Self::T0 | Self::Genesis => crate::spec::TEMPO_T0_BASE_FEE,
         }
     }
@@ -119,7 +121,9 @@ impl TempoHardfork {
     /// - T1A+: 30M gas (allows maximum-sized contract deployments under TIP-1000 state creation)
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
         match self {
-            Self::T1A | Self::T1B | Self::T1C | Self::T2 => Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
+            Self::T1A | Self::T1B | Self::T1C | Self::T2 => {
+                Some(crate::spec::TEMPO_T1_TX_GAS_LIMIT_CAP)
+            }
             Self::T0 | Self::Genesis | Self::T1 => Some(MAX_TX_GAS_LIMIT_OSAKA),
         }
     }
@@ -276,32 +280,62 @@ mod tests {
 
     #[test]
     fn test_is_t0() {
-        assert_hardfork_activation(TempoHardfork::is_t0, T0, &[Genesis], &[T1, T1A, T1B, T1C, T2]);
+        assert_hardfork_activation(
+            TempoHardfork::is_t0,
+            T0,
+            &[Genesis],
+            &[T1, T1A, T1B, T1C, T2],
+        );
     }
 
     #[test]
     fn test_is_t1() {
-        assert_hardfork_activation(TempoHardfork::is_t1, T1, &[Genesis, T0], &[T1A, T1B, T1C, T2]);
+        assert_hardfork_activation(
+            TempoHardfork::is_t1,
+            T1,
+            &[Genesis, T0],
+            &[T1A, T1B, T1C, T2],
+        );
     }
 
     #[test]
     fn test_is_t1a() {
-        assert_hardfork_activation(TempoHardfork::is_t1a, T1A, &[Genesis, T0, T1], &[T1B, T1C, T2]);
+        assert_hardfork_activation(
+            TempoHardfork::is_t1a,
+            T1A,
+            &[Genesis, T0, T1],
+            &[T1B, T1C, T2],
+        );
     }
 
     #[test]
     fn test_is_t1b() {
-        assert_hardfork_activation(TempoHardfork::is_t1b, T1B, &[Genesis, T0, T1, T1A], &[T1C, T2]);
+        assert_hardfork_activation(
+            TempoHardfork::is_t1b,
+            T1B,
+            &[Genesis, T0, T1, T1A],
+            &[T1C, T2],
+        );
     }
 
     #[test]
     fn test_is_t1c() {
-        assert_hardfork_activation(TempoHardfork::is_t1c, T1C, &[Genesis, T0, T1, T1A, T1B], &[T2]);
+        assert_hardfork_activation(
+            TempoHardfork::is_t1c,
+            T1C,
+            &[Genesis, T0, T1, T1A, T1B],
+            &[T2],
+        );
     }
 
     #[test]
     fn test_is_t2() {
-        assert_hardfork_activation(TempoHardfork::is_t2, T2, &[Genesis, T0, T1, T1A, T1B, T1C], &[]);
+        assert_hardfork_activation(
+            TempoHardfork::is_t2,
+            T2,
+            &[Genesis, T0, T1, T1A, T1B, T1C],
+            &[],
+        );
     }
 
     #[test]
