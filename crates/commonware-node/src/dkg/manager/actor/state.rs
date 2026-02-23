@@ -8,7 +8,7 @@ use alloy_consensus::BlockHeader as _;
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::{
     Block as _, Heightable as _,
-    types::{Epoch, Epocher as _, Height},
+    types::{Epoch, Height},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -732,18 +732,6 @@ impl State {
     /// Returns the players active in the DKG round tracked by this state.
     pub(super) fn players(&self) -> &ordered::Set<PublicKey> {
         &self.players
-    }
-
-    /// Returns the last block height of the epoch preceding this state's epoch.
-    pub(super) fn boundary_of_parent_epoch(
-        &self,
-        epoch_strategy: &commonware_consensus::types::FixedEpocher,
-    ) -> Height {
-        self.epoch.previous().map_or_else(Height::zero, |prev| {
-            epoch_strategy
-                .last(prev)
-                .expect("epoch strategy is valid for all epochs")
-        })
     }
 }
 
