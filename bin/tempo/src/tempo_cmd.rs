@@ -6,7 +6,7 @@ use std::{
 };
 
 use alloy_network::EthereumWallet;
-use alloy_primitives::{Address, B256, Bytes, hex::encode_prefixed};
+use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_signer_local::PrivateKeySigner;
