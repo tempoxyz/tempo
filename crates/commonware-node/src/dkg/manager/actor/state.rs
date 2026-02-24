@@ -8,7 +8,7 @@ use alloy_consensus::BlockHeader as _;
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::{
     Block as _, Heightable as _,
-    types::{Epoch, Epocher as _, Height},
+    types::{Epoch, Height},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -20,9 +20,9 @@ use commonware_cryptography::{
     transcript::{Summary, Transcript},
 };
 use commonware_parallel::Strategy;
-use commonware_runtime::{Clock, Metrics, buffer::paged::CacheRef};
+use commonware_runtime::{BufferPooler, Clock, Metrics, buffer::paged::CacheRef};
 use commonware_storage::{
-    journal::{contiguous, segmented},
+    journal::{contiguous, contiguous::Reader as _, segmented},
     metadata,
 };
 use commonware_utils::{N3f1, NZU16, NZU32, NZU64, NZUsize, ordered};
@@ -33,7 +33,7 @@ use tracing::{debug, info, instrument, warn};
 use crate::consensus::{Digest, block::Block};
 
 const PAGE_SIZE: NonZeroU16 = NZU16!(1 << 12);
-const POOL_CAPACITY: NonZeroUsize = NZUsize!(1 << 20);
+const POOL_CAPACITY: NonZeroUsize = NZUsize!(1 << 13);
 const WRITE_BUFFER: NonZeroUsize = NZUsize!(1 << 12);
 const READ_BUFFER: NonZeroUsize = NZUsize!(1 << 20);
 
@@ -495,7 +495,7 @@ impl Builder {
     #[instrument(skip_all, err)]
     pub(super) async fn init<TContext>(self, context: TContext) -> eyre::Result<Storage<TContext>>
     where
-        TContext: commonware_runtime::Storage + Clock + Metrics,
+        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         let Self {
             initial_state,
@@ -504,7 +504,7 @@ impl Builder {
         let partition_prefix =
             partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
 
-        let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+        let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
         let states_partition = format!("{partition_prefix}_states");
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
@@ -604,7 +604,7 @@ async fn migrate_journal_to_metadata_if_necessary<TContext>(
     page_cache: &CacheRef,
 ) -> eyre::Result<()>
 where
-    TContext: commonware_runtime::Storage + Clock + Metrics,
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
     if states.keys().next().is_some() {
         debug!("states already exists in new format; not migrating");
@@ -625,14 +625,15 @@ where
     .await
     .wrap_err("unable to initialize legacy DKG states journal for migration")?;
 
-    if let Some(latest_segment) = legacy_journal.size().checked_sub(1) {
+    if let Some(latest_segment) = legacy_journal.size().await.checked_sub(1) {
         info!(
             latest_segment,
             "legacy journal contains states; migrating last 2 segments",
         );
 
+        let reader = legacy_journal.reader().await;
         for segment in latest_segment.saturating_sub(1)..=latest_segment {
-            let legacy_state = legacy_journal
+            let legacy_state = reader
                 .read(segment)
                 .await
                 .wrap_err("unable to read state from legacy journal")?;
@@ -732,18 +733,6 @@ impl State {
     /// Returns the players active in the DKG round tracked by this state.
     pub(super) fn players(&self) -> &ordered::Set<PublicKey> {
         &self.players
-    }
-
-    /// Returns the last block height of the epoch preceding this state's epoch.
-    pub(super) fn boundary_of_parent_epoch(
-        &self,
-        epoch_strategy: &commonware_consensus::types::FixedEpocher,
-    ) -> Height {
-        self.epoch.previous().map_or_else(Height::zero, |prev| {
-            epoch_strategy
-                .last(prev)
-                .expect("epoch strategy is valid for all epochs")
-        })
     }
 }
 
@@ -1413,7 +1402,7 @@ mod tests {
             let partition_prefix = "test_dkg";
             let states_partition = format!("{partition_prefix}_states");
             let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
             let ancient_legacy = make_legacy_state(&mut context, 1);
             let previous_legacy = make_legacy_state(&mut context, 2);
@@ -1423,7 +1412,7 @@ mod tests {
 
             // Populate the legacy journal with three entries.
             {
-                let mut journal = contiguous::variable::Journal::<_, LegacyState>::init(
+                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
                     context.with_label("journal_setup"),
                     contiguous::variable::Config {
                         partition: states_partition.clone(),
@@ -1490,7 +1479,8 @@ mod tests {
             )
             .await
             .unwrap();
-            assert_eq!(reopened.size(), 0);
+
+            assert_eq!(reopened.size().await, 0);
 
             // Metadata persists across reopens.
             drop(states);
@@ -1521,14 +1511,14 @@ mod tests {
             let partition_prefix = "test_dkg_single";
             let states_partition = format!("{partition_prefix}_states");
             let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
             let only_legacy = make_legacy_state(&mut context, 5);
             let only_expected: State = only_legacy.clone().into();
 
             // Populate the legacy journal with a single entry.
             {
-                let mut journal = contiguous::variable::Journal::<_, LegacyState>::init(
+                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
                     context.with_label("journal_setup"),
                     contiguous::variable::Config {
                         partition: states_partition.clone(),
@@ -1581,7 +1571,7 @@ mod tests {
             let partition_prefix = "test_dkg_noop";
             let states_partition = format!("{partition_prefix}_states");
             let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-            let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
+            let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
             let existing_state = make_test_state(&mut context, 10);
             let journal_legacy = make_legacy_state(&mut context, 20);
@@ -1602,7 +1592,7 @@ mod tests {
 
             // Populate a legacy journal with different data.
             {
-                let mut journal = contiguous::variable::Journal::<_, LegacyState>::init(
+                let journal = contiguous::variable::Journal::<_, LegacyState>::init(
                     context.with_label("journal_setup"),
                     contiguous::variable::Config {
                         partition: states_partition.clone(),

@@ -2,14 +2,14 @@ use super::{
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
 };
-use alloy_consensus::{Transaction, transaction::TxHashRef};
+use alloy_consensus::{SignableTransaction, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     Decodable2718, Encodable2718, Typed2718,
     eip2718::{Eip2718Error, Eip2718Result},
     eip2930::AccessList,
     eip7702::SignedAuthorization,
 };
-use alloy_primitives::{B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_rlp::{BufMut, Decodable, Encodable};
 use core::{
     fmt::Debug,
@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 /// A transaction with an AA signature and hash seal.
 ///
 /// This wraps a TempoTransaction transaction with its multi-signature-type signature
-/// (secp256k1, P256, Webauthn, Keychain) and provides a cached transaction hash.
+/// (secp256k1, P256, Webauthn, Keychain) and provides cached hashes.
 #[derive(Clone, Debug)]
 pub struct AASigned {
     /// The inner Tempo transaction
@@ -93,6 +93,25 @@ impl AASigned {
     /// Calculate the signing hash for the transaction.
     pub fn signature_hash(&self) -> B256 {
         self.tx.signature_hash()
+    }
+
+    /// Calculate the expiring nonce dedup hash for replay protection.
+    ///
+    /// This hash is `keccak256(encode_for_signing || sender)`. It is:
+    /// - **Invariant to fee payer changes**: the fee payer signature and fee token are excluded
+    ///   (since `encode_for_signing` doesn't commit to them when a fee payer is present).
+    /// - **Unique per sender**: different signers produce different recovered addresses, so the
+    ///   hash differs even for identical transaction payloads.
+    ///
+    /// This prevents a replay attack where two different fee payers sign the same sender-signed
+    /// transaction, producing different `tx_hash` values that would bypass `tx_hash`-based
+    /// replay protection.
+    pub fn expiring_nonce_hash(&self, sender: Address) -> B256 {
+        let mut buf =
+            Vec::with_capacity(self.tx.payload_len_for_signature() + sender.as_slice().len());
+        self.tx.encode_for_signing(&mut buf);
+        buf.extend_from_slice(sender.as_slice());
+        alloy_primitives::keccak256(&buf)
     }
 
     /// Returns the RLP header for the transaction and signature, encapsulating both
@@ -569,6 +588,93 @@ mod tests {
         // Wrong type for typed_decode
         let result = AASigned::typed_decode(0x00, &mut [].as_ref());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_expiring_nonce_hash_invariant_to_fee_payer() {
+        let sender = Address::repeat_byte(0x01);
+
+        let make_sponsored_tx = |fee_payer_sig: Signature| -> TempoTransaction {
+            TempoTransaction {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                nonce_key: U256::MAX, // TEMPO_EXPIRING_NONCE_KEY
+                nonce: 0,
+                fee_token: Some(Address::repeat_byte(0xFE)),
+                fee_payer_signature: Some(fee_payer_sig),
+                valid_before: Some(100),
+                calls: vec![Call {
+                    to: TxKind::Call(Address::repeat_byte(0x42)),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                ..Default::default()
+            }
+        };
+
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+
+        // Two txs identical except for fee_payer_signature
+        let tx1 = make_sponsored_tx(Signature::new(U256::from(1), U256::from(2), false));
+        let tx2 = make_sponsored_tx(Signature::new(U256::from(3), U256::from(4), true));
+
+        let signed1 = AASigned::new_unhashed(tx1, sig.clone());
+        let signed2 = AASigned::new_unhashed(tx2, sig);
+
+        // tx_hash MUST differ (fee_payer_signature is part of the envelope)
+        assert_ne!(signed1.hash(), signed2.hash(), "tx hashes must differ");
+
+        // expiring_nonce_hash MUST be identical (invariant to fee payer)
+        let hash1 = signed1.expiring_nonce_hash(sender);
+        let hash2 = signed2.expiring_nonce_hash(sender);
+        assert_eq!(
+            hash1, hash2,
+            "expiring_nonce_hash must be invariant to fee payer signature changes"
+        );
+        assert_ne!(hash1, B256::ZERO);
+    }
+
+    #[test]
+    fn test_expiring_nonce_hash_unique_per_sender() {
+        let tx = TempoTransaction {
+            chain_id: 1,
+            gas_limit: 1_000_000,
+            nonce_key: U256::MAX,
+            nonce: 0,
+            valid_before: Some(100),
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x42)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, sig);
+
+        let sender_a = Address::repeat_byte(0x01);
+        let sender_b = Address::repeat_byte(0x02);
+
+        assert_ne!(
+            signed.expiring_nonce_hash(sender_a),
+            signed.expiring_nonce_hash(sender_b),
+            "different senders must produce different expiring_nonce_hash"
+        );
+    }
+
+    #[test]
+    fn test_expiring_nonce_hash_deterministic() {
+        let tx = make_tx();
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, sig);
+        let sender = Address::repeat_byte(0xAB);
+
+        let h1 = signed.expiring_nonce_hash(sender);
+        let h2 = signed.expiring_nonce_hash(sender);
+        assert_eq!(h1, h2, "expiring_nonce_hash must be deterministic");
     }
 
     #[test]

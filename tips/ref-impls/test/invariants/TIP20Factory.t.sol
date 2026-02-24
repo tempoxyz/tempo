@@ -27,6 +27,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
     mapping(address => bool) private _isCreatedToken;
     mapping(bytes32 => address) private _saltToToken;
     mapping(address => bytes32) private _tokenToSalt;
+    mapping(address => address) private _tokenToSender;
 
     /// @dev Track salts used by each sender
     mapping(address => bytes32[]) private _senderSalts;
@@ -38,7 +39,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         _setupInvariantBase();
-        _actors = _buildActors(10);
+        (_actors,) = _buildActors(10);
 
         // One-time constant checks (immutable after deployment)
         // TEMPO-FAC8: isTIP20 consistency for system contracts
@@ -435,6 +436,24 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 "TEMPO-FAC11: Token address has incorrect prefix"
             );
 
+            // TEMPO-FAC12 (reverse): Given a token address, verify the salt/sender that produced it
+            {
+                address sender = _tokenToSender[tokenAddr];
+                bytes32 salt = _tokenToSalt[tokenAddr];
+                assertTrue(sender != address(0), "TEMPO-FAC12: Missing sender ghost state");
+                assertEq(
+                    factory.getTokenAddress(sender, salt),
+                    tokenAddr,
+                    "TEMPO-FAC12: Reverse invariant - token address does not match (sender, salt)"
+                );
+                bytes32 uniqueKey = keccak256(abi.encode(sender, salt));
+                assertEq(
+                    _saltToToken[uniqueKey],
+                    tokenAddr,
+                    "TEMPO-FAC12: Ghost maps inconsistent (forward vs reverse)"
+                );
+            }
+
             // TEMPO-FAC12: USD tokens must have USD quote tokens
             if (keccak256(bytes(token.currency())) == usdHash) {
                 ITIP20 quote = token.quoteToken();
@@ -481,6 +500,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         _isCreatedToken[tokenAddr] = true;
         _saltToToken[uniqueKey] = tokenAddr;
         _tokenToSalt[tokenAddr] = salt;
+        _tokenToSender[tokenAddr] = actor;
         _senderSalts[actor].push(salt);
     }
 

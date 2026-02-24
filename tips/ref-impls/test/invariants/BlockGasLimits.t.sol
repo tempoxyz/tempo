@@ -21,9 +21,9 @@ import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTran
 /// - T1 base fee: 20 gwei (TEMPO-BLOCK4)
 /// - Payment lane minimum: 470,000,000 (TEMPO-BLOCK5)
 /// - Max deployment fits in tx cap (TEMPO-BLOCK6)
-/// - Shared gas limit: 50,000,000 (TEMPO-BLOCK10)
 ///
-/// Block-level lane enforcement (BLOCK7, BLOCK12) is tested in Rust.
+/// Block-level lane enforcement (BLOCK7, BLOCK12) and shared gas limit
+/// (BLOCK10) are tested in Rust (crates/consensus/src/lib.rs).
 contract BlockGasLimitsInvariantTest is InvariantBase {
 
     using TxBuilder for *;
@@ -50,9 +50,6 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
 
     /// @dev Payment lane minimum (470M)
     uint256 internal constant PAYMENT_LANE_MIN = BLOCK_GAS_LIMIT - GENERAL_GAS_LIMIT;
-
-    /// @dev Shared gas limit (50M)
-    uint256 internal constant SHARED_GAS_LIMIT = BLOCK_GAS_LIMIT / 10;
 
     /// @dev Max contract size (24KB, EIP-170)
     uint256 internal constant MAX_CONTRACT_SIZE = 24_576;
@@ -181,9 +178,10 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
             // Over-cap tx was accepted - VIOLATION
             ghost_txOverCapViolations++;
             ghost_protocolNonce[sender]++;
-        } catch {
-            // Expected: rejected
-            ghost_txOverCapRejected++;
+        } catch (bytes memory reason) {
+            if (_isGasCapRevert(reason)) {
+                ghost_txOverCapRejected++;
+            }
         }
     }
 
@@ -240,6 +238,12 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
     /*//////////////////////////////////////////////////////////////
                             HELPERS
     //////////////////////////////////////////////////////////////*/
+
+    /// @notice Check if revert reason indicates a gas cap violation
+    function _isGasCapRevert(bytes memory reason) internal view returns (bool) {
+        (bool isError, string memory msg_) = _tryDecodeErrorMessage(reason);
+        return isError && vm.contains(msg_, "is greater than the cap");
+    }
 
     /// @notice Create initcode that deploys a contract of target runtime size
     /// @param targetSize Target runtime bytecode size
