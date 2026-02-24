@@ -161,7 +161,6 @@ fn get_identity_transition_proof_after_full_dkg() {
 
     let setup = Setup::new()
         .how_many_signers(how_many_signers)
-        .t2_time(0)
         .epoch_length(epoch_length);
 
     let seed = setup.seed;

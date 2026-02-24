@@ -158,6 +158,7 @@ fn get_identity_transition_proof_after_full_dkg() {
 
     let setup = Setup::new()
         .how_many_signers(how_many_signers)
+        .t2_time(0)
         .epoch_length(epoch_length);
 
     let seed = setup.seed;
@@ -180,7 +181,7 @@ fn get_identity_transition_proof_after_full_dkg() {
 
         // Schedule full DKG for epoch 1
         execution_runtime
-            .set_next_full_dkg_ceremony(http_url.clone(), full_dkg_epoch)
+            .set_next_full_dkg_ceremony_v2(http_url.clone(), full_dkg_epoch)
             .await
             .unwrap();
 
