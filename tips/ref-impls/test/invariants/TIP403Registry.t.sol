@@ -136,7 +136,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         _setupInvariantBase();
         _basePoliciesCreated = registry.policyIdCounter() - counterBefore;
 
-        _actors = _buildActors(10);
+        (_actors,) = _buildActors(10);
 
         // One-time constant checks (immutable after deployment)
         // TEMPO-REG13: Special policies 0 and 1 always exist
@@ -391,7 +391,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for checking non-existent policies
-    /// @dev Tests TEMPO-REG14 (policy existence checks)
+    /// @dev Tests TEMPO-REG14 (policy existence checks), TEMPO-REG20 (reverts with PolicyNotFound)
     function checkNonExistentPolicy(uint64 policyId) external {
         uint64 counter = registry.policyIdCounter();
         uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
@@ -401,6 +401,18 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             registry.policyExists(nonExistentId),
             "TEMPO-REG14: Non-existent policy should not exist"
         );
+
+        // TEMPO-REG20: Non-existent policy must revert with PolicyNotFound
+        address account = _selectActor(uint256(policyId));
+        try registry.isAuthorized(nonExistentId, account) {
+            revert("TEMPO-REG20: Non-existent policy should revert with PolicyNotFound");
+        } catch (bytes memory reason) {
+            assertEq(
+                bytes4(reason),
+                ITIP403Registry.PolicyNotFound.selector,
+                "TEMPO-REG20: Should revert with PolicyNotFound"
+            );
+        }
     }
 
     /// @notice Handler for checking authorization of accounts never added to a policy

@@ -85,6 +85,11 @@ crate::sol! {
         /// @return The burn blocked role identifier
         function BURN_BLOCKED_ROLE() external view returns (bytes32);
 
+        // EIP-2612 Permit Functions
+        function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+        function nonces(address owner) external view returns (uint256);
+        function DOMAIN_SEPARATOR() external view returns (bytes32);
+
         struct UserRewardInfo {
             address rewardRecipient;
             uint256 rewardPerToken;
@@ -135,6 +140,8 @@ crate::sol! {
         error InvalidToken();
         error Uninitialized();
         error InvalidTransferPolicyId();
+        error PermitExpired();
+        error InvalidSignature();
     }
 }
 
@@ -243,5 +250,15 @@ impl TIP20Error {
     /// Error when token is uninitialized (has no bytecode)
     pub const fn uninitialized() -> Self {
         Self::Uninitialized(ITIP20::Uninitialized {})
+    }
+
+    /// Error when permit signature has expired (block.timestamp > deadline)
+    pub const fn permit_expired() -> Self {
+        Self::PermitExpired(ITIP20::PermitExpired {})
+    }
+
+    /// Error when permit signature is invalid
+    pub const fn invalid_signature() -> Self {
+        Self::InvalidSignature(ITIP20::InvalidSignature {})
     }
 }
