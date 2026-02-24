@@ -78,7 +78,7 @@ pub trait Precompile {
 
 /// Returns the full Tempo precompiles for the given config.
 ///
-/// Pre-T2 hardforks use Prague precompiles, T2+ uses Osaka precompiles.
+/// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
 /// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
 pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
     let spec = if cfg.spec.is_t1c() {
