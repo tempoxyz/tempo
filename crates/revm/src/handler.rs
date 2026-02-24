@@ -684,6 +684,16 @@ where
         })
         .map_err(|e| EVMError::Custom(e.to_string()))?;
 
+        // TIP-1007: Set the fee token in transient storage so contracts can read it
+        // via `IFeeManager.getFeeToken()` during execution.
+        if cfg.spec().is_t2() {
+            let fee_token = self.fee_token;
+            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+                TipFeeManager::new().set_fee_token(fee_token)
+            })
+            .map_err(|e| EVMError::Custom(e.to_string()))?;
+        }
+
         // Validate fee token has TIP20 prefix before loading balance.
         // This prevents panics in get_token_balance for invalid fee tokens.
         // Note: Full fee token validation (currency check) happens in load_fee_fields,

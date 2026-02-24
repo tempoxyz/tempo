@@ -32,6 +32,9 @@ pub struct TipFeeManager {
     /// T2+: Tracks liquidity reserved for a pending fee swap during `collect_fee_pre_tx`.
     /// Checked by `burn` and `rebalance_swap` to prevent withdrawals that would violate the reservation.
     pending_fee_swap_reservation: Mapping<B256, u128>,
+    /// T2+: The fee token used for the current transaction (TIP-1007).
+    /// Set by the handler before execution, read via `getFeeToken()`.
+    tx_fee_token: Address,
 }
 
 impl TipFeeManager {
@@ -229,6 +232,14 @@ impl TipFeeManager {
         ))?;
 
         Ok(())
+    }
+
+    pub fn get_fee_token(&self) -> Result<Address> {
+        self.tx_fee_token.t_read()
+    }
+
+    pub fn set_fee_token(&mut self, token: Address) -> Result<()> {
+        self.tx_fee_token.t_write(token)
     }
 
     pub fn user_tokens(&self, call: IFeeManager::userTokensCall) -> Result<Address> {

@@ -47,6 +47,9 @@ impl Precompile for TipFeeManager {
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::collectedFees(call)) => {
                 view(call, |c| self.collected_fees[c.validator][c.token].read())
             }
+            TipFeeManagerCall::FeeManager(IFeeManagerCalls::getFeeToken(call)) => {
+                view(call, |_| self.get_fee_token())
+            }
 
             // IFeeManager mutate functions
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::setValidatorToken(call)) => {
@@ -376,6 +379,47 @@ mod tests {
 
             let result = fee_manager.call(&ITIPFeeAMM::SCALECall {}.abi_encode(), sender)?;
             assert_eq!(U256::abi_decode(&result.bytes)?, SCALE);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_fee_token_returns_zero_when_unset() -> eyre::Result<()> {
+        let mut storage =
+            HashMapStorageProvider::new_with_spec(1, tempo_chainspec::hardfork::TempoHardfork::T2);
+        let sender = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut fee_manager = TipFeeManager::new();
+
+            let calldata = IFeeManager::getFeeTokenCall {}.abi_encode();
+            let result = fee_manager.call(&calldata, sender)?;
+            assert_eq!(result.gas_used, 0);
+
+            let returned_token = Address::abi_decode(&result.bytes)?;
+            assert_eq!(returned_token, Address::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_fee_token_returns_set_value() -> eyre::Result<()> {
+        let mut storage =
+            HashMapStorageProvider::new_with_spec(1, tempo_chainspec::hardfork::TempoHardfork::T2);
+        let sender = Address::random();
+        let fee_token = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut fee_manager = TipFeeManager::new();
+
+            // Set the fee token via transient storage
+            fee_manager.set_fee_token(fee_token)?;
+
+            // Read it back through the dispatch interface
+            let calldata = IFeeManager::getFeeTokenCall {}.abi_encode();
+            let result = fee_manager.call(&calldata, sender)?;
+            let returned_token = Address::abi_decode(&result.bytes)?;
+            assert_eq!(returned_token, fee_token);
 
             Ok(())
         })

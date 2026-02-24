@@ -2,26 +2,87 @@ use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
     consensus::Transaction,
     network::ReceiptResponse,
+    primitives::{B256, Bytes},
     providers::{Provider, ProviderBuilder, WalletProvider},
     signers::{
         SignerSync,
         local::{MnemonicBuilder, PrivateKeySigner},
     },
+    sol_types::SolCall,
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
 use alloy_primitives::{Address, Signature, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_alloy::rpc::TempoTransactionReceipt;
-use tempo_contracts::precompiles::{
-    IFeeManager, ITIP20,
-    ITIPFeeAMM::{self},
+use tempo_contracts::{
+    CREATEX_ADDRESS, CreateX,
+    precompiles::{
+        IFeeManager, ITIP20,
+        ITIPFeeAMM::{self},
+    },
 };
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
 };
+
+/// Builds init code for a helper contract that calls `getFeeToken()` twice on the
+/// FeeManager precompile and stores the results in storage slots 0 and 1.
+///
+/// This allows integration tests to verify the fee token value observed during
+/// real transaction execution by reading the contract's storage after the tx.
+fn build_fee_token_checker_init_code() -> Bytes {
+    let selector = IFeeManager::getFeeTokenCall::SELECTOR;
+    let fm_addr = TIP_FEE_MANAGER_ADDRESS;
+
+    let mut runtime = Vec::new();
+
+    // Call getFeeToken() twice, storing results at slots 0 and 1
+    for slot in 0u8..2u8 {
+        // PUSH4 <selector>
+        runtime.push(0x63);
+        runtime.extend_from_slice(&selector);
+        // PUSH1 0x00, MSTORE — selector right-aligned at memory[0:32]
+        runtime.extend_from_slice(&[0x60, 0x00, 0x52]);
+        // STATICCALL(gas, addr, argsOffset=28, argsSize=4, retOffset=32, retSize=32)
+        runtime.extend_from_slice(&[0x60, 0x20, 0x60, 0x20, 0x60, 0x04, 0x60, 0x1c]);
+        // PUSH20 <fee_manager_address>
+        runtime.push(0x73);
+        runtime.extend_from_slice(fm_addr.as_slice());
+        // GAS, STATICCALL, POP success
+        runtime.extend_from_slice(&[0x5a, 0xfa, 0x50]);
+        // MLOAD(0x20) — load result, SSTORE at slot
+        runtime.extend_from_slice(&[0x60, 0x20, 0x51, 0x60, slot, 0x55]);
+    }
+
+    // STOP
+    runtime.push(0x00);
+
+    let runtime_len = runtime.len() as u8;
+
+    // Init code: CODECOPY runtime to memory and RETURN it
+    let init_prefix_len = 11u8;
+    let mut init = Vec::with_capacity(init_prefix_len as usize + runtime.len());
+    init.extend_from_slice(&[
+        0x60,
+        runtime_len, // PUSH1 <runtime_len>
+        0x80,        // DUP1
+        0x60,
+        init_prefix_len, // PUSH1 <init_prefix_len>
+        0x60,
+        0x00, // PUSH1 0x00
+        0x39, // CODECOPY
+        0x60,
+        0x00, // PUSH1 0x00
+        0xf3, // RETURN
+    ]);
+    debug_assert_eq!(init.len(), init_prefix_len as usize);
+
+    init.extend(runtime);
+    Bytes::from(init)
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_set_user_token() -> eyre::Result<()> {
@@ -399,6 +460,169 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
     assert_eq!(
         balance_after,
         balance_before - calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price())
+    );
+
+    Ok(())
+}
+
+/// TIP-1007: getFeeToken() is callable via eth_call (static call safety) and
+/// returns the resolved fee token. The handler runs during eth_call in this
+/// node implementation, so the fee token is set in transient storage.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_get_fee_token_eth_call() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let user_address = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(setup.http_url);
+
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+
+    // The handler runs during eth_call, so getFeeToken() returns the user's resolved
+    // fee token rather than address(0). This is because eth_call goes through the
+    // full handler pipeline including validate_against_state_and_deduct_caller.
+    let fee_token = fee_manager.getFeeToken().call().await?;
+    let user_fee_token = fee_manager.userTokens(user_address).call().await?;
+    assert_eq!(
+        fee_token, user_fee_token,
+        "getFeeToken() via eth_call must return the resolved fee token"
+    );
+
+    Ok(())
+}
+
+/// TIP-1007: getFeeToken() returns the correct fee token during real transaction
+/// execution, is consistent across multiple calls within the same tx, and
+/// transient storage is properly cleared between transactions.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_get_fee_token_during_execution() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let user_address = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(setup.http_url);
+
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+
+    // Query the user's default fee token
+    let default_fee_token = fee_manager.userTokens(user_address).call().await?;
+    assert!(
+        !default_fee_token.is_zero(),
+        "user should have a default fee token"
+    );
+
+    // --- Deploy helper contract via CreateX ---
+    let init_code = build_fee_token_checker_init_code();
+    let createx = CreateX::new(CREATEX_ADDRESS, &provider);
+    let checker = createx
+        .deployCreate(init_code.clone())
+        .gas(5_000_000)
+        .call()
+        .await?
+        .0
+        .into();
+    createx
+        .deployCreate(init_code)
+        .gas(5_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // --- Test 1: basic functionality with default fee token ---
+    let receipt = provider
+        .send_transaction(
+            TransactionRequest::default()
+                .to(checker)
+                .gas_limit(1_000_000),
+        )
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status(), "helper call failed");
+
+    let result_0 = provider.get_storage_at(checker, U256::ZERO).await?;
+    let fee_token_0 = Address::from_word(B256::from(result_0));
+    assert_eq!(
+        fee_token_0, default_fee_token,
+        "getFeeToken() must return the user's fee token during execution"
+    );
+
+    // --- Test 2: consistency — second call in same tx returns same value ---
+    let result_1 = provider.get_storage_at(checker, U256::from(1)).await?;
+    let fee_token_1 = Address::from_word(B256::from(result_1));
+    assert_eq!(
+        fee_token_0, fee_token_1,
+        "getFeeToken() must return consistent value across calls within same tx"
+    );
+
+    // --- Test 3: different fee token + transient storage clearing ---
+    let custom_token = setup_test_token(provider.clone(), user_address).await?;
+    custom_token
+        .mint(user_address, U256::from(1e18 as u64))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_amm
+        .mint(
+            *custom_token.address(),
+            PATH_USD_ADDRESS,
+            U256::from(1e8 as u64),
+            user_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_manager
+        .setUserToken(*custom_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Call helper again — should now see the custom fee token
+    let receipt = provider
+        .send_transaction(
+            TransactionRequest::default()
+                .to(checker)
+                .gas_limit(1_000_000),
+        )
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status(), "helper call with custom token failed");
+
+    let result_0 = provider.get_storage_at(checker, U256::ZERO).await?;
+    let custom_fee_token = Address::from_word(B256::from(result_0));
+    assert_eq!(
+        custom_fee_token,
+        *custom_token.address(),
+        "getFeeToken() must return the custom fee token after preference change"
+    );
+
+    // Verify consistency for custom token
+    let result_1 = provider.get_storage_at(checker, U256::from(1)).await?;
+    let custom_fee_token_1 = Address::from_word(B256::from(result_1));
+    assert_eq!(
+        custom_fee_token, custom_fee_token_1,
+        "getFeeToken() must return consistent value with custom token"
+    );
+
+    // Verify transient clearing: custom token != default token from previous tx
+    assert_ne!(
+        custom_fee_token, default_fee_token,
+        "transient storage must be cleared between transactions"
     );
 
     Ok(())
