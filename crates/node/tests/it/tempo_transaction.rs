@@ -47,6 +47,7 @@ use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
+use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::TempoNetwork;
