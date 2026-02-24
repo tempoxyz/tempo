@@ -214,6 +214,12 @@ impl<DB, I> TempoEvmHandler<DB, I> {
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
+    /// Loads the fee token and fee payer from the transaction environment.
+    ///
+    /// Must be called before `validate_against_state_and_deduct_caller`, which uses the loaded
+    /// fee fields for balance checks. Called by `TempoEvmHandler::inspect_run` and
+    /// `Handler::run`; exposed for downstream `InspectorHandler` impls (e.g. tempo-foundry)
+    /// that override `inspect_run` but still need Tempo fee setup.
     pub fn load_fee_fields(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -489,9 +495,14 @@ where
 
     /// Inspector-aware execution with a custom exec loop for standard (non-AA) transactions.
     ///
-    /// Handles Tempo-specific gas adjustment and AA multi-call dispatch, but delegates the
-    /// standard single-call execution to the provided `exec_loop` closure.
-    /// Allows downstream consumers like the `FoundryHandler` to inject custom execution
+    /// Dispatches based on transaction type:
+    /// - AA transactions (type 0x76): Use batch execution path with calls field
+    /// - All other transactions: Use standard single-call execution
+    ///
+    /// This mirrors the logic in Handler::execution but uses inspector-aware execution methods.
+    ///
+    /// Additionally, delegates the standard single-call execution to the `exec_loop` closure.
+    /// This allows downstream consumers like the `FoundryHandler` to inject custom execution
     /// loop logic (such as CREATE2 factory routing) while preserving all Tempo-specific
     /// behavior as a single source of truth.
     pub fn inspect_execution_with<F>(
@@ -1655,8 +1666,7 @@ where
         }
     }
 
-    /// Overridden execution method with inspector support that handles AA vs standard
-    /// transactions.
+    /// Overridden execution method with inspector support that handles AA vs standard transactions.
     ///
     /// Delegates to [`inspect_execution_with`](TempoEvmHandler::inspect_execution_with) with
     /// the default [`inspect_run_exec_loop`](Self::inspect_run_exec_loop).
