@@ -1,11 +1,12 @@
 # This workflow is only intended to be used in forks of tempoxyz/tempo.
-# It syncs the fork's main branch with the upstream repository daily.
+# It syncs the fork's main branch with the upstream repository hourly.
+# This is only a backup in case the webhook fails to send.
 
 name: Sync main branch with upstream
 
 on:
   schedule:
-    - cron: "0 0 * * *" # daily at midnight UTC
+    - cron: "0 * * * *" # hourly, backup in case the webhook fails
   workflow_dispatch:
 
 permissions:
