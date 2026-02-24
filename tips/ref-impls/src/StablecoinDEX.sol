@@ -806,21 +806,19 @@ contract StablecoinDEX is IStablecoinDEX {
                 // Fill the order and get next order
                 orderId = _fillOrder(orderId, fillAmount);
 
-                if (remainingOut == 0) {
-                    return amountIn;
-                }
-
-                // If tick is exhausted, move to next tick
+                // If tick is exhausted, update best tick before checking remaining
                 if (orderId == 0) {
                     bool initialized;
                     (currentTick, initialized) = nextInitializedBidTick(key, currentTick);
-                    if (!initialized) {
-                        revert IStablecoinDEX.InsufficientLiquidity();
-                    }
+                    book.bestBidTick = initialized ? currentTick : type(int16).min;
+
+                    if (remainingOut == 0) return amountIn;
+                    if (!initialized) revert IStablecoinDEX.InsufficientLiquidity();
 
                     level = book.bids[currentTick];
-                    book.bestBidTick = currentTick;
                     orderId = level.head;
+                } else if (remainingOut == 0) {
+                    return amountIn;
                 }
             }
         } else {
@@ -856,21 +854,19 @@ contract StablecoinDEX is IStablecoinDEX {
                 // Fill the order and get next order
                 orderId = _fillOrder(orderId, fillAmount);
 
-                if (remainingOut == 0) {
-                    return amountIn;
-                }
-
-                // If tick is exhausted, move to next tick
+                // If tick is exhausted, update best tick before checking remaining
                 if (orderId == 0) {
                     bool initialized;
                     (currentTick, initialized) = nextInitializedAskTick(key, currentTick);
-                    if (!initialized) {
-                        revert IStablecoinDEX.InsufficientLiquidity();
-                    }
+                    book.bestAskTick = initialized ? currentTick : type(int16).max;
+
+                    if (remainingOut == 0) return amountIn;
+                    if (!initialized) revert IStablecoinDEX.InsufficientLiquidity();
 
                     level = book.asks[currentTick];
-                    book.bestAskTick = currentTick;
                     orderId = level.head;
+                } else if (remainingOut == 0) {
+                    return amountIn;
                 }
             }
         }
@@ -924,21 +920,19 @@ contract StablecoinDEX is IStablecoinDEX {
                 // Fill the order and get next order
                 orderId = _fillOrder(orderId, fillAmount);
 
-                if (remainingIn == 0) {
-                    return amountOut;
-                }
-
-                // If tick is exhausted (orderId == 0), move to next tick
+                // If tick is exhausted, update best tick before checking remaining
                 if (orderId == 0) {
                     bool initialized;
                     (currentTick, initialized) = nextInitializedBidTick(key, currentTick);
-                    if (!initialized) {
-                        revert IStablecoinDEX.InsufficientLiquidity();
-                    }
+                    book.bestBidTick = initialized ? currentTick : type(int16).min;
+
+                    if (remainingIn == 0) return amountOut;
+                    if (!initialized) revert IStablecoinDEX.InsufficientLiquidity();
 
                     level = book.bids[currentTick];
-                    book.bestBidTick = currentTick;
                     orderId = level.head;
+                } else if (remainingIn == 0) {
+                    return amountOut;
                 }
             }
         } else {
@@ -975,21 +969,19 @@ contract StablecoinDEX is IStablecoinDEX {
                 // Fill the order and get next order
                 orderId = _fillOrder(orderId, fillAmount);
 
-                if (remainingIn == 0) {
-                    return amountOut;
-                }
-
-                // If tick is exhausted (orderId == 0), move to next tick
+                // If tick is exhausted, update best tick before checking remaining
                 if (orderId == 0) {
                     bool initialized;
                     (currentTick, initialized) = nextInitializedAskTick(key, currentTick);
-                    if (!initialized) {
-                        revert IStablecoinDEX.InsufficientLiquidity();
-                    }
+                    book.bestAskTick = initialized ? currentTick : type(int16).max;
+
+                    if (remainingIn == 0) return amountOut;
+                    if (!initialized) revert IStablecoinDEX.InsufficientLiquidity();
 
                     level = book.asks[currentTick];
-                    book.bestAskTick = currentTick;
                     orderId = level.head;
+                } else if (remainingIn == 0) {
+                    return amountOut;
                 }
             }
         }

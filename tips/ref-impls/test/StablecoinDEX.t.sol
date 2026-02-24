@@ -2123,4 +2123,40 @@ contract StablecoinDEXTest is BaseTest {
         }
     }
 
+    /// @notice Demonstrates that swapping exact amount to fully exhaust the best tick
+    ///         leaves bestBidTick/bestAskTick pointing at an empty tick level.
+    ///         This is a divergence from the precompile, which updates best tick inside fill_order.
+    function test_BestTickStaleAfterExactExhaustion_ExactIn_Bid() public {
+        int16 tick = 100;
+
+        // Alice places a single bid order at tick 100
+        uint128 orderAmount = 200_000_000; // 200 base units
+        _placeBidOrder(alice, orderAmount, tick);
+
+        // Verify bestBidTick is set
+        (,, int16 bestBidBefore,) = exchange.books(pairKey);
+        assertEq(bestBidBefore, tick, "bestBidTick should be 100");
+
+        // Bob swaps base-for-quote (fills bids) with exactly the order amount
+        // This is the _fillOrdersExactIn baseForQuote path
+        vm.prank(bob);
+        exchange.swapExactAmountIn(address(token1), address(pathUSD), orderAmount, 0);
+
+        // The order should be fully filled — tick level should be empty
+        (,, uint128 liquidity) = exchange.getTickLevel(address(token1), tick, true);
+        assertEq(liquidity, 0, "tick should be fully exhausted");
+
+        // BUG: bestBidTick still points to the exhausted tick
+        (,, int16 bestBidAfter,) = exchange.books(pairKey);
+
+        // This assertion demonstrates the bug — bestBidTick should be MIN (no bids left)
+        // but it still points to tick 100 which has zero liquidity.
+        // The precompile correctly sets it to i16::MIN.
+        assertEq(
+            bestBidAfter,
+            type(int16).min,
+            "TEMPO-DEX12: bestBidTick should be MIN after exhausting all bids"
+        );
+    }
+
 }

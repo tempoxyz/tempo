@@ -536,6 +536,70 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         vm.stopPrank();
     }
 
+    /// @notice Fuzz handler: Swaps exactly the best tick's liquidity to exhaust it
+    /// @dev Targets TEMPO-DEX12/DEX13 by exercising the exact-exhaustion early return path
+    ///      in _fillOrdersExactIn/_fillOrdersExactOut where remainingIn/Out reaches 0 on
+    ///      the same iteration that the tick is fully consumed.
+    /// @param swapperRnd Random seed for selecting swapper
+    /// @param tokenRnd Random seed for selecting base token
+    /// @param isBid If true, exhaust best bid (swap base for quote); if false, exhaust best ask
+    function swapExactBestTick(uint256 swapperRnd, uint256 tokenRnd, bool isBid) external {
+        address swapper = _actors[swapperRnd % _actors.length];
+        TIP20 baseToken = _tokens[tokenRnd % _tokens.length];
+        address quote = address(pathUSD);
+        bytes32 key = exchange.pairKey(address(baseToken), quote);
+
+        (,, int16 bestBidTick, int16 bestAskTick) = exchange.books(key);
+
+        // Determine swap direction and amount from best tick liquidity
+        address tokenIn;
+        address tokenOut;
+        uint128 amount;
+        if (isBid) {
+            // Exhaust best bid: swap base-for-quote (taker sells base into bids)
+            if (bestBidTick == type(int16).min) return;
+            (,, uint128 liquidity) = exchange.getTickLevel(address(baseToken), bestBidTick, true);
+            if (liquidity == 0) return;
+            // Swap exactly the liquidity amount of base token
+            tokenIn = address(baseToken);
+            tokenOut = quote;
+            amount = liquidity;
+        } else {
+            // Exhaust best ask: swap quote-for-base (taker buys base from asks)
+            if (bestAskTick == type(int16).max) return;
+            (,, uint128 liquidity) = exchange.getTickLevel(address(baseToken), bestAskTick, false);
+            if (liquidity == 0) return;
+            // Swap exactly the liquidity amount of base token (as amountOut)
+            tokenIn = quote;
+            tokenOut = address(baseToken);
+            amount = liquidity;
+        }
+
+        _ensureFunds(swapper, TIP20(tokenIn), amount * 2);
+
+        bool swapperHasOrders = _placedOrders[swapper].length > 0;
+        SwapBalanceSnapshot memory before = SwapBalanceSnapshot({
+            tokenIn: tokenIn,
+            tokenOut: tokenOut,
+            tokenInExternal: TIP20(tokenIn).balanceOf(swapper),
+            tokenOutExternal: TIP20(tokenOut).balanceOf(swapper),
+            tokenInInternal: exchange.balanceOf(swapper, tokenIn),
+            tokenOutInternal: exchange.balanceOf(swapper, tokenOut)
+        });
+
+        vm.startPrank(swapper);
+        if (isBid) {
+            // ExactIn with base amount == tick liquidity
+            _swapExactAmountIn(swapper, amount, before, swapperHasOrders);
+        } else {
+            // ExactOut with base amount == tick liquidity
+            _swapExactAmountOut(swapper, amount, before, swapperHasOrders);
+        }
+        _nextOrderId = exchange.nextOrderId();
+        vm.stopPrank();
+        if (_loggingEnabled) _logBalances();
+    }
+
     /// @notice Fuzz handler: Blacklists an actor, has another actor cancel their stale orders, then whitelists again
     /// @dev Tests TEMPO-DEX18 (stale order cancellation by non-owner when maker is blacklisted)
     /// @param blacklistActorRnd Random seed for selecting actor to blacklist
@@ -1039,14 +1103,13 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         // TEMPO-DEX12: If bestBidTick is not MIN, it should have liquidity
         if (bestBidTick != type(int16).min) {
             (,, uint128 bidLiquidity) = exchange.getTickLevel(baseToken, bestBidTick, true);
-            // Note: during swaps, bestBidTick may temporarily point to empty tick
-            // This is acceptable as it gets updated on next operation
+            assertTrue(bidLiquidity > 0, "TEMPO-DEX12: best bid tick has zero liquidity");
         }
 
         // TEMPO-DEX13: If bestAskTick is not MAX, it should have liquidity
         if (bestAskTick != type(int16).max) {
             (,, uint128 askLiquidity) = exchange.getTickLevel(baseToken, bestAskTick, false);
-            // Note: during swaps, bestAskTick may temporarily point to empty tick
+            assertTrue(askLiquidity > 0, "TEMPO-DEX13: best ask tick has zero liquidity");
         }
     }
 
