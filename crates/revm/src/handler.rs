@@ -214,7 +214,7 @@ impl<DB, I> TempoEvmHandler<DB, I> {
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
-    fn load_fee_fields(
+    pub fn load_fee_fields(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
@@ -485,6 +485,44 @@ where
             calls,
             Self::inspect_execute_single_call,
         )
+    }
+
+    /// Inspector-aware execution with a custom exec loop for standard (non-AA) transactions.
+    ///
+    /// Handles Tempo-specific gas adjustment and AA multi-call dispatch, but delegates the
+    /// standard single-call execution to the provided `exec_loop` closure.
+    /// Allows downstream consumers like the `FoundryHandler` to inject custom execution
+    /// loop logic (such as CREATE2 factory routing) while preserving all Tempo-specific
+    /// behavior as a single source of truth.
+    pub fn inspect_execution_with<F>(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+        init_and_floor_gas: &InitialAndFloorGas,
+        mut exec_loop: F,
+    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
+    where
+        F: FnMut(
+            &mut Self,
+            &mut TempoEvm<DB, I>,
+            <<TempoEvm<DB, I> as EvmTr>::Frame as FrameTr>::FrameInit,
+        ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
+        I: Inspector<TempoContext<DB>, EthInterpreter>,
+    {
+        let spec = *evm.ctx_ref().cfg().spec();
+        let adjusted_gas = adjusted_initial_gas(spec, evm.initial_gas, init_and_floor_gas);
+
+        let tx = evm.tx();
+
+        if let Some(oog) = check_gas_limit(spec, tx, &adjusted_gas) {
+            return Ok(oog);
+        }
+
+        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
+            let calls = tempo_tx_env.aa_calls.clone();
+            return self.inspect_execute_multi_call(evm, &adjusted_gas, calls);
+        }
+
+        self.execute_single_call_with(evm, &adjusted_gas, &mut exec_loop)
     }
 }
 
@@ -1617,34 +1655,18 @@ where
         }
     }
 
-    /// Overridden execution method with inspector support that handles AA vs standard transactions.
+    /// Overridden execution method with inspector support that handles AA vs standard
+    /// transactions.
     ///
-    /// Dispatches based on transaction type:
-    /// - AA transactions (type 0x76): Use batch execution path with calls field
-    /// - All other transactions: Use standard single-call execution
-    ///
-    /// This mirrors the logic in Handler::execution but uses inspector-aware execution methods.
+    /// Delegates to [`inspect_execution_with`](TempoEvmHandler::inspect_execution_with) with
+    /// the default [`inspect_run_exec_loop`](Self::inspect_run_exec_loop).
     #[inline]
     fn inspect_execution(
         &mut self,
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        let spec = evm.ctx_ref().cfg().spec();
-        let adjusted_gas = adjusted_initial_gas(*spec, evm.initial_gas, init_and_floor_gas);
-
-        let tx = evm.tx();
-
-        if let Some(oog) = check_gas_limit(*spec, tx, &adjusted_gas) {
-            return Ok(oog);
-        }
-
-        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
-            let calls = tempo_tx_env.aa_calls.clone();
-            self.inspect_execute_multi_call(evm, &adjusted_gas, calls)
-        } else {
-            self.inspect_execute_single_call(evm, &adjusted_gas)
-        }
+        self.inspect_execution_with(evm, init_and_floor_gas, Self::inspect_run_exec_loop)
     }
 }
 
