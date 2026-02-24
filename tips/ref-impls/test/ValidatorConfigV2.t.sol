@@ -52,7 +52,12 @@ contract ValidatorConfigV2Test is BaseTest {
     {
         bytes32 message = keccak256(
             abi.encodePacked(
-                uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress
+                uint64(block.chainid),
+                address(validatorConfigV2),
+                validatorAddress,
+                uint8(bytes(ingress).length),
+                ingress,
+                egress
             )
         );
         // Forge's signEd25519 does simple concat(namespace, message), but the Rust
@@ -76,7 +81,12 @@ contract ValidatorConfigV2Test is BaseTest {
     {
         bytes32 message = keccak256(
             abi.encodePacked(
-                uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress
+                uint64(block.chainid),
+                address(validatorConfigV2),
+                validatorAddress,
+                uint8(bytes(ingress).length),
+                ingress,
+                egress
             )
         );
         bytes memory ns = bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR");
