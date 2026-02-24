@@ -58,7 +58,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](71);
+        bytes4[] memory selectors = new bytes4[](72);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -148,6 +148,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Spending limit refund handlers (K-REFUND)
         selectors[68] = this.handler_keySpendingRefund.selector;
         selectors[69] = this.handler_keySpendingRefundRevokedKey.selector;
+        // Fee-payer substitution replay handler
+        selectors[71] = this.handler_feePayerSubstitutionReplay.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         // Initialize previous nonce tracking for secp256k1 actors
@@ -225,6 +227,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_timeBoundZeroWidthAllowed,
             0,
             "T5: Tx with validBefore == validAfter unexpectedly allowed"
+        );
+
+        // Fee-payer substitution replay
+        assertEq(
+            ghost_feePayerSubstitutionAllowed,
+            0,
+            "Fee-payer substitution replay unexpectedly allowed"
         );
     }
 
@@ -4556,6 +4565,141 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_keyRefundRevokedNoop++;
         } catch {
             _handleRevertProtocol(ctx.owner);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                FEE-PAYER SUBSTITUTION REPLAY HANDLER
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Handler: Test fee-payer substitution replay with expiring nonces
+    /// @dev Signs the same sender payload (expiring nonce: nonceKey=max, nonce=0,
+    ///      validBefore set), then sponsors with two different fee payers. The first
+    ///      submission succeeds; the second should be rejected despite having a
+    ///      unique tx_hash — because expiring_nonce_hash (which excludes the
+    ///      fee_payer_signature) correctly deduplicates.
+    function handler_feePayerSubstitutionReplay(
+        uint256 actorSeed,
+        uint256 feePayerSeed1,
+        uint256 feePayerSeed2,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        // Pick 4 distinct actors: sender, feePayer1, feePayer2, recipient
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 fpIdx1 = feePayerSeed1 % actors.length;
+        uint256 fpIdx2 = feePayerSeed2 % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+
+        // Ensure sender != feePayer1
+        if (senderIdx == fpIdx1) fpIdx1 = (fpIdx1 + 1) % actors.length;
+        // Ensure sender != feePayer2 and feePayer1 != feePayer2
+        if (senderIdx == fpIdx2) fpIdx2 = (fpIdx2 + 1) % actors.length;
+        if (fpIdx1 == fpIdx2) fpIdx2 = (fpIdx2 + 1) % actors.length;
+        if (senderIdx == fpIdx2) fpIdx2 = (fpIdx2 + 1) % actors.length;
+        // Ensure recipient != sender
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        address sender = actors[senderIdx];
+        address feePayer1 = actors[fpIdx1];
+        address feePayer2 = actors[fpIdx2];
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+
+        // Check balances: sender needs transfer amount, fee payers need gas fees
+        if (
+            feeToken.balanceOf(sender) < amount || feeToken.balanceOf(feePayer1) < 1e6
+                || feeToken.balanceOf(feePayer2) < 1e6
+        ) {
+            return;
+        }
+
+        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+
+        // Build expiring nonce TempoTransaction
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken),
+            value: 0,
+            data: abi.encodeCall(ITIP20.transfer, (recipient, amount))
+        });
+
+        uint64 gasLimit = TxBuilder.callGas(calls[0].data, 0) + TxBuilder.GAS_LIMIT_BUFFER;
+
+        TempoTransaction memory tx_ = TempoTransactionLib.create()
+            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(EXPIRING_NONCE_KEY).withNonce(0)
+            .withValidBefore(validBefore);
+
+        // Encode the base tx (before fee payer sig) — this is what fee payers sign
+        bytes memory encodedTx = tx_.encode(vmRlp);
+        bytes32 feePayerHash = keccak256(encodedTx);
+
+        // Fee payer 1 signs the encoded tx hash
+        (uint8 fp1V, bytes32 fp1R, bytes32 fp1S) = vm.sign(actorKeys[fpIdx1], feePayerHash);
+        bytes memory feePayer1Sig = abi.encodePacked(fp1R, fp1S, fp1V);
+
+        // Attach fee payer 1's signature and sign with sender
+        tx_ = tx_.withFeePayerSignature(feePayer1Sig);
+
+        bytes memory signedTx1 = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.Secp256k1,
+                privateKey: actorKeys[senderIdx],
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: address(0)
+            })
+        );
+
+        vm.coinbase(validator);
+
+        // First execution should succeed
+        try vmExec.executeTransaction(signedTx1) {
+            ghost_expiringNonceTxsExecuted++;
+            ghost_totalTxExecuted++;
+            ghost_totalCallsExecuted++;
+        } catch {
+            ghost_totalTxReverted++;
+            return;
+        }
+
+        // Fee payer 2 signs the SAME base tx hash
+        (uint8 fp2V, bytes32 fp2R, bytes32 fp2S) = vm.sign(actorKeys[fpIdx2], feePayerHash);
+        bytes memory feePayer2Sig = abi.encodePacked(fp2R, fp2S, fp2V);
+
+        // Replace fee payer signature and re-sign with sender
+        tx_ = tx_.withFeePayerSignature(feePayer2Sig);
+
+        bytes memory signedTx2 = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.Secp256k1,
+                privateKey: actorKeys[senderIdx],
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: address(0)
+            })
+        );
+
+        // Second execution should fail — expiring_nonce_hash dedup catches
+        // fee-payer substitution because it excludes fee_payer_signature
+        ghost_feePayerSubstitutionAttempted++;
+        try vmExec.executeTransaction(signedTx2) {
+            // VIOLATION: Fee-payer substitution replay succeeded!
+            ghost_feePayerSubstitutionAllowed++;
+        } catch {
+            _handleExpectedReject(_noop);
         }
     }
 
