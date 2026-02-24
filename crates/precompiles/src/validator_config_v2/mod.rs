@@ -221,14 +221,14 @@ impl ValidatorConfigV2 {
         ensure_address_is_ip_port(ingress).map_err(|err| {
             TempoPrecompileError::from(ValidatorConfigV2Error::not_ip_port(
                 ingress.to_string(),
-                format!("{err:?}"),
+                err.to_string(),
             ))
         })?;
 
         ensure_address_is_ip(egress).map_err(|err| {
             TempoPrecompileError::from(ValidatorConfigV2Error::not_ip(
                 egress.to_string(),
-                format!("{err:?}"),
+                err.to_string(),
             ))
         })
     }
@@ -242,7 +242,7 @@ impl ValidatorConfigV2 {
             .map_err(|err| {
                 TempoPrecompileError::from(ValidatorConfigV2Error::not_ip_port(
                     ingress.to_string(),
-                    format!("{err:?}"),
+                    err.to_string(),
                 ))
             })?;
         Ok(match ingress.ip() {
@@ -419,9 +419,7 @@ impl ValidatorConfigV2 {
 
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
 
-        self.active_ingress_ips
-            [Self::ingress_ip_key(&v.ingress).expect("contract must only contain valid ingress")]
-        .delete()?;
+        self.active_ingress_ips[Self::ingress_ip_key(&v.ingress)?].delete()?;
 
         v.deactivated_at_height = block_height;
         self.validators[idx].write(v)

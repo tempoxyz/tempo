@@ -6,7 +6,7 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    ip_validation::ensure_address_is_ip_port,
+    ip_validation::{ensure_address_is_ip_port, ensure_address_is_ip_port_legacy},
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256};
@@ -154,22 +154,40 @@ impl ValidatorConfig {
             return Err(ValidatorConfigError::validator_already_exists())?;
         }
 
-        // Validate addresses
-        ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
-            ValidatorConfigError::not_host_port(
-                "inboundAddress".to_string(),
-                call.inboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
-
-        ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
-            ValidatorConfigError::not_ip_port(
-                "outboundAddress".to_string(),
-                call.outboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
+        // Validate addresses.
+        // T2+: reject IPv6 zones, use stable Display formatting for errors.
+        // Pre-T2: preserve legacy behavior for consensus compatibility.
+        if self.storage.spec().is_t2() {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+        } else {
+            ensure_address_is_ip_port_legacy(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+            ensure_address_is_ip_port_legacy(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+        }
 
         // Store the new validator in the validators mapping
         let count = self.validator_count()?;
@@ -229,21 +247,37 @@ impl ValidatorConfig {
             self.validators[sender].delete()?;
         }
 
-        ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
-            ValidatorConfigError::not_host_port(
-                "inboundAddress".to_string(),
-                call.inboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
-
-        ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
-            ValidatorConfigError::not_ip_port(
-                "outboundAddress".to_string(),
-                call.outboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
+        if self.storage.spec().is_t2() {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+        } else {
+            ensure_address_is_ip_port_legacy(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+            ensure_address_is_ip_port_legacy(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+        }
 
         let updated_validator = Validator {
             public_key: call.publicKey,
