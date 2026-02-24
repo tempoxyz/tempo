@@ -422,7 +422,7 @@ impl MaxTpsArgs {
 
         let mut pending_txs =
             generate_transactions(signer_provider_manager.clone(), gen_input, counters.clone())
-                .buffer_unordered(self.max_concurrent_requests)
+                .buffer_unordered(self.tps as usize)
                 .filter_map(|result| async {
                     match result {
                         Ok(bytes) => Some(bytes),
