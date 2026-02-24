@@ -116,8 +116,12 @@ impl AssertValidatorIsAdded {
             'becomes_signer: loop {
                 context.sleep(Duration::from_secs(1)).await;
 
-                let mut entered_player_epoch = false;
-                let mut entered_dealer_epoch = false;
+                let mut added_epoch = None;
+                let mut added_signer= None;
+                let mut dealers = None;
+                let mut network_epoch = None;
+                let mut peers = None;
+                let mut players = None;
                 for line in context.encode().lines() {
                     if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                         continue;
@@ -130,49 +134,53 @@ impl AssertValidatorIsAdded {
                     assert_no_v1(key, value);
                     assert_no_dkg_failure(key, value);
 
-                    if key.ends_with("peer_manager_peers") {
-                        assert_eq!(
-                            how_many_initial + 1,
-                            value.parse::<u32>().unwrap(),
-                            "peers are registered on the next finalized block; this should have happened almost immediately",
-                        );
-                    }
-
-                    if key.ends_with("_epoch_manager_latest_epoch") {
+                    if key.ends_with("_epoch_manager_latest_epoch")
+                    {
                         let epoch = value.parse::<u64>().unwrap();
-
                         if key.contains(&added_uid) {
-                            entered_player_epoch |= epoch >= player_epoch.get();
-                            entered_dealer_epoch |= epoch >= dealer_epoch.get();
-                        }
-
-                        assert!(
-                            epoch < dealer_epoch.next().get(),
-                            "network reached epoch `{}` without added validator getting a share",
-                            dealer_epoch.next(),
-                        );
-                    }
-
-                    if entered_player_epoch && !entered_dealer_epoch {
-                        if key.ends_with("_dkg_manager_ceremony_players") {
-                            assert_eq!(how_many_initial + 1, value.parse::<u32>().unwrap(),)
-                        }
-                        if key.ends_with("_dkg_manager_ceremony_dealers") {
-                            assert_eq!(how_many_initial, value.parse::<u32>().unwrap(),)
+                            added_epoch.replace(epoch);
+                        } else {
+                            network_epoch.replace(epoch);
                         }
                     }
 
-                    if entered_dealer_epoch {
-                        if key.ends_with("_dkg_manager_ceremony_dealers") {
-                            assert_eq!(how_many_initial + 1, value.parse::<u32>().unwrap(),)
-                        }
-
-                        if key.ends_with("_epoch_manager_how_often_signer_total") {
-                            assert!(value.parse::<u64>().unwrap() > 0,);
-                            break 'becomes_signer;
-                        }
+                    if key.ends_with("_dkg_manager_ceremony_players") {
+                        players.replace(value.parse::<u32>().unwrap());
+                    }
+                    if key.ends_with("_dkg_manager_ceremony_dealers") {
+                        dealers.replace(value.parse::<u32>().unwrap());
+                    }
+                    if key.ends_with("peer_manager_peers")
+                    {
+                        peers.replace(value.parse::<u32>().unwrap());
+                    }
+                    if key.ends_with("_epoch_manager_how_often_signer_total")
+                    && key.contains(&added_uid) {
+                        added_signer.replace(value.parse::<u64>().unwrap());
                     }
                 }
+
+                let added_epoch = added_epoch.unwrap();
+                let added_signer = added_signer.unwrap();
+                let dealers = dealers.unwrap();
+                let network_epoch = network_epoch.unwrap();
+                let players = players.unwrap();
+
+                if added_epoch >= player_epoch.get() && added_epoch < dealer_epoch.get() {
+                        assert_eq!(how_many_initial + 1, players);
+                        assert_eq!(how_many_initial, dealers);
+                }
+
+                if added_epoch >= dealer_epoch.get() {
+                    assert_eq!(how_many_initial + 1, dealers);
+                    assert!(added_signer > 0);
+                    break 'becomes_signer;
+                }
+
+                assert!(
+                    network_epoch <= dealer_epoch.get(),
+                    "network reached epoch `{network_epoch}` without added validator getting a share",
+                );
             }
         })
     }
@@ -223,19 +231,24 @@ impl AssertValidatorIsRemoved {
                 .await
                 .unwrap();
 
-            tracing::debug!(
-                block.number = receipt.block_number,
-                "deactivateValidator call returned receipt"
-            );
-
             let removal_epoch = target_epoch(epoch_length, receipt.block_number.unwrap());
             let removed_epoch = removal_epoch.next();
+
+            tracing::debug!(
+                block.number = receipt.block_number,
+                %removal_epoch,
+                %removed_epoch,
+                "deactivateValidator call returned receipt; now monitoring \
+                removal of validator"
+            );
 
             'is_removed: loop {
                 context.sleep(Duration::from_secs(1)).await;
 
-                let mut entered_removal_epoch = false;
-                let mut entered_removed_epoch = false;
+                let mut dealers = None;
+                let mut network_epoch = None;
+                let mut peers = None;
+                let mut players = None;
                 for line in context.encode().lines() {
                     if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                         continue;
@@ -252,50 +265,49 @@ impl AssertValidatorIsRemoved {
                         assert_eq!(0, value.parse::<u64>().unwrap(),);
                     }
 
-                    if key.ends_with("_epoch_manager_latest_epoch") {
-                        let epoch = value.parse::<u64>().unwrap();
-
-                        assert!(
-                            epoch < removed_epoch.next().get(),
-                            "validator removal should have happened by epoch \
-                            `{removed_epoch}`, but network is already in epoch \
-                            {}",
-                            removed_epoch.next(),
-                        );
-
-                        if key.contains(&removed_validator.uid) {
-                            entered_removal_epoch |= epoch >= removal_epoch.get();
-                        }
-
-                        entered_removed_epoch |= epoch >= removed_epoch.get();
+                    if key.ends_with("_epoch_manager_latest_epoch")
+                        && !key.contains(&removed_validator.uid)
+                    {
+                        network_epoch.replace(value.parse::<u64>().unwrap());
                     }
 
-                    if entered_removal_epoch && !entered_removed_epoch {
-                        if key.ends_with("_dkg_manager_ceremony_players") {
-                            assert_eq!(how_many_initial - 1, value.parse::<u32>().unwrap(),)
-                        }
-                        if key.ends_with("_dkg_manager_ceremony_dealers") {
-                            assert_eq!(how_many_initial, value.parse::<u32>().unwrap(),)
-                        }
+                    if key.ends_with("_dkg_manager_ceremony_players") {
+                        players.replace(value.parse::<u32>().unwrap());
                     }
-
-                    if entered_removed_epoch && !key.contains(&removed_validator.uid) {
-                        if key.ends_with("peer_manager_peers") {
-                            assert_eq!(
-                                how_many_initial - 1,
-                                value.parse::<u32>().unwrap(),
-                                "once the peer is deactivated and no longer a \
-                                dealer, it should be removed from the list of \
-                                peers immediately"
-                            );
-                        }
-
-                        if key.ends_with("_dkg_manager_ceremony_dealers") {
-                            assert_eq!(how_many_initial - 1, value.parse::<u32>().unwrap(),);
-                            break 'is_removed;
-                        }
+                    if key.ends_with("_dkg_manager_ceremony_dealers") {
+                        dealers.replace(value.parse::<u32>().unwrap());
+                    }
+                    if key.ends_with("peer_manager_peers") && !key.contains(&removed_validator.uid)
+                    {
+                        peers.replace(value.parse::<u32>().unwrap());
                     }
                 }
+
+                let dealers = dealers.unwrap();
+                let network_epoch = network_epoch.unwrap();
+                let peers = peers.unwrap();
+                let players = players.unwrap();
+                if network_epoch < removed_epoch.get() && network_epoch >= removal_epoch.get() {
+                    assert_eq!(how_many_initial - 1, players);
+                    assert_eq!(how_many_initial, dealers);
+                }
+
+                if network_epoch >= removed_epoch.get() {
+                    assert_eq!(
+                        how_many_initial - 1,
+                        peers,
+                        "once the peer is deactivated and no longer a dealer, \
+                        it should be removed from the list of peers immediately"
+                    );
+                    assert_eq!(how_many_initial - 1, dealers);
+                    break 'is_removed;
+                }
+
+                assert!(
+                    network_epoch <= removed_epoch.get(),
+                    "network epoch `{network_epoch}` exceeded `{removed_epoch}` \
+                    without validator being removed"
+                );
             }
         })
     }
