@@ -1,0 +1,22 @@
+# This workflow is only intended to be used in forks of tempoxyz/tempo.
+# It syncs the fork's main branch with the upstream repository daily.
+
+name: Sync main branch with upstream
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # daily at midnight UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: ${{ github.repository != 'tempoxyz/tempo' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync fork with upstream
+        run: gh repo sync "${{ github.repository }}" --force
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
