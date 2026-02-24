@@ -84,7 +84,14 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validateAddParams(validatorAddress, publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress)
+            abi.encodePacked(
+                block.chainid,
+                address(this),
+                validatorAddress,
+                uint8(bytes(ingress).length),
+                ingress,
+                egress
+            )
         );
         _verifyEd25519Signature(
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"), publicKey, message, signature
@@ -153,7 +160,14 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validateRotateParams(publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress)
+            abi.encodePacked(
+                block.chainid,
+                address(this),
+                validatorAddress,
+                uint8(bytes(ingress).length),
+                ingress,
+                egress
+            )
         );
         _verifyEd25519Signature(
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"), publicKey, message, signature
