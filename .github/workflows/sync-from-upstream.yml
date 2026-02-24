@@ -1,6 +1,5 @@
 # This workflow is only intended to be used in forks of tempoxyz/tempo.
 # It syncs the fork's main branch with the upstream repository hourly.
-# This is only a backup in case the webhook fails to send.
 
 name: Sync main branch with upstream
 
