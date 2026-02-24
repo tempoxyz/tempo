@@ -12,6 +12,7 @@ use alloy::{
 use alloy_eips::{eip2718::Encodable2718, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 use alloy_network::TxSignerSync;
 use alloy_primitives::Bytes;
+use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP};
 

@@ -187,14 +187,13 @@ Tested via `vmExec.executeTransaction()` and constant assertions:
   - Handler deploys contracts at 50-100% of max size
   - Invariant: max size deployment must succeed within tx cap
 
-- **TEMPO-BLOCK10**: shared_gas_limit = 50M. (constant assertion)
-
 ### Protocol-Level Invariants (Rust)
 
 The following are enforced in the block builder and tested in Rust:
 
 - **TEMPO-BLOCK7**: Block validity rejects over-limit blocks → `crates/payload/builder/src/lib.rs`
 - **TEMPO-BLOCK8-9**: Hardfork activation rules → `crates/chainspec/`
+- **TEMPO-BLOCK10**: Shared gas limit = block_gas_limit / 10 → `crates/consensus/src/lib.rs`
 - **TEMPO-BLOCK11**: Constant base fee within epoch → `crates/chainspec/`
 - **TEMPO-BLOCK12**: General lane enforcement (30M cap) → `crates/payload/builder/src/lib.rs`
 

@@ -9,6 +9,7 @@ use crate::metrics::TempoPayloadBuilderMetrics;
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
+use either::Either;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -22,8 +23,9 @@ use reth_evm::{
     block::{BlockExecutionError, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
+use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
-use reth_payload_primitives::PayloadBuilderAttributes;
+use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock, PayloadBuilderAttributes};
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
 use reth_revm::{
     State,
@@ -45,9 +47,9 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
-use tempo_payload_types::TempoPayloadBuilderAttributes;
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadBuilderAttributes};
 use tempo_primitives::{
-    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,
+    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
     transaction::{
         calc_gas_balance_spending,
@@ -159,7 +161,7 @@ where
         StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
 {
     type Attributes = TempoPayloadBuilderAttributes;
-    type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
+    type BuiltPayload = TempoBuiltPayload;
 
     fn try_build(
         &self,
@@ -213,10 +215,10 @@ where
     )]
     fn build_payload<Txs>(
         &self,
-        args: BuildArguments<TempoPayloadBuilderAttributes, EthBuiltPayload<TempoPrimitives>>,
+        args: BuildArguments<TempoPayloadBuilderAttributes, TempoBuiltPayload>,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
         empty: bool,
-    ) -> Result<BuildOutcome<EthBuiltPayload<TempoPrimitives>>, PayloadBuilderError>
+    ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     {
@@ -561,7 +563,8 @@ where
         let BlockBuilderOutcome {
             execution_result,
             block,
-            ..
+            hashed_state,
+            trie_updates,
         } = builder.finish(&state_provider)?;
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
@@ -582,7 +585,7 @@ where
 
         let requests = chain_spec
             .is_prague_active_at_timestamp(attributes.timestamp())
-            .then_some(execution_result.requests);
+            .then(|| execution_result.requests.clone());
 
         let sealed_block = Arc::new(block.sealed_block().clone());
         let rlp_length = sealed_block.rlp_length();
@@ -624,8 +627,20 @@ where
             "Built payload"
         );
 
-        let payload =
+        let eth_payload =
             EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
+
+        let executed_block = BuiltPayloadExecutedBlock {
+            recovered_block: Arc::new(block),
+            execution_output: Arc::new(BlockExecutionOutput {
+                result: execution_result,
+                state: db.take_bundle(),
+            }),
+            hashed_state: Either::Left(Arc::new(hashed_state)),
+            trie_updates: Either::Left(Arc::new(trie_updates)),
+        };
+
+        let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
 
         drop(db);
         Ok(BuildOutcome::Better {
@@ -636,7 +651,7 @@ where
 }
 
 pub fn is_more_subblocks(
-    best_payload: Option<&EthBuiltPayload<TempoPrimitives>>,
+    best_payload: Option<&TempoBuiltPayload>,
     subblocks: &[RecoveredSubBlock],
 ) -> bool {
     let Some(best_payload) = best_payload else {
@@ -715,7 +730,7 @@ mod tests {
         }
     }
 
-    fn payload_with_metadata(count: usize) -> EthBuiltPayload<TempoPrimitives> {
+    fn payload_with_metadata(count: usize) -> TempoBuiltPayload {
         let metadata: Vec<_> = (0..count).map(|_| SubBlockMetadata::random()).collect();
         let input: Bytes = alloy_rlp::encode(&metadata).into();
         let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -739,7 +754,8 @@ mod tests {
             },
         };
         let sealed = Arc::new(SealedBlock::seal_slow(block));
-        EthBuiltPayload::new(PayloadId::default(), sealed, U256::ZERO, None)
+        let eth = EthBuiltPayload::new(PayloadId::default(), sealed, U256::ZERO, None);
+        TempoBuiltPayload::new(eth, None)
     }
 
     #[test]

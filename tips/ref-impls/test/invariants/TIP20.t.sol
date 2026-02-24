@@ -828,6 +828,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
         amount = bound(amount, 1, targetBalance);
 
+        uint128 optedInSupplyBefore = token.optedInSupply();
+        (address rewardRecipient,,) = token.userRewardInfo(target);
+        bool targetOptedIn = rewardRecipient != address(0);
         uint256 totalSupplyBefore = token.totalSupply();
 
         vm.startPrank(admin);
@@ -850,6 +853,22 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 totalSupplyBefore - amount,
                 "TEMPO-TIP23: Total supply not decreased"
             );
+
+            // TEMPO-TIP11: Opted-in supply should decrease by burned amount if target was opted in
+            uint128 optedInSupplyAfter = token.optedInSupply();
+            if (targetOptedIn) {
+                assertEq(
+                    optedInSupplyAfter,
+                    optedInSupplyBefore - uint128(amount),
+                    "TEMPO-TIP11: Opted-in supply not decreased after burnBlocked"
+                );
+            } else {
+                assertEq(
+                    optedInSupplyAfter,
+                    optedInSupplyBefore,
+                    "TEMPO-TIP11: Opted-in supply changed unexpectedly after burnBlocked"
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
