@@ -26,8 +26,10 @@ use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_commonware_node_config::SigningKey;
-use tempo_commonware_node_config::validator::{self as validator, ValidatorConfig};
+use tempo_commonware_node_config::{
+    SigningKey,
+    validator::{self as validator, ValidatorConfig},
+};
 use tempo_contracts::precompiles::{
     IValidatorConfig, IValidatorConfigV2, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
@@ -115,9 +117,9 @@ impl ValidatorIdentityArgs {
     }
 }
 
-/// Shared arguments for commands that submit a transaction.
+/// Shared arguments for commands that update the validator config contract.
 #[derive(Debug, clap::Args)]
-pub(crate) struct SubmitArgs {
+pub(crate) struct ValidatorTransactionArgs {
     /// The ed25519 signature proving validator key ownership and validity over
     /// the validator identity.
     #[arg(long, value_name = "SIGNATURE")]
@@ -138,7 +140,7 @@ pub(crate) struct AddValidator {
     identity: ValidatorIdentityArgs,
 
     #[command(flatten)]
-    submit: SubmitArgs,
+    submit: ValidatorTransactionArgs,
 }
 
 impl AddValidator {
@@ -205,7 +207,7 @@ pub(crate) struct RotateValidator {
     identity: ValidatorIdentityArgs,
 
     #[command(flatten)]
-    submit: SubmitArgs,
+    submit: ValidatorTransactionArgs,
 }
 
 impl RotateValidator {
