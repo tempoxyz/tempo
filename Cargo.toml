@@ -168,22 +168,22 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "0ce23d76", fea
 revm = { version = "34.0.0", features = ["optional_fee_charge"] }
 
 alloy = { version = "1.6.1", default-features = false }
-alloy-consensus = { version = "1.6.1", default-features = false }
+alloy-consensus = { version = "1.7.3", default-features = false }
 alloy-contract = { version = "1.6.1", default-features = false }
 alloy-eips = { version = "1.6.1", default-features = false }
 alloy-evm = "0.27.0"
 revm-inspectors = "0.34.2"
-alloy-genesis = "1.6.1"
+alloy-genesis = "1.7.3"
 alloy-hardforks = "0.4.7"
 alloy-network = { version = "1.6.1", default-features = false }
 alloy-primitives = { version = "1.5.4", default-features = false }
-alloy-provider = { version = "1.6.1", default-features = false }
+alloy-provider = { version = "1.7.3", default-features = false }
 alloy-rlp = "0.3.13"
-alloy-rpc-types-engine = "1.6.1"
+alloy-rpc-types-engine = "1.7.3"
 alloy-rpc-types-eth = { version = "1.6.1" }
 alloy-serde = "1.6.1"
 alloy-signer = "1.6.1"
-alloy-signer-local = "1.6.1"
+alloy-signer-local = "1.7.3"
 alloy-sol-types = { version = "1.5.7", default-features = false }
 alloy-transport = "1.6.1"
 
@@ -206,23 +206,23 @@ auto_impl = "1"
 axum = "0.8.8"
 base64 = "0.22"
 bytes = "1.11.1"
-clap = { version = "4.5.57", features = ["derive", "env"] }
+clap = { version = "4.5.60", features = ["derive", "env"] }
 const-hex = { version = "1.17.0" }
 derive_more = { version = "2.1.1" }
 either = "1"
 eyre = "0.6.12"
-futures = "0.3.31"
+futures = "0.3.32"
 governor = "0.10.4"
 indexmap = "2.13.0"
 indicatif = "0.18"
 itertools = "0.14.0"
-jiff = { version = "0.2.18", default-features = false }
+jiff = { version = "0.2.21", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.3"
 p256 = "0.13"
 parking_lot = "0.12.5"
 prometheus-client = "0.24.0"
-proptest = "1.9"
+proptest = "1.10"
 proptest-arbitrary-interop = "0.1.0"
 rand = "0.9"
 rand_08 = { package = "rand", version = "0.8.5" }
@@ -233,7 +233,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 schnellru = "0.2"
 sha2 = "0.10"
-tempfile = "3.24.0"
+tempfile = "3.26.0"
 thiserror = "2.0.18"
 # TODO: restrict this to only the required features
 tokio = { version = "1.49.0", features = ["full"] }
