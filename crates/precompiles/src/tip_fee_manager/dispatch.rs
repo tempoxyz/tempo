@@ -5,11 +5,17 @@ use crate::{
         ITIPFeeAMM, TipFeeManager,
         amm::{M, MIN_LIQUIDITY, N, SCALE},
     },
-    view,
+    unknown_selector, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::{IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls};
+use tempo_contracts::precompiles::{
+    IFeeManager::{self, IFeeManagerCalls},
+    ITIPFeeAMM::ITIPFeeAMMCalls,
+};
 
 /// Combined enum for dispatching to either IFeeManager or ITIPFeeAMM
 enum TipFeeManagerCall {
@@ -48,6 +54,12 @@ impl Precompile for TipFeeManager {
                 view(call, |c| self.collected_fees[c.validator][c.token].read())
             }
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::getFeeToken(call)) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(
+                        IFeeManager::getFeeTokenCall::SELECTOR,
+                        self.storage.gas_used(),
+                    );
+                }
                 view(call, |_| self.get_fee_token())
             }
 
@@ -151,7 +163,7 @@ mod tests {
     };
     use alloy::{
         primitives::{Address, B256, U256},
-        sol_types::{SolCall, SolValue},
+        sol_types::{SolCall, SolError, SolValue},
     };
     use tempo_contracts::precompiles::{
         IFeeManager, IFeeManager::IFeeManagerCalls, ITIPFeeAMM, ITIPFeeAMM::ITIPFeeAMMCalls,
@@ -385,6 +397,25 @@ mod tests {
     }
 
     #[test]
+    fn test_get_fee_token_pre_t2_returns_unknown_selector() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut fee_manager = TipFeeManager::new();
+
+            let calldata = IFeeManager::getFeeTokenCall {}.abi_encode();
+            let result = fee_manager.call(&calldata, sender)?;
+            assert!(result.reverted);
+            assert!(
+                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&result.bytes)
+                    .is_ok()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_get_fee_token_returns_zero_when_unset() -> eyre::Result<()> {
         let mut storage =
             HashMapStorageProvider::new_with_spec(1, tempo_chainspec::hardfork::TempoHardfork::T2);
@@ -427,7 +458,8 @@ mod tests {
 
     #[test]
     fn test_tip_fee_manager_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage =
+            HashMapStorageProvider::new_with_spec(1, tempo_chainspec::hardfork::TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
