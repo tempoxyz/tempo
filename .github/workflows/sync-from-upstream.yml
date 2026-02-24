@@ -9,15 +9,21 @@ on:
     - cron: "0 * * * *" # hourly, backup in case the webhook fails
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   sync:
     if: ${{ github.repository != 'tempoxyz/tempo' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+
       - name: Sync fork with upstream
         run: gh repo sync "${{ github.repository }}" --force
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
