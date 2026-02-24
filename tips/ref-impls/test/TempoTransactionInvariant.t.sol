@@ -51,7 +51,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     // ============ Setup ============
 
-    function setUp() public override {
+    function setUp() public virtual override {
         super.setUp();
 
         // Target this contract for handler functions
