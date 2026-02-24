@@ -495,6 +495,7 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 ### Approval Invariants
 
 - **TEMPO-TIP5**: Allowance setting - `approve` sets exact allowance amount, returns `true`.
+- **TEMPO-TIP36**: A valid permit sets allowance to the `value` in the permit struct.
 
 ### Mint/Burn Invariants
 
@@ -536,3 +537,11 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 - **TEMPO-TIP27**: Pause-role enforcement - only accounts with `PAUSE_ROLE` can call `pause` (non-role holders revert with `Unauthorized`).
 - **TEMPO-TIP28**: Unpause-role enforcement - only accounts with `UNPAUSE_ROLE` can call `unpause` (non-role holders revert with `Unauthorized`).
 - **TEMPO-TIP29**: Burn-blocked-role enforcement - only accounts with `BURN_BLOCKED_ROLE` can call `burnBlocked` (non-role holders revert with `Unauthorized`).
+
+### Permit Invariants
+
+- **TEMPO-TIP31**: `nonces(owner)` must only ever increase, never decrease.
+- **TEMPO-TIP32**: `nonces(owner)` must increment by exactly 1 on each successful `permit()` call for that owner.
+- **TEMPO-TIP33**: A permit signature can only be used once (enforced by nonce increment).
+- **TEMPO-TIP34**: A permit with a deadline in the past must always revert.
+- **TEMPO-TIP35**: The recovered signer from a valid permit signature must exactly match the `owner` parameter.

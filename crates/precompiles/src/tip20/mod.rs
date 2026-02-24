@@ -18,7 +18,8 @@ use crate::{
 };
 use alloy::{
     hex,
-    primitives::{Address, B256, U256, keccak256, uint},
+    primitives::{Address, B256, Signature, U256, keccak256, uint},
+    sol_types::SolValue,
 };
 use std::sync::LazyLock;
 use tempo_precompiles_macros::contract;
@@ -73,8 +74,7 @@ pub struct TIP20Token {
     total_supply: U256,
     balances: Mapping<Address, U256>,
     allowances: Mapping<Address, Mapping<Address, U256>>,
-    // Unused slot, kept for storage layout compatibility
-    _nonces: Mapping<Address, U256>,
+    permit_nonces: Mapping<Address, U256>,
     paused: bool,
     supply_cap: U256,
     // Unused slot, kept for storage layout compatibility
@@ -85,6 +85,19 @@ pub struct TIP20Token {
     opted_in_supply: u128,
     user_reward_info: Mapping<Address, UserRewardInfo>,
 }
+
+/// EIP-712 Permit typehash: keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
+pub static PERMIT_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
+});
+
+/// EIP-712 domain separator typehash
+pub static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+});
+
+/// EIP-712 version hash: keccak256("1")
+pub static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
 
 pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
 pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
@@ -475,6 +488,97 @@ impl TIP20Token {
         }))?;
 
         Ok(true)
+    }
+
+    // EIP-2612 Permit
+
+    /// Returns the current nonce for an address (EIP-2612)
+    pub fn nonces(&self, call: ITIP20::noncesCall) -> Result<U256> {
+        self.permit_nonces[call.owner].read()
+    }
+
+    /// Returns the EIP-712 domain separator, computed dynamically
+    pub fn domain_separator(&self) -> Result<B256> {
+        let name = self.name()?;
+        let name_hash = keccak256(name.as_bytes());
+        let chain_id = U256::from(self.storage.chain_id());
+
+        let encoded = (
+            *EIP712_DOMAIN_TYPEHASH,
+            name_hash,
+            *VERSION_HASH,
+            chain_id,
+            self.address,
+        )
+            .abi_encode();
+
+        Ok(keccak256(encoded))
+    }
+
+    /// Executes a permit: sets allowance via a signed EIP-2612 message.
+    ///
+    /// Does NOT take msg_sender — the owner is validated from the signature.
+    /// Follows same pause behavior as approve() (allowed when paused).
+    pub fn permit(&mut self, call: ITIP20::permitCall) -> Result<()> {
+        // 1. Check deadline
+        if self.storage.timestamp() > call.deadline {
+            return Err(TIP20Error::permit_expired().into());
+        }
+
+        // 2. Construct EIP-712 struct hash
+        let nonce = self.permit_nonces[call.owner].read()?;
+        let struct_hash = keccak256(
+            (
+                *PERMIT_TYPEHASH,
+                call.owner,
+                call.spender,
+                call.value,
+                nonce,
+                call.deadline,
+            )
+                .abi_encode(),
+        );
+
+        // 3. Construct EIP-712 digest
+        let domain_separator = self.domain_separator()?;
+        let digest = keccak256(
+            [
+                &[0x19, 0x01],
+                domain_separator.as_slice(),
+                struct_hash.as_slice(),
+            ]
+            .concat(),
+        );
+
+        // 4. Validate ECDSA signature
+        // Only v=27/28 is accepted; v=0/1 is intentionally NOT normalized (see TIP-1004 spec).
+        if call.v != 27 && call.v != 28 {
+            return Err(TIP20Error::invalid_signature().into());
+        }
+        let parity = call.v == 28;
+        let sig = Signature::from_scalars_and_parity(call.r, call.s, parity);
+        let recovered = alloy::consensus::crypto::secp256k1::recover_signer(&sig, digest)
+            .map_err(|_| TIP20Error::invalid_signature())?;
+        if recovered.is_zero() || recovered != call.owner {
+            return Err(TIP20Error::invalid_signature().into());
+        }
+
+        // 5. Increment nonce
+        self.permit_nonces[call.owner].write(
+            nonce
+                .checked_add(U256::from(1))
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )?;
+
+        // 6. Set allowance
+        self.set_allowance(call.owner, call.spender, call.value)?;
+
+        // 7. Emit Approval event
+        self.emit_event(TIP20Event::Approval(ITIP20::Approval {
+            owner: call.owner,
+            spender: call.spender,
+            amount: call.value,
+        }))
     }
 
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
@@ -2053,5 +2157,544 @@ pub(crate) mod tests {
 
             Ok(())
         })
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  EIP-2612 Permit Tests (TIP-1004)
+    // ═══════════════════════════════════════════════════════════
+
+    mod permit_tests {
+        use super::*;
+        use alloy::sol_types::SolValue;
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_chainspec::hardfork::TempoHardfork;
+
+        const CHAIN_ID: u64 = 42;
+
+        /// Create a T2 storage provider for permit tests
+        fn setup_t2_storage() -> HashMapStorageProvider {
+            HashMapStorageProvider::new_with_spec(CHAIN_ID, TempoHardfork::T2)
+        }
+
+        /// Helper to create a valid permit signature
+        fn sign_permit(
+            signer: &PrivateKeySigner,
+            token_name: &str,
+            token_address: Address,
+            spender: Address,
+            value: U256,
+            nonce: U256,
+            deadline: U256,
+        ) -> (u8, B256, B256) {
+            let domain_separator = compute_domain_separator(token_name, token_address);
+            let struct_hash = keccak256(
+                (
+                    *PERMIT_TYPEHASH,
+                    signer.address(),
+                    spender,
+                    value,
+                    nonce,
+                    deadline,
+                )
+                    .abi_encode(),
+            );
+            let digest = keccak256(
+                [
+                    &[0x19, 0x01],
+                    domain_separator.as_slice(),
+                    struct_hash.as_slice(),
+                ]
+                .concat(),
+            );
+
+            let sig = signer.sign_hash_sync(&digest).unwrap();
+            let v = sig.v() as u8 + 27;
+            let r: B256 = sig.r().into();
+            let s: B256 = sig.s().into();
+            (v, r, s)
+        }
+
+        fn compute_domain_separator(token_name: &str, token_address: Address) -> B256 {
+            keccak256(
+                (
+                    *EIP712_DOMAIN_TYPEHASH,
+                    keccak256(token_name.as_bytes()),
+                    *VERSION_HASH,
+                    U256::from(CHAIN_ID),
+                    token_address,
+                )
+                    .abi_encode(),
+            )
+        }
+
+        struct PermitFixture {
+            storage: HashMapStorageProvider,
+            admin: Address,
+            signer: PrivateKeySigner,
+            spender: Address,
+        }
+
+        impl PermitFixture {
+            fn new() -> Self {
+                Self {
+                    storage: setup_t2_storage(),
+                    admin: Address::random(),
+                    signer: PrivateKeySigner::random(),
+                    spender: Address::random(),
+                }
+            }
+        }
+
+        fn make_permit_call(
+            signer: &PrivateKeySigner,
+            spender: Address,
+            token_address: Address,
+            value: U256,
+            nonce: U256,
+            deadline: U256,
+        ) -> ITIP20::permitCall {
+            let (v, r, s) = sign_permit(
+                signer,
+                "Test",
+                token_address,
+                spender,
+                value,
+                nonce,
+                deadline,
+            );
+            ITIP20::permitCall {
+                owner: signer.address(),
+                spender,
+                value,
+                deadline,
+                v,
+                r,
+                s,
+            }
+        }
+
+        #[test]
+        fn test_permit_happy_path() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
+            let owner = signer.address();
+            let value = U256::from(1000);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+                let call =
+                    make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
+                token.permit(call)?;
+
+                // Verify allowance was set
+                let allowance = token.allowance(ITIP20::allowanceCall { owner, spender })?;
+                assert_eq!(allowance, value);
+
+                // Verify nonce was incremented
+                let nonce = token.nonces(ITIP20::noncesCall { owner })?;
+                assert_eq!(nonce, U256::from(1));
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_expired() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
+            let value = U256::from(1000);
+            // Deadline in the past
+            let deadline = U256::ZERO;
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+                let call =
+                    make_permit_call(signer, spender, token.address, value, U256::ZERO, deadline);
+
+                let result = token.permit(call);
+
+                assert!(matches!(
+                    result,
+                    Err(TempoPrecompileError::TIP20(TIP20Error::PermitExpired(_)))
+                ));
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_invalid_signature() -> eyre::Result<()> {
+            let mut storage = setup_t2_storage();
+            let admin = Address::random();
+            let owner = Address::random();
+            let spender = Address::random();
+            let value = U256::from(1000);
+            let deadline = U256::MAX;
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+                // Use garbage signature bytes
+                let result = token.permit(ITIP20::permitCall {
+                    owner,
+                    spender,
+                    value,
+                    deadline,
+                    v: 27,
+                    r: B256::ZERO,
+                    s: B256::ZERO,
+                });
+
+                assert!(matches!(
+                    result,
+                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidSignature(_)))
+                ));
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_wrong_signer() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
+            let wrong_owner = Address::random(); // Not the signer's address
+            let value = U256::from(1000);
+            let deadline = U256::MAX;
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+                // Sign with signer but claim wrong_owner
+                let (v, r, s) = sign_permit(
+                    signer,
+                    "Test",
+                    token.address,
+                    spender,
+                    value,
+                    U256::ZERO,
+                    deadline,
+                );
+
+                let result = token.permit(ITIP20::permitCall {
+                    owner: wrong_owner, // Different from signer
+                    spender,
+                    value,
+                    deadline,
+                    v,
+                    r,
+                    s,
+                });
+
+                assert!(matches!(
+                    result,
+                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidSignature(_)))
+                ));
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_replay_protection() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
+            let value = U256::from(1000);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+                let call =
+                    make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
+
+                // First use should succeed
+                token.permit(call.clone())?;
+
+                // Second use of same signature should fail (nonce incremented)
+                let result = token.permit(call);
+
+                assert!(matches!(
+                    result,
+                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidSignature(_)))
+                ));
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_nonce_tracking() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
+            let owner = signer.address();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+                // Initial nonce should be 0
+                assert_eq!(token.nonces(ITIP20::noncesCall { owner })?, U256::ZERO);
+
+                // Do 3 permits, each with correct nonce
+                for i in 0u64..3 {
+                    let nonce = U256::from(i);
+                    let value = U256::from(100 * (i + 1));
+                    let call =
+                        make_permit_call(signer, spender, token.address, value, nonce, U256::MAX);
+                    token.permit(call)?;
+
+                    assert_eq!(
+                        token.nonces(ITIP20::noncesCall { owner })?,
+                        U256::from(i + 1)
+                    );
+                }
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_works_when_paused() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
+            let owner = signer.address();
+            let value = U256::from(1000);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_role(admin, *PAUSE_ROLE)
+                    .apply()?;
+
+                // Pause the token
+                token.pause(admin, ITIP20::pauseCall {})?;
+                assert!(token.paused()?);
+
+                let call =
+                    make_permit_call(signer, spender, token.address, value, U256::ZERO, U256::MAX);
+
+                // Permit should work even when paused
+                token.permit(call)?;
+
+                assert_eq!(
+                    token.allowance(ITIP20::allowanceCall { owner, spender })?,
+                    value
+                );
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_domain_separator() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage, admin, ..
+            } = PermitFixture::new();
+
+            StorageCtx::enter(&mut storage, || {
+                let token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+                let ds = token.domain_separator()?;
+                let expected = compute_domain_separator("Test", token.address);
+                assert_eq!(ds, expected);
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_max_allowance() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
+            let owner = signer.address();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+                let call = make_permit_call(
+                    signer,
+                    spender,
+                    token.address,
+                    U256::MAX,
+                    U256::ZERO,
+                    U256::MAX,
+                );
+                token.permit(call)?;
+
+                assert_eq!(
+                    token.allowance(ITIP20::allowanceCall { owner, spender })?,
+                    U256::MAX
+                );
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_allowance_override() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                ref signer,
+                spender,
+            } = PermitFixture::new();
+            let owner = signer.address();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+                // First permit: set allowance to 1000
+                let call = make_permit_call(
+                    signer,
+                    spender,
+                    token.address,
+                    U256::from(1000),
+                    U256::ZERO,
+                    U256::MAX,
+                );
+                token.permit(call)?;
+                assert_eq!(
+                    token.allowance(ITIP20::allowanceCall { owner, spender })?,
+                    U256::from(1000)
+                );
+
+                // Second permit: override to 0
+                let call = make_permit_call(
+                    signer,
+                    spender,
+                    token.address,
+                    U256::ZERO,
+                    U256::from(1),
+                    U256::MAX,
+                );
+                token.permit(call)?;
+                assert_eq!(
+                    token.allowance(ITIP20::allowanceCall { owner, spender })?,
+                    U256::ZERO
+                );
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_invalid_v_values() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                spender,
+                ..
+            } = PermitFixture::new();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+                for v in [0u8, 1] {
+                    let result = token.permit(ITIP20::permitCall {
+                        owner: admin,
+                        spender,
+                        value: U256::from(1000),
+                        deadline: U256::MAX,
+                        v,
+                        r: B256::ZERO,
+                        s: B256::ZERO,
+                    });
+
+                    assert!(
+                        matches!(
+                            result,
+                            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidSignature(_)))
+                        ),
+                        "v={v} should revert with InvalidSignature"
+                    );
+                }
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_zero_address_recovery_reverts() -> eyre::Result<()> {
+            let PermitFixture {
+                mut storage,
+                admin,
+                spender,
+                ..
+            } = PermitFixture::new();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+                let result = token.permit(ITIP20::permitCall {
+                    owner: Address::ZERO,
+                    spender,
+                    value: U256::from(1000),
+                    deadline: U256::MAX,
+                    v: 27,
+                    r: B256::ZERO,
+                    s: B256::ZERO,
+                });
+
+                assert!(matches!(
+                    result,
+                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidSignature(_)))
+                ));
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_permit_domain_separator_changes_with_chain_id() -> eyre::Result<()> {
+            let PermitFixture { admin, .. } = PermitFixture::new();
+
+            let mut storage_a = setup_t2_storage();
+            let mut storage_b =
+                HashMapStorageProvider::new_with_spec(CHAIN_ID + 1, TempoHardfork::T2);
+
+            let ds_a = StorageCtx::enter(&mut storage_a, || {
+                TIP20Setup::create("Test", "TST", admin)
+                    .apply()?
+                    .domain_separator()
+            })?;
+
+            let ds_b = StorageCtx::enter(&mut storage_b, || {
+                TIP20Setup::create("Test", "TST", admin)
+                    .apply()?
+                    .domain_separator()
+            })?;
+
+            assert_ne!(
+                ds_a, ds_b,
+                "domain separator must change when chainId changes"
+            );
+
+            Ok(())
+        }
     }
 }
