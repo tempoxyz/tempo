@@ -3,7 +3,7 @@ use crate::{
     engine::TempoEngineValidator,
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer,
-        TempoToken, TempoTokenApiServer,
+        TempoRethApiServer, TempoRethRpc, TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
@@ -197,6 +197,7 @@ where
     async fn launch_add_ons(self, ctx: AddOnsContext<'_, N>) -> eyre::Result<Self::Handle> {
         let eth_config =
             EthConfigHandler::new(ctx.node.provider().clone(), ctx.node.evm_config().clone());
+        let engine_handle = ctx.beacon_engine_handle.clone();
 
         self.inner
             .launch_add_ons_with(ctx, move |container| {
@@ -208,9 +209,11 @@ where
                 let token = TempoToken::new(eth_api.clone());
                 let eth_ext = TempoEthExt::new(eth_api);
                 let admin = TempoAdminApi::new(self.validator_key);
+                let reth_api = TempoRethRpc::new(engine_handle);
 
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
+                modules.merge_configured(reth_api.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
 
