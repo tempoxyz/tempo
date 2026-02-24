@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - "rc/*"
     tags:
       - "v*.*.*"
   merge_group:
