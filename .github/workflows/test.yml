@@ -83,7 +83,7 @@ jobs:
   test:
     name: test
     needs: check-precompiles
-    runs-on: depot-ubuntu-latest-16
+    runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
       contents: read
@@ -102,27 +102,24 @@ jobs:
       # Build and run tests WITH coverage (only when precompiles changed)
       - name: Build and compile tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
-        run: cargo nextest run --no-run -j num-cpus
+        run: cargo nextest run --profile ci --no-run
         env:
           RUSTFLAGS: -C instrument-coverage
       - name: Run tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
         run: |
           mkdir -p coverage
-          cargo nextest run \
-            --no-fail-fast \
-            -j num-cpus \
-            --retries 2
+          cargo nextest run --profile ci 
         env:
           RUSTFLAGS: -C instrument-coverage
           LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/cargo-%p-%m.profraw
       # Build and run tests WITHOUT coverage (when precompiles not changed)
       - name: Build and compile tests
         if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run --no-run -j num-cpus
+        run: cargo nextest run --profile ci --no-run
       - name: Run tests
         if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run --no-fail-fast -j num-cpus --retries 2
+        run: cargo nextest run  --profile ci
       - name: Generate precompiles coverage profdata
         if: needs.check-precompiles.outputs.coverage == 'true'
         run: |
@@ -172,7 +169,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.91" # MSRV
+          toolchain: "1.93" # MSRV
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: Build with MSRV

@@ -9,13 +9,13 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash,
-    map::{AddressMap, HashMap},
+    map::{AddressMap, AddressSet, HashMap},
 };
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
-use reth_primitives_traits::Block;
 use reth_provider::{ChangedAccount, StateProviderFactory};
+use reth_storage_api::StateProvider;
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
     BlockInfo, CanonicalStateUpdate, CoinbaseTipOrdering, GetPooledTransactionLimit,
@@ -30,6 +30,14 @@ use reth_transaction_pool::{
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    account_keychain::AccountKeychain,
+    nonce::NonceManager,
+    tip_fee_manager::amm::{Pool as AmmPool, PoolKey, compute_amount_out},
+    tip20::slots as tip20_slots,
+};
+use tempo_primitives::Block;
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -92,9 +100,6 @@ where
         seq_ids: Vec<crate::tt_2d_pool::AASequenceId>,
         block_hash: B256,
     ) -> Result<(), reth_provider::ProviderError> {
-        use reth_storage_api::StateProvider;
-        use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
-
         if seq_ids.is_empty() {
             return Ok(());
         }
@@ -143,6 +148,8 @@ where
     /// 1. **Revoked keychain keys**: AA transactions signed with keys that have been revoked
     /// 2. **Spending limit updates**: AA transactions signed with keys whose spending limit
     ///    changed for a token matching the transaction's fee token
+    ///    2b. **Spending limit spends**: AA transactions whose remaining spending limit (re-read
+    ///    from state) is now insufficient after included keychain txs decremented it
     /// 3. **Validator token changes**: Transactions that would fail due to insufficient
     ///    liquidity in the new (user_token, validator_token) AMM pool
     ///
@@ -152,22 +159,18 @@ where
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
     ) -> usize {
-        use reth_storage_api::StateProvider;
-        use tempo_precompiles::{
-            TIP_FEE_MANAGER_ADDRESS,
-            tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
-            tip20::slots as tip20_slots,
-        };
-
         if !updates.has_invalidation_events() {
             return 0;
         }
 
-        // Only fetch state provider if we need to check liquidity, blacklists, or whitelists.
-        // Don't let a provider error skip revoked/spending-limit eviction.
+        // Fetch state provider if any check needs on-chain reads:
+        // - validator token changes (liquidity check)
+        // - blacklist/whitelist (policy check)
+        // - spending limit spends (remaining limit check)
         let state_provider = if !updates.validator_token_changes.is_empty()
             || !updates.blacklist_additions.is_empty()
             || !updates.whitelist_removals.is_empty()
+            || !updates.spending_limit_spends.is_empty()
         {
             self.client().latest().ok()
         } else {
@@ -194,6 +197,7 @@ where
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
         let mut spending_limit_count = 0;
+        let mut spending_limit_spend_count = 0;
         let mut liquidity_count = 0;
         let mut user_token_count = 0;
         let mut blacklisted_count = 0;
@@ -222,6 +226,22 @@ where
             {
                 to_remove.push(*tx.hash());
                 spending_limit_count += 1;
+                continue;
+            }
+
+            // Check 2b: Spending limit spends
+            // When a keychain tx is included, verify_and_update_spending() decrements the
+            // remaining limit but emits no event. We re-read the current remaining limit
+            // from state for affected (account, key_id, fee_token) combos and evict if
+            // the pending tx's fee cost now exceeds the remaining limit.
+            if !updates.spending_limit_spends.is_empty()
+                && let Some(ref provider) = state_provider
+                && let Some(ref subject) = keychain_subject
+                && subject.matches_spending_limit_update(&updates.spending_limit_spends)
+                && exceeds_spending_limit(&**provider, subject, tx.transaction.fee_token_cost())
+            {
+                to_remove.push(*tx.hash());
+                spending_limit_spend_count += 1;
                 continue;
             }
 
@@ -265,7 +285,7 @@ where
                     };
 
                     let reserve = alloy_primitives::U256::from(
-                        Pool::decode_from_slot(pool_value).reserve_validator_token,
+                        AmmPool::decode_from_slot(pool_value).reserve_validator_token,
                     );
 
                     if reserve < amount_out {
@@ -386,6 +406,7 @@ where
                 total = evicted_count,
                 revoked_count,
                 spending_limit_count,
+                spending_limit_spend_count,
                 liquidity_count,
                 user_token_count,
                 blacklisted_count,
@@ -395,30 +416,6 @@ where
             self.remove_transactions(to_remove);
         }
         evicted_count
-    }
-
-    fn add_validated_transactions(
-        &self,
-        origin: TransactionOrigin,
-        transactions: Vec<TransactionValidationOutcome<TempoPooledTransaction>>,
-    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        if transactions.iter().any(|outcome| {
-            outcome
-                .as_valid_transaction()
-                .map(|tx| tx.transaction().is_aa_2d())
-                .unwrap_or(false)
-        }) {
-            // mixed or 2d only
-            let mut results = Vec::with_capacity(transactions.len());
-            for tx in transactions {
-                results.push(self.add_validated_transaction(origin, tx));
-            }
-            return results;
-        }
-
-        self.protocol_pool
-            .inner()
-            .add_transactions(origin, transactions)
     }
 
     fn add_validated_transaction(
@@ -593,13 +590,53 @@ where
         if transactions.is_empty() {
             return Vec::new();
         }
-        let validated = self
-            .protocol_pool
+
+        // Fully delegate to protocol pool for non-2D transactions
+        if !transactions.iter().any(|tx| tx.is_aa_2d()) {
+            return self
+                .protocol_pool
+                .add_transactions(origin, transactions)
+                .await;
+        }
+
+        self.protocol_pool
             .validator()
             .validate_transactions_with_origin(origin, transactions)
-            .await;
+            .await
+            .into_iter()
+            .map(|outcome| self.add_validated_transaction(origin, outcome))
+            .collect()
+    }
 
-        self.add_validated_transactions(origin, validated)
+    async fn add_transactions_with_origins(
+        &self,
+        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
+    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
+        if transactions.is_empty() {
+            return Vec::new();
+        }
+
+        // Fully delegate to protocol pool for non-2D transactions
+        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
+            return self
+                .protocol_pool
+                .add_transactions_with_origins(transactions)
+                .await;
+        }
+
+        let origins = transactions
+            .iter()
+            .map(|(origin, _)| *origin)
+            .collect::<Vec<_>>();
+
+        self.protocol_pool
+            .validator()
+            .validate_transactions(transactions)
+            .await
+            .into_iter()
+            .zip(origins)
+            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
+            .collect()
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -842,8 +879,20 @@ where
         txs
     }
 
+    fn prune_transactions(
+        &self,
+        hashes: Vec<TxHash>,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
+        txs.extend(self.protocol_pool.prune_transactions(hashes));
+        txs
+    }
+
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
         self.protocol_pool.retain_unknown(announcement);
+        if announcement.is_empty() {
+            return;
+        }
         let aa_pool = self.aa_2d_pool.read();
         announcement.retain_by_hash(|tx| !aa_pool.contains(tx))
     }
@@ -883,11 +932,18 @@ where
 
     fn get_pending_transactions_with_predicate(
         &self,
-        predicate: impl FnMut(&ValidPoolTransaction<Self::Transaction>) -> bool,
+        mut predicate: impl FnMut(&ValidPoolTransaction<Self::Transaction>) -> bool,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // TODO: support 2d pool
-        self.protocol_pool
-            .get_pending_transactions_with_predicate(predicate)
+        let mut txs = self
+            .protocol_pool
+            .get_pending_transactions_with_predicate(&mut predicate);
+        txs.extend(
+            self.aa_2d_pool
+                .read()
+                .pending_transactions()
+                .filter(|tx| predicate(tx)),
+        );
+        txs
     }
 
     fn get_pending_transactions_by_sender(
@@ -971,7 +1027,7 @@ where
         txs
     }
 
-    fn unique_senders(&self) -> std::collections::HashSet<Address> {
+    fn unique_senders(&self) -> AddressSet {
         let mut senders = self.protocol_pool.unique_senders();
         senders.extend(self.aa_2d_pool.read().senders_iter().copied());
         senders
@@ -1044,18 +1100,37 @@ where
     }
 }
 
+/// Checks whether a pending keychain tx exceeds its remaining spending limit.
+///
+/// Re-reads the current remaining limit from state for the tx's (account, key_id,
+/// fee_token) combo. Returns true if the tx's fee cost exceeds the remaining limit,
+/// meaning it should be evicted.
+pub(crate) fn exceeds_spending_limit(
+    provider: &dyn reth_storage_api::StateProvider,
+    subject: &crate::transaction::KeychainSubject,
+    fee_token_cost: alloy_primitives::U256,
+) -> bool {
+    let limit_key = AccountKeychain::spending_limit_key(subject.account, subject.key_id);
+    let slot = AccountKeychain::new().spending_limits[limit_key][subject.fee_token].slot();
+
+    match provider.storage(ACCOUNT_KEYCHAIN_ADDRESS, slot.into()) {
+        Ok(Some(remaining)) => fee_token_cost > remaining,
+        Ok(None) => !fee_token_cost.is_zero(),
+        Err(_) => false,
+    }
+}
+
 impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
+    type Block = Block;
+
     fn set_block_info(&self, info: BlockInfo) {
         self.protocol_pool.set_block_info(info)
     }
 
-    fn on_canonical_state_change<B>(&self, update: CanonicalStateUpdate<'_, B>)
-    where
-        B: Block,
-    {
+    fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
         self.protocol_pool.on_canonical_state_change(update)
     }
 
@@ -1073,5 +1148,110 @@ where
 
     fn cleanup_blobs(&self) {
         self.protocol_pool.cleanup_blobs()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transaction::KeychainSubject;
+    use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+    use reth_storage_api::StateProviderFactory;
+    use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, account_keychain::AccountKeychain};
+
+    fn provider_with_spending_limit(
+        account: Address,
+        key_id: Address,
+        fee_token: Address,
+        remaining_limit: alloy_primitives::U256,
+    ) -> Box<dyn reth_storage_api::StateProvider> {
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+        let slot = AccountKeychain::new().spending_limits[limit_key][fee_token].slot();
+
+        provider.add_account(
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            ExtendedAccount::new(0, alloy_primitives::U256::ZERO)
+                .extend_storage([(slot.into(), remaining_limit)]),
+        );
+
+        provider.latest().unwrap()
+    }
+
+    #[test]
+    fn exceeds_spending_limit_returns_true_when_cost_exceeds_remaining() {
+        let account = Address::random();
+        let key_id = Address::random();
+        let fee_token = Address::random();
+        let subject = KeychainSubject {
+            account,
+            key_id,
+            fee_token,
+        };
+
+        let state = provider_with_spending_limit(
+            account,
+            key_id,
+            fee_token,
+            alloy_primitives::U256::from(100),
+        );
+
+        assert!(exceeds_spending_limit(
+            &*state,
+            &subject,
+            alloy_primitives::U256::from(200)
+        ));
+    }
+
+    #[test]
+    fn exceeds_spending_limit_returns_false_when_cost_within_limit() {
+        let account = Address::random();
+        let key_id = Address::random();
+        let fee_token = Address::random();
+        let subject = KeychainSubject {
+            account,
+            key_id,
+            fee_token,
+        };
+
+        let state = provider_with_spending_limit(
+            account,
+            key_id,
+            fee_token,
+            alloy_primitives::U256::from(500),
+        );
+
+        assert!(!exceeds_spending_limit(
+            &*state,
+            &subject,
+            alloy_primitives::U256::from(200)
+        ));
+    }
+
+    #[test]
+    fn exceeds_spending_limit_returns_true_when_no_limit_set() {
+        let account = Address::random();
+        let key_id = Address::random();
+        let fee_token = Address::random();
+        let subject = KeychainSubject {
+            account,
+            key_id,
+            fee_token,
+        };
+
+        // Provider with no spending limit storage set
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+        let state = provider.latest().unwrap();
+
+        assert!(exceeds_spending_limit(
+            &*state,
+            &subject,
+            alloy_primitives::U256::from(1)
+        ));
     }
 }

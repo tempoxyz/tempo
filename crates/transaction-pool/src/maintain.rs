@@ -60,6 +60,14 @@ pub struct TempoPoolUpdates {
     pub whitelist_removals: Vec<(u64, Address)>,
     /// Fee token pause state changes: (token, is_paused).
     pub pause_events: Vec<(Address, bool)>,
+    /// Keychain transactions that were included in the block, decrementing spending limits.
+    ///
+    /// We record which (account, key_id, fee_token) combos had their limits decremented by
+    /// included txs. During eviction, we re-read the remaining limit from state for these
+    /// combos and compare against pending tx costs. This is needed because the pool only
+    /// monitors `SpendingLimitUpdated` events (from `update_spending_limit()`), but doesn't
+    /// account for actual spends (from `verify_and_update_spending()` during execution).
+    pub spending_limit_spends: SpendingLimitUpdates,
 }
 
 impl TempoPoolUpdates {
@@ -78,6 +86,7 @@ impl TempoPoolUpdates {
             && self.blacklist_additions.is_empty()
             && self.whitelist_removals.is_empty()
             && self.pause_events.is_empty()
+            && self.spending_limit_spends.is_empty()
     }
 
     /// Extracts pool updates from a committed chain segment.
@@ -141,6 +150,36 @@ impl TempoPoolUpdates {
             }
         }
 
+        // Extract (account, key_id, fee_token) from included keychain transactions.
+        // When these txs execute, verify_and_update_spending() decrements spending limits,
+        // but no SpendingLimitUpdated event is emitted. We record which combos were affected
+        // so the pool can re-read the remaining limit from state and evict over-limit txs.
+        for tx in chain
+            .blocks_iter()
+            .flat_map(|block| block.body().transactions())
+        {
+            let Some(aa_tx) = tx.as_aa() else {
+                continue;
+            };
+            let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
+                continue;
+            };
+            let Ok(key_id) = keychain_sig.key_id(&aa_tx.signature_hash()) else {
+                continue;
+            };
+            // Skip main keys (key_id == Address::ZERO) - they don't have spending limits
+            if key_id.is_zero() {
+                continue;
+            }
+            let fee_token = aa_tx
+                .tx()
+                .fee_token
+                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+            updates
+                .spending_limit_spends
+                .insert(keychain_sig.user_address, key_id, fee_token);
+        }
+
         updates
     }
 
@@ -148,6 +187,7 @@ impl TempoPoolUpdates {
     pub fn has_invalidation_events(&self) -> bool {
         !self.revoked_keys.is_empty()
             || !self.spending_limit_changes.is_empty()
+            || !self.spending_limit_spends.is_empty()
             || !self.validator_token_changes.is_empty()
             || !self.user_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
@@ -479,7 +519,7 @@ where
                 let tip_timestamp = tip.tip().header().timestamp();
 
                 // T1 transition: one-time cleanup of underpriced transactions.
-                // When T1 activates, transactions with max_fee_per_gas < 20 gwei become
+                // When T1 activates, transactions with max_fee_per_gas < 20 billion attodollars become
                 // never-includable and should be evicted. This check runs once per node lifetime.
                 // TODO: Remove this after T1 is activated on mainnet.
                 if !state.t1_transition_cleanup_done {
@@ -491,7 +531,7 @@ where
                                 target: "txpool",
                                 count = evicted,
                                 tip_timestamp,
-                                "T1 transition: evicted underpriced transactions (max_fee_per_gas < 20 gwei)"
+                                "T1 transition: evicted underpriced transactions (max_fee_per_gas < 20 billion attodollars)"
                             );
                         }
                         state.t1_transition_cleanup_done = true;
@@ -594,8 +634,16 @@ where
                                 })
                                 .collect();
 
-                            state.paused_pool.insert_batch(token, entries);
+                            let cap_evicted = state.paused_pool.insert_batch(token, entries);
                             metrics.transactions_paused.increment(count as u64);
+                            if cap_evicted > 0 {
+                                metrics.paused_pool_cap_evicted.increment(cap_evicted as u64);
+                                debug!(
+                                    target: "txpool",
+                                    cap_evicted,
+                                    "Evicted oldest paused transactions due to global cap"
+                                );
+                            }
                             debug!(
                                 target: "txpool",
                                 %token,
@@ -655,10 +703,14 @@ where
                 }
 
                 // 5. Evict revoked keys and spending limit updates from paused pool
-                if !updates.revoked_keys.is_empty() || !updates.spending_limit_changes.is_empty() {
+                if !updates.revoked_keys.is_empty()
+                    || !updates.spending_limit_changes.is_empty()
+                    || !updates.spending_limit_spends.is_empty()
+                {
                     state.paused_pool.evict_invalidated(
                         &updates.revoked_keys,
                         &updates.spending_limit_changes,
+                        &updates.spending_limit_spends,
                     );
                 }
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
@@ -668,8 +720,8 @@ where
                 pool.notify_aa_pool_on_state_updates(bundle_state);
 
                 // 7. Remove included expiring nonce transactions
-                // Expiring nonce txs use tx hash for replay protection rather than sequential nonces,
-                // so we need to remove them on inclusion rather than relying on nonce changes.
+                // Expiring nonce txs don't have sequential nonces, so we need to remove them
+                // on inclusion rather than relying on nonce changes.
                 pool.remove_included_expiring_nonce_txs(mined_tx_hashes.iter());
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
@@ -693,6 +745,7 @@ where
                         target: "txpool",
                         revoked_keys = updates.revoked_keys.len(),
                         spending_limit_changes = updates.spending_limit_changes.len(),
+                        spending_limit_spends = updates.spending_limit_spends.len(),
                         validator_token_changes = updates.validator_token_changes.len(),
                         user_token_changes = updates.user_token_changes.len(),
                         blacklist_additions = updates.blacklist_additions.len(),
@@ -736,7 +789,7 @@ where
 /// Removes transactions with max_fee_per_gas below the T1 base fee from the pool.
 ///
 /// This is a one-time cleanup performed when the T0 → T1 hardfork transition is detected.
-/// After T1 activation, transactions with max_fee_per_gas < 20 gwei are never includable
+/// After T1 activation, transactions with max_fee_per_gas < 20 billion attodollars are never includable
 /// and should be evicted from the pool.
 ///
 /// # Note
@@ -1004,7 +1057,6 @@ mod tests {
             blocks,
             ExecutionOutcome::default(),
             Default::default(),
-            Default::default(),
         ))
     }
 
@@ -1126,5 +1178,103 @@ mod tests {
             !affected_seq_ids.contains(&AASequenceId::new(sender_2d, U256::from(2))),
             "Should NOT contain re-included tx's seq_id (nonce_key=2) - tx is in new chain"
         );
+    }
+
+    mod from_chain_spending_limit_spends {
+        use super::*;
+        use alloy_signer_local::PrivateKeySigner;
+
+        /// Verify from_chain extracts (account, key_id, fee_token) from included keychain txs.
+        #[test]
+        fn extracts_keychain_tx_spending_limit_spends() {
+            let user_address = Address::random();
+            let access_key_signer = PrivateKeySigner::random();
+            let key_id = access_key_signer.address();
+            let fee_token = Address::random();
+
+            let keychain_tx = TxBuilder::aa(user_address)
+                .fee_token(fee_token)
+                .build_keychain(user_address, &access_key_signer);
+            let envelope = extract_envelope(&keychain_tx);
+
+            let block = create_block_with_txs(1, vec![envelope], vec![user_address]);
+            let chain = create_test_chain(vec![block]);
+
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert!(
+                updates
+                    .spending_limit_spends
+                    .contains(user_address, key_id, fee_token),
+                "Should contain the keychain tx's (account, key_id, fee_token)"
+            );
+            assert_eq!(updates.spending_limit_spends.len(), 1);
+        }
+
+        /// Non-keychain AA txs should NOT produce spending limit spends.
+        #[test]
+        fn ignores_non_keychain_aa_transactions() {
+            let sender = Address::random();
+            let tx = TxBuilder::aa(sender).fee_token(Address::random()).build();
+            let envelope = extract_envelope(&tx);
+
+            let block = create_block_with_txs(1, vec![envelope], vec![sender]);
+            let chain = create_test_chain(vec![block]);
+
+            let updates = TempoPoolUpdates::from_chain(&chain);
+            assert!(updates.spending_limit_spends.is_empty());
+        }
+
+        /// EIP-1559 txs should NOT produce spending limit spends.
+        #[test]
+        fn ignores_eip1559_transactions() {
+            let sender = Address::random();
+            let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+            let envelope = extract_envelope(&tx);
+
+            let block = create_block_with_txs(1, vec![envelope], vec![sender]);
+            let chain = create_test_chain(vec![block]);
+
+            let updates = TempoPoolUpdates::from_chain(&chain);
+            assert!(updates.spending_limit_spends.is_empty());
+        }
+
+        /// Uses default fee token when keychain tx has no explicit fee_token.
+        #[test]
+        fn uses_default_fee_token_when_none_set() {
+            let user_address = Address::random();
+            let access_key_signer = PrivateKeySigner::random();
+            let key_id = access_key_signer.address();
+
+            // Build keychain tx without explicit fee_token
+            let keychain_tx =
+                TxBuilder::aa(user_address).build_keychain(user_address, &access_key_signer);
+            let envelope = extract_envelope(&keychain_tx);
+
+            let block = create_block_with_txs(1, vec![envelope], vec![user_address]);
+            let chain = create_test_chain(vec![block]);
+
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert!(updates.spending_limit_spends.contains(
+                user_address,
+                key_id,
+                tempo_precompiles::DEFAULT_FEE_TOKEN,
+            ));
+        }
+
+        /// has_invalidation_events returns true when spending_limit_spends is non-empty.
+        #[test]
+        fn has_invalidation_events_includes_spending_limit_spends() {
+            let mut updates = TempoPoolUpdates::new();
+            assert!(!updates.has_invalidation_events());
+
+            updates.spending_limit_spends.insert(
+                Address::random(),
+                Address::random(),
+                Address::random(),
+            );
+            assert!(updates.has_invalidation_events());
+        }
     }
 }

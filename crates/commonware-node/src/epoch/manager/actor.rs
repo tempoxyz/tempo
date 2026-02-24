@@ -59,7 +59,7 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
+    BufferPooler, Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
     telemetry::metrics::status::GaugeExt as _,
 };
 use commonware_utils::{Acknowledgement as _, vec::NonEmptyVec};
@@ -79,8 +79,8 @@ use super::ingress::{Content, Message};
 const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 
-pub(crate) struct Actor<TBlocker, TContext> {
-    active_epochs: BTreeMap<Epoch, Handle<()>>,
+pub(crate) struct Actor<TContext, TBlocker> {
+    active_epochs: BTreeMap<Epoch, (Handle<()>, ContextCell<TContext>)>,
     config: super::Config<TBlocker>,
     context: ContextCell<TContext>,
     confirmed_latest_network_epoch: Option<Epoch>,
@@ -88,11 +88,12 @@ pub(crate) struct Actor<TBlocker, TContext> {
     metrics: Metrics,
 }
 
-impl<TBlocker, TContext> Actor<TBlocker, TContext>
+impl<TContext, TBlocker> Actor<TContext, TBlocker>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     // TODO(janis): are all of these bounds necessary?
-    TContext: Spawner
+    TContext: BufferPooler
+        + Spawner
         + commonware_runtime::Metrics
         + Rng
         + CryptoRng
@@ -319,10 +320,16 @@ where
         };
         self.config.scheme_provider.register(epoch, scheme.clone());
 
+        // Manage the context so we can explicitly drop during cleanup, releasing
+        // all metrics associated with this context.
+        let engine_ctx = self
+            .context
+            .with_label("simplex")
+            .with_attribute("epoch", epoch)
+            .with_scope();
+
         let engine = simplex::Engine::new(
-            self.context
-                .with_label("simplex")
-                .with_attribute("epoch", epoch),
+            engine_ctx.clone(),
             simplex::Config {
                 scheme,
                 elector: elector::Random,
@@ -363,7 +370,10 @@ where
 
         assert!(
             self.active_epochs
-                .insert(epoch, engine.start(vote, certificate, resolver))
+                .insert(
+                    epoch,
+                    (engine.start(vote, certificate, resolver), engine_ctx)
+                )
                 .is_none(),
             "there must be no other active engine running: this was ensured at \
             the beginning of this method",
@@ -385,7 +395,8 @@ where
 
     #[instrument(parent = &cause, skip_all, fields(epoch))]
     fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
-        if let Some(engine) = self.active_epochs.remove(&epoch) {
+        if let Some((engine, engine_ctx)) = self.active_epochs.remove(&epoch) {
+            drop(engine_ctx);
             engine.abort();
             info!("stopped engine backing epoch");
         } else {

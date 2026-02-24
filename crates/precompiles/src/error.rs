@@ -15,7 +15,7 @@ use revm::{
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
     TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-    ValidatorConfigError,
+    ValidatorConfigError, ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -62,6 +62,10 @@ pub enum TempoPrecompileError {
     #[error("Validator config error: {0:?}")]
     ValidatorConfigError(ValidatorConfigError),
 
+    /// Error from validator config v2
+    #[error("Validator config v2 error: {0:?}")]
+    ValidatorConfigV2Error(ValidatorConfigV2Error),
+
     /// Error from account keychain precompile
     #[error("Account keychain error: {0:?}")]
     AccountKeychainError(AccountKeychainError),
@@ -90,6 +94,26 @@ impl From<JournalLoadErasedError> for TempoPrecompileError {
 pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
 
 impl TempoPrecompileError {
+    /// Returns true if this error represents a system-level failure that must be propagated
+    /// rather than swallowed, because state may be inconsistent.
+    pub fn is_system_error(&self) -> bool {
+        match self {
+            Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) => true,
+            Self::StablecoinDEX(_)
+            | Self::TIP20(_)
+            | Self::NonceError(_)
+            | Self::TIP20Factory(_)
+            | Self::RolesAuthError(_)
+            | Self::TIPFeeAMMError(_)
+            | Self::FeeManagerError(_)
+            | Self::TIP403RegistryError(_)
+            | Self::ValidatorConfigError(_)
+            | Self::ValidatorConfigV2Error(_)
+            | Self::AccountKeychainError(_)
+            | Self::UnknownFunctionSelector(_) => false,
+        }
+    }
+
     pub fn under_overflow() -> Self {
         Self::Panic(PanicKind::UnderOverflow)
     }
@@ -116,6 +140,7 @@ impl TempoPrecompileError {
                 panic.abi_encode().into()
             }
             Self::ValidatorConfigError(e) => e.abi_encode().into(),
+            Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Err(PrecompileError::OutOfGas);
@@ -178,6 +203,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIPFeeAMMError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::NonceError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigV2Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
 
     registry
