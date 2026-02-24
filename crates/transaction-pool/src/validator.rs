@@ -395,15 +395,22 @@ where
             key_authorization: tx.key_authorization.clone(),
             signature_hash: aa_tx.signature_hash(),
             tx_hash: *aa_tx.hash(),
+            expiring_nonce_hash: tx
+                .is_expiring_nonce_tx()
+                .then(|| aa_tx.expiring_nonce_hash(sender)),
             override_key_id: None,
         };
 
         // Calculate the intrinsic gas for the AA transaction
         let gas_params = tempo_gas_params(spec);
 
-        let mut init_and_floor_gas =
-            calculate_aa_batch_intrinsic_gas(&aa_env, &gas_params, Some(tx.access_list.iter()))
-                .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
+        let mut init_and_floor_gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env,
+            &gas_params,
+            Some(tx.access_list.iter()),
+            spec,
+        )
+        .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
 
         // Add nonce gas based on hardfork
         // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
@@ -842,20 +849,38 @@ where
                         .is_t1_active_at_timestamp(current_time);
 
                     if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-                        // Expiring nonce transaction - check if tx hash is already seen
-                        let tx_hash = *transaction.hash();
-                        let seen_slot = NonceManager::new().expiring_seen_slot(tx_hash);
+                        // Expiring nonce transaction - check if the replay hash is already seen.
+                        //
+                        // Pre-T1B: use tx_hash to match handler behavior (handler writes seen[tx_hash]).
+                        // T1B+: use expiring_nonce_hash (invariant to fee payer changes) to match
+                        //        the updated handler replay protection.
+                        //
+                        // TODO: Remove the tx_hash path after T1B is active on mainnet.
+                        let replay_hash = if spec.is_t1b() {
+                            transaction
+                                .transaction()
+                                .inner()
+                                .as_aa()
+                                .expect("expiring nonce tx must be AA")
+                                .expiring_nonce_hash(transaction.transaction().sender())
+                        } else {
+                            *transaction.hash()
+                        };
+                        let seen_slot = NonceManager::new().expiring_seen_slot(replay_hash);
 
                         let seen_expiry: u64 = match state_provider
                             .storage(NONCE_PRECOMPILE_ADDRESS, seen_slot.into())
                         {
                             Ok(val) => val.unwrap_or_default().saturating_to(),
                             Err(err) => {
-                                return TransactionValidationOutcome::Error(tx_hash, Box::new(err));
+                                return TransactionValidationOutcome::Error(
+                                    *transaction.hash(),
+                                    Box::new(err),
+                                );
                             }
                         };
 
-                        // If expiry is non-zero and in the future, tx hash is still valid (replay).
+                        // If expiry is non-zero and in the future, the replay hash is still active.
                         // Note: This is also enforced at the protocol level in handler.rs via
                         // `check_and_mark_expiring_nonce`, so even if a tx bypasses pool validation
                         // (e.g., injected directly into a block), execution will still reject it.
@@ -912,6 +937,79 @@ where
     }
 }
 
+impl<Client> TransactionValidator for TempoTransactionValidator<Client>
+where
+    Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+{
+    type Transaction = TempoPooledTransaction;
+    type Block = Block;
+
+    async fn validate_transaction(
+        &self,
+        origin: TransactionOrigin,
+        transaction: Self::Transaction,
+    ) -> TransactionValidationOutcome<Self::Transaction> {
+        let state_provider = match self.inner.client().latest() {
+            Ok(provider) => provider,
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
+
+        self.validate_one(origin, transaction, state_provider)
+    }
+
+    async fn validate_transactions(
+        &self,
+        transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
+        + Send,
+    ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let state_provider = match self.inner.client().latest() {
+            Ok(provider) => provider,
+            Err(err) => {
+                return transactions
+                    .into_iter()
+                    .map(|(_, tx)| {
+                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                    })
+                    .collect();
+            }
+        };
+
+        transactions
+            .into_iter()
+            .map(|(origin, tx)| self.validate_one(origin, tx, &state_provider))
+            .collect()
+    }
+
+    async fn validate_transactions_with_origin(
+        &self,
+        origin: TransactionOrigin,
+        transactions: impl IntoIterator<Item = Self::Transaction, IntoIter: Send> + Send,
+    ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let state_provider = match self.inner.client().latest() {
+            Ok(provider) => provider,
+            Err(err) => {
+                return transactions
+                    .into_iter()
+                    .map(|tx| {
+                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                    })
+                    .collect();
+            }
+        };
+
+        transactions
+            .into_iter()
+            .map(|tx| self.validate_one(origin, tx, &state_provider))
+            .collect()
+    }
+
+    fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
+        self.inner.on_new_head_block(new_tip_block)
+    }
+}
+
 /// Ensures that gas limit of the transaction exceeds the intrinsic gas of the transaction.
 pub fn ensure_intrinsic_gas_tempo_tx(
     tx: &TempoPooledTransaction,
@@ -955,78 +1053,6 @@ pub fn ensure_intrinsic_gas_tempo_tx(
         Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
     } else {
         Ok(())
-    }
-}
-
-impl<Client> TransactionValidator for TempoTransactionValidator<Client>
-where
-    Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
-{
-    type Transaction = TempoPooledTransaction;
-    type Block = Block;
-
-    async fn validate_transaction(
-        &self,
-        origin: TransactionOrigin,
-        transaction: Self::Transaction,
-    ) -> TransactionValidationOutcome<Self::Transaction> {
-        let state_provider = match self.inner.client().latest() {
-            Ok(provider) => provider,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
-
-        self.validate_one(origin, transaction, state_provider)
-    }
-
-    async fn validate_transactions(
-        &self,
-        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
-    ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let state_provider = match self.inner.client().latest() {
-            Ok(provider) => provider,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|(_, tx)| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
-
-        transactions
-            .into_iter()
-            .map(|(origin, tx)| self.validate_one(origin, tx, &state_provider))
-            .collect()
-    }
-
-    async fn validate_transactions_with_origin(
-        &self,
-        origin: TransactionOrigin,
-        transactions: impl IntoIterator<Item = Self::Transaction> + Send,
-    ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let state_provider = match self.inner.client().latest() {
-            Ok(provider) => provider,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|tx| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
-
-        transactions
-            .into_iter()
-            .map(|tx| self.validate_one(origin, tx, &state_provider))
-            .collect()
-    }
-
-    fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
-        self.inner.on_new_head_block(new_tip_block)
     }
 }
 
