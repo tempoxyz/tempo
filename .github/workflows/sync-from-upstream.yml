@@ -1,5 +1,5 @@
-# This workflow is only intended to be used in forks of tempoxyz/tempo.
-# It syncs the fork's main branch with the upstream repository hourly.
+# This workflow is only intended to be used in forks/copies of tempoxyz/tempo.
+# It syncs the main branch with the upstream repository hourly.
 
 name: Sync main branch with upstream
 
@@ -22,7 +22,17 @@ jobs:
           app-id: ${{ vars.SYNC_APP_ID }}
           private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
 
-      - name: Sync fork with upstream
-        run: gh repo sync "${{ github.repository }}" --force
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Sync main with upstream
+        run: |
+          git remote add upstream https://github.com/tempoxyz/tempo.git
+          git fetch upstream main
+          git checkout main
+          git reset --hard upstream/main
+          git push origin main --force
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
