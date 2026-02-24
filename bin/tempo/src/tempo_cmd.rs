@@ -15,8 +15,8 @@ use clap::Subcommand;
 use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{
-    Signer as _, Verifier as _,
-    ed25519::{PrivateKey, PublicKey, Signature},
+    Signer as _,
+    ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::NZU64;
@@ -27,12 +27,11 @@ use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_commonware_node_config::SigningKey;
+use tempo_commonware_node_config::validator::ValidatorConfig;
 use tempo_contracts::precompiles::{
     IValidatorConfig, IValidatorConfigV2, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-
-const ADD_VALIDATOR_NAMESPACE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
@@ -73,47 +72,6 @@ impl ConsensusSubcommand {
             Self::CalculatePublicKey(args) => args.run(),
             Self::ValidatorsInfo(args) => args.run(),
         }
-    }
-}
-
-pub(crate) struct ValidatorConfig {
-    address: Address,
-    public_key: B256,
-    ingress: SocketAddr,
-    egress: IpAddr,
-}
-
-impl ValidatorConfig {
-    fn new(address: Address, public_key: B256, ingress: SocketAddr, egress: IpAddr) -> Self {
-        Self {
-            address,
-            public_key,
-            ingress,
-            egress,
-        }
-    }
-
-    fn check_signature(self, chain_id: u64, signature: Bytes) -> eyre::Result<()> {
-        let public_key = PublicKey::decode(&mut self.public_key.as_slice())
-            .wrap_err("invalid ed25519 public key")?;
-
-        let sig =
-            Signature::decode(&mut signature.as_ref()).wrap_err("invalid ed25519 signature")?;
-
-        let mut hasher = alloy_primitives::Keccak256::new();
-        hasher.update(chain_id.to_be_bytes());
-        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        hasher.update(self.address.as_slice());
-        hasher.update(self.ingress.to_string().as_bytes());
-        hasher.update(self.egress.to_string().as_bytes());
-        let message = hasher.finalize();
-
-        // Verify signature with the add-validator namespace
-        if !public_key.verify(ADD_VALIDATOR_NAMESPACE, message.as_slice(), &sig) {
-            return Err(eyre!("signature verification failed"));
-        }
-
-        Ok(())
     }
 }
 
@@ -179,15 +137,17 @@ impl AddValidator {
             .await
             .wrap_err("failed to get chain id")?;
 
-        let validator_config = ValidatorConfig::new(
-            self.validator_address,
-            self.public_key,
-            self.ingress,
-            self.egress,
-        );
+        let validator_config = ValidatorConfig {
+            chain_id,
+            validator_address: self.validator_address,
+            public_key: self.public_key,
+            ingress: self.ingress,
+            egress: self.egress,
+        };
 
-        // Sanity check the signature
-        validator_config.check_signature(chain_id, self.signature.clone())?;
+        validator_config
+            .check_add_validator_signature(self.signature.as_ref())
+            .wrap_err("add-validator signature check failed")?;
 
         let calldata = IValidatorConfigV2::addValidatorCall {
             validatorAddress: self.validator_address,
@@ -275,15 +235,17 @@ impl RotateValidator {
             .await
             .wrap_err("failed to get chain id")?;
 
-        let validator_config = ValidatorConfig::new(
-            self.validator_address,
-            self.public_key,
-            self.ingress,
-            self.egress,
-        );
+        let validator_config = ValidatorConfig {
+            chain_id,
+            validator_address: self.validator_address,
+            public_key: self.public_key,
+            ingress: self.ingress,
+            egress: self.egress,
+        };
 
-        // Sanity check the signature
-        validator_config.check_signature(chain_id, self.signature.clone())?;
+        validator_config
+            .check_rotate_validator_signature(self.signature.as_ref())
+            .wrap_err("rotate-validator signature check failed")?;
 
         let calldata = IValidatorConfigV2::rotateValidatorCall {
             validatorAddress: self.validator_address,

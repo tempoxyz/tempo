@@ -11854,11 +11854,13 @@ dependencies = [
 name = "tempo-commonware-node-config"
 version = "1.2.0"
 dependencies = [
+ "alloy-primitives",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-utils",
  "const-hex",
  "rand 0.8.5",
+ "tempo-contracts",
  "thiserror 2.0.18",
 ]
 
