@@ -869,19 +869,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                     "TEMPO-TIP11: Opted-in supply changed unexpectedly after burnBlocked"
                 );
             }
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "BURN_BLOCKED: ",
-                        vm.toString(amount),
-                        " ",
-                        token.symbol(),
-                        " from ",
-                        _getActorIndex(target)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
