@@ -15,8 +15,10 @@ tempo-primitives = { workspace = true, features = ["reth-codec", "serde"] }
 
 reth-ethereum-engine-primitives.workspace = true
 reth-node-api.workspace = true
+reth-payload-primitives.workspace = true
 reth-primitives-traits.workspace = true
 
+alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-serde.workspace = true
 alloy-rpc-types-eth.workspace = true
