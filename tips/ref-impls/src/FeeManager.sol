@@ -86,6 +86,15 @@ contract FeeManager is IFeeManager, FeeAMM {
         }
     }
 
+    function getFeeToken() external view returns (address) {
+        address token;
+        // Reads from transient storage slot 0 (set by the protocol before tx execution)
+        assembly {
+            token := tload(0)
+        }
+        return token;
+    }
+
     function distributeFees(address validator, address token) external {
         uint256 amount = collectedFees[validator][token];
         if (amount == 0) {
