@@ -6,13 +6,13 @@ use std::{
 };
 
 use alloy_network::EthereumWallet;
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, B256, Bytes, hex::encode_prefixed};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
-use commonware_codec::{DecodeExt as _, ReadExt as _};
+use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{
     Signer as _,
@@ -27,7 +27,7 @@ use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_commonware_node_config::SigningKey;
-use tempo_commonware_node_config::validator::ValidatorConfig;
+use tempo_commonware_node_config::validator::{self as validator, ValidatorConfig};
 use tempo_contracts::precompiles::{
     IValidatorConfig, IValidatorConfigV2, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
@@ -55,6 +55,10 @@ pub(crate) enum ConsensusSubcommand {
     AddValidator(AddValidator),
     /// Rotate a validator to a new identity.
     RotateValidator(RotateValidator),
+    /// Create an ed25519 signature for `addValidator`.
+    CreateAddValidatorSignature(CreateSignatureArgs),
+    /// Create an ed25519 signature for `rotateValidator`.
+    CreateRotateValidatorSignature(CreateSignatureArgs),
     /// Generates an ed25519 signing key pair to be used in consensus.
     GeneratePrivateKey(GeneratePrivateKey),
     /// Calculates the public key from an ed25519 signing key.
@@ -68,6 +72,10 @@ impl ConsensusSubcommand {
         match self {
             Self::AddValidator(args) => args.run(),
             Self::RotateValidator(args) => args.run(),
+            Self::CreateAddValidatorSignature(args) => args.run(validator::ADD_VALIDATOR_NAMESPACE),
+            Self::CreateRotateValidatorSignature(args) => {
+                args.run(validator::ROTATE_VALIDATOR_NAMESPACE)
+            }
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
             Self::ValidatorsInfo(args) => args.run(),
@@ -75,8 +83,9 @@ impl ConsensusSubcommand {
     }
 }
 
+/// Shared validator identity arguments used across add/rotate/sign commands.
 #[derive(Debug, clap::Args)]
-pub(crate) struct AddValidator {
+pub(crate) struct ValidatorIdentityArgs {
     /// The validator address.
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
@@ -92,9 +101,25 @@ pub(crate) struct AddValidator {
     /// The outbound address for the validator.
     #[arg(long, value_name = "IP")]
     egress: IpAddr,
+}
 
+impl ValidatorIdentityArgs {
+    fn to_config(&self, chain_id: u64) -> ValidatorConfig {
+        ValidatorConfig {
+            chain_id,
+            validator_address: self.validator_address,
+            public_key: self.public_key,
+            ingress: self.ingress,
+            egress: self.egress,
+        }
+    }
+}
+
+/// Shared arguments for commands that submit a transaction.
+#[derive(Debug, clap::Args)]
+pub(crate) struct SubmitArgs {
     /// The ed25519 signature proving validator key ownership and validity over
-    /// the provided fields.
+    /// the validator identity.
     #[arg(long, value_name = "SIGNATURE")]
     signature: Bytes,
 
@@ -105,6 +130,15 @@ pub(crate) struct AddValidator {
     /// The RPC URL to submit the transaction to.
     #[arg(long, value_name = "RPC_URL")]
     rpc_url: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct AddValidator {
+    #[command(flatten)]
+    identity: ValidatorIdentityArgs,
+
+    #[command(flatten)]
+    submit: SubmitArgs,
 }
 
 impl AddValidator {
@@ -118,8 +152,7 @@ impl AddValidator {
 
     async fn run_async(self) -> eyre::Result<()> {
         let private_key_bytes =
-            std::fs::read(&self.private_key).wrap_err("failed reading private key")?;
-
+            std::fs::read(&self.submit.private_key).wrap_err("failed reading private key")?;
         let private_key =
             B256::try_from(private_key_bytes.as_slice()).wrap_err("invalid private key")?;
 
@@ -128,7 +161,7 @@ impl AddValidator {
             .fetch_chain_id()
             .with_gas_estimation()
             .wallet(signer)
-            .connect(&self.rpc_url) // todo custom
+            .connect(&self.submit.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
 
@@ -137,24 +170,17 @@ impl AddValidator {
             .await
             .wrap_err("failed to get chain id")?;
 
-        let validator_config = ValidatorConfig {
-            chain_id,
-            validator_address: self.validator_address,
-            public_key: self.public_key,
-            ingress: self.ingress,
-            egress: self.egress,
-        };
-
-        validator_config
-            .check_add_validator_signature(self.signature.as_ref())
+        self.identity
+            .to_config(chain_id)
+            .check_add_validator_signature(self.submit.signature.as_ref())
             .wrap_err("add-validator signature check failed")?;
 
         let calldata = IValidatorConfigV2::addValidatorCall {
-            validatorAddress: self.validator_address,
-            publicKey: self.public_key,
-            ingress: self.ingress.to_string(),
-            egress: self.egress.to_string(),
-            signature: self.signature,
+            validatorAddress: self.identity.validator_address,
+            publicKey: self.identity.public_key,
+            ingress: self.identity.ingress.to_string(),
+            egress: self.identity.egress.to_string(),
+            signature: self.submit.signature,
         };
 
         let tx = TransactionRequest::default()
@@ -175,34 +201,11 @@ impl AddValidator {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct RotateValidator {
-    /// The validator address.
-    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
-    validator_address: Address,
+    #[command(flatten)]
+    identity: ValidatorIdentityArgs,
 
-    /// The identity key of the validator (0x-prefixed hex).
-    #[arg(long, value_name = "IDENTITY_KEY")]
-    public_key: B256,
-
-    /// The inbound address for the validator.
-    #[arg(long, value_name = "IP:PORT")]
-    ingress: SocketAddr,
-
-    /// The outbound address for the validator.
-    #[arg(long, value_name = "IP")]
-    egress: IpAddr,
-
-    /// The ed25519 signature proving validator key ownership and validity over
-    /// the provided fields.
-    #[arg(long, value_name = "SIGNATURE")]
-    signature: Bytes,
-
-    /// Path to the file holding the Ethereum private key.
-    #[arg(long, value_name = "FILE")]
-    private_key: PathBuf,
-
-    /// The RPC URL to submit the transaction to.
-    #[arg(long, value_name = "RPC_URL")]
-    rpc_url: String,
+    #[command(flatten)]
+    submit: SubmitArgs,
 }
 
 impl RotateValidator {
@@ -216,8 +219,7 @@ impl RotateValidator {
 
     async fn run_async(self) -> eyre::Result<()> {
         let private_key_bytes =
-            std::fs::read(&self.private_key).wrap_err("failed reading private key")?;
-
+            std::fs::read(&self.submit.private_key).wrap_err("failed reading private key")?;
         let private_key =
             B256::try_from(private_key_bytes.as_slice()).wrap_err("invalid private key")?;
 
@@ -226,7 +228,7 @@ impl RotateValidator {
             .fetch_chain_id()
             .with_gas_estimation()
             .wallet(EthereumWallet::from(signer))
-            .connect(&self.rpc_url) // todo custom
+            .connect(&self.submit.rpc_url)
             .await
             .wrap_err("failed to connect to RPC")?;
 
@@ -235,24 +237,17 @@ impl RotateValidator {
             .await
             .wrap_err("failed to get chain id")?;
 
-        let validator_config = ValidatorConfig {
-            chain_id,
-            validator_address: self.validator_address,
-            public_key: self.public_key,
-            ingress: self.ingress,
-            egress: self.egress,
-        };
-
-        validator_config
-            .check_rotate_validator_signature(self.signature.as_ref())
+        self.identity
+            .to_config(chain_id)
+            .check_rotate_validator_signature(self.submit.signature.as_ref())
             .wrap_err("rotate-validator signature check failed")?;
 
         let calldata = IValidatorConfigV2::rotateValidatorCall {
-            validatorAddress: self.validator_address,
-            publicKey: self.public_key,
-            ingress: self.ingress.to_string(),
-            egress: self.egress.to_string(),
-            signature: self.signature,
+            validatorAddress: self.identity.validator_address,
+            publicKey: self.identity.public_key,
+            ingress: self.identity.ingress.to_string(),
+            egress: self.identity.egress.to_string(),
+            signature: self.submit.signature,
         };
 
         let tx = TransactionRequest::default()
@@ -270,6 +265,46 @@ impl RotateValidator {
         Ok(())
     }
 }
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct CreateSignatureArgs {
+    #[command(flatten)]
+    identity: ValidatorIdentityArgs,
+
+    /// The chain ID of the network.
+    #[arg(long, value_name = "CHAIN_ID")]
+    chain_id: u64,
+
+    /// Path to the ed25519 signing key file.
+    #[arg(long, value_name = "FILE")]
+    signing_key: PathBuf,
+}
+
+impl CreateSignatureArgs {
+    fn run(self, namespace: &[u8]) -> eyre::Result<()> {
+        let signing_key =
+            SigningKey::read_from_file(&self.signing_key).wrap_err("failed reading signing key")?;
+
+        let network = match self.chain_id {
+            4217 => "presto (mainnet)",
+            42429 => "andantino (testnet)",
+            42431 => "moderato",
+            _ => "unknown",
+        };
+
+        eprintln!("Detected Network: {network}");
+
+        let config = self.identity.to_config(self.chain_id);
+        let message = config.message_hash();
+
+        let private_key = signing_key.into_inner();
+        let signature = private_key.sign(namespace, message.as_slice());
+        let encoded = signature.encode();
+        println!("{}", alloy_primitives::hex::encode_prefixed(encoded));
+        Ok(())
+    }
+}
+
 #[derive(Debug, clap::Args)]
 pub(crate) struct GeneratePrivateKey {
     /// Destination of the generated signing key.
