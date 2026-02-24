@@ -95,16 +95,13 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_account_additional_cost();
+        let warm_cost = self.gas_params.warm_storage_read_cost();
 
-        let mut account = self
-            .internals
-            .load_account_mut_skip_cold_load(address, false)?;
-
-        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        deduct_gas(
-            &mut self.gas_remaining,
-            self.gas_params.warm_storage_read_cost(),
-        )?;
+        let mut account = with_static_gas(&mut self.gas_remaining, self.spec, warm_cost, || {
+            Ok(self
+                .internals
+                .load_account_mut_skip_cold_load(address, false)?)
+        })?;
 
         // dynamic gas
         if account.is_cold {
@@ -124,13 +121,13 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let result = self
-            .internals
-            .load_account_mut(address)?
-            .sstore(key, value, false)?;
-
-        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        self.deduct_gas(self.gas_params.sstore_static_gas())?;
+        let static_gas = self.gas_params.sstore_static_gas();
+        let result = with_static_gas(&mut self.gas_remaining, self.spec, static_gas, || {
+            Ok(self
+                .internals
+                .load_account_mut(address)?
+                .sstore(key, value, false)?)
+        })?;
 
         // dynamic gas
         self.deduct_gas(
@@ -176,25 +173,18 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_storage_additional_cost();
+        let warm_cost = self.gas_params.warm_storage_read_cost();
 
-        let value;
-        let is_cold;
-        {
+        let value = with_static_gas(&mut self.gas_remaining, self.spec, warm_cost, || {
             let mut account = self.internals.load_account_mut(address)?;
-            let val = account.sload(key, false)?;
+            Ok(account.sload(key, false)?)
+        })?;
 
-            value = val.present_value;
-            is_cold = val.is_cold;
-        };
-
-        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
-        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
-
-        if is_cold {
+        if value.is_cold {
             self.deduct_gas(additional_cost)?;
         }
 
-        Ok(value)
+        Ok(value.present_value)
     }
 
     #[inline]
@@ -245,6 +235,26 @@ impl From<EvmInternalsError> for TempoPrecompileError {
     }
 }
 
+/// Wraps a storage operation with static gas deduction.
+/// On T2+, static gas is charged before the operation.
+/// On pre-T2, static gas is charged after the operation.
+#[inline]
+fn with_static_gas<T>(
+    gas_remaining: &mut u64,
+    spec: TempoHardfork,
+    gas: u64,
+    storage_op: impl FnOnce() -> Result<T, TempoPrecompileError>,
+) -> Result<T, TempoPrecompileError> {
+    if spec.is_t2() {
+        deduct_gas(gas_remaining, gas)?;
+        storage_op()
+    } else {
+        let result = storage_op()?;
+        deduct_gas(gas_remaining, gas)?;
+        Ok(result)
+    }
+}
+
 /// Deducts gas from the remaining gas and returns an error if insufficient.
 #[inline]
 pub fn deduct_gas(gas: &mut u64, additional_cost: u64) -> Result<(), TempoPrecompileError> {
@@ -253,6 +263,7 @@ pub fn deduct_gas(gas: &mut u64, additional_cost: u64) -> Result<(), TempoPrecom
         .ok_or(TempoPrecompileError::OutOfGas)?;
     Ok(())
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
