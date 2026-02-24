@@ -172,9 +172,9 @@ impl ValidatorIdentityArgs {
     }
 }
 
-/// Shared arguments for commands that submit a transaction.
+/// Shared arguments for commands that update the validator config contract.
 #[derive(Debug, clap::Args)]
-pub(crate) struct SubmitArgs {
+pub(crate) struct ValidatorTransactionArgs {
     /// The ed25519 signature proving validator key ownership and validity over
     /// the validator identity.
     #[arg(long, value_name = "SIGNATURE")]
@@ -195,7 +195,7 @@ pub(crate) struct AddValidator {
     identity: ValidatorIdentityArgs,
 
     #[command(flatten)]
-    submit: SubmitArgs,
+    submit: ValidatorTransactionArgs,
 }
 
 impl AddValidator {
@@ -262,7 +262,7 @@ pub(crate) struct RotateValidator {
     identity: ValidatorIdentityArgs,
 
     #[command(flatten)]
-    submit: SubmitArgs,
+    submit: ValidatorTransactionArgs,
 }
 
 impl RotateValidator {
