@@ -88,7 +88,9 @@ contract FeeManager is IFeeManager, FeeAMM {
 
     function getFeeToken() external view returns (address) {
         address token;
-        // Reads from transient storage slot 0 (set by the protocol before tx execution)
+        // NOTE: The slot used here (0) is specific to this reference implementation.
+        // The production Rust precompile uses a different transient slot determined
+        // by the `contract` macro's layout (currently slot 7).
         assembly {
             token := tload(0)
         }
