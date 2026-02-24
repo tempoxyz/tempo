@@ -168,7 +168,7 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.11
 ] }
 revm = { version = "34.0.0", features = ["optional_fee_charge"] }
 
-alloy = { version = "1.6.1", default-features = false }
+alloy = { version = "1.7.3", default-features = false }
 alloy-consensus = { version = "1.6.1", default-features = false }
 alloy-contract = { version = "1.6.1", default-features = false }
 alloy-eips = { version = "1.6.1", default-features = false }
@@ -207,7 +207,7 @@ auto_impl = "1"
 axum = "0.8.8"
 base64 = "0.22"
 bytes = "1.11.1"
-clap = { version = "4.5.57", features = ["derive", "env"] }
+clap = { version = "4.5.60", features = ["derive", "env"] }
 const-hex = { version = "1.17.0" }
 derive_more = { version = "2.1.1" }
 either = "1"
@@ -217,7 +217,7 @@ governor = "0.10.4"
 indexmap = "2.13.0"
 indicatif = "0.18"
 itertools = "0.14.0"
-jiff = { version = "0.2.18", default-features = false }
+jiff = { version = "0.2.21", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.3"
 p256 = "0.13"
@@ -234,7 +234,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 schnellru = "0.2"
 sha2 = "0.10"
-tempfile = "3.24.0"
+tempfile = "3.26.0"
 thiserror = "2.0.18"
 # TODO: restrict this to only the required features
 tokio = { version = "1.49.0", features = ["full"] }
