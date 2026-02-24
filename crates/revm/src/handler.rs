@@ -216,10 +216,15 @@ impl<DB, I> TempoEvmHandler<DB, I> {
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     /// Loads the fee token and fee payer from the transaction environment.
     ///
-    /// Must be called before `validate_against_state_and_deduct_caller`, which uses the loaded
-    /// fee fields for balance checks. Called by `TempoEvmHandler::inspect_run` and
-    /// `Handler::run`; exposed for downstream `InspectorHandler` impls (e.g. tempo-foundry)
-    /// that override `inspect_run` but still need Tempo fee setup.
+    /// Resolves and validates the fee fields used by Tempo's fee system:
+    /// - Fee payer: determined from the transaction
+    /// - Fee token: resolved via the journaled state and validated (TIP20 prefix + USD currency)
+    ///
+    /// Must be called before `validate_against_state_and_deduct_caller`, which uses the
+    /// loaded fee fields for balance checks.
+    ///
+    /// Called by [`Handler::run`] and [`InspectorHandler::inspect_run`]. Exposed for consumers
+    /// like `FoundryHandler` that override `inspect_run` but still need Tempo fee setup.
     pub fn load_fee_fields(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -290,7 +295,7 @@ where
 
     /// Executes a standard single-call transaction using the default handler logic.
     ///
-    /// This calls the same helper methods used by the default Handler::execution() implementation.
+    /// This calls the same helper methods used by the default [`Handler::execution`] implementation.
     fn execute_single_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -499,7 +504,7 @@ where
     /// - AA transactions (type 0x76): Use batch execution path with calls field
     /// - All other transactions: Use standard single-call execution
     ///
-    /// This mirrors the logic in Handler::execution but uses inspector-aware execution methods.
+    /// This mirrors the logic in [`Handler::execution`] but uses inspector-aware execution methods.
     ///
     /// Additionally, delegates the standard single-call execution to the `exec_loop` closure.
     /// This allows downstream consumers like the `FoundryHandler` to inject custom execution
