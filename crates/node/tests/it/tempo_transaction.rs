@@ -47,6 +47,7 @@ use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
+use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::TempoNetwork;
@@ -3379,33 +3380,33 @@ async fn test_aa_estimate_gas_matrix() -> eyre::Result<()> {
             },
             expected: ExpectedGasDiff::GreaterThan("p256"),
         },
-        // ~285,926: 3,000 keychain validation + ~30,000 KeyAuthorization (27,000 base +
-        // 3,000 ecrecover) + storage costs for key authorization precompile
+        // T1B+: keychain validation (3k) + sig_gas (3k ecrecover) + SLOAD (2.2k) +
+        // SSTORE (250k) = ~258.2k + warm access overhead ≈ 260k
         GasCase {
             name: "keychain_secp256k1",
             kind: GasCaseKind::Keychain {
                 key_type: None,
                 num_limits: 0,
             },
-            expected: ExpectedGasDiff::Range(285_000..=287_000),
+            expected: ExpectedGasDiff::Range(258_000..=263_000),
         },
-        // ~290,966: keychain_secp256k1 costs + 5,000 P256 signature verification
+        // keychain_secp256k1 costs + 5,000 P256 signature verification
         GasCase {
             name: "keychain_p256",
             kind: GasCaseKind::Keychain {
                 key_type: Some(SignatureType::P256),
                 num_limits: 0,
             },
-            expected: ExpectedGasDiff::Range(290_000..=292_000),
+            expected: ExpectedGasDiff::Range(263_000..=268_000),
         },
-        // ~282,903: ~30,000 KeyAuthorization (27,000 base + 3,000 ecrecover) + storage costs
+        // T1B+: sig_gas (3k) + SLOAD (2.2k) + SSTORE (250k) = ~255.2k + warm access overhead
         GasCase {
             name: "key_auth_secp256k1",
             kind: GasCaseKind::KeyAuth {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 0,
             },
-            expected: ExpectedGasDiff::Range(282_000..=284_000),
+            expected: ExpectedGasDiff::Range(255_000..=260_000),
         },
         // Same range as secp256k1: the authorization signature is always secp256k1
         // from the root key; key_type only describes which key is being authorized.
@@ -3415,16 +3416,16 @@ async fn test_aa_estimate_gas_matrix() -> eyre::Result<()> {
                 key_type: SignatureType::P256,
                 num_limits: 0,
             },
-            expected: ExpectedGasDiff::Range(282_000..=284_000),
+            expected: ExpectedGasDiff::Range(255_000..=260_000),
         },
-        // ~349,426: key_auth_secp256k1 costs + 3 × 22,000 for spending limits
+        // T1B+: key_auth_secp256k1 costs + 3 × SSTORE (250k) for spending limits
         GasCase {
             name: "key_auth_secp256k1_3_limits",
             kind: GasCaseKind::KeyAuth {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 3,
             },
-            expected: ExpectedGasDiff::Range(349_000..=351_000),
+            expected: ExpectedGasDiff::Range(1_010_000..=1_016_000),
         },
     ];
 
@@ -6411,9 +6412,50 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     Ok(())
 }
 
-// ============================================================================
-// Expiring Nonce Tests
-// ============================================================================
+#[tokio::test(flavor = "multi_thread")]
+async fn test_estimate_gas_expiring_nonce_tx() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing eth_estimateGas for Expiring Nonce TX ===\n");
+
+    let setup = TestNodeBuilder::new().build_with_node_access().await?;
+
+    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let signer_addr = signer.address();
+
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(signer)
+        .connect_http(setup.node.rpc_url());
+
+    let recipient = Address::random();
+
+    // Get current block timestamp so valid_before is within the 30s expiry window
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let valid_before = block.header.timestamp() + 20;
+
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(signer_addr),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Call(recipient),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: Some(TEMPO_EXPIRING_NONCE_KEY),
+        valid_before: Some(valid_before),
+        ..Default::default()
+    };
+
+    let gas = provider.estimate_gas(request).await?;
+    assert!(gas > 0, "gas estimate should be non-zero");
+
+    Ok(())
+}
 
 /// Test basic expiring nonce flow - submit transaction with expiring nonce, verify it executes
 #[tokio::test(flavor = "multi_thread")]
@@ -6473,6 +6515,159 @@ async fn test_aa_expiring_nonce_basic_flow() -> eyre::Result<()> {
         "Protocol nonce should remain 0 for expiring nonce transactions"
     );
     println!("✓ Protocol nonce unchanged (still 0)");
+
+    Ok(())
+}
+
+/// Test that a different fee payer CANNOT replay a user's expiring-nonce sponsored transaction
+/// by signing as an alternate fee payer.
+///
+/// Replay protection uses `expiring_nonce_hash = keccak256(encode_for_signing || sender)`,
+/// which is invariant to fee payer signature changes. Even though different fee payer signatures
+/// produce different `tx_hash` values, the `expiring_nonce_hash` is identical, so the second
+/// submission is rejected.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_expiring_nonce_fee_payer_signature_malleability() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing Expiring Nonce Fee Payer Signature Malleability ===\n");
+
+    let (mut setup, provider, _funder_signer, _funder_addr) =
+        setup_test_with_funded_account().await?;
+
+    let chain_id = provider.get_chain_id().await?;
+
+    // Fee payer 1 is the funded TEST_MNEMONIC account
+    let fee_payer_1_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+
+    // Fee payer 2 is a separate account (attacker / alternate relayer)
+    // Fund it so the replay rejection is driven by expiring nonce dedup, not balance checks.
+    let fee_payer_2_signer = alloy::signers::local::PrivateKeySigner::random();
+    fund_address_with_fee_tokens(
+        &mut setup,
+        &provider,
+        &fee_payer_1_signer,
+        fee_payer_1_signer.address(),
+        fee_payer_2_signer.address(),
+        U256::from(1_000_000_000_000_000_000u128),
+        chain_id,
+    )
+    .await?;
+
+    // User is a fresh random account
+    let user_signer = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = user_signer.address();
+
+    // Advance blocks to get a meaningful timestamp
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    let valid_before = current_timestamp + 25;
+
+    // Create a sponsored expiring-nonce transaction with a benign call.
+    // The user has no balance — the fee payer covers gas. Any call from the user
+    // demonstrates the replay: if executed twice, the user's intent runs twice.
+    let recipient = Address::random();
+
+    let mut tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
+        calls: vec![Call {
+            to: recipient.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+        nonce: 0,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        valid_before: Some(valid_before),
+        // Presence of fee_payer_signature indicates a fee-payer-sponsored tx
+        fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+        ..Default::default()
+    };
+
+    // Step 1: User signs the transaction (signature_hash excludes fee payer sig)
+    let user_sig_hash = tx.signature_hash();
+    let user_signature = user_signer.sign_hash_sync(&user_sig_hash)?;
+    println!("User signature_hash: {user_sig_hash}");
+
+    // Step 2: Fee payer 1 signs the fee payer hash
+    let fee_payer_sig_hash = tx.fee_payer_signature_hash(user_addr);
+    let fee_payer_sig_1 = fee_payer_1_signer.sign_hash_sync(&fee_payer_sig_hash)?;
+    tx.fee_payer_signature = Some(fee_payer_sig_1);
+
+    // Build and submit the first version (fee payer 1)
+    let aa_sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(user_signature));
+    let envelope_1: TempoTxEnvelope = tx.clone().into_signed(aa_sig.clone()).into();
+    let tx_hash_1 = *envelope_1.tx_hash();
+    let encoded_1 = envelope_1.encoded_2718();
+    println!("First tx_hash (fee payer 1):  {tx_hash_1}");
+
+    setup.node.rpc.inject_tx(encoded_1.into()).await?;
+    setup.node.advance_block().await?;
+
+    let receipt_1: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash_1])
+        .await?;
+    assert!(receipt_1.is_some(), "First transaction should be mined");
+    let receipt_1_json = receipt_1.unwrap();
+    let status_1 = receipt_1_json["status"]
+        .as_str()
+        .map(|s| s == "0x1")
+        .unwrap_or(false);
+    assert!(status_1, "First transaction should succeed");
+    println!("✓ First submission succeeded");
+
+    // Step 3: Fee payer 2 (attacker) signs the SAME user intent as a different fee payer.
+    // The user's signature remains valid because signature_hash is invariant to fee payer sig.
+    let fee_payer_sig_2 = fee_payer_2_signer.sign_hash_sync(&fee_payer_sig_hash)?;
+    assert_ne!(
+        fee_payer_sig_1, fee_payer_sig_2,
+        "Different fee payer keys must produce different signatures"
+    );
+    tx.fee_payer_signature = Some(fee_payer_sig_2);
+
+    // The user's signature_hash should be identical (invariant to fee payer sig)
+    assert_eq!(
+        tx.signature_hash(),
+        user_sig_hash,
+        "User signature_hash must be invariant to fee payer signature changes"
+    );
+
+    // Build the second version — different fee payer sig means different tx_hash
+    let envelope_2: TempoTxEnvelope = tx.into_signed(aa_sig).into();
+    let tx_hash_2 = *envelope_2.tx_hash();
+    let encoded_2 = envelope_2.encoded_2718();
+    println!("Second tx_hash (fee payer 2): {tx_hash_2}");
+
+    assert_ne!(
+        tx_hash_1, tx_hash_2,
+        "Different fee payer signatures must produce different tx hashes"
+    );
+
+    // Step 4: Submit the replay — this is rejected because replay protection uses
+    // expiring_nonce_hash (keccak256(encode_for_signing || sender)), which is invariant
+    // to fee payer changes.
+    let replay_result = setup.node.rpc.inject_tx(encoded_2.into()).await;
+
+    let error_msg = replay_result
+        .expect_err("Replay with different fee payer signature must be rejected")
+        .to_string();
+
+    assert!(
+        error_msg
+            .contains("Expiring nonce transaction replay: tx hash already seen and not expired"),
+        "Rejection must be due to expiring nonce replay protection, got: {error_msg}"
+    );
+    println!("✓ Replay with different fee payer correctly rejected: {error_msg}");
 
     Ok(())
 }
@@ -7583,6 +7778,126 @@ async fn run_fill_sign_send_test_p256(test_case: &FillTestCase) -> eyre::Result<
 }
 
 /// E2E matrix: fill -> sign -> send across nonce modes and key types.
+/// Regression test: CREATE + KeyAuthorization nonce bump (T1B fix).
+///
+/// **The bug (T1):** An AA CREATE transaction with a KeyAuthorization uses a
+/// gas-metered precompile call for `authorize_key`. The SSTORE costs can exceed
+/// the remaining gas, causing OutOfGas. The handler then short-circuits execution
+/// before `make_create_frame` bumps the protocol nonce. Since the nonce stays at 0,
+/// the signed transaction can be replayed indefinitely.
+///
+/// **The fix (T1B):** The precompile runs with unlimited gas, eliminating the OOG
+/// path. Gas is accounted for solely in intrinsic gas. The CREATE frame is always
+/// constructed, the nonce is always bumped, and replay is impossible.
+///
+/// This test verifies:
+/// 1. CREATE + KeyAuthorization tx succeeds and deploys a contract
+/// 2. The protocol nonce is bumped (nonce 0 → 1)
+/// 3. Replaying the same signed transaction is rejected (nonce too low)
+#[tokio::test]
+async fn test_t1b_create_nonce_bump_with_key_authorization() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (mut setup, provider, root_signer, root_addr) = setup_test_with_funded_account().await?;
+
+    let chain_id = provider.get_chain_id().await?;
+    let nonce = provider.get_transaction_count(root_addr).await?;
+
+    println!("\n=== Testing CREATE + KeyAuthorization Nonce Bump (T1B regression) ===\n");
+    println!("Root address: {root_addr}");
+    println!("Initial nonce: {nonce}");
+
+    // Generate a P256 access key to authorize
+    let (_, access_pub_x, access_pub_y, access_key_addr) = generate_p256_access_key();
+    println!("Access key to authorize: {access_key_addr}");
+
+    // Create key authorization signed by root (secp256k1)
+    let mock_sig = create_mock_p256_sig(access_pub_x, access_pub_y);
+    let key_authorization = create_key_authorization(
+        &root_signer,
+        access_key_addr,
+        mock_sig,
+        chain_id,
+        None, // never expires
+        None, // no spending limits
+    )?;
+
+    // Compute expected contract address BEFORE sending
+    let expected_contract_address = root_addr.create(nonce);
+    println!("Expected contract address: {expected_contract_address}");
+
+    // Simple initcode: PUSH1 0x2a PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 RETURN
+    // Stores 42 at memory[0] and returns 32 bytes as runtime code
+    let init_code =
+        Bytes::from_static(&[0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+
+    // Build AA tx: CREATE call + key_authorization
+    let mut tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: init_code,
+        }],
+        2_000_000,
+    );
+    tx.key_authorization = Some(key_authorization);
+
+    // Sign with root key (secp256k1)
+    let aa_signature = sign_aa_tx_secp256k1(&tx, &root_signer)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+    let encoded = envelope.encoded_2718();
+
+    // Submit and mine
+    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
+    let payload = setup.node.advance_block().await?;
+    println!(
+        "✓ CREATE + KeyAuth tx mined in block {}",
+        payload.block().inner.number
+    );
+
+    // 1. Verify nonce was bumped
+    let nonce_after = provider.get_transaction_count(root_addr).await?;
+    assert_eq!(
+        nonce_after,
+        nonce + 1,
+        "Protocol nonce must be bumped after CREATE tx with KeyAuthorization"
+    );
+    println!("✓ Nonce bumped: {nonce} → {nonce_after}");
+
+    // 2. Verify contract was deployed at the expected address
+    let deployed_code = provider.get_code_at(expected_contract_address).await?;
+    assert!(
+        !deployed_code.is_empty(),
+        "Contract should be deployed at the expected address"
+    );
+    let mut expected_code = [0u8; 32];
+    expected_code[31] = 0x2a;
+    assert_eq!(
+        deployed_code.as_ref(),
+        &expected_code,
+        "Deployed contract should have expected runtime code (0x2a)"
+    );
+    println!("✓ Contract deployed at {expected_contract_address}");
+
+    // 3. Verify receipt shows success
+    let tx_hash = keccak256(&encoded);
+    assert_receipt_status(&provider, tx_hash, true).await?;
+    println!("✓ Receipt status: success");
+
+    // 4. Verify replay is rejected — same signed tx should fail with nonce-too-low
+    let replay_result = setup.node.rpc.inject_tx(encoded.into()).await;
+    assert!(
+        replay_result.is_err(),
+        "Replay of the same CREATE+KeyAuth tx must be rejected (nonce already bumped)"
+    );
+    println!("✓ Replay rejected: {}", replay_result.unwrap_err());
+
+    println!("\n=== CREATE + KeyAuthorization Nonce Bump Test Passed ===");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_e2e_fill_sign_send_matrix() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();

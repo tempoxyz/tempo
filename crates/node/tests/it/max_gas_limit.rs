@@ -1,7 +1,7 @@
 //! Tests for per-transaction gas limit caps across hardforks (TIP-1000/1010).
 //!
-//! Pre-T1: no per-tx gas cap (effectively unlimited).
-//! Post-T1 (TIP-1010): per-tx gas limit cap is 30M (`TEMPO_T1_TX_GAS_LIMIT_CAP`).
+//! Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas).
+//! Post-T1A (TIP-1010): per-tx gas limit cap is 30M (`TEMPO_T1_TX_GAS_LIMIT_CAP`).
 
 use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
@@ -12,6 +12,7 @@ use alloy::{
 use alloy_eips::{eip2718::Encodable2718, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 use alloy_network::TxSignerSync;
 use alloy_primitives::Bytes;
+use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP};
 
@@ -39,10 +40,10 @@ fn build_tx(
         .into()
 }
 
-/// Post-T1: tx at the Osaka limit (16M) should be accepted by the pool and
+/// Post-T1A: tx at the Osaka limit (16M) should be accepted by the pool and
 /// included in a block.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_at_osaka_limit() -> eyre::Result<()> {
+async fn test_post_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -67,10 +68,10 @@ async fn test_post_t1_tx_at_osaka_limit() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Post-T1: tx between the Osaka limit (16M) and Tempo's T1 cap (30M) should
+/// Post-T1A: tx between the Osaka limit (16M) and Tempo's T1A cap (30M) should
 /// be accepted by the pool and included in a block.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_above_osaka_below_tempo_cap() -> eyre::Result<()> {
+async fn test_post_t1a_tx_above_osaka_below_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -98,10 +99,10 @@ async fn test_post_t1_tx_above_osaka_below_tempo_cap() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Post-T1: tx at exactly the Tempo T1 cap (30M) should be accepted by the
+/// Post-T1A: tx at exactly the Tempo T1A cap (30M) should be accepted by the
 /// pool and included in a block.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_at_tempo_cap() -> eyre::Result<()> {
+async fn test_post_t1a_tx_at_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -129,9 +130,9 @@ async fn test_post_t1_tx_at_tempo_cap() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Post-T1: tx exceeding Tempo's 30M cap should be rejected by the pool.
+/// Post-T1A: tx exceeding Tempo's 30M cap should be rejected by the pool.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_post_t1_tx_exceeding_tempo_cap() -> eyre::Result<()> {
+async fn test_post_t1a_tx_exceeding_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -145,26 +146,27 @@ async fn test_post_t1_tx_exceeding_tempo_cap() -> eyre::Result<()> {
     let result = provider.send_raw_transaction(&raw_tx).await;
     assert!(
         result.is_err(),
-        "tx with gas_limit > 30M should be rejected post-T1"
+        "tx with gas_limit > 30M should be rejected post-T1A"
     );
 
     Ok(())
 }
 
-/// Pre-T1 (T0 only): tx with gas_limit above 30M should be accepted by the
-/// pool and included in a block because there is no per-tx gas cap before T1.
+/// Pre-T1A (T0 only): tx at the Osaka limit (16M) should be accepted.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_pre_t1_tx_above_30m() -> eyre::Result<()> {
+async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let genesis_str = include_str!("../assets/test-genesis.json");
     let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
     genesis["config"].as_object_mut().unwrap().remove("t1Time");
+    genesis["config"].as_object_mut().unwrap().remove("t1aTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1bTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
-    let pre_t1_genesis = serde_json::to_string(&genesis)?;
+    let pre_t1a_genesis = serde_json::to_string(&genesis)?;
 
     let mut setup = TestNodeBuilder::new()
-        .with_genesis(pre_t1_genesis)
+        .with_genesis(pre_t1a_genesis)
         .build_with_node_access()
         .await?;
 
@@ -174,7 +176,7 @@ async fn test_pre_t1_tx_above_30m() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
-    let raw_tx = build_tx(&signer, chain_id, 0, 50_000_000);
+    let raw_tx = build_tx(&signer, chain_id, 0, MAX_TX_GAS_LIMIT_OSAKA);
     let pending = provider.send_raw_transaction(&raw_tx).await?;
     let expected_hash = *pending.tx_hash();
     let payload = setup.node.advance_block().await?;
@@ -184,7 +186,41 @@ async fn test_pre_t1_tx_above_30m() -> eyre::Result<()> {
         .body()
         .transactions()
         .any(|tx| *tx.tx_hash() == expected_hash);
-    assert!(included, "pre-T1 should allow tx with gas_limit > 30M");
+    assert!(included, "pre-T1A should accept tx at Osaka limit (16M)");
+
+    Ok(())
+}
+
+/// Pre-T1A (T0 only): tx above the Osaka limit (16M) should be rejected.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_pre_t1a_tx_above_osaka_limit() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let genesis_str = include_str!("../assets/test-genesis.json");
+    let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
+    genesis["config"].as_object_mut().unwrap().remove("t1Time");
+    genesis["config"].as_object_mut().unwrap().remove("t1aTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1bTime");
+    genesis["config"].as_object_mut().unwrap().remove("t2Time");
+    let pre_t1a_genesis = serde_json::to_string(&genesis)?;
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(pre_t1a_genesis)
+        .build_with_node_access()
+        .await?;
+
+    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    let raw_tx = build_tx(&signer, chain_id, 0, MAX_TX_GAS_LIMIT_OSAKA + 1);
+    let result = provider.send_raw_transaction(&raw_tx).await;
+    assert!(
+        result.is_err(),
+        "pre-T1A should reject tx above Osaka limit (16M)"
+    );
 
     Ok(())
 }

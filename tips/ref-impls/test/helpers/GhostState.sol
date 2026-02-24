@@ -27,6 +27,7 @@ abstract contract GhostState {
 
     mapping(bytes32 => address) public ghost_createAddresses;
     mapping(address => uint256) public ghost_createCount;
+    mapping(address => uint256[]) public ghost_createNonces;
 
     // ============ CREATE Rejection Tracking ============
 
@@ -49,6 +50,7 @@ abstract contract GhostState {
     uint256 public ghost_eip7702CreateWithAuthAllowed; // TX7 - CREATE with auth list unexpectedly allowed
     uint256 public ghost_timeBoundValidAfterAllowed; // T1 - validAfter not enforced
     uint256 public ghost_timeBoundValidBeforeAllowed; // T2 - validBefore not enforced
+    uint256 public ghost_timeBoundZeroWidthAllowed; // T5 - validBefore == validAfter unexpectedly allowed
 
     // ============ Fee Collection Tracking (F1-F12) ============
 
@@ -183,6 +185,7 @@ abstract contract GhostState {
         bytes32 key = keccak256(abi.encodePacked(caller, protocolNonce));
         ghost_createAddresses[key] = deployed;
         ghost_createCount[caller]++;
+        ghost_createNonces[caller].push(protocolNonce);
         ghost_totalCreatesExecuted++;
     }
 
