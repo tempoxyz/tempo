@@ -126,21 +126,26 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @dev Each actor gets funded with all tokens
     /// @param noOfActors_ Number of actors to create
     /// @return actorsAddress Array of created actor addresses
-    function _buildActors(uint256 noOfActors_) internal virtual returns (address[] memory) {
+    function _buildActors(uint256 noOfActors_)
+        internal
+        virtual
+        returns (address[] memory, uint256[] memory)
+    {
         address[] memory actorsAddress = new address[](noOfActors_);
+        uint256[] memory actorKeys = new uint256[](noOfActors_);
 
         for (uint256 i = 0; i < noOfActors_; i++) {
-            address actor = makeAddr(string(abi.encodePacked("Actor", vm.toString(i))));
-            actorsAddress[i] = actor;
+            (actorsAddress[i], actorKeys[i]) =
+                makeAddrAndKey(string(abi.encodePacked("Actor", vm.toString(i))));
 
             // Register actor as balance holder for invariant checks
-            _registerBalanceHolder(actor);
+            _registerBalanceHolder(actorsAddress[i]);
 
             // Initial actor balance for all tokens
-            _ensureFundsAll(actor, 1_000_000_000_000);
+            _ensureFundsAll(actorsAddress[i], 1_000_000_000_000);
         }
 
-        return actorsAddress;
+        return (actorsAddress, actorKeys);
     }
 
     /// @notice Creates test actors with approvals for a specific contract
@@ -154,7 +159,7 @@ abstract contract InvariantBaseTest is BaseTest {
         internal
         returns (address[] memory)
     {
-        address[] memory actorsAddress = _buildActors(noOfActors_);
+        (address[] memory actorsAddress,) = _buildActors(noOfActors_);
 
         for (uint256 i = 0; i < noOfActors_; i++) {
             vm.startPrank(actorsAddress[i]);

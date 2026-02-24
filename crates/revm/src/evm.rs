@@ -2201,4 +2201,228 @@ mod tests {
 
         Ok(())
     }
+
+    /// Regression: CREATE nonce replay vulnerability — demonstrates the T1
+    /// bug and verifies the T1B fix.
+    ///
+    /// **The bug (T1):** An AA CREATE transaction with a KeyAuthorization runs
+    /// `authorize_key` in a gas-metered precompile call. TIP-1000 SSTORE costs
+    /// (250k) easily exceed the remaining gas after intrinsic deduction, causing
+    /// OutOfGas. The handler then sets `evm.initial_gas = u64::MAX`, which
+    /// short-circuits execution before `make_create_frame` bumps the protocol
+    /// nonce. The nonce stays at 0, making the signed transaction replayable.
+    ///
+    /// **The fix (T1B):** The precompile runs with `gas_limit = u64::MAX`,
+    /// eliminating the OOG path. Gas is accounted for solely in intrinsic gas.
+    /// The CREATE frame is always constructed, the nonce is always bumped, and
+    /// replay is impossible.
+    #[test]
+    fn test_create_nonce_replay_regression() -> eyre::Result<()> {
+        use tempo_precompiles::account_keychain::AccountKeychain;
+
+        /// Run a CREATE+KeyAuth transaction on the given hardfork and return
+        /// (caller_nonce_after, key_expiry).
+        fn run_create_with_key_auth(
+            spec: TempoHardfork,
+            gas_limit: u64,
+        ) -> eyre::Result<(u64, u64)> {
+            let key_pair = P256KeyPair::random();
+            let caller = key_pair.address;
+
+            let db = CacheDB::new(EmptyDB::new());
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.spec = spec;
+            cfg.gas_params = tempo_gas_params(spec);
+
+            let ctx = Context::mainnet()
+                .with_db(db)
+                .with_block(Default::default())
+                .with_cfg(cfg)
+                .with_tx(Default::default());
+
+            let mut evm = TempoEvm::new(ctx, ());
+            fund_account(&mut evm, caller);
+
+            let block = TempoBlockEnv::default();
+            {
+                let ctx = &mut evm.ctx;
+                let internals =
+                    EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+                // Use default cfg for TIP20 setup — the test infrastructure's
+                // `is_initialized` check uses an unsafe `as_hashmap()` cast that
+                // only works with default gas params.
+                let mut provider =
+                    EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+                StorageCtx::enter(&mut provider, || {
+                    TIP20Setup::path_usd(caller)
+                        .with_issuer(caller)
+                        .with_mint(caller, U256::from(100_000_000))
+                        .apply()
+                })?;
+            }
+
+            let access_key = P256KeyPair::random();
+            let key_auth = KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::WebAuthn,
+                key_id: access_key.address,
+                expiry: None,
+                limits: None,
+            };
+            let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
+            let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
+
+            let tx = TxBuilder::new()
+                .create(&[0x60, 0x00, 0x60, 0x00, 0xF3])
+                .key_authorization(signed_key_auth)
+                .gas_limit(gas_limit)
+                .build();
+
+            let signed_tx = key_pair.sign_tx(tx)?;
+            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+            let _result = evm.transact_commit(tx_env);
+
+            let nonce = evm
+                .ctx
+                .db()
+                .basic_ref(caller)
+                .ok()
+                .flatten()
+                .map(|a| a.nonce)
+                .unwrap_or(0);
+
+            let key_expiry = {
+                let ctx = &mut evm.ctx;
+                let internals =
+                    EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+                let mut provider =
+                    EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+                let key = StorageCtx::enter(&mut provider, || {
+                    AccountKeychain::default().keys[caller][access_key.address].read()
+                })?;
+                key.expiry
+            };
+
+            Ok((nonce, key_expiry))
+        }
+
+        // --- T1: demonstrate the bug ---
+        // T1 intrinsic gas for this tx is ~560k (21k base + 500k CREATE + 35k
+        // KeyAuth heuristic). Gas limit 780k leaves ~220k for the precompile,
+        // which is below the 250k SSTORE cost → OOG → nonce NOT bumped.
+        let (t1_nonce, t1_key_expiry) = run_create_with_key_auth(TempoHardfork::T1, 780_000)?;
+        assert_eq!(
+            t1_nonce, 0,
+            "T1 bug: nonce must NOT be bumped when keychain OOGs"
+        );
+        assert_eq!(
+            t1_key_expiry, 0,
+            "T1 bug: key must NOT be authorized when keychain OOGs"
+        );
+
+        // --- T1B: verify the fix ---
+        // T1B intrinsic gas is ~1.04M (21k base + 500k CREATE + 260k KeyAuth
+        // + calldata + sig). Gas limit 1.05M is just enough to pass intrinsic
+        // validation. The precompile runs with unlimited gas, so the nonce is
+        // always bumped.
+        let (t1b_nonce, t1b_key_expiry) = run_create_with_key_auth(TempoHardfork::T1B, 1_050_000)?;
+        assert_eq!(
+            t1b_nonce, 1,
+            "T1B fix: nonce must be bumped after CREATE+KeyAuth"
+        );
+        assert_eq!(t1b_key_expiry, u64::MAX, "T1B fix: key must be authorized");
+
+        Ok(())
+    }
+
+    /// Regression: double gas charging for KeyAuthorization — demonstrates the
+    /// T1 bug and verifies the T1B fix.
+    ///
+    /// **The bug (T1):** The handler charges both a heuristic intrinsic gas
+    /// estimate AND the metered precompile gas (`evm.initial_gas += gas_used`),
+    /// resulting in a double charge. With TIP-1000 SSTORE at 250k, a simple
+    /// KeyAuthorization (0 limits) costs ~530k on T1 instead of ~280k.
+    ///
+    /// **The fix (T1B):** Only the intrinsic gas is charged; the precompile runs
+    /// with unlimited gas and its cost is NOT added to `initial_gas` afterward.
+    #[test]
+    fn test_double_charge_key_authorization_regression() -> eyre::Result<()> {
+        /// Run a CALL+KeyAuth transaction and return gas_used.
+        fn run_call_with_key_auth(spec: TempoHardfork) -> eyre::Result<u64> {
+            let key_pair = P256KeyPair::random();
+            let caller = key_pair.address;
+
+            let db = CacheDB::new(EmptyDB::new());
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.spec = spec;
+            cfg.gas_params = tempo_gas_params(spec);
+
+            let ctx = Context::mainnet()
+                .with_db(db)
+                .with_block(Default::default())
+                .with_cfg(cfg)
+                .with_tx(Default::default());
+
+            let mut evm = TempoEvm::new(ctx, ());
+            fund_account(&mut evm, caller);
+
+            let block = TempoBlockEnv::default();
+            {
+                let ctx = &mut evm.ctx;
+                let internals =
+                    EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
+                let mut provider =
+                    EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+                StorageCtx::enter(&mut provider, || {
+                    TIP20Setup::path_usd(caller)
+                        .with_issuer(caller)
+                        .with_mint(caller, U256::from(100_000_000))
+                        .apply()
+                })?;
+            }
+
+            let access_key = P256KeyPair::random();
+            let key_auth = KeyAuthorization {
+                chain_id: 1,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key.address,
+                expiry: None,
+                limits: None,
+            };
+            let key_auth_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
+            let signed_key_auth = key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_sig));
+
+            let tx = TxBuilder::new()
+                .call_identity(&[])
+                .key_authorization(signed_key_auth)
+                .gas_limit(2_000_000)
+                .build();
+
+            let signed_tx = key_pair.sign_tx(tx)?;
+            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+            let result = evm.transact_commit(tx_env)?;
+            assert!(result.is_success());
+            Ok(result.gas_used())
+        }
+
+        let t1_gas = run_call_with_key_auth(TempoHardfork::T1)?;
+        let t1b_gas = run_call_with_key_auth(TempoHardfork::T1B)?;
+
+        // T1 double-charges: intrinsic heuristic (~35k) + metered precompile
+        // (~250k SSTORE) on top of base tx gas, resulting in >500k.
+        assert!(
+            t1_gas > 500_000,
+            "T1 bug: should double-charge (got {t1_gas}, expected >500k)"
+        );
+
+        // T1B charges only once via accurate intrinsic gas (~255k for
+        // sig+sload+sstore) + base tx. Total ~541k, well below the ~790k
+        // that double-charging would produce.
+        assert!(
+            t1b_gas < t1_gas,
+            "T1B fix: gas ({t1b_gas}) must be less than T1 double-charge ({t1_gas})"
+        );
+
+        Ok(())
+    }
 }

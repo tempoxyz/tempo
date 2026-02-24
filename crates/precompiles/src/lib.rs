@@ -7,6 +7,8 @@ pub use error::{IntoPrecompileResult, Result};
 
 pub mod storage;
 
+pub(crate) mod ip_validation;
+
 pub mod account_keychain;
 pub mod nonce;
 pub mod stablecoin_dex;
@@ -15,6 +17,7 @@ pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
 pub mod validator_config;
+pub mod validator_config_v2;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_util;
@@ -29,6 +32,7 @@ use crate::{
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
+    validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -48,7 +52,7 @@ use revm::{
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
     STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -90,6 +94,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(ValidatorConfigPrecompile::create(&cfg))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
             Some(AccountKeychainPrecompile::create(&cfg))
+        } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
+            Some(ValidatorConfigV2Precompile::create(&cfg))
         } else {
             None
         }
@@ -181,6 +187,15 @@ pub struct ValidatorConfigPrecompile;
 impl ValidatorConfigPrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("ValidatorConfig", cfg, |input| { ValidatorConfig::new() })
+    }
+}
+
+pub struct ValidatorConfigV2Precompile;
+impl ValidatorConfigV2Precompile {
+    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("ValidatorConfigV2", cfg, |input| {
+            ValidatorConfigV2::new()
+        })
     }
 }
 
@@ -558,6 +573,13 @@ mod tests {
         assert!(
             validator_precompile.is_some(),
             "ValidatorConfig should be registered"
+        );
+
+        // ValidatorConfigV2 should be registered
+        let validator_v2_precompile = precompiles.get(&VALIDATOR_CONFIG_V2_ADDRESS);
+        assert!(
+            validator_v2_precompile.is_some(),
+            "ValidatorConfigV2 should be registered"
         );
 
         // AccountKeychain should be registered
