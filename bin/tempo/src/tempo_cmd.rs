@@ -1,16 +1,22 @@
-use std::{fs::OpenOptions, path::PathBuf, sync::Arc};
+use std::{
+    fs::OpenOptions,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+};
 
-use alloy_primitives::Address;
-use alloy_provider::Provider;
-
+use alloy_network::EthereumWallet;
+use alloy_primitives::{Address, B256, Bytes};
+use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
+use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
 use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{
-    Signer as _,
-    ed25519::{PrivateKey, PublicKey},
+    Signer as _, Verifier as _,
+    ed25519::{PrivateKey, PublicKey, Signature},
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::NZU64;
@@ -21,10 +27,14 @@ use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node_config::SigningKey;
-use tempo_contracts::precompiles::{IValidatorConfig, VALIDATOR_CONFIG_ADDRESS};
+use tempo_contracts::precompiles::{
+    IValidatorConfig, IValidatorConfigV2, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 use crate::init_state;
+
+const ADD_VALIDATOR_NAMESPACE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
 
 /// Passthrough args for extension management commands.
 ///
@@ -97,6 +107,10 @@ impl ExtendedCommand for TempoSubcommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ConsensusSubcommand {
+    /// Add a new validator to the validator config contract.
+    AddValidator(AddValidator),
+    /// Rotate a validator to a new identity.
+    RotateValidator(RotateValidator),
     /// Generates an ed25519 signing key pair to be used in consensus.
     GeneratePrivateKey(GeneratePrivateKey),
     /// Calculates the public key from an ed25519 signing key.
@@ -108,6 +122,8 @@ pub(crate) enum ConsensusSubcommand {
 impl ConsensusSubcommand {
     fn run(self) -> eyre::Result<()> {
         match self {
+            Self::AddValidator(args) => args.run(),
+            Self::RotateValidator(args) => args.run(),
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
             Self::ValidatorsInfo(args) => args.run(),
@@ -115,6 +131,238 @@ impl ConsensusSubcommand {
     }
 }
 
+pub(crate) struct ValidatorConfig {
+    address: Address,
+    public_key: B256,
+    ingress: SocketAddr,
+    egress: IpAddr,
+}
+
+impl ValidatorConfig {
+    fn new(address: Address, public_key: B256, ingress: SocketAddr, egress: IpAddr) -> Self {
+        Self {
+            address,
+            public_key,
+            ingress,
+            egress,
+        }
+    }
+
+    fn check_signature(self, chain_id: u64, signature: Bytes) -> eyre::Result<()> {
+        let public_key = PublicKey::decode(&mut self.public_key.as_slice())
+            .wrap_err("invalid ed25519 public key")?;
+
+        let sig =
+            Signature::decode(&mut signature.as_ref()).wrap_err("invalid ed25519 signature")?;
+
+        let mut hasher = alloy_primitives::Keccak256::new();
+        hasher.update(chain_id.to_be_bytes());
+        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        hasher.update(self.address.as_slice());
+        hasher.update(self.ingress.to_string().as_bytes());
+        hasher.update(self.egress.to_string().as_bytes());
+        let message = hasher.finalize();
+
+        // Verify signature with the add-validator namespace
+        if !public_key.verify(ADD_VALIDATOR_NAMESPACE, message.as_slice(), &sig) {
+            return Err(eyre!("signature verification failed"));
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct AddValidator {
+    /// The validator address.
+    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
+    validator_address: Address,
+
+    /// The identity key of the validator (0x-prefixed hex).
+    #[arg(long, value_name = "IDENTITY_KEY")]
+    public_key: B256,
+
+    /// The inbound address for the validator.
+    #[arg(long, value_name = "IP:PORT")]
+    ingress: SocketAddr,
+
+    /// The outbound address for the validator.
+    #[arg(long, value_name = "IP")]
+    egress: IpAddr,
+
+    /// The ed25519 signature proving validator key ownership and validity over
+    /// the provided fields.
+    #[arg(long, value_name = "SIGNATURE")]
+    signature: Bytes,
+
+    /// Path to the file holding the Ethereum private key.
+    #[arg(long, value_name = "FILE")]
+    private_key: PathBuf,
+
+    /// The RPC URL to submit the transaction to.
+    #[arg(long, value_name = "RPC_URL")]
+    rpc_url: String,
+}
+
+impl AddValidator {
+    fn run(self) -> eyre::Result<()> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .wrap_err("failed constructing async runtime")?
+            .block_on(self.run_async())
+    }
+
+    async fn run_async(self) -> eyre::Result<()> {
+        let private_key_bytes =
+            std::fs::read(&self.private_key).wrap_err("failed reading private key")?;
+
+        let private_key =
+            B256::try_from(private_key_bytes.as_slice()).wrap_err("invalid private key")?;
+
+        let signer = PrivateKeySigner::from_bytes(&private_key)?;
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .fetch_chain_id()
+            .with_gas_estimation()
+            .wallet(signer)
+            .connect(&self.rpc_url) // todo custom
+            .await
+            .wrap_err("failed to connect to RPC")?;
+
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed to get chain id")?;
+
+        let validator_config = ValidatorConfig::new(
+            self.validator_address,
+            self.public_key,
+            self.ingress,
+            self.egress,
+        );
+
+        // Sanity check the signature
+        validator_config.check_signature(chain_id, self.signature.clone())?;
+
+        let calldata = IValidatorConfigV2::addValidatorCall {
+            validatorAddress: self.validator_address,
+            publicKey: self.public_key,
+            ingress: self.ingress.to_string(),
+            egress: self.egress.to_string(),
+            signature: self.signature,
+        };
+
+        let tx = TransactionRequest::default()
+            .to(VALIDATOR_CONFIG_V2_ADDRESS)
+            .input(calldata.abi_encode().into());
+
+        let pending = provider
+            .send_transaction(tx.into())
+            .await
+            .wrap_err("failed to send transaction")?;
+
+        let tx_hash = pending.tx_hash();
+        println!("transaction submitted: {tx_hash}");
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct RotateValidator {
+    /// The validator address.
+    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
+    validator_address: Address,
+
+    /// The identity key of the validator (0x-prefixed hex).
+    #[arg(long, value_name = "IDENTITY_KEY")]
+    public_key: B256,
+
+    /// The inbound address for the validator.
+    #[arg(long, value_name = "IP:PORT")]
+    ingress: SocketAddr,
+
+    /// The outbound address for the validator.
+    #[arg(long, value_name = "IP")]
+    egress: IpAddr,
+
+    /// The ed25519 signature proving validator key ownership and validity over
+    /// the provided fields.
+    #[arg(long, value_name = "SIGNATURE")]
+    signature: Bytes,
+
+    /// Path to the file holding the Ethereum private key.
+    #[arg(long, value_name = "FILE")]
+    private_key: PathBuf,
+
+    /// The RPC URL to submit the transaction to.
+    #[arg(long, value_name = "RPC_URL")]
+    rpc_url: String,
+}
+
+impl RotateValidator {
+    fn run(self) -> eyre::Result<()> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .wrap_err("failed constructing async runtime")?
+            .block_on(self.run_async())
+    }
+
+    async fn run_async(self) -> eyre::Result<()> {
+        let private_key_bytes =
+            std::fs::read(&self.private_key).wrap_err("failed reading private key")?;
+
+        let private_key =
+            B256::try_from(private_key_bytes.as_slice()).wrap_err("invalid private key")?;
+
+        let signer = PrivateKeySigner::from_bytes(&private_key)?;
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .fetch_chain_id()
+            .with_gas_estimation()
+            .wallet(EthereumWallet::from(signer))
+            .connect(&self.rpc_url) // todo custom
+            .await
+            .wrap_err("failed to connect to RPC")?;
+
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed to get chain id")?;
+
+        let validator_config = ValidatorConfig::new(
+            self.validator_address,
+            self.public_key,
+            self.ingress,
+            self.egress,
+        );
+
+        // Sanity check the signature
+        validator_config.check_signature(chain_id, self.signature.clone())?;
+
+        let calldata = IValidatorConfigV2::rotateValidatorCall {
+            validatorAddress: self.validator_address,
+            publicKey: self.public_key,
+            ingress: self.ingress.to_string(),
+            egress: self.egress.to_string(),
+            signature: self.signature,
+        };
+
+        let tx = TransactionRequest::default()
+            .to(VALIDATOR_CONFIG_V2_ADDRESS)
+            .input(calldata.abi_encode().into());
+
+        let pending = provider
+            .send_transaction(tx.into())
+            .await
+            .wrap_err("failed to send transaction")?;
+
+        let tx_hash = pending.tx_hash();
+        println!("transaction submitted: {tx_hash}");
+
+        Ok(())
+    }
+}
 #[derive(Debug, clap::Args)]
 pub(crate) struct GeneratePrivateKey {
     /// Destination of the generated signing key.

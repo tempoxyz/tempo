@@ -11926,9 +11926,11 @@ name = "tempo"
 version = "1.4.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-network",
  "alloy-primitives",
  "alloy-provider",
  "alloy-rpc-types-eth",
+ "alloy-signer-local",
  "alloy-sol-types",
  "base64 0.22.1",
  "clap",
