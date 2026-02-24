@@ -42,9 +42,6 @@ pub(crate) enum IpParseError {
 }
 
 pub(crate) fn ensure_address_is_ip(input: &str) -> core::result::Result<(), IpParseError> {
-    if input.contains('%') {
-        return Err(IpParseError::Ipv6Zone);
-    }
     input.parse::<std::net::IpAddr>()?;
     Ok(())
 }
