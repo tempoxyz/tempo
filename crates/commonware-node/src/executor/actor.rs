@@ -172,16 +172,16 @@ where
     }
 
     async fn run(mut self) {
-        let mut backfill_on_start = {
-            if self.last_consensus_finalized_height > self.last_execution_finalized_height {
-                info!(
-                    last_finalized_consensus_height = %self.last_consensus_finalized_height,
-                    last_finalized_execution_height = %self.last_execution_finalized_height,
-                    "the last finalized height according to the consensus layer \
-                    is ahead of the execution layer, will backfill blocks",
-                );
-            }
+        info_span!("start").in_scope(|| {
+            info!(
+                last_finalized_consensus_height = %self.last_consensus_finalized_height,
+                last_finalized_execution_height = %self.last_execution_finalized_height,
+                "consensus and execution layers reported last finalized heights; \
+                backfilling blocks from consensus to execution if necessary",
+            );
+        });
 
+        let mut backfill_on_start = {
             let marshal = self.marshal.clone();
             std::pin::pin!(
                 futures::stream::iter(

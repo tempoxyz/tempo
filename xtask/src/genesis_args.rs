@@ -3,10 +3,11 @@ use alloy::{
     primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, Keccak256};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
+    Signer as _,
     bls12381::{
         dkg::{self, Output},
         primitives::{sharing::Mode, variant::MinSig},
@@ -42,7 +43,9 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{ITIP20Factory, IValidatorConfig},
+    precompiles::{
+        ITIP20Factory, IValidatorConfig, IValidatorConfigV2, VALIDATOR_CONFIG_V2_ADDRESS,
+    },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -57,6 +60,7 @@ use tempo_precompiles::{
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
+    validator_config_v2::{VALIDATOR_NS_ADD, ValidatorConfigV2},
 };
 
 /// Generate genesis allocation file for testing
@@ -151,9 +155,21 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value = "0")]
     t1_time: u64,
 
+    /// T1.A hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t1a_time: u64,
+
+    /// T1.B hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t1b_time: u64,
+
     /// T2 hardfork activation time.
     #[arg(long, default_value = "0")]
     t2_time: u64,
+
+    /// Whether to skip initializing validator config v1
+    #[arg(long)]
+    no_initialize_validator_config_v1: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -324,8 +340,6 @@ impl GenesisArgs {
         let consensus_config =
             generate_consensus_config(&self.validators, self.seed, self.no_dkg_in_genesis);
 
-        println!("Initializing validator config");
-
         let validator_onchain_addresses = if self.validator_addresses.is_empty() {
             if addresses.len() < self.validators.len() + 1 {
                 return Err(eyre!("not enough accounts created for validators"));
@@ -339,14 +353,31 @@ impl GenesisArgs {
 
             &self.validator_addresses[0..self.validators.len()]
         };
-        initialize_validator_config(
-            validator_admin,
-            &mut evm,
-            &consensus_config,
-            // Skip first address (used as default admin)
-            validator_onchain_addresses,
-            self.no_dkg_in_genesis,
-        )?;
+
+        if self.t2_time == 0 {
+            println!("Initializing validator config v2 (T2 active at genesis)");
+            initialize_validator_config_v2(
+                validator_admin,
+                &mut evm,
+                &consensus_config,
+                validator_onchain_addresses,
+                self.no_dkg_in_genesis,
+                self.chain_id,
+            )?;
+        }
+
+        if !self.no_initialize_validator_config_v1 {
+            println!("Initializing validator config v1");
+            initialize_validator_config(
+                validator_admin,
+                &mut evm,
+                &consensus_config,
+                validator_onchain_addresses,
+                self.no_dkg_in_genesis,
+            )?;
+        } else {
+            println!("flag specified; skipping initialization of validator config v1");
+        }
 
         println!("Initializing fee manager");
         let default_user_fee_token = if let Some(address) = deployment_gas_token {
@@ -492,6 +523,12 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t1Time".to_string(), self.t1_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t1aTime".to_string(), self.t1a_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t1bTime".to_string(), self.t1b_time)?;
         chain_config
             .extra_fields
             .insert_value("t2Time".to_string(), self.t2_time)?;
@@ -916,13 +953,100 @@ fn initialize_validator_config(
     )
 }
 
+/// Initializes the [`ValidatorConfigV2`] contract at genesis (T2 active at genesis).
+///
+/// Populates validators directly into V2 with `needs_migration = false`.
+/// Each `add_validator` call requires an Ed25519 signature from the validator's signing key.
+fn initialize_validator_config_v2(
+    admin: Address,
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+    consensus_config: &Option<ConsensusConfig>,
+    onchain_validator_addresses: &[Address],
+    no_dkg_in_genesis: bool,
+    chain_id: u64,
+) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || {
+            let mut v2 = ValidatorConfigV2::new();
+            v2.initialize(admin)
+                .wrap_err("failed to initialize validator config v2")?;
+
+            if no_dkg_in_genesis {
+                println!("no-dkg-in-genesis passed; not writing validators to genesis block");
+                return Ok(());
+            }
+
+            let Some(consensus_config) = consensus_config.clone() else {
+                println!("no consensus config passed; no validators to write to contract");
+                return Ok(());
+            };
+
+            let num_validators = consensus_config.validators.len();
+            if onchain_validator_addresses.len() < num_validators {
+                return Err(eyre!(
+                    "need {} addresses for all validators, but only {} were provided",
+                    num_validators,
+                    onchain_validator_addresses.len()
+                ));
+            }
+
+            println!("writing {num_validators} validators into v2 contract");
+            for (i, validator) in consensus_config.validators.iter().enumerate() {
+                let validator_address = onchain_validator_addresses[i];
+                let public_key = validator.public_key();
+                let pubkey: B256 = public_key.encode().as_ref().try_into().unwrap();
+                let addr = validator.addr;
+                let ingress = addr.to_string();
+                let egress = addr.ip().to_string();
+
+                // message: keccak256(chainId || contractAddr || validatorAddr || ingress || egress)
+                let mut hasher = Keccak256::new();
+                hasher.update(chain_id.to_be_bytes());
+                hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+                hasher.update(validator_address.as_slice());
+                hasher.update(ingress.as_bytes());
+                hasher.update(egress.as_bytes());
+                let message = hasher.finalize();
+
+                let private_key = validator.signing_key.clone().into_inner();
+                let signature = private_key.sign(VALIDATOR_NS_ADD, message.as_slice());
+
+                v2.add_validator(
+                    admin,
+                    IValidatorConfigV2::addValidatorCall {
+                        validatorAddress: validator_address,
+                        publicKey: pubkey,
+                        ingress: ingress.clone(),
+                        egress: egress.clone(),
+                        signature: signature.encode().to_vec().into(),
+                    },
+                )
+                .wrap_err("failed to add validator to V2")?;
+
+                println!(
+                    "added validator (v2)\
+                    \n\tpublic key: {public_key}\
+                    \n\tonchain address: {validator_address}\
+                    \n\tnet address: {addr}"
+                );
+            }
+            Ok(())
+        },
+    )
+}
+
 /// Generates the consensus configs of the validators.
 fn generate_consensus_config(
     validators: &[SocketAddr],
     seed: Option<u64>,
     no_dkg_in_genesis: bool,
 ) -> Option<ConsensusConfig> {
-    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+    use commonware_cryptography::ed25519::PrivateKey;
 
     match (validators.is_empty(), no_dkg_in_genesis) {
         (_, true) => {
