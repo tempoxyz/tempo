@@ -81,7 +81,7 @@ pub trait Precompile {
 /// Pre-T2 hardforks use Prague precompiles, T2+ uses Osaka precompiles.
 /// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
 pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
-    let spec = if cfg.spec.is_t2() {
+    let spec = if cfg.spec.is_t1c() {
         cfg.spec.into()
     } else {
         SpecId::PRAGUE
