@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       should_run: ${{ steps.filter.outputs.specs }}
     steps:
@@ -85,9 +86,8 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
-
-      - name: Show Forge version
-        run: forge --version
+        with:
+          version: nightly
 
       - name: Run Forge build
         working-directory: tips/ref-impls
@@ -108,6 +108,8 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
+        with:
+          version: nightly
 
       - name: Run Forge fmt check
         working-directory: tips/ref-impls
@@ -128,6 +130,8 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
+        with:
+          version: nightly
 
       - name: Run Forge tests
         working-directory: tips/ref-impls
@@ -136,7 +140,8 @@ jobs:
   tempo-foundry-test:
     name: Forge Test (Rust Precompiles)
     needs: [check-specs-changes, check-precompiles]
-    if: needs.check-specs-changes.outputs.should_run == 'true'
+    # Skip for forked repos
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:

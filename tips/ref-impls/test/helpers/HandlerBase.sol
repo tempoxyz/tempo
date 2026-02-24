@@ -484,6 +484,7 @@ abstract contract HandlerBase is InvariantBase {
         bytes32 key = keccak256(abi.encodePacked(sender, uint256(usedNonce)));
         ghost_createAddresses[key] = expectedAddress;
         ghost_createCount[sender]++;
+        ghost_createNonces[sender].push(uint256(usedNonce));
     }
 
     /// @notice Record CREATE success with 2D nonce (Tempo tx with nonceKey > 0)
@@ -523,6 +524,7 @@ abstract contract HandlerBase is InvariantBase {
                 bytes32 key = keccak256(abi.encodePacked(sender, uint256(protocolNonce)));
                 ghost_createAddresses[key] = expectedAddress;
                 ghost_createCount[sender]++;
+                ghost_createNonces[sender].push(uint256(protocolNonce));
             }
         }
     }
