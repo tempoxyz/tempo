@@ -16,7 +16,7 @@ tempo-chainspec.workspace = true
 tempo-consensus.workspace = true
 tempo-contracts.workspace = true
 tempo-payload-types = { workspace = true, optional = true }
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-revm.workspace = true
 
 commonware-cryptography.workspace = true
