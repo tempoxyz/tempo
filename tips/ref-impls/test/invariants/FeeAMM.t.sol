@@ -14,9 +14,6 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 /// @dev Tests invariants TEMPO-AMM1 through TEMPO-AMM34 and TEMPO-FEE1 through TEMPO-FEE6 as documented in README.md
 contract FeeAMMInvariantTest is InvariantBaseTest {
 
-    /// @dev Log file path for recording amm actions
-    string private constant LOG_FILE = "fee_amm.log";
-
     /// @dev Constants from Rust tip_fee_manager/amm.rs
     uint256 private constant M = 9970; // Fee swap rate (0.997 = 0.30% fee)
     uint256 private constant N = 9985; // Rebalance swap rate (0.9985 = 0.15% fee)
@@ -237,8 +234,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         _setupInvariantBase();
         _actors = _buildActorsWithApprovals(20, address(amm));
 
-        _initLogFile(LOG_FILE, "FeeAMM Invariant Test Log");
-
         // TEMPO-AMM16: Verify fee rate constants once at setup (never change)
         assertTrue(M == 9970, "TEMPO-AMM16: Fee swap rate M should be 9970");
         assertTrue(N == 9985, "TEMPO-AMM16: Rebalance rate N should be 9985");
@@ -313,8 +308,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 poolBefore.reserveValidatorToken + uint128(amount),
                 "TEMPO-AMM4: Validator reserve mismatch after mint"
             );
-
-            if (_loggingEnabled) _logMint(actor, liquidity, amount);
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -359,20 +352,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 isExpectedError,
                 "TEMPO-AMM33: Blacklisted mint should revert with PolicyForbids or known error"
             );
-
-            // Only log if it was actually PolicyForbids (the blacklist case we're testing)
-            if (selector == ITIP20.PolicyForbids.selector) {
-                if (_loggingEnabled) {
-                    _log(
-                        string.concat(
-                            "TEMPO-AMM33: Correctly rejected blacklisted ",
-                            _getActorIndex(actor),
-                            " from minting ",
-                            _getTokenSymbol(validatorToken)
-                        )
-                    );
-                }
-            }
         }
     }
 
@@ -419,9 +398,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             _ghostBurnValidatorActual += amountValidatorToken;
 
             _assertBurnInvariants(ctx, amountUserToken, amountValidatorToken);
-            if (_loggingEnabled) {
-                _logBurn(ctx.actor, ctx.liquidityToBurn, amountUserToken, amountValidatorToken);
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -540,7 +516,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             _markActorActive(ctx.actor);
 
             _assertRebalanceInvariants(ctx, amountIn);
-            if (_loggingEnabled) _logRebalance(ctx.actor, amountIn, ctx.amountOut);
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -604,17 +579,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             // TEMPO-FEE1: Validator token should be updated
             address storedToken = amm.validatorTokens(actor);
             assertEq(storedToken, token, "TEMPO-FEE1: Validator token not set correctly");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "SET_VALIDATOR_TOKEN: ",
-                        _getActorIndex(actor),
-                        " -> ",
-                        _getTokenSymbol(token)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownFeeManagerError(reason);
@@ -638,14 +602,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             // TEMPO-FEE2: User token should be updated
             address storedToken = amm.userTokens(actor);
             assertEq(storedToken, token, "TEMPO-FEE2: User token not set correctly");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "SET_USER_TOKEN: ", _getActorIndex(actor), " -> ", _getTokenSymbol(token)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownFeeManagerError(reason);
@@ -747,17 +703,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         vm.startPrank(actor);
         try amm.mint(userToken, validatorToken, boundaryAmount, actor) returns (uint256) {
             vm.stopPrank();
-            // If this succeeds, the invariant is that half_amount > MIN_LIQUIDITY is NOT required
-            // (i.e., Solidity implementation differs from Rust)
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "FIRST_MINT_BOUNDARY: ",
-                        _getActorIndex(actor),
-                        " succeeded with boundary amount (half=MIN_LIQUIDITY)"
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             // Expected: InsufficientLiquidity when half_amount <= MIN_LIQUIDITY
@@ -766,15 +711,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 IFeeAMM.InsufficientLiquidity.selector,
                 "First mint with half=MIN_LIQUIDITY should fail with InsufficientLiquidity"
             );
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "FIRST_MINT_BOUNDARY: ",
-                        _getActorIndex(actor),
-                        " correctly rejected at boundary"
-                    )
-                );
-            }
         }
 
         // Also test just above boundary: 2 * MIN_LIQUIDITY + 2 = 2002
@@ -788,15 +724,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             // Should succeed with liquidity = half_amount - MIN_LIQUIDITY = 1001 - 1000 = 1
             assertEq(liquidity, 1, "First mint just above boundary should yield liquidity of 1");
             _totalMints++;
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "FIRST_MINT_ABOVE_BOUNDARY: ",
-                        _getActorIndex(actor),
-                        " succeeded with liquidity=1"
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -841,20 +768,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 floorValue + 1,
                 "TEMPO-AMM22: Rebalance with exact division should still add +1"
             );
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "EXACT_DIVISION_REBALANCE: amountOut=",
-                        vm.toString(amountOut),
-                        " amountIn=",
-                        vm.toString(amountIn),
-                        " (floor=",
-                        vm.toString(floorValue),
-                        ")"
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -903,14 +816,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             if (currentlyBlacklisted) {
                 vm.prank(policyAdmin);
                 registry.modifyPolicyBlacklist(policyId, actor, false);
-                _log(
-                    string.concat(
-                        "WHITELIST: ",
-                        _getActorIndex(actor),
-                        " recovered (non-blacklistable) for ",
-                        _getTokenSymbol(token)
-                    )
-                );
             }
             // If not blacklisted, do nothing - keep it that way
             return;
@@ -926,14 +831,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         if ((probabilitySeed % 100) < 20) {
             vm.prank(policyAdmin);
             registry.modifyPolicyBlacklist(policyId, actor, true);
-            _log(
-                string.concat(
-                    "BLACKLIST: ",
-                    _getActorIndex(actor),
-                    " permanently blacklisted for ",
-                    _getTokenSymbol(token)
-                )
-            );
         }
     }
 
@@ -976,8 +873,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 );
                 _ghostTotalFeesDistributed += collectedBefore; // Track for TEMPO-AMM29
             }
-
-            if (_loggingEnabled) _logDistribute(validator, collectedBefore);
         } catch (bytes memory reason) {
             _assertKnownFeeManagerError(reason);
         }
@@ -1086,12 +981,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 // Track precise dust from fee swap (inline to avoid stack depth)
                 _ghostFeeSwapTheoreticalDust += (feeAmount * (SCALE - M)) / SCALE;
                 _ghostFeeSwapActualDust += feeAmount - expectedOut;
-
-                if (_loggingEnabled) {
-                    _logFeeCollection(
-                        user, validator, feeAmount, expectedOut, userToken, validatorToken
-                    );
-                }
             } catch (bytes memory reason) {
                 _assertKnownError(reason);
             }
@@ -1114,69 +1003,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 _ghostFeeOutputSum += feeAmount;
                 _ghostTotalFeesCollected += feeAmount; // Track for TEMPO-AMM29
                 // No dust for same-token transfers
-
-                if (_loggingEnabled) {
-                    _logFeeCollectionSameToken(user, validator, feeAmount, userToken);
-                }
             } catch (bytes memory reason) {
                 _assertKnownError(reason);
             }
         }
-    }
-
-    /// @dev Logs a cross-token fee collection
-    function _logFeeCollection(
-        address user,
-        address validator,
-        uint256 feeAmount,
-        uint256 expectedOut,
-        address userToken,
-        address validatorToken
-    )
-        internal
-    {
-        if (!_loggingEnabled) return;
-        _log(
-            string.concat(
-                "FEE_COLLECTION: ",
-                _getActorIndex(user),
-                " paid ",
-                vm.toString(feeAmount),
-                " ",
-                _getTokenSymbol(userToken),
-                " -> ",
-                _getActorIndex(validator),
-                " receives ",
-                vm.toString(expectedOut),
-                " ",
-                _getTokenSymbol(validatorToken)
-            )
-        );
-    }
-
-    /// @dev Logs a same-token fee collection
-    function _logFeeCollectionSameToken(
-        address user,
-        address validator,
-        uint256 feeAmount,
-        address token
-    )
-        internal
-    {
-        if (!_loggingEnabled) return;
-        _log(
-            string.concat(
-                "FEE_COLLECTION: ",
-                _getActorIndex(user),
-                " paid ",
-                vm.toString(feeAmount),
-                " ",
-                _getTokenSymbol(token),
-                " -> ",
-                _getActorIndex(validator),
-                " (same token, no swap)"
-            )
-        );
     }
 
     /// @dev Stores pool reserves directly using vm.store
@@ -1237,66 +1067,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                             INVARIANT HOOKS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Called after each invariant run to log final state
+    /// @notice Called after each invariant run
     function afterInvariant() public {
         // TEMPO-AMM24: All participants can exit - simulate full withdrawal
         _verifyAllCanExit();
-
-        if (!_loggingEnabled) return;
-
-        _log("");
-        _log("--------------------------------------------------------------------------------");
-        _log("                              Final State Summary");
-        _log("--------------------------------------------------------------------------------");
-        _log(string.concat("Total mints: ", vm.toString(_totalMints)));
-        _log(string.concat("Total burns: ", vm.toString(_totalBurns)));
-        _log(string.concat("Total rebalance swaps: ", vm.toString(_totalRebalanceSwaps)));
-        _log(string.concat("Total fee collections: ", vm.toString(_totalFeeCollections)));
-        _log(string.concat("Total mint/burn cycles: ", vm.toString(_totalMintBurnCycles)));
-        _log(string.concat("Total small rebalance swaps: ", vm.toString(_totalSmallRebalanceSwaps)));
-
-        // Fee collection: In > Out due to 0.30% fee (M=0.9970)
-        // The difference is fee revenue captured by the AMM
-        uint256 feeRevenue =
-            _ghostFeeInputSum > _ghostFeeOutputSum ? _ghostFeeInputSum - _ghostFeeOutputSum : 0;
-        _log(
-            string.concat(
-                "Fee swaps - In: ",
-                vm.toString(_ghostFeeInputSum),
-                ", Out: ",
-                vm.toString(_ghostFeeOutputSum),
-                ", Revenue (0.30% fee): ",
-                vm.toString(feeRevenue)
-            )
-        );
-
-        // Rebalance: Out > In due to 0.15% discount (N=0.9985)
-        // The difference is the incentive paid to LPs for rebalancing
-        uint256 rebalanceIncentive = _ghostRebalanceOutputSum > _ghostRebalanceInputSum
-            ? _ghostRebalanceOutputSum - _ghostRebalanceInputSum
-            : 0;
-        _log(
-            string.concat(
-                "Rebalance swaps - In: ",
-                vm.toString(_ghostRebalanceInputSum),
-                ", Out: ",
-                vm.toString(_ghostRebalanceOutputSum),
-                ", LP incentive (0.15% discount): ",
-                vm.toString(rebalanceIncentive)
-            )
-        );
-
-        // Net AMM position: fee revenue minus rebalance incentives paid
-        // Should be positive if fee volume exceeds rebalance volume (fee rate > rebalance rate)
-        if (feeRevenue >= rebalanceIncentive) {
-            _log(string.concat("Net AMM revenue: +", vm.toString(feeRevenue - rebalanceIncentive)));
-        } else {
-            _log(string.concat("Net AMM revenue: -", vm.toString(rebalanceIncentive - feeRevenue)));
-        }
-
-        // Precise dust tracking
-        _logDustTracking();
-        _logBalances();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1634,11 +1408,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @dev After all operations, all LPs should be able to burn their positions and
     ///      all validators should be able to claim their fees. Only dust should remain.
     function _verifyAllCanExit() internal {
-        _log("");
-        _log("--------------------------------------------------------------------------------");
-        _log("              EXIT CHECK PHASE 1: Exit with blacklisted actors frozen");
-        _log("--------------------------------------------------------------------------------");
-
         // Step 1: Distribute all pending fees to validators (tracks frozen fees from blacklisted)
         _exitDistributeAllFees();
 
@@ -1648,17 +1417,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         // Step 3: Verify only dust remains in the AMM (accounting for frozen balances)
         _exitVerifyOnlyDustRemains();
 
-        _log("");
-        _log("--------------------------------------------------------------------------------");
-        _log("         EXIT CHECK PHASE 2: Unblacklist all actors and verify recovery");
-        _log("--------------------------------------------------------------------------------");
-
         // Step 4: TEMPO-AMM34 - Unblacklist all actors and verify frozen balances are recoverable
         _exitVerifyCleanExitAfterUnblacklist();
-
-        _log("");
-        _log("================================================================================");
-        _log("");
     }
 
     /// @dev Unblacklist ALL actors and verify they can cleanly exit
@@ -1694,16 +1454,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             }
         }
 
-        if (unblacklistedCount > 0) {
-            _log(
-                string.concat(
-                    "EXIT CHECK - Unblacklisted ",
-                    vm.toString(unblacklistedCount),
-                    " actor/token pairs"
-                )
-            );
-        }
-
         // Step 2: Distribute any remaining frozen fees
         uint256 distributedAfterUnblacklist = 0;
         for (uint256 i = 0; i < _actors.length; i++) {
@@ -1721,7 +1471,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                         revert(
                             string.concat(
                                 "TEMPO-AMM34: Distribution failed for ",
-                                _getActorIndex(validator),
+                                vm.toString(validator),
                                 " after unblacklist - frozen fees should be recoverable"
                             )
                         );
@@ -1739,22 +1489,12 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                     revert(
                         string.concat(
                             "TEMPO-AMM34: pathUSD distribution failed for ",
-                            _getActorIndex(validator),
+                            vm.toString(validator),
                             " after unblacklist - frozen fees should be recoverable"
                         )
                     );
                 }
             }
-        }
-
-        if (distributedAfterUnblacklist > 0) {
-            _log(
-                string.concat(
-                    "EXIT CHECK - Recovered ",
-                    vm.toString(distributedAfterUnblacklist),
-                    " frozen fees after unblacklisting"
-                )
-            );
         }
 
         // Step 3: Burn any remaining LP (should succeed for all actors now)
@@ -1795,8 +1535,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         assertEq(
             remainingLP, 0, "TEMPO-AMM34: All LP should be burnable after unblacklisting all actors"
         );
-
-        _log("All frozen balances recovered");
     }
 
     /// @dev Track frozen fees per token from blacklisted actors that cannot exit
@@ -1837,28 +1575,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                     _assertKnownFeeManagerError(reason);
                     _exitFrozenFeesPathUSD += pendingPathUSD;
                 }
-            }
-        }
-
-        // Log frozen fees
-        if (_exitFrozenFeesPathUSD > 0) {
-            _log(
-                string.concat(
-                    "EXIT CHECK - Frozen pathUSD fees (blacklisted): ",
-                    vm.toString(_exitFrozenFeesPathUSD)
-                )
-            );
-        }
-        for (uint256 t = 0; t < _tokens.length; t++) {
-            if (_exitFrozenFees[address(_tokens[t])] > 0) {
-                _log(
-                    string.concat(
-                        "EXIT CHECK - Frozen ",
-                        _tokens[t].symbol(),
-                        " fees (blacklisted): ",
-                        vm.toString(_exitFrozenFees[address(_tokens[t])])
-                    )
-                );
             }
         }
     }
@@ -1959,16 +1675,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             expectedTokens[i] += pool2.reserveValidatorToken;
         }
 
-        // Log detailed breakdown
-        _log(
-            string.concat(
-                "EXIT CHECK - pathUSD: actual=",
-                vm.toString(ammPathUSD),
-                ", expected_reserves=",
-                vm.toString(expectedPathUSD)
-            )
-        );
-
         // Assert: actual balance >= expected reserves (solvency)
         // The difference is dust from fee swaps that accumulated
         assertTrue(
@@ -1988,19 +1694,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
             uint256 tokenDust = ammBalance - expectedTokens[t];
             totalDust += tokenDust;
-
-            _log(
-                string.concat(
-                    "EXIT CHECK - ",
-                    _tokens[t].symbol(),
-                    ": actual=",
-                    vm.toString(ammBalance),
-                    ", expected_reserves=",
-                    vm.toString(expectedTokens[t]),
-                    ", dust=",
-                    vm.toString(tokenDust)
-                )
-            );
         }
 
         // Fee swap dust and rebalance +1 rounding both go INTO reserves (not as extra balance).
@@ -2023,24 +1716,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         // The balance should NOT exceed reserves by more than the tracked dust sources (no value creation).
         uint256 expectedDust = _ghostFeeSwapActualDust + _ghostRebalanceRoundingDust;
         uint256 maxExpectedDust = expectedDust + burnDust + totalFrozenFees;
-
-        _log(
-            string.concat(
-                "EXIT CHECK - Dust: actual=",
-                vm.toString(totalDust),
-                ", max_allowed=",
-                vm.toString(maxExpectedDust),
-                " (fee=",
-                vm.toString(_ghostFeeSwapActualDust),
-                " + rebalance=",
-                vm.toString(_ghostRebalanceRoundingDust),
-                " + burn=",
-                vm.toString(burnDust),
-                " + frozen=",
-                vm.toString(totalFrozenFees),
-                ")"
-            )
-        );
 
         assertTrue(
             totalDust <= maxExpectedDust,
@@ -2202,120 +1877,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             || keccak256(reason)
                 == keccak256(abi.encodeWithSignature("Error(string)", "CANNOT_CHANGE_WITHIN_BLOCK"));
         assertTrue(isKnownError, "Failed with unknown FeeManager error");
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                              LOGGING
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Logs a mint action
-    function _logMint(address actor, uint256 liquidity, uint256 amount) internal {
-        if (!_loggingEnabled) return;
-        _log(
-            string.concat(
-                "MINT: ",
-                _getActorIndex(actor),
-                " minted ",
-                vm.toString(liquidity),
-                " LP for ",
-                vm.toString(amount),
-                " validator tokens"
-            )
-        );
-    }
-
-    /// @dev Logs a burn action
-    function _logBurn(
-        address actor,
-        uint256 liquidity,
-        uint256 amountUser,
-        uint256 amountValidator
-    )
-        internal
-    {
-        if (!_loggingEnabled) return;
-        _log(
-            string.concat(
-                "BURN: ",
-                _getActorIndex(actor),
-                " burned ",
-                vm.toString(liquidity),
-                " LP for ",
-                vm.toString(amountUser),
-                " user + ",
-                vm.toString(amountValidator),
-                " validator tokens"
-            )
-        );
-    }
-
-    /// @dev Logs a rebalance swap action
-    function _logRebalance(address actor, uint256 amountIn, uint256 amountOut) internal {
-        if (!_loggingEnabled) return;
-        _log(
-            string.concat(
-                "REBALANCE: ",
-                _getActorIndex(actor),
-                " swapped ",
-                vm.toString(amountIn),
-                " validator for ",
-                vm.toString(amountOut),
-                " user tokens"
-            )
-        );
-    }
-
-    /// @dev Logs a fee distribution action
-    function _logDistribute(address validator, uint256 amount) internal {
-        if (!_loggingEnabled) return;
-        _log(
-            string.concat(
-                "DISTRIBUTE_FEES: ",
-                _getActorIndex(validator),
-                " received ",
-                vm.toString(amount),
-                " fees"
-            )
-        );
-    }
-
-    /// @dev Logs AMM balances for all tokens
-    function _logBalances() internal {
-        if (!_loggingEnabled) return;
-        _logContractBalances(address(amm), "AMM");
-    }
-
-    /// @dev Logs precise dust tracking information
-    function _logDustTracking() internal {
-        if (!_loggingEnabled) return;
-        // Fee swap dust analysis
-        uint256 extraDust = _ghostFeeSwapActualDust > _ghostFeeSwapTheoreticalDust
-            ? _ghostFeeSwapActualDust - _ghostFeeSwapTheoreticalDust
-            : 0;
-        _log(
-            string.concat(
-                "Fee swap dust - Theoretical: ",
-                vm.toString(_ghostFeeSwapTheoreticalDust),
-                ", Actual: ",
-                vm.toString(_ghostFeeSwapActualDust),
-                ", Extra: ",
-                vm.toString(extraDust)
-            )
-        );
-
-        // Rebalance +1 rounding dust (should equal swap count)
-        _log(
-            string.concat(
-                "Rebalance +1 rounding dust: ",
-                vm.toString(_ghostRebalanceRoundingDust),
-                " (should equal rebalance swap count: ",
-                vm.toString(_totalRebalanceSwaps),
-                ")"
-            )
-        );
-
-        // Active actor count
-        _log(string.concat("Active actors: ", vm.toString(_activeActorList.length)));
     }
 
 }

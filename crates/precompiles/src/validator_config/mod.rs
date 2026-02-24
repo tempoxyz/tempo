@@ -6,6 +6,7 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     error::{Result, TempoPrecompileError},
+    ip_validation::ensure_address_is_ip_port,
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256};
@@ -317,19 +318,6 @@ impl ValidatorConfig {
         self.check_owner(sender)?;
         self.next_dkg_ceremony.write(call.epoch)
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("input was not of the form `<ip>:<port>`")]
-pub struct IpWithPortParseError {
-    #[from]
-    source: std::net::AddrParseError,
-}
-
-pub fn ensure_address_is_ip_port(input: &str) -> core::result::Result<(), IpWithPortParseError> {
-    // Only accept IP addresses (v4 or v6) with port
-    input.parse::<std::net::SocketAddr>()?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -986,27 +974,5 @@ mod tests {
 
             Ok(())
         })
-    }
-
-    #[test]
-    fn test_ensure_address_is_ip_port_rejects_invalid() {
-        // Test invalid formats are rejected (not silently returning Ok)
-        let invalid_cases = [
-            "not-an-ip:8000",    // hostname, not IP
-            "192.168.1.1",       // missing port
-            "8000",              // just port
-            "",                  // empty
-            "192.168.1.1:abc",   // non-numeric port
-            "192.168.1.1:99999", // port out of range
-        ];
-
-        for invalid in invalid_cases {
-            let result = ensure_address_is_ip_port(invalid);
-            assert!(result.is_err(), "Expected error for '{invalid}', got Ok");
-        }
-
-        // Valid IP:port should succeed
-        assert!(ensure_address_is_ip_port("192.168.1.1:8000").is_ok());
-        assert!(ensure_address_is_ip_port("[::1]:8000").is_ok());
     }
 }

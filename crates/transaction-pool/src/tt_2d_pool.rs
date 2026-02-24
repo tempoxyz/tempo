@@ -15,21 +15,21 @@ use reth_transaction_pool::{
 };
 use revm::database::BundleAccount;
 use std::{
-    cell::RefCell,
     collections::{
         BTreeMap, BTreeSet,
         Bound::{Excluded, Unbounded},
         btree_map::Entry,
         hash_map,
     },
-    rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 
 type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
-
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -53,9 +53,9 @@ pub struct AA2dPool {
     by_id: BTreeMap<AA2dTransactionId, Arc<AA2dInternalTransaction>>,
     /// _All_ transactions by hash.
     by_hash: HashMap<TxHash, Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    /// Expiring nonce transactions, keyed by tx hash (always pending/independent).
-    /// These use tx hash for replay protection instead of sequential nonces.
-    expiring_nonce_txs: HashMap<TxHash, PendingTransaction<TxOrdering>>,
+    /// Expiring nonce transactions, keyed by expiring nonce hash (always pending/independent).
+    /// These use expiring nonce replay protection instead of sequential nonces.
+    expiring_nonce_txs: HashMap<B256, PendingTransaction<TxOrdering>>,
     /// Reverse index for the storage slot of an account's nonce
     ///
     /// ```solidity
@@ -90,6 +90,15 @@ impl Default for AA2dPool {
 }
 
 impl AA2dPool {
+    fn expiring_nonce_hash(
+        transaction: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    ) -> B256 {
+        transaction
+            .transaction
+            .expiring_nonce_hash()
+            .expect("expiring nonce tx must be AA")
+    }
+
     /// Creates a new instance with the givenconfig and nonce keys
     pub fn new(config: AA2dPoolConfig) -> Self {
         Self {
@@ -140,7 +149,7 @@ impl AA2dPool {
             ));
         }
 
-        // Handle expiring nonce transactions separately - they use tx hash as unique ID
+        // Handle expiring nonce transactions separately - they use expiring nonce hash as unique ID
         // Only treat as expiring nonce if T1 hardfork is active
         if hardfork.is_t1() && transaction.transaction.is_expiring_nonce() {
             return self.add_expiring_nonce_transaction(transaction);
@@ -172,7 +181,7 @@ impl AA2dPool {
                     .priority(&transaction.transaction, hardfork.base_fee()),
                 transaction: transaction.clone(),
             },
-            is_pending: Rc::new(RefCell::new(false)),
+            is_pending: AtomicBool::new(false),
         });
 
         // Use entry API once to both check for replacement and insert.
@@ -308,17 +317,18 @@ impl AA2dPool {
 
     /// Adds an expiring nonce transaction to the pool.
     ///
-    /// Expiring nonce transactions use the tx hash as their unique identifier instead of
-    /// (sender, nonce_key, nonce). They are always immediately pending since they don't
-    /// have sequential nonce dependencies.
+    /// Expiring nonce transactions use the expiring nonce hash as their unique identifier instead
+    /// of (sender, nonce_key, nonce). They are always immediately pending since they don't have
+    /// sequential nonce dependencies.
     fn add_expiring_nonce_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         let tx_hash = *transaction.hash();
+        let expiring_nonce_hash = Self::expiring_nonce_hash(&transaction);
 
-        // Check if already exists (by hash)
-        if self.expiring_nonce_txs.contains_key(&tx_hash) {
+        // Check if already exists (by expiring nonce hash)
+        if self.expiring_nonce_txs.contains_key(&expiring_nonce_hash) {
             return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
         }
 
@@ -341,7 +351,8 @@ impl AA2dPool {
         };
 
         // Insert into expiring nonce map and by_hash
-        self.expiring_nonce_txs.insert(tx_hash, pending_tx);
+        self.expiring_nonce_txs
+            .insert(expiring_nonce_hash, pending_tx);
         self.by_hash.insert(tx_hash, transaction.clone());
 
         // Increment sender count
@@ -707,7 +718,8 @@ impl AA2dPool {
 
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
-            self.expiring_nonce_txs.remove(tx_hash);
+            self.expiring_nonce_txs
+                .remove(&Self::expiring_nonce_hash(&tx));
             // Decrement sender count for expiring nonce txs
             self.decrement_sender_count(tx.sender());
             return Some((tx, None));
@@ -780,8 +792,12 @@ impl AA2dPool {
         for tx in txs {
             // Handle expiring nonce transactions separately - they are stored by hash
             if tx.transaction.is_expiring_nonce() {
-                let hash = *tx.hash();
-                if self.expiring_nonce_txs.remove(&hash).is_some() {
+                if self
+                    .expiring_nonce_txs
+                    .remove(&Self::expiring_nonce_hash(&tx))
+                    .is_some()
+                {
+                    let hash = *tx.hash();
                     self.by_hash.remove(&hash);
                     self.decrement_sender_count(tx.sender());
                     removed.push(tx);
@@ -1042,10 +1058,11 @@ impl AA2dPool {
     /// Evicts an expiring nonce transaction by hash.
     fn evict_expiring_nonce_tx(
         &mut self,
-        hash: &TxHash,
+        expiring_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let pending_tx = self.expiring_nonce_txs.remove(hash)?;
-        self.by_hash.remove(hash);
+        let pending_tx = self.expiring_nonce_txs.remove(expiring_hash)?;
+        let tx_hash = *pending_tx.transaction.hash();
+        self.by_hash.remove(&tx_hash);
         self.decrement_sender_count(pending_tx.transaction.sender());
         Some(pending_tx.transaction)
     }
@@ -1065,7 +1082,16 @@ impl AA2dPool {
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
         for tx_hash in tx_hashes {
-            if let Some(pending_tx) = self.expiring_nonce_txs.remove(tx_hash) {
+            let Some(tx) = self.by_hash.get(tx_hash).cloned() else {
+                continue;
+            };
+            if !tx.transaction.is_expiring_nonce() {
+                continue;
+            }
+            if let Some(pending_tx) = self
+                .expiring_nonce_txs
+                .remove(&Self::expiring_nonce_hash(&tx))
+            {
                 self.by_hash.remove(tx_hash);
                 self.decrement_sender_count(pending_tx.transaction.sender());
                 removed.push(pending_tx.transaction);
@@ -1225,7 +1251,8 @@ impl AA2dPool {
             // Expiring nonce txs are stored in expiring_nonce_txs, not by_id
             if tx.transaction.is_expiring_nonce() {
                 assert!(
-                    self.expiring_nonce_txs.contains_key(hash),
+                    self.expiring_nonce_txs
+                        .contains_key(&Self::expiring_nonce_hash(tx)),
                     "Expiring nonce transaction with hash {hash:?} in by_hash but not in expiring_nonce_txs"
                 );
                 continue;
@@ -1311,9 +1338,10 @@ impl AA2dPool {
 
         // Verify expiring nonce txs integrity
         for (hash, pending_tx) in &self.expiring_nonce_txs {
+            let tx_hash = *pending_tx.transaction.hash();
             assert!(
-                self.by_hash.contains_key(hash),
-                "Expiring nonce tx {hash:?} not in by_hash"
+                self.by_hash.contains_key(&tx_hash),
+                "Expiring nonce tx {tx_hash:?} not in by_hash (expiring hash {hash:?})"
             );
             assert!(
                 pending_tx.transaction.transaction.is_expiring_nonce(),
@@ -1354,7 +1382,7 @@ impl Default for AA2dPoolConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct AA2dInternalTransaction {
     /// Keeps track of the transaction
     ///
@@ -1364,31 +1392,23 @@ struct AA2dInternalTransaction {
     ///
     /// If it's not pending, it is queued.
     ///
-    /// Uses `Rc<RefCell<bool>>` so we can mutate this flag without removing/reinserting
+    /// Uses `AtomicBool` so we can mutate this flag without removing/reinserting
     /// the transaction from the eviction set. This allows a single eviction set for
     /// all transactions, with pending/queued filtering done at eviction time.
-    is_pending: Rc<RefCell<bool>>,
+    is_pending: AtomicBool,
 }
 
 impl AA2dInternalTransaction {
     /// Returns whether this transaction is pending/executable.
     fn is_pending(&self) -> bool {
-        *self.is_pending.borrow()
+        self.is_pending.load(Ordering::Relaxed)
     }
 
     /// Sets the pending status of this transaction, returning the previous value.
     fn set_pending(&self, pending: bool) -> bool {
-        std::mem::replace(&mut *self.is_pending.borrow_mut(), pending)
+        self.is_pending.swap(pending, Ordering::Relaxed)
     }
 }
-
-// SAFETY: `AA2dInternalTransaction` contains `Rc<RefCell<bool>>` which is not `Send`/`Sync`.
-// However, `AA2dPool` is only ever accessed through `Arc<RwLock<AA2dPool>>`, meaning:
-// - All reads require holding the read lock (shared access to the pool, no mutation of is_pending)
-// - All writes require holding the write lock (exclusive access, single consumer)
-// Since we never have concurrent access to `is_pending`, this is safe.
-unsafe impl Send for AA2dInternalTransaction {}
-unsafe impl Sync for AA2dInternalTransaction {}
 
 /// Key for ordering transactions by eviction priority.
 ///
@@ -1584,10 +1604,21 @@ impl AA2dTransactionId {
 mod tests {
     use super::*;
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
-    use alloy_primitives::{Address, U256};
+    use alloy_eips::eip2930::AccessList;
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
     use std::collections::HashSet;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{
+            TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        },
+    };
 
     #[test_case::test_case(U256::ZERO)]
     #[test_case::test_case(U256::random())]
@@ -2684,12 +2715,10 @@ mod tests {
         // All should be pending
         for nonce in 0..=4 {
             assert!(
-                *pool
-                    .by_id
+                pool.by_id
                     .get(&AA2dTransactionId::new(seq_id, nonce))
                     .unwrap()
-                    .is_pending
-                    .borrow()
+                    .is_pending()
             );
         }
 
@@ -5063,6 +5092,162 @@ mod tests {
         assert_eq!(queued, 0, "Should have 0 queued transactions");
 
         // This will fail if pending_count wasn't incremented
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn expiring_nonce_tx_dedup_uses_expiring_nonce_hash() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let call_to = Address::random();
+        let fee_token = Address::random();
+        let calls = vec![Call {
+            to: TxKind::Call(call_to),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }];
+
+        let build_tx = |fee_payer_signature: Signature| {
+            let tx = TempoTransaction {
+                chain_id: 1,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 2_000_000_000,
+                gas_limit: 1_000_000,
+                calls: calls.clone(),
+                nonce_key: U256::MAX,
+                nonce: 0,
+                fee_token: Some(fee_token),
+                fee_payer_signature: Some(fee_payer_signature),
+                valid_after: None,
+                valid_before: Some(123),
+                access_list: AccessList::default(),
+                tempo_authorization_list: Vec::new(),
+                key_authorization: None,
+            };
+
+            let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                Signature::test_signature(),
+            ));
+            let aa_signed = AASigned::new_unhashed(tx, signature);
+            let envelope: TempoTxEnvelope = aa_signed.into();
+            let recovered = Recovered::new_unchecked(envelope, sender);
+            TempoPooledTransaction::new(recovered)
+        };
+
+        let tx1 = build_tx(Signature::new(U256::from(1), U256::from(2), false));
+        let tx2 = build_tx(Signature::new(U256::from(3), U256::from(4), false));
+
+        assert_ne!(tx1.hash(), tx2.hash(), "tx hashes must differ");
+        let expiring_hash_1 = tx1
+            .expiring_nonce_hash()
+            .expect("expiring nonce tx must be AA");
+        let expiring_hash_2 = tx2
+            .expiring_nonce_hash()
+            .expect("expiring nonce tx must be AA");
+        assert_eq!(
+            expiring_hash_1, expiring_hash_2,
+            "expiring nonce hashes must match"
+        );
+
+        let tx1_hash = *tx1.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let tx2_hash = *tx2.hash();
+        let result = pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        );
+        assert!(result.is_err(), "Expected AlreadyImported error");
+        let err = result.unwrap_err();
+        assert_eq!(err.hash, tx2_hash);
+        assert!(
+            matches!(err.kind, PoolErrorKind::AlreadyImported),
+            "Expected AlreadyImported, got {:?}",
+            err.kind
+        );
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 1, "Expected 1 pending transaction");
+        assert_eq!(queued, 0, "Expected 0 queued transactions");
+        assert!(pool.by_hash.contains_key(&tx1_hash));
+        assert_eq!(pool.expiring_nonce_txs.len(), 1);
+        pool.assert_invariants();
+    }
+
+    /// Verifies that `remove_included_expiring_nonce_txs` (called on block mining) correctly
+    /// removes an expiring nonce tx using the two-step lookup: tx_hash → by_hash → derive
+    /// expiring_nonce_hash → remove from expiring_nonce_txs.
+    #[test]
+    fn remove_included_expiring_nonce_tx_uses_correct_key() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let fee_token = Address::random();
+        let calls = vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }];
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 1_000_000,
+            calls,
+            nonce_key: U256::MAX,
+            nonce: 0,
+            fee_token: Some(fee_token),
+            fee_payer_signature: Some(Signature::new(U256::from(1), U256::from(2), false)),
+            valid_before: Some(123),
+            access_list: AccessList::default(),
+            tempo_authorization_list: Vec::new(),
+            key_authorization: None,
+            valid_after: None,
+        };
+
+        let signature =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let aa_signed = AASigned::new_unhashed(tx, signature);
+        let envelope: TempoTxEnvelope = aa_signed.into();
+        let recovered = Recovered::new_unchecked(envelope, sender);
+        let pooled = TempoPooledTransaction::new(recovered);
+
+        let tx_hash = *pooled.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(pooled, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        assert_eq!(pool.expiring_nonce_txs.len(), 1);
+        assert!(pool.by_hash.contains_key(&tx_hash));
+        pool.assert_invariants();
+
+        // Simulate block mining: remove by tx_hash (what the block contains)
+        let removed = pool.remove_included_expiring_nonce_txs(std::iter::once(&tx_hash));
+        assert_eq!(removed.len(), 1, "should remove the tx by its tx_hash");
+        assert_eq!(*removed[0].hash(), tx_hash);
+
+        // Both maps must be empty
+        assert!(
+            pool.expiring_nonce_txs.is_empty(),
+            "expiring_nonce_txs not cleaned up"
+        );
+        assert!(
+            !pool.by_hash.contains_key(&tx_hash),
+            "by_hash not cleaned up"
+        );
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 0);
+        assert_eq!(queued, 0);
         pool.assert_invariants();
     }
 

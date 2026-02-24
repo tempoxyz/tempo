@@ -185,20 +185,21 @@ abstract contract InvariantChecker is HandlerBase {
     /// @notice Verify CREATE addresses for a single account
     /// @param account The account to verify
     function _verifyCreateAddressesForAccount(address account) internal view {
-        uint256 createCount = ghost_createCount[account];
+        uint256[] storage nonces = ghost_createNonces[account];
 
-        for (uint256 n = 0; n < createCount; n++) {
+        assertEq(nonces.length, ghost_createCount[account], "C5: create nonce list/count mismatch");
+
+        for (uint256 i = 0; i < nonces.length; i++) {
+            uint256 n = nonces[i];
             bytes32 key = keccak256(abi.encodePacked(account, n));
             address recorded = ghost_createAddresses[key];
 
-            if (recorded != address(0)) {
-                // C5: Recorded address matches computed address
-                address computed = TxBuilder.computeCreateAddress(account, n);
-                assertEq(recorded, computed, "C5: CREATE address mismatch");
+            assertTrue(recorded != address(0), "C5: missing recorded CREATE address");
 
-                // C5: Code exists at the address
-                assertTrue(recorded.code.length > 0, "C5: No code at CREATE address");
-            }
+            address computed = TxBuilder.computeCreateAddress(account, n);
+            assertEq(recorded, computed, "C5: CREATE address mismatch");
+
+            assertTrue(recorded.code.length > 0, "C5: No code at CREATE address");
         }
     }
 

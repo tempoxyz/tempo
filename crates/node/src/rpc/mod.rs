@@ -15,7 +15,7 @@ use reth_primitives_traits::{
     Recovered, TransactionMeta, TxTy, WithEncoded, transaction::TxHashRef,
 };
 use reth_rpc_eth_api::{FromEthApiError, RpcTxReq};
-use reth_transaction_pool::PoolPooledTx;
+use reth_transaction_pool::{PoolPooledTx, TransactionOrigin};
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
@@ -30,7 +30,7 @@ use alloy::{
     primitives::{U256, uint},
 };
 use reth_ethereum::tasks::{
-    TaskSpawner,
+    Runtime,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
 use reth_evm::{
@@ -185,7 +185,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthApiSpec for TempoEthApi<N> {
 
 impl<N: FullNodeTypes<Types = TempoNode>> SpawnBlocking for TempoEthApi<N> {
     #[inline]
-    fn io_task_spawner(&self) -> impl TaskSpawner {
+    fn io_task_spawner(&self) -> &Runtime {
         self.inner.task_spawner()
     }
 
@@ -347,6 +347,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
 
     fn send_transaction(
         &self,
+        origin: TransactionOrigin,
         tx: WithEncoded<Recovered<PoolPooledTx<Self::Pool>>>,
     ) -> impl Future<Output = Result<B256, Self::Error>> + Send {
         match tx.value().inner().subblock_proposer() {
@@ -368,7 +369,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
                 ))
                 .into(),
             ))),
-            None => Either::Right(self.inner.send_transaction(tx).map_err(Into::into)),
+            None => Either::Right(self.inner.send_transaction(origin, tx).map_err(Into::into)),
         }
     }
 

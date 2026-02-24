@@ -9,9 +9,6 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 /// @dev Tests invariants TEMPO-REG1 through TEMPO-REG19 as documented in README.md
 contract TIP403RegistryInvariantTest is InvariantBaseTest {
 
-    /// @dev Log file path for recording actions
-    string private constant LOG_FILE = "tip403_registry.log";
-
     /// @dev Ghost variable for tracking total policies created in handlers
     uint256 private _totalPoliciesCreated;
 
@@ -44,12 +41,10 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     /// @dev Core policy creation with ghost state updates. Does NOT include assertions.
     /// @param actor The address that will be the admin of the new policy
     /// @param policyType The type of policy to create
-    /// @param isFallback Whether this is a fallback creation (for logging)
     /// @return policyId The ID of the newly created policy
     function _createPolicyInternal(
         address actor,
-        ITIP403Registry.PolicyType policyType,
-        bool isFallback
+        ITIP403Registry.PolicyType policyType
     )
         internal
         returns (uint64 policyId)
@@ -61,23 +56,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         _totalPoliciesCreated++;
         _createdPolicies.push(policyId);
         _policyTypes[policyId] = policyType;
-
-        if (isFallback) {
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_POLICY[fallback]: ",
-                        _getActorIndex(actor),
-                        " created policy ",
-                        vm.toString(policyId),
-                        " type=",
-                        policyType == ITIP403Registry.PolicyType.WHITELIST
-                            ? "WHITELIST"
-                            : "BLACKLIST"
-                    )
-                );
-            }
-        }
     }
 
     /// @dev Find an existing policy of the specified type
@@ -129,7 +107,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
                 return (policyId, admin);
             }
             // No policies exist, create a whitelist
-            policyId = _createPolicyInternal(actor, ITIP403Registry.PolicyType.WHITELIST, true);
+            policyId = _createPolicyInternal(actor, ITIP403Registry.PolicyType.WHITELIST);
             return (policyId, actor);
         }
 
@@ -144,7 +122,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         }
 
         // Not found, create one as fallback
-        policyId = _createPolicyInternal(actor, requestedType, true);
+        policyId = _createPolicyInternal(actor, requestedType);
         return (policyId, actor);
     }
 
@@ -158,9 +136,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         _setupInvariantBase();
         _basePoliciesCreated = registry.policyIdCounter() - counterBefore;
 
-        _actors = _buildActors(10);
-
-        _initLogFile(LOG_FILE, "TIP403Registry Invariant Test Log");
+        (_actors,) = _buildActors(10);
 
         // One-time constant checks (immutable after deployment)
         // TEMPO-REG13: Special policies 0 and 1 always exist
@@ -182,7 +158,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
 
         uint64 counterBefore = registry.policyIdCounter();
 
-        uint64 policyId = _createPolicyInternal(actor, policyType, false);
+        uint64 policyId = _createPolicyInternal(actor, policyType);
 
         // TEMPO-REG1: Policy ID should equal counter before creation
         assertEq(
@@ -203,19 +179,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         (ITIP403Registry.PolicyType storedType, address storedAdmin) = registry.policyData(policyId);
         assertEq(uint256(storedType), uint256(policyType), "TEMPO-REG4: Policy type mismatch");
         assertEq(storedAdmin, actor, "TEMPO-REG4: Policy admin mismatch");
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "CREATE_POLICY: ",
-                    _getActorIndex(actor),
-                    " created policy ",
-                    vm.toString(policyId),
-                    " type=",
-                    isWhitelist ? "WHITELIST" : "BLACKLIST"
-                )
-            );
-        }
     }
 
     /// @notice Handler for creating policies with initial accounts
@@ -270,20 +233,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
                     );
                 }
             }
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "CREATE_POLICY_WITH_ACCOUNTS: ",
-                        _getActorIndex(actor),
-                        " created policy ",
-                        vm.toString(policyId),
-                        " with ",
-                        vm.toString(numAccounts),
-                        " accounts"
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -304,19 +253,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             // TEMPO-REG6: Admin should be updated
             (, address storedAdmin) = registry.policyData(policyId);
             assertEq(storedAdmin, newAdmin, "TEMPO-REG6: Admin not updated correctly");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "SET_ADMIN: policy ",
-                        vm.toString(policyId),
-                        " admin changed from ",
-                        _getActorIndex(currentAdmin),
-                        " to ",
-                        _getActorIndex(newAdmin)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -366,19 +302,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             // TEMPO-REG8: Authorization should reflect whitelist status
             bool authAfter = registry.isAuthorized(policyId, account);
             assertEq(authAfter, allowed, "TEMPO-REG8: Whitelist authorization mismatch");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "MODIFY_WHITELIST: policy ",
-                        vm.toString(policyId),
-                        " ",
-                        _getActorIndex(account),
-                        " set to ",
-                        allowed ? "ALLOWED" : "DISALLOWED"
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -407,19 +330,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             // TEMPO-REG9: Authorization should be opposite of blacklist status
             bool authAfter = registry.isAuthorized(policyId, account);
             assertEq(authAfter, !restricted, "TEMPO-REG9: Blacklist authorization mismatch");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "MODIFY_BLACKLIST: policy ",
-                        vm.toString(policyId),
-                        " ",
-                        _getActorIndex(account),
-                        " set to ",
-                        restricted ? "RESTRICTED" : "UNRESTRICTED"
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -553,17 +463,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
-        }
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_MODIFY_SPECIAL_POLICY: ",
-                    _getActorIndex(actor),
-                    " blocked on policy ",
-                    vm.toString(policyId)
-                )
-            );
         }
     }
 
