@@ -7,7 +7,7 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    if: github.event.label.name == 'agentic-audit' && github.event.pull_request.draft == false
+    if: github.event.label.name == 'agentic-audit'
     steps:
       - name: Publish event
         run: |
