@@ -155,12 +155,13 @@ where
             // Validate KeyAuthorization expiry, reject if expiring within the propagation
             // buffer. This prevents near-expiry authorizations from entering the pool only to
             // expire at peers with slightly newer tip timestamps.
+            let min_allowed = current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS);
             if let Some(expiry) = auth.expiry
-                && expiry <= current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS)
+                && expiry <= min_allowed
             {
                 return Ok(Err(TempoPoolTransactionError::KeyAuthorizationExpired {
                     expiry,
-                    current_time,
+                    current_time: min_allowed,
                 }));
             }
         }
@@ -229,10 +230,11 @@ where
         // Check if key has expired or is expiring within the propagation buffer, reject
         // transactions using near-expiry access keys to prevent them from entering the pool
         // only to expire at peers with slightly newer tip timestamps.
-        if authorized_key.expiry <= current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS) {
+        let min_allowed = current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS);
+        if authorized_key.expiry <= min_allowed {
             return Ok(Err(TempoPoolTransactionError::AccessKeyExpired {
                 expiry: authorized_key.expiry,
-                current_time,
+                current_time: min_allowed,
             }));
         }
 
@@ -2865,7 +2867,7 @@ mod tests {
                 matches!(
                     result.expect("should not be a provider error"),
                     Err(TempoPoolTransactionError::AccessKeyExpired { expiry, current_time: ct })
-                    if expiry == current_time - 1 && ct == current_time
+                    if expiry == current_time - 1 && ct == current_time + AA_VALID_BEFORE_MIN_SECS
                 ),
                 "Expired access key should be rejected"
             );
@@ -2985,7 +2987,7 @@ mod tests {
                 matches!(
                     result.expect("should not be a provider error"),
                     Err(TempoPoolTransactionError::KeyAuthorizationExpired { expiry, current_time: ct })
-                    if expiry == current_time - 1 && ct == current_time
+                    if expiry == current_time - 1 && ct == current_time + AA_VALID_BEFORE_MIN_SECS
                 ),
                 "Expired KeyAuthorization should be rejected"
             );
