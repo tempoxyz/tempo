@@ -131,7 +131,8 @@ impl<TContext: Spawner> Actor<TContext> {
                     if state
                         .latest_finalized
                         .as_ref()
-                        .is_none_or(|f| f.height < block.height)
+                        .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)))
+                        .is_none_or(|r| r <= round)
                         // Notarization must be strictly newer
                         && state
                             .latest_notarized
@@ -163,7 +164,8 @@ impl<TContext: Spawner> Actor<TContext> {
                     if state
                         .latest_finalized
                         .as_ref()
-                        .is_none_or(|f| f.height < block.height)
+                        .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)))
+                        .is_none_or(|r| r <= round)
                     {
                         state.latest_finalized = Some(block);
 
