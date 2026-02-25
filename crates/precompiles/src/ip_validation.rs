@@ -4,12 +4,12 @@
 //! to expected IP address formats (with or without ports).
 
 #[derive(Debug, thiserror::Error)]
-#[error("input was not of the form `<ip>:<port>`")]
-pub(crate) struct IpWithPortParseError {
-    #[from]
-    source: std::net::AddrParseError,
+pub(crate) enum IpWithPortParseError {
+    #[error("input was not of the form `<ip>:<port>`")]
+    Parse(#[from] std::net::AddrParseError),
 }
 
+/// Validates that `input` is of the form `<ip>:<port>`.
 pub(crate) fn ensure_address_is_ip_port(
     input: &str,
 ) -> core::result::Result<(), IpWithPortParseError> {
@@ -18,10 +18,9 @@ pub(crate) fn ensure_address_is_ip_port(
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("input was not a valid IP address")]
-pub(crate) struct IpParseError {
-    #[from]
-    source: std::net::AddrParseError,
+pub(crate) enum IpParseError {
+    #[error("input was not a valid IP address")]
+    Parse(#[from] std::net::AddrParseError),
 }
 
 pub(crate) fn ensure_address_is_ip(input: &str) -> core::result::Result<(), IpParseError> {
