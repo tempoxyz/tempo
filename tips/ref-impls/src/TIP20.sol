@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { TIP20Factory } from "./TIP20Factory.sol";
-import { TIP403Registry } from "./TIP403Registry.sol";
-import { TempoUtilities } from "./TempoUtilities.sol";
-import { TIP20RolesAuth } from "./abstracts/TIP20RolesAuth.sol";
-import { ITIP20 } from "./interfaces/ITIP20.sol";
+import {TIP20Factory} from "./TIP20Factory.sol";
+import {TIP403Registry} from "./TIP403Registry.sol";
+import {TempoUtilities} from "./TempoUtilities.sol";
+import {TIP20RolesAuth} from "./abstracts/TIP20RolesAuth.sol";
+import {ITIP20} from "./interfaces/ITIP20.sol";
 
 contract TIP20 is ITIP20, TIP20RolesAuth {
-
-    TIP403Registry internal constant TIP403_REGISTRY =
-        TIP403Registry(0x403c000000000000000000000000000000000000);
+    TIP403Registry internal constant TIP403_REGISTRY = TIP403Registry(0x403c000000000000000000000000000000000000);
 
     address internal constant TIP_FEE_MANAGER_ADDRESS = 0xfeEC000000000000000000000000000000000000;
     address internal constant STABLECOIN_DEX_ADDRESS = 0xDEc0000000000000000000000000000000000000;
@@ -36,9 +34,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     ITIP20 public override quoteToken;
     ITIP20 public override nextQuoteToken;
 
-    bytes32 public constant PERMIT_TYPEHASH = keccak256(
-        "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
-    );
+    bytes32 public constant PERMIT_TYPEHASH =
+        keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
 
     bytes32 public constant PAUSE_ROLE = keccak256("PAUSE_ROLE");
     bytes32 public constant UNPAUSE_ROLE = keccak256("UNPAUSE_ROLE");
@@ -249,10 +246,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         _;
     }
 
-    function transfer(
-        address to,
-        uint256 amount
-    )
+    function transfer(address to, uint256 amount)
         public
         virtual
         notPaused
@@ -269,11 +263,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         return true;
     }
 
-    function transferFrom(
-        address from,
-        address to,
-        uint256 amount
-    )
+    function transferFrom(address from, address to, uint256 amount)
         public
         virtual
         notPaused
@@ -357,9 +347,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     function DOMAIN_SEPARATOR() public view returns (bytes32) {
         return keccak256(
             abi.encode(
-                keccak256(
-                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
-                ),
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
                 keccak256(bytes(name)),
                 keccak256(bytes("1")),
                 block.chainid,
@@ -368,22 +356,12 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         );
     }
 
-    function permit(
-        address owner,
-        address spender,
-        uint256 value,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    )
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
         external
     {
         if (block.timestamp > deadline) revert PermitExpired();
 
-        bytes32 structHash = keccak256(
-            abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline)
-        );
+        bytes32 structHash = keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline));
 
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
 
@@ -399,11 +377,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                         TIP20 EXTENSION FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function transferWithMemo(
-        address to,
-        uint256 amount,
-        bytes32 memo
-    )
+    function transferWithMemo(address to, uint256 amount, bytes32 memo)
         public
         virtual
         notPaused
@@ -414,12 +388,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         emit TransferWithMemo(msg.sender, to, amount, memo);
     }
 
-    function transferFromWithMemo(
-        address from,
-        address to,
-        uint256 amount,
-        bytes32 memo
-    )
+    function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo)
         public
         virtual
         notPaused
@@ -444,11 +413,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     /// @dev In the Tempo node implementation, this function is not exposed via the TIP20 interface
     /// and is not externally callable. It is only invoked internally by specific precompiles
     /// (like the fee manager precompile), avoiding the need to approve precompiles to spend tokens.
-    function systemTransferFrom(
-        address from,
-        address to,
-        uint256 amount
-    )
+    function systemTransferFrom(address from, address to, uint256 amount)
         external
         virtual
         notPaused
@@ -511,14 +476,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     //////////////////////////////////////////////////////////////*/
 
     // Updates the rewards for `user` and their `rewardRecipient`
-    function _updateRewardsAndGetRecipient(address user)
-        internal
-        returns (address rewardRecipient)
-    {
+    function _updateRewardsAndGetRecipient(address user) internal returns (address rewardRecipient) {
         rewardRecipient = userRewardInfo[user].rewardRecipient;
         uint256 cachedGlobalRewardPerToken = globalRewardPerToken;
-        uint256 rewardPerTokenDelta =
-            cachedGlobalRewardPerToken - userRewardInfo[user].rewardPerToken;
+        uint256 rewardPerTokenDelta = cachedGlobalRewardPerToken - userRewardInfo[user].rewardPerToken;
 
         if (rewardPerTokenDelta != 0) {
             // No rewards to update if not opted-in
@@ -627,5 +588,4 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             }
         }
     }
-
-    }
+}
