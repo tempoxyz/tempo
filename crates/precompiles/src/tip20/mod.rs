@@ -950,12 +950,12 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         PATH_USD_ADDRESS,
+        account_keychain::{
+            AccountKeychain, SignatureType, TokenLimit, authorizeKeyCall, getRemainingLimitCall,
+        },
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, setup_storage},
-    };
-    use crate::account_keychain::{
-        AccountKeychain, SignatureType, TokenLimit, authorizeKeyCall, getRemainingLimitCall,
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -1314,11 +1314,12 @@ pub(crate) mod tests {
             keychain.set_tx_origin(user)?;
             keychain.authorize_transfer(user, token_address, max_fee)?;
 
-            let remaining_after_deduction = keychain.get_remaining_limit(getRemainingLimitCall {
-                account: user,
-                keyId: access_key,
-                token: token_address,
-            })?;
+            let remaining_after_deduction =
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account: user,
+                    keyId: access_key,
+                    token: token_address,
+                })?;
             assert_eq!(remaining_after_deduction, spending_limit - max_fee);
 
             // Call transfer_fee_post_tx — should refund the spending limit via is_t1c() gate
