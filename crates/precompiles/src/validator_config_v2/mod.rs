@@ -339,7 +339,7 @@ impl ValidatorConfigV2 {
     ///
     /// **FORMAT**:
     /// - Namespace: [`VALIDATOR_NS_ADD`] or [`VALIDATOR_NS_ROTATE`]
-    /// - Message: `keccak256(abi.encodePacked(chainId, contractAddr, validatorAddr, uint8(ingress.len), ingress, egress))`
+    /// - Message: `keccak256(chainId || contractAddr || validatorAddr || uint8(ingress.len) || ingress || egress))`
     fn verify_validator_signature(
         &self,
         namespace: &[u8],
