@@ -4,6 +4,8 @@ permissions: {}
 
 on:
   push:
+    branches:
+      - "rc/*"
     tags:
       - "v*.*.*"
   workflow_dispatch:
@@ -38,14 +40,17 @@ jobs:
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
-      - name: Get version from tag
+      - name: Get version from tag or branch
         id: get_version
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
+          SHA: ${{ github.sha }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "version=$INPUT_TAG" >> $GITHUB_OUTPUT
+          elif [[ "$GITHUB_REF" == refs/heads/rc/* ]]; then
+            echo "version=sha-${SHA::7}" >> $GITHUB_OUTPUT
           else
             echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
@@ -53,7 +58,7 @@ jobs:
     name: check version
     runs-on: ubuntu-latest
     needs: get-version
-    if: ${{ github.event.inputs.dry_run != 'true' }}
+    if: ${{ !startsWith(github.ref, 'refs/heads/rc/') && github.event.inputs.dry_run != 'true' }}
     permissions:
       contents: read
     steps:
