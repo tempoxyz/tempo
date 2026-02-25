@@ -1486,7 +1486,7 @@ mod tests {
 
     #[test]
     fn test_pre_t1c_rebalance_swap_skips_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
         let admin = Address::random();
         let to = Address::random();
 
@@ -1521,7 +1521,7 @@ mod tests {
 
     #[test]
     fn test_pre_t1c_no_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
         let admin = Address::random();
         let recipient = Address::random();
 
