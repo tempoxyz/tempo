@@ -79,6 +79,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T1.B hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t1b_time: Option<u64>,
+    /// Activation timestamp for T1.C hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t1c_time: Option<u64>,
     /// Activation timestamp for T2 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t2_time: Option<u64>,
@@ -112,6 +115,10 @@ impl TempoGenesisInfo {
 
     pub fn t1b_time(&self) -> Option<u64> {
         self.t1b_time
+    }
+
+    pub fn t1c_time(&self) -> Option<u64> {
+        self.t1c_time
     }
 
     pub fn t2_time(&self) -> Option<u64> {
@@ -209,6 +216,7 @@ impl TempoChainSpec {
             t1_time,
             t1a_time,
             t1b_time,
+            t1c_time,
             t2_time,
             ..
         } = TempoGenesisInfo::extract_from(&genesis);
@@ -222,6 +230,7 @@ impl TempoChainSpec {
             (TempoHardfork::T1, t1_time),
             (TempoHardfork::T1A, t1a_time),
             (TempoHardfork::T1B, t1b_time),
+            (TempoHardfork::T1C, t1c_time),
             (TempoHardfork::T2, t2_time),
         ]
         .into_iter()
@@ -557,6 +566,7 @@ mod tests {
                     "t1Time": 0,
                     "t1aTime": 0,
                     "t1bTime": 0,
+                    "t1cTime": 0,
                     "t2Time": 0
                 },
                 "alloc": {}
@@ -574,6 +584,8 @@ mod tests {
         assert!(chainspec.is_t1a_active_at_timestamp(1000));
         assert!(chainspec.is_t1b_active_at_timestamp(0));
         assert!(chainspec.is_t1b_active_at_timestamp(1000));
+        assert!(chainspec.is_t1c_active_at_timestamp(0));
+        assert!(chainspec.is_t1c_active_at_timestamp(1000));
         assert!(chainspec.is_t2_active_at_timestamp(0));
         assert!(chainspec.is_t2_active_at_timestamp(1000));
 
