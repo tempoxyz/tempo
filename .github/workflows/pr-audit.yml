@@ -7,14 +7,12 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false && contains(github.event.pull_request.labels.*.name, 'agentic-audit')
+    if: github.event.label.name == 'agentic-audit'
     steps:
       - name: Publish event
         run: |
           set -euo pipefail
-          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
-            -H "Content-Type: application/json" \
-            -d '{
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }}             -H "Content-Type: application/json"             -d '{
               "repository": "${{ github.repository }}",
               "event": "pr_audit",
               "data": {
