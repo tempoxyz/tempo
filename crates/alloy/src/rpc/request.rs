@@ -98,6 +98,11 @@ pub struct TempoTransactionRequest {
 }
 
 impl TempoTransactionRequest {
+    /// Set the fee token for the [`TempoTransaction`] transaction.
+    pub fn set_fee_token(&mut self, fee_token: Address) {
+        self.fee_token = Some(fee_token);
+    }
+
     /// Builder-pattern method for setting the fee token.
     pub fn with_fee_token(mut self, fee_token: Address) -> Self {
         self.fee_token = Some(fee_token);
