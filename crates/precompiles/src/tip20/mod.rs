@@ -903,7 +903,7 @@ impl TIP20Token {
             return Ok(());
         }
 
-        if self.storage.spec().is_t2() {
+        if self.storage.spec().is_t1c() {
             AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
         }
 
