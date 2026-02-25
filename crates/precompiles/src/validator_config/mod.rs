@@ -6,7 +6,7 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    ip_validation::{ensure_address_is_ip_port, ensure_address_is_ip_port_legacy},
+    ip_validation::ensure_address_is_ip_port,
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256};
@@ -155,8 +155,8 @@ impl ValidatorConfig {
         }
 
         // Validate addresses.
-        // T2+: reject IPv6 zones, use stable Display formatting for errors.
-        // Pre-T2: preserve legacy behavior for consensus compatibility.
+        // T2+: use stable Display formatting for errors.
+        // Pre-T2: preserve legacy Debug formatting for consensus compatibility.
         if self.storage.spec().is_t2() {
             ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
                 ValidatorConfigError::not_host_port(
@@ -173,14 +173,14 @@ impl ValidatorConfig {
                 )
             })?;
         } else {
-            ensure_address_is_ip_port_legacy(&call.inboundAddress).map_err(|err| {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
                 ValidatorConfigError::not_host_port(
                     "inboundAddress".to_string(),
                     call.inboundAddress.clone(),
                     format!("{err:?}"),
                 )
             })?;
-            ensure_address_is_ip_port_legacy(&call.outboundAddress).map_err(|err| {
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
                 ValidatorConfigError::not_ip_port(
                     "outboundAddress".to_string(),
                     call.outboundAddress.clone(),
@@ -263,14 +263,14 @@ impl ValidatorConfig {
                 )
             })?;
         } else {
-            ensure_address_is_ip_port_legacy(&call.inboundAddress).map_err(|err| {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
                 ValidatorConfigError::not_host_port(
                     "inboundAddress".to_string(),
                     call.inboundAddress.clone(),
                     format!("{err:?}"),
                 )
             })?;
-            ensure_address_is_ip_port_legacy(&call.outboundAddress).map_err(|err| {
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
                 ValidatorConfigError::not_ip_port(
                     "outboundAddress".to_string(),
                     call.outboundAddress.clone(),
