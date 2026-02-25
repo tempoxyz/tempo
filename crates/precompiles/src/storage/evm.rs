@@ -97,11 +97,19 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let additional_cost = self.gas_params.cold_account_additional_cost();
         let warm_cost = self.gas_params.warm_storage_read_cost();
 
-        let mut account = with_static_gas(&mut self.gas_remaining, self.spec, warm_cost, || {
-            Ok(self
-                .internals
-                .load_account_mut_skip_cold_load(address, false)?)
-        })?;
+        // static gas: T2+ charges before the storage operation
+        if self.spec.is_t2() {
+            deduct_gas(&mut self.gas_remaining, warm_cost)?;
+        }
+
+        let mut account = self
+            .internals
+            .load_account_mut_skip_cold_load(address, false)?;
+
+        // static gas: pre-T2 charges after the storage operation
+        if !self.spec.is_t2() {
+            deduct_gas(&mut self.gas_remaining, warm_cost)?;
+        }
 
         // dynamic gas
         if account.is_cold {
@@ -122,15 +130,25 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
         let static_gas = self.gas_params.sstore_static_gas();
-        let result = with_static_gas(&mut self.gas_remaining, self.spec, static_gas, || {
-            Ok(self
-                .internals
-                .load_account_mut(address)?
-                .sstore(key, value, false)?)
-        })?;
+
+        // static gas: T2+ charges before the storage operation
+        if self.spec.is_t2() {
+            deduct_gas(&mut self.gas_remaining, static_gas)?;
+        }
+
+        let result = self
+            .internals
+            .load_account_mut(address)?
+            .sstore(key, value, false)?;
+
+        // static gas: pre-T2 charges after the storage operation
+        if !self.spec.is_t2() {
+            deduct_gas(&mut self.gas_remaining, static_gas)?;
+        }
 
         // dynamic gas
-        self.deduct_gas(
+        deduct_gas(
+            &mut self.gas_remaining,
             self.gas_params
                 .sstore_dynamic_gas(true, &result.data, result.is_cold),
         )?;
@@ -175,16 +193,27 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let additional_cost = self.gas_params.cold_storage_additional_cost();
         let warm_cost = self.gas_params.warm_storage_read_cost();
 
-        let value = with_static_gas(&mut self.gas_remaining, self.spec, warm_cost, || {
-            let mut account = self.internals.load_account_mut(address)?;
-            Ok(account.sload(key, false)?)
-        })?;
-
-        if value.is_cold {
-            self.deduct_gas(additional_cost)?;
+        // static gas: T2+ charges before the storage operation
+        if self.spec.is_t2() {
+            deduct_gas(&mut self.gas_remaining, warm_cost)?;
         }
 
-        Ok(value.present_value)
+        let (data, is_cold) = {
+            let mut account = self.internals.load_account_mut(address)?;
+            let slot = account.sload(key, false)?;
+            (slot.data.present_value, slot.is_cold)
+        };
+
+        // static gas: pre-T2 charges after the storage operation
+        if !self.spec.is_t2() {
+            deduct_gas(&mut self.gas_remaining, warm_cost)?;
+        }
+
+        if is_cold {
+            deduct_gas(&mut self.gas_remaining, additional_cost)?;
+        }
+
+        Ok(data)
     }
 
     #[inline]
@@ -232,26 +261,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 impl From<EvmInternalsError> for TempoPrecompileError {
     fn from(value: EvmInternalsError) -> Self {
         Self::Fatal(value.to_string())
-    }
-}
-
-/// Wraps a storage operation with static gas deduction.
-/// On T2+, static gas is charged before the operation.
-/// On pre-T2, static gas is charged after the operation.
-#[inline]
-fn with_static_gas<T>(
-    gas_remaining: &mut u64,
-    spec: TempoHardfork,
-    gas: u64,
-    storage_op: impl FnOnce() -> Result<T, TempoPrecompileError>,
-) -> Result<T, TempoPrecompileError> {
-    if spec.is_t2() {
-        deduct_gas(gas_remaining, gas)?;
-        storage_op()
-    } else {
-        let result = storage_op()?;
-        deduct_gas(gas_remaining, gas)?;
-        Ok(result)
     }
 }
 
@@ -524,6 +533,66 @@ mod tests {
         // Verify values are independent
         assert_eq!(provider.tload(address1, key)?, value1);
         assert_eq!(provider.tload(address2, key)?, value2);
+
+        Ok(())
+    }
+
+    /// On T2, static gas is charged BEFORE the storage operation — insufficient
+    /// gas prevents the op from executing. On pre-T2, static gas is charged
+    /// AFTER — the op runs but the post-charge fails.
+    #[test]
+    fn test_static_gas_pre_and_post_t2() -> eyre::Result<()> {
+        let (key, value) = (U256::random(), U256::random().min(U256::ONE));
+        let address = Address::random();
+
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let static_gas = ctx.cfg.gas_params.sstore_static_gas();
+
+        // --- T2: static gas charged before the op ---
+        {
+            let evm_internals =
+                EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new(
+                evm_internals,
+                static_gas - 1,
+                TempoHardfork::T2,
+                false,
+                ctx.cfg.gas_params.clone(),
+            );
+
+            // sstore does NOT runs (the write does NOT land in the journal).
+            assert!(provider.sstore(address, key, value).is_err());
+            assert_eq!(provider.gas_used(), 0);
+
+            // The value was NOT written — verify via a fresh sload with enough gas.
+            provider.gas_remaining = u64::MAX;
+            provider.gas_limit = u64::MAX;
+            assert_eq!(provider.sload(address, key)?, U256::ZERO);
+        }
+
+        // --- Pre-T2: static gas charged after the op ---
+        {
+            let evm_internals =
+                EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new(
+                evm_internals,
+                static_gas - 1,
+                TempoHardfork::T1B,
+                false,
+                ctx.cfg.gas_params.clone(),
+            );
+
+            // sstore runs (the write lands in the journal) but the post-charge fails.
+            assert!(provider.sstore(address, key, value).is_err());
+            assert_eq!(provider.gas_used(), 0);
+
+            // The value was still written — verify via a fresh sload with enough gas.
+            provider.gas_remaining = u64::MAX;
+            provider.gas_limit = u64::MAX;
+            assert_eq!(provider.sload(address, key)?, value);
+        }
 
         Ok(())
     }
