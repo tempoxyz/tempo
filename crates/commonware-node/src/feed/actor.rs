@@ -10,7 +10,7 @@ use commonware_codec::Encode;
 use commonware_consensus::{
     Heightable as _,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
-    types::FixedEpocher,
+    types::{Epoch, FixedEpocher, Round, View},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
@@ -85,8 +85,7 @@ impl<TContext: Spawner> Actor<TContext> {
     /// Create a [`CertifiedBlock`] from the notarization or finalization.
     async fn create_certified_block(
         &mut self,
-        view: u64,
-        epoch: u64,
+        round: Round,
         digest: Digest,
         certificate: &impl Encode,
     ) -> CertifiedBlock {
@@ -96,6 +95,9 @@ impl<TContext: Spawner> Actor<TContext> {
             .get_block(&digest)
             .await
             .map(|b| b.height().get());
+
+        let view = round.view().get();
+        let epoch = round.epoch().get();
 
         CertifiedBlock {
             epoch,
@@ -111,16 +113,10 @@ impl<TContext: Spawner> Actor<TContext> {
         match activity {
             Activity::Notarization(notarization) => {
                 let seen = now_millis();
-                let view = notarization.proposal.round.view().get();
-                let epoch = notarization.proposal.round.epoch().get();
+                let round = notarization.proposal.round;
 
                 let block = self
-                    .create_certified_block(
-                        view,
-                        notarization.proposal.round.epoch().get(),
-                        notarization.proposal.payload,
-                        &notarization,
-                    )
+                    .create_certified_block(round, notarization.proposal.payload, &notarization)
                     .await;
 
                 let _ = self.state.events_tx().send(Event::Notarized {
@@ -136,11 +132,12 @@ impl<TContext: Spawner> Actor<TContext> {
                         .latest_finalized
                         .as_ref()
                         .is_none_or(|f| f.height < block.height)
-                        // Notarization must be strictly newer (view is reset to 1 on epoch change)
+                        // Notarization must be strictly newer
                         && state
                             .latest_notarized
                             .as_ref()
-                            .is_none_or(|n| (n.epoch, n.view) <= (epoch, view))
+                            .map(|n| Round::new(Epoch::new(n.epoch), View::new(n.view)))
+                            .is_none_or(|r| r <= round)
                     {
                         state.latest_notarized = Some(block);
                     }
@@ -148,16 +145,10 @@ impl<TContext: Spawner> Actor<TContext> {
             }
             Activity::Finalization(finalization) => {
                 let seen = now_millis();
-                let view = finalization.proposal.round.view().get();
-                let epoch = finalization.proposal.round.epoch().get();
+                let round = finalization.proposal.round;
 
                 let block = self
-                    .create_certified_block(
-                        view,
-                        finalization.proposal.round.epoch().get(),
-                        finalization.proposal.payload,
-                        &finalization,
-                    )
+                    .create_certified_block(round, finalization.proposal.payload, &finalization)
                     .await;
 
                 let _ = self.state.events_tx().send(Event::Finalized {
@@ -180,7 +171,8 @@ impl<TContext: Spawner> Actor<TContext> {
                         if state
                             .latest_notarized
                             .as_ref()
-                            .is_some_and(|n| (n.epoch, n.view) <= (epoch, view))
+                            .map(|n| Round::new(Epoch::new(n.epoch), View::new(n.view)))
+                            .is_some_and(|r| r <= round)
                         {
                             state.latest_notarized = None;
                         }
