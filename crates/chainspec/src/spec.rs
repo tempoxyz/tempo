@@ -479,6 +479,8 @@ mod tests {
             TempoHardfork::T1B
         );
 
+        // T1C not yet scheduled on mainnet
+        assert!(!mainnet_chainspec.is_t1c_active_at_timestamp(u64::MAX));
         // T2 not yet scheduled on mainnet
         assert!(!mainnet_chainspec.is_t2_active_at_timestamp(u64::MAX));
         assert_eq!(
@@ -523,6 +525,8 @@ mod tests {
             TempoHardfork::T1B
         );
 
+        // T1C not yet scheduled on moderato
+        assert!(!moderato_genesis.is_t1c_active_at_timestamp(u64::MAX));
         // T2 not yet scheduled on moderato
         assert!(!moderato_genesis.is_t2_active_at_timestamp(u64::MAX));
         assert_eq!(
