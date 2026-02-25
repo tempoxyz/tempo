@@ -5300,7 +5300,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     // - authorization tx (1 block)
     // - use key tx (1 block)
     // Then after expiry, advancing a few more blocks should exceed the expiry
-    let short_expiry_timestamp = test2_timestamp + 3;
+    let short_expiry_timestamp = test2_timestamp + 5;
     println!("Setting key expiry to: {short_expiry_timestamp} (current: {test2_timestamp})");
 
     let short_expiry_key_auth = create_key_authorization(
