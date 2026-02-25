@@ -152,10 +152,11 @@ where
                 )));
             }
 
-            // Validate KeyAuthorization expiry - reject if already expired
-            // This prevents expired same-tx authorizations from entering the pool
+            // Validate KeyAuthorization expiry, reject if expiring within the propagation
+            // buffer. This prevents near-expiry authorizations from entering the pool only to
+            // expire at peers with slightly newer tip timestamps.
             if let Some(expiry) = auth.expiry
-                && expiry <= current_time
+                && expiry <= current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS)
             {
                 return Ok(Err(TempoPoolTransactionError::KeyAuthorizationExpired {
                     expiry,
@@ -225,9 +226,10 @@ where
             )));
         }
 
-        // Check if key has expired - reject transactions using expired access keys
-        // This prevents expired keychain transactions from entering/persisting in the pool
-        if authorized_key.expiry <= current_time {
+        // Check if key has expired or is expiring within the propagation buffer, reject
+        // transactions using near-expiry access keys to prevent them from entering the pool
+        // only to expire at peers with slightly newer tip timestamps.
+        if authorized_key.expiry <= current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS) {
             return Ok(Err(TempoPoolTransactionError::AccessKeyExpired {
                 expiry: authorized_key.expiry,
                 current_time,
