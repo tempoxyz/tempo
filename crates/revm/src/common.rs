@@ -233,7 +233,7 @@ pub trait TempoStateAccess<M = ()> {
         })
     }
 
-    /// Checks if the fee payer can transfer a given token (is not blacklisted).
+    /// Checks if the fee payer can transfer the fee token to the fee manager.
     fn can_fee_payer_transfer(
         &mut self,
         fee_token: Address,
@@ -244,11 +244,13 @@ pub trait TempoStateAccess<M = ()> {
         Self: Sized,
     {
         self.with_read_only_storage_ctx(spec, || {
-            // Ensure the fee payer is not blacklisted (sender authorization)
-            let policy_id = TIP20Token::from_address(fee_token)?
-                .transfer_policy_id
-                .read()?;
-            TIP403Registry::new().is_authorized_as(policy_id, fee_payer, AuthRole::sender())
+            let token = TIP20Token::from_address(fee_token)?;
+            if spec.is_t1c() {
+                token.is_transfer_authorized(fee_payer, TIP_FEE_MANAGER_ADDRESS)
+            } else {
+                let policy_id = token.transfer_policy_id.read()?;
+                TIP403Registry::new().is_authorized_as(policy_id, fee_payer, AuthRole::sender())
+            }
         })
     }
 
