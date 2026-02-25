@@ -273,9 +273,9 @@ pub(crate) struct CreateSignatureArgs {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
 
-    /// The chain ID of the network.
-    #[arg(long, value_name = "CHAIN_ID")]
-    chain_id: u64,
+    /// RPC used to fetch the chain id
+    #[arg(long, value_name = "RPC_URL")]
+    chain_id_from_rpc_url: String,
 
     /// Path to the ed25519 signing key file.
     #[arg(long, value_name = "FILE")]
@@ -284,19 +284,28 @@ pub(crate) struct CreateSignatureArgs {
 
 impl CreateSignatureArgs {
     fn run(self, namespace: &[u8]) -> eyre::Result<()> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .wrap_err("failed constructing async runtime")?
+            .block_on(self.run_async(namespace))
+    }
+
+    async fn run_async(self, namespace: &[u8]) -> eyre::Result<()> {
         let signing_key =
             SigningKey::read_from_file(&self.signing_key).wrap_err("failed reading signing key")?;
 
-        let network = match self.chain_id {
-            4217 => "presto (mainnet)",
-            42429 => "andantino (testnet)",
-            42431 => "moderato",
-            _ => "unknown",
-        };
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect(&self.chain_id_from_rpc_url)
+            .await
+            .wrap_err("failed to connect to RPC")?;
 
-        eprintln!("Detected Network: {network}");
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed to get chain id")?;
 
-        let config = self.identity.to_config(self.chain_id);
+        let config = self.identity.to_config(chain_id);
         let message = config.message_hash();
 
         let private_key = signing_key.into_inner();
