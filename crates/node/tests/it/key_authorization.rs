@@ -108,6 +108,7 @@ fn make_pre_t1b_genesis() -> eyre::Result<String> {
     let genesis_str = include_str!("../assets/test-genesis.json");
     let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
     genesis["config"].as_object_mut().unwrap().remove("t1bTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
     Ok(serde_json::to_string(&genesis)?)
 }
