@@ -112,6 +112,7 @@ impl<TContext: Spawner> Actor<TContext> {
             Activity::Notarization(notarization) => {
                 let seen = now_millis();
                 let view = notarization.proposal.round.view().get();
+                let epoch = notarization.proposal.round.epoch().get();
 
                 let block = self
                     .create_certified_block(
@@ -129,14 +130,17 @@ impl<TContext: Spawner> Actor<TContext> {
 
                 {
                     let mut state = self.state.write();
+
+                    // Late-arriving notarization relative finalization is ignored.
                     if state
                         .latest_finalized
                         .as_ref()
                         .is_none_or(|f| f.height < block.height)
+                        // Notarization must be strictly newer (view is reset to 1 on epoch change)
                         && state
                             .latest_notarized
                             .as_ref()
-                            .is_none_or(|n| n.view < view)
+                            .is_none_or(|n| (n.epoch, n.view) <= (epoch, view))
                     {
                         state.latest_notarized = Some(block);
                     }
@@ -145,6 +149,7 @@ impl<TContext: Spawner> Actor<TContext> {
             Activity::Finalization(finalization) => {
                 let seen = now_millis();
                 let view = finalization.proposal.round.view().get();
+                let epoch = finalization.proposal.round.epoch().get();
 
                 let block = self
                     .create_certified_block(
@@ -162,19 +167,23 @@ impl<TContext: Spawner> Actor<TContext> {
 
                 {
                     let mut state = self.state.write();
+
+                    // Finalization must be strictly newer
                     if state
                         .latest_finalized
                         .as_ref()
                         .is_none_or(|f| f.height < block.height)
                     {
+                        state.latest_finalized = Some(block);
+
+                        // Clear any older notarization
                         if state
                             .latest_notarized
                             .as_ref()
-                            .is_some_and(|n| n.view <= view)
+                            .is_some_and(|n| (n.epoch, n.view) <= (epoch, view))
                         {
                             state.latest_notarized = None;
                         }
-                        state.latest_finalized = Some(block);
                     }
                 }
             }
