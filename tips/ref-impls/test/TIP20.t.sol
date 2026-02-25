@@ -18,6 +18,10 @@ contract TIP20Test is BaseTest {
     bytes32 constant TEST_MEMO = bytes32(uint256(0x1234567890abcdef));
     bytes32 constant ANOTHER_MEMO = bytes32("Hello World");
 
+    // Signer key pair for permit tests
+    uint256 internal constant SIGNER_KEY = 0xA11CE;
+    uint256 internal constant WRONG_KEY = 0xB0B;
+
     event TransferWithMemo(
         address indexed from, address indexed to, uint256 amount, bytes32 indexed memo
     );
@@ -2532,6 +2536,180 @@ contract TIP20Test is BaseTest {
         }
 
         vm.stopPrank();
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                          EIP-2612 PERMIT TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Helper to build the EIP-712 digest for a permit call
+    function _permitDigest(
+        address owner_,
+        address spender_,
+        uint256 value_,
+        uint256 nonce_,
+        uint256 deadline_
+    )
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32 structHash = keccak256(
+            abi.encode(token.PERMIT_TYPEHASH(), owner_, spender_, value_, nonce_, deadline_)
+        );
+        return keccak256(abi.encodePacked("\x19\x01", token.DOMAIN_SEPARATOR(), structHash));
+    }
+
+    function test_Permit() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        address signer = vm.addr(SIGNER_KEY);
+        uint256 value = 500e18;
+        uint256 deadline = block.timestamp + 1 hours;
+
+        // Mint tokens so signer has a balance (not strictly required for approve, but realistic)
+        vm.prank(admin);
+        token.mint(signer, 1000e18);
+
+        // Nonce starts at 0
+        assertEq(token.nonces(signer), 0);
+
+        bytes32 digest = _permitDigest(signer, bob, value, 0, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, digest);
+
+        vm.expectEmit(true, true, true, true);
+        emit Approval(signer, bob, value);
+
+        token.permit(signer, bob, value, deadline, v, r, s);
+
+        // Allowance reflects new value
+        assertEq(token.allowance(signer, bob), value);
+        // Nonce incremented
+        assertEq(token.nonces(signer), 1);
+    }
+
+    function test_Permit_OverridesExistingAllowance() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        address signer = vm.addr(SIGNER_KEY);
+        uint256 deadline = block.timestamp + 1 hours;
+
+        // Set initial allowance via approve
+        vm.prank(signer);
+        token.approve(bob, 100e18);
+        assertEq(token.allowance(signer, bob), 100e18);
+
+        // Permit overrides to 50e18
+        bytes32 digest = _permitDigest(signer, bob, 50e18, 0, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, digest);
+
+        token.permit(signer, bob, 50e18, deadline, v, r, s);
+
+        assertEq(token.allowance(signer, bob), 50e18);
+    }
+
+    function test_Permit_Replay() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        address signer = vm.addr(SIGNER_KEY);
+        uint256 value = 500e18;
+        uint256 deadline = block.timestamp + 1 hours;
+
+        bytes32 digest = _permitDigest(signer, bob, value, 0, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, digest);
+
+        // First call succeeds
+        token.permit(signer, bob, value, deadline, v, r, s);
+        assertEq(token.nonces(signer), 1);
+
+        // Replay fails — nonce already consumed
+        try token.permit(signer, bob, value, deadline, v, r, s) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidSignature.selector));
+        }
+
+        // Nonce unchanged after failed replay
+        assertEq(token.nonces(signer), 1);
+    }
+
+    function test_Permit_Fail() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        address signer = vm.addr(SIGNER_KEY);
+        uint256 value = 500e18;
+
+        // 1. Expired deadline
+        {
+            uint256 expiredDeadline = block.timestamp - 1;
+            bytes32 digest = _permitDigest(signer, bob, value, 0, expiredDeadline);
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, digest);
+
+            try token.permit(signer, bob, value, expiredDeadline, v, r, s) {
+                revert CallShouldHaveReverted();
+            } catch (bytes memory err) {
+                assertEq(err, abi.encodeWithSelector(ITIP20.PermitExpired.selector));
+            }
+            assertEq(token.nonces(signer), 0);
+        }
+
+        // 2. Invalid signature (garbage bytes)
+        {
+            uint256 deadline = block.timestamp + 1 hours;
+
+            try token.permit(signer, bob, value, deadline, 27, bytes32("bad_r"), bytes32("bad_s")) {
+                revert CallShouldHaveReverted();
+            } catch (bytes memory err) {
+                assertEq(err, abi.encodeWithSelector(ITIP20.InvalidSignature.selector));
+            }
+            assertEq(token.nonces(signer), 0);
+        }
+
+        // 3. Wrong signer (bob signs a permit claiming owner = signer)
+        {
+            uint256 deadline = block.timestamp + 1 hours;
+            bytes32 digest = _permitDigest(signer, bob, value, 0, deadline);
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(WRONG_KEY, digest);
+
+            try token.permit(signer, bob, value, deadline, v, r, s) {
+                revert CallShouldHaveReverted();
+            } catch (bytes memory err) {
+                assertEq(err, abi.encodeWithSelector(ITIP20.InvalidSignature.selector));
+            }
+            assertEq(token.nonces(signer), 0);
+        }
+    }
+
+    function test_Nonces() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        address signer = vm.addr(SIGNER_KEY);
+        uint256 deadline = block.timestamp + 1 hours;
+
+        assertEq(token.nonces(signer), 0);
+
+        // First permit: nonce 0 → 1
+        bytes32 digest0 = _permitDigest(signer, bob, 100e18, 0, deadline);
+        (uint8 v0, bytes32 r0, bytes32 s0) = vm.sign(SIGNER_KEY, digest0);
+        token.permit(signer, bob, 100e18, deadline, v0, r0, s0);
+        assertEq(token.nonces(signer), 1);
+
+        // Second permit: nonce 1 → 2
+        bytes32 digest1 = _permitDigest(signer, charlie, 200e18, 1, deadline);
+        (uint8 v1, bytes32 r1, bytes32 s1) = vm.sign(SIGNER_KEY, digest1);
+        token.permit(signer, charlie, 200e18, deadline, v1, r1, s1);
+        assertEq(token.nonces(signer), 2);
+    }
+
+    function test_DomainSeparator() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        bytes32 expected = keccak256(
+            abi.encode(
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
+                keccak256(bytes(token.name())),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(token)
+            )
+        );
+        assertEq(token.DOMAIN_SEPARATOR(), expected);
     }
 
 }

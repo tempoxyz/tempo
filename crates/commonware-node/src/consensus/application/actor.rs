@@ -35,7 +35,7 @@ use futures::{
 };
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_node_builder::{Block as _, ConsensusEngineHandle};
+use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 

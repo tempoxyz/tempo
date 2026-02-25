@@ -214,6 +214,68 @@ impl TxBuilder {
         TempoPooledTransaction::new(recovered)
     }
 
+    /// Build an AA transaction with a keychain signature.
+    ///
+    /// The `user_address` is the account that owns the keychain key,
+    /// and `access_key_signer` is the private key used to sign (whose address becomes key_id).
+    pub(crate) fn build_keychain(
+        self,
+        user_address: Address,
+        access_key_signer: &alloy_signer_local::PrivateKeySigner,
+    ) -> TempoPooledTransaction {
+        use alloy_signer::SignerSync;
+        use tempo_primitives::transaction::tt_signature::KeychainSignature;
+
+        let calls = self.calls.unwrap_or_else(|| {
+            vec![Call {
+                to: self.kind,
+                value: self.value,
+                input: Default::default(),
+            }]
+        });
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+            max_fee_per_gas: self.max_fee_per_gas,
+            gas_limit: self.gas_limit,
+            calls,
+            nonce_key: self.nonce_key,
+            nonce: self.nonce,
+            fee_token: self.fee_token,
+            fee_payer_signature: None,
+            valid_after: self.valid_after,
+            valid_before: self.valid_before,
+            access_list: self.access_list,
+            tempo_authorization_list: self.authorization_list.unwrap_or_default(),
+            key_authorization: None,
+        };
+
+        // Create a temp AASigned to get the signature hash
+        let temp_sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let unsigned = AASigned::new_unhashed(tx.clone(), temp_sig);
+        let sig_hash = unsigned.signature_hash();
+
+        // Sign with the access key
+        let signature = access_key_signer
+            .sign_hash_sync(&sig_hash)
+            .expect("signing failed");
+
+        let keychain_sig = TempoSignature::Keychain(KeychainSignature::new(
+            user_address,
+            PrimitiveSignature::Secp256k1(signature),
+        ));
+
+        let signed_tx = AASigned::new_unhashed(tx, keychain_sig);
+        let envelope: TempoTxEnvelope = signed_tx.into();
+        let recovered = {
+            use reth_primitives_traits::SignerRecoverable;
+            envelope.try_into_recovered().unwrap()
+        };
+        TempoPooledTransaction::new(recovered)
+    }
+
     /// Build an EIP-1559 transaction.
     pub(crate) fn build_eip1559(self) -> TempoPooledTransaction {
         let tx = TxEip1559 {

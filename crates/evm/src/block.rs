@@ -921,7 +921,7 @@ mod tests {
         let signer = PrivateKey::from_seed(0);
         let validator_key = B256::from_slice(&signer.public_key());
 
-        // Add a seen subblock from a different validator that wont match metadata
+        // Add a seen subblock from a different validator that won't match metadata
         let different_key = B256::repeat_byte(0x99);
         let different_proposer = PartialValidatorKey::from_slice(&different_key[..15]);
 

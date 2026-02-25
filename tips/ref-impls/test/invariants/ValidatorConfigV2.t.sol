@@ -70,7 +70,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         _setupInvariantBase();
-        _actors = _buildActors(5);
+        (_actors,) = _buildActors(5);
         _potentialValidators = _buildAddressPool(500, VALIDATOR_POOL_OFFSET);
 
         // Add V1 validators — migration and initialization driven by the fuzzer

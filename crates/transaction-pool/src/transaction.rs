@@ -199,6 +199,12 @@ impl TempoPooledTransaction {
     pub fn key_expiry(&self) -> Option<u64> {
         self.key_expiry.get().copied().flatten()
     }
+
+    /// Returns the expiring nonce hash for AA expiring nonce transactions.
+    pub fn expiring_nonce_hash(&self) -> Option<B256> {
+        let aa_tx = self.inner().as_aa()?;
+        Some(aa_tx.expiring_nonce_hash(self.sender()))
+    }
 }
 
 #[derive(Debug, Error)]
@@ -442,10 +448,6 @@ impl PoolTransaction for TempoPooledTransaction {
     type TryFromConsensusError = Infallible;
     type Consensus = TempoTxEnvelope;
     type Pooled = TempoTxEnvelope;
-
-    fn consensus_ref(&self) -> Recovered<&Self::Consensus> {
-        Recovered::new_unchecked(&*self.inner.transaction, self.inner.transaction.signer())
-    }
 
     fn clone_into_consensus(&self) -> Recovered<Self::Consensus> {
         self.inner.transaction.clone()

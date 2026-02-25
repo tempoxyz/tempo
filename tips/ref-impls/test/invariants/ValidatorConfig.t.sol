@@ -42,7 +42,7 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         _setupInvariantBase();
-        _actors = _buildActors(10);
+        (_actors,) = _buildActors(10);
         _potentialValidators = _buildAddressPool(20, VALIDATOR_POOL_OFFSET);
         _ghostOwner = admin;
     }
