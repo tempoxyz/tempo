@@ -151,7 +151,7 @@ impl TipFeeManager {
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        if self.storage.spec().is_t2() {
+        if self.storage.spec().is_t1c() {
             let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
             if pool.reserve_validator_token < reserved {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
@@ -337,7 +337,7 @@ impl TipFeeManager {
         let (amount_user_token, amount_validator_token) =
             self.calculate_burn_amounts(&pool, pool_id, liquidity)?;
 
-        // T2+: Check that burn leaves enough liquidity for pending fee swaps
+        // T1C+: Check that burn leaves enough liquidity for pending fee swaps
         // Reservation is set by reserve_pool_liquidity() via check_sufficient_liquidity()
         let validator_amount: u128 = amount_validator_token
             .try_into()
@@ -346,7 +346,7 @@ impl TipFeeManager {
             .reserve_validator_token
             .checked_sub(validator_amount)
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
-        if self.storage.spec().is_t2() {
+        if self.storage.spec().is_t1c() {
             let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
             if available_after_burn < reserved {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
@@ -1325,8 +1325,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t2_reserve_pool_liquidity() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+    fn test_t1c_reserve_pool_liquidity() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -1365,8 +1365,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t2_burn_respects_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+    fn test_t1c_burn_respects_reservation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
         let admin = Address::random();
         let recipient = Address::random();
 
@@ -1409,8 +1409,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t2_partial_burn_with_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+    fn test_t1c_partial_burn_with_reservation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
         let admin = Address::random();
         let recipient = Address::random();
 
@@ -1447,8 +1447,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t2_rebalance_swap_respects_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+    fn test_t1c_rebalance_swap_respects_reservation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
         let admin = Address::random();
         let to = Address::random();
 
@@ -1485,7 +1485,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t2_rebalance_swap_skips_reservation() -> eyre::Result<()> {
+    fn test_pre_t1c_rebalance_swap_skips_reservation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         let admin = Address::random();
         let to = Address::random();
@@ -1520,7 +1520,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t2_no_reservation() -> eyre::Result<()> {
+    fn test_pre_t1c_no_reservation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         let admin = Address::random();
         let recipient = Address::random();
