@@ -1584,11 +1584,8 @@ mod tests {
             let mut v1 = v1();
             v1.initialize(owner)?;
 
-            // Find a 32-byte value that is not a valid Ed25519 curve point.
-            let bad_key = (0u8..)
-                .map(|i| [i; 32])
-                .find(|k| PublicKey::decode(&k[..]).is_err())
-                .unwrap();
+            // Zero is not a valid Ed25519 curve point.
+            let bad_key = [0u8; 32];
             v1.add_validator(
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
