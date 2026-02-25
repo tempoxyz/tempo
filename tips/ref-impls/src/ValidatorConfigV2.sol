@@ -90,6 +90,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
                 validatorAddress,
                 uint8(bytes(ingress).length),
                 ingress,
+                uint8(bytes(egress).length),
                 egress
             )
         );
@@ -166,6 +167,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
                 validatorAddress,
                 uint8(bytes(ingress).length),
                 ingress,
+                uint8(bytes(egress).length),
                 egress
             )
         );

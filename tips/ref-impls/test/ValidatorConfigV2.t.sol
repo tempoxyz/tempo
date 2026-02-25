@@ -57,6 +57,7 @@ contract ValidatorConfigV2Test is BaseTest {
                 validatorAddress,
                 uint8(bytes(ingress).length),
                 ingress,
+                uint8(bytes(egress).length),
                 egress
             )
         );
@@ -86,6 +87,7 @@ contract ValidatorConfigV2Test is BaseTest {
                 validatorAddress,
                 uint8(bytes(ingress).length),
                 ingress,
+                uint8(bytes(egress).length),
                 egress
             )
         );

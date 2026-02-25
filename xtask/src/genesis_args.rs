@@ -1004,13 +1004,14 @@ fn initialize_validator_config_v2(
                 let ingress = addr.to_string();
                 let egress = addr.ip().to_string();
 
-                // message: keccak256(chainId || contractAddr || validatorAddr || uint8(ingress.len) || ingress || egress)
+                // message: keccak256(chainId || contractAddr || validatorAddr || uint8(ingress.len) || ingress || uint8(egress.len) || egress)
                 let mut hasher = Keccak256::new();
                 hasher.update(chain_id.to_be_bytes());
                 hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
                 hasher.update(validator_address.as_slice());
                 hasher.update([ingress.len() as u8]);
                 hasher.update(ingress.as_bytes());
+                hasher.update([egress.len() as u8]);
                 hasher.update(egress.as_bytes());
                 let message = hasher.finalize();
 

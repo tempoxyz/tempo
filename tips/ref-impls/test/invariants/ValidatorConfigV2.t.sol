@@ -122,6 +122,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 validatorAddress,
                 uint8(bytes(ingress).length),
                 ingress,
+                uint8(bytes(egress).length),
                 egress
             )
         );
@@ -148,6 +149,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 validatorAddress,
                 uint8(bytes(ingress).length),
                 ingress,
+                uint8(bytes(egress).length),
                 egress
             )
         );

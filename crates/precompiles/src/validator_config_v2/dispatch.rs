@@ -199,7 +199,9 @@ mod tests {
             let ingress = b"192.168.1.1:8000";
             msg_data.push(ingress.len() as u8);
             msg_data.extend_from_slice(ingress);
-            msg_data.extend_from_slice(b"192.168.1.1");
+            let egress = b"192.168.1.1";
+            msg_data.push(egress.len() as u8);
+            msg_data.extend_from_slice(egress);
             let message = alloy::primitives::keccak256(&msg_data);
 
             // Sign with namespace

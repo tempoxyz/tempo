@@ -98,7 +98,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Add a new validator (owner only)
     /// @dev The signature must be an Ed25519 signature over:
-    ///      keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ADD_VALIDATOR", chainId, contractAddress, validatorAddress, uint8(bytes(ingress).length), ingress, egress))
+    ///      keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ADD_VALIDATOR", chainId, contractAddress, validatorAddress, uint8(bytes(ingress).length), ingress, uint8(bytes(egress).length), egress))
     ///      This proves the caller controls the private key corresponding to publicKey.
     ///      Reverts if isInitialized() returns false.
     /// @param validatorAddress The address of the new validator
@@ -133,7 +133,7 @@ interface IValidatorConfigV2 {
     ///      - Egress must be parseable as <ip>
     ///      - The signature must prove ownership of the new public key
     ///      The signature must be an Ed25519 signature over:
-    ///      keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR", chainId, contractAddress, validatorAddress, uint8(bytes(ingress).length), ingress, egress))
+    ///      keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR", chainId, contractAddress, validatorAddress, uint8(bytes(ingress).length), ingress, uint8(bytes(egress).length), egress))
     /// @param validatorAddress The address of the validator to rotate
     /// @param publicKey The new validator's Ed25519 communication public key
     /// @param ingress The new validator's inbound address `<ip>:<port>` for incoming connections
