@@ -115,6 +115,8 @@ pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"
 pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
 /// Role hash for minting new tokens.
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
+/// Role hash for burning tokens from any address.
+pub static BURN_AT_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_AT_ROLE"));
 /// Role hash that prevents an account from burning tokens.
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
 
@@ -181,6 +183,14 @@ impl TIP20Token {
     /// The role is computed as `keccak256("ISSUER_ROLE")`.
     pub fn issuer_role() -> B256 {
         *ISSUER_ROLE
+    }
+
+    /// Returns the BURN_AT_ROLE constant
+    ///
+    /// This role identifier grants permission to burn tokens from any account.
+    /// The role is computed as `keccak256("BURN_AT_ROLE")`.
+    pub fn burn_at_role() -> B256 {
+        *BURN_AT_ROLE
     }
 
     /// Returns the BURN_BLOCKED_ROLE constant
@@ -422,6 +432,34 @@ impl TIP20Token {
         }))?;
         self.emit_event(TIP20Event::Burn(ITIP20::Burn {
             from: msg_sender,
+            amount: call.amount,
+        }))
+    }
+
+    /// Burns tokens from any address regardless of transfer policy
+    pub fn burn_at(&mut self, msg_sender: Address, call: ITIP20::burnAtCall) -> Result<()> {
+        self.check_role(msg_sender, *BURN_AT_ROLE)?;
+
+        // Prevent burning from `FeeManager` and `StablecoinDEX` to protect accounting invariants
+        if matches!(call.from, TIP_FEE_MANAGER_ADDRESS | STABLECOIN_DEX_ADDRESS) {
+            return Err(TIP20Error::protected_address().into());
+        }
+
+        self._transfer(call.from, Address::ZERO, call.amount)?;
+
+        let total_supply = self.total_supply()?;
+        let new_supply =
+            total_supply
+                .checked_sub(call.amount)
+                .ok_or(TIP20Error::insufficient_balance(
+                    total_supply,
+                    call.amount,
+                    self.address,
+                ))?;
+        self.set_total_supply(new_supply)?;
+
+        self.emit_event(TIP20Event::BurnAt(ITIP20::BurnAt {
+            from: call.from,
             amount: call.amount,
         }))
     }
@@ -1851,6 +1889,246 @@ pub(crate) mod tests {
                 account: STABLECOIN_DEX_ADDRESS,
             })?;
             assert_eq!(balance, amount);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_success() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+        let target = Address::random();
+        let amount = U256::from(1000);
+        let burn_amount = U256::from(300);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_AT_ROLE)
+                .with_mint(target, amount)
+                .apply()?;
+
+            // Verify initial state
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: target })?,
+                amount
+            );
+            assert_eq!(token.total_supply()?, amount);
+
+            // Burn tokens from target
+            token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: target,
+                    amount: burn_amount,
+                },
+            )?;
+
+            // Verify balance and supply decreased
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: target })?,
+                amount - burn_amount
+            );
+            assert_eq!(token.total_supply()?, amount - burn_amount);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_unauthorized() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let unauthorized = Address::random();
+        let target = Address::random();
+        let amount = U256::from(1000);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_mint(target, amount)
+                .apply()?;
+
+            let result = token.burn_at(
+                unauthorized,
+                ITIP20::burnAtCall {
+                    from: target,
+                    amount: U256::from(100),
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::RolesAuthError(
+                    tempo_contracts::precompiles::RolesAuthError::Unauthorized(_)
+                ))
+            ));
+
+            // Verify balance unchanged
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: target })?,
+                amount
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_protected_addresses() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+        let amount = (U256::random() % U256::from(u128::MAX)) / U256::from(2);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_AT_ROLE)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
+                .with_mint(STABLECOIN_DEX_ADDRESS, amount)
+                .apply()?;
+
+            // Attempt to burn from FeeManager
+            let result = token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: TIP_FEE_MANAGER_ADDRESS,
+                    amount: amount / U256::from(2),
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
+            ));
+
+            // Verify FeeManager balance unchanged
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: TIP_FEE_MANAGER_ADDRESS,
+                })?,
+                amount
+            );
+
+            // Attempt to burn from StablecoinDEX
+            let result = token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: STABLECOIN_DEX_ADDRESS,
+                    amount: amount / U256::from(2),
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
+            ));
+
+            // Verify StablecoinDEX balance unchanged
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: STABLECOIN_DEX_ADDRESS,
+                })?,
+                amount
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_insufficient_balance() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+        let target = Address::random();
+        let amount = U256::from(1000);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_AT_ROLE)
+                .with_mint(target, amount)
+                .apply()?;
+
+            let result = token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: target,
+                    amount: amount + U256::from(1),
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(
+                    TIP20Error::InsufficientBalance(_)
+                ))
+            ));
+
+            // Verify balance unchanged
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: target })?,
+                amount
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_no_policy_check() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+        let target = Address::random();
+        let amount = U256::from(1000);
+        let burn_amount = U256::from(300);
+
+        StorageCtx::enter(&mut storage, || {
+            // Create a blacklist policy that blocks target
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+            let policy_id = registry.create_policy_with_accounts(
+                admin,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                    accounts: vec![target],
+                },
+            )?;
+
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_AT_ROLE)
+                .with_mint(target, amount)
+                .apply()?;
+
+            // Change to blacklist policy
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            // burnAt should succeed even though target is blacklisted
+            token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: target,
+                    amount: burn_amount,
+                },
+            )?;
+
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: target })?,
+                amount - burn_amount
+            );
+            assert_eq!(token.total_supply()?, amount - burn_amount);
 
             Ok(())
         })

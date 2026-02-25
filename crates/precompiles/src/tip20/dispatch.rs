@@ -86,6 +86,9 @@ impl Precompile for TIP20Token {
             TIP20Call::TIP20(ITIP20Calls::ISSUER_ROLE(call)) => {
                 view(call, |_| Ok(Self::issuer_role()))
             }
+            TIP20Call::TIP20(ITIP20Calls::BURN_AT_ROLE(call)) => {
+                view(call, |_| Ok(Self::burn_at_role()))
+            }
             TIP20Call::TIP20(ITIP20Calls::BURN_BLOCKED_ROLE(call)) => {
                 view(call, |_| Ok(Self::burn_blocked_role()))
             }
@@ -133,6 +136,9 @@ impl Precompile for TIP20Token {
             }
             TIP20Call::TIP20(ITIP20Calls::burnWithMemo(call)) => {
                 mutate_void(call, msg_sender, |s, c| self.burn_with_memo(s, c))
+            }
+            TIP20Call::TIP20(ITIP20Calls::burnAt(call)) => {
+                mutate_void(call, msg_sender, |s, c| self.burn_at(s, c))
             }
             TIP20Call::TIP20(ITIP20Calls::burnBlocked(call)) => {
                 mutate_void(call, msg_sender, |s, c| self.burn_blocked(s, c))

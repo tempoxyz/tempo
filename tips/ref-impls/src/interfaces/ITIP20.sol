@@ -45,6 +45,11 @@ interface ITIP20 {
     /// @param amount The amount of tokens burned.
     event Burn(address indexed from, uint256 amount);
 
+    /// @notice Emitted when tokens are burned from any account.
+    /// @param from The address from which tokens were burned.
+    /// @param amount The amount of tokens burned.
+    event BurnAt(address indexed from, uint256 amount);
+
     /// @notice Emitted when tokens are forcibly burned from a blocked account.
     /// @param from The address from which tokens were forcibly burned.
     /// @param amount The amount of tokens burned.
@@ -89,6 +94,10 @@ interface ITIP20 {
         address indexed from, address indexed to, uint256 amount, bytes32 indexed memo
     );
 
+    /// @notice Returns the role identifier for burning tokens from any account.
+    /// @return The burn-at role identifier.
+    function BURN_AT_ROLE() external view returns (bytes32);
+
     /// @notice Returns the role identifier for burning tokens from blocked accounts.
     /// @return The burn blocked role identifier.
     function BURN_BLOCKED_ROLE() external view returns (bytes32);
@@ -121,6 +130,11 @@ interface ITIP20 {
     /// @notice Burns tokens from the caller's balance.
     /// @param amount The amount of tokens to burn.
     function burn(uint256 amount) external;
+
+    /// @notice Burns tokens from any account.
+    /// @param from The address to burn tokens from.
+    /// @param amount The amount of tokens to burn.
+    function burnAt(address from, uint256 amount) external;
 
     /// @notice Burns tokens from a blocked account (admin function).
     /// @param from The address to burn tokens from.

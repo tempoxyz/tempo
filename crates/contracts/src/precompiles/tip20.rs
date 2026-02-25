@@ -55,6 +55,7 @@ crate::sol! {
         function supplyCap() external view returns (uint256);
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
+        function burnAt(address from, uint256 amount) external;
         function burnBlocked(address from, uint256 amount) external;
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
         function burnWithMemo(uint256 amount, bytes32 memo) external;
@@ -80,6 +81,10 @@ crate::sol! {
         /// @notice Returns the role identifier for issuing tokens
         /// @return The issuer role identifier
         function ISSUER_ROLE() external view returns (bytes32);
+
+        /// @notice Returns the role identifier for burning tokens from any account
+        /// @return The burn-at role identifier
+        function BURN_AT_ROLE() external view returns (bytes32);
 
         /// @notice Returns the role identifier for burning tokens from blocked accounts
         /// @return The burn blocked role identifier
@@ -110,6 +115,7 @@ crate::sol! {
         event Approval(address indexed owner, address indexed spender, uint256 amount);
         event Mint(address indexed to, uint256 amount);
         event Burn(address indexed from, uint256 amount);
+        event BurnAt(address indexed from, uint256 amount);
         event BurnBlocked(address indexed from, uint256 amount);
         event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 indexed memo);
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
