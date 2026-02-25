@@ -465,30 +465,28 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
     Ok(())
 }
 
-/// TIP-1007: getFeeToken() is callable via eth_call (static call safety) and
-/// returns the resolved fee token. The handler runs during eth_call in this
-/// node implementation, so the fee token is set in transient storage.
+/// TIP-1007: getFeeToken() returns address(0) in eth_call simulation contexts
+/// because the handler skips writing the fee token to transient storage when
+/// `disable_fee_charge` is set (per TIP-1007 spec).
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_fee_token_eth_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let user_address = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
         .connect_http(setup.http_url);
 
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
-    // The handler runs during eth_call, so getFeeToken() returns the user's resolved
-    // fee token rather than address(0). This is because eth_call goes through the
-    // full handler pipeline including validate_against_state_and_deduct_caller.
+    // Per TIP-1007 spec: getFeeToken() returns address(0) in simulation contexts
+    // (eth_call) where the transaction handler does not write the fee token.
     let fee_token = fee_manager.getFeeToken().call().await?;
-    let user_fee_token = fee_manager.userTokens(user_address).call().await?;
     assert_eq!(
-        fee_token, user_fee_token,
-        "getFeeToken() via eth_call must return the resolved fee token"
+        fee_token,
+        Address::ZERO,
+        "getFeeToken() via eth_call must return address(0) per TIP-1007 spec"
     );
 
     Ok(())
