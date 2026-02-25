@@ -11,7 +11,8 @@ pragma solidity >=0.8.13 <0.9.0;
 ///      - `active` bool replaced by `addedAtHeight` and `deactivatedAtHeight`
 ///      - No `updateValidator` - validators are immutable after creation
 ///      - Requires Ed25519 signature on `addValidator` to prove key ownership
-///      - Both address and public key must be unique across all validators (including deleted)
+///      - Addresses must be unique among active validators (reusable after deactivation)
+///      - Public keys must be unique across all validators (including deleted)
 interface IValidatorConfigV2 {
 
     // =========================================================================
@@ -76,7 +77,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Validator information (V2 - append-only, delete-once)
     /// @param publicKey Ed25519 communication public key (non-zero, unique across all validators)
-    /// @param validatorAddress Ethereum-style address of the validator (unique across all validators)
+    /// @param validatorAddress Ethereum-style address of the validator (unique among active validators)
     /// @param ingress Address where other validators can connect (format: `<ip>:<port>`)
     /// @param egress IP address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>`)
     /// @param index Position in validators array (assigned at creation, immutable)
@@ -118,8 +119,8 @@ interface IValidatorConfigV2 {
     /// @notice Deactivates a validator (owner or validator only)
     /// @dev Marks the validator as deactivated by setting deactivatedAtHeight to the current block height.
     ///      The validator's entry remains in storage for historical queries.
-    ///      The public key remains reserved and cannot be reused. The address remains
-    ///      reserved unless reassigned via transferValidatorOwnership.
+    ///      The public key remains reserved and cannot be reused. The address becomes
+    ///      available for reuse by a new validator or via transferValidatorOwnership.
     /// @param validatorAddress The validator address to deactivate
     function deactivateValidator(address validatorAddress) external;
 
