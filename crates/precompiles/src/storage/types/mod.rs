@@ -27,6 +27,26 @@ use crate::{
 };
 use alloy::primitives::{Address, U256, keccak256};
 
+/// Marker trait selecting the EVM storage space used by a handler.
+///
+/// `Persistent` and `Transient` are independent storage spaces for the same `(address, slot)`.
+/// Selecting a mode determines both, the target space and the opcodes used to interact with it.
+pub trait StorageMode: 'static {}
+
+/// Persistent EVM storage space — uses `SLOAD`/`SSTORE`.
+///
+/// Values persist across transactions and blocks.
+#[derive(Debug, Clone, Copy)]
+pub struct Persistent;
+impl StorageMode for Persistent {}
+
+/// Transient EVM storage space — uses `TLOAD`/`TSTORE`.
+///
+/// Values are transaction-local and are cleared by the EVM at the transaction boundary.
+#[derive(Debug, Clone, Copy)]
+pub struct Transient;
+impl StorageMode for Transient {}
+
 /// Describes how a type is laid out in EVM storage.
 ///
 /// This determines whether a type can be packed with other fields
@@ -204,15 +224,6 @@ pub trait Handler<T: Storable> {
 
     /// Deletes the value from storage (sets to zero).
     fn delete(&mut self) -> Result<()>;
-
-    /// Reads the value from storage.
-    fn t_read(&self) -> Result<T>;
-
-    /// Writes the value to storage.
-    fn t_write(&mut self, value: T) -> Result<()>;
-
-    /// Deletes the value from storage (sets to zero).
-    fn t_delete(&mut self) -> Result<()>;
 }
 
 /// High-level storage operations for storable types.
@@ -368,5 +379,41 @@ pub trait StorageKey: sealed::OnlyPrimitives {
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
 
         U256::from_be_bytes(keccak256(buf).0)
+    }
+}
+
+/// Mode-generic handler factory used by `Mapping` to create sub-handlers.
+///
+/// This trait provides a way to create the appropriate handler type based on the storage mode.
+pub trait HandleFor<M: StorageMode>: StorableType {
+    type HandlerMode;
+
+    fn handle_for(slot: U256, ctx: LayoutCtx, address: Address) -> Self::HandlerMode;
+}
+
+/// Blanket impl: all StorableType types support Persistent mode via their Handler.
+impl<T: StorableType> HandleFor<Persistent> for T {
+    type HandlerMode = T::Handler;
+
+    fn handle_for(slot: U256, ctx: LayoutCtx, address: Address) -> Self::HandlerMode {
+        T::handle(slot, ctx, address)
+    }
+}
+
+/// Transient mode for primitive types (sealed::OnlyPrimitives).
+impl<T: sealed::OnlyPrimitives + Storable> HandleFor<Transient> for T {
+    type HandlerMode = Slot<T, Transient>;
+
+    fn handle_for(slot: U256, ctx: LayoutCtx, address: Address) -> Self::HandlerMode {
+        Slot::new_with_ctx(slot, ctx, address)
+    }
+}
+
+/// Transient mode for Mapping types — propagates transient-ness.
+impl<K, V: HandleFor<Transient> + StorableType> HandleFor<Transient> for Mapping<K, V> {
+    type HandlerMode = Mapping<K, V, Transient>;
+
+    fn handle_for(slot: U256, _ctx: LayoutCtx, address: Address) -> Self::HandlerMode {
+        Mapping::new(slot, address)
     }
 }

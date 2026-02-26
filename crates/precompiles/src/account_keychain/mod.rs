@@ -123,12 +123,11 @@ pub struct AccountKeychain {
     // key_authorization_witnesses[account][witness] -> true once manually burned.
     key_authorization_witnesses: Mapping<Address, Mapping<B256, bool>>,
 
-    // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
-    // macro is refactored and has 2 independent layouts (persistent and transient).
-    // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
+    #[transient]
     transaction_key: Address,
-    // The transaction origin (tx.origin) - the EOA that signed the transaction.
-    // Used to ensure spending limits only apply when msg_sender == tx_origin.
+    /// The transaction origin (tx.origin) — the EOA that signed the transaction.
+    /// Used to ensure spending limits only apply when msg_sender == tx_origin.
+    #[transient]
     tx_origin: Address,
 }
 
@@ -710,7 +709,7 @@ impl AccountKeychain {
         _call: getTransactionKeyCall,
         _msg_sender: Address,
     ) -> Result<Address> {
-        self.transaction_key.t_read()
+        self.transaction_key.read()
     }
 
     /// Internal: Set the transaction key (called during transaction validation)
@@ -725,7 +724,7 @@ impl AccountKeychain {
     /// transactions.
     /// Uses transient storage, so the key is automatically cleared after the transaction.
     pub fn set_transaction_key(&mut self, key_id: Address) -> Result<()> {
-        self.transaction_key.t_write(key_id)
+        self.transaction_key.write(key_id)
     }
 
     /// Sets the transaction origin (tx.origin) for the current transaction.
@@ -733,7 +732,7 @@ impl AccountKeychain {
     /// Called by the handler before transaction execution.
     /// Uses transient storage, so it's automatically cleared after the transaction.
     pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
-        self.tx_origin.t_write(origin)
+        self.tx_origin.write(origin)
     }
 
     /// Persists the authorization-time restrictions for a freshly created key.
@@ -1086,7 +1085,7 @@ impl AccountKeychain {
     /// `tx_origin` is seeded by the handler before validation/execution.
     /// If origin is not seeded (zero), admin ops are rejected.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
-        let transaction_key = self.transaction_key.t_read()?;
+        let transaction_key = self.transaction_key.read()?;
         if !transaction_key.is_zero()
             && (!self.storage.spec().is_t6() || !self.is_admin_key(msg_sender, transaction_key)?)
         {
@@ -1094,7 +1093,7 @@ impl AccountKeychain {
         }
 
         if self.storage.spec().is_t2() {
-            let tx_origin = self.tx_origin.t_read()?;
+            let tx_origin = self.tx_origin.read()?;
             if tx_origin.is_zero() || tx_origin != msg_sender {
                 return Err(AccountKeychainError::unauthorized_caller().into());
             }
@@ -1397,13 +1396,13 @@ impl AccountKeychain {
         token: Address,
         amount: U256,
     ) -> Result<()> {
-        let transaction_key = self.transaction_key.t_read()?;
+        let transaction_key = self.transaction_key.read()?;
 
         if transaction_key == Address::ZERO {
             return Ok(());
         }
 
-        let tx_origin = self.tx_origin.t_read()?;
+        let tx_origin = self.tx_origin.read()?;
         if account != tx_origin {
             return Ok(());
         }
@@ -1470,7 +1469,7 @@ impl AccountKeychain {
         amount: U256,
     ) -> Result<()> {
         // Get the transaction key for this account
-        let transaction_key = self.transaction_key.t_read()?;
+        let transaction_key = self.transaction_key.read()?;
 
         // If using main key (Address::ZERO), no spending limits apply
         if transaction_key == Address::ZERO {
@@ -1478,7 +1477,7 @@ impl AccountKeychain {
         }
 
         // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.tx_origin.t_read()?;
+        let tx_origin = self.tx_origin.read()?;
         if account != tx_origin {
             return Ok(());
         }
@@ -1505,7 +1504,7 @@ impl AccountKeychain {
         new_approval: U256,
     ) -> Result<()> {
         // Get the transaction key for this account
-        let transaction_key = self.transaction_key.t_read()?;
+        let transaction_key = self.transaction_key.read()?;
 
         // If using main key (Address::ZERO), no spending limits apply
         if transaction_key == Address::ZERO {
@@ -1513,7 +1512,7 @@ impl AccountKeychain {
         }
 
         // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.tx_origin.t_read()?;
+        let tx_origin = self.tx_origin.read()?;
         if account != tx_origin {
             return Ok(());
         }
@@ -2154,7 +2153,7 @@ mod tests {
             let mut keychain = AccountKeychain::new();
 
             // Test 1: Initially transaction key should be zero
-            let initial_key = keychain.transaction_key.t_read()?;
+            let initial_key = keychain.transaction_key.read()?;
             assert_eq!(
                 initial_key,
                 Address::ZERO,
@@ -2165,7 +2164,7 @@ mod tests {
             keychain.set_transaction_key(access_key_addr)?;
 
             // Test 3: Verify it was stored
-            let loaded_key = keychain.transaction_key.t_read()?;
+            let loaded_key = keychain.transaction_key.read()?;
             assert_eq!(loaded_key, access_key_addr, "Transaction key should be set");
 
             // Test 4: Verify getTransactionKey works
@@ -2178,7 +2177,7 @@ mod tests {
 
             // Test 5: Clear transaction key
             keychain.set_transaction_key(Address::ZERO)?;
-            let cleared_key = keychain.transaction_key.t_read()?;
+            let cleared_key = keychain.transaction_key.read()?;
             assert_eq!(
                 cleared_key,
                 Address::ZERO,

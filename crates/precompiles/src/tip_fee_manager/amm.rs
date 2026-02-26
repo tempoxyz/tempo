@@ -166,7 +166,7 @@ impl TipFeeManager {
     /// Reserves pool liquidity in transient storage for a pending fee swap.
     #[inline]
     pub fn reserve_pool_liquidity(&mut self, pool_id: B256, amount: u128) -> Result<()> {
-        self.pending_fee_swap_reservation[pool_id].t_write(amount)
+        self.pending_fee_swap_reservation[pool_id].write(amount)
     }
 
     /// Executes a rebalance swap: sells `amount_out` of user-token from the pool in exchange for
@@ -218,7 +218,7 @@ impl TipFeeManager {
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
         if self.storage.spec().is_t1c() {
-            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
+            let reserved = self.pending_fee_swap_reservation[pool_id].read()?;
             if pool.reserve_validator_token < reserved {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
@@ -444,7 +444,7 @@ impl TipFeeManager {
             .checked_sub(validator_amount)
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
         if self.storage.spec().is_t1c() {
-            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
+            let reserved = self.pending_fee_swap_reservation[pool_id].read()?;
             if available_after_burn < reserved {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
@@ -1515,7 +1515,7 @@ mod tests {
             let amount_out: u128 = compute_amount_out(max_amount)?.try_into().unwrap();
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
-            let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
+            let reserved = amm.pending_fee_swap_reservation[pool_id].read()?;
             let expected_reserved: u128 = compute_amount_out(max_amount)?.try_into().unwrap();
             assert_eq!(reserved, expected_reserved);
 
@@ -1636,7 +1636,7 @@ mod tests {
 
             amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)?;
             let pool = amm.pools[pool_id].read()?;
-            let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
+            let reserved = amm.pending_fee_swap_reservation[pool_id].read()?;
             assert!(pool.reserve_validator_token >= reserved);
 
             Ok(())

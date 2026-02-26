@@ -79,6 +79,8 @@ pub(crate) struct LayoutField<'a> {
     pub kind: FieldKind<'a>,
     /// The assigned storage slot for this field (or base for const-eval chain)
     pub assigned_slot: SlotAssignment,
+    /// Whether this field uses transient storage
+    pub transient: bool,
 }
 
 /// Build layout IR from field information.
@@ -117,6 +119,7 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<LayoutFiel
             ty: &field.ty,
             kind,
             assigned_slot,
+            transient: field.transient,
         });
     }
 
@@ -466,6 +469,7 @@ mod tests {
             ty,
             slot: slot.map(U256::from),
             base_slot: base_slot.map(U256::from),
+            transient: false,
         }
     }
 

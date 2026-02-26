@@ -94,21 +94,6 @@ impl<T: Storable> Handler<T> for BytesLikeHandler<T> {
     fn delete(&mut self) -> Result<()> {
         self.as_slot().delete()
     }
-
-    #[inline]
-    fn t_read(&self) -> Result<T> {
-        self.as_slot().t_read()
-    }
-
-    #[inline]
-    fn t_write(&mut self, value: T) -> Result<()> {
-        self.as_slot().t_write(value)
-    }
-
-    #[inline]
-    fn t_delete(&mut self) -> Result<()> {
-        self.as_slot().t_delete()
-    }
 }
 
 // -- STORABLE OPS IMPLEMENTATIONS ---------------------------------------------

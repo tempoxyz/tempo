@@ -335,7 +335,7 @@ mod tests {
         tip_fee_manager::{
             IFeeManager, TipFeeManager,
             amm::{Pool, PoolKey, compute_amount_out},
-            slots as fee_manager_slots,
+            slots as fee_manager_slots, transient_slots as fee_manager_transient_slots,
         },
         tip20::{
             ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
@@ -791,7 +791,7 @@ mod tests {
             let pool_slot =
                 U256::from_be_bytes::<32>(pool_id.into()).mapping_slot(fee_manager_slots::POOLS);
             let pending_pool_reservation_slot = U256::from_be_bytes::<32>(pool_id.into())
-                .mapping_slot(fee_manager_slots::PENDING_FEE_SWAP_RESERVATION);
+                .mapping_slot(fee_manager_transient_slots::PENDING_FEE_SWAP_RESERVATION);
             let receive_policy_config_slot =
                 recipient.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
             let nonce_key = U256::from(42);

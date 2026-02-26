@@ -461,24 +461,6 @@ where
         // Delete the underlying vector (clears length and data slots)
         self.values.delete()
     }
-
-    fn t_read(&self) -> Result<Set<T>> {
-        Err(TempoPrecompileError::Fatal(
-            "Set types don't support transient storage".into(),
-        ))
-    }
-
-    fn t_write(&mut self, _value: Set<T>) -> Result<()> {
-        Err(TempoPrecompileError::Fatal(
-            "Set types don't support transient storage".into(),
-        ))
-    }
-
-    fn t_delete(&mut self) -> Result<()> {
-        Err(TempoPrecompileError::Fatal(
-            "Set types don't support transient storage".into(),
-        ))
-    }
 }
 
 impl<T> fmt::Debug for SetHandler<T>
@@ -819,19 +801,6 @@ mod tests {
             assert_eq!(handler.at(0)?, Some(U256::from(2)));
             assert_eq!(handler.len()?, 1);
 
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_handler_transient_storage_errors() -> eyre::Result<()> {
-        let (mut storage, address) = setup_storage();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
-            assert!(handler.t_read().is_err());
-            assert!(handler.t_write(Set::new()).is_err());
-            assert!(handler.t_delete().is_err());
             Ok(())
         })
     }

@@ -8,12 +8,18 @@ use syn::{Expr, Ident, Visibility};
 /// Generates a public handler field declaration for a storage field
 pub(crate) fn gen_handler_field_decl(field: &LayoutField<'_>) -> proc_macro2::TokenStream {
     let field_name = field.name;
-    let handler_type = match &field.kind {
-        FieldKind::Direct(ty) => {
+    let handler_type = match (&field.kind, field.transient) {
+        (FieldKind::Direct(ty), false) => {
             quote! { <#ty as crate::storage::StorableType>::Handler }
         }
-        FieldKind::Mapping { key, value } => {
+        (FieldKind::Direct(ty), true) => {
+            quote! { crate::storage::Slot<#ty, crate::storage::Transient> }
+        }
+        (FieldKind::Mapping { key, value }, false) => {
             quote! { <crate::storage::Mapping<#key, #value> as crate::storage::StorableType>::Handler }
+        }
+        (FieldKind::Mapping { key, value }, true) => {
+            quote! { crate::storage::Mapping<#key, #value, crate::storage::Transient> }
         }
     };
 
@@ -43,8 +49,12 @@ pub(crate) fn gen_handler_field_init(
 
     let is_contract = packing_mod.is_none();
 
-    // Create slots_module identifier based on context
-    let slots_mod = format_ident!("slots");
+    // For contract-level fields, transient fields reference transient_slots:: module
+    let slots_mod = if field.transient {
+        format_ident!("transient_slots")
+    } else {
+        format_ident!("slots")
+    };
     let const_mod = packing_mod.unwrap_or(&slots_mod);
 
     // Calculate `Slot` based on context
@@ -54,6 +64,44 @@ pub(crate) fn gen_handler_field_init(
         quote! { base_slot.saturating_add(::alloy::primitives::U256::from_limbs([#const_mod::#loc_const.offset_slots as u64, 0, 0, 0])) }
     };
 
+    // For transient fields at contract level, use direct construction
+    if field.transient && is_contract {
+        return match &field.kind {
+            FieldKind::Direct(ty) => {
+                let (prev_slot_const_ref, next_slot_const_ref) = packing::get_neighbor_slot_refs(
+                    field_idx,
+                    all_fields,
+                    const_mod,
+                    |f| f.name,
+                    is_contract,
+                );
+
+                let layout_ctx = packing::gen_layout_ctx_expr(
+                    ty,
+                    matches!(field.assigned_slot, SlotAssignment::Manual(_)),
+                    quote! { #const_mod::#slot_const },
+                    quote! { #const_mod::#offset_const },
+                    prev_slot_const_ref,
+                    next_slot_const_ref,
+                );
+
+                quote! {
+                    #field_name: crate::storage::Slot::new_with_ctx(
+                        #slot_expr, #layout_ctx, address
+                    )
+                }
+            }
+            FieldKind::Mapping { key, value } => {
+                quote! {
+                    #field_name: crate::storage::Mapping::<#key, #value, crate::storage::Transient>::new(
+                        #slot_expr, address
+                    )
+                }
+            }
+        };
+    }
+
+    // Persistent field (existing logic)
     match &field.kind {
         FieldKind::Direct(ty) => {
             // Calculate neighbor slot references for packing detection
@@ -106,14 +154,16 @@ pub(crate) fn gen_handler_field_init(
 pub(crate) fn gen_struct(
     name: &Ident,
     vis: &Visibility,
-    allocated_fields: &[LayoutField<'_>],
+    persistent_fields: &[LayoutField<'_>],
+    transient_fields: &[LayoutField<'_>],
 ) -> proc_macro2::TokenStream {
-    // Generate handler field for each storage variable
-    let handler_fields = allocated_fields.iter().map(gen_handler_field_decl);
+    let handler_fields = persistent_fields.iter().map(gen_handler_field_decl);
+    let transient_handler_fields = transient_fields.iter().map(gen_handler_field_decl);
 
     quote! {
         #vis struct #name {
             #(#handler_fields,)*
+            #(#transient_handler_fields,)*
             address: ::alloy::primitives::Address,
             storage: crate::storage::StorageCtx,
         }
@@ -123,14 +173,20 @@ pub(crate) fn gen_struct(
 /// Generate the constructor method
 pub(crate) fn gen_constructor(
     name: &Ident,
-    allocated_fields: &[LayoutField<'_>],
+    persistent_fields: &[LayoutField<'_>],
+    transient_fields: &[LayoutField<'_>],
     address: Option<&Expr>,
 ) -> proc_macro2::TokenStream {
     // Generate handler initializations for each field using the shared helper
-    let field_inits = allocated_fields
+    let persistent_field_inits = persistent_fields
         .iter()
         .enumerate()
-        .map(|(idx, field)| gen_handler_field_init(field, idx, allocated_fields, None));
+        .map(|(idx, field)| gen_handler_field_init(field, idx, persistent_fields, None));
+
+    let transient_field_inits = transient_fields
+        .iter()
+        .enumerate()
+        .map(|(idx, field)| gen_handler_field_init(field, idx, transient_fields, None));
 
     // Generate `pub fn new()` when address is provided
     let new_fn = address.map(|addr| {
@@ -144,6 +200,18 @@ pub(crate) fn gen_constructor(
         }
     });
 
+    // Only generate collision check calls for non-empty modules
+    let persistent_check = if !persistent_fields.is_empty() {
+        quote! { slots::__check_all_collisions(); }
+    } else {
+        quote! {}
+    };
+    let transient_check = if !transient_fields.is_empty() {
+        quote! { transient_slots::__check_all_collisions(); }
+    } else {
+        quote! {}
+    };
+
     quote! {
         impl #name {
             #new_fn
@@ -153,11 +221,13 @@ pub(crate) fn gen_constructor(
                 // Run collision detection checks in debug builds
                 #[cfg(debug_assertions)]
                 {
-                    slots::__check_all_collisions();
+                    #persistent_check
+                    #transient_check
                 }
 
                 Self {
-                    #(#field_inits,)*
+                    #(#persistent_field_inits,)*
+                    #(#transient_field_inits,)*
                     address,
                     storage: crate::storage::StorageCtx::default(),
                 }
@@ -221,20 +291,54 @@ pub(crate) fn gen_contract_storage_impl(name: &Ident) -> proc_macro2::TokenStrea
     }
 }
 
-/// Generate the `slots` module with constants and collision checks
-///
-/// Returns the slots module containing only constants and collision detection functions
-pub(crate) fn gen_slots_module(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::TokenStream {
-    // Generate constants and collision check functions
-    let constants = packing::gen_constants_from_ir(allocated_fields, false);
-    let collision_checks = gen_collision_checks(allocated_fields);
+/// Generate the `slots` and `transient_slots` modules with constants and collision checks
+pub(crate) fn gen_slots_modules(
+    persistent_fields: &[LayoutField<'_>],
+    transient_fields: &[LayoutField<'_>],
+) -> proc_macro2::TokenStream {
+    // Generate persistent slots module
+    let persistent_constants = if !persistent_fields.is_empty() {
+        packing::gen_constants_from_ir(persistent_fields, false)
+    } else {
+        proc_macro2::TokenStream::new()
+    };
+    let persistent_collision_checks = if !persistent_fields.is_empty() {
+        gen_collision_checks(persistent_fields)
+    } else {
+        quote! {
+            #[cfg(debug_assertions)]
+            #[inline(always)]
+            pub(super) fn __check_all_collisions() {}
+        }
+    };
+
+    // Generate transient slots module
+    let transient_constants = if !transient_fields.is_empty() {
+        packing::gen_constants_from_ir(transient_fields, false)
+    } else {
+        proc_macro2::TokenStream::new()
+    };
+    let transient_collision_checks = if !transient_fields.is_empty() {
+        gen_collision_checks(transient_fields)
+    } else {
+        quote! {
+            #[cfg(debug_assertions)]
+            #[inline(always)]
+            pub(super) fn __check_all_collisions() {}
+        }
+    };
 
     quote! {
         pub mod slots {
             use super::*;
+            #persistent_constants
+            #persistent_collision_checks
+        }
 
-            #constants
-            #collision_checks
+        pub mod transient_slots {
+            use super::*;
+            #transient_constants
+            #transient_collision_checks
         }
     }
 }

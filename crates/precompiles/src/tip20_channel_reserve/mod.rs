@@ -90,11 +90,11 @@ pub struct TIP20ChannelReserve {
     /// Per-payer reusable credits for deleted packed channel-state slots.
     channel_storage_credits: Mapping<Address, u64>,
 
-    // WARNING: transient storage slots must remain after persistent storage fields until the
-    // `contract` macro supports independent persistent/transient layouts.
     /// Transient same-transaction guard that prevents close-and-reopen with the same id.
+    #[transient]
     opened_this_tx: Mapping<B256, bool>,
     /// Transient per-transaction entropy seeded by the EVM handler before calls can open channels.
+    #[transient]
     channel_open_context_hash: B256,
 }
 
@@ -111,7 +111,7 @@ impl TIP20ChannelReserve {
     /// transaction-derived hash and the context is automatically cleared before the next
     /// transaction. If this is not called, `open` reads zero from transient storage and reverts.
     pub fn set_channel_open_context_hash(&mut self, hash: B256) -> Result<()> {
-        self.channel_open_context_hash.t_write(hash)
+        self.channel_open_context_hash.write(hash)
     }
 
     /// Returns the number of reusable channel storage credits owned by `payer`.
@@ -156,7 +156,7 @@ impl TIP20ChannelReserve {
             expiring_nonce_hash,
         )?;
         if self.channel_states[channel_id].read()?.exists()
-            || self.opened_this_tx[channel_id].t_read()?
+            || self.opened_this_tx[channel_id].read()?
         {
             return Err(TIP20ChannelReserveError::channel_already_exists().into());
         }
@@ -173,7 +173,7 @@ impl TIP20ChannelReserve {
                 close_requested_at: 0,
             },
         )?;
-        self.opened_this_tx[channel_id].t_write(true)?;
+        self.opened_this_tx[channel_id].write(true)?;
 
         self.emit_event(TIP20ChannelReserveEvent::ChannelOpened(
             ITIP20ChannelReserve::ChannelOpened {
@@ -661,7 +661,7 @@ impl TIP20ChannelReserve {
 
     /// Loads the transaction-scoped nonce hash seeded by the handler.
     fn enclosing_channel_open_context_hash(&self) -> Result<B256> {
-        let hash = self.channel_open_context_hash.t_read()?;
+        let hash = self.channel_open_context_hash.read()?;
         if hash.is_zero() {
             return Err(TIP20ChannelReserveError::expiring_nonce_hash_not_set().into());
         }

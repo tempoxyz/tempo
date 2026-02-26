@@ -112,12 +112,13 @@ fn gen_contract_output(
 }
 
 /// Information extracted from a field in the storage schema
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FieldInfo {
     name: Ident,
     ty: Type,
     slot: Option<U256>,
     base_slot: Option<U256>,
+    transient: bool,
 }
 
 /// Classification of a field based on its type
@@ -166,12 +167,13 @@ fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
                 ));
             }
 
-            let (slot, base_slot) = extract_attributes(&field.attrs)?;
+            let (slot, base_slot, transient) = extract_attributes(&field.attrs)?;
             Ok(FieldInfo {
                 name: name.to_owned(),
                 ty: field.ty,
                 slot,
                 base_slot,
+                transient,
             })
         })
         .collect()
@@ -184,12 +186,22 @@ fn gen_contract_storage(
     fields: &[FieldInfo],
     address: Option<&Expr>,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    // Generate the complete output
-    let allocated_fields = packing::allocate_slots(fields)?;
-    let transformed_struct = layout::gen_struct(ident, vis, &allocated_fields);
+    // Partition into persistent and transient groups
+    let persistent_fields: Vec<FieldInfo> =
+        fields.iter().filter(|f| !f.transient).cloned().collect();
+    let transient_fields: Vec<FieldInfo> = fields.iter().filter(|f| f.transient).cloned().collect();
+
+    // Allocate slots independently — both start from slot 0
+    let persistent_allocated = packing::allocate_slots(&persistent_fields)?;
+    let transient_allocated = packing::allocate_slots(&transient_fields)?;
+
+    // Generate output
+    let transformed_struct =
+        layout::gen_struct(ident, vis, &persistent_allocated, &transient_allocated);
     let storage_trait = layout::gen_contract_storage_impl(ident);
-    let constructor = layout::gen_constructor(ident, &allocated_fields, address);
-    let slots_module = layout::gen_slots_module(&allocated_fields);
+    let constructor =
+        layout::gen_constructor(ident, &persistent_allocated, &transient_allocated, address);
+    let slots_modules = layout::gen_slots_modules(&persistent_allocated, &transient_allocated);
     let default_impl = if address.is_some() {
         layout::gen_default_impl(ident)
     } else {
@@ -197,7 +209,7 @@ fn gen_contract_storage(
     };
 
     let output = quote! {
-        #slots_module
+        #slots_modules
         #transformed_struct
         #constructor
         #storage_trait

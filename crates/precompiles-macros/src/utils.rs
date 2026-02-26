@@ -3,8 +3,8 @@
 use alloy::primitives::{U256, keccak256};
 use syn::{Attribute, Lit, Type};
 
-/// Return type for [`extract_attributes`]: (slot, base_slot)
-type ExtractedAttributes = (Option<U256>, Option<U256>);
+/// Return type for [`extract_attributes`]: (slot, base_slot, transient)
+type ExtractedAttributes = (Option<U256>, Option<U256>, bool);
 
 /// Parses a slot value from a literal.
 ///
@@ -100,6 +100,7 @@ pub(crate) fn to_camel_case(s: &str) -> String {
 pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<ExtractedAttributes> {
     let mut slot_attr: Option<U256> = None;
     let mut base_slot_attr: Option<U256> = None;
+    let mut transient = false;
 
     for attr in attrs {
         // Extract `#[slot(N)]` attribute
@@ -134,10 +135,18 @@ pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<ExtractedAt
 
             let value: Lit = attr.parse_args()?;
             base_slot_attr = Some(parse_slot_value(&value)?);
+        } else if attr.path().is_ident("transient") {
+            if transient {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "duplicate `transient` attribute",
+                ));
+            }
+            transient = true;
         }
     }
 
-    Ok((slot_attr, base_slot_attr))
+    Ok((slot_attr, base_slot_attr, transient))
 }
 
 /// Extracts array sizes from the `#[storable_arrays(...)]` attribute.

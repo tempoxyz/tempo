@@ -13,7 +13,9 @@ use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, StorableType, StorageCtx},
+    storage::{
+        HandleFor, Handler, LayoutCtx, Persistent, StorableType, StorageCtx, StorageMode, Transient,
+    },
     tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};
@@ -129,7 +131,7 @@ impl StorageCredits {
     }
 
     pub fn balance_of(&self, account: Address) -> Result<u64> {
-        self.handler::<u64>(account).read()
+        self.handler::<u64, Persistent>(account).read()
     }
 
     /// Runs `f` and returns its value plus the number of credits minted for `account`.
@@ -199,20 +201,24 @@ impl StorageCredits {
         U256::from_be_bytes(account.into_word().0)
     }
 
-    /// Returns a full-slot handler for the account's storage-credit balance/state.
+    /// Returns a full-slot handler for an account-derived storage-credit slot.
     #[inline]
-    fn handler<T: StorableType>(&self, account: Address) -> T::Handler {
-        T::handle(Self::slot(account), LayoutCtx::FULL, self.address)
+    fn handler<T, M>(&self, account: Address) -> <T as HandleFor<M>>::HandlerMode
+    where
+        T: StorableType + HandleFor<M>,
+        M: StorageMode,
+    {
+        <T as HandleFor<M>>::handle_for(Self::slot(account), LayoutCtx::FULL, self.address)
     }
 
     #[inline]
     fn credit_state_of(&self, account: Address) -> Result<TransientState> {
-        self.handler::<U256>(account).t_read()?.try_into()
+        self.handler::<U256, Transient>(account).read()?.try_into()
     }
 
     #[inline]
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
-        self.handler::<U256>(account).t_write(state.into())
+        self.handler::<U256, Transient>(account).write(state.into())
     }
 
     /// Runs `f` while allowing at most `limit` synchronous TIP-1060 storage-credit consumptions
@@ -421,6 +427,37 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_credit_state_is_transient_and_does_not_touch_balance() -> eyre::Result<()> {
+        let account = Address::repeat_byte(0x14);
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut credits = StorageCredits::new();
+
+            credits.set_mode(account, Mode::Direct)?;
+            assert_eq!(credits.mode_of(account)?, CreditMode::Direct);
+            assert_eq!(credits.budget_of(account)?, u64::MAX);
+            assert_eq!(credits.balance_of(account)?, 0);
+
+            Ok::<(), TempoPrecompileError>(())
+        })?;
+
+        storage.clear_transient();
+
+        StorageCtx::enter(&mut storage, || {
+            let credits = StorageCredits::new();
+
+            assert_eq!(credits.mode_of(account)?, CreditMode::Refund);
+            assert_eq!(credits.budget_of(account)?, 0);
+            assert_eq!(credits.balance_of(account)?, 0);
+
+            Ok::<(), TempoPrecompileError>(())
+        })?;
+
+        Ok(())
     }
 
     #[test]

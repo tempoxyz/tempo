@@ -35,11 +35,9 @@ pub struct TipFeeManager {
     total_supply: Mapping<B256, U256>,
     liquidity_balances: Mapping<B256, Mapping<Address, U256>>,
 
-    // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
-    // macro is refactored and has 2 independent layouts (persistent and transient).
-    // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
     /// T1C+: Tracks liquidity reserved for a pending fee swap during `collect_fee_pre_tx`.
     /// Checked by `burn` and `rebalance_swap` to prevent withdrawals that would violate the reservation.
+    #[transient]
     pending_fee_swap_reservation: Mapping<B256, u128>,
 
     /// T5+: Intermediate token for two-hop fee swap routing ([TIP-1033]).
@@ -47,6 +45,7 @@ pub struct TipFeeManager {
     /// insufficient liquidity and the swap falls back through `userToken.quoteToken()`.
     ///
     /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
+    #[transient]
     two_hop_intermediate: Address,
 }
 
@@ -208,7 +207,7 @@ impl TipFeeManager {
                     .map_err(|_| TempoPrecompileError::under_overflow())?;
                 self.reserve_pool_liquidity(self.pool_id(user_token, intermediate), out1)?;
                 self.reserve_pool_liquidity(self.pool_id(intermediate, validator_token), out2)?;
-                self.two_hop_intermediate.t_write(intermediate)?;
+                self.two_hop_intermediate.write(intermediate)?;
             }
         }
 
@@ -239,7 +238,7 @@ impl TipFeeManager {
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
-        let hop_token = self.two_hop_intermediate.t_read()?;
+        let hop_token = self.two_hop_intermediate.read()?;
         let validator_token = self.get_validator_token(beneficiary)?;
 
         let amount = if fee_token == validator_token {
@@ -1104,15 +1103,15 @@ mod tests {
 
                 fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false)?;
                 assert_eq!(
-                    fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?,
+                    fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].read()?,
                     997 // 1st hop: floor(1000 * 9970/10000) = 997
                 );
                 assert_eq!(
-                    fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?,
+                    fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].read()?,
                     994 // 2nd hop: floor(997 * 9970/10000) = 994
                 );
                 assert_eq!(
-                    fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.validator)].t_read()?,
+                    fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.validator)].read()?,
                     0 // direct pool is NOT reserved
                 );
                 Ok(())
@@ -1153,13 +1152,13 @@ mod tests {
                     // reserved and no intermediate token is cached.
                     for (a, b) in [(t.user, t.hop), (t.hop, t.validator)] {
                         assert_eq!(
-                            fm.pending_fee_swap_reservation[fm.pool_id(a, b)].t_read()?,
+                            fm.pending_fee_swap_reservation[fm.pool_id(a, b)].read()?,
                             0,
                             "{label}: hop pool reservation leaked for ({a}, {b})",
                         );
                     }
                     assert!(
-                        fm.two_hop_intermediate.t_read()?.is_zero(),
+                        fm.two_hop_intermediate.read()?.is_zero(),
                         "{label}: intermediate cache leaked",
                     );
                     Ok(())
@@ -1257,7 +1256,7 @@ mod tests {
 
             let amount = U256::from(1_000);
             fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
-            assert_eq!(fm.two_hop_intermediate.t_read()?, t.hop);
+            assert_eq!(fm.two_hop_intermediate.read()?, t.hop);
 
             // Mid-tx: rotate user.quoteToken from hop → validator. After this rotation,
             // a freshly re-resolved route would degenerate (intermediate == validator),
@@ -1331,11 +1330,11 @@ mod tests {
 
                 let amount = U256::from(1_000);
                 fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
-                assert_eq!(fm.two_hop_intermediate.t_read()?, t.hop, "tx1: cached");
+                assert_eq!(fm.two_hop_intermediate.read()?, t.hop, "tx1: cached");
                 fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
                 // Note: post_tx leaves the slot non-zero in-tx; EVM clears it at tx boundary.
                 assert_eq!(
-                    fm.two_hop_intermediate.t_read()?,
+                    fm.two_hop_intermediate.read()?,
                     t.hop,
                     "tx1: intermediate persists in-tx until EOT",
                 );
@@ -1343,7 +1342,7 @@ mod tests {
                 // Simulate tx boundary (EVM clears all transient storage).
                 fm.storage_mut().clear_transient();
                 assert!(
-                    fm.two_hop_intermediate.t_read()?.is_zero(),
+                    fm.two_hop_intermediate.read()?.is_zero(),
                     "post-EOT: intermediate must be cleared",
                 );
 
@@ -1356,7 +1355,7 @@ mod tests {
 
                 fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
                 assert!(
-                    fm.two_hop_intermediate.t_read()?.is_zero(),
+                    fm.two_hop_intermediate.read()?.is_zero(),
                     "tx2: pre_tx took direct route, must not set intermediate",
                 );
                 fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
@@ -1402,8 +1401,8 @@ mod tests {
             // pre_tx reserves: hop1 = 997, hop2 = 994 (computed from 1_000 input).
             let amount = U256::from(1_000);
             fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
-            let r1 = fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?;
-            let r2 = fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?;
+            let r1 = fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].read()?;
+            let r2 = fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].read()?;
             assert!(r1 > 0 && r2 > 0, "both hop pools must be reserved");
 
             // Full-supply burn on hop1 would zero the reserve → must trip reservation.
@@ -1432,11 +1431,11 @@ mod tests {
 
             // Sanity: reservations are unchanged by the failed burns.
             assert_eq!(
-                fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?,
+                fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].read()?,
                 r1,
             );
             assert_eq!(
-                fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?,
+                fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].read()?,
                 r2,
             );
 
