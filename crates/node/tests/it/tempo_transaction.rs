@@ -6876,7 +6876,7 @@ async fn test_aa_valid_before_upper_bound_rejected() -> eyre::Result<()> {
         .unwrap();
     let current_timestamp = block.header.timestamp();
 
-    // valid_before far in the future (1 hour) — should be rejected
+    // valid_before far in the future
     let mut tx = create_basic_aa_tx(
         chain_id,
         0,
@@ -6923,7 +6923,7 @@ async fn test_aa_valid_before_within_window_accepted() -> eyre::Result<()> {
         .unwrap();
     let current_timestamp = block.header.timestamp();
 
-    // valid_before within the 120s window — should be accepted
+    // valid_before within the 120s window
     let mut tx = create_basic_aa_tx(
         chain_id,
         0,
