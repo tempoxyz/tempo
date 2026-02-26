@@ -11923,7 +11923,6 @@ dependencies = [
  "alloy-genesis",
  "alloy-hardforks",
  "alloy-primitives",
- "bitflags 2.11.0",
  "eyre",
  "reth-chainspec",
  "reth-cli",

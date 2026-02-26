@@ -5,10 +5,15 @@
 //!
 //! ## Adding a new feature
 //!
-//! 1. Add a new constant to [`TempoFeatures`]
+//! 1. Add a new constant to [`TempoFeature`] (assign the next sequential ID)
 //! 2. Add a `requires()` entry if it depends on other features
 //! 3. Map it from the appropriate `TempoHardfork` in [`TempoFeatures::from_hardfork`]
-//! 4. Use `features.contains(TempoFeatures::MY_FEATURE)` in gating logic
+//! 4. Use `features.contains(TempoFeature::MY_FEATURE)` in gating logic
+//!
+//! ## Capacity
+//!
+//! The backing store grows dynamically — there is no upper limit on the number
+//! of features. Each feature is identified by a `u32` ID.
 //!
 //! ## Relationship to hardforks
 //!
@@ -17,54 +22,206 @@
 
 use crate::hardfork::TempoHardfork;
 
-bitflags::bitflags! {
-    /// Bitfield of independently-activatable Tempo protocol features.
-    ///
-    /// Each bit represents a single protocol change that can be gated in consensus,
-    /// EVM execution, transaction validation, and precompile dispatch.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct TempoFeatures: u128 {
-        // ── Features introduced in T1 ──────────────────────────────────
-        /// Expiring nonce transactions (TIP-1005)
-        const EXPIRING_NONCES       = 1 << 0;
-        /// Updated base fee (20B attodollars) and fixed 30M general gas limit
-        const T1_GAS_PARAMS         = 1 << 1;
-        /// Keychain signature validation in EVM handler
-        const KEYCHAIN_VALIDATION   = 1 << 2;
+/// A single feature identified by a numeric ID.
+///
+/// Features are cheap to copy and compare. The ID is an index into the
+/// [`TempoFeatures`] bitset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TempoFeature(u32);
 
-        // ── Features introduced in T1A ─────────────────────────────────
-        /// Remove EIP-7825 per-transaction gas limit, allow 30M
-        const REMOVE_TX_GAS_LIMIT   = 1 << 3;
+impl TempoFeature {
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
 
-        // ── Features introduced in T1B ─────────────────────────────────
-        /// Replay hash v2 (includes chain_id + nonce_key)
-        const REPLAY_HASH_V2        = 1 << 4;
-
-        // ── Features introduced in T1C ─────────────────────────────────
-        /// Osaka EVM precompiles (vs Prague)
-        const OSAKA_PRECOMPILES     = 1 << 5;
-
-        // ── Features introduced in T2 ──────────────────────────────────
-        /// Compound transfer policies (TIP-1015)
-        const COMPOUND_TRANSFERS    = 1 << 6;
-        /// TIP-20 permit/nonces/DOMAIN_SEPARATOR
-        const TIP20_PERMIT          = 1 << 7;
-        /// ValidatorConfigV2 precompile
-        const VALIDATOR_CONFIG_V2   = 1 << 8;
-        /// TIP-403 compound policies & directional auth
-        const TIP403_COMPOUND       = 1 << 9;
-        /// Fee token query (getFeeToken) in TipFeeManager
-        const FEE_TOKEN_QUERY       = 1 << 10;
-        /// Updated 2D nonce key gas costs (adds 2 warm SLOADs)
-        const T2_NONCE_GAS          = 1 << 11;
+    pub const fn id(self) -> u32 {
+        self.0
     }
 }
+
+// ── Feature constants ──────────────────────────────────────────────────────
+
+impl TempoFeature {
+    // ── T1 ──────────────────────────────────────────────────────────────
+    /// Expiring nonce transactions (TIP-1005)
+    pub const EXPIRING_NONCES: Self = Self(0);
+    /// Updated base fee (20B attodollars) and fixed 30M general gas limit
+    pub const T1_GAS_PARAMS: Self = Self(1);
+    /// Keychain signature validation in EVM handler
+    pub const KEYCHAIN_VALIDATION: Self = Self(2);
+
+    // ── T1A ─────────────────────────────────────────────────────────────
+    /// Remove EIP-7825 per-transaction gas limit, allow 30M
+    pub const REMOVE_TX_GAS_LIMIT: Self = Self(3);
+
+    // ── T1B ─────────────────────────────────────────────────────────────
+    /// Replay hash v2 (includes chain_id + nonce_key)
+    pub const REPLAY_HASH_V2: Self = Self(4);
+
+    // ── T1C ─────────────────────────────────────────────────────────────
+    /// Osaka EVM precompiles (vs Prague)
+    pub const OSAKA_PRECOMPILES: Self = Self(5);
+
+    // ── T2 ──────────────────────────────────────────────────────────────
+    /// Compound transfer policies (TIP-1015)
+    pub const COMPOUND_TRANSFERS: Self = Self(6);
+    /// TIP-20 permit/nonces/DOMAIN_SEPARATOR
+    pub const TIP20_PERMIT: Self = Self(7);
+    /// ValidatorConfigV2 precompile
+    pub const VALIDATOR_CONFIG_V2: Self = Self(8);
+    /// TIP-403 compound policies & directional auth
+    pub const TIP403_COMPOUND: Self = Self(9);
+    /// Fee token query (getFeeToken) in TipFeeManager
+    pub const FEE_TOKEN_QUERY: Self = Self(10);
+    /// Updated 2D nonce key gas costs (adds 2 warm SLOADs)
+    pub const T2_NONCE_GAS: Self = Self(11);
+
+    /// Total number of currently defined features.
+    pub const COUNT: u32 = 12;
+}
+
+// ── Dependency DAG ─────────────────────────────────────────────────────────
+
+impl TempoFeature {
+    /// Returns the set of features that must already be active before `self`
+    /// can activate. Returns an empty set for root features.
+    pub fn requires(self) -> TempoFeatures {
+        match self {
+            Self::REMOVE_TX_GAS_LIMIT => TempoFeatures::from_iter([Self::T1_GAS_PARAMS]),
+            Self::REPLAY_HASH_V2 => TempoFeatures::from_iter([Self::EXPIRING_NONCES]),
+            Self::OSAKA_PRECOMPILES => TempoFeatures::from_iter([Self::REPLAY_HASH_V2]),
+            Self::COMPOUND_TRANSFERS => TempoFeatures::from_iter([Self::EXPIRING_NONCES]),
+            Self::TIP20_PERMIT => TempoFeatures::from_iter([Self::EXPIRING_NONCES]),
+            Self::VALIDATOR_CONFIG_V2 => TempoFeatures::from_iter([Self::EXPIRING_NONCES]),
+            Self::TIP403_COMPOUND => TempoFeatures::from_iter([Self::COMPOUND_TRANSFERS]),
+            Self::FEE_TOKEN_QUERY => TempoFeatures::from_iter([Self::EXPIRING_NONCES]),
+            Self::T2_NONCE_GAS => TempoFeatures::from_iter([Self::EXPIRING_NONCES]),
+            _ => TempoFeatures::empty(),
+        }
+    }
+}
+
+// ── Growable bitset of features ────────────────────────────────────────────
+
+/// A dynamically-sized set of active [`TempoFeature`]s.
+///
+/// Backed by a `Vec<u64>` that grows as needed — no upper bound on the
+/// number of features.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct TempoFeatures {
+    words: Vec<u64>,
+}
+
+impl TempoFeatures {
+    /// An empty feature set.
+    pub const fn empty() -> Self {
+        Self { words: Vec::new() }
+    }
+
+    /// Returns true if no features are active.
+    pub fn is_empty(&self) -> bool {
+        self.words.iter().all(|&w| w == 0)
+    }
+
+    /// Insert a feature into the set.
+    pub fn insert(&mut self, feature: TempoFeature) {
+        let (word, bit) = Self::index(feature);
+        if word >= self.words.len() {
+            self.words.resize(word + 1, 0);
+        }
+        self.words[word] |= 1u64 << bit;
+    }
+
+    /// Remove a feature from the set.
+    pub fn remove(&mut self, feature: TempoFeature) {
+        let (word, bit) = Self::index(feature);
+        if word < self.words.len() {
+            self.words[word] &= !(1u64 << bit);
+        }
+    }
+
+    /// Returns true if `feature` is in the set.
+    pub fn contains(&self, feature: TempoFeature) -> bool {
+        let (word, bit) = Self::index(feature);
+        word < self.words.len() && (self.words[word] & (1u64 << bit)) != 0
+    }
+
+    /// Returns true if `self` is a superset of `other`.
+    pub fn contains_all(&self, other: &Self) -> bool {
+        for (i, &other_word) in other.words.iter().enumerate() {
+            let self_word = self.words.get(i).copied().unwrap_or(0);
+            if (self_word & other_word) != other_word {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Returns the union of `self` and `other`.
+    pub fn union(&self, other: &Self) -> Self {
+        let len = self.words.len().max(other.words.len());
+        let mut words = vec![0u64; len];
+        for (i, w) in words.iter_mut().enumerate() {
+            let a = self.words.get(i).copied().unwrap_or(0);
+            let b = other.words.get(i).copied().unwrap_or(0);
+            *w = a | b;
+        }
+        Self { words }
+    }
+
+    /// Returns features in `other` that are not in `self`.
+    pub fn difference(&self, other: &Self) -> Self {
+        let len = self.words.len().max(other.words.len());
+        let mut words = vec![0u64; len];
+        for (i, w) in words.iter_mut().enumerate() {
+            let self_word = self.words.get(i).copied().unwrap_or(0);
+            let other_word = other.words.get(i).copied().unwrap_or(0);
+            *w = other_word & !self_word;
+        }
+        Self { words }
+    }
+
+    /// Number of active features.
+    pub fn count(&self) -> u32 {
+        self.words.iter().map(|w| w.count_ones()).sum()
+    }
+
+    /// Iterate over all active feature IDs.
+    pub fn iter(&self) -> impl Iterator<Item = TempoFeature> + '_ {
+        self.words.iter().enumerate().flat_map(|(word_idx, &word)| {
+            (0..64).filter_map(move |bit| {
+                if word & (1u64 << bit) != 0 {
+                    Some(TempoFeature::new((word_idx as u32) * 64 + bit))
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
+    fn index(feature: TempoFeature) -> (usize, u32) {
+        let id = feature.id();
+        ((id / 64) as usize, id % 64)
+    }
+}
+
+impl FromIterator<TempoFeature> for TempoFeatures {
+    fn from_iter<I: IntoIterator<Item = TempoFeature>>(iter: I) -> Self {
+        let mut set = Self::empty();
+        for f in iter {
+            set.insert(f);
+        }
+        set
+    }
+}
+
+// ── Error type ─────────────────────────────────────────────────────────────
 
 /// Error returned when a feature's dependencies are not satisfied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MissingDependencies {
     /// The feature that cannot be activated.
-    pub feature: TempoFeatures,
+    pub feature: TempoFeature,
     /// The unsatisfied dependencies.
     pub missing: TempoFeatures,
 }
@@ -73,86 +230,92 @@ impl std::fmt::Display for MissingDependencies {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "cannot activate {:?}: missing dependencies {:?}",
-            self.feature, self.missing
+            "cannot activate feature {}: missing dependencies {:?}",
+            self.feature.id(),
+            self.missing.iter().map(|f| f.id()).collect::<Vec<_>>()
         )
     }
 }
 
 impl std::error::Error for MissingDependencies {}
 
-impl TempoFeatures {
-    /// Returns the set of features that must already be active before `self` can activate.
-    ///
-    /// This defines the feature dependency DAG. A feature with empty requirements can
-    /// activate independently.
-    pub const fn requires(self) -> Self {
-        // For single-bit features, define explicit dependencies.
-        // For multi-bit sets (unions), return empty — callers should check individual features.
-        match self {
-            // T1A features require T1 features
-            f if f.bits() == Self::REMOVE_TX_GAS_LIMIT.bits() => Self::T1_GAS_PARAMS,
+// ── Activation validation ──────────────────────────────────────────────────
 
-            // T1B features require T1A
-            f if f.bits() == Self::REPLAY_HASH_V2.bits() => Self::EXPIRING_NONCES,
-
-            // T1C features require T1B
-            f if f.bits() == Self::OSAKA_PRECOMPILES.bits() => Self::REPLAY_HASH_V2,
-
-            // T2 features require T1 features
-            f if f.bits() == Self::COMPOUND_TRANSFERS.bits() => Self::EXPIRING_NONCES,
-            f if f.bits() == Self::TIP20_PERMIT.bits() => Self::EXPIRING_NONCES,
-            f if f.bits() == Self::VALIDATOR_CONFIG_V2.bits() => Self::EXPIRING_NONCES,
-            f if f.bits() == Self::TIP403_COMPOUND.bits() => Self::COMPOUND_TRANSFERS,
-            f if f.bits() == Self::FEE_TOKEN_QUERY.bits() => Self::EXPIRING_NONCES,
-            f if f.bits() == Self::T2_NONCE_GAS.bits() => Self::EXPIRING_NONCES,
-
-            _ => Self::empty(),
-        }
-    }
-
+impl TempoFeature {
     /// Returns `Ok(())` if all dependencies for `self` are satisfied by `active`,
     /// or `Err` with the missing dependencies.
-    pub const fn can_activate(self, active: Self) -> Result<(), MissingDependencies> {
+    pub fn can_activate(self, active: &TempoFeatures) -> Result<(), MissingDependencies> {
         let required = self.requires();
-        let missing_bits = required.bits() & !active.bits();
-        if missing_bits == 0 {
+        let missing = active.difference(&required);
+        if missing.is_empty() {
             Ok(())
         } else {
             Err(MissingDependencies {
                 feature: self,
-                missing: Self::from_bits_retain(missing_bits),
+                missing,
             })
         }
     }
+}
 
+// ── Convenience method on TempoHardfork ────────────────────────────────────
+
+impl TempoHardfork {
+    /// Returns true if this hardfork activates the given feature.
+    ///
+    /// This is the primary API for feature-gating in EVM handlers, consensus,
+    /// and transaction validation — anywhere you have a `TempoHardfork` (spec).
+    ///
+    /// ```ignore
+    /// if spec.has(TempoFeature::REPLAY_HASH_V2) {
+    ///     // new behavior
+    /// }
+    /// ```
+    pub fn has(self, feature: TempoFeature) -> bool {
+        TempoFeatures::from_hardfork(self).contains(feature)
+    }
+}
+
+// ── Hardfork backward compatibility ────────────────────────────────────────
+
+impl TempoFeatures {
     /// Construct the feature set implied by a legacy `TempoHardfork`.
     ///
     /// This provides backward compatibility: existing hardfork-gated code can be
     /// migrated incrementally to feature checks.
-    pub const fn from_hardfork(hf: TempoHardfork) -> Self {
+    pub fn from_hardfork(hf: TempoHardfork) -> Self {
         match hf {
-            TempoHardfork::Genesis => Self::empty(),
-            TempoHardfork::T0 => Self::empty(),
-            TempoHardfork::T1 => Self::T1_GAS_PARAMS
-                .union(Self::EXPIRING_NONCES)
-                .union(Self::KEYCHAIN_VALIDATION),
+            TempoHardfork::Genesis | TempoHardfork::T0 => Self::empty(),
+            TempoHardfork::T1 => Self::from_iter([
+                TempoFeature::EXPIRING_NONCES,
+                TempoFeature::T1_GAS_PARAMS,
+                TempoFeature::KEYCHAIN_VALIDATION,
+            ]),
             TempoHardfork::T1A => {
-                Self::from_hardfork(TempoHardfork::T1).union(Self::REMOVE_TX_GAS_LIMIT)
+                let mut f = Self::from_hardfork(TempoHardfork::T1);
+                f.insert(TempoFeature::REMOVE_TX_GAS_LIMIT);
+                f
             }
             TempoHardfork::T1B => {
-                Self::from_hardfork(TempoHardfork::T1A).union(Self::REPLAY_HASH_V2)
+                let mut f = Self::from_hardfork(TempoHardfork::T1A);
+                f.insert(TempoFeature::REPLAY_HASH_V2);
+                f
             }
             TempoHardfork::T1C => {
-                Self::from_hardfork(TempoHardfork::T1B).union(Self::OSAKA_PRECOMPILES)
+                let mut f = Self::from_hardfork(TempoHardfork::T1B);
+                f.insert(TempoFeature::OSAKA_PRECOMPILES);
+                f
             }
-            TempoHardfork::T2 => Self::from_hardfork(TempoHardfork::T1C)
-                .union(Self::COMPOUND_TRANSFERS)
-                .union(Self::TIP20_PERMIT)
-                .union(Self::VALIDATOR_CONFIG_V2)
-                .union(Self::TIP403_COMPOUND)
-                .union(Self::FEE_TOKEN_QUERY)
-                .union(Self::T2_NONCE_GAS),
+            TempoHardfork::T2 => {
+                let mut f = Self::from_hardfork(TempoHardfork::T1C);
+                f.insert(TempoFeature::COMPOUND_TRANSFERS);
+                f.insert(TempoFeature::TIP20_PERMIT);
+                f.insert(TempoFeature::VALIDATOR_CONFIG_V2);
+                f.insert(TempoFeature::TIP403_COMPOUND);
+                f.insert(TempoFeature::FEE_TOKEN_QUERY);
+                f.insert(TempoFeature::T2_NONCE_GAS);
+                f
+            }
         }
     }
 }
@@ -169,11 +332,10 @@ mod tests {
         let t1c = TempoFeatures::from_hardfork(TempoHardfork::T1C);
         let t2 = TempoFeatures::from_hardfork(TempoHardfork::T2);
 
-        // Each hardfork's features are a superset of the previous
-        assert!(t1a.contains(t1));
-        assert!(t1b.contains(t1a));
-        assert!(t1c.contains(t1b));
-        assert!(t2.contains(t1c));
+        assert!(t1a.contains_all(&t1));
+        assert!(t1b.contains_all(&t1a));
+        assert!(t1c.contains_all(&t1b));
+        assert!(t2.contains_all(&t1c));
     }
 
     #[test]
@@ -185,29 +347,29 @@ mod tests {
     #[test]
     fn test_t1_features() {
         let t1 = TempoFeatures::from_hardfork(TempoHardfork::T1);
-        assert!(t1.contains(TempoFeatures::EXPIRING_NONCES));
-        assert!(t1.contains(TempoFeatures::T1_GAS_PARAMS));
-        assert!(t1.contains(TempoFeatures::KEYCHAIN_VALIDATION));
-        assert!(!t1.contains(TempoFeatures::REMOVE_TX_GAS_LIMIT));
+        assert!(t1.contains(TempoFeature::EXPIRING_NONCES));
+        assert!(t1.contains(TempoFeature::T1_GAS_PARAMS));
+        assert!(t1.contains(TempoFeature::KEYCHAIN_VALIDATION));
+        assert!(!t1.contains(TempoFeature::REMOVE_TX_GAS_LIMIT));
     }
 
     #[test]
     fn test_t2_has_all_features() {
         let t2 = TempoFeatures::from_hardfork(TempoHardfork::T2);
-        assert!(t2.contains(TempoFeatures::COMPOUND_TRANSFERS));
-        assert!(t2.contains(TempoFeatures::TIP20_PERMIT));
-        assert!(t2.contains(TempoFeatures::VALIDATOR_CONFIG_V2));
-        assert!(t2.contains(TempoFeatures::TIP403_COMPOUND));
-        assert!(t2.contains(TempoFeatures::FEE_TOKEN_QUERY));
-        assert!(t2.contains(TempoFeatures::T2_NONCE_GAS));
+        assert!(t2.contains(TempoFeature::COMPOUND_TRANSFERS));
+        assert!(t2.contains(TempoFeature::TIP20_PERMIT));
+        assert!(t2.contains(TempoFeature::VALIDATOR_CONFIG_V2));
+        assert!(t2.contains(TempoFeature::TIP403_COMPOUND));
+        assert!(t2.contains(TempoFeature::FEE_TOKEN_QUERY));
+        assert!(t2.contains(TempoFeature::T2_NONCE_GAS));
     }
 
     #[test]
     fn test_dependency_satisfied() {
         let active = TempoFeatures::from_hardfork(TempoHardfork::T1);
         assert!(
-            TempoFeatures::REMOVE_TX_GAS_LIMIT
-                .can_activate(active)
+            TempoFeature::REMOVE_TX_GAS_LIMIT
+                .can_activate(&active)
                 .is_ok()
         );
     }
@@ -215,97 +377,107 @@ mod tests {
     #[test]
     fn test_dependency_missing() {
         let active = TempoFeatures::empty();
-        let result = TempoFeatures::REMOVE_TX_GAS_LIMIT.can_activate(active);
+        let result = TempoFeature::REMOVE_TX_GAS_LIMIT.can_activate(&active);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.missing.contains(TempoFeatures::T1_GAS_PARAMS));
+        assert!(err.missing.contains(TempoFeature::T1_GAS_PARAMS));
     }
 
     #[test]
     fn test_compound_requires_chain() {
-        // TIP403_COMPOUND requires COMPOUND_TRANSFERS which requires EXPIRING_NONCES
         let empty = TempoFeatures::empty();
-        assert!(TempoFeatures::TIP403_COMPOUND.can_activate(empty).is_err());
+        assert!(TempoFeature::TIP403_COMPOUND.can_activate(&empty).is_err());
 
-        let with_expiring = TempoFeatures::EXPIRING_NONCES;
-        // Still fails — TIP403_COMPOUND directly requires COMPOUND_TRANSFERS
+        let with_expiring = TempoFeatures::from_iter([TempoFeature::EXPIRING_NONCES]);
         assert!(
-            TempoFeatures::TIP403_COMPOUND
-                .can_activate(with_expiring)
+            TempoFeature::TIP403_COMPOUND
+                .can_activate(&with_expiring)
                 .is_err()
         );
 
-        let with_compound = TempoFeatures::EXPIRING_NONCES | TempoFeatures::COMPOUND_TRANSFERS;
+        let with_compound = TempoFeatures::from_iter([
+            TempoFeature::EXPIRING_NONCES,
+            TempoFeature::COMPOUND_TRANSFERS,
+        ]);
         assert!(
-            TempoFeatures::TIP403_COMPOUND
-                .can_activate(with_compound)
+            TempoFeature::TIP403_COMPOUND
+                .can_activate(&with_compound)
                 .is_ok()
         );
     }
 
     #[test]
     fn test_no_self_dependency() {
-        for bit in 0..128u32 {
-            let feature = TempoFeatures::from_bits_retain(1u128 << bit);
+        for id in 0..TempoFeature::COUNT {
+            let feature = TempoFeature::new(id);
             let deps = feature.requires();
-            assert!(!deps.contains(feature), "{feature:?} depends on itself");
+            assert!(!deps.contains(feature), "feature {id} depends on itself");
         }
     }
 
     #[test]
     fn test_feature_independence() {
-        // TIP20_PERMIT and VALIDATOR_CONFIG_V2 share the same dependency (EXPIRING_NONCES)
-        // but are independent of each other
-        let active = TempoFeatures::EXPIRING_NONCES;
-        assert!(TempoFeatures::TIP20_PERMIT.can_activate(active).is_ok());
+        let active = TempoFeatures::from_iter([TempoFeature::EXPIRING_NONCES]);
+        assert!(TempoFeature::TIP20_PERMIT.can_activate(&active).is_ok());
         assert!(
-            TempoFeatures::VALIDATOR_CONFIG_V2
-                .can_activate(active)
+            TempoFeature::VALIDATOR_CONFIG_V2
+                .can_activate(&active)
                 .is_ok()
         );
     }
 
     #[test]
-    fn test_128_bits_available() {
-        // Verify we can use high bits without overflow
-        let high = TempoFeatures::from_bits_retain(1u128 << 127);
-        assert!(!high.is_empty());
-        assert_eq!(high.bits().count_ones(), 1);
+    fn test_unlimited_features() {
+        // Features at very high IDs work fine
+        let high = TempoFeature::new(10_000);
+        let mut set = TempoFeatures::empty();
+        assert!(!set.contains(high));
+        set.insert(high);
+        assert!(set.contains(high));
+        assert_eq!(set.count(), 1);
 
-        let all_bits = TempoFeatures::from_bits_retain(u128::MAX);
-        assert_eq!(all_bits.bits(), u128::MAX);
+        // Even higher
+        let very_high = TempoFeature::new(100_000);
+        set.insert(very_high);
+        assert!(set.contains(very_high));
+        assert_eq!(set.count(), 2);
+
+        // Remove works
+        set.remove(high);
+        assert!(!set.contains(high));
+        assert_eq!(set.count(), 1);
     }
 
     #[test]
     fn test_no_dependency_cycles() {
-        // Walk the dependency chain for every defined feature and ensure
-        // we never revisit a feature (no cycles in the DAG).
-        let all_features: Vec<TempoFeatures> = (0..12)
-            .map(|bit| TempoFeatures::from_bits_retain(1u128 << bit))
-            .collect();
-
-        for &feature in &all_features {
+        for id in 0..TempoFeature::COUNT {
+            let feature = TempoFeature::new(id);
             let mut visited = TempoFeatures::empty();
-            let mut current = feature;
+            let mut current_deps = feature.requires();
             loop {
-                let deps = current.requires();
-                if deps.is_empty() {
+                if current_deps.is_empty() {
                     break;
                 }
-                assert!(
-                    !visited.contains(deps),
-                    "cycle detected: {feature:?} -> ... -> {deps:?}"
-                );
-                visited = visited.union(current);
-                current = deps;
+                for dep in current_deps.iter() {
+                    assert!(
+                        !visited.contains(dep),
+                        "cycle detected involving feature {}",
+                        dep.id()
+                    );
+                }
+                visited = visited.union(&current_deps);
+                // Walk one level deeper — union all deps' deps
+                let mut next = TempoFeatures::empty();
+                for dep in current_deps.iter() {
+                    next = next.union(&dep.requires());
+                }
+                current_deps = next;
             }
         }
     }
 
     #[test]
     fn test_hardfork_features_satisfy_all_dependencies() {
-        // Every feature set produced by from_hardfork() must have all
-        // internal dependencies satisfied.
         let hardforks = [
             TempoHardfork::Genesis,
             TempoHardfork::T0,
@@ -318,24 +490,21 @@ mod tests {
 
         for hf in hardforks {
             let features = TempoFeatures::from_hardfork(hf);
-            // Check each active feature's deps are also in the set
-            for bit in 0..12 {
-                let flag = TempoFeatures::from_bits_retain(1u128 << bit);
-                if features.contains(flag) {
-                    let deps = flag.requires();
-                    assert!(
-                        features.contains(deps),
-                        "{hf:?} includes {flag:?} but is missing its deps {deps:?}"
-                    );
-                }
+            for feature in features.iter() {
+                let deps = feature.requires();
+                assert!(
+                    features.contains_all(&deps),
+                    "{hf:?} includes feature {} but is missing deps",
+                    feature.id()
+                );
             }
         }
     }
 
     #[test]
     fn test_missing_dependencies_display() {
-        let err = TempoFeatures::REMOVE_TX_GAS_LIMIT
-            .can_activate(TempoFeatures::empty())
+        let err = TempoFeature::REMOVE_TX_GAS_LIMIT
+            .can_activate(&TempoFeatures::empty())
             .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("cannot activate"));
@@ -344,25 +513,23 @@ mod tests {
 
     #[test]
     fn test_empty_features_can_always_activate() {
-        // Empty set has no requirements
+        // A feature with no deps can activate from nothing
         assert!(
-            TempoFeatures::empty()
-                .can_activate(TempoFeatures::empty())
+            TempoFeature::EXPIRING_NONCES
+                .can_activate(&TempoFeatures::empty())
                 .is_ok()
         );
     }
 
     #[test]
     fn test_base_features_have_no_dependencies() {
-        // T1 base features should be activatable from nothing
-        assert!(TempoFeatures::EXPIRING_NONCES.requires().is_empty());
-        assert!(TempoFeatures::T1_GAS_PARAMS.requires().is_empty());
-        assert!(TempoFeatures::KEYCHAIN_VALIDATION.requires().is_empty());
+        assert!(TempoFeature::EXPIRING_NONCES.requires().is_empty());
+        assert!(TempoFeature::T1_GAS_PARAMS.requires().is_empty());
+        assert!(TempoFeature::KEYCHAIN_VALIDATION.requires().is_empty());
     }
 
     #[test]
     fn test_each_hardfork_adds_features() {
-        // Each successive hardfork strictly adds features (never removes)
         let pairs = [
             (TempoHardfork::Genesis, TempoHardfork::T0),
             (TempoHardfork::T0, TempoHardfork::T1),
@@ -375,7 +542,7 @@ mod tests {
             let prev_f = TempoFeatures::from_hardfork(prev);
             let next_f = TempoFeatures::from_hardfork(next);
             assert!(
-                next_f.contains(prev_f),
+                next_f.contains_all(&prev_f),
                 "{next:?} should be a superset of {prev:?}"
             );
         }
@@ -384,10 +551,126 @@ mod tests {
     #[test]
     fn test_t2_feature_count() {
         let t2 = TempoFeatures::from_hardfork(TempoHardfork::T2);
-        assert_eq!(
-            t2.bits().count_ones(),
-            12,
-            "T2 should activate all 12 defined features"
-        );
+        assert_eq!(t2.count(), 12, "T2 should activate all 12 defined features");
+    }
+
+    #[test]
+    fn test_union_and_difference() {
+        let a =
+            TempoFeatures::from_iter([TempoFeature::EXPIRING_NONCES, TempoFeature::T1_GAS_PARAMS]);
+        let b =
+            TempoFeatures::from_iter([TempoFeature::T1_GAS_PARAMS, TempoFeature::REPLAY_HASH_V2]);
+
+        let union = a.union(&b);
+        assert!(union.contains(TempoFeature::EXPIRING_NONCES));
+        assert!(union.contains(TempoFeature::T1_GAS_PARAMS));
+        assert!(union.contains(TempoFeature::REPLAY_HASH_V2));
+        assert_eq!(union.count(), 3);
+
+        // difference: what's in b but not in a
+        let diff = a.difference(&b);
+        assert!(!diff.contains(TempoFeature::T1_GAS_PARAMS)); // in both
+        assert!(diff.contains(TempoFeature::REPLAY_HASH_V2)); // only in b
+        assert!(!diff.contains(TempoFeature::EXPIRING_NONCES)); // only in a
+    }
+
+    #[test]
+    fn test_iter() {
+        let set = TempoFeatures::from_hardfork(TempoHardfork::T1);
+        let ids: Vec<u32> = set.iter().map(|f| f.id()).collect();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains(&0)); // EXPIRING_NONCES
+        assert!(ids.contains(&1)); // T1_GAS_PARAMS
+        assert!(ids.contains(&2)); // KEYCHAIN_VALIDATION
+    }
+
+    #[test]
+    fn test_insert_remove_idempotent() {
+        let mut set = TempoFeatures::empty();
+        set.insert(TempoFeature::EXPIRING_NONCES);
+        set.insert(TempoFeature::EXPIRING_NONCES); // double insert
+        assert_eq!(set.count(), 1);
+
+        set.remove(TempoFeature::EXPIRING_NONCES);
+        set.remove(TempoFeature::EXPIRING_NONCES); // double remove
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn test_remove_nonexistent_feature() {
+        let mut set = TempoFeatures::empty();
+        // Removing a feature that was never inserted (including high IDs) is fine
+        set.remove(TempoFeature::new(9999));
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn test_hardfork_has_convenience() {
+        // spec.has() is the primary API for handler code
+        assert!(TempoHardfork::T1.has(TempoFeature::EXPIRING_NONCES));
+        assert!(TempoHardfork::T1.has(TempoFeature::T1_GAS_PARAMS));
+        assert!(!TempoHardfork::T1.has(TempoFeature::REPLAY_HASH_V2));
+
+        assert!(TempoHardfork::T1B.has(TempoFeature::REPLAY_HASH_V2));
+        assert!(!TempoHardfork::T1B.has(TempoFeature::COMPOUND_TRANSFERS));
+
+        assert!(TempoHardfork::T2.has(TempoFeature::COMPOUND_TRANSFERS));
+        assert!(TempoHardfork::T2.has(TempoFeature::TIP20_PERMIT));
+
+        assert!(!TempoHardfork::Genesis.has(TempoFeature::EXPIRING_NONCES));
+        assert!(!TempoHardfork::T0.has(TempoFeature::EXPIRING_NONCES));
+    }
+
+    /// Demonstrates how feature flags replace `spec.is_tN()` checks in
+    /// non-precompile code (e.g., EVM handler, consensus, tx validation).
+    ///
+    /// Before:
+    /// ```ignore
+    /// let replay_hash = if spec.is_t1b() {
+    ///     tempo_tx_env.expiring_nonce_hash.ok_or(...)?
+    /// } else {
+    ///     tempo_tx_env.tx_hash
+    /// };
+    /// ```
+    ///
+    /// After:
+    /// ```ignore
+    /// let replay_hash = if spec.has(TempoFeature::REPLAY_HASH_V2) {
+    ///     tempo_tx_env.expiring_nonce_hash.ok_or(...)?
+    /// } else {
+    ///     tempo_tx_env.tx_hash
+    /// };
+    /// ```
+    #[test]
+    fn test_handler_migration_pattern() {
+        // Simulates the replay hash selection logic from handler.rs
+        fn select_replay_hash(spec: TempoHardfork, v2_hash: u64, v1_hash: u64) -> u64 {
+            if spec.has(TempoFeature::REPLAY_HASH_V2) {
+                v2_hash
+            } else {
+                v1_hash
+            }
+        }
+
+        // Pre-T1B: uses v1 hash
+        assert_eq!(select_replay_hash(TempoHardfork::T1, 42, 7), 7);
+        assert_eq!(select_replay_hash(TempoHardfork::T1A, 42, 7), 7);
+
+        // T1B+: uses v2 hash
+        assert_eq!(select_replay_hash(TempoHardfork::T1B, 42, 7), 42);
+        assert_eq!(select_replay_hash(TempoHardfork::T2, 42, 7), 42);
+    }
+
+    /// Demonstrates multi-feature gating — e.g., a security fix that
+    /// only applies when two features are both active.
+    #[test]
+    fn test_multi_feature_gating() {
+        fn should_apply_security_fix(spec: TempoHardfork) -> bool {
+            spec.has(TempoFeature::EXPIRING_NONCES) && spec.has(TempoFeature::REPLAY_HASH_V2)
+        }
+
+        assert!(!should_apply_security_fix(TempoHardfork::T1)); // has nonces, no replay v2
+        assert!(should_apply_security_fix(TempoHardfork::T1B)); // has both
+        assert!(should_apply_security_fix(TempoHardfork::T2)); // has both
     }
 }

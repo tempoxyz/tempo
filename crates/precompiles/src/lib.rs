@@ -305,7 +305,7 @@ pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
 macro_rules! require_feature {
     ($storage:expr, $feature:ident, $selector:expr) => {
         if !::tempo_chainspec::features::TempoFeatures::from_hardfork($storage.spec())
-            .contains(::tempo_chainspec::features::TempoFeatures::$feature)
+            .contains(::tempo_chainspec::features::TempoFeature::$feature)
         {
             return $crate::unknown_selector($selector, $storage.gas_used());
         }
