@@ -46,7 +46,9 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
+    handler::EthPrecompiles,
     precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
+    primitives::hardfork::SpecId,
 };
 
 pub use tempo_contracts::precompiles::{
@@ -72,6 +74,21 @@ pub fn input_cost(calldata_len: usize) -> u64 {
 
 pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
+}
+
+/// Returns the full Tempo precompiles for the given config.
+///
+/// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
+/// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
+pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
+    let spec = if cfg.spec.is_t1c() {
+        cfg.spec.into()
+    } else {
+        SpecId::PRAGUE
+    };
+    let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
+    extend_tempo_precompiles(&mut precompiles, cfg);
+    precompiles
 }
 
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
@@ -526,12 +543,8 @@ mod tests {
 
     #[test]
     fn test_extend_tempo_precompiles_registers_precompiles() {
-        use revm::handler::EthPrecompiles;
-
         let cfg = CfgEnv::<TempoHardfork>::default();
-        let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
-
-        extend_tempo_precompiles(&mut precompiles, &cfg);
+        let precompiles = tempo_precompiles(&cfg);
 
         // TIP20Factory should be registered
         let factory_precompile = precompiles.get(&TIP20_FACTORY_ADDRESS);
@@ -603,5 +616,39 @@ mod tests {
             random_precompile.is_none(),
             "Random address should not be a precompile"
         );
+    }
+
+    #[test]
+    fn test_p256verify_availability_across_t1c_boundary() {
+        let has_p256 = |spec: TempoHardfork| -> bool {
+            // P256VERIFY lives at address 0x100 (256), added in Osaka
+            let p256_addr = Address::from_word(U256::from(256).into());
+
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec(spec);
+            tempo_precompiles(&cfg).get(&p256_addr).is_some()
+        };
+
+        // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)
+        for spec in [
+            TempoHardfork::Genesis,
+            TempoHardfork::T0,
+            TempoHardfork::T1,
+            TempoHardfork::T1A,
+            TempoHardfork::T1B,
+        ] {
+            assert!(
+                !has_p256(spec),
+                "P256VERIFY should NOT be available at {spec:?} (pre-T1C)"
+            );
+        }
+
+        // T1C+ hardforks should use Osaka precompiles (P256VERIFY available)
+        for spec in [TempoHardfork::T1C, TempoHardfork::T2] {
+            assert!(
+                has_p256(spec),
+                "P256VERIFY should be available at {spec:?} (T1C+)"
+            );
+        }
     }
 }
