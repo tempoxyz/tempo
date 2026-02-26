@@ -7,6 +7,7 @@ use alloy::primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
 use tempo_precompiles_macros::Storable;
 
+/// Precision multiplier for reward-per-token accumulator (1e18).
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
 impl TIP20Token {
@@ -326,6 +327,7 @@ impl TIP20Token {
     }
 }
 
+/// Per-user reward tracking state for the opt-in staking rewards system.
 #[derive(Debug, Clone, Storable)]
 pub struct UserRewardInfo {
     pub reward_recipient: Address,

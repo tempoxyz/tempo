@@ -43,6 +43,7 @@ proptest.workspace = true
 sha2.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
+test-case.workspace = true
 
 [features]
 reth = ["dep:reth-storage-api"]

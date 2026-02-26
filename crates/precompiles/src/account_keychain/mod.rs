@@ -92,7 +92,10 @@ impl AuthorizedKey {
     }
 }
 
-/// Account Keychain contract for managing authorized keys
+/// Account Keychain contract for managing authorized keys (session keys, spending limits).
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = ACCOUNT_KEYCHAIN_ADDRESS)]
 pub struct AccountKeychain {
     // keys[account][keyId] -> AuthorizedKey
