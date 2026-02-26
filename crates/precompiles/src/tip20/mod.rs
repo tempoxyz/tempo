@@ -54,6 +54,16 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
     Ok(())
 }
 
+/// TIP-20 token contract — the native token standard on Tempo.
+///
+/// Implements ERC-20-like functionality (balances, allowances, transfers) with additional
+/// features: role-based access control, pausability, supply caps, transfer policies (TIP-403),
+/// and opt-in staking rewards.
+///
+/// Each token lives at a deterministic address with the `0x20C0` prefix.
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract]
 pub struct TIP20Token {
     // RolesAuth
@@ -99,9 +109,13 @@ pub static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
 /// EIP-712 version hash: keccak256("1")
 pub static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
 
+/// Role hash for pausing token transfers.
 pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
+/// Role hash for unpausing token transfers.
 pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
+/// Role hash for minting new tokens.
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
+/// Role hash that prevents an account from burning tokens.
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
 
 impl TIP20Token {

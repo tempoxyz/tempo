@@ -76,6 +76,7 @@ jobs:
       - run: cargo hack check --feature-powerset --depth 1 --partition ${{ matrix.partition }}/2
 
   docs:
+    if: ${{ github.repository == 'tempoxyz/tempo' }}
     name: docs
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
@@ -106,7 +107,7 @@ jobs:
           path: ./target/doc
 
   deploy-docs:
-    if: github.ref_name == 'main' && github.event_name == 'push'
+    if: ${{ github.repository == 'tempoxyz/tempo' && github.ref_name == 'main' && github.event_name == 'push' }}
     needs: [docs]
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
@@ -192,4 +193,5 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
+          allowed-skips: ${{ github.repository != 'tempoxyz/tempo' && 'docs' || '' }}
           jobs: ${{ toJSON(needs) }}

@@ -103,7 +103,11 @@ impl<H> TxResult for TempoTxResult<H> {
     }
 }
 
-/// Block executor for Tempo. Wraps an inner [`EthBlockExecutor`].
+/// Block executor for Tempo.
+///
+/// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
+/// logic on top: section-based transaction ordering ([`BlockSection`]), subblock
+/// validation, shared/non-shared gas accounting, and gas incentive tracking.
 pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) inner: EthBlockExecutor<
         'a,
@@ -921,7 +925,7 @@ mod tests {
         let signer = PrivateKey::from_seed(0);
         let validator_key = B256::from_slice(&signer.public_key());
 
-        // Add a seen subblock from a different validator that wont match metadata
+        // Add a seen subblock from a different validator that won't match metadata
         let different_key = B256::repeat_byte(0x99);
         let different_proposer = PartialValidatorKey::from_slice(&different_key[..15]);
 

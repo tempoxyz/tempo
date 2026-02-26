@@ -1180,7 +1180,7 @@ async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>
     receipts: impl IntoIterator<Item = F>,
     max_concurrent_requests: usize,
 ) -> eyre::Result<()> {
-    stream::iter(receipts.into_iter())
+    stream::iter(receipts)
         .buffer_unordered(max_concurrent_requests)
         .try_for_each(|receipt| assert_receipt(receipt))
         .await

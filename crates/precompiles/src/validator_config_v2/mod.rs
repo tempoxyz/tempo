@@ -23,6 +23,7 @@ pub const VALIDATOR_NS_ADD: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
 /// Signature namespace for `rotateValidator` operations.
 pub const VALIDATOR_NS_ROTATE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR";
 
+/// Per-validator record stored in the `validators` vector.
 #[derive(Debug, Storable)]
 struct ValidatorV2 {
     public_key: B256,
@@ -34,6 +35,7 @@ struct ValidatorV2 {
     deactivated_at_height: u64,
 }
 
+/// Contract-level configuration (owner, initialization flag, and init height).
 #[derive(Debug, Storable)]
 struct Config {
     owner: Address,
@@ -59,6 +61,9 @@ impl Config {
 ///
 /// Index-canonical storage: the `validators` vec is the source of truth.
 /// `address_to_index` and `pubkey_to_index` are 1-indexed lookup pointers (0 = not found).
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = VALIDATOR_CONFIG_V2_ADDRESS)]
 pub struct ValidatorConfigV2 {
     config: Config,
@@ -221,14 +226,14 @@ impl ValidatorConfigV2 {
         ensure_address_is_ip_port(ingress).map_err(|err| {
             TempoPrecompileError::from(ValidatorConfigV2Error::not_ip_port(
                 ingress.to_string(),
-                format!("{err:?}"),
+                err.to_string(),
             ))
         })?;
 
         ensure_address_is_ip(egress).map_err(|err| {
             TempoPrecompileError::from(ValidatorConfigV2Error::not_ip(
                 egress.to_string(),
-                format!("{err:?}"),
+                err.to_string(),
             ))
         })
     }
@@ -242,7 +247,7 @@ impl ValidatorConfigV2 {
             .map_err(|err| {
                 TempoPrecompileError::from(ValidatorConfigV2Error::not_ip_port(
                     ingress.to_string(),
-                    format!("{err:?}"),
+                    err.to_string(),
                 ))
             })?;
         Ok(match ingress.ip() {
@@ -419,9 +424,7 @@ impl ValidatorConfigV2 {
 
         let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
 
-        self.active_ingress_ips
-            [Self::ingress_ip_key(&v.ingress).expect("contract must only contain valid ingress")]
-        .delete()?;
+        self.active_ingress_ips[Self::ingress_ip_key(&v.ingress)?].delete()?;
 
         v.deactivated_at_height = block_height;
         self.validators[idx].write(v)
