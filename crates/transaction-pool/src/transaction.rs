@@ -374,6 +374,14 @@ pub enum TempoPoolTransactionError {
         cost: U256,
         remaining: U256,
     },
+
+    /// Legacy V1 keychain signature rejected post-T1C (permanently invalid).
+    #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
+    LegacyKeychainPostT1C,
+
+    /// V2 keychain signature rejected pre-T1C (not yet valid).
+    #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
+    V2KeychainPreT1C,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -390,7 +398,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::ExpiringNonceReplay
             | Self::Keychain(_)
             | Self::InsufficientLiquidity(_)
-            | Self::SpendingLimitExceeded { .. } => false,
+            | Self::SpendingLimitExceeded { .. }
+            | Self::V2KeychainPreT1C => false,
             Self::NonZeroValue
             | Self::SubblockNonceKey
             | Self::InsufficientGasForAAIntrinsicCost { .. }
@@ -409,7 +418,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::NoCalls
             | Self::CreateCallWithAuthorizationList
             | Self::CreateCallNotFirst
-            | Self::FeeCapBelowMinBaseFee { .. } => true,
+            | Self::FeeCapBelowMinBaseFee { .. }
+            | Self::LegacyKeychainPostT1C => true,
         }
     }
 
@@ -775,6 +785,8 @@ mod tests {
                 false,
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),
+            (TempoPoolTransactionError::LegacyKeychainPostT1C, true),
+            (TempoPoolTransactionError::V2KeychainPreT1C, false),
             (
                 TempoPoolTransactionError::InsufficientLiquidity(Address::ZERO),
                 false,

@@ -681,6 +681,11 @@ impl TempoSignature {
         matches!(self, Self::Keychain(k) if k.is_legacy())
     }
 
+    /// Check if this is a V2 Keychain signature.
+    pub fn is_v2_keychain(&self) -> bool {
+        matches!(self, Self::Keychain(k) if !k.is_legacy())
+    }
+
     /// Get the Keychain signature if this is a Keychain signature
     pub fn as_keychain(&self) -> Option<&KeychainSignature> {
         match self {

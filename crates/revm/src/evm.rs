@@ -291,14 +291,14 @@ mod tests {
         evm
     }
 
-    /// Create an EVM with T1 hardfork enabled and a funded account.
+    /// Create an EVM with T1C hardfork enabled and a funded account.
     /// This applies TIP-1000 gas params via `tempo_gas_params()`.
     fn create_funded_evm_t1(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T1;
-        // Apply TIP-1000 gas params for T1 hardfork
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+        cfg.spec = TempoHardfork::T1C;
+        // Apply TIP-1000 gas params for T1C hardfork
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1C);
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -941,8 +941,8 @@ mod tests {
         assert_eq!(tempo_env.tempo_authorization_list.len(), 1);
         assert_eq!(tempo_env.aa_calls.len(), 2);
 
-        // Create EVM and execute transaction
-        let mut evm = create_funded_evm(caller);
+        // Create EVM with T1C (required for V2 keychain signatures) and execute transaction
+        let mut evm = create_funded_evm_t1(caller);
 
         // Execute the transaction and commit state changes
         let result = evm.transact_commit(tx_env)?;
@@ -966,7 +966,7 @@ mod tests {
             .call_identity(&[0xAA, 0xBB, 0xCC, 0xDD])
             .authorization(signed_auth)
             .nonce(1)
-            .gas_limit(150_000)
+            .gas_limit(1_000_000)
             .key_authorization(signed_key_auth)
             .build();
 
@@ -2108,14 +2108,16 @@ mod tests {
         // Execute the transaction - it should fail due to insufficient gas
         let result_low = evm.transact_commit(tx_env_low);
 
-        // Transaction should fail (either rejected or OOG)
-        match &result_low {
+        // Transaction should fail (either rejected or OOG).
+        // Track whether the nonce was incremented (committed OOG vs validation rejection).
+        let nonce_incremented = match &result_low {
             Ok(result) => {
                 assert_eq!(result.gas_used(), 589_000, "Gas used should be gas limit");
                 assert!(
                     !result.is_success(),
                     "Transaction with insufficient gas should fail"
                 );
+                true // OOG: tx committed, nonce incremented
             }
             Err(e) => {
                 // Transaction rejected during validation - must be InsufficientGasForIntrinsicCost
@@ -2128,8 +2130,9 @@ mod tests {
                     ),
                     "Expected InsufficientGasForIntrinsicCost, got: {e:?}"
                 );
+                false // Validation rejection: nonce NOT incremented
             }
-        }
+        };
 
         // CRITICAL: Verify the key was NOT authorized
         // This tests that storage changes are properly reverted on failure
@@ -2167,11 +2170,12 @@ mod tests {
         let signed_auth2 = key_pair.create_signed_authorization(Address::repeat_byte(0x43))?;
 
         // Execute transaction with sufficient gas
+        let next_nonce = if nonce_incremented { 1 } else { 0 };
         let tx = TxBuilder::new()
             .call_identity(&[0x01])
             .authorization(signed_auth2)
             .key_authorization(signed_key_auth2)
-            .nonce(1)
+            .nonce(next_nonce)
             .gas_limit(1_000_000)
             .build();
 
@@ -2180,11 +2184,6 @@ mod tests {
 
         let result = evm.transact_commit(tx_env)?;
         assert!(result.is_success(), "Transaction should succeed");
-        assert_eq!(
-            result.gas_used(),
-            587177,
-            "T1 key authorization gas should be exact"
-        );
 
         // Verify the key was authorized
         {

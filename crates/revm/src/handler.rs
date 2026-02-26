@@ -1272,11 +1272,20 @@ where
             }
 
             // Pre-T1C: Reject V2 keychain signatures to prevent chain splits
-            if !cfg.spec().is_t1c()
-                && aa_env.signature.is_keychain()
-                && !aa_env.signature.is_legacy_keychain()
-            {
+            // TODO(tanishk): This check can be removed after T1C activation.
+            if !cfg.spec().is_t1c() && aa_env.signature.is_v2_keychain() {
                 return Err(TempoInvalidTransaction::V2KeychainBeforeActivation.into());
+            }
+
+            // Apply the same version gating to keychain sigs in the authorization list
+            for auth in &aa_env.tempo_authorization_list {
+                if cfg.spec().is_t1c() && auth.signature().is_legacy_keychain() {
+                    return Err(TempoInvalidTransaction::LegacyKeychainSignature.into());
+                }
+                // TODO(tanishk): This check can be removed after T1C activation.
+                if !cfg.spec().is_t1c() && auth.signature().is_v2_keychain() {
+                    return Err(TempoInvalidTransaction::V2KeychainBeforeActivation.into());
+                }
             }
 
             let has_keychain_fields =
