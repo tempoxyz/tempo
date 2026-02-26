@@ -165,8 +165,12 @@ where
         // If the execution layer has been deleted then this loop will never
         // complete.
         let (latest_boundary_header, highest_finalized_header) = join(
-            read_header_at_height_with_rety(&self.context, &self.execution_node, latest_boundary),
-            read_header_at_height_with_rety(&self.context, &self.execution_node, highest_finalized),
+            read_header_at_height_with_retry(&self.context, &self.execution_node, latest_boundary),
+            read_header_at_height_with_retry(
+                &self.context,
+                &self.execution_node,
+                highest_finalized,
+            ),
         )
         .await;
 
@@ -335,7 +339,7 @@ struct LastTrackedPeerSet {
     peers: ordered::Map<PublicKey, commonware_p2p::Address>,
 }
 
-async fn read_header_at_height_with_rety(
+async fn read_header_at_height_with_retry(
     context: &impl Clock,
     execution_node: &TempoFullNode,
     height: u64,
