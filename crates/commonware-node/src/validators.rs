@@ -6,7 +6,8 @@ use std::{
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{Address, B256};
 use commonware_codec::DecodeExt as _;
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
+use commonware_p2p::Ingress;
 use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
@@ -25,6 +26,118 @@ use tempo_precompiles::{
 
 use tempo_primitives::TempoHeader;
 use tracing::{Level, info, instrument, warn};
+
+use crate::utils::public_key_to_b256;
+
+/// Returns all active validators read from block state at block `hash`.
+///
+/// The returned validators are those that are marked active according to
+/// block state, and those that are `known`. This accounts for those validators
+/// that are actively participating in consensus (including DKG) but might
+/// be marked inactive on chain.
+///
+/// This function reads the `header` corresponding to `hash` from `node` and
+/// checks if the T2 hardfork is active at `header.timestamp` and if the
+/// Validator Config V2 is initialized.
+///
+/// If T2 is active and the contract is initialized, it will read the entries
+/// from the Validator Config V2 contract.
+///
+/// Otherwise, it will read the entries from the V1 contract.
+pub(crate) fn read_active_and_known_peers_at_block_hash(
+    node: &TempoFullNode,
+    known: &ordered::Set<PublicKey>,
+    hash: B256,
+) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
+    if can_use_v2_at_block_hash(node, hash)
+        .wrap_err("failed to determine validator config v2 status")?
+    {
+        read_active_and_known_peers_at_block_hash_v2(node, known, hash)
+            .wrap_err("failed reading peers from validator config v2")
+    } else {
+        read_active_and_known_peers_at_block_hash_v1(node, known, hash)
+            .wrap_err("failed reading peers from validator config v1")
+    }
+}
+
+/// Returns all validator config v1 entries at block `hash`.
+///
+/// Reads the validator config v1 contract at the block state identified by
+/// `hash` and retains all validators for which `$entry.active = true` or
+/// for which `$entry.publicKey` is in `known`.
+pub(crate) fn read_active_and_known_peers_at_block_hash_v1(
+    node: &TempoFullNode,
+    known: &ordered::Set<PublicKey>,
+    hash: B256,
+) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
+    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfig| {
+        let mut all = HashMap::new();
+        for raw in config
+            .get_validators()
+            .wrap_err("failed to query contract for validator config")?
+        {
+            if let Ok(decoded) = DecodedValidatorV1::decode_from_contract(raw)
+                && let Some(dupe) = all.insert(decoded.public_key.clone(), decoded)
+            {
+                warn!(
+                        %dupe.public_key,
+                        "replaced peer because public keys were duplicated",
+                );
+            }
+        }
+        all.retain(|k, v| v.active || known.position(k).is_some());
+        Ok(
+            ordered::Map::try_from_iter(all.into_iter().map(|(k, v)| (k, v.to_address())))
+                .expect("hashmaps don't contain duplicates"),
+        )
+    })
+    .map(|(_height, _hash, value)| value)
+}
+
+/// Returns active validator config v2 entries at block `hash`.
+///
+/// This returns both the validators that are `active` as per the contract, and
+/// those that are `known`.
+fn read_active_and_known_peers_at_block_hash_v2(
+    node: &TempoFullNode,
+    known: &ordered::Set<PublicKey>,
+    hash: B256,
+) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
+    read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
+        let mut all = HashMap::new();
+        for raw in config
+            .get_active_validators()
+            .wrap_err("failed getting active validator set")?
+        {
+            let idx = raw.index;
+            let decoded = DecodedValidatorV2::decode_from_contract(raw).wrap_err_with(|| {
+                format!("invariant violation: contract contained invalid entry at index `{idx}`")
+            })?;
+            if all.insert(decoded.public_key.clone(), decoded.to_address()).is_some() {
+                eyre::bail!(
+                    "invariant violation: contract had a duplicate entry for public key `{}`",
+                    decoded.public_key
+                );
+            }
+        }
+        for member in known {
+            if !all.contains_key(member) {
+                let val = config
+                    .validator_by_public_key(public_key_to_b256(member))
+                    .wrap_err_with(|| format!("invariant violation: contract did not contain entry for committee member `{member}`"))?;
+                let idx = val.index;
+                let decoded =
+                    DecodedValidatorV2::decode_from_contract(val).wrap_err_with(|| {
+                        format!(
+                            "invariant violation: contract contained invalid entry at index `{idx}`"
+                        )
+                    })?;
+                all.insert(decoded.public_key.clone(), decoded.to_address());
+            }
+        }
+        Ok(ordered::Map::try_from_iter(all).expect("hashmaps don't contain duplicates"))
+    }).map(|(_height, _hash, value)| value)
+}
 
 pub(crate) fn v2_initialization_height(node: &TempoFullNode, height: u64) -> eyre::Result<u64> {
     read_validator_config_at_height(node, height, |config: &ValidatorConfigV2| {
@@ -472,6 +585,15 @@ impl DecodedValidatorV1 {
         })
     }
 
+    fn to_address(&self) -> commonware_p2p::Address {
+        // NOTE: commonware takes egress as socket address but only uses the IP part.
+        // So setting port to 0 is ok.
+        commonware_p2p::Address::Asymmetric {
+            ingress: Ingress::Socket(self.inbound),
+            egress: self.outbound,
+        }
+    }
+
     pub(crate) fn is_active(&self) -> bool {
         self.active
     }
@@ -545,6 +667,15 @@ impl DecodedValidatorV2 {
             index,
             address,
         })
+    }
+
+    fn to_address(&self) -> commonware_p2p::Address {
+        // NOTE: commonware takes egress as socket address but only uses the IP part.
+        // So setting port to 0 is ok.
+        commonware_p2p::Address::Asymmetric {
+            ingress: Ingress::Socket(self.ingress),
+            egress: SocketAddr::from((self.egress, 0)),
+        }
     }
 }
 impl std::fmt::Display for DecodedValidatorV2 {
