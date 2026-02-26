@@ -1281,7 +1281,7 @@ where
         // sufficient to determine if the contract is initialized.
         && v2_initialization_height_at_block_hash(node, latest_finalized.hash)
             .wrap_err("unable to determine if v2 contract is already initialized")?
-            >= parent_of_boundary_header.number()
+            <= parent_of_boundary_header.number()
         // Similarly, the `is_init` flag must be set. It is sufficient to check
         // at the same height: if the init height > 0, then the flag *must* be
         // set (spec violation otherwise), and if init height == 0, then the flag
