@@ -173,6 +173,7 @@ alloy-contract = { version = "1.6.1", default-features = false }
 alloy-eips = { version = "1.6.1", default-features = false }
 alloy-evm = "0.27.0"
 revm-inspectors = "0.34.2"
+bitflags = "2"
 alloy-genesis = "1.6.1"
 alloy-hardforks = "0.4.7"
 alloy-network = { version = "1.6.1", default-features = false }

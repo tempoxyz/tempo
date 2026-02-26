@@ -288,6 +288,30 @@ pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
     error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
 }
 
+/// Gate a precompile dispatch arm behind a feature flag.
+///
+/// If the feature is not active for the current hardfork, returns
+/// `unknown_selector` as if the function doesn't exist.
+///
+/// # Example
+///
+/// ```ignore
+/// ITIP20Calls::permit(call) => {
+///     require_feature!(self.storage, TIP20_PERMIT, ITIP20::permitCall::SELECTOR);
+///     mutate_void(call, msg_sender, |_s, c| self.permit(c))
+/// }
+/// ```
+#[macro_export]
+macro_rules! require_feature {
+    ($storage:expr, $feature:ident, $selector:expr) => {
+        if !::tempo_chainspec::features::TempoFeatures::from_hardfork($storage.spec())
+            .contains(::tempo_chainspec::features::TempoFeatures::$feature)
+        {
+            return $crate::unknown_selector($selector, $storage.gas_used());
+        }
+    };
+}
+
 /// Helper function to decode calldata and dispatch it.
 #[inline]
 fn dispatch_call<T>(
