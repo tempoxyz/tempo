@@ -6,7 +6,9 @@ use crate::{
     tip20::{IRolesAuth, RolesAuthError, RolesAuthEvent, TIP20Token},
 };
 
+/// The default admin role (zero hash). Holders can grant/revoke any role.
 pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
+/// A self-administered role that cannot be granted by any admin.
 pub const UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
 
 impl TIP20Token {

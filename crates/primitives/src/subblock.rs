@@ -1,4 +1,5 @@
 use crate::TempoTxEnvelope;
+use alloc::vec::Vec;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256, wrap_fixed_bytes};
 use alloy_rlp::{BufMut, Decodable, Encodable, RlpDecodable, RlpEncodable};

@@ -1,6 +1,7 @@
 use super::tempo_transaction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
+use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
@@ -8,6 +9,10 @@ use p256::{
     ecdsa::{Signature as P256Signature, VerifyingKey, signature::hazmat::PrehashVerifier},
 };
 use sha2::{Digest, Sha256};
+
+#[cfg(not(feature = "std"))]
+use once_cell::race::OnceBox as OnceLock;
+#[cfg(feature = "std")]
 use std::sync::OnceLock;
 
 /// The P256 (secp256r1/prime256v1) curve order n.
@@ -408,7 +413,8 @@ impl KeychainSignature {
 
         // Not cached - recover and cache
         let key_id = self.signature.recover_signer(sig_hash)?;
-        let _ = self.cached_key_id.set(key_id);
+        #[allow(clippy::useless_conversion)]
+        let _ = self.cached_key_id.set(key_id.into());
         Ok(key_id)
     }
 }
