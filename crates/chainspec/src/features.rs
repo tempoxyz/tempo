@@ -23,7 +23,7 @@ bitflags::bitflags! {
     /// Each bit represents a single protocol change that can be gated in consensus,
     /// EVM execution, transaction validation, and precompile dispatch.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct TempoFeatures: u64 {
+    pub struct TempoFeatures: u128 {
         // ── Features introduced in T1 ──────────────────────────────────
         /// Expiring nonce transactions (TIP-1005)
         const EXPIRING_NONCES       = 1 << 0;
@@ -245,9 +245,8 @@ mod tests {
 
     #[test]
     fn test_no_self_dependency() {
-        // Every single-bit feature's requires() should not include itself
-        for bit in 0..12 {
-            let feature = TempoFeatures::from_bits_retain(1 << bit);
+        for bit in 0..128u32 {
+            let feature = TempoFeatures::from_bits_retain(1u128 << bit);
             let deps = feature.requires();
             assert!(!deps.contains(feature), "{feature:?} depends on itself");
         }
@@ -263,6 +262,132 @@ mod tests {
             TempoFeatures::VALIDATOR_CONFIG_V2
                 .can_activate(active)
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_128_bits_available() {
+        // Verify we can use high bits without overflow
+        let high = TempoFeatures::from_bits_retain(1u128 << 127);
+        assert!(!high.is_empty());
+        assert_eq!(high.bits().count_ones(), 1);
+
+        let all_bits = TempoFeatures::from_bits_retain(u128::MAX);
+        assert_eq!(all_bits.bits(), u128::MAX);
+    }
+
+    #[test]
+    fn test_no_dependency_cycles() {
+        // Walk the dependency chain for every defined feature and ensure
+        // we never revisit a feature (no cycles in the DAG).
+        let all_features: Vec<TempoFeatures> = (0..12)
+            .map(|bit| TempoFeatures::from_bits_retain(1u128 << bit))
+            .collect();
+
+        for &feature in &all_features {
+            let mut visited = TempoFeatures::empty();
+            let mut current = feature;
+            loop {
+                let deps = current.requires();
+                if deps.is_empty() {
+                    break;
+                }
+                assert!(
+                    !visited.contains(deps),
+                    "cycle detected: {feature:?} -> ... -> {deps:?}"
+                );
+                visited = visited.union(current);
+                current = deps;
+            }
+        }
+    }
+
+    #[test]
+    fn test_hardfork_features_satisfy_all_dependencies() {
+        // Every feature set produced by from_hardfork() must have all
+        // internal dependencies satisfied.
+        let hardforks = [
+            TempoHardfork::Genesis,
+            TempoHardfork::T0,
+            TempoHardfork::T1,
+            TempoHardfork::T1A,
+            TempoHardfork::T1B,
+            TempoHardfork::T1C,
+            TempoHardfork::T2,
+        ];
+
+        for hf in hardforks {
+            let features = TempoFeatures::from_hardfork(hf);
+            // Check each active feature's deps are also in the set
+            for bit in 0..12 {
+                let flag = TempoFeatures::from_bits_retain(1u128 << bit);
+                if features.contains(flag) {
+                    let deps = flag.requires();
+                    assert!(
+                        features.contains(deps),
+                        "{hf:?} includes {flag:?} but is missing its deps {deps:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_missing_dependencies_display() {
+        let err = TempoFeatures::REMOVE_TX_GAS_LIMIT
+            .can_activate(TempoFeatures::empty())
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("cannot activate"));
+        assert!(msg.contains("missing dependencies"));
+    }
+
+    #[test]
+    fn test_empty_features_can_always_activate() {
+        // Empty set has no requirements
+        assert!(
+            TempoFeatures::empty()
+                .can_activate(TempoFeatures::empty())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_base_features_have_no_dependencies() {
+        // T1 base features should be activatable from nothing
+        assert!(TempoFeatures::EXPIRING_NONCES.requires().is_empty());
+        assert!(TempoFeatures::T1_GAS_PARAMS.requires().is_empty());
+        assert!(TempoFeatures::KEYCHAIN_VALIDATION.requires().is_empty());
+    }
+
+    #[test]
+    fn test_each_hardfork_adds_features() {
+        // Each successive hardfork strictly adds features (never removes)
+        let pairs = [
+            (TempoHardfork::Genesis, TempoHardfork::T0),
+            (TempoHardfork::T0, TempoHardfork::T1),
+            (TempoHardfork::T1, TempoHardfork::T1A),
+            (TempoHardfork::T1A, TempoHardfork::T1B),
+            (TempoHardfork::T1B, TempoHardfork::T1C),
+            (TempoHardfork::T1C, TempoHardfork::T2),
+        ];
+        for (prev, next) in pairs {
+            let prev_f = TempoFeatures::from_hardfork(prev);
+            let next_f = TempoFeatures::from_hardfork(next);
+            assert!(
+                next_f.contains(prev_f),
+                "{next:?} should be a superset of {prev:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_t2_feature_count() {
+        let t2 = TempoFeatures::from_hardfork(TempoHardfork::T2);
+        assert_eq!(
+            t2.bits().count_ones(),
+            12,
+            "T2 should activate all 12 defined features"
         );
     }
 }
