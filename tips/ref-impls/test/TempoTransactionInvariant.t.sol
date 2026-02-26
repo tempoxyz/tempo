@@ -58,7 +58,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](71);
+        bytes4[] memory selectors = new bytes4[](72);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -148,6 +148,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Spending limit refund handlers (K-REFUND)
         selectors[68] = this.handler_keySpendingRefund.selector;
         selectors[69] = this.handler_keySpendingRefundRevokedKey.selector;
+        // Cross-account key auth replay handler
+        selectors[71] = this.handler_keyAuthCrossAccountReplay.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         // Initialize previous nonce tracking for secp256k1 actors
@@ -225,6 +227,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_timeBoundZeroWidthAllowed,
             0,
             "T5: Tx with validBefore == validAfter unexpectedly allowed"
+        );
+
+        // Cross-account key auth replay
+        assertEq(
+            ghost_keyAuthCrossAccountAllowed,
+            0,
+            "Cross-account key auth replay unexpectedly allowed"
         );
     }
 
@@ -4556,6 +4565,95 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_keyRefundRevokedNoop++;
         } catch {
             _handleRevertProtocol(ctx.owner);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    CROSS-ACCOUNT KEY AUTH REPLAY HANDLER
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Handler: Account A authorizes key K, then account B tries to use
+    ///         key K (authorized for A) to sign a tx on behalf of B — should be
+    ///         rejected.
+    /// @dev Tests that access key authorization is bound to the authorizing account,
+    ///      preventing cross-account key reuse. The keychain must reject transactions
+    ///      signed with a key that was only authorized for a different account.
+    function handler_keyAuthCrossAccountReplay(
+        uint256 actorSeedA,
+        uint256 actorSeedB,
+        uint256 keySeed,
+        uint256 recipientSeed,
+        uint256 amount
+    )
+        external
+    {
+        // Pick two distinct actors
+        uint256 actorIdxA = actorSeedA % actors.length;
+        uint256 actorIdxB = actorSeedB % actors.length;
+        if (actorIdxA == actorIdxB) actorIdxB = (actorIdxB + 1) % actors.length;
+
+        address ownerA = actors[actorIdxA];
+        address ownerB = actors[actorIdxB];
+
+        // Get a key from actor A's key pool
+        (address keyId, uint256 keyPk) = _getActorAccessKey(actorIdxA, keySeed);
+
+        // Step 1: Ensure key K is authorized for actor A
+        if (!ghost_keyAuthorized[ownerA][keyId]) {
+            uint64 expiry = uint64(block.timestamp + 1 days);
+            IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
+            limits[0] = IAccountKeychain.TokenLimit({ token: address(feeToken), amount: 1000e6 });
+
+            vm.prank(ownerA);
+            try keychain.authorizeKey(
+                keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, true, limits
+            ) {
+                address[] memory tokens = new address[](1);
+                tokens[0] = address(feeToken);
+                uint256[] memory amounts = new uint256[](1);
+                amounts[0] = 1000e6;
+                _authorizeKey(ownerA, keyId, expiry, true, tokens, amounts);
+            } catch {
+                return;
+            }
+        }
+
+        // Skip if key is also authorized for B — not a meaningful replay test
+        if (ghost_keyAuthorized[ownerB][keyId]) return;
+
+        // Step 2: Account B tries to use key K (authorized for A) to sign a tx
+        amount = bound(amount, 1e6, 10e6);
+        if (!_checkBalance(ownerB, amount)) return;
+
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (actorIdxB == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+        address recipient = actors[recipientIdx];
+
+        uint64 currentNonce = uint64(ghost_protocolNonce[ownerB]);
+
+        // Build a tx signed with key K's private key, setting userAddress = B.
+        // The keychain should reject this because key K is only authorized for A.
+        bytes memory signedTx = TxBuilder.buildTempoCallKeychain(
+            vmRlp,
+            vm,
+            address(feeToken),
+            abi.encodeCall(ITIP20.transfer, (recipient, amount)),
+            0, // nonceKey=0 uses protocol nonce
+            currentNonce,
+            keyPk,
+            ownerB
+        );
+
+        vm.coinbase(validator);
+
+        ghost_keyAuthCrossAccountAttempted++;
+        try vmExec.executeTransaction(signedTx) {
+            // VIOLATION: Key authorized for A was accepted for B!
+            ghost_keyAuthCrossAccountAllowed++;
+        } catch {
+            _handleExpectedReject(_noop);
         }
     }
 
