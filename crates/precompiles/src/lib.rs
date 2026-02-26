@@ -617,4 +617,38 @@ mod tests {
             "Random address should not be a precompile"
         );
     }
+
+    #[test]
+    fn test_p256verify_availability_across_t1c_boundary() {
+        let has_p256 = |spec: TempoHardfork| -> bool {
+            // P256VERIFY lives at address 0x100 (256), added in Osaka
+            let p256_addr = Address::from_word(U256::from(256).into());
+
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec(spec);
+            tempo_precompiles(&cfg).get(&p256_addr).is_some()
+        };
+
+        // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)
+        for spec in [
+            TempoHardfork::Genesis,
+            TempoHardfork::T0,
+            TempoHardfork::T1,
+            TempoHardfork::T1A,
+            TempoHardfork::T1B,
+        ] {
+            assert!(
+                !has_p256(spec),
+                "P256VERIFY should NOT be available at {spec:?} (pre-T1C)"
+            );
+        }
+
+        // T1C+ hardforks should use Osaka precompiles (P256VERIFY available)
+        for spec in [TempoHardfork::T1C, TempoHardfork::T2] {
+            assert!(
+                has_p256(spec),
+                "P256VERIFY should be available at {spec:?} (T1C+)"
+            );
+        }
+    }
 }
