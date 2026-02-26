@@ -1,9 +1,17 @@
 use alloy::primitives::{Address, LogData, U256};
-use revm::state::{AccountInfo, Bytecode};
+use revm::{
+    context::journaled_state::JournalCheckpoint,
+    state::{AccountInfo, Bytecode},
+};
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+
+/// Snapshot of mutable state for checkpoint/revert support.
+///
+/// PERF: naive cloning strategy due to its limited usage.
+struct Snapshot(HashMap<(Address, U256), U256>);
 
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
@@ -16,6 +24,7 @@ pub struct HashMapStorageProvider {
     block_number: u64,
     spec: TempoHardfork,
     is_static: bool,
+    snapshots: Vec<Snapshot>,
 }
 
 impl HashMapStorageProvider {
@@ -29,6 +38,7 @@ impl HashMapStorageProvider {
             transient: HashMap::new(),
             accounts: HashMap::new(),
             events: HashMap::new(),
+            snapshots: Vec::new(),
             chain_id,
             #[expect(clippy::disallowed_methods)]
             timestamp: U256::from(
@@ -147,6 +157,25 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn is_static(&self) -> bool {
         self.is_static
+    }
+
+    fn checkpoint(&mut self) -> JournalCheckpoint {
+        let idx = self.snapshots.len();
+        self.snapshots.push(Snapshot(self.internals.clone()));
+        JournalCheckpoint {
+            log_i: 0,
+            journal_i: idx,
+        }
+    }
+
+    fn checkpoint_commit(&mut self) {
+        self.snapshots.pop();
+    }
+
+    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+        if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_i..).next() {
+            self.internals = snapshot.0;
+        }
     }
 }
 

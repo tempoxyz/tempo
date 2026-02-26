@@ -237,6 +237,21 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn is_static(&self) -> bool {
         self.is_static
     }
+
+    #[inline]
+    fn checkpoint(&mut self) -> revm::context::journaled_state::JournalCheckpoint {
+        self.internals.checkpoint()
+    }
+
+    #[inline]
+    fn checkpoint_commit(&mut self) {
+        self.internals.checkpoint_commit()
+    }
+
+    #[inline]
+    fn checkpoint_revert(&mut self, checkpoint: revm::context::journaled_state::JournalCheckpoint) {
+        self.internals.checkpoint_revert(checkpoint)
+    }
 }
 
 impl From<EvmInternalsError> for TempoPrecompileError {

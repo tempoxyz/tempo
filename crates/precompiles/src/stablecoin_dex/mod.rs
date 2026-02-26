@@ -576,6 +576,9 @@ impl StablecoinDEX {
         TIP20Token::from_address(non_escrow_token)?
             .ensure_transfer_authorized(self.address, sender)?;
 
+        // CKECKPOINT START: atomically perform a batch of state-changing operations
+        let batch = self.storage.checkpoint();
+
         // Debit from user's balance only. This is set to true after a flip order is filled and the
         // subsequent flip order is being placed.
         if internal_balance_only {
@@ -592,10 +595,16 @@ impl StablecoinDEX {
 
         // Create the flip order
         let order_id = self.next_order_id()?;
-        self.increment_next_order_id()?;
         let order = Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
             .map_err(|_| StablecoinDEXError::invalid_flip_tick())?;
 
+        // Commit the flip order
+        if self.storage.spec().is_t1c() {
+            // PERF: skip 1 redundant SLOAD
+            self.next_order_id.write(order_id + 1)?;
+        } else {
+            self.increment_next_order_id()?;
+        }
         self.commit_order_to_book(order)?;
 
         // Emit OrderPlaced event for flip order
@@ -611,6 +620,9 @@ impl StablecoinDEX {
                 flipTick: flip_tick,
             },
         ))?;
+
+        // CKECKPOINT END: commit the state-chainging batch
+        batch.commit();
 
         Ok(order_id)
     }
@@ -1397,7 +1409,7 @@ impl StablecoinDEX {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::IntoLogData;
+    use alloy::{primitives::IntoLogData, sol_types::SolEvent};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
@@ -4699,5 +4711,71 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_flip_checkpoint_reverts_partial_state_post_t1c() -> eyre::Result<()> {
+        // When commit_order_to_book fails inside place_flip:
+        // - T1C+: checkpoint reverts sub_balance + next_order_id
+        // - Pre-T1C: partial state leaks (balance debited, id bumped)
+        //
+        // All specs are T1A+ so system errors propagate and the swap itself fails.
+        for spec in [TempoHardfork::T1A, TempoHardfork::T1C] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let FlipOrderTestCtx {
+                    mut exchange,
+                    alice,
+                    bob,
+                    base_token,
+                    quote_token,
+                    book_key,
+                    amount,
+                    flip_tick,
+                    ..
+                } = setup_flip_order_test()?;
+
+                let next_id_before = exchange.next_order_id()?;
+
+                // Poison the flip target tick so commit_order_to_book
+                // overflows on checked_add — a system error.
+                let poisoned = TickLevel::with_values(0, 0, u128::MAX);
+                exchange.books[book_key]
+                    .tick_level_handler_mut(flip_tick, false)
+                    .write(poisoned)?;
+
+                // Fund bob to fill the order
+                exchange.set_balance(bob, base_token, amount)?;
+
+                let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
+                assert!(result.is_err(), "[{spec:?}] swap should fail");
+
+                // 1. `fill_order` credited alice `amount` base before `place_flip`
+                // 2. `sub_balance` debited it back
+                // 3. `commit_order_to_book` failed
+                let alice_base = exchange.balance_of(alice, base_token)?;
+                let next_id_after = exchange.next_order_id()?;
+
+                if spec.is_t1c() {
+                    // Checkpoint reverts both sub_balance and order_id
+                    assert_eq!(alice_base, amount,);
+                    assert_eq!(next_id_after, next_id_before,);
+                } else {
+                    // No checkpoint — partial state leaks
+                    assert_eq!(alice_base, 0,);
+                    assert_eq!(next_id_after, next_id_before + 1,);
+                }
+
+                // verify that `OrderPlaced` event was never emitted due to poisoned tick's revert
+                assert!(
+                    exchange.emitted_events().last().is_some_and(
+                        |e| e.topics()[0] == IStablecoinDEX::OrderFilled::SIGNATURE_HASH
+                    )
+                );
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
     }
 }

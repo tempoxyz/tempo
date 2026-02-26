@@ -426,6 +426,18 @@ where
     fn refund_gas(&mut self, _: i64) {
         unreachable!("'refund_gas' not supported in read-only context")
     }
+
+    fn checkpoint(&mut self) -> revm::context::journaled_state::JournalCheckpoint {
+        unreachable!("'checkpoint' not supported in read-only context")
+    }
+
+    fn checkpoint_commit(&mut self) {
+        unreachable!("'checkpoint_commit' not supported in read-only context")
+    }
+
+    fn checkpoint_revert(&mut self, _: revm::context::journaled_state::JournalCheckpoint) {
+        unreachable!("'checkpoint_revert' not supported in read-only context")
+    }
 }
 
 #[cfg(test)]

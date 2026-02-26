@@ -2,7 +2,7 @@ pub mod evm;
 pub mod hashmap;
 
 pub mod thread_local;
-pub use thread_local::StorageCtx;
+pub use thread_local::{CheckpointGuard, StorageCtx};
 
 mod types;
 pub use types::*;
@@ -12,7 +12,10 @@ pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
 use alloy::primitives::{Address, LogData, U256};
-use revm::state::{AccountInfo, Bytecode};
+use revm::{
+    context::journaled_state::JournalCheckpoint,
+    state::{AccountInfo, Bytecode},
+};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::error::Result;
@@ -83,6 +86,18 @@ pub trait PrecompileStorageProvider {
 
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
+
+    /// Creates a journal checkpoint for atomic batching.
+    ///
+    /// All state mutations after this call can be atomically committed or reverted.
+    /// Checkpoints must be consumed in LIFO order.
+    fn checkpoint(&mut self) -> JournalCheckpoint;
+
+    /// Commits all state changes since the last checkpoint.
+    fn checkpoint_commit(&mut self);
+
+    /// Reverts all state changes back to the given checkpoint.
+    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint);
 }
 
 /// Storage operations for a given (contract) address.
