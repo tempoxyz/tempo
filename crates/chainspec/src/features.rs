@@ -20,7 +20,13 @@
 //! Existing hardforks (T0–T2) are mapped to feature sets for backward compatibility.
 //! New protocol changes should be defined as features directly, not as hardfork variants.
 
+use alloy_primitives::{Address, U256, address, keccak256};
+
 use crate::hardfork::TempoHardfork;
+
+/// Address of the FeatureRegistry precompile.
+pub const FEATURE_REGISTRY_ADDRESS: Address =
+    address!("0xFEA7000000000000000000000000000000000000");
 
 /// A single feature identified by a numeric ID.
 ///
@@ -202,6 +208,56 @@ impl TempoFeatures {
     fn index(feature: TempoFeature) -> (usize, u32) {
         let id = feature.id();
         ((id / 64) as usize, id % 64)
+    }
+
+    /// Read active features directly from on-chain state via SLOAD.
+    ///
+    /// Reads the feature bitmap from the `FeatureRegistry` precompile's storage.
+    /// The bitmap is stored as a `Mapping<u64, U256>` at slot 1 (the second field
+    /// in the contract struct). Each 256-bit word encodes 256 features.
+    ///
+    /// Stops reading when a zero word is encountered (assumes features are
+    /// activated sequentially from word 0).
+    pub fn from_state(
+        mut sload: impl FnMut(Address, U256) -> Result<U256, Box<dyn std::error::Error>>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut features = Self::empty();
+
+        // Slot 1 is the base slot for the `features` mapping (Mapping<u64, U256>).
+        // The actual storage slot for mapping key `k` is keccak256(k || base_slot).
+        let base_slot = U256::from(1);
+
+        for word_index in 0u64..16 {
+            // Compute Solidity mapping slot: keccak256(abi.encode(key, base_slot))
+            let key = U256::from(word_index);
+            let mut buf = [0u8; 64];
+            buf[0..32].copy_from_slice(&key.to_be_bytes::<32>());
+            buf[32..64].copy_from_slice(&base_slot.to_be_bytes::<32>());
+            let slot = U256::from_be_bytes(keccak256(buf).0);
+
+            let word = sload(FEATURE_REGISTRY_ADDRESS, slot)?;
+            if word.is_zero() {
+                break;
+            }
+
+            // Each U256 word encodes 256 features; convert to our u64-word bitset
+            let word_bytes = word.to_le_bytes::<32>();
+            for (sub_idx, chunk) in word_bytes.chunks_exact(8).enumerate() {
+                let sub_word = u64::from_le_bytes(chunk.try_into().unwrap());
+                if sub_word == 0 {
+                    continue;
+                }
+                for bit in 0..64u32 {
+                    if sub_word & (1u64 << bit) != 0 {
+                        let feature_id =
+                            word_index as u32 * 256 + sub_idx as u32 * 64 + bit;
+                        features.insert(TempoFeature::new(feature_id));
+                    }
+                }
+            }
+        }
+
+        Ok(features)
     }
 }
 

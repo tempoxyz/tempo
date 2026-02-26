@@ -10,6 +10,7 @@ pub mod storage;
 pub(crate) mod ip_validation;
 
 pub mod account_keychain;
+pub mod feature_registry;
 pub mod nonce;
 pub mod stablecoin_dex;
 pub mod tip20;
@@ -24,6 +25,7 @@ pub mod test_util;
 
 use crate::{
     account_keychain::AccountKeychain,
+    feature_registry::FeatureRegistry,
     nonce::NonceManager,
     stablecoin_dex::StablecoinDEX,
     storage::StorageCtx,
@@ -52,9 +54,10 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, FEATURE_REGISTRY_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -118,6 +121,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(AccountKeychainPrecompile::create(&cfg))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
             Some(ValidatorConfigV2Precompile::create(&cfg))
+        } else if *address == FEATURE_REGISTRY_ADDRESS {
+            Some(FeatureRegistryPrecompile::create(&cfg))
         } else {
             None
         }
@@ -217,6 +222,14 @@ pub struct ValidatorConfigPrecompile;
 impl ValidatorConfigPrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("ValidatorConfig", cfg, |input| { ValidatorConfig::new() })
+    }
+}
+
+/// EVM precompile wrapper for [`FeatureRegistry`].
+pub struct FeatureRegistryPrecompile;
+impl FeatureRegistryPrecompile {
+    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("FeatureRegistry", cfg, |input| { FeatureRegistry::new() })
     }
 }
 
@@ -638,6 +651,13 @@ mod tests {
         assert!(
             keychain_precompile.is_some(),
             "AccountKeychain should be registered"
+        );
+
+        // FeatureRegistry should be registered
+        let feature_registry_precompile = precompiles.get(&FEATURE_REGISTRY_ADDRESS);
+        assert!(
+            feature_registry_precompile.is_some(),
+            "FeatureRegistry should be registered"
         );
 
         // TIP20 tokens with prefix should be registered
