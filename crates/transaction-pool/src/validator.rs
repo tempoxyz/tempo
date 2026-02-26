@@ -1363,9 +1363,11 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // Too far in the future: rejected
-        let tx_too_far =
-            create_aa_transaction(None, Some(current_time + DEFAULT_AA_VALID_BEFORE_MAX_SECS + 1));
+        // Too far in the future is rejected
+        let tx_too_far = create_aa_transaction(
+            None,
+            Some(current_time + DEFAULT_AA_VALID_BEFORE_MAX_SECS + 1),
+        );
         let validator = setup_validator(&tx_too_far, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_too_far)
@@ -1381,7 +1383,7 @@ mod tests {
             _ => panic!("Expected Invalid outcome with InvalidValidBefore error, got: {outcome:?}"),
         }
 
-        // At boundary: accepted
+        // At boundary is accepted
         let tx_at_boundary =
             create_aa_transaction(None, Some(current_time + DEFAULT_AA_VALID_BEFORE_MAX_SECS));
         let validator = setup_validator(&tx_at_boundary, current_time);

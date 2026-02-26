@@ -1004,7 +1004,7 @@ mod tests {
         assert!(!state.tx_to_expiry.contains_key(&hash_a));
         assert_eq!(state.expiry_map[&1000], vec![hash_b]);
 
-        // Mine hash_b — should remove the expiry_map entry entirely
+        // Mine hash_b should remove the expiry_map entry entirely
         state.remove_mined(&[hash_b]);
         assert!(!state.tx_to_expiry.contains_key(&hash_b));
         assert!(!state.expiry_map.contains_key(&1000));
