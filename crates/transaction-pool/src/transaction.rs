@@ -390,9 +390,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::ExpiringNonceReplay
             | Self::Keychain(_)
             | Self::InsufficientLiquidity(_)
-            | Self::SpendingLimitExceeded { .. }
-            | Self::AccessKeyExpired { .. }
-            | Self::KeyAuthorizationExpired { .. } => false,
+            | Self::SpendingLimitExceeded { .. } => false,
             Self::NonZeroValue
             | Self::SubblockNonceKey
             | Self::InsufficientGasForAAIntrinsicCost { .. }
@@ -405,6 +403,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::TooManyTokenLimits { .. }
             | Self::ExpiringNonceMissingValidBefore
             | Self::ExpiringNonceNonceNotZero
+            | Self::AccessKeyExpired { .. }
+            | Self::KeyAuthorizationExpired { .. }
             | Self::InvalidFeePayerSignature
             | Self::NoCalls
             | Self::CreateCallWithAuthorizationList
@@ -791,14 +791,14 @@ mod tests {
                     expiry: 100,
                     min_allowed: 200,
                 },
-                false,
+                true,
             ),
             (
                 TempoPoolTransactionError::KeyAuthorizationExpired {
                     expiry: 100,
                     min_allowed: 200,
                 },
-                false,
+                true,
             ),
             (TempoPoolTransactionError::InvalidFeePayerSignature, true),
             (TempoPoolTransactionError::NonZeroValue, true),
