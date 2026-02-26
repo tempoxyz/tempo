@@ -1,0 +1,38 @@
+# This workflow is only intended to be used in forks/copies of tempoxyz/tempo.
+# It syncs the main branch with the upstream repository hourly.
+
+name: Sync main branch with upstream
+
+on:
+  schedule:
+    - cron: "0 * * * *" # hourly, backup in case the webhook fails
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  sync:
+    if: ${{ github.repository != 'tempoxyz/tempo' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2
+        with:
+          app-id: ${{ vars.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Sync main with upstream
+        run: |
+          git remote add upstream https://github.com/tempoxyz/tempo.git
+          git fetch upstream main
+          git checkout main
+          git reset --hard upstream/main
+          git push origin main --force
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}

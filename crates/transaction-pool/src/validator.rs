@@ -395,15 +395,22 @@ where
             key_authorization: tx.key_authorization.clone(),
             signature_hash: aa_tx.signature_hash(),
             tx_hash: *aa_tx.hash(),
+            expiring_nonce_hash: tx
+                .is_expiring_nonce_tx()
+                .then(|| aa_tx.expiring_nonce_hash(sender)),
             override_key_id: None,
         };
 
         // Calculate the intrinsic gas for the AA transaction
         let gas_params = tempo_gas_params(spec);
 
-        let mut init_and_floor_gas =
-            calculate_aa_batch_intrinsic_gas(&aa_env, &gas_params, Some(tx.access_list.iter()))
-                .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
+        let mut init_and_floor_gas = calculate_aa_batch_intrinsic_gas(
+            &aa_env,
+            &gas_params,
+            Some(tx.access_list.iter()),
+            spec,
+        )
+        .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
 
         // Add nonce gas based on hardfork
         // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
@@ -842,20 +849,38 @@ where
                         .is_t1_active_at_timestamp(current_time);
 
                     if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-                        // Expiring nonce transaction - check if tx hash is already seen
-                        let tx_hash = *transaction.hash();
-                        let seen_slot = NonceManager::new().expiring_seen_slot(tx_hash);
+                        // Expiring nonce transaction - check if the replay hash is already seen.
+                        //
+                        // Pre-T1B: use tx_hash to match handler behavior (handler writes seen[tx_hash]).
+                        // T1B+: use expiring_nonce_hash (invariant to fee payer changes) to match
+                        //        the updated handler replay protection.
+                        //
+                        // TODO: Remove the tx_hash path after T1B is active on mainnet.
+                        let replay_hash = if spec.is_t1b() {
+                            transaction
+                                .transaction()
+                                .inner()
+                                .as_aa()
+                                .expect("expiring nonce tx must be AA")
+                                .expiring_nonce_hash(transaction.transaction().sender())
+                        } else {
+                            *transaction.hash()
+                        };
+                        let seen_slot = NonceManager::new().expiring_seen_slot(replay_hash);
 
                         let seen_expiry: u64 = match state_provider
                             .storage(NONCE_PRECOMPILE_ADDRESS, seen_slot.into())
                         {
                             Ok(val) => val.unwrap_or_default().saturating_to(),
                             Err(err) => {
-                                return TransactionValidationOutcome::Error(tx_hash, Box::new(err));
+                                return TransactionValidationOutcome::Error(
+                                    *transaction.hash(),
+                                    Box::new(err),
+                                );
                             }
                         };
 
-                        // If expiry is non-zero and in the future, tx hash is still valid (replay).
+                        // If expiry is non-zero and in the future, the replay hash is still active.
                         // Note: This is also enforced at the protocol level in handler.rs via
                         // `check_and_mark_expiring_nonce`, so even if a tx bypasses pool validation
                         // (e.g., injected directly into a block), execution will still reject it.
@@ -909,52 +934,6 @@ where
             }
             outcome => outcome,
         }
-    }
-}
-
-/// Ensures that gas limit of the transaction exceeds the intrinsic gas of the transaction.
-pub fn ensure_intrinsic_gas_tempo_tx(
-    tx: &TempoPooledTransaction,
-    spec: TempoHardfork,
-) -> Result<(), InvalidPoolTransactionError> {
-    let gas_params = tempo_gas_params(spec);
-
-    let mut gas = gas_params.initial_tx_gas(
-        tx.input(),
-        tx.is_create(),
-        tx.access_list().map(|l| l.len()).unwrap_or_default() as u64,
-        tx.access_list()
-            .map(|l| l.iter().map(|i| i.storage_keys.len()).sum::<usize>())
-            .unwrap_or_default() as u64,
-        tx.authorization_list().map(|l| l.len()).unwrap_or_default() as u64,
-    );
-
-    // TIP-1000: Storage pricing updates for launch
-    // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
-    // no need for v1 fork check as gas_params would be zero
-    for auth in tx.authorization_list().unwrap_or_default() {
-        if auth.nonce == 0 {
-            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
-        }
-    }
-
-    // TIP-1000: Storage pricing updates for launch
-    // Tempo transactions with `nonce == 0` require additional gas, but the amount depends on nonce type:
-    // - Expiring nonce (nonce_key == MAX): EXPIRING_NONCE_GAS (13k) for ring buffer operations
-    // - Regular/2D nonce with nonce == 0: new_account_cost (250k) for potential account creation
-    if spec.is_t1() && tx.nonce() == 0 {
-        if tx.nonce_key() == Some(TEMPO_EXPIRING_NONCE_KEY) {
-            gas.initial_gas += EXPIRING_NONCE_GAS;
-        } else {
-            gas.initial_gas += gas_params.get(GasId::new_account_cost());
-        }
-    }
-
-    let gas_limit = tx.gas_limit();
-    if gas_limit < gas.initial_gas || gas_limit < gas.floor_gas {
-        Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
-    } else {
-        Ok(())
     }
 }
 
@@ -1027,6 +1006,52 @@ where
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
         self.inner.on_new_head_block(new_tip_block)
+    }
+}
+
+/// Ensures that gas limit of the transaction exceeds the intrinsic gas of the transaction.
+pub fn ensure_intrinsic_gas_tempo_tx(
+    tx: &TempoPooledTransaction,
+    spec: TempoHardfork,
+) -> Result<(), InvalidPoolTransactionError> {
+    let gas_params = tempo_gas_params(spec);
+
+    let mut gas = gas_params.initial_tx_gas(
+        tx.input(),
+        tx.is_create(),
+        tx.access_list().map(|l| l.len()).unwrap_or_default() as u64,
+        tx.access_list()
+            .map(|l| l.iter().map(|i| i.storage_keys.len()).sum::<usize>())
+            .unwrap_or_default() as u64,
+        tx.authorization_list().map(|l| l.len()).unwrap_or_default() as u64,
+    );
+
+    // TIP-1000: Storage pricing updates for launch
+    // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+    // no need for v1 fork check as gas_params would be zero
+    for auth in tx.authorization_list().unwrap_or_default() {
+        if auth.nonce == 0 {
+            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+        }
+    }
+
+    // TIP-1000: Storage pricing updates for launch
+    // Tempo transactions with `nonce == 0` require additional gas, but the amount depends on nonce type:
+    // - Expiring nonce (nonce_key == MAX): EXPIRING_NONCE_GAS (13k) for ring buffer operations
+    // - Regular/2D nonce with nonce == 0: new_account_cost (250k) for potential account creation
+    if spec.is_t1() && tx.nonce() == 0 {
+        if tx.nonce_key() == Some(TEMPO_EXPIRING_NONCE_KEY) {
+            gas.initial_gas += EXPIRING_NONCE_GAS;
+        } else {
+            gas.initial_gas += gas_params.get(GasId::new_account_cost());
+        }
+    }
+
+    let gas_limit = tx.gas_limit();
+    if gas_limit < gas.initial_gas || gas_limit < gas.floor_gas {
+        Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
+    } else {
+        Ok(())
     }
 }
 

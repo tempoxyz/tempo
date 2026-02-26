@@ -164,6 +164,13 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                     key_authorization,
                     signature_hash: B256::ZERO,
                     tx_hash: B256::ZERO,
+                    // Use a zero sentinel for expiring nonce hash during simulation.
+                    // The real hash is keccak256(encode_for_signing || sender), but we
+                    // don't have a signed transaction here. B256::ZERO lets the handler's
+                    // replay check proceed (it runs against ephemeral simulation state
+                    // that is discarded). Gas accuracy is unaffected — the 13k
+                    // EXPIRING_NONCE_GAS is charged based on nonce_key, not the hash value.
+                    expiring_nonce_hash: Some(B256::ZERO),
                     valid_before,
                     valid_after,
                     subblock_transaction: false,

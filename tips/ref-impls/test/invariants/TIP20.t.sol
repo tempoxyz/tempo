@@ -7,7 +7,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title TIP20 Invariant Tests
 /// @notice Fuzz-based invariant tests for the TIP20 token implementation
-/// @dev Tests invariants TEMPO-TIP1 through TEMPO-TIP29
+/// @dev Tests invariants TEMPO-TIP1 through TEMPO-TIP36
 contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @dev Ghost variables for reward distribution tracking
@@ -31,8 +31,14 @@ contract TIP20InvariantTest is InvariantBaseTest {
     mapping(address => mapping(address => bool)) private _tokenHolderSeen;
     mapping(address => address[]) private _tokenHolders;
 
+    /// @dev Private keys associated with actor addresses
+    uint256[] private _keys;
+
     /// @dev Constants
     uint256 internal constant ACC_PRECISION = 1e18;
+    bytes32 internal constant PERMIT_TYPEHASH = keccak256(
+        "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+    );
 
     /// @dev Register an address as a potential token holder
     function _registerHolder(address token, address holder) internal {
@@ -49,7 +55,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         _setupInvariantBase();
-        _actors = _buildActors(20);
+        (_actors, _keys) = _buildActors(20);
 
         // Snapshot initial supply after _buildActors mints tokens to actors
         for (uint256 i = 0; i < _tokens.length; i++) {
@@ -822,6 +828,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
         amount = bound(amount, 1, targetBalance);
 
+        uint128 optedInSupplyBefore = token.optedInSupply();
+        (address rewardRecipient,,) = token.userRewardInfo(target);
+        bool targetOptedIn = rewardRecipient != address(0);
         uint256 totalSupplyBefore = token.totalSupply();
 
         vm.startPrank(admin);
@@ -844,6 +853,22 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 totalSupplyBefore - amount,
                 "TEMPO-TIP23: Total supply not decreased"
             );
+
+            // TEMPO-TIP11: Opted-in supply should decrease by burned amount if target was opted in
+            uint128 optedInSupplyAfter = token.optedInSupply();
+            if (targetOptedIn) {
+                assertEq(
+                    optedInSupplyAfter,
+                    optedInSupplyBefore - uint128(amount),
+                    "TEMPO-TIP11: Opted-in supply not decreased after burnBlocked"
+                );
+            } else {
+                assertEq(
+                    optedInSupplyAfter,
+                    optedInSupplyBefore,
+                    "TEMPO-TIP11: Opted-in supply changed unexpectedly after burnBlocked"
+                );
+            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -1227,6 +1252,86 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.stopPrank();
     }
 
+    function permit(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 tokenSeed,
+        uint128 amount,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s,
+        uint256 resultSeed
+    )
+        external
+    {
+        vm.assume(!isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        address actor = _selectActor(actorSeed);
+        address recipient = _selectActorExcluding(recipientSeed, actor);
+        TIP20 token = _selectBaseToken(tokenSeed);
+        uint256 actorNonce = token.nonces(actor);
+
+        // build permit digest
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                token.DOMAIN_SEPARATOR(),
+                keccak256(
+                    abi.encode(PERMIT_TYPEHASH, actor, recipient, amount, actorNonce, deadline)
+                )
+            )
+        );
+
+        // alternate between: correct sig, random sig, corrupted digest, and fully random sig
+        address signer;
+        if (resultSeed % 4 == 0) {
+            signer = actor;
+            (v, r, s) = vm.sign(_selectActorKey(actorSeed), digest);
+        } else if (resultSeed % 4 == 1) {
+            // Sign with a random key
+            uint256 wrongKey = _selectActorKeyExcluding(recipientSeed, actor);
+            signer = vm.addr(wrongKey);
+            (v, r, s) = vm.sign(wrongKey, digest);
+        } else if (resultSeed % 4 == 2) {
+            digest = keccak256(abi.encodePacked(digest, resultSeed)); // corrupt the digest unpredictably
+        } // else use the random bytes entirely
+
+        try token.permit(actor, recipient, amount, deadline, v, r, s) {
+            // If permit passes, check invariants
+
+            // **TEMPO-TIP36**: Permit should set correct allowance
+            assertEq(
+                token.allowance(actor, recipient),
+                amount,
+                "TEMPO-TIP36: Permit did not set correct allowance"
+            );
+
+            // **TEMPO-TIP32**: Nonce should be incremented
+            assertEq(
+                token.nonces(actor), actorNonce + 1, "TEMPO-TIP32: Permit did not increment nonce"
+            );
+
+            // **TEMPO-TIP34**: A permit with a deadline in the past must always revert.
+            assertGe(
+                deadline, block.timestamp, "TEMPO-TIP34: Permit should revert if deadline is past"
+            );
+
+            // **TEMPO-TIP35**: The recovered signer from a valid permit signature must exactly match the `owner` parameter.
+            assertEq(
+                ecrecover(digest, v, r, s),
+                actor,
+                "TEMPO-TIP35: Recovered signer does not match expected"
+            );
+
+            // Occasionally try 2nd permit. Use prime modulo to test all cases of seed % 4 between [0, 3]
+            if (resultSeed % 7 == 0) {
+                try token.permit(actor, recipient, amount, deadline, v, r, s) {
+                    revert("TEMPO-TIP33: Permit should not be reusable");
+                } catch (bytes memory) { }
+            }
+        } catch (bytes memory) { }
+    }
+
     /// @notice Handler that verifies paused tokens reject transfers with ContractPaused
     /// @dev Tests TEMPO-TIP17: pause enforcement - transfers revert with ContractPaused
     function tryTransferWhilePaused(
@@ -1312,6 +1417,31 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 }
             }
         }
+    }
+
+    // Helper function to select key associated with seed
+    function _selectActorKey(uint256 seed) internal view returns (uint256) {
+        return _keys[seed % _keys.length];
+    }
+
+    function _selectActorKeyExcluding(
+        uint256 seed,
+        address exclude
+    )
+        internal
+        view
+        returns (uint256)
+    {
+        uint256 key;
+        address actor;
+        do {
+            key = _selectActorKey(seed);
+            actor = vm.addr(key);
+            unchecked {
+                seed++;
+            }
+        } while (actor == exclude);
+        return key;
     }
 
 }

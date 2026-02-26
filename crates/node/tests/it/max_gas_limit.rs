@@ -12,6 +12,7 @@ use alloy::{
 use alloy_eips::{eip2718::Encodable2718, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 use alloy_network::TxSignerSync;
 use alloy_primitives::Bytes;
+use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP};
 
@@ -160,6 +161,8 @@ async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
     genesis["config"].as_object_mut().unwrap().remove("t1Time");
     genesis["config"].as_object_mut().unwrap().remove("t1aTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1bTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
     let pre_t1a_genesis = serde_json::to_string(&genesis)?;
 
@@ -198,6 +201,8 @@ async fn test_pre_t1a_tx_above_osaka_limit() -> eyre::Result<()> {
     let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
     genesis["config"].as_object_mut().unwrap().remove("t1Time");
     genesis["config"].as_object_mut().unwrap().remove("t1aTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1bTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
     let pre_t1a_genesis = serde_json::to_string(&genesis)?;
 

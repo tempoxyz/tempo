@@ -42,11 +42,11 @@ impl Network for TempoNetwork {
 
 impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn chain_id(&self) -> Option<ChainId> {
-        self.inner.chain_id()
+        TransactionBuilder::chain_id(&self.inner)
     }
 
     fn set_chain_id(&mut self, chain_id: ChainId) {
-        self.inner.set_chain_id(chain_id)
+        TransactionBuilder::set_chain_id(&mut self.inner, chain_id)
     }
 
     fn nonce(&self) -> Option<u64> {
@@ -54,11 +54,11 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn set_nonce(&mut self, nonce: u64) {
-        self.inner.set_nonce(nonce)
+        TransactionBuilder::set_nonce(&mut self.inner, nonce)
     }
 
     fn take_nonce(&mut self) -> Option<u64> {
-        self.inner.take_nonce()
+        TransactionBuilder::take_nonce(&mut self.inner)
     }
 
     fn input(&self) -> Option<&Bytes> {
@@ -78,15 +78,15 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn kind(&self) -> Option<TxKind> {
-        self.inner.kind()
+        TransactionBuilder::kind(&self.inner)
     }
 
     fn clear_kind(&mut self) {
-        self.inner.clear_kind()
+        TransactionBuilder::clear_kind(&mut self.inner)
     }
 
     fn set_kind(&mut self, kind: TxKind) {
-        self.inner.set_kind(kind)
+        TransactionBuilder::set_kind(&mut self.inner, kind)
     }
 
     fn value(&self) -> Option<U256> {
@@ -94,7 +94,7 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn set_value(&mut self, value: U256) {
-        self.inner.set_value(value)
+        TransactionBuilder::set_value(&mut self.inner, value)
     }
 
     fn gas_price(&self) -> Option<u128> {
@@ -143,18 +143,19 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             TempoTxType::Legacy
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559
-            | TempoTxType::Eip7702 => self
-                .inner
-                .complete_type(ty.try_into().expect("tempo tx types checked")),
+            | TempoTxType::Eip7702 => TransactionBuilder::complete_type(
+                &self.inner,
+                ty.try_into().expect("tempo tx types checked"),
+            ),
         }
     }
 
     fn can_submit(&self) -> bool {
-        self.inner.can_submit()
+        TransactionBuilder::can_submit(&self.inner)
     }
 
     fn can_build(&self) -> bool {
-        self.inner.can_build()
+        TransactionBuilder::can_build(&self.inner) || self.can_build_aa()
     }
 
     fn output_tx_type(&self) -> TempoTxType {
@@ -169,7 +170,7 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
         {
             TempoTxType::AA
         } else {
-            match self.inner.output_tx_type() {
+            match TransactionBuilder::output_tx_type(&self.inner) {
                 TxType::Legacy => TempoTxType::Legacy,
                 TxType::Eip2930 => TempoTxType::Eip2930,
                 TxType::Eip1559 => TempoTxType::Eip1559,
@@ -186,7 +187,9 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             TempoTxType::Legacy
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559
-            | TempoTxType::Eip7702 => self.inner.output_tx_type_checked()?.try_into().ok(),
+            | TempoTxType::Eip7702 => TransactionBuilder::output_tx_type_checked(&self.inner)?
+                .try_into()
+                .ok(),
         }
     }
 

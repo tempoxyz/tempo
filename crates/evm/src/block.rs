@@ -18,9 +18,15 @@ use commonware_cryptography::{
     Verifier,
     ed25519::{PublicKey, Signature},
 };
-use reth_revm::{Inspector, State, context::result::ResultAndState};
+use reth_revm::{
+    DatabaseCommit, Inspector, State,
+    context::result::ResultAndState,
+    context_interface::JournalTr,
+    state::{Account, Bytecode, EvmState},
+};
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
@@ -47,7 +53,7 @@ pub(crate) enum BlockSection {
 /// Builder for [`TempoReceipt`].
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
-pub(crate) struct TempoReceiptBuilder;
+pub struct TempoReceiptBuilder;
 
 impl ReceiptBuilder for TempoReceiptBuilder {
     type Transaction = TempoTxEnvelope;
@@ -97,7 +103,11 @@ impl<H> TxResult for TempoTxResult<H> {
     }
 }
 
-/// Block executor for Tempo. Wraps an inner [`EthBlockExecutor`].
+/// Block executor for Tempo.
+///
+/// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
+/// logic on top: section-based transaction ordering ([`BlockSection`]), subblock
+/// validation, shared/non-shared gas accounting, and gas incentive tracking.
 pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) inner: EthBlockExecutor<
         'a,
@@ -360,7 +370,30 @@ where
     type Result = TempoTxResult<TempoHaltReason>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
-        self.inner.apply_pre_execution_changes()
+        self.inner.apply_pre_execution_changes()?;
+
+        // Deploy 0xEF marker bytecode to ValidatorConfigV2 when T2 activates.
+        let timestamp = self.evm().block().timestamp.to::<u64>();
+        if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
+            let db = self.evm_mut().ctx_mut().journaled_state.db_mut();
+            let acc = db
+                .load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS)
+                .map_err(BlockExecutionError::other)?;
+            let mut info = acc.account_info().unwrap_or_default();
+            if info.is_empty_code_hash() {
+                let code = Bytecode::new_legacy([0xef].into());
+                info.code_hash = code.hash_slow();
+                info.code = Some(code);
+                let mut account: Account = info.into();
+                account.mark_touch();
+                db.commit(EvmState::from_iter([(
+                    VALIDATOR_CONFIG_V2_ADDRESS,
+                    account,
+                )]));
+            }
+        }
+
+        Ok(())
     }
 
     fn receipts(&self) -> &[Self::Receipt] {
@@ -448,9 +481,9 @@ where
                     self.seen_subblocks.last_mut().unwrap()
                 };
 
-                last_subblock
-                    .1
-                    .push(tx.expect("always Some for subblock transactions"));
+                last_subblock.1.push(tx.ok_or_else(|| {
+                    BlockExecutionError::msg("missing tx for subblock transaction")
+                })?);
             }
             BlockSection::GasIncentive => {
                 self.incentive_gas_used += gas_used;
@@ -883,7 +916,7 @@ mod tests {
         let signer = PrivateKey::from_seed(0);
         let validator_key = B256::from_slice(&signer.public_key());
 
-        // Add a seen subblock from a different validator that wont match metadata
+        // Add a seen subblock from a different validator that won't match metadata
         let different_key = B256::repeat_byte(0x99);
         let different_proposer = PartialValidatorKey::from_slice(&different_key[..15]);
 
@@ -1098,5 +1131,24 @@ mod tests {
 
         let result = executor.finish();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_deploys_validator_v2_code() {
+        use std::sync::Arc;
+        use tempo_chainspec::spec::DEV;
+
+        // Dev chainspec has t2Time: 0, so T2 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let acc = db.load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
     }
 }
