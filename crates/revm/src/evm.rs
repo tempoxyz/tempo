@@ -202,7 +202,10 @@ mod tests {
     use revm::{
         Context, DatabaseRef, ExecuteCommitEvm, ExecuteEvm, InspectEvm, MainContext,
         bytecode::opcode,
-        context::{CfgEnv, ContextTr, TxEnv},
+        context::{
+            CfgEnv, ContextTr, TxEnv,
+            result::{ExecutionResult, HaltReason},
+        },
         database::{CacheDB, EmptyDB},
         handler::system_call::SystemCallEvm,
         inspector::{CountInspector, InspectSystemCallEvm},
@@ -229,7 +232,7 @@ mod tests {
         },
     };
 
-    use crate::{TempoBlockEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
+    use crate::{TempoBlockEnv, TempoEvm, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv};
 
     // ==================== Test Constants ====================
 
@@ -656,7 +659,13 @@ mod tests {
                 U256::from(1000100)
             );
         } else {
-            assert!(!result.is_success());
+            assert!(matches!(
+                result,
+                ExecutionResult::Halt {
+                    reason: TempoHaltReason::Ethereum(HaltReason::OpcodeNotFound),
+                    ..
+                }
+            ));
         }
 
         Ok(())
