@@ -6891,10 +6891,8 @@ async fn test_aa_valid_before_upper_bound_rejected() -> eyre::Result<()> {
 
     let sig = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
     let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
-    let result = setup
-        .node
-        .rpc
-        .inject_tx(envelope.encoded_2718().into())
+    let result = provider
+        .send_raw_transaction(&envelope.encoded_2718())
         .await;
 
     let err_str = result
@@ -6940,10 +6938,8 @@ async fn test_aa_valid_before_within_window_accepted() -> eyre::Result<()> {
     let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
     let tx_hash = *envelope.tx_hash();
 
-    setup
-        .node
-        .rpc
-        .inject_tx(envelope.encoded_2718().into())
+    provider
+        .send_raw_transaction(&envelope.encoded_2718())
         .await?;
     setup.node.advance_block().await?;
 

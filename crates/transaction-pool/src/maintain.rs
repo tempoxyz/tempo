@@ -19,7 +19,11 @@ use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeMap, btree_map::Entry},
+    sync::Arc,
+    time::Instant,
+};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
@@ -240,8 +244,7 @@ impl TempoPoolState {
     fn remove_mined(&mut self, mined_hashes: &[TxHash]) {
         for hash in mined_hashes {
             if let Some(valid_before) = self.tx_to_expiry.remove(hash)
-                && let std::collections::btree_map::Entry::Occupied(mut entry) =
-                    self.expiry_map.entry(valid_before)
+                && let Entry::Occupied(mut entry) = self.expiry_map.entry(valid_before)
             {
                 let hashes = entry.get_mut();
                 hashes.retain(|h| h != hash);
