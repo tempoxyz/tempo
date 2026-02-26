@@ -7747,7 +7747,7 @@ async fn run_fill_sign_send_test_secp256k1(test_case: &FillTestCase) -> eyre::Re
         fill_transaction_from_case(&provider, test_case, alice_addr, current_timestamp).await?;
     tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     if request_context.expected_valid_before.is_none() {
-        tx.valid_before = Some(u64::MAX);
+        tx.valid_before = None;
     }
 
     let signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;

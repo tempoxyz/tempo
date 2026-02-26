@@ -53,7 +53,7 @@ fn build_create_key_auth_tx(
         nonce_key: U256::ZERO,
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         key_authorization: Some(signed_key_auth),
         ..Default::default()
     };
@@ -90,7 +90,7 @@ fn build_2d_nonce_transfer_tx(
         nonce_key: U256::from(nonce_key),
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
