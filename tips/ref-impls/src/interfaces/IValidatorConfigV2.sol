@@ -11,8 +11,7 @@ pragma solidity >=0.8.13 <0.9.0;
 ///      - `active` bool replaced by `addedAtHeight` and `deactivatedAtHeight`
 ///      - No `updateValidator` - validators are immutable after creation
 ///      - Requires Ed25519 signature on `addValidator` to prove key ownership
-///      - Addresses must be unique among active validators (reusable after deactivation)
-///      - Public keys must be unique across all validators (including deleted)
+///      - Both address and public key must be unique across all validators (including deleted)
 interface IValidatorConfigV2 {
 
     // =========================================================================
@@ -56,14 +55,16 @@ interface IValidatorConfigV2 {
     error InvalidMigrationIndex();
 
     /// @notice Thrown when address is not in valid ip:port format
+    /// @param field The field name that failed validation
     /// @param input The invalid input that was provided
     /// @param backtrace Additional error context
-    error NotIpPort(string input, string backtrace);
+    error NotIpPort(string field, string input, string backtrace);
 
     /// @notice Thrown when address is not a valid IP (for egress field)
+    /// @param field The field name that failed validation
     /// @param input The invalid input that was provided
     /// @param backtrace Additional error context
-    error NotIp(string input, string backtrace);
+    error NotIp(string field, string input, string backtrace);
 
     /// @notice Thrown when ingress IP is already in use by another active validator
     /// @param ingress The ingress address that is already in use
@@ -75,7 +76,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Validator information (V2 - append-only, delete-once)
     /// @param publicKey Ed25519 communication public key (non-zero, unique across all validators)
-    /// @param validatorAddress Ethereum-style address of the validator (unique among active validators)
+    /// @param validatorAddress Ethereum-style address of the validator (unique across all validators)
     /// @param ingress Address where other validators can connect (format: `<ip>:<port>`)
     /// @param egress IP address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>`)
     /// @param index Position in validators array (assigned at creation, immutable)
@@ -117,8 +118,8 @@ interface IValidatorConfigV2 {
     /// @notice Deactivates a validator (owner or validator only)
     /// @dev Marks the validator as deactivated by setting deactivatedAtHeight to the current block height.
     ///      The validator's entry remains in storage for historical queries.
-    ///      The public key remains reserved and cannot be reused. The address becomes
-    ///      available for reuse by a new validator or via transferValidatorOwnership.
+    ///      The public key remains reserved and cannot be reused. The address remains
+    ///      reserved unless reassigned via transferValidatorOwnership.
     /// @param validatorAddress The validator address to deactivate
     function deactivateValidator(address validatorAddress) external;
 
