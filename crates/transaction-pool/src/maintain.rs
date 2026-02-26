@@ -981,6 +981,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_remove_mined() {
+        let mut state = TempoPoolState::default();
+        let hash_a = TxHash::random();
+        let hash_b = TxHash::random();
+        let hash_unknown = TxHash::random();
+
+        // Track two txs at the same valid_before
+        state.expiry_map.entry(1000).or_default().push(hash_a);
+        state.tx_to_expiry.insert(hash_a, 1000);
+        state.expiry_map.entry(1000).or_default().push(hash_b);
+        state.tx_to_expiry.insert(hash_b, 1000);
+
+        // Mine hash_a and an unknown hash
+        state.remove_mined(&[hash_a, hash_unknown]);
+
+        // hash_a removed from both maps
+        assert!(!state.tx_to_expiry.contains_key(&hash_a));
+        assert_eq!(state.expiry_map[&1000], vec![hash_b]);
+
+        // Mine hash_b — should remove the expiry_map entry entirely
+        state.remove_mined(&[hash_b]);
+        assert!(!state.tx_to_expiry.contains_key(&hash_b));
+        assert!(!state.expiry_map.contains_key(&1000));
+    }
+
     mod key_expiry_tracker_tests {
         use super::*;
 

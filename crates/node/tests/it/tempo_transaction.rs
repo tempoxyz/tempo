@@ -116,7 +116,7 @@ async fn fund_address_with_fee_tokens(
         nonce: provider.get_transaction_count(funder_addr).await?,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -722,7 +722,7 @@ fn create_basic_aa_tx(
         // Use AlphaUSD to match fund_address_with_fee_tokens
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -1085,7 +1085,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             nonce,
             fee_token: None,
             fee_payer_signature: None,
-            valid_before: Some(u64::MAX),
+            valid_before: None,
             ..Default::default()
         };
 
@@ -1497,7 +1497,7 @@ async fn send_tx(
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -1747,7 +1747,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
         nonce: nonce_seq,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -3245,7 +3245,7 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -3902,7 +3902,7 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
         }],
         nonce_key: U256::ZERO, // Protocol nonce (key 0)
         nonce,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -4684,7 +4684,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth.clone()),
@@ -4722,7 +4722,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -4784,7 +4784,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -4846,7 +4846,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -5136,7 +5136,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -5582,7 +5582,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth),
@@ -5643,7 +5643,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None, // No auth needed - key already authorized
@@ -5716,7 +5716,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -5822,7 +5822,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(invalid_key_auth),
@@ -6013,7 +6013,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth_wrong_chain),
@@ -6070,7 +6070,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth_wildcard),
@@ -6128,7 +6128,7 @@ async fn test_aa_create_correct_contract_address() -> eyre::Result<()> {
         nonce_key: U256::ZERO,
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -6858,6 +6858,97 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
     }
 
     println!("\n=== All Expiring Nonce Validity Window Tests Passed ===");
+    Ok(())
+}
+
+/// Test that non-expiring-nonce AA txs with valid_before too far in the future are rejected.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_valid_before_upper_bound_rejected() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (mut setup, provider, alice_signer, _alice_addr) = setup_test_with_funded_account().await?;
+    let chain_id = provider.get_chain_id().await?;
+
+    setup.node.advance_block().await?;
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+
+    // valid_before far in the future (1 hour) — should be rejected
+    let mut tx = create_basic_aa_tx(
+        chain_id,
+        0,
+        vec![Call {
+            to: Address::random().into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        2_000_000,
+    );
+    tx.valid_before = Some(current_timestamp + 3600);
+
+    let sig = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
+    let result = setup
+        .node
+        .rpc
+        .inject_tx(envelope.encoded_2718().into())
+        .await;
+
+    let err_str = result
+        .expect_err("far-future valid_before should be rejected")
+        .to_string();
+    assert!(
+        err_str.contains("invalid 'valid_before'"),
+        "Expected InvalidValidBefore error, got: {err_str}"
+    );
+
+    Ok(())
+}
+
+/// Test that non-expiring-nonce AA txs with valid_before within window are accepted.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_valid_before_within_window_accepted() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (mut setup, provider, alice_signer, _alice_addr) = setup_test_with_funded_account().await?;
+    let chain_id = provider.get_chain_id().await?;
+
+    setup.node.advance_block().await?;
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+
+    // valid_before within the 120s window — should be accepted
+    let mut tx = create_basic_aa_tx(
+        chain_id,
+        0,
+        vec![Call {
+            to: Address::random().into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        2_000_000,
+    );
+    tx.valid_before = Some(current_timestamp + 100);
+
+    let sig = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
+    let tx_hash = *envelope.tx_hash();
+
+    setup
+        .node
+        .rpc
+        .inject_tx(envelope.encoded_2718().into())
+        .await?;
+    setup.node.advance_block().await?;
+
+    assert_receipt_status(&provider, tx_hash, true).await?;
+
     Ok(())
 }
 

@@ -1357,6 +1357,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_aa_valid_before_upper_bound() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Too far in the future: rejected
+        let tx_too_far =
+            create_aa_transaction(None, Some(current_time + DEFAULT_AA_VALID_BEFORE_MAX_SECS + 1));
+        let validator = setup_validator(&tx_too_far, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_too_far)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::InvalidValidBefore { .. })
+                ));
+            }
+            _ => panic!("Expected Invalid outcome with InvalidValidBefore error, got: {outcome:?}"),
+        }
+
+        // At boundary: accepted
+        let tx_at_boundary =
+            create_aa_transaction(None, Some(current_time + DEFAULT_AA_VALID_BEFORE_MAX_SECS));
+        let validator = setup_validator(&tx_at_boundary, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_at_boundary)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(!matches!(
+                err.downcast_other_ref::<TempoPoolTransactionError>(),
+                Some(TempoPoolTransactionError::InvalidValidBefore { .. })
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn test_aa_valid_after_check() {
         // NOTE: `setup_validator` will turn `tip_timestamp` into `current_time`
         let current_time = std::time::SystemTime::now()
