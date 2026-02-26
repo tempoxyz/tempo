@@ -30,6 +30,13 @@ pub const MIN_ORDER_AMOUNT: u128 = 100_000_000;
 /// Allowed tick spacing for order placement
 pub const TICK_SPACING: i16 = 10;
 
+/// On-chain CLOB (Central Limit Order Book) for stablecoin trading.
+///
+/// Supports limit orders, market swaps, and flip orders across USD-denominated TIP-20 token pairs.
+/// Orders use tick-based pricing with price-time priority.
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = STABLECOIN_DEX_ADDRESS)]
 pub struct StablecoinDEX {
     books: Mapping<B256, Orderbook>,
