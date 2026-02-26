@@ -10,7 +10,7 @@ use crate::{
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, TxHash,
-    map::{self as alloy_map, AddressMap, B256Set, HashMap, HashSet},
+    map::{AddressMap, B256Set, HashMap, HashSet},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -387,7 +387,7 @@ impl KeyExpiryTracker {
         let key = KeyId { account, key_id };
 
         match self.key_to_txs.entry(key) {
-            alloy_map::Entry::Occupied(mut entry) => {
+            alloy_primitives::map::Entry::Occupied(mut entry) => {
                 let (existing_expiry, txs) = entry.get_mut();
                 debug_assert_eq!(
                     *existing_expiry, expiry,
@@ -395,7 +395,7 @@ impl KeyExpiryTracker {
                 );
                 txs.insert(tx_hash);
             }
-            alloy_map::Entry::Vacant(entry) => {
+            alloy_primitives::map::Entry::Vacant(entry) => {
                 entry.insert((expiry, [tx_hash].into_iter().collect()));
                 self.expiry_map.entry(expiry).or_default().insert(key);
             }
@@ -409,7 +409,8 @@ impl KeyExpiryTracker {
             return;
         };
 
-        let alloy_map::Entry::Occupied(mut key_entry) = self.key_to_txs.entry(key) else {
+        let alloy_primitives::map::Entry::Occupied(mut key_entry) = self.key_to_txs.entry(key)
+        else {
             return;
         };
 
