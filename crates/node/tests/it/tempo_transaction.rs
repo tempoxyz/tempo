@@ -313,7 +313,7 @@ fn create_signed_key_authorization(
     };
 
     let authorization = KeyAuthorization {
-        chain_id: 0, // Wildcard - valid on any chain
+        chain_id: 1337, // Must match test genesis chain_id (T1C rejects wildcard 0)
         key_type,
         key_id: Address::random(), // Random key being authorized
         expiry: None,              // Never expires
@@ -6045,15 +6045,15 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     );
     println!("  ✓ Wrong chain_id KeyAuthorization rejected as expected");
 
-    // Test 2: chain_id = 0 (wildcard) should be accepted
-    println!("\nTest 2: KeyAuthorization with chain_id = 0 (wildcard) should be accepted");
+    // Test 2: chain_id = 0 (wildcard) should be rejected post-T1C
+    println!("\nTest 2: KeyAuthorization with chain_id = 0 (wildcard) should be rejected post-T1C");
     let key_auth_wildcard = create_key_authorization(
         &root_signer,
         access_key_addr,
-        mock_p256_sig,
+        mock_p256_sig.clone(),
         0,    // Wildcard chain_id
         None, // Never expires
-        Some(spending_limits),
+        Some(spending_limits.clone()),
     )?;
 
     let tx_wildcard = TempoTransaction {
@@ -6079,13 +6079,67 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
 
     let sig_hash = tx_wildcard.signature_hash();
     let signature = root_signer.sign_hash_sync(&sig_hash)?;
+    let signed_tx = AASigned::new_unhashed(
+        tx_wildcard,
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+    );
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    let inject_result = setup.node.rpc.inject_tx(encoded.into()).await;
+    assert!(
+        inject_result.is_err(),
+        "Transaction with wildcard chain_id=0 MUST be rejected post-T1C"
+    );
+    let error_msg = inject_result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("chain_id does not match"),
+        "Error must mention chain_id mismatch. Got: {error_msg}"
+    );
+    println!("  ✓ Wildcard chain_id=0 rejected post-T1C as expected");
+
+    // Test 3: Matching chain_id should be accepted
+    println!("\nTest 3: KeyAuthorization with matching chain_id should be accepted");
+    let key_auth_matching = create_key_authorization(
+        &root_signer,
+        access_key_addr,
+        mock_p256_sig,
+        chain_id, // Matching chain_id
+        None,
+        Some(spending_limits),
+    )?;
+
+    let tx_matching = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: Some(key_auth_matching),
+        tempo_authorization_list: vec![],
+    };
+
+    let sig_hash = tx_matching.signature_hash();
+    let signature = root_signer.sign_hash_sync(&sig_hash)?;
     let tx_hash = submit_and_mine_aa_tx(
         &mut setup,
-        tx_wildcard,
+        tx_matching,
         TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     )
     .await?;
-    println!("  ✓ Wildcard chain_id KeyAuthorization accepted (tx: {tx_hash})");
+    println!("  ✓ Matching chain_id KeyAuthorization accepted (tx: {tx_hash})");
 
     Ok(())
 }

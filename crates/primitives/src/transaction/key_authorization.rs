@@ -38,7 +38,8 @@ pub struct TokenLimit {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct KeyAuthorization {
-    /// Chain ID for replay protection (0 = valid on any chain)
+    /// Chain ID for replay protection.
+    /// Pre-T1C: 0 = valid on any chain (wildcard). T1C+: must match current chain.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub chain_id: u64,
 

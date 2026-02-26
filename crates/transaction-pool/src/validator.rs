@@ -130,6 +130,7 @@ where
         };
 
         let current_time = self.inner.fork_tracker().tip_timestamp();
+        let spec = self.inner.chain_spec().tempo_hardfork_at(current_time);
         let auth = tx.tx().key_authorization.as_ref();
 
         // Ensure that key auth is valid if present.
@@ -144,9 +145,17 @@ where
                 )));
             }
 
-            // Validate chain_id (chain_id == 0 is wildcard, works on any chain)
+            // Validate chain_id.
+            // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
+            // Pre-T1C: chain_id == 0 is wildcard, works on any chain.
             let chain_id = self.inner.chain_spec().chain_id();
-            if auth.chain_id != 0 && auth.chain_id != chain_id {
+            if spec.is_t1c() {
+                if auth.chain_id != chain_id {
+                    return Ok(Err(TempoPoolTransactionError::Keychain(
+                        "KeyAuthorization chain_id does not match current chain",
+                    )));
+                }
+            } else if auth.chain_id != 0 && auth.chain_id != chain_id {
                 return Ok(Err(TempoPoolTransactionError::Keychain(
                     "KeyAuthorization chain_id does not match current chain",
                 )));
@@ -2506,42 +2515,128 @@ mod tests {
             Ok(())
         }
 
-        #[test]
-        fn test_key_authorization_wrong_chain_id_rejected() {
-            let (access_key_signer, access_key_address) = generate_keypair();
-            let (user_signer, user_address) = generate_keypair();
+        /// Setup a validator using the DEV chain spec (T1C active at genesis).
+        fn setup_validator_with_keychain_storage_t1c(
+            transaction: &TempoPooledTransaction,
+            user_address: Address,
+            key_id: Address,
+            authorized_key_slot_value: Option<U256>,
+        ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
+            use tempo_chainspec::spec::DEV;
 
-            // Create KeyAuthorization with wrong chain_id (not 0 and not matching)
+            let provider = MockEthProvider::<TempoPrimitives>::new()
+                .with_chain_spec(Arc::unwrap_or_clone(DEV.clone()));
+
+            provider.add_account(
+                transaction.sender(),
+                ExtendedAccount::new(transaction.nonce(), U256::ZERO),
+            );
+            provider.add_block(B256::random(), Default::default());
+
+            if let Some(slot_value) = authorized_key_slot_value {
+                let storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
+                provider.add_account(
+                    ACCOUNT_KEYCHAIN_ADDRESS,
+                    ExtendedAccount::new(0, U256::ZERO)
+                        .extend_storage([(storage_slot.into(), slot_value)]),
+                );
+            }
+
+            let inner =
+                EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
+                    .disable_balance_check()
+                    .build(InMemoryBlobStore::default());
+            let amm_cache =
+                AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+            TempoTransactionValidator::new(
+                inner,
+                DEFAULT_AA_VALID_AFTER_MAX_SECS,
+                DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+                amm_cache,
+            )
+        }
+
+        /// Helper: sign a KeyAuthorization and build a transaction with it.
+        fn build_key_auth_tx(
+            chain_id: u64,
+            access_key_signer: &PrivateKeySigner,
+            access_key_address: Address,
+            user_signer: &PrivateKeySigner,
+            user_address: Address,
+        ) -> TempoPooledTransaction {
             let key_auth = KeyAuthorization {
-                chain_id: 99999, // Wrong chain_id
+                chain_id,
                 key_type: SignatureType::Secp256k1,
                 key_id: access_key_address,
                 expiry: None,
                 limits: None,
             };
-
             let auth_sig_hash = key_auth.signature_hash();
             let auth_signature = user_signer
                 .sign_hash_sync(&auth_sig_hash)
                 .expect("signing failed");
             let signed_key_auth =
                 key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
-
-            let transaction = create_aa_with_keychain_signature(
+            create_aa_with_keychain_signature(
                 user_address,
-                &access_key_signer,
+                access_key_signer,
                 Some(signed_key_auth),
-            );
+            )
+        }
 
-            let validator = setup_validator_with_keychain_storage(
-                &transaction,
-                user_address,
+        /// Pre-T1C (MODERATO): chain_id=0 wildcard is accepted, wrong chain_id is rejected,
+        /// matching chain_id is accepted.
+        #[test]
+        fn test_key_authorization_chain_id_pre_t1c() -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            // chain_id=0 (wildcard) → accepted
+            let tx = build_key_auth_tx(
+                0,
+                &access_key_signer,
                 access_key_address,
-                None,
+                &user_signer,
+                user_address,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let validator =
+                setup_validator_with_keychain_storage(&tx, user_address, access_key_address, None);
+            let sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &sp)?;
+            assert!(
+                result.is_ok(),
+                "chain_id=0 should be accepted pre-T1C, got: {result:?}"
+            );
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            // chain_id=42431 (matching MODERATO) → accepted
+            let tx = build_key_auth_tx(
+                42431,
+                &access_key_signer,
+                access_key_address,
+                &user_signer,
+                user_address,
+            );
+            let validator =
+                setup_validator_with_keychain_storage(&tx, user_address, access_key_address, None);
+            let sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &sp)?;
+            assert!(
+                result.is_ok(),
+                "matching chain_id should be accepted pre-T1C, got: {result:?}"
+            );
+
+            // chain_id=99999 (wrong) → rejected
+            let tx = build_key_auth_tx(
+                99999,
+                &access_key_signer,
+                access_key_address,
+                &user_signer,
+                user_address,
+            );
+            let validator =
+                setup_validator_with_keychain_storage(&tx, user_address, access_key_address, None);
+            let sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &sp);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2549,50 +2644,94 @@ mod tests {
                         "KeyAuthorization chain_id does not match current chain"
                     ))
                 ),
-                "Wrong chain_id should be rejected"
+                "wrong chain_id should be rejected pre-T1C"
             );
+
+            Ok(())
         }
 
+        /// Post-T1C (DEV): chain_id=0 wildcard is rejected, wrong chain_id is rejected,
+        /// matching chain_id is accepted.
         #[test]
-        fn test_key_authorization_chain_id_zero_accepted() -> Result<(), ProviderError> {
+        fn test_key_authorization_chain_id_post_t1c() -> Result<(), ProviderError> {
+            use tempo_chainspec::spec::DEV;
+
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
 
-            // Create KeyAuthorization with chain_id = 0 (wildcard)
-            let key_auth = KeyAuthorization {
-                chain_id: 0, // Wildcard - works on any chain
-                key_type: SignatureType::Secp256k1,
-                key_id: access_key_address,
-                expiry: None,
-                limits: None,
-            };
-
-            let auth_sig_hash = key_auth.signature_hash();
-            let auth_signature = user_signer
-                .sign_hash_sync(&auth_sig_hash)
-                .expect("signing failed");
-            let signed_key_auth =
-                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
-
-            let transaction = create_aa_with_keychain_signature(
-                user_address,
+            // chain_id=DEV.chain_id() (1337, matching) → accepted
+            let tx = build_key_auth_tx(
+                DEV.chain_id(),
                 &access_key_signer,
-                Some(signed_key_auth),
+                access_key_address,
+                &user_signer,
+                user_address,
             );
-
-            let validator = setup_validator_with_keychain_storage(
-                &transaction,
+            let validator = setup_validator_with_keychain_storage_t1c(
+                &tx,
                 user_address,
                 access_key_address,
                 None,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
-
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &sp)?;
             assert!(
                 result.is_ok(),
-                "chain_id=0 (wildcard) should be accepted, got: {result:?}"
+                "matching chain_id should be accepted post-T1C, got: {result:?}"
             );
+
+            // chain_id=0 (wildcard) → rejected
+            let tx = build_key_auth_tx(
+                0,
+                &access_key_signer,
+                access_key_address,
+                &user_signer,
+                user_address,
+            );
+            let validator = setup_validator_with_keychain_storage_t1c(
+                &tx,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &sp);
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::Keychain(
+                        "KeyAuthorization chain_id does not match current chain"
+                    ))
+                ),
+                "chain_id=0 wildcard should be rejected post-T1C"
+            );
+
+            // chain_id=99999 (wrong) → rejected
+            let tx = build_key_auth_tx(
+                99999,
+                &access_key_signer,
+                access_key_address,
+                &user_signer,
+                user_address,
+            );
+            let validator = setup_validator_with_keychain_storage_t1c(
+                &tx,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &sp);
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::Keychain(
+                        "KeyAuthorization chain_id does not match current chain"
+                    ))
+                ),
+                "wrong chain_id should be rejected post-T1C"
+            );
+
             Ok(())
         }
 
