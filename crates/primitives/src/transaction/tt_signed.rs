@@ -2,6 +2,7 @@ use super::{
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
 };
+use alloc::vec::Vec;
 use alloy_consensus::{SignableTransaction, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     Decodable2718, Encodable2718, Typed2718,
@@ -15,6 +16,10 @@ use core::{
     fmt::Debug,
     hash::{Hash, Hasher},
 };
+
+#[cfg(not(feature = "std"))]
+use once_cell::race::OnceBox as OnceLock;
+#[cfg(feature = "std")]
 use std::sync::OnceLock;
 
 /// A transaction with an AA signature and hash seal.
@@ -80,7 +85,8 @@ impl AASigned {
     /// Returns a reference to the transaction hash, computing it if needed.
     #[doc(alias = "tx_hash", alias = "transaction_hash")]
     pub fn hash(&self) -> &B256 {
-        self.hash.get_or_init(|| self.compute_hash())
+        #[allow(clippy::useless_conversion)]
+        self.hash.get_or_init(|| self.compute_hash().into())
     }
 
     /// Calculate the transaction hash
@@ -384,8 +390,8 @@ impl<'a> arbitrary::Arbitrary<'a> for AASigned {
 #[cfg(feature = "serde")]
 mod serde_impl {
     use super::*;
+    use alloc::borrow::Cow;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::borrow::Cow;
 
     #[derive(Serialize, Deserialize)]
     struct AASignedHelper<'a> {
