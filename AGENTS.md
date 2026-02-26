@@ -1,15 +1,6 @@
 # Tempo
 
-Tempo is a blockchain node built on [Reth SDK](https://github.com/paradigmxyz/reth). Rust workspace, `cargo` for builds, `just` for task automation.
-
-## Commands
-
-```bash
-cargo fmt --all --check                                    # Check formatting
-cargo clippy --workspace --all-targets -- -D warnings      # Lint
-cargo test                                                 # Run all tests
-cargo test -p <crate-name>                                 # Run tests for a specific crate
-```
+Tempo is a blockchain node built on [Reth SDK](https://github.com/paradigmxyz/reth).
 
 ## Pull Requests
 
@@ -50,21 +41,21 @@ Keep it short. Say what changed and why — nothing more.
 **Template:**
 
 ```
+Closes #<issue>
+
 <what changed, 1-3 sentences>
 
 <why, if not obvious from the diff>
-
-Closes #<issue>
 ```
 
 **Good example:**
 
 ```
+Closes #2901
+
 Adds `valid_before` upper bound for all AA transactions. Transactions past
 their expiry are rejected at validation time and cleaned up from the pool
 via a periodic sweep.
-
-Closes #2901
 ```
 
 **Bad example:**
