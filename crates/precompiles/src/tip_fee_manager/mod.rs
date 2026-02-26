@@ -36,7 +36,7 @@ pub struct TipFeeManager {
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
-    /// T2+: Tracks liquidity reserved for a pending fee swap during `collect_fee_pre_tx`.
+    /// T1C+: Tracks liquidity reserved for a pending fee swap during `collect_fee_pre_tx`.
     /// Checked by `burn` and `rebalance_swap` to prevent withdrawals that would violate the reservation.
     pending_fee_swap_reservation: Mapping<B256, u128>,
 
@@ -147,7 +147,7 @@ impl TipFeeManager {
             let pool_id = PoolKey::new(user_token, validator_token).get_id();
             let amount_out_needed = self.check_sufficient_liquidity(pool_id, max_amount)?;
 
-            if self.storage.spec().is_t2() {
+            if self.storage.spec().is_t1c() {
                 self.reserve_pool_liquidity(pool_id, amount_out_needed)?;
             }
         }

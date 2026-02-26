@@ -45,9 +45,9 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         let precompiles = tempo_precompiles::tempo_precompiles(&ctx.cfg);
 
         Self::new_inner(Evm {
+            instruction: instructions::tempo_instructions(ctx.cfg.spec),
             ctx,
             inspector,
-            instruction: instructions::tempo_instructions(),
             precompiles,
             frame_stack: FrameStack::new(),
         })
@@ -190,7 +190,7 @@ where
 mod tests {
     use crate::gas_params::tempo_gas_params;
     use alloy_eips::eip7702::Authorization;
-    use alloy_evm::{Evm, EvmFactory, FromRecoveredTx};
+    use alloy_evm::FromRecoveredTx;
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256, bytes};
     use alloy_sol_types::SolCall;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -202,7 +202,10 @@ mod tests {
     use revm::{
         Context, DatabaseRef, ExecuteCommitEvm, ExecuteEvm, InspectEvm, MainContext,
         bytecode::opcode,
-        context::{CfgEnv, ContextTr, TxEnv},
+        context::{
+            CfgEnv, ContextTr, TxEnv,
+            result::{ExecutionResult, HaltReason},
+        },
         database::{CacheDB, EmptyDB},
         handler::system_call::SystemCallEvm,
         inspector::{CountInspector, InspectSystemCallEvm},
@@ -210,7 +213,6 @@ mod tests {
     };
     use sha2::{Digest, Sha256};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_evm::TempoEvmFactory;
     use tempo_precompiles::{
         AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
         nonce::NonceManager,
@@ -230,7 +232,7 @@ mod tests {
         },
     };
 
-    use crate::{TempoBlockEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
+    use crate::{TempoBlockEnv, TempoEvm, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv};
 
     // ==================== Test Constants ====================
 
@@ -608,13 +610,23 @@ mod tests {
 
     // ==================== End Test Utility Functions ====================
 
-    #[test]
-    fn test_access_millis_timestamp() -> eyre::Result<()> {
+    #[test_case::test_case(TempoHardfork::T1)]
+    #[test_case::test_case(TempoHardfork::T1C)]
+    fn test_access_millis_timestamp(spec: TempoHardfork) -> eyre::Result<()> {
         let db = CacheDB::new(EmptyDB::new());
-        let mut tempo_evm = TempoEvmFactory::default().create_evm(db, Default::default());
-        let ctx = tempo_evm.ctx_mut();
+
+        let mut ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(CfgEnv::<TempoHardfork>::default())
+            .with_tx(Default::default());
+
+        ctx.cfg.spec = spec;
         ctx.block.timestamp = U256::from(1000);
         ctx.block.timestamp_millis_part = 100;
+
+        let mut tempo_evm = TempoEvm::new(ctx, ());
+        let ctx = &mut tempo_evm.ctx;
 
         let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
@@ -638,12 +650,23 @@ mod tests {
             kind: contract.into(),
             ..Default::default()
         };
-        let res = tempo_evm.transact_raw(tx_env.into())?;
-        assert!(res.result.is_success());
-        assert_eq!(
-            U256::from_be_slice(res.result.output().unwrap()),
-            U256::from(1000100)
-        );
+        let result = tempo_evm.transact_one(tx_env.into())?;
+
+        if !spec.is_t1c() {
+            assert!(result.is_success());
+            assert_eq!(
+                U256::from_be_slice(result.output().unwrap()),
+                U256::from(1000100)
+            );
+        } else {
+            assert!(matches!(
+                result,
+                ExecutionResult::Halt {
+                    reason: TempoHaltReason::Ethereum(HaltReason::OpcodeNotFound),
+                    ..
+                }
+            ));
+        }
 
         Ok(())
     }

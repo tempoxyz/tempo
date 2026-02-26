@@ -165,7 +165,7 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10
   "std",
   "optional-checks",
 ] }
-revm = { version = "34.0.0", features = ["optional_fee_charge"] }
+revm = { version = "34.0.0", features = ["optional_fee_charge"], default-features = false }
 
 alloy = { version = "1.6.1", default-features = false }
 alloy-consensus = { version = "1.6.1", default-features = false }
@@ -178,10 +178,10 @@ alloy-hardforks = "0.4.7"
 alloy-network = { version = "1.6.1", default-features = false }
 alloy-primitives = { version = "1.5.4", default-features = false }
 alloy-provider = { version = "1.6.1", default-features = false }
-alloy-rlp = "0.3.13"
+alloy-rlp = { version = "0.3.13", default-features = false }
 alloy-rpc-types-engine = "1.6.1"
 alloy-rpc-types-eth = { version = "1.6.1" }
-alloy-serde = "1.6.1"
+alloy-serde = { version = "1.6.1", default-features = false }
 alloy-signer = "1.6.1"
 alloy-signer-local = "1.6.1"
 alloy-sol-types = { version = "1.5.7", default-features = false }
@@ -204,11 +204,11 @@ async-lock = "3.4.2"
 async-trait = "0.1"
 auto_impl = "1"
 axum = "0.8.8"
-base64 = "0.22"
+base64 = { version = "0.22", features = ["alloc"], default-features = false }
 bytes = "1.11.1"
 clap = { version = "4.5.57", features = ["derive", "env"] }
 const-hex = { version = "1.17.0" }
-derive_more = { version = "2.1.1" }
+derive_more = { version = "2.1.1", default-features = false }
 either = "1"
 eyre = "0.6.12"
 futures = "0.3.31"
@@ -219,7 +219,7 @@ itertools = "0.14.0"
 jiff = { version = "0.2.18", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.3"
-p256 = "0.13"
+p256 = { version = "0.13", default-features = false }
 parking_lot = "0.12.5"
 prometheus-client = "0.24.0"
 proptest = "1.9"
@@ -229,10 +229,10 @@ rand_08 = { package = "rand", version = "0.8.5" }
 rand_core = "0.6.4"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde = { version = "1.0.228", features = ["derive"], default-features = false }
+serde_json = { version = "1.0.149", features = ["alloc"], default-features = false }
 schnellru = "0.2"
-sha2 = "0.10"
+sha2 = { version = "0.10", default-features = false }
 tempfile = "3.24.0"
 thiserror = "2.0.18"
 # TODO: restrict this to only the required features
@@ -243,7 +243,7 @@ tracing-subscriber = "0.3.22"
 url = "2.5"
 criterion = "0.8.2"
 test-case = "3"
-secp256k1 = "0.30.0"
+secp256k1 = { version = "0.30.0", default-features = false }
 pyroscope = "0.5.8"
 pyroscope_pprofrs = "0.2.10"
 rayon = "1.11"
