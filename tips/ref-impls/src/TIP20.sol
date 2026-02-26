@@ -181,9 +181,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
 
         _transfer(from, address(0), amount);
-        unchecked {
-            _totalSupply -= uint128(amount);
-        }
+        _totalSupply -= uint128(amount);
 
         emit BurnAt(from, amount);
     }
