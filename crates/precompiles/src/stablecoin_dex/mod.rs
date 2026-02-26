@@ -621,7 +621,7 @@ impl StablecoinDEX {
             },
         ))?;
 
-        // CHECKPOINT END: commit the state-chainging batch
+        // CHECKPOINT END: commit the state-changing batch
         batch.commit();
 
         Ok(order_id)
