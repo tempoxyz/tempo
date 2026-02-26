@@ -433,11 +433,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{TempoBlockEnv, TempoEvm};
     use alloy_primitives::{address, uint};
-    use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
+    use reth_evm::EvmInternals;
+    use revm::{
+        Context, MainContext, context::TxEnv, database::EmptyDB,
+        interpreter::instructions::utility::IntoU256,
+    };
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
-        tip20::{IRolesAuth::*, ITIP20::*, slots as tip20_slots},
+        storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
+        test_util::TIP20Setup,
+        tip20::{IRolesAuth::*, ITIP20::*, TIP20Token, slots as tip20_slots},
+        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
     #[test]
@@ -684,6 +692,102 @@ mod tests {
             let is_usd = db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?;
             assert_eq!(is_usd, *expected, "currency '{label}' failed");
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_can_fee_payer_transfer_t1c() -> eyre::Result<()> {
+        let admin = Address::random();
+        let fee_payer = Address::random();
+        let db = revm::database::CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvm::new(
+            Context::mainnet()
+                .with_db(db)
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(Default::default())
+                .with_tx(Default::default()),
+            (),
+        );
+
+        // Set up token with whitelist policy
+        let policy_id = {
+            let ctx = &mut evm.ctx;
+            let internals =
+                EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+            StorageCtx::enter(&mut provider, || -> eyre::Result<u64> {
+                TIP20Setup::path_usd(admin).apply()?;
+                let mut registry = TIP403Registry::new();
+                registry.initialize()?;
+
+                let policy_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: ITIP403Registry::PolicyType::WHITELIST,
+                    },
+                )?;
+                TIP20Token::from_address(PATH_USD_ADDRESS)?.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy_id,
+                    },
+                )?;
+                registry.modify_policy_whitelist(
+                    admin,
+                    ITIP403Registry::modifyPolicyWhitelistCall {
+                        policyId: policy_id,
+                        account: fee_payer,
+                        allowed: true,
+                    },
+                )?;
+                Ok(policy_id)
+            })?
+        };
+
+        assert!(evm.ctx.journaled_state.can_fee_payer_transfer(
+            PATH_USD_ADDRESS,
+            fee_payer,
+            TempoHardfork::T1B
+        )?);
+
+        // Post T1C fails if fee payer not authorized
+        assert!(!evm.ctx.journaled_state.can_fee_payer_transfer(
+            PATH_USD_ADDRESS,
+            fee_payer,
+            TempoHardfork::T1C
+        )?);
+
+        // Whitelist FeeManager
+        {
+            let ctx = &mut evm.ctx;
+            let internals =
+                EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+            StorageCtx::enter(&mut provider, || {
+                TIP403Registry::new().modify_policy_whitelist(
+                    admin,
+                    ITIP403Registry::modifyPolicyWhitelistCall {
+                        policyId: policy_id,
+                        account: TIP_FEE_MANAGER_ADDRESS,
+                        allowed: true,
+                    },
+                )
+            })?;
+        }
+
+        assert!(evm.ctx.journaled_state.can_fee_payer_transfer(
+            PATH_USD_ADDRESS,
+            fee_payer,
+            TempoHardfork::T1B
+        )?);
+
+        assert!(evm.ctx.journaled_state.can_fee_payer_transfer(
+            PATH_USD_ADDRESS,
+            fee_payer,
+            TempoHardfork::T1C
+        )?);
 
         Ok(())
     }
