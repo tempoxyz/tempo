@@ -576,7 +576,7 @@ impl StablecoinDEX {
         TIP20Token::from_address(non_escrow_token)?
             .ensure_transfer_authorized(self.address, sender)?;
 
-        // CKECKPOINT START: atomically perform a batch of state-changing operations
+        // CHECKPOINT START: atomically batch all state-changing operations
         let batch = self.storage.checkpoint();
 
         // Debit from user's balance only. This is set to true after a flip order is filled and the
@@ -621,7 +621,7 @@ impl StablecoinDEX {
             },
         ))?;
 
-        // CKECKPOINT END: commit the state-chainging batch
+        // CHECKPOINT END: commit the state-chainging batch
         batch.commit();
 
         Ok(order_id)

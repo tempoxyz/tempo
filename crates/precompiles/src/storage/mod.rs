@@ -87,16 +87,22 @@ pub trait PrecompileStorageProvider {
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
 
-    /// Creates a journal checkpoint for atomic batching.
+    /// Creates a new journal checkpoint so that all subsequent state-changing
+    /// operations can be atomically committed ([`checkpoint_commit`](Self::checkpoint_commit))
+    /// or reverted ([`checkpoint_revert`](Self::checkpoint_revert)).
     ///
-    /// All state mutations after this call can be atomically committed or reverted.
-    /// Checkpoints must be consumed in LIFO order.
+    /// Prefer [`StorageCtx::checkpoint`] which returns a [`CheckpointGuard`] that
+    /// auto-reverts on drop and is hardfork-aware (no-op pre-T1C).
     fn checkpoint(&mut self) -> JournalCheckpoint;
 
     /// Commits all state changes since the last checkpoint.
+    ///
+    /// Prefer [`CheckpointGuard::commit`].
     fn checkpoint_commit(&mut self);
 
     /// Reverts all state changes back to the given checkpoint.
+    ///
+    /// Prefer [`CheckpointGuard`] (auto-reverts on drop).
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint);
 }
 
