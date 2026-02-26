@@ -11,11 +11,8 @@ use commonware_p2p::Ingress;
 use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
-use reth_node_builder::{Block as _, ConfigureEvm as _};
-use reth_provider::{
-    BlockHashReader as _, BlockIdReader as _, BlockReader as _, BlockSource, HeaderProvider as _,
-    StateProviderFactory as _,
-};
+use reth_node_builder::ConfigureEvm as _;
+use reth_provider::{HeaderProvider as _, StateProviderFactory as _};
 use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
@@ -158,73 +155,6 @@ pub(crate) fn is_v2_initialized_at_block_hash(
         config.is_initialized().map_err(eyre::Report::new)
     })
     .map(|(_, _, activated)| activated)
-}
-
-/// Reads state from the ValidatorConfig precompile at a given block height.
-pub(crate) fn read_validator_config_at_height<C, T>(
-    node: &TempoFullNode,
-    height: u64,
-    read_fn: impl FnOnce(&C) -> eyre::Result<T>,
-) -> eyre::Result<(u64, B256, T)>
-where
-    C: Default,
-{
-    // Try mapping the block height to a hash tracked by reth.
-    //
-    // First check the canonical chain, then fallback to pending block state.
-    //
-    // Necessary because the DKG and application actors process finalized block concurrently.
-    let block_hash = if let Some(hash) = node
-        .provider
-        .block_hash(height)
-        .wrap_err_with(|| format!("failed reading block hash at height `{height}`"))?
-    {
-        hash
-    } else if let Some(pending) = node
-        .provider
-        .pending_block_num_hash()
-        .wrap_err("failed reading pending block state")?
-        && pending.number == height
-    {
-        pending.hash
-    } else {
-        return Err(eyre::eyre!("block not found at height `{height}`"));
-    };
-
-    let block = node
-        .provider
-        .find_block_by_hash(block_hash, BlockSource::Any)
-        .map_err(eyre::Report::new)
-        .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty block"))
-        .wrap_err_with(|| format!("failed reading block with hash `{block_hash}`"))?;
-
-    let db = State::builder()
-        .with_database(StateProviderDatabase::new(
-            node.provider
-                .state_by_block_hash(block_hash)
-                .wrap_err_with(|| {
-                    format!("failed to get state from node provider for hash `{block_hash}`")
-                })?,
-        ))
-        .build();
-
-    let mut evm = node
-        .evm_config
-        .evm_for_block(db, block.header())
-        .wrap_err("failed instantiating evm for block")?;
-
-    let height = block.number();
-    let hash = block.seal_slow().hash();
-
-    let ctx = evm.ctx_mut();
-    let res = StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        || read_fn(&C::default()),
-    )?;
-    Ok((height, hash, res))
 }
 
 /// Reads the validator state at the given block hash.

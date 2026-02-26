@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Sealable as _};
 use bytes::{Buf, BufMut};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
@@ -41,7 +41,7 @@ use rand_core::CryptoRngCore;
 use reth_ethereum::{
     chainspec::EthChainSpec, network::NetworkInfo, rpc::eth::primitives::BlockNumHash,
 };
-use reth_provider::{BlockIdReader as _, BlockNumReader as _, HeaderProvider as _};
+use reth_provider::{BlockIdReader as _, HeaderProvider as _};
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
@@ -55,7 +55,7 @@ use crate::{
     validators::{
         DecodedValidatorV2, can_use_v2_at_block_hash, decode_from_contract,
         is_v2_initialized_at_block_hash, read_validator_config_at_block_hash,
-        read_validator_config_at_height, v2_initialization_height_at_block_hash,
+        v2_initialization_height_at_block_hash,
     },
 };
 
@@ -1291,12 +1291,15 @@ where
     {
         ordered::Set::default()
     } else {
-        let (_read_height, _read_hash, raw_validators) =
-            read_validator_config_at_height(node, latest_boundary, |config: &ValidatorConfig| {
+        let (_read_height, _read_hash, raw_validators) = read_validator_config_at_block_hash(
+            node,
+            boundary_header.hash_slow(),
+            |config: &ValidatorConfig| {
                 config
                     .get_validators()
                     .wrap_err("failed to query contract for validator config")
-            })?;
+            },
+        )?;
         info!(
             ?raw_validators,
             "read validators from validator config v1 contract",
@@ -1652,17 +1655,16 @@ async fn read_syncers_if_v2_not_initialized_with_retry(
 
         let retry_after = MIN_RETRY.saturating_mul(attempts).min(MAX_RETRY);
         let is_syncing = node.network.is_syncing();
-        let best_block = node.provider.best_block_number();
-        let blocks_behind = best_block
+        let best_finalized_block = node.provider.finalized_block_number().ok().flatten();
+        let blocks_behind = best_finalized_block
             .as_ref()
-            .ok()
             .map(|best| boundary_block.number().saturating_sub(*best));
         tracing::warn_span!("read_validator_config_with_retry").in_scope(|| {
             warn!(
                 attempts,
                 retry_after = %tempo_telemetry_util::display_duration(retry_after),
                 is_syncing,
-                best_block = %tempo_telemetry_util::display_result(&best_block),
+                best_finalized_block = %tempo_telemetry_util::display_option(&best_finalized_block),
                 height_if_v1 = boundary_block.number(),
                 blocks_behind = %tempo_telemetry_util::display_option(&blocks_behind),
                 "reading validator config from contract failed; will retry",
