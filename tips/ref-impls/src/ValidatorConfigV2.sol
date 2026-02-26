@@ -15,6 +15,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     // Constants
     // =========================================================================
 
+    uint256 private constant _SLOADS_PER_VALIDATOR = 9; // worst case value
+    uint256 private constant _GAS_PER_COLD_SLOAD = 2100;
+    uint256 private constant _GAS_BUFFER = 10_000;
+
     // =========================================================================
     // Storage
     // =========================================================================
@@ -27,7 +31,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     IValidatorConfig public immutable v1 =
         IValidatorConfig(0xCccCcCCC00000000000000000000000000000000);
 
-    Validator[] internal validatorsArray;
+    Validator[] internal activeValidatorsArray;
+    Validator[] internal inactiveValidatorsArray;
 
     /// @dev 1-indexed: 0 means not found. Stored value is arrayIndex + 1.
     mapping(address => uint64) internal addressToIndex;
@@ -58,11 +63,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _;
     }
 
-    modifier onlyOwnerOrValidator(address validatorAddress) {
+    function _checkOnlyOwnerOrValidator(address validatorAddress) internal view {
         if (msg.sender != _owner && msg.sender != validatorAddress) {
             revert Unauthorized();
         }
-        _;
     }
 
     // =========================================================================
@@ -94,24 +98,33 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function deactivateValidator(address validatorAddress)
-        external
-        onlyOwnerOrValidator(validatorAddress)
-    {
-        uint64 idx = addressToIndex[validatorAddress];
-        if (idx == 0) {
+    function deactivateValidator(uint64 idx) external {
+        uint64 activeValsLength = uint64(activeValidatorsArray.length);
+        if (idx >= activeValsLength) {
             revert ValidatorNotFound();
         }
 
-        Validator storage v = validatorsArray[idx - 1];
-        if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
-        }
+        Validator memory toDeactivate = activeValidatorsArray[idx];
 
-        bytes32 ingressIpHash = _getIngressIpHash(v.ingress);
+        _checkOnlyOwnerOrValidator(toDeactivate.validatorAddress);
+
+        bytes32 ingressIpHash = _getIngressIpHash(toDeactivate.ingress);
         delete activeIngressIpHashes[ingressIpHash];
 
-        v.deactivatedAtHeight = uint64(block.number);
+        toDeactivate.deactivatedAtHeight = uint64(block.number);
+        inactiveValidatorsArray.push(toDeactivate);
+        addressToIndex[toDeactivate.validatorAddress] = 0;
+        pubkeyToIndex[toDeactivate.publicKey] = 0;
+
+        // swap and pop
+        if (idx != activeValsLength - 1) {
+            Validator memory lastValidator = activeValidatorsArray[activeValsLength - 1];
+            lastValidator.index = idx;
+            activeValidatorsArray[idx] = lastValidator;
+            addressToIndex[lastValidator.validatorAddress] = idx + 1;
+            pubkeyToIndex[lastValidator.publicKey] = idx + 1;
+        }
+        activeValidatorsArray.pop();
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -130,7 +143,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     /// @inheritdoc IValidatorConfigV2
     function rotateValidator(
-        address validatorAddress,
+        uint64 idx,
         bytes32 publicKey,
         string calldata ingress,
         string calldata egress,
@@ -138,22 +151,20 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     )
         external
         onlyInitialized
-        onlyOwnerOrValidator(validatorAddress)
     {
-        uint64 idx = addressToIndex[validatorAddress];
-        if (idx == 0) {
+        if (idx >= activeValidatorsArray.length) {
             revert ValidatorNotFound();
         }
+        Validator memory oldValidator = activeValidatorsArray[idx];
 
-        Validator storage oldValidator = validatorsArray[idx - 1];
-        if (oldValidator.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
-        }
+        _checkOnlyOwnerOrValidator(oldValidator.validatorAddress);
 
         _validateRotateParams(publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress)
+            abi.encodePacked(
+                block.chainid, address(this), oldValidator.validatorAddress, ingress, egress
+            )
         );
         _verifyEd25519Signature(
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"), publicKey, message, signature
@@ -162,28 +173,31 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _updateIngressIp(oldValidator.ingress, ingress);
 
         oldValidator.deactivatedAtHeight = uint64(block.number);
+        oldValidator.index = 0;
+        inactiveValidatorsArray.push(oldValidator);
+        pubkeyToIndex[oldValidator.publicKey] = 0;
 
-        _addValidator(validatorAddress, publicKey, ingress, egress, 0);
+        // Replace in place. Ingress hash uniqueness tracked above
+        activeValidatorsArray[idx] = Validator({
+            publicKey: publicKey,
+            validatorAddress: oldValidator.validatorAddress,
+            ingress: ingress,
+            egress: egress,
+            index: idx,
+            addedAtHeight: uint64(block.number),
+            deactivatedAtHeight: 0
+        });
+        pubkeyToIndex[publicKey] = idx + 1; // 1-indexed
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function setIpAddresses(
-        address validatorAddress,
-        string calldata ingress,
-        string calldata egress
-    )
-        external
-        onlyOwnerOrValidator(validatorAddress)
-    {
-        uint64 idx = addressToIndex[validatorAddress];
-        if (idx == 0) {
+    function setIpAddresses(uint64 idx, string calldata ingress, string calldata egress) external {
+        if (idx >= activeValidatorsArray.length) {
             revert ValidatorNotFound();
         }
+        Validator storage v = activeValidatorsArray[idx];
 
-        Validator storage v = validatorsArray[idx - 1];
-        if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
-        }
+        _checkOnlyOwnerOrValidator(v.validatorAddress);
 
         _validateIpPort(ingress, "ingress");
         _validateIp(egress, "egress");
@@ -194,34 +208,27 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function transferValidatorOwnership(
-        address currentAddress,
-        address newAddress
-    )
-        external
-        onlyInitialized
-        onlyOwnerOrValidator(currentAddress)
-    {
+    function transferValidatorOwnership(uint64 idx, address newAddress) external onlyInitialized {
+        if (idx >= activeValidatorsArray.length) {
+            revert ValidatorNotFound();
+        }
+
         if (newAddress == address(0)) {
             revert InvalidValidatorAddress();
         }
 
-        uint64 idx = addressToIndex[currentAddress];
-        if (idx == 0) {
-            revert ValidatorNotFound();
-        }
         if (addressToIndex[newAddress] != 0) {
             revert AddressAlreadyHasValidator();
         }
 
-        Validator storage v = validatorsArray[idx - 1];
-        if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
-        }
+        Validator storage v = activeValidatorsArray[idx];
+        address currAddr = v.validatorAddress;
+
+        _checkOnlyOwnerOrValidator(currAddr);
 
         v.validatorAddress = newAddress;
-        addressToIndex[newAddress] = idx;
-        delete addressToIndex[currentAddress];
+        addressToIndex[newAddress] = idx + 1;
+        delete addressToIndex[currAddr];
     }
 
     // =========================================================================
@@ -229,27 +236,40 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     // =========================================================================
 
     /// @inheritdoc IValidatorConfigV2
-    function getAllValidators() external view returns (Validator[] memory) {
-        return validatorsArray;
+    function getActiveValidators() external view returns (Validator[] memory validators) {
+        return activeValidatorsArray;
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function getActiveValidators() external view returns (Validator[] memory validators) {
-        uint64 len = uint64(validatorsArray.length);
-        validators = new Validator[](len);
-        uint64 idx = 0;
-        for (uint64 i = 0; i < len; i++) {
-            Validator storage v = validatorsArray[i];
-            if (v.deactivatedAtHeight == 0) {
-                validators[idx] = v;
-                idx++;
+    function getInactiveValidators(uint64 startIndex) external view returns (Validator[] memory) {
+        uint256 len = inactiveValidatorsArray.length;
+        if (startIndex >= len) {
+            return new Validator[](0);
+        }
+
+        Validator[] memory result = new Validator[](len - startIndex);
+        uint256 gasPerIteration = _SLOADS_PER_VALIDATOR * _GAS_PER_COLD_SLOAD + _GAS_BUFFER;
+
+        uint256 count;
+        for (uint256 i = startIndex; i < len; i++) {
+            if (gasleft() < gasPerIteration) {
+                assembly {
+                    mstore(result, count)
+                }
+                return result;
+            }
+            result[count] = inactiveValidatorsArray[i];
+            unchecked {
+                ++count;
             }
         }
-        // Modify array.length to the correct length
-        // We're doing this in assembly because it's not possible to do in solidity
-        assembly {
-            mstore(validators, idx)
-        }
+
+        return result;
+    }
+
+    /// @inheritdoc IValidatorConfigV2
+    function inactiveValidatorCount() external view returns (uint64) {
+        return uint64(inactiveValidatorsArray.length);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -260,15 +280,20 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     /// @inheritdoc IValidatorConfigV2
     function validatorCount() external view returns (uint64) {
-        return uint64(validatorsArray.length);
+        return uint64(activeValidatorsArray.length) + uint64(inactiveValidatorsArray.length);
+    }
+
+    /// @inheritdoc IValidatorConfigV2
+    function activeValidatorCount() external view returns (uint64) {
+        return uint64(activeValidatorsArray.length);
     }
 
     /// @inheritdoc IValidatorConfigV2
     function validatorByIndex(uint64 index) external view returns (Validator memory) {
-        if (index >= validatorsArray.length) {
+        if (index >= activeValidatorsArray.length) {
             revert ValidatorNotFound();
         }
-        return validatorsArray[index];
+        return activeValidatorsArray[index];
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -277,7 +302,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         if (idx == 0) {
             revert ValidatorNotFound();
         }
-        return validatorsArray[idx - 1];
+        return activeValidatorsArray[idx - 1];
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -286,7 +311,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         if (idx == 0) {
             revert ValidatorNotFound();
         }
-        return validatorsArray[idx - 1];
+        return activeValidatorsArray[idx - 1];
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -313,7 +338,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         if (_initialized) {
             revert AlreadyInitialized();
         }
-        if (idx != validatorsArray.length) {
+        if (idx != inactiveValidatorsArray.length + activeValidatorsArray.length) {
             revert InvalidMigrationIndex();
         }
 
@@ -322,7 +347,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert ValidatorNotFound();
         }
 
-        if (validatorsArray.length == 0 && _owner == address(0)) {
+        if (_owner == address(0)) {
             _owner = v1.owner();
         }
 
@@ -352,7 +377,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
 
         IValidatorConfig.Validator[] memory v1Validators = v1.getValidators();
-        if (validatorsArray.length < v1Validators.length) {
+        if (activeValidatorsArray.length + inactiveValidatorsArray.length < v1Validators.length) {
             revert MigrationNotComplete();
         }
 
@@ -380,7 +405,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
         // Allow reusing addresses of deactivated validators
         uint64 idx1 = addressToIndex[validatorAddress];
-        if (idx1 != 0 && validatorsArray[idx1 - 1].deactivatedAtHeight == 0) {
+        if (idx1 != 0) {
             revert AddressAlreadyHasValidator();
         }
         _validateRotateParams(publicKey, ingress, egress);
@@ -414,7 +439,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     )
         internal
     {
-        uint64 idx = uint64(validatorsArray.length);
+        uint64 idx = deactivatedAtHeight == 0 ? uint64(activeValidatorsArray.length) : 0;
+
         Validator memory newVal = Validator({
             publicKey: publicKey,
             validatorAddress: validatorAddress,
@@ -425,13 +451,14 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             deactivatedAtHeight: deactivatedAtHeight
         });
 
-        validatorsArray.push(newVal);
-        addressToIndex[validatorAddress] = idx + 1; // 1-indexed
-        pubkeyToIndex[publicKey] = idx + 1; // 1-indexed
-
         if (deactivatedAtHeight == 0) {
+            activeValidatorsArray.push(newVal);
+            addressToIndex[validatorAddress] = idx + 1; // 1-indexed
+            pubkeyToIndex[publicKey] = idx + 1; // 1-indexed
             bytes32 ingressIpHash = _getIngressIpHash(ingress);
             activeIngressIpHashes[ingressIpHash] = true;
+        } else {
+            inactiveValidatorsArray.push(newVal);
         }
     }
 
