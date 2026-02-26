@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use crate::{
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
     generate_localnet::GenerateLocalnet, get_dkg_outcome::GetDkgOutcome,
+    inspect_block::InspectBlock, replay_dkg::ReplayDkg,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -16,6 +17,8 @@ mod generate_genesis;
 mod generate_localnet;
 mod genesis_args;
 mod get_dkg_outcome;
+mod inspect_block;
+mod replay_dkg;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -32,6 +35,8 @@ async fn main() -> eyre::Result<()> {
             .await
             .wrap_err("failed to generate localnet configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
+        Action::ReplayDkg(args) => args.run().await.wrap_err("failed to replay DKG"),
+        Action::InspectBlock(args) => args.run().await.wrap_err("failed to inspect block"),
     }
 }
 
@@ -52,6 +57,8 @@ enum Action {
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
     GenerateAddPeer(GenerateAddPeer),
+    ReplayDkg(ReplayDkg),
+    InspectBlock(InspectBlock),
 }
 
 #[derive(Debug, clap::Args)]
