@@ -227,10 +227,12 @@ pub enum TempoPoolTransactionError {
     #[error("No fee token preference configured")]
     MissingFeeToken,
 
-    #[error(
-        "'valid_before' {valid_before} is too close to current time (min allowed: {min_allowed})"
-    )]
-    InvalidValidBefore { valid_before: u64, min_allowed: u64 },
+    #[error("invalid 'valid_before': {valid_before} (min: {min_allowed}, max: {max_allowed})")]
+    InvalidValidBefore {
+        valid_before: u64,
+        min_allowed: u64,
+        max_allowed: u64,
+    },
 
     #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
     InvalidValidAfter { valid_after: u64, max_allowed: u64 },
@@ -764,6 +766,7 @@ mod tests {
                 TempoPoolTransactionError::InvalidValidBefore {
                     valid_before: 100,
                     min_allowed: 200,
+                    max_allowed: 0,
                 },
                 false,
             ),

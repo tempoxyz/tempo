@@ -232,6 +232,26 @@ impl TempoPoolState {
         }
     }
 
+    /// Removes expiry tracking metadata for mined transactions.
+    ///
+    /// Reth removes mined transactions from the pool, but the additional tracking in
+    /// `expiry_map` and `tx_to_expiry` is not cleaned up. This method removes the
+    /// entries from both maps.
+    fn remove_mined(&mut self, mined_hashes: &[TxHash]) {
+        for hash in mined_hashes {
+            if let Some(valid_before) = self.tx_to_expiry.remove(hash)
+                && let std::collections::btree_map::Entry::Occupied(mut entry) =
+                    self.expiry_map.entry(valid_before)
+            {
+                let hashes = entry.get_mut();
+                hashes.retain(|h| h != hash);
+                if hashes.is_empty() {
+                    entry.remove();
+                }
+            }
+        }
+    }
+
     /// Collects and removes all expired transactions up to the given timestamp.
     /// Returns the list of expired transaction hashes.
     fn drain_expired(&mut self, tip_timestamp: u64) -> Vec<TxHash> {
@@ -547,6 +567,9 @@ where
                     .flat_map(|block| block.body().transactions())
                     .map(|tx| *tx.tx_hash())
                     .collect();
+
+                // Clean up AA tx expiry tracking from expiry_map and tx_to_expiry
+                state.remove_mined(&mined_tx_hashes);
 
                 // Add expired transactions (from local tracking state)
                 let expired = state.drain_expired(tip_timestamp);
