@@ -8,7 +8,7 @@ pub mod tt_signed;
 pub use tt_authorization::{MAGIC, RecoveredTempoAuthorization, TempoSignedAuthorization};
 // Re-export Authorization from alloy for convenience
 pub use tt_signature::{
-    KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
+    KeychainSignature, KeychainVersion, PrimitiveSignature, TempoSignature, derive_p256_address,
 };
 
 pub use alloy_eips::eip7702::Authorization;

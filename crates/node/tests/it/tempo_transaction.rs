@@ -550,8 +550,12 @@ fn sign_aa_tx_with_p256_access_key(
     access_pub_key_y: &B256,
     root_key_addr: Address,
 ) -> eyre::Result<TempoSignature> {
+    // V2: sign keccak256(sig_hash || user_address) instead of raw sig_hash
+    let sig_hash = tx.signature_hash();
+    let effective_hash =
+        alloy_primitives::keccak256([sig_hash.as_slice(), root_key_addr.as_slice()].concat());
     let inner = sign_p256_primitive(
-        tx.signature_hash(),
+        effective_hash,
         access_key_signing_key,
         *access_pub_key_x,
         *access_pub_key_y,
@@ -567,8 +571,11 @@ fn sign_aa_tx_with_secp256k1_access_key(
     access_key_signer: &impl SignerSync,
     root_key_addr: Address,
 ) -> eyre::Result<TempoSignature> {
+    // V2: sign keccak256(sig_hash || user_address) instead of raw sig_hash
     let sig_hash = tx.signature_hash();
-    let signature = access_key_signer.sign_hash_sync(&sig_hash)?;
+    let effective_hash =
+        alloy_primitives::keccak256([sig_hash.as_slice(), root_key_addr.as_slice()].concat());
+    let signature = access_key_signer.sign_hash_sync(&effective_hash)?;
     let inner_signature = PrimitiveSignature::Secp256k1(signature);
 
     Ok(TempoSignature::Keychain(
@@ -619,13 +626,11 @@ fn sign_aa_tx_with_webauthn_access_key(
     origin: &str,
     root_key_addr: Address,
 ) -> eyre::Result<TempoSignature> {
-    let inner = sign_webauthn_primitive(
-        tx.signature_hash(),
-        signing_key,
-        pub_key_x,
-        pub_key_y,
-        origin,
-    )?;
+    // V2: sign keccak256(sig_hash || user_address) instead of raw sig_hash
+    let sig_hash = tx.signature_hash();
+    let effective_hash =
+        alloy_primitives::keccak256([sig_hash.as_slice(), root_key_addr.as_slice()].concat());
+    let inner = sign_webauthn_primitive(effective_hash, signing_key, pub_key_x, pub_key_y, origin)?;
     Ok(TempoSignature::Keychain(KeychainSignature::new(
         root_key_addr,
         inner,

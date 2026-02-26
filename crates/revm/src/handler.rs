@@ -1266,6 +1266,11 @@ where
             )
             .map_err(TempoInvalidTransaction::from)?;
 
+            // T1C+: Reject legacy V1 keychain signatures (vulnerable to cross-account replay)
+            if cfg.spec().is_t1c() && aa_env.signature.is_legacy_keychain() {
+                return Err(TempoInvalidTransaction::LegacyKeychainSignature.into());
+            }
+
             let has_keychain_fields =
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
 

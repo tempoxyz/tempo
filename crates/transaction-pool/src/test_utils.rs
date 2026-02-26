@@ -257,9 +257,13 @@ impl TxBuilder {
         let unsigned = AASigned::new_unhashed(tx.clone(), temp_sig);
         let sig_hash = unsigned.signature_hash();
 
+        // V2: sign keccak256(sig_hash || user_address) instead of raw sig_hash
+        let effective_hash =
+            alloy_primitives::keccak256([sig_hash.as_slice(), user_address.as_slice()].concat());
+
         // Sign with the access key
         let signature = access_key_signer
-            .sign_hash_sync(&sig_hash)
+            .sign_hash_sync(&effective_hash)
             .expect("signing failed");
 
         let keychain_sig = TempoSignature::Keychain(KeychainSignature::new(

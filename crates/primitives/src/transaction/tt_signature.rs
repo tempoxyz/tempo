@@ -41,6 +41,7 @@ pub fn normalize_p256_s(s_bytes: &[u8]) -> B256 {
 pub const SIGNATURE_TYPE_P256: u8 = 0x01;
 pub const SIGNATURE_TYPE_WEBAUTHN: u8 = 0x02;
 pub const SIGNATURE_TYPE_KEYCHAIN: u8 = 0x03;
+pub const SIGNATURE_TYPE_KEYCHAIN_V2: u8 = 0x04;
 
 // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
 const MIN_AUTH_DATA_LEN: usize = 37;
@@ -348,10 +349,28 @@ impl reth_codecs::Compact for PrimitiveSignature {
     }
 }
 
+/// Keychain signature version.
+///
+/// Determines how the signature hash is computed for the inner signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+pub enum KeychainVersion {
+    /// Legacy (V1): inner signature signs `sig_hash` directly.
+    /// Deprecated at T1C — vulnerable to cross-account replay when the same access key
+    /// is provisioned on multiple accounts.
+    V1,
+    /// V2: inner signature signs `keccak256(sig_hash || user_address)`.
+    /// Binds the signature to the specific user account, preventing cross-account replay.
+    V2,
+}
+
 /// Keychain signature wrapping another signature with a user address
 /// This allows an access key to sign on behalf of a root account
 ///
-/// Format: 0x03 || user_address (20 bytes) || inner_signature
+/// Format (V1): 0x03 || user_address (20 bytes) || inner_signature
+/// Format (V2): 0x04 || user_address (20 bytes) || inner_signature
 ///
 /// The user_address is the root account this transaction is being executed for.
 /// The inner signature proves an authorized access key signed the transaction.
@@ -359,12 +378,13 @@ impl reth_codecs::Compact for PrimitiveSignature {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
 pub struct KeychainSignature {
     /// Root account address that this transaction is being executed for
     pub user_address: Address,
     /// The actual signature from the access key (can be Secp256k1, P256, or WebAuthn, but NOT another Keychain)
     pub signature: PrimitiveSignature,
+    /// Keychain signature version (V1 = legacy, V2 = includes user_address in sig hash)
+    pub version: KeychainVersion,
     /// Cached access key ID recovered from the inner signature.
     /// This is an implementation detail - use `key_id()` to access.
     /// Uses OnceLock for thread-safe interior mutability.
@@ -381,12 +401,45 @@ pub struct KeychainSignature {
 }
 
 impl KeychainSignature {
-    /// Create a new KeychainSignature
+    /// Create a new V2 KeychainSignature (recommended).
+    ///
+    /// V2 signatures include the user_address in the signature hash,
+    /// preventing cross-account replay attacks.
     pub fn new(user_address: Address, signature: PrimitiveSignature) -> Self {
         Self {
             user_address,
             signature,
+            version: KeychainVersion::V2,
             cached_key_id: OnceLock::new(),
+        }
+    }
+
+    /// Create a legacy V1 KeychainSignature.
+    ///
+    /// V1 signatures do NOT include the user_address in the signature hash
+    /// and are deprecated at the T1C hardfork.
+    pub fn new_v1(user_address: Address, signature: PrimitiveSignature) -> Self {
+        Self {
+            user_address,
+            signature,
+            version: KeychainVersion::V1,
+            cached_key_id: OnceLock::new(),
+        }
+    }
+
+    /// Compute the effective signature hash for key recovery.
+    ///
+    /// - V1: returns `sig_hash` directly (legacy, deprecated)
+    /// - V2: returns `keccak256(sig_hash || user_address)` (replay-safe)
+    fn effective_sig_hash(&self, sig_hash: &B256) -> B256 {
+        match self.version {
+            KeychainVersion::V1 => *sig_hash,
+            KeychainVersion::V2 => {
+                let mut buf = [0u8; 52]; // 32 + 20
+                buf[..32].copy_from_slice(sig_hash.as_slice());
+                buf[32..].copy_from_slice(self.user_address.as_slice());
+                keccak256(buf)
+            }
         }
     }
 
@@ -407,9 +460,15 @@ impl KeychainSignature {
         }
 
         // Not cached - recover and cache
-        let key_id = self.signature.recover_signer(sig_hash)?;
+        let effective_hash = self.effective_sig_hash(sig_hash);
+        let key_id = self.signature.recover_signer(&effective_hash)?;
         let _ = self.cached_key_id.set(key_id);
         Ok(key_id)
+    }
+
+    /// Returns true if this is a legacy V1 keychain signature.
+    pub fn is_legacy(&self) -> bool {
+        self.version == KeychainVersion::V1
     }
 }
 
@@ -417,7 +476,9 @@ impl KeychainSignature {
 // since it's just a cache and doesn't affect the logical equality of signatures
 impl PartialEq for KeychainSignature {
     fn eq(&self, other: &Self) -> bool {
-        self.user_address == other.user_address && self.signature == other.signature
+        self.user_address == other.user_address
+            && self.signature == other.signature
+            && self.version == other.version
     }
 }
 
@@ -427,39 +488,14 @@ impl core::hash::Hash for KeychainSignature {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.user_address.hash(state);
         self.signature.hash(state);
+        self.version.hash(state);
     }
 }
 
-// Manual Compact implementation that excludes cached_key_id (cache field)
-#[cfg(feature = "reth-codec")]
-impl reth_codecs::Compact for KeychainSignature {
-    fn to_compact<B>(&self, buf: &mut B) -> usize
-    where
-        B: alloy_rlp::BufMut + AsMut<[u8]>,
-    {
-        // Only encode user_address and signature, skip cached_key_id
-        let mut written = 0;
-        written += self.user_address.to_compact(buf);
-        written += self.signature.to_compact(buf);
-        written
-    }
-
-    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
-        // Decode user_address and signature, initialize cached_key_id as empty
-        let (user_address, rest) = Address::from_compact(buf, len);
-        let remaining_len = len - (buf.len() - rest.len());
-        let (signature, rest) = PrimitiveSignature::from_compact(rest, remaining_len);
-
-        (
-            Self {
-                user_address,
-                signature,
-                cached_key_id: OnceLock::new(),
-            },
-            rest,
-        )
-    }
-}
+// Note: No Compact impl for KeychainSignature. It is never stored directly in the DB —
+// it is always wrapped in TempoSignature, whose Compact impl delegates to to_bytes()/from_bytes()
+// which encodes the version via the wire type byte (0x03 = V1, 0x04 = V2). Omitting Compact
+// here ensures no one accidentally uses it for storage, which would lose the version field.
 
 // Manual Arbitrary implementation that excludes cached_key_id (cache field)
 #[cfg(any(test, feature = "arbitrary"))]
@@ -468,6 +504,7 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
         Ok(Self {
             user_address: u.arbitrary()?,
             signature: u.arbitrary()?,
+            version: u.arbitrary()?,
             cached_key_id: OnceLock::new(), // Always start with empty cache
         })
     }
@@ -503,12 +540,17 @@ impl TempoSignature {
             return Err("Signature data is empty");
         }
 
-        // Check if this is a Keychain signature (type identifier 0x03)
+        // Check if this is a Keychain signature (type identifier 0x03 or 0x04)
         // We need to handle this specially before delegating to PrimitiveSignature
         if data.len() > 1
             && data.len() != SECP256K1_SIGNATURE_LENGTH
-            && data[0] == SIGNATURE_TYPE_KEYCHAIN
+            && (data[0] == SIGNATURE_TYPE_KEYCHAIN || data[0] == SIGNATURE_TYPE_KEYCHAIN_V2)
         {
+            let version = if data[0] == SIGNATURE_TYPE_KEYCHAIN {
+                KeychainVersion::V1
+            } else {
+                KeychainVersion::V2
+            };
             let sig_data = &data[1..];
 
             // Keychain format: user_address (20 bytes) || inner_signature
@@ -526,6 +568,7 @@ impl TempoSignature {
             return Ok(Self::Keychain(KeychainSignature {
                 user_address,
                 signature: inner_signature,
+                version,
                 cached_key_id: OnceLock::new(),
             }));
         }
@@ -544,10 +587,14 @@ impl TempoSignature {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.to_bytes(),
             Self::Keychain(keychain_sig) => {
-                // Format: 0x03 | user_address (20 bytes) | inner_signature
+                // Format: type_byte | user_address (20 bytes) | inner_signature
                 let inner_bytes = keychain_sig.signature.to_bytes();
                 let mut bytes = Vec::with_capacity(1 + 20 + inner_bytes.len());
-                bytes.push(SIGNATURE_TYPE_KEYCHAIN);
+                let type_byte = match keychain_sig.version {
+                    KeychainVersion::V1 => SIGNATURE_TYPE_KEYCHAIN,
+                    KeychainVersion::V2 => SIGNATURE_TYPE_KEYCHAIN_V2,
+                };
+                bytes.push(type_byte);
                 bytes.extend_from_slice(keychain_sig.user_address.as_slice());
                 bytes.extend_from_slice(&inner_bytes);
                 Bytes::from(bytes)
@@ -616,6 +663,11 @@ impl TempoSignature {
     /// Check if this is a Keychain signature
     pub fn is_keychain(&self) -> bool {
         matches!(self, Self::Keychain(_))
+    }
+
+    /// Check if this is a legacy V1 Keychain signature (deprecated at T1C).
+    pub fn is_legacy_keychain(&self) -> bool {
+        matches!(self, Self::Keychain(k) if k.is_legacy())
     }
 
     /// Get the Keychain signature if this is a Keychain signature
@@ -1476,14 +1528,57 @@ mod tests {
     }
 
     #[test]
-    fn test_recover_signer_keychain() {
+    fn test_recover_signer_keychain_v1() {
         use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
 
         let (signing_key, access_key_address) = generate_secp256k1_keypair();
         let user_address = Address::repeat_byte(0xDD);
 
+        // V1: inner signature signs sig_hash directly
         let sig_hash = B256::from([0x22; 32]);
         let inner_sig = sign_hash(&signing_key, &sig_hash);
+
+        let keychain_sig = TempoSignature::Keychain(KeychainSignature::new_v1(
+            user_address,
+            match inner_sig {
+                TempoSignature::Primitive(p) => p,
+                _ => panic!("Expected primitive signature"),
+            },
+        ));
+
+        // recover_signer returns user_address
+        let recovered = keychain_sig.recover_signer(&sig_hash).unwrap();
+        assert_eq!(
+            recovered, user_address,
+            "Keychain V1 recovery should return user_address"
+        );
+
+        // key_id should be cached and return access key address
+        let keychain = keychain_sig.as_keychain().unwrap();
+        let key_id = keychain.key_id(&sig_hash).unwrap();
+        assert_eq!(
+            key_id, access_key_address,
+            "key_id should return access key address"
+        );
+
+        // V1 should be legacy
+        assert!(keychain_sig.is_legacy_keychain());
+    }
+
+    #[test]
+    fn test_recover_signer_keychain_v2() {
+        use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
+
+        let (signing_key, access_key_address) = generate_secp256k1_keypair();
+        let user_address = Address::repeat_byte(0xDD);
+
+        // V2: inner signature signs keccak256(sig_hash || user_address)
+        let sig_hash = B256::from([0x22; 32]);
+        let mut buf = [0u8; 52];
+        buf[..32].copy_from_slice(sig_hash.as_slice());
+        buf[32..].copy_from_slice(user_address.as_slice());
+        let effective_hash = keccak256(buf);
+        let inner_sig = sign_hash(&signing_key, &effective_hash);
 
         let keychain_sig = TempoSignature::Keychain(KeychainSignature::new(
             user_address,
@@ -1497,7 +1592,7 @@ mod tests {
         let recovered = keychain_sig.recover_signer(&sig_hash).unwrap();
         assert_eq!(
             recovered, user_address,
-            "Keychain recovery should return user_address"
+            "Keychain V2 recovery should return user_address"
         );
 
         // key_id should be cached and return access key address
@@ -1506,6 +1601,55 @@ mod tests {
         assert_eq!(
             key_id, access_key_address,
             "key_id should return access key address"
+        );
+
+        // V2 should NOT be legacy
+        assert!(!keychain_sig.is_legacy_keychain());
+    }
+
+    #[test]
+    fn test_keychain_v2_prevents_cross_account_replay() {
+        use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
+
+        let (signing_key, _access_key_address) = generate_secp256k1_keypair();
+        let user_a = Address::repeat_byte(0xAA);
+        let user_b = Address::repeat_byte(0xBB);
+
+        // Sign for user_a with V2
+        let sig_hash = B256::from([0x22; 32]);
+        let mut buf = [0u8; 52];
+        buf[..32].copy_from_slice(sig_hash.as_slice());
+        buf[32..].copy_from_slice(user_a.as_slice());
+        let effective_hash = keccak256(buf);
+        let inner_sig = sign_hash(&signing_key, &effective_hash);
+
+        let inner_primitive = match inner_sig {
+            TempoSignature::Primitive(p) => p,
+            _ => panic!("Expected primitive signature"),
+        };
+
+        // Valid for user_a
+        let sig_a =
+            TempoSignature::Keychain(KeychainSignature::new(user_a, inner_primitive.clone()));
+        let recovered_a = sig_a.recover_signer(&sig_hash).unwrap();
+        assert_eq!(recovered_a, user_a);
+
+        // Replay attempt: same inner signature but for user_b
+        // This should still "succeed" (recover_signer returns user_b) but the
+        // key_id will be wrong — it won't match any authorized key for user_b
+        let sig_b = TempoSignature::Keychain(KeychainSignature::new(user_b, inner_primitive));
+        let recovered_b = sig_b.recover_signer(&sig_hash).unwrap();
+        assert_eq!(
+            recovered_b, user_b,
+            "recover_signer returns the claimed user_address"
+        );
+
+        // But the key_id recovered under user_b will be a garbage address (not the real access key)
+        let key_id_a = sig_a.as_keychain().unwrap().key_id(&sig_hash).unwrap();
+        let key_id_b = sig_b.as_keychain().unwrap().key_id(&sig_hash).unwrap();
+        assert_ne!(
+            key_id_a, key_id_b,
+            "V2 cross-account replay should recover different key_ids"
         );
     }
 

@@ -199,6 +199,13 @@ pub enum TempoInvalidTransaction {
         got: u64,
     },
 
+    /// Legacy V1 keychain signature is no longer accepted (deprecated at T1C).
+    ///
+    /// V1 keychain signatures do not bind the user address into the signature hash,
+    /// making them vulnerable to cross-account replay. Use V2 keychain signatures instead.
+    #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
+    LegacyKeychainSignature,
+
     /// Keychain operations are not supported in subblock transactions.
     #[error("keychain operations are not supported in subblock transactions")]
     KeychainOpInSubblockTransaction,

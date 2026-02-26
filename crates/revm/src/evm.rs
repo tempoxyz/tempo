@@ -453,12 +453,17 @@ mod tests {
             )
         }
 
-        /// Sign a transaction with KeychainSignature wrapper.
+        /// Sign a transaction with KeychainSignature wrapper (V2).
         fn sign_tx_keychain(
             &self,
             tx: TempoTransaction,
         ) -> eyre::Result<tempo_primitives::AASigned> {
-            let webauthn_sig = self.sign_webauthn(tx.signature_hash().as_slice())?;
+            // V2: sign keccak256(sig_hash || user_address) instead of raw sig_hash
+            let sig_hash = tx.signature_hash();
+            let effective_hash = alloy_primitives::keccak256(
+                [sig_hash.as_slice(), self.address.as_slice()].concat(),
+            );
+            let webauthn_sig = self.sign_webauthn(effective_hash.as_slice())?;
             let keychain_sig =
                 KeychainSignature::new(self.address, PrimitiveSignature::WebAuthn(webauthn_sig));
             Ok(tx.into_signed(TempoSignature::Keychain(keychain_sig)))
