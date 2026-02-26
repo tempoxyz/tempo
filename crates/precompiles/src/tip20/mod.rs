@@ -1341,6 +1341,69 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_transfer_fee_post_tx_pre_t1c() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
+        let admin = Address::random();
+        let user = Address::random();
+        let access_key = Address::random();
+        let max_fee = U256::from(1000);
+        let refund_amount = U256::from(300);
+        let gas_used = U256::from(100);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, max_fee)
+                .apply()?;
+
+            let token_address = token.address;
+            let spending_limit = U256::from(2000);
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            keychain.authorize_key(
+                user,
+                authorizeKeyCall {
+                    keyId: access_key,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: token_address,
+                        amount: spending_limit,
+                    }],
+                },
+            )?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(user)?;
+            keychain.authorize_transfer(user, token_address, max_fee)?;
+
+            let remaining_after_deduction =
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account: user,
+                    keyId: access_key,
+                    token: token_address,
+                })?;
+            assert_eq!(remaining_after_deduction, spending_limit - max_fee);
+
+            token.transfer_fee_post_tx(user, refund_amount, gas_used)?;
+
+            // spending limit unchanged pre-t1c
+            let remaining_after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: user,
+                keyId: access_key,
+                token: token_address,
+            })?;
+            assert_eq!(remaining_after_refund, spending_limit - max_fee);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_transfer_from_insufficient_allowance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
