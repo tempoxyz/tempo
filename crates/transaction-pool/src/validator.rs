@@ -2029,7 +2029,7 @@ mod tests {
             .as_secs();
 
         let valid_after = current_time + 60;
-        let valid_before = current_time + 3600;
+        let valid_before = current_time + 100;
 
         let transaction = create_aa_transaction(Some(valid_after), Some(valid_before));
         let validator = setup_validator(&transaction, current_time);
