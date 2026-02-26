@@ -461,7 +461,6 @@ async fn test_fee_payer_transfer_whitelist_pre_t1c() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    // pre T1C only checks sender authorization
     let tx = TransactionRequest::default()
         .to(Address::ZERO)
         .value(U256::ZERO);
@@ -547,9 +546,10 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
         .to(Address::ZERO)
         .value(U256::ZERO);
     let result = fee_payer_provider.send_transaction(tx).await;
+    let err = result.unwrap_err().to_string();
     assert!(
-        result.is_err(),
-        "expected rejection: FeeManager not whitelisted"
+        err.contains("TokenPolicyForbids"),
+        "expected TokenPolicyForbids, got: {err}"
     );
 
     // Whitelist FeeManager
