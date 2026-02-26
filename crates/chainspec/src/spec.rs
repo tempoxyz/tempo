@@ -3,7 +3,13 @@ use crate::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use alloy_eips::eip7840::BlobParams;
-use alloy_evm::eth::spec::EthExecutorSpec;
+use alloy_evm::{
+    eth::spec::EthExecutorSpec,
+    revm::interpreter::gas::{
+        COLD_SLOAD_COST as COLD_SLOAD, SSTORE_SET, WARM_SSTORE_RESET,
+        WARM_STORAGE_READ_COST as WARM_SLOAD,
+    },
+};
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use reth_chainspec::{
@@ -15,11 +21,21 @@ use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 use tempo_primitives::TempoHeader;
 
-/// T0 base fee: 10 gwei (1×10^10 wei)
+/// T0 base fee: 10 billion attodollars (1×10^10)
+///
+/// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
+/// Basefee is denominated in attodollars.
 pub const TEMPO_T0_BASE_FEE: u64 = 10_000_000_000;
 
-/// T1 base fee: 20 gwei (2×10^10 wei)
-/// At this base fee, a standard TIP-20 transfer (~50,000 gas) costs ~0.1 cent
+/// T1 base fee: 20 billion attodollars (2×10^10)
+///
+/// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
+/// Basefee is denominated in attodollars.
+///
+/// At this basefee, a standard TIP-20 transfer (~50,000 gas) costs:
+/// - Gas: 50,000 × 20 billion attodollars/gas = 1 quadrillion attodollars
+/// - Tokens: 1 quadrillion attodollars / 10^12 = 1,000 microdollars
+/// - Economic: 1,000 microdollars = 0.001 USD = 0.1 cents
 pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
 
 /// TIP-1010 general (non-payment) gas limit: 30 million gas per block.
@@ -34,6 +50,16 @@ pub const TEMPO_T1_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
 
+/// Gas cost for using an existing 2D nonce key (cold SLOAD + warm SSTORE reset)
+pub const TEMPO_T1_EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD + WARM_SSTORE_RESET;
+/// T2 adds 2 warm SLOADs for the extended nonce key lookup
+pub const TEMPO_T2_EXISTING_NONCE_KEY_GAS: u64 = TEMPO_T1_EXISTING_NONCE_KEY_GAS + 2 * WARM_SLOAD;
+
+/// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero)
+pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + SSTORE_SET;
+/// T2 adds 2 warm SLOADs for the extended nonce key lookup
+pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = TEMPO_T1_NEW_NONCE_KEY_GAS + 2 * WARM_SLOAD;
+
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +73,15 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T1 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t1_time: Option<u64>,
+    /// Activation timestamp for T1.A hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t1a_time: Option<u64>,
+    /// Activation timestamp for T1.B hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t1b_time: Option<u64>,
+    /// Activation timestamp for T1.C hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t1c_time: Option<u64>,
     /// Activation timestamp for T2 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t2_time: Option<u64>,
@@ -72,6 +107,18 @@ impl TempoGenesisInfo {
 
     pub fn t1_time(&self) -> Option<u64> {
         self.t1_time
+    }
+
+    pub fn t1a_time(&self) -> Option<u64> {
+        self.t1a_time
+    }
+
+    pub fn t1b_time(&self) -> Option<u64> {
+        self.t1b_time
+    }
+
+    pub fn t1c_time(&self) -> Option<u64> {
+        self.t1c_time
     }
 
     pub fn t2_time(&self) -> Option<u64> {
@@ -138,7 +185,7 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 
 /// Development chainspec with funded dev accounts and activated tempo hardforks
 ///
-/// `cargo x generate-genesis -o dev.json --accounts 10`
+/// `cargo x generate-genesis -o dev.json --accounts 10 --no-dkg-in-genesis`
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/dev.json"))
         .expect("`./genesis/dev.json` must be present and deserializable");
@@ -167,6 +214,9 @@ impl TempoChainSpec {
         let info @ TempoGenesisInfo {
             t0_time,
             t1_time,
+            t1a_time,
+            t1b_time,
+            t1c_time,
             t2_time,
             ..
         } = TempoGenesisInfo::extract_from(&genesis);
@@ -178,6 +228,9 @@ impl TempoChainSpec {
             (TempoHardfork::Genesis, Some(0)),
             (TempoHardfork::T0, t0_time),
             (TempoHardfork::T1, t1_time),
+            (TempoHardfork::T1A, t1a_time),
+            (TempoHardfork::T1B, t1b_time),
+            (TempoHardfork::T1C, t1c_time),
             (TempoHardfork::T2, t2_time),
         ]
         .into_iter()
@@ -187,7 +240,7 @@ impl TempoChainSpec {
         Self {
             inner: base_spec.map_header(|inner| TempoHeader {
                 general_gas_limit: 0,
-                timestamp_millis_part: inner.timestamp * 1000,
+                timestamp_millis_part: inner.timestamp % 1000,
                 shared_gas_limit: 0,
                 inner,
             }),
@@ -201,6 +254,11 @@ impl TempoChainSpec {
         self.default_follow_url = Some(url);
         self
     }
+
+    /// Returns the mainnet chainspec.
+    pub fn mainnet() -> Self {
+        PRESTO.as_ref().clone()
+    }
 }
 
 // Required by reth's e2e-test-utils for integration tests.
@@ -210,7 +268,7 @@ impl From<ChainSpec> for TempoChainSpec {
         Self {
             inner: spec.map_header(|inner| TempoHeader {
                 general_gas_limit: 0,
-                timestamp_millis_part: inner.timestamp * 1000,
+                timestamp_millis_part: inner.timestamp % 1000,
                 inner,
                 shared_gas_limit: 0,
             }),
@@ -387,12 +445,47 @@ mod tests {
         let mainnet_chainspec = super::TempoChainSpecParser::parse("mainnet")
             .expect("the mainnet chainspec must always be well formed");
 
-        // Should always return T0
+        // Before T1 activation (1770908400 = Feb 12th 2026 16:00 CET)
         assert_eq!(mainnet_chainspec.tempo_hardfork_at(0), TempoHardfork::T0);
         assert_eq!(mainnet_chainspec.tempo_hardfork_at(1000), TempoHardfork::T0);
         assert_eq!(
-            mainnet_chainspec.tempo_hardfork_at(u64::MAX),
+            mainnet_chainspec.tempo_hardfork_at(1770908399),
             TempoHardfork::T0
+        );
+
+        // At and after T1/T1A activation (both activate at 1770908400)
+        assert!(mainnet_chainspec.is_t1_active_at_timestamp(1770908400));
+        assert!(mainnet_chainspec.is_t1a_active_at_timestamp(1770908400));
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1770908400),
+            TempoHardfork::T1A
+        );
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1770908401),
+            TempoHardfork::T1A
+        );
+
+        // Before T1B activation (1771858800 = Feb 23rd 2026 16:00 CET)
+        assert!(!mainnet_chainspec.is_t1b_active_at_timestamp(1771858799));
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1771858799),
+            TempoHardfork::T1A
+        );
+
+        // At and after T1B activation
+        assert!(mainnet_chainspec.is_t1b_active_at_timestamp(1771858800));
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1771858800),
+            TempoHardfork::T1B
+        );
+
+        // T1C not yet scheduled on mainnet
+        assert!(!mainnet_chainspec.is_t1c_active_at_timestamp(u64::MAX));
+        // T2 not yet scheduled on mainnet
+        assert!(!mainnet_chainspec.is_t2_active_at_timestamp(u64::MAX));
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(u64::MAX),
+            TempoHardfork::T1B
         );
 
         let moderato_genesis = super::TempoChainSpecParser::parse("moderato")
@@ -417,15 +510,34 @@ mod tests {
             moderato_genesis.tempo_hardfork_at(1770303601),
             TempoHardfork::T1
         );
+
+        // Before T1A/T1B activation (1771858800 = Feb 23rd 2026 16:00 CET)
         assert_eq!(
-            moderato_genesis.tempo_hardfork_at(u64::MAX),
+            moderato_genesis.tempo_hardfork_at(1771858799),
             TempoHardfork::T1
         );
 
-        let testnet_chainspec = super::TempoChainSpecParser::parse("testnet")
-            .expect("the mainnet chainspec must always be well formed");
+        // At and after T1A/T1B activation (both activate at 1771858800)
+        assert!(moderato_genesis.is_t1a_active_at_timestamp(1771858800));
+        assert!(moderato_genesis.is_t1b_active_at_timestamp(1771858800));
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1771858800),
+            TempoHardfork::T1B
+        );
 
-        // Should always return Genesis
+        // T1C not yet scheduled on moderato
+        assert!(!moderato_genesis.is_t1c_active_at_timestamp(u64::MAX));
+        // T2 not yet scheduled on moderato
+        assert!(!moderato_genesis.is_t2_active_at_timestamp(u64::MAX));
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(u64::MAX),
+            TempoHardfork::T1B
+        );
+
+        let testnet_chainspec = super::TempoChainSpecParser::parse("testnet")
+            .expect("the testnet chainspec must always be well formed");
+
+        // Should always return Genesis (no hardfork timestamps on andantino)
         assert_eq!(
             testnet_chainspec.tempo_hardfork_at(0),
             TempoHardfork::Genesis
@@ -456,6 +568,9 @@ mod tests {
                     "chainId": 1234,
                     "t0Time": 0,
                     "t1Time": 0,
+                    "t1aTime": 0,
+                    "t1bTime": 0,
+                    "t1cTime": 0,
                     "t2Time": 0
                 },
                 "alloc": {}
@@ -469,6 +584,12 @@ mod tests {
         assert!(chainspec.is_t0_active_at_timestamp(1000));
         assert!(chainspec.is_t1_active_at_timestamp(0));
         assert!(chainspec.is_t1_active_at_timestamp(1000));
+        assert!(chainspec.is_t1a_active_at_timestamp(0));
+        assert!(chainspec.is_t1a_active_at_timestamp(1000));
+        assert!(chainspec.is_t1b_active_at_timestamp(0));
+        assert!(chainspec.is_t1b_active_at_timestamp(1000));
+        assert!(chainspec.is_t1c_active_at_timestamp(0));
+        assert!(chainspec.is_t1c_active_at_timestamp(1000));
         assert!(chainspec.is_t2_active_at_timestamp(0));
         assert!(chainspec.is_t2_active_at_timestamp(1000));
 

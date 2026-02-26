@@ -18,6 +18,10 @@ contract TIP20Test is BaseTest {
     bytes32 constant TEST_MEMO = bytes32(uint256(0x1234567890abcdef));
     bytes32 constant ANOTHER_MEMO = bytes32("Hello World");
 
+    // Signer key pair for permit tests
+    uint256 internal constant SIGNER_KEY = 0xA11CE;
+    uint256 internal constant WRONG_KEY = 0xB0B;
+
     event TransferWithMemo(
         address indexed from, address indexed to, uint256 amount, bytes32 indexed memo
     );
@@ -2283,6 +2287,429 @@ contract TIP20Test is BaseTest {
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
         }
+    }
+
+    function test_Mint_Succeeds_AuthorizedMintRecipient_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 mintWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+
+        registry.modifyPolicyWhitelist(mintWhitelist, charlie, true);
+
+        uint64 compound =
+            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
+
+        TIP20 compoundToken = TIP20(
+            factory.createToken("COMPOUND", "CMP", "USD", pathUSD, admin, bytes32("compound"))
+        );
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(compound);
+
+        compoundToken.mint(charlie, 1000);
+        assertEq(compoundToken.balanceOf(charlie), 1000);
+
+        vm.stopPrank();
+    }
+
+    function test_Mint_Fails_UnauthorizedMintRecipient_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 mintWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+
+        // charlie is NOT in mintWhitelist
+
+        uint64 compound =
+            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, mintWhitelist);
+
+        TIP20 compoundToken = TIP20(
+            factory.createToken("COMPOUND2", "CMP2", "USD", pathUSD, admin, bytes32("compound2"))
+        );
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(compound);
+
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.mint(charlie, 1000) {
+            revert("mint should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+
+        vm.stopPrank();
+    }
+
+    function test_Transfer_Succeeds_BothAuthorized_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+
+        registry.modifyPolicyWhitelist(senderWhitelist, alice, true);
+        registry.modifyPolicyWhitelist(recipientWhitelist, bob, true);
+
+        uint64 compound = registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, 1);
+
+        TIP20 compoundToken = TIP20(
+            factory.createToken("COMPOUND3", "CMP3", "USD", pathUSD, admin, bytes32("compound3"))
+        );
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(alice, 1000);
+        compoundToken.changeTransferPolicyId(compound);
+
+        vm.stopPrank();
+
+        vm.prank(alice);
+        compoundToken.transfer(bob, 500);
+
+        assertEq(compoundToken.balanceOf(alice), 500);
+        assertEq(compoundToken.balanceOf(bob), 500);
+    }
+
+    function test_Transfer_Fails_SenderUnauthorized_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderWhitelist = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        // alice is NOT in senderWhitelist
+
+        uint64 compound = registry.createCompoundPolicy(senderWhitelist, 1, 1);
+
+        TIP20 compoundToken = TIP20(
+            factory.createToken("COMPOUND4", "CMP4", "USD", pathUSD, admin, bytes32("compound4"))
+        );
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(alice, 1000);
+        compoundToken.changeTransferPolicyId(compound);
+
+        vm.stopPrank();
+
+        vm.prank(alice);
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.transfer(bob, 500) {
+            revert("transfer should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+    }
+
+    function test_Transfer_Fails_RecipientUnauthorized_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 recipientWhitelist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+        // bob is NOT in recipientWhitelist
+
+        uint64 compound = registry.createCompoundPolicy(1, recipientWhitelist, 1);
+
+        TIP20 compoundToken = TIP20(
+            factory.createToken("COMPOUND5", "CMP5", "USD", pathUSD, admin, bytes32("compound5"))
+        );
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(alice, 1000);
+        compoundToken.changeTransferPolicyId(compound);
+
+        vm.stopPrank();
+
+        vm.prank(alice);
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.transfer(bob, 500) {
+            revert("transfer should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+    }
+
+    function test_Transfer_AsymmetricCompound_BlockedCanReceiveNotSend() public {
+        vm.startPrank(admin);
+
+        uint64 senderBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        registry.modifyPolicyBlacklist(senderBlacklist, charlie, true);
+
+        // charlie blocked from sending, but anyone can receive
+        uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
+
+        TIP20 compoundToken =
+            TIP20(factory.createToken("ASYM", "ASY", "USD", pathUSD, admin, bytes32("asym")));
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(alice, 1000);
+        compoundToken.mint(charlie, 500);
+        compoundToken.changeTransferPolicyId(asymmetricCompound);
+
+        vm.stopPrank();
+
+        // alice can send to charlie (charlie can receive)
+        vm.prank(alice);
+        compoundToken.transfer(charlie, 200);
+        assertEq(compoundToken.balanceOf(charlie), 700);
+
+        // charlie cannot send (blocked as sender)
+        vm.prank(charlie);
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.transfer(alice, 100) {
+            revert("transfer should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+    }
+
+    function test_BurnBlocked_Succeeds_BlockedSender_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        registry.modifyPolicyBlacklist(senderBlacklist, charlie, true);
+
+        uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
+
+        TIP20 compoundToken =
+            TIP20(factory.createToken("BURN1", "BRN1", "USD", pathUSD, admin, bytes32("burn1")));
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(charlie, 1000);
+        compoundToken.changeTransferPolicyId(asymmetricCompound);
+
+        compoundToken.burnBlocked(charlie, 500);
+        assertEq(compoundToken.balanceOf(charlie), 500);
+
+        vm.stopPrank();
+    }
+
+    function test_BurnBlocked_Fails_AuthorizedSender_CompoundPolicy() public {
+        vm.startPrank(admin);
+
+        uint64 senderBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        // alice is NOT blacklisted, so she's authorized as sender
+
+        uint64 asymmetricCompound = registry.createCompoundPolicy(senderBlacklist, 1, 1);
+
+        TIP20 compoundToken =
+            TIP20(factory.createToken("BURN2", "BRN2", "USD", pathUSD, admin, bytes32("burn2")));
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(alice, 1000);
+        compoundToken.changeTransferPolicyId(asymmetricCompound);
+
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.burnBlocked(alice, 500) {
+            revert("burnBlocked should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+
+        vm.stopPrank();
+    }
+
+    function test_BurnBlocked_ChecksCorrectSubPolicy() public {
+        vm.startPrank(admin);
+
+        // Create compound where only recipient is blocked, sender is allowed
+        uint64 recipientBlacklist =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        registry.modifyPolicyBlacklist(recipientBlacklist, charlie, true);
+
+        uint64 recipientBlockedCompound = registry.createCompoundPolicy(1, recipientBlacklist, 1);
+
+        TIP20 compoundToken =
+            TIP20(factory.createToken("BURN3", "BRN3", "USD", pathUSD, admin, bytes32("burn3")));
+        compoundToken.grantRole(_ISSUER_ROLE, admin);
+        compoundToken.grantRole(_BURN_BLOCKED_ROLE, admin);
+        compoundToken.changeTransferPolicyId(1);
+        compoundToken.mint(charlie, 1000);
+        compoundToken.changeTransferPolicyId(recipientBlockedCompound);
+
+        // charlie is blocked as recipient but NOT as sender, so burnBlocked should fail
+        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
+        try compoundToken.burnBlocked(charlie, 500) {
+            revert("burnBlocked should have reverted");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ITIP20.PolicyForbids.selector);
+        }
+
+        vm.stopPrank();
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                          EIP-2612 PERMIT TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Helper to build the EIP-712 digest for a permit call
+    function _permitDigest(
+        address owner_,
+        address spender_,
+        uint256 value_,
+        uint256 nonce_,
+        uint256 deadline_
+    )
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32 structHash = keccak256(
+            abi.encode(token.PERMIT_TYPEHASH(), owner_, spender_, value_, nonce_, deadline_)
+        );
+        return keccak256(abi.encodePacked("\x19\x01", token.DOMAIN_SEPARATOR(), structHash));
+    }
+
+    function test_Permit() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        address signer = vm.addr(SIGNER_KEY);
+        uint256 value = 500e18;
+        uint256 deadline = block.timestamp + 1 hours;
+
+        // Mint tokens so signer has a balance (not strictly required for approve, but realistic)
+        vm.prank(admin);
+        token.mint(signer, 1000e18);
+
+        // Nonce starts at 0
+        assertEq(token.nonces(signer), 0);
+
+        bytes32 digest = _permitDigest(signer, bob, value, 0, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, digest);
+
+        vm.expectEmit(true, true, true, true);
+        emit Approval(signer, bob, value);
+
+        token.permit(signer, bob, value, deadline, v, r, s);
+
+        // Allowance reflects new value
+        assertEq(token.allowance(signer, bob), value);
+        // Nonce incremented
+        assertEq(token.nonces(signer), 1);
+    }
+
+    function test_Permit_OverridesExistingAllowance() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        address signer = vm.addr(SIGNER_KEY);
+        uint256 deadline = block.timestamp + 1 hours;
+
+        // Set initial allowance via approve
+        vm.prank(signer);
+        token.approve(bob, 100e18);
+        assertEq(token.allowance(signer, bob), 100e18);
+
+        // Permit overrides to 50e18
+        bytes32 digest = _permitDigest(signer, bob, 50e18, 0, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, digest);
+
+        token.permit(signer, bob, 50e18, deadline, v, r, s);
+
+        assertEq(token.allowance(signer, bob), 50e18);
+    }
+
+    function test_Permit_Replay() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        address signer = vm.addr(SIGNER_KEY);
+        uint256 value = 500e18;
+        uint256 deadline = block.timestamp + 1 hours;
+
+        bytes32 digest = _permitDigest(signer, bob, value, 0, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, digest);
+
+        // First call succeeds
+        token.permit(signer, bob, value, deadline, v, r, s);
+        assertEq(token.nonces(signer), 1);
+
+        // Replay fails — nonce already consumed
+        try token.permit(signer, bob, value, deadline, v, r, s) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidSignature.selector));
+        }
+
+        // Nonce unchanged after failed replay
+        assertEq(token.nonces(signer), 1);
+    }
+
+    function test_Permit_Fail() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        address signer = vm.addr(SIGNER_KEY);
+        uint256 value = 500e18;
+
+        // 1. Expired deadline
+        {
+            uint256 expiredDeadline = block.timestamp - 1;
+            bytes32 digest = _permitDigest(signer, bob, value, 0, expiredDeadline);
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, digest);
+
+            try token.permit(signer, bob, value, expiredDeadline, v, r, s) {
+                revert CallShouldHaveReverted();
+            } catch (bytes memory err) {
+                assertEq(err, abi.encodeWithSelector(ITIP20.PermitExpired.selector));
+            }
+            assertEq(token.nonces(signer), 0);
+        }
+
+        // 2. Invalid signature (garbage bytes)
+        {
+            uint256 deadline = block.timestamp + 1 hours;
+
+            try token.permit(signer, bob, value, deadline, 27, bytes32("bad_r"), bytes32("bad_s")) {
+                revert CallShouldHaveReverted();
+            } catch (bytes memory err) {
+                assertEq(err, abi.encodeWithSelector(ITIP20.InvalidSignature.selector));
+            }
+            assertEq(token.nonces(signer), 0);
+        }
+
+        // 3. Wrong signer (bob signs a permit claiming owner = signer)
+        {
+            uint256 deadline = block.timestamp + 1 hours;
+            bytes32 digest = _permitDigest(signer, bob, value, 0, deadline);
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(WRONG_KEY, digest);
+
+            try token.permit(signer, bob, value, deadline, v, r, s) {
+                revert CallShouldHaveReverted();
+            } catch (bytes memory err) {
+                assertEq(err, abi.encodeWithSelector(ITIP20.InvalidSignature.selector));
+            }
+            assertEq(token.nonces(signer), 0);
+        }
+    }
+
+    function test_Nonces() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        address signer = vm.addr(SIGNER_KEY);
+        uint256 deadline = block.timestamp + 1 hours;
+
+        assertEq(token.nonces(signer), 0);
+
+        // First permit: nonce 0 → 1
+        bytes32 digest0 = _permitDigest(signer, bob, 100e18, 0, deadline);
+        (uint8 v0, bytes32 r0, bytes32 s0) = vm.sign(SIGNER_KEY, digest0);
+        token.permit(signer, bob, 100e18, deadline, v0, r0, s0);
+        assertEq(token.nonces(signer), 1);
+
+        // Second permit: nonce 1 → 2
+        bytes32 digest1 = _permitDigest(signer, charlie, 200e18, 1, deadline);
+        (uint8 v1, bytes32 r1, bytes32 s1) = vm.sign(SIGNER_KEY, digest1);
+        token.permit(signer, charlie, 200e18, deadline, v1, r1, s1);
+        assertEq(token.nonces(signer), 2);
+    }
+
+    function test_DomainSeparator() public {
+        vm.skip(isTempo); // TODO: skip for Tempo for now, reenable after tempo-foundry deps bumped
+        bytes32 expected = keccak256(
+            abi.encode(
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
+                keccak256(bytes(token.name())),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(token)
+            )
+        );
+        assertEq(token.DOMAIN_SEPARATOR(), expected);
     }
 
 }

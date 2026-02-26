@@ -33,7 +33,7 @@ use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
 use tempo_consensus::TempoConsensus;
-use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
+use tempo_evm::TempoEvmConfig;
 use tempo_faucet::{
     args::FaucetArgs,
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
@@ -52,7 +52,7 @@ use tracing::{info, info_span};
 struct TempoArgs {
     /// Follow this specific RPC node for block hashes.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
-    #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
+    #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
     pub follow: Option<String>,
 
     #[command(flatten)]
@@ -93,7 +93,26 @@ struct PyroscopeArgs {
     pub sample_rate: u32,
 }
 
+/// Force-install the default crypto provider.
+///
+/// This is necessary in case there are more than one available backends enabled in rustls (ring,
+/// aws-lc-rs).
+///
+/// This should be called high in the main fn.
+///
+/// See also:
+///   <https://github.com/snapview/tokio-tungstenite/issues/353#issuecomment-2455100010>
+///   <https://github.com/awslabs/aws-sdk-rust/discussions/1257>
+fn install_crypto_provider() {
+    // https://github.com/snapview/tokio-tungstenite/issues/353
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install default rustls crypto provider");
+}
+
 fn main() -> eyre::Result<()> {
+    install_crypto_provider();
+
     reth_cli_util::sigsegv_handler::install();
 
     // XXX: ensures that the error source chain is preserved in
@@ -251,12 +270,8 @@ fn main() -> eyre::Result<()> {
         ret
     });
 
-    let components = |spec: Arc<TempoChainSpec>| {
-        (
-            TempoEvmConfig::new(spec.clone(), TempoEvmFactory::default()),
-            TempoConsensus::new(spec),
-        )
-    };
+    let components =
+        |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         let faucet_args = args.faucet_args.clone();
@@ -299,6 +314,13 @@ fn main() -> eyre::Result<()> {
         } = builder
             .node(TempoNode::new(&args.node_args, validator_key))
             .apply(|mut builder: WithLaunchContext<_>| {
+                // Enable discv5 peer discovery
+                builder
+                    .config_mut()
+                    .network
+                    .discovery
+                    .enable_discv5_discovery = true;
+
                 // Resolve the follow URL:
                 // --follow or --follow=auto -> use chain-specific default
                 // --follow=URL -> use provided URL

@@ -39,6 +39,9 @@ pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 ///
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = NONCE_PRECOMPILE_ADDRESS)]
 pub struct NonceManager {
     nonces: Mapping<Address, Mapping<U256, u64>>,
@@ -88,15 +91,15 @@ impl NonceManager {
         Ok(new_nonce)
     }
 
-    /// Returns the storage slot for a given tx hash in the expiring nonce seen set.
-    /// This can be used by the transaction pool to check if a tx hash has been seen.
-    pub fn expiring_seen_slot(&self, tx_hash: B256) -> U256 {
-        self.expiring_nonce_seen[tx_hash].slot()
+    /// Returns the storage slot for a given hash in the expiring nonce seen set.
+    /// This can be used by the transaction pool to check if a hash has been seen.
+    pub fn expiring_seen_slot(&self, hash: B256) -> U256 {
+        self.expiring_nonce_seen[hash].slot()
     }
 
-    /// Checks if a tx hash has been seen and is still valid (not expired).
-    pub fn is_expiring_nonce_seen(&self, tx_hash: B256, now: u64) -> Result<bool> {
-        let expiry = self.expiring_nonce_seen[tx_hash].read()?;
+    /// Checks if a hash has been seen and is still valid (not expired).
+    pub fn is_expiring_nonce_seen(&self, hash: B256, now: u64) -> Result<bool> {
+        let expiry = self.expiring_nonce_seen[hash].read()?;
         Ok(expiry != 0 && expiry > now)
     }
 
@@ -104,19 +107,22 @@ impl NonceManager {
     ///
     /// Uses a circular buffer that overwrites expired entries as the pointer advances.
     ///
+    /// The `expiring_nonce_hash` parameter is
+    /// (`keccak256(encode_for_signing || sender)`), which is invariant to fee payer changes.
+    ///
     /// This is called during transaction execution to:
     /// 1. Validate the expiry is within the allowed window
-    /// 2. Check for replay (tx hash already seen and not expired)
+    /// 2. Check for replay (hash already seen and not expired)
     /// 3. Check if we can evict the entry at current pointer (must be expired or empty)
-    /// 4. Mark the tx hash as seen
+    /// 4. Mark the hash as seen
     ///
     /// Returns an error if:
     /// - The expiry is not within (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
-    /// - The tx hash has already been seen and not expired
+    /// - The hash has already been seen and not expired
     /// - The entry at current pointer is not expired (buffer full of valid entries)
     pub fn check_and_mark_expiring_nonce(
         &mut self,
-        tx_hash: B256,
+        expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
         let now: u64 = self.storage.timestamp().saturating_to();
@@ -127,8 +133,8 @@ impl NonceManager {
             return Err(NonceError::invalid_expiring_nonce_expiry().into());
         }
 
-        // 2. Replay check: reject if tx hash is already seen and not expired
-        let seen_expiry = self.expiring_nonce_seen[tx_hash].read()?;
+        // 2. Replay check: reject if hash is already seen and not expired
+        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
         if seen_expiry != 0 && seen_expiry > now {
             return Err(NonceError::expiring_nonce_replay().into());
         }
@@ -152,8 +158,8 @@ impl NonceManager {
         }
 
         // 5. Insert new entry
-        self.expiring_nonce_ring[idx].write(tx_hash)?;
-        self.expiring_nonce_seen[tx_hash].write(valid_before)?;
+        self.expiring_nonce_ring[idx].write(expiring_nonce_hash)?;
+        self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
 
         // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
         let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
@@ -171,7 +177,7 @@ impl NonceManager {
 mod tests {
     use crate::{
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
 
     use super::*;
@@ -431,6 +437,29 @@ mod tests {
 
             let ptr = mgr.expiring_nonce_ring_ptr.read()?;
             assert_eq!(ptr, 1, "Pointer should increment to 1 after wrap");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_initialize_sets_storage_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            // Before initialization, contract should not be initialized
+            assert!(!mgr.is_initialized()?);
+
+            // Initialize
+            mgr.initialize()?;
+
+            // After initialization, contract should be initialized
+            assert!(mgr.is_initialized()?);
+
+            // Re-initializing a new handle should still see initialized state
+            let mgr2 = NonceManager::new();
+            assert!(mgr2.is_initialized()?);
 
             Ok(())
         })

@@ -23,10 +23,18 @@ pub use tt_signed::AASigned;
 
 use alloy_primitives::{U256, uint};
 
-/// Factor by which we scale the gas price for gas spending calculations.
+/// Scaling factor for converting gas prices (attodollars) to TIP-20 token amounts (microdollars).
+///
+/// This factor is 10^12, which converts from attodollars (10^-18 USD) to microdollars (10^-6 USD):
+/// - Gas prices are in attodollars at 10^-18 USD precision
+/// - TIP-20 tokens use 6 decimals (microdollars at 10^-6 USD precision)
+/// - Conversion: attodollars / 10^12 = microdollars
 pub const TEMPO_GAS_PRICE_SCALING_FACTOR: U256 = uint!(1_000_000_000_000_U256);
 
-/// Calculates gas balance spending with gas price scaled by [`TEMPO_GAS_PRICE_SCALING_FACTOR`].
+/// Calculates gas balance spending in TIP-20 token units (microdollars).
+///
+/// Takes gas parameters in attodollars and converts to microdollars (TIP-20 token units).
+/// Formula: (gas_limit × gas_price) / 10^12 = microdollars
 pub fn calc_gas_balance_spending(gas_limit: u64, gas_price: u128) -> U256 {
     U256::from(gas_limit)
         .saturating_mul(U256::from(gas_price))

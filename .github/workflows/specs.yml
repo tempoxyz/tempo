@@ -11,11 +11,6 @@ on:
       - ".github/workflows/specs.yml"
   merge_group:
   pull_request:
-    branches: [main]
-    paths:
-      - "tips/ref-impls/**"
-      - "crates/precompiles/**"
-      - ".github/workflows/specs.yml"
 
 env:
   FOUNDRY_PROFILE: ci
@@ -23,8 +18,31 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  check-specs-changes:
+    name: Check specs changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      should_run: ${{ steps.filter.outputs.specs }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            specs:
+              - 'tips/ref-impls/**'
+              - 'crates/precompiles/**'
+              - '.github/workflows/specs.yml'
+
   check-precompiles:
     name: Check precompiles changes
+    needs: check-specs-changes
+    if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,6 +73,8 @@ jobs:
 
   build:
     name: Forge Build
+    needs: check-specs-changes
+    if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -66,9 +86,8 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
-
-      - name: Show Forge version
-        run: forge --version
+        with:
+          version: nightly
 
       - name: Run Forge build
         working-directory: tips/ref-impls
@@ -76,6 +95,8 @@ jobs:
 
   lint:
     name: Forge Fmt
+    needs: check-specs-changes
+    if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -87,6 +108,8 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
+        with:
+          version: nightly
 
       - name: Run Forge fmt check
         working-directory: tips/ref-impls
@@ -94,6 +117,8 @@ jobs:
 
   test:
     name: Forge Test (Solidity)
+    needs: check-specs-changes
+    if: needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -105,6 +130,8 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
+        with:
+          version: nightly
 
       - name: Run Forge tests
         working-directory: tips/ref-impls
@@ -112,7 +139,9 @@ jobs:
 
   tempo-foundry-test:
     name: Forge Test (Rust Precompiles)
-    needs: check-precompiles
+    needs: [check-specs-changes, check-precompiles]
+    # Skip for forked repos
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true'
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
@@ -213,6 +242,7 @@ jobs:
     if: always()
     permissions: {}
     needs:
+      - check-specs-changes
       - check-precompiles
       - build
       - lint
@@ -224,6 +254,7 @@ jobs:
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
           allowed-failures: tempo-foundry-test
+          allowed-skips: check-precompiles,build,lint,test,tempo-foundry-test
           jobs: ${{ toJSON(needs) }}
 
   precompiles-coverage:

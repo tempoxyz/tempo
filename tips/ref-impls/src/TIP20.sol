@@ -36,6 +36,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     ITIP20 public override quoteToken;
     ITIP20 public override nextQuoteToken;
 
+    bytes32 public constant PERMIT_TYPEHASH = keccak256(
+        "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+    );
+
     bytes32 public constant PAUSE_ROLE = keccak256("PAUSE_ROLE");
     bytes32 public constant UNPAUSE_ROLE = keccak256("UNPAUSE_ROLE");
     bytes32 public constant ISSUER_ROLE = keccak256("ISSUER_ROLE");
@@ -69,6 +73,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     uint128 internal _totalSupply;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => uint256) public nonces;
 
     /*//////////////////////////////////////////////////////////////
                               TIP20 STORAGE
@@ -174,8 +179,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             revert ProtectedAddress();
         }
 
-        // Only allow burning from addresses that are blocked from transferring.
-        if (TIP403_REGISTRY.isAuthorized(transferPolicyId, from)) {
+        // TIP-1015: Only allow burning from addresses that are blocked from sending
+        if (TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, from)) {
             revert PolicyForbids();
         }
 
@@ -221,9 +226,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     modifier transferAuthorized(address from, address to) {
+        // TIP-1015: Use directional sender/recipient authorization
         if (
-            !TIP403_REGISTRY.isAuthorized(transferPolicyId, from)
-                || !TIP403_REGISTRY.isAuthorized(transferPolicyId, to)
+            !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, from)
+                || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, to)
         ) revert PolicyForbids();
         _;
     }
@@ -309,7 +315,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function _mint(address to, uint256 amount) internal {
-        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, to)) {
+        // TIP-1015: Use mint recipient authorization
+        if (!TIP403_REGISTRY.isAuthorizedMintRecipient(transferPolicyId, to)) {
             revert PolicyForbids();
         }
         if (_totalSupply + amount > supplyCap) revert SupplyCapExceeded(); // Catches overflow.
@@ -326,6 +333,51 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
 
         emit Transfer(address(0), to, amount);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            EIP-2612 PERMIT
+    //////////////////////////////////////////////////////////////*/
+
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
+                keccak256(bytes(name)),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    )
+        external
+    {
+        if (block.timestamp > deadline) revert PermitExpired();
+
+        bytes32 structHash = keccak256(
+            abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline)
+        );
+
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+
+        address recovered = ecrecover(digest, v, r, s);
+        if (recovered == address(0) || recovered != owner) {
+            revert InvalidSignature();
+        }
+
+        emit Approval(owner, spender, allowance[owner][spender] = value);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -468,7 +520,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     /// @notice Distributes rewards to opted-in token holders.
     function distributeReward(uint256 amount) external virtual notPaused {
         if (amount == 0) revert InvalidAmount();
-        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) {
+        // TIP-1015: Use directional authorization for sender -> contract transfer
+        if (
+            !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, msg.sender)
+                || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, address(this))
+        ) {
             revert PolicyForbids();
         }
 
@@ -485,11 +541,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function setRewardRecipient(address newRewardRecipient) external virtual notPaused {
-        // Check TIP-403 authorization
+        // TIP-1015: Check sender/recipient authorization for reward claiming path
         if (newRewardRecipient != address(0)) {
             if (
-                !TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)
-                    || !TIP403_REGISTRY.isAuthorized(transferPolicyId, newRewardRecipient)
+                !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, msg.sender)
+                    || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, newRewardRecipient)
             ) revert PolicyForbids();
         }
 
@@ -507,9 +563,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function claimRewards() external virtual notPaused returns (uint256 maxAmount) {
+        // TIP-1015: Use directional authorization for contract -> recipient transfer
         if (
-            !TIP403_REGISTRY.isAuthorized(transferPolicyId, address(this))
-                || !TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)
+            !TIP403_REGISTRY.isAuthorizedSender(transferPolicyId, address(this))
+                || !TIP403_REGISTRY.isAuthorizedRecipient(transferPolicyId, msg.sender)
         ) {
             revert PolicyForbids();
         }

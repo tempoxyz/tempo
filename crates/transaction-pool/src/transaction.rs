@@ -199,6 +199,12 @@ impl TempoPooledTransaction {
     pub fn key_expiry(&self) -> Option<u64> {
         self.key_expiry.get().copied().flatten()
     }
+
+    /// Returns the expiring nonce hash for AA expiring nonce transactions.
+    pub fn expiring_nonce_hash(&self) -> Option<B256> {
+        let aa_tx = self.inner().as_aa()?;
+        Some(aa_tx.expiring_nonce_hash(self.sender()))
+    }
 }
 
 #[derive(Debug, Error)]
@@ -241,6 +247,9 @@ pub enum TempoPoolTransactionError {
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
     )]
     Keychain(&'static str),
+
+    #[error("Fee payer signature recovery failed")]
+    InvalidFeePayerSignature,
 
     #[error(
         "Native transfers are not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
@@ -396,6 +405,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::ExpiringNonceNonceNotZero
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
+            | Self::InvalidFeePayerSignature
             | Self::NoCalls
             | Self::CreateCallWithAuthorizationList
             | Self::CreateCallNotFirst
@@ -776,6 +786,7 @@ mod tests {
                 },
                 false,
             ),
+            (TempoPoolTransactionError::InvalidFeePayerSignature, true),
             (TempoPoolTransactionError::NonZeroValue, true),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (

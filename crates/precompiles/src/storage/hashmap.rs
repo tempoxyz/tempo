@@ -5,6 +5,9 @@ use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
+/// In-memory [`PrecompileStorageProvider`] for unit tests.
+///
+/// Stores all state in `HashMap`s, avoiding the need for a real EVM context.
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
@@ -14,6 +17,7 @@ pub struct HashMapStorageProvider {
     block_number: u64,
     timestamp: U256,
     beneficiary: Address,
+    block_number: u64,
     spec: TempoHardfork,
     is_static: bool,
 }
@@ -39,6 +43,7 @@ impl HashMapStorageProvider {
                     .as_secs(),
             ),
             beneficiary: Address::ZERO,
+            block_number: 0,
             spec,
             is_static: false,
         }
@@ -65,6 +70,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn beneficiary(&self) -> Address {
         self.beneficiary
+    }
+
+    fn block_number(&self) -> u64 {
+        self.block_number
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
@@ -176,6 +185,10 @@ impl HashMapStorageProvider {
 
     pub fn set_beneficiary(&mut self, beneficiary: Address) {
         self.beneficiary = beneficiary;
+    }
+
+    pub fn set_block_number(&mut self, block_number: u64) {
+        self.block_number = block_number;
     }
 
     pub fn set_spec(&mut self, spec: TempoHardfork) {

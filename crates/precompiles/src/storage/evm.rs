@@ -9,6 +9,9 @@ use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
+/// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
+///
+/// Wraps `EvmInternals` and tracks gas consumption for storage operations.
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     gas_remaining: u64,
@@ -75,6 +78,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     fn beneficiary(&self) -> Address {
         self.internals.block_env().beneficiary()
+    }
+
+    fn block_number(&self) -> u64 {
+        self.internals.block_env().number().to::<u64>()
     }
 
     #[inline]

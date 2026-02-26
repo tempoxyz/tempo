@@ -133,7 +133,7 @@ The FeeManager extends FeeAMM and handles fee token preferences and distribution
 
 ### Fee Collection Invariants
 
-- **TEMPO-FEE5**: Collected fees should not exceed AMM token balance for any token.
+- **TEMPO-FEE5**: Combined solvency - for each token, total pool reserves + collected fees ≤ AMM token balance.
 - **TEMPO-FEE6**: Fee swap rate M is correctly applied - fee output should always be <= fee input.
 
 ## TIP-1000: State Creation Cost (Gas Pricing)
@@ -187,14 +187,13 @@ Tested via `vmExec.executeTransaction()` and constant assertions:
   - Handler deploys contracts at 50-100% of max size
   - Invariant: max size deployment must succeed within tx cap
 
-- **TEMPO-BLOCK10**: shared_gas_limit = 50M. (constant assertion)
-
 ### Protocol-Level Invariants (Rust)
 
 The following are enforced in the block builder and tested in Rust:
 
 - **TEMPO-BLOCK7**: Block validity rejects over-limit blocks → `crates/payload/builder/src/lib.rs`
 - **TEMPO-BLOCK8-9**: Hardfork activation rules → `crates/chainspec/`
+- **TEMPO-BLOCK10**: Shared gas limit = block_gas_limit / 10 → `crates/consensus/src/lib.rs`
 - **TEMPO-BLOCK11**: Constant base fee within epoch → `crates/chainspec/`
 - **TEMPO-BLOCK12**: General lane enforcement (30M cap) → `crates/payload/builder/src/lib.rs`
 
@@ -230,6 +229,40 @@ The Nonce precompile manages 2D nonces for accounts, enabling multiple independe
 ### Reserved Key Invariants
 
 - **TEMPO-NON11**: Reserved expiring nonce key - `type(uint256).max` is reserved for `TEMPO_EXPIRING_NONCE_KEY`. Reading it returns 0 for uninitialized accounts (readable but reserved for special use).
+
+## TIP-1015 Compound Policies
+
+TIP-1015 extends TIP-403 with compound policies that specify different authorization rules for senders, recipients, and mint recipients.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-1015-2**: Compound policy immutability - compound policies have `PolicyType.COMPOUND` and `admin == address(0)`.
+- **TEMPO-1015-3**: Compound policy existence - all created compound policies return true for `policyExists()`.
+- **TEMPO-1015-4**: Simple policy equivalence - for simple policies, `isAuthorizedSender == isAuthorizedRecipient == isAuthorizedMintRecipient`.
+- **TEMPO-1015-5**: isAuthorized equivalence - for compound policies, `isAuthorized(p, u) == isAuthorizedSender(p, u) && isAuthorizedRecipient(p, u)`.
+- **TEMPO-1015-6**: Compound delegation correctness - directional authorization delegates to the correct sub-policy.
+
+### Per-Handler Assertions
+
+#### Compound Policy Creation
+
+- **TEMPO-1015-1**: Simple policy constraint - `createCompoundPolicy` reverts with `PolicyNotSimple` if any referenced policy is compound.
+- **TEMPO-1015-2**: Immutability - newly created compound policies have no admin (address(0)).
+- **TEMPO-1015-3**: Existence check - `createCompoundPolicy` reverts with `PolicyNotFound` if any referenced policy doesn't exist.
+- **TEMPO-1015-6**: Built-in policy compatibility - compound policies can reference built-in policies 0 (always-reject) and 1 (always-allow).
+
+#### Compound Policy Modification
+
+- **TEMPO-1015-2**: Cannot modify compound policy - `modifyPolicyWhitelist` and `modifyPolicyBlacklist` revert for compound policies.
+
+#### TIP-20 Integration
+
+- Mint uses `mintRecipientPolicyId` for authorization (not sender or recipient).
+- Transfer uses `senderPolicyId` for sender and `recipientPolicyId` for recipient.
+- `burnBlocked` uses `senderPolicyId` to check if address is blocked.
+- DEX `cancelStaleOrder` uses `senderPolicyId` to check if maker is blocked.
 
 ## TIP20Factory
 
@@ -299,6 +332,7 @@ These verify correct behavior when the specific function is called:
 - **TEMPO-REG14**: Non-existent policies - policy IDs >= `policyIdCounter` return false for `policyExists()`.
 - **TEMPO-REG17**: Special policy immutability - policies 0 and 1 cannot be modified via `modifyPolicyWhitelist` or `modifyPolicyBlacklist`.
 - **TEMPO-REG18**: Special policy admin immutability - the admin of policies 0 and 1 cannot be changed (attempts revert with `Unauthorized` since admin is `address(0)`).
+- **TEMPO-REG20**: Non-existent policy reverts - `isAuthorized` reverts with `PolicyNotFound` for policy IDs that have never been created.
 
 
 ## ValidatorConfig
@@ -344,6 +378,47 @@ The ValidatorConfig precompile manages the set of validators that participate in
 - **TEMPO-VAL14**: Owner consistency - contract owner always matches ghost state.
 - **TEMPO-VAL15**: Validator data consistency - all validator data (active status, public key, index) matches ghost state.
 - **TEMPO-VAL16**: Index consistency - each validator's index matches the ghost-tracked index assigned at creation.
+
+## ValidatorConfigV2
+
+The ValidatorConfigV2 precompile replaces V1 with append-only, delete-once semantics. Validators are immutable after creation, tracked by `addedAtHeight` and `deactivatedAtHeight` for historical reconstruction. Ed25519 signature verification proves key ownership at registration. Both owner and validator can call dual-auth functions (rotate, setIpAddresses, transferValidatorOwnership).
+
+### Per-Handler Assertions
+
+- **TEMPO-VALV2-1**: Dual-auth enforcement - functions callable by owner or validator (`deactivateValidator`, `setIpAddresses`, `rotateValidator`, `transferValidatorOwnership`) succeed when called by owner or the validator itself; fail when called by third parties.
+- **TEMPO-VALV2-2**: Owner-only enforcement - functions callable only by owner (`addValidator`, `transferOwnership`, `setNextFullDkgCeremony`, `migrateValidator`, `initializeIfMigrated`) succeed when called by owner; fail when called by non-owners.
+- **TEMPO-VALV2-3**: Validator count changes - active and total validator counts change only as follows: `addValidator` (+1 active, +1 total), `rotateValidator` (+0 active, +1 total), `deactivateValidator` (-1 active, +0 total); all other operations leave counts unchanged.
+- **TEMPO-VALV2-4**: Height field updates - validator height fields are set only by specific operations and always equal `block.number` when set:
+  - `addValidator`: sets new validator's `addedAtHeight = block.number`, `deactivatedAtHeight = 0`
+  - `rotateValidator`: sets old validator's `deactivatedAtHeight = block.number`; sets new validator's `addedAtHeight = block.number`, `deactivatedAtHeight = 0`
+  - `deactivateValidator`: sets validator's `deactivatedAtHeight = block.number`
+  - `migrateValidator`: sets new validator's `addedAtHeight = block.number`, `deactivatedAtHeight = 0` (if V1 active) or `block.number` (if V1 inactive)
+- **TEMPO-VALV2-5**: Init gate enforcement - post-init functions (`addValidator`, `rotateValidator`, `setIpAddresses`, `transferValidatorOwnership`, `setNextDkgCeremony`) fail with `NotInitialized` when `isInitialized() == false`; pre-init functions (`migrateValidator`, `initializeIfMigrated`) fail with `AlreadyInitialized` when `isInitialized() == true`.
+- **TEMPO-VALV2-6**: Address uniqueness per-handler - `addValidator` rejects addresses already in use by an active validator; `rotateValidator` verifies address mapping points to the new entry after deactivating the old (per-handler supplement to global VALV2-11).
+- **TEMPO-VALV2-7**: Public key validation per-handler - `addValidator` and `rotateValidator` reject zero public keys and public keys already registered (per-handler supplement to global VALV2-12).
+- **TEMPO-VALV2-25**: Migration preserves v1 values - V2 active status matches V1 (`V1.active == true` ↔ `V2.deactivatedAtHeight == 0`) immediately after `migrateValidator`.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-VALV2-8**: Append-only - `validatorCount` is monotonically increasing; never decreases across any sequence of operations.
+- **TEMPO-VALV2-9**: Delete-once - no validator can have `deactivatedAtHeight` transition from non-zero back to zero or to a different non-zero value; once deactivated, the validator remains deactivated permanently.
+- **TEMPO-VALV2-10**: Height tracking - for all validators: `addedAtHeight > 0` (set when added); `deactivatedAtHeight` is either `0` (active) or `>= addedAtHeight` (deactivated at or after addition).
+- **TEMPO-VALV2-11**: Address uniqueness among active - at most one active validator (where `deactivatedAtHeight == 0`) has any given address; deactivated addresses may be reused.
+- **TEMPO-VALV2-12**: Public key uniqueness - all public keys are globally unique and non-zero across all validators (including deactivated); once registered, a public key cannot be reused.
+- **TEMPO-VALV2-13**: Ingress IP uniqueness - no two active validators share the same ingress IP (port excluded from comparison); deactivated validators' ingress IPs may be reused.
+- **TEMPO-VALV2-14**: Sequential indices - each validator's `index` field equals its position in the validators array (validator at array position `i` has `index == i`).
+- **TEMPO-VALV2-15**: Active validator subset correctness - `getActiveValidators()` returns exactly the set of validators where `deactivatedAtHeight == 0` (no more, no fewer).
+- **TEMPO-VALV2-16**: Validator data consistency - all validator data (publicKey, validatorAddress, ingress, egress, index, addedAtHeight, deactivatedAtHeight) in contract matches ghost state for each validator.
+- **TEMPO-VALV2-17**: Validator count consistency - `validatorCount()` equals the actual length of the validators array; both are always in sync.
+- **TEMPO-VALV2-18**: Address lookup correctness - for every validator, `validatorByAddress(validator.validatorAddress)` returns that exact validator; `addressToIndex` mapping is accurate.
+- **TEMPO-VALV2-19**: Public key lookup correctness - for every validator, `validatorByPublicKey(validator.publicKey)` returns that exact validator; `pubkeyToIndex` mapping is accurate.
+- **TEMPO-VALV2-20**: Owner consistency - `owner()` always equals the ghost-tracked owner; ownership transfers are correctly reflected.
+- **TEMPO-VALV2-21**: DKG ceremony consistency - `getNextFullDkgCeremony()` always equals the ghost-tracked epoch; updates via `setNextFullDkgCeremony` are correctly stored.
+- **TEMPO-VALV2-22**: Initialization one-way - once `isInitialized() == true`, it remains true forever; `isInitialized()` only transitions from false to true, never back.
+- **TEMPO-VALV2-23**: Migration completeness - if `isInitialized() == false`, then `validatorCount <= V1.getAllValidators().length`; migration cannot exceed V1 validator count.
+- **TEMPO-VALV2-24**: Migration preserves identity - for each validator at index `i < V1.getAllValidators().length`: `V2.validator[i].publicKey == V1.validator[i].publicKey` and `V2.validator[i].validatorAddress == V1.validator[i].validatorAddress`.
 
 ## AccountKeychain
 
@@ -420,6 +495,7 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 ### Approval Invariants
 
 - **TEMPO-TIP5**: Allowance setting - `approve` sets exact allowance amount, returns `true`.
+- **TEMPO-TIP36**: A valid permit sets allowance to the `value` in the permit struct.
 
 ### Mint/Burn Invariants
 
@@ -461,3 +537,11 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 - **TEMPO-TIP27**: Pause-role enforcement - only accounts with `PAUSE_ROLE` can call `pause` (non-role holders revert with `Unauthorized`).
 - **TEMPO-TIP28**: Unpause-role enforcement - only accounts with `UNPAUSE_ROLE` can call `unpause` (non-role holders revert with `Unauthorized`).
 - **TEMPO-TIP29**: Burn-blocked-role enforcement - only accounts with `BURN_BLOCKED_ROLE` can call `burnBlocked` (non-role holders revert with `Unauthorized`).
+
+### Permit Invariants
+
+- **TEMPO-TIP31**: `nonces(owner)` must only ever increase, never decrease.
+- **TEMPO-TIP32**: `nonces(owner)` must increment by exactly 1 on each successful `permit()` call for that owner.
+- **TEMPO-TIP33**: A permit signature can only be used once (enforced by nonce increment).
+- **TEMPO-TIP34**: A permit with a deadline in the past must always revert.
+- **TEMPO-TIP35**: The recovered signer from a valid permit signature must exactly match the `owner` parameter.

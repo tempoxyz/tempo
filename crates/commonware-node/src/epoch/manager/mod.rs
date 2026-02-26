@@ -13,7 +13,9 @@ use commonware_consensus::{
     types::{FixedEpocher, ViewDelta},
 };
 use commonware_p2p::Blocker;
-use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef};
+use commonware_runtime::{
+    BufferPooler, Clock, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
+};
 use rand_08::{CryptoRng, Rng};
 
 use crate::{consensus::block::Block, epoch::scheme_provider::SchemeProvider, feed, subblocks};
@@ -37,14 +39,21 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) views_until_leader_skip: ViewDelta,
 }
 
-pub(crate) fn init<TBlocker, TContext>(
+pub(crate) fn init<TContext, TBlocker>(
     context: TContext,
     config: Config<TBlocker>,
-) -> (Actor<TBlocker, TContext>, Mailbox)
+) -> (Actor<TContext, TBlocker>, Mailbox)
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext:
-        Spawner + Metrics + Rng + CryptoRng + Clock + governor::clock::Clock + Storage + Network,
+    TContext: BufferPooler
+        + Spawner
+        + Metrics
+        + Rng
+        + CryptoRng
+        + Clock
+        + governor::clock::Clock
+        + Storage
+        + Network,
 {
     let (tx, rx) = futures::channel::mpsc::unbounded();
     let actor = Actor::new(config, context, rx);

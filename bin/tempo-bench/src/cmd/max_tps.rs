@@ -148,6 +148,14 @@ pub struct MaxTpsArgs {
     #[arg(long, default_value_t = 0.0)]
     erc20_weight: f64,
 
+    /// Send transfers to existing signer accounts instead of random new addresses.
+    ///
+    /// When enabled, TIP-20 and ERC-20 transfers are sent to the bench's own signer addresses
+    /// (which already exist on-chain), avoiding cold SSTORE for account creation. This tests
+    /// pure transfer throughput without state growth.
+    #[arg(long)]
+    existing_recipients: bool,
+
     /// An amount of receipts to wait for after sending all the transactions.
     #[arg(long, default_value_t = 100)]
     sample_size: usize,
@@ -168,16 +176,20 @@ pub struct MaxTpsArgs {
     #[arg(long)]
     clear_txpool: bool,
 
-    /// Disable 2D nonces
-    #[arg(long)]
-    disable_2d_nonces: bool,
-
-    /// Use expiring nonces (TIP-1009) instead of 2D nonces.
+    /// Use 2D nonces instead of expiring nonces.
     ///
-    /// Expiring nonces use a circular buffer for replay protection, avoiding state bloat
-    /// from unbounded 2D nonce storage growth. Each transaction has a valid_before timestamp.
+    /// By default, tempo-bench uses expiring nonces (TIP-1009) which use a circular buffer
+    /// for replay protection, avoiding state bloat. Use this flag to switch to 2D nonces
+    /// which store nonce state per (address, nonce_key) pair.
     #[arg(long)]
-    expiring_nonces: bool,
+    use_2d_nonces: bool,
+
+    /// Use standard sequential nonces instead of expiring nonces.
+    ///
+    /// This disables both expiring nonces and 2D nonces, using traditional sequential
+    /// nonce management.
+    #[arg(long)]
+    use_standard_nonces: bool,
 
     /// Batch size for signing transactions when using expiring nonces.
     ///
@@ -185,8 +197,6 @@ pub struct MaxTpsArgs {
     /// in batches close to when they're sent. This controls how many transactions to
     /// generate/sign before sending. Default is 15 seconds worth of transactions at the
     /// target TPS (e.g., 75,000 at 5,000 TPS).
-    ///
-    /// Only used with --expiring-nonces.
     #[arg(long)]
     expiring_batch_secs: Option<u64>,
 }
@@ -214,31 +224,25 @@ impl MaxTpsArgs {
                 .erased()
         });
 
-        if self.expiring_nonces {
-            // Use the default 25-second expiry window (protocol max is 30s).
-            // For expiring nonces benchmarks, keep duration short (< 20s recommended)
-            // to ensure transactions don't expire before being sent.
-            let expiry_secs = ExpiringNonceFiller::DEFAULT_EXPIRY_SECS;
+        if self.use_2d_nonces {
             info!(
                 accounts = self.accounts,
-                expiry_secs, "Creating signers (with expiring nonces - TIP-1009)"
+                "Creating signers (with 2D nonces)"
             );
             let signer_provider_manager = SignerProviderManager::new(
                 self.mnemonic.resolve(),
                 self.from_mnemonic_index,
                 accounts,
                 self.target_urls.clone(),
-                Box::new(move |target_url, _cached_nonce_manager| {
-                    ProviderBuilder::default()
-                        .filler(ExpiringNonceFiller::with_expiry_secs(expiry_secs))
-                        .with_gas_estimation()
-                        .fetch_chain_id()
+                Box::new(|target_url, _cached_nonce_manager| {
+                    ProviderBuilder::new_with_network::<TempoNetwork>()
+                        .with_random_2d_nonces()
                         .connect_http(target_url)
                 }),
                 signer_provider_factory,
             );
             self.run_with_manager(signer_provider_manager).await
-        } else if self.disable_2d_nonces {
+        } else if self.use_standard_nonces {
             info!(
                 accounts = self.accounts,
                 "Creating signers (with standard nonces)"
@@ -259,18 +263,23 @@ impl MaxTpsArgs {
             );
             self.run_with_manager(signer_provider_manager).await
         } else {
+            // Default: Use expiring nonces (TIP-1009)
+            // Use the default 25-second expiry window (protocol max is 30s).
+            let expiry_secs = ExpiringNonceFiller::DEFAULT_EXPIRY_SECS;
             info!(
                 accounts = self.accounts,
-                "Creating signers (with 2D nonces)"
+                expiry_secs, "Creating signers (with expiring nonces - TIP-1009)"
             );
             let signer_provider_manager = SignerProviderManager::new(
                 self.mnemonic.resolve(),
                 self.from_mnemonic_index,
                 accounts,
                 self.target_urls.clone(),
-                Box::new(|target_url, _cached_nonce_manager| {
-                    ProviderBuilder::new_with_network::<TempoNetwork>()
-                        .with_random_2d_nonces()
+                Box::new(move |target_url, _cached_nonce_manager| {
+                    ProviderBuilder::default()
+                        .filler(ExpiringNonceFiller::with_expiry_secs(expiry_secs))
+                        .with_gas_estimation()
+                        .fetch_chain_id()
                         .connect_http(target_url)
                 }),
                 signer_provider_factory,
@@ -374,6 +383,20 @@ impl MaxTpsArgs {
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let erc20_weight = (self.erc20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
 
+        let recipients = if self.existing_recipients {
+            let addrs: Vec<Address> = signer_providers
+                .iter()
+                .map(|(signer, _)| signer.address())
+                .collect();
+            info!(
+                recipients = addrs.len(),
+                "Using existing signer addresses as recipients"
+            );
+            Some(addrs)
+        } else {
+            None
+        };
+
         let gen_input = GenerateTransactionsInput {
             total_txs,
             accounts,
@@ -386,12 +409,15 @@ impl MaxTpsArgs {
             quote_token,
             user_tokens,
             erc20_tokens,
+            recipients,
+            tx_id: Arc::new(AtomicUsize::new(0)),
         };
 
         // For expiring nonces, we need to generate/sign/send in batches to avoid
         // transactions expiring before they're sent. We pipeline batch generation
         // with sending to avoid gaps that would cause empty blocks.
-        let mut pending_txs = if self.expiring_nonces {
+        let use_expiring_nonces = !self.use_2d_nonces && !self.use_standard_nonces;
+        let mut pending_txs = if use_expiring_nonces {
             let batch_secs = self.expiring_batch_secs.unwrap_or(15);
             let batch_size = self.tps * batch_secs;
             let num_batches = total_txs.div_ceil(batch_size);
@@ -740,6 +766,8 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         quote_token,
         user_tokens,
         erc20_tokens,
+        recipients,
+        tx_id,
     } = input;
 
     let txs_per_sender = total_txs / accounts;
@@ -761,6 +789,8 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
     let erc20_transfers = Arc::new(AtomicUsize::new(0));
+    // `tx_id` is shared across batches via `GenerateTransactionsInput` to ensure
+    // unique tx hashes across all batches when using expiring nonces.
 
     let builders = ProgressBar::new(total_txs)
         .wrap_stream(stream::iter(
@@ -778,6 +808,11 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                 .choose_weighted(&mut rand::rng(), |(_, weight)| *weight)?
                 .0;
 
+            let recipient = match &recipients {
+                Some(addrs) => *addrs.choose(&mut rand::rng()).unwrap(),
+                None => Address::random(),
+            };
+
             let mut tx = match tx_index {
                 0 => {
                     tip20_transfers.fetch_add(1, Ordering::Relaxed);
@@ -785,7 +820,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
                     // Transfer minimum possible amount
                     token
-                        .transfer(Address::random(), U256::ONE)
+                        .transfer(recipient, U256::ONE)
                         .into_transaction_request()
                 }
                 1 => {
@@ -818,7 +853,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
                     // Transfer minimum possible amount
                     token
-                        .transfer(Address::random(), U256::ONE)
+                        .transfer(recipient, U256::ONE)
                         .into_transaction_request()
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
@@ -868,7 +903,19 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                 });
             }
 
-            eyre::Ok((tx.try_into_request()?, signer))
+            let mut req = tx.try_into_request()?;
+
+            // Bump priority fee by a unique counter to ensure unique tx hashes
+            // when using expiring nonces (which share nonce=0).
+            let id = tx_id.fetch_add(1, Ordering::Relaxed) as u128;
+            if let Some(fee) = req.max_priority_fee_per_gas() {
+                req.inner.set_max_priority_fee_per_gas(fee + id);
+            }
+            if let Some(fee) = req.max_fee_per_gas() {
+                req.inner.set_max_fee_per_gas(fee + id);
+            }
+
+            eyre::Ok((req, signer))
         })
         .buffer_unordered(max_concurrent_requests)
         .try_collect::<Vec<_>>()
@@ -1133,7 +1180,7 @@ async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>
     receipts: impl IntoIterator<Item = F>,
     max_concurrent_requests: usize,
 ) -> eyre::Result<()> {
-    stream::iter(receipts.into_iter())
+    stream::iter(receipts)
         .buffer_unordered(max_concurrent_requests)
         .try_for_each(|receipt| assert_receipt(receipt))
         .await
@@ -1161,4 +1208,9 @@ struct GenerateTransactionsInput<F: TxFiller<TempoNetwork>> {
     quote_token: Address,
     user_tokens: Vec<Address>,
     erc20_tokens: Vec<Address>,
+    /// When set, transfers go to these existing addresses instead of `Address::random()`.
+    recipients: Option<Vec<Address>>,
+    /// Shared counter used to bump priority fee, ensuring unique tx hashes across batches
+    /// when using expiring nonces (which share nonce=0).
+    tx_id: Arc<AtomicUsize>,
 }
