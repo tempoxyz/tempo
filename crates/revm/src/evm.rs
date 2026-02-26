@@ -45,9 +45,9 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         let precompiles = tempo_precompiles::tempo_precompiles(&ctx.cfg);
 
         Self::new_inner(Evm {
+            instruction: instructions::tempo_instructions(ctx.cfg.spec),
             ctx,
             inspector,
-            instruction: instructions::tempo_instructions(),
             precompiles,
             frame_stack: FrameStack::new(),
         })
