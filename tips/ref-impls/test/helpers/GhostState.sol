@@ -146,6 +146,13 @@ abstract contract GhostState {
     uint256 public ghost_expiringNonceMissingVBAttempted;
     uint256 public ghost_expiringNonceConcurrentExecuted;
 
+    // ============ Fee-Payer Substitution Replay Tracking ============
+
+    /// @dev Tracks attempts to replay with a different fee payer
+    uint256 public ghost_feePayerSubstitutionAttempted;
+    /// @dev Violation counter: fee-payer substitution replay unexpectedly allowed
+    uint256 public ghost_feePayerSubstitutionAllowed;
+
     // ============ Update Functions ============
 
     function _updateProtocolNonce(address account) internal {
