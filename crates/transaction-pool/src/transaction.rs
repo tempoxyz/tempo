@@ -105,7 +105,7 @@ impl TempoPooledTransaction {
 
     /// Returns whether this is a payment transaction.
     ///
-    /// Based on classifier v1: payment if tx.to has TIP20 reserved prefix.
+    /// Delegates to [`TempoTxEnvelope::is_payment`].
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }
@@ -610,10 +610,14 @@ mod tests {
     #[test]
     fn test_payment_classification_positive() {
         // Test that TIP20 address prefix is correctly classified as payment
+        // with valid transfer calldata
         let payment_addr = address!("20c0000000000000000000000000000000000001");
+        let mut calldata = vec![0u8; 68];
+        calldata[..4].copy_from_slice(&alloy_primitives::hex!("a9059cbb"));
         let tx = TxEip1559 {
             to: TxKind::Call(payment_addr),
             gas_limit: 21000,
+            input: Bytes::from(calldata),
             ..Default::default()
         };
 
