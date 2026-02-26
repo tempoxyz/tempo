@@ -8,11 +8,9 @@ use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
-/// Snapshot of mutable state for checkpoint/revert support.
+/// In-memory [`PrecompileStorageProvider`] for unit tests.
 ///
-/// PERF: naive cloning strategy due to its limited usage.
-struct Snapshot(HashMap<(Address, U256), U256>);
-
+/// Stores all state in `HashMap`s, avoiding the need for a real EVM context.
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
@@ -26,6 +24,11 @@ pub struct HashMapStorageProvider {
     is_static: bool,
     snapshots: Vec<Snapshot>,
 }
+
+/// Snapshot of mutable state for checkpoint/revert support.
+///
+/// PERF: naive cloning strategy due to its limited usage.
+struct Snapshot(HashMap<(Address, U256), U256>);
 
 impl HashMapStorageProvider {
     pub fn new(chain_id: u64) -> Self {
