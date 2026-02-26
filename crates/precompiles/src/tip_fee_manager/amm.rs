@@ -12,8 +12,11 @@ use tempo_precompiles_macros::Storable;
 
 /// Constants from the Solidity reference implementation
 pub const M: U256 = uint!(9970_U256); // m = 0.9970 (scaled by 10000)
+/// Fee multiplier for rebalance swaps: 0.9985 scaled by 10000.
 pub const N: U256 = uint!(9985_U256);
+/// Scale factor for fixed-point AMM arithmetic (10000).
 pub const SCALE: U256 = uint!(10000_U256);
+/// Minimum liquidity locked permanently when initializing a pool.
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 
 /// Compute amount out for a fee swap
@@ -41,6 +44,7 @@ impl From<Pool> for ITIPFeeAMM::Pool {
     }
 }
 
+/// Identifies a directional token pair in the fee AMM.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Storable)]
 pub struct PoolKey {
     pub user_token: Address,
