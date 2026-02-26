@@ -246,6 +246,7 @@ pub trait TempoStateAccess<M = ()> {
         self.with_read_only_storage_ctx(spec, || {
             let token = TIP20Token::from_address(fee_token)?;
             if spec.is_t1c() {
+                // Check both the fee payer and the fee manager is authorized
                 token.is_transfer_authorized(fee_payer, TIP_FEE_MANAGER_ADDRESS)
             } else {
                 let policy_id = token.transfer_policy_id.read()?;
