@@ -17,6 +17,13 @@ pub use tempo_contracts::precompiles::{
 use alloy::primitives::{Address, U256, uint};
 use tempo_precompiles_macros::contract;
 
+/// Fee manager precompile that handles transaction fee collection and distribution.
+///
+/// Users and validators choose their preferred TIP-20 fee token. When they differ, fees are
+/// swapped through the built-in AMM (`TIPFeeAMM`).
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = TIP_FEE_MANAGER_ADDRESS)]
 pub struct TipFeeManager {
     validator_tokens: Mapping<Address, Address>,

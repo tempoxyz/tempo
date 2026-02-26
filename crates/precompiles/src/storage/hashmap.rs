@@ -5,6 +5,9 @@ use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
+/// In-memory [`PrecompileStorageProvider`] for unit tests.
+///
+/// Stores all state in `HashMap`s, avoiding the need for a real EVM context.
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,

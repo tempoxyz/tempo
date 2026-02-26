@@ -63,6 +63,7 @@ pub use account_keychain::AuthorizedKey;
 /// Being careful and pricing it twice as COPY_COST to mitigate different abi decodings.
 pub const INPUT_PER_WORD_COST: u64 = 6;
 
+/// Returns the gas cost for decoding calldata of the given length.
 #[inline]
 pub fn input_cost(calldata_len: usize) -> u64 {
     calldata_len
@@ -70,10 +71,15 @@ pub fn input_cost(calldata_len: usize) -> u64 {
         .saturating_mul(INPUT_PER_WORD_COST as usize) as u64
 }
 
+/// Trait implemented by all Tempo precompile contract types.
+///
+/// Precompiles must provide a dispatcher that decodes the 4-byte function selector from calldata,
+/// ABI-decodes the arguments, and routes to the corresponding method.
 pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
+/// Registers all Tempo precompiles into the given precompile map.
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
     let cfg = cfg.clone();
 
@@ -132,6 +138,7 @@ macro_rules! tempo_precompile {
     }};
 }
 
+/// EVM precompile wrapper for [`TipFeeManager`].
 pub struct TipFeeManagerPrecompile;
 impl TipFeeManagerPrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
@@ -139,6 +146,7 @@ impl TipFeeManagerPrecompile {
     }
 }
 
+/// EVM precompile wrapper for [`TIP403Registry`].
 pub struct TIP403RegistryPrecompile;
 impl TIP403RegistryPrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
@@ -146,6 +154,7 @@ impl TIP403RegistryPrecompile {
     }
 }
 
+/// EVM precompile wrapper for [`TIP20Factory`].
 pub struct TIP20FactoryPrecompile;
 impl TIP20FactoryPrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
@@ -153,6 +162,7 @@ impl TIP20FactoryPrecompile {
     }
 }
 
+/// EVM precompile wrapper for [`TIP20Token`].
 pub struct TIP20Precompile;
 impl TIP20Precompile {
     pub fn create(address: Address, cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
@@ -162,6 +172,7 @@ impl TIP20Precompile {
     }
 }
 
+/// EVM precompile wrapper for [`StablecoinDEX`].
 pub struct StablecoinDEXPrecompile;
 impl StablecoinDEXPrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
@@ -169,6 +180,7 @@ impl StablecoinDEXPrecompile {
     }
 }
 
+/// EVM precompile wrapper for [`NonceManager`].
 pub struct NoncePrecompile;
 impl NoncePrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
@@ -176,6 +188,7 @@ impl NoncePrecompile {
     }
 }
 
+/// EVM precompile wrapper for [`AccountKeychain`].
 pub struct AccountKeychainPrecompile;
 impl AccountKeychainPrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
@@ -183,6 +196,7 @@ impl AccountKeychainPrecompile {
     }
 }
 
+/// EVM precompile wrapper for [`ValidatorConfig`].
 pub struct ValidatorConfigPrecompile;
 impl ValidatorConfigPrecompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
@@ -190,6 +204,7 @@ impl ValidatorConfigPrecompile {
     }
 }
 
+/// EVM precompile wrapper for [`ValidatorConfigV2`].
 pub struct ValidatorConfigV2Precompile;
 impl ValidatorConfigV2Precompile {
     pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
