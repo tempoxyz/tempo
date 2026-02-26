@@ -6938,7 +6938,7 @@ async fn test_aa_valid_before_within_window_accepted() -> eyre::Result<()> {
     let envelope: TempoTxEnvelope = tx.into_signed(sig).into();
     let tx_hash = *envelope.tx_hash();
 
-    provider
+    let _ = provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?;
     setup.node.advance_block().await?;
