@@ -542,6 +542,28 @@ fn sign_p256_primitive(
     }))
 }
 
+/// Helper to sign AA transaction with P256 access key using legacy V1 keychain signature.
+/// V1 signs the raw sig_hash without binding user_address.
+fn sign_aa_tx_with_p256_access_key_v1(
+    tx: &TempoTransaction,
+    access_key_signing_key: &p256::ecdsa::SigningKey,
+    access_pub_key_x: &B256,
+    access_pub_key_y: &B256,
+    root_key_addr: Address,
+) -> eyre::Result<TempoSignature> {
+    let sig_hash = tx.signature_hash();
+    let inner = sign_p256_primitive(
+        sig_hash,
+        access_key_signing_key,
+        *access_pub_key_x,
+        *access_pub_key_y,
+    )?;
+    Ok(TempoSignature::Keychain(KeychainSignature::new_v1(
+        root_key_addr,
+        inner,
+    )))
+}
+
 /// Helper to sign AA transaction with P256 access key (wrapped in Keychain signature)
 fn sign_aa_tx_with_p256_access_key(
     tx: &TempoTransaction,
@@ -7931,5 +7953,112 @@ async fn test_e2e_fill_sign_send_matrix() -> eyre::Result<()> {
     }
 
     println!("\n✓ All {} test cases passed", test_matrix.len());
+    Ok(())
+}
+
+/// Tests keychain signature V2 e2e: authorize a key, use it with V2 signature, verify it works.
+/// Also verifies that V1 signatures are rejected (current chain runs post-T1C).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    let (access_key_signing, pub_x, pub_y, access_key_addr) = generate_p256_access_key();
+
+    let mut nonce = provider.get_transaction_count(root_addr).await?;
+
+    // Step 1: Authorize the access key via root key
+    let key_auth = create_key_authorization(
+        &root_signer,
+        access_key_addr,
+        create_mock_p256_sig(pub_x, pub_y),
+        chain_id,
+        None,
+        None,
+    )?;
+
+    let mut auth_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    auth_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+    auth_tx.key_authorization = Some(key_auth);
+
+    let root_sig = sign_aa_tx_secp256k1(&auth_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, auth_tx, root_sig).await?;
+    nonce += 1;
+    println!("✓ Access key authorized");
+
+    // Step 2: Use the access key with V2 signature — should succeed
+    let recipient = Address::random();
+    let mut transfer_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_transfer_call(recipient, U256::from(1_000_000u64))],
+        2_000_000,
+    );
+    transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+
+    let v2_sig = sign_aa_tx_with_p256_access_key(
+        &transfer_tx,
+        &access_key_signing,
+        &pub_x,
+        &pub_y,
+        root_addr,
+    )?;
+
+    // Verify the signature is V2
+    assert!(!v2_sig.is_legacy_keychain());
+    assert!(v2_sig.is_keychain());
+
+    let tx_hash = submit_and_mine_aa_tx(&mut setup, transfer_tx, v2_sig).await?;
+    let receipt = provider
+        .get_transaction_receipt(tx_hash)
+        .await?
+        .expect("receipt must exist");
+    assert!(receipt.status(), "V2 keychain transfer must succeed");
+    println!("✓ V2 keychain signature accepted and transfer succeeded");
+
+    // Step 3: V1 signature should be rejected at pool level (post-T1C)
+    nonce += 1;
+    let mut v1_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    v1_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+
+    let v1_sig =
+        sign_aa_tx_with_p256_access_key_v1(&v1_tx, &access_key_signing, &pub_x, &pub_y, root_addr)?;
+
+    assert!(v1_sig.is_legacy_keychain());
+
+    let signed_v1 = AASigned::new_unhashed(v1_tx, v1_sig);
+    let envelope_v1: TempoTxEnvelope = signed_v1.into();
+    let inject_result = setup
+        .node
+        .rpc
+        .inject_tx(envelope_v1.encoded_2718().into())
+        .await;
+
+    assert!(
+        inject_result.is_err(),
+        "V1 keychain signature should be rejected post-T1C"
+    );
+    println!(
+        "✓ V1 keychain signature rejected post-T1C: {}",
+        inject_result.unwrap_err()
+    );
+
     Ok(())
 }

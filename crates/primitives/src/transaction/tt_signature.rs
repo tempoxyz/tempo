@@ -1802,4 +1802,84 @@ mod tests {
         let sig = TempoSignature::Keychain(KeychainSignature::new(Address::ZERO, inner));
         assert!(sig.is_keychain());
     }
+
+    #[test]
+    fn test_keychain_v1_v2_bytes_roundtrip_and_wire_format() {
+        let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let user = Address::repeat_byte(0xAA);
+
+        // V1 round-trips and uses 0x03 wire byte
+        let v1 = TempoSignature::Keychain(KeychainSignature::new_v1(user, inner.clone()));
+        let v1_bytes = v1.to_bytes();
+        assert_eq!(v1_bytes[0], SIGNATURE_TYPE_KEYCHAIN);
+        let v1_decoded = TempoSignature::from_bytes(&v1_bytes).unwrap();
+        assert_eq!(v1, v1_decoded);
+        assert!(v1_decoded.is_legacy_keychain());
+
+        // V2 round-trips and uses 0x04 wire byte
+        let v2 = TempoSignature::Keychain(KeychainSignature::new(user, inner));
+        let v2_bytes = v2.to_bytes();
+        assert_eq!(v2_bytes[0], SIGNATURE_TYPE_KEYCHAIN_V2);
+        let v2_decoded = TempoSignature::from_bytes(&v2_bytes).unwrap();
+        assert_eq!(v2, v2_decoded);
+        assert!(!v2_decoded.is_legacy_keychain());
+
+        // V1 and V2 with same inner sig are NOT equal
+        assert_ne!(v1, v2);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_keychain_serde_roundtrip_and_backward_compat() {
+        let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let user = Address::repeat_byte(0xBB);
+
+        // V2 serde roundtrip preserves version
+        let v2 = TempoSignature::Keychain(KeychainSignature::new(user, inner.clone()));
+        let json = serde_json::to_string(&v2).unwrap();
+        let decoded: TempoSignature = serde_json::from_str(&json).unwrap();
+        assert_eq!(v2, decoded);
+        assert!(!decoded.is_legacy_keychain());
+
+        // V1 serde roundtrip preserves version
+        let v1 = TempoSignature::Keychain(KeychainSignature::new_v1(user, inner));
+        let json_v1 = serde_json::to_string(&v1).unwrap();
+        let decoded_v1: TempoSignature = serde_json::from_str(&json_v1).unwrap();
+        assert_eq!(v1, decoded_v1);
+        assert!(decoded_v1.is_legacy_keychain());
+
+        // Backward compat: JSON without "version" field deserializes as V1
+        let json_no_version = json_v1.replace(r#","version":"v1""#, "");
+        assert!(
+            !json_no_version.contains("version"),
+            "version field should be stripped"
+        );
+        let decoded_no_version: TempoSignature = serde_json::from_str(&json_no_version).unwrap();
+        assert!(decoded_no_version.is_legacy_keychain());
+    }
+
+    #[test]
+    fn test_keychain_rlp_roundtrip_preserves_version() {
+        use alloy_rlp::Decodable;
+
+        let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let user = Address::repeat_byte(0xCC);
+
+        for (sig, expect_legacy) in [
+            (
+                TempoSignature::Keychain(KeychainSignature::new_v1(user, inner.clone())),
+                true,
+            ),
+            (
+                TempoSignature::Keychain(KeychainSignature::new(user, inner)),
+                false,
+            ),
+        ] {
+            let mut buf = Vec::new();
+            alloy_rlp::Encodable::encode(&sig, &mut buf);
+            let decoded = TempoSignature::decode(&mut buf.as_slice()).unwrap();
+            assert_eq!(sig, decoded);
+            assert_eq!(decoded.is_legacy_keychain(), expect_legacy);
+        }
+    }
 }
