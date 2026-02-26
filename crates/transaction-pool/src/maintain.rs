@@ -31,7 +31,7 @@ use tracing::{debug, error};
 
 /// Evict transactions this many seconds before they expire to prevent broadcasting
 /// near-expiry txs that peers would reject as bad transactions.
-const EVICTION_BUFFER_SECS: u64 = 5;
+const EVICTION_BUFFER_SECS: u64 = 3;
 
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
