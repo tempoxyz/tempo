@@ -840,6 +840,10 @@ where
                             tip_timestamp,
                             "Evicting stale pending transactions"
                         );
+                        // Clean up expiry tracking for stale txs to prevent orphaned entries
+                        for hash in &stale_to_evict {
+                            state.untrack_expiry(hash, false);
+                        }
                         pool.remove_transactions(stale_to_evict);
                     }
                 }

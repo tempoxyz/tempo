@@ -11,9 +11,7 @@ pub use crate::node::{TempoNodeArgs, TempoPoolBuilder};
 use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
 use std::sync::Arc;
-pub use tempo_transaction_pool::validator::{
-    DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_AA_VALID_BEFORE_MAX_SECS,
-};
+pub use tempo_transaction_pool::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS;
 
 pub mod engine;
 pub mod node;

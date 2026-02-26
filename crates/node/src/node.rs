@@ -45,8 +45,8 @@ use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
     amm::AmmLiquidityCache,
     validator::{
-        DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_AA_VALID_BEFORE_MAX_SECS,
-        DEFAULT_MAX_TEMPO_AUTHORIZATIONS, TempoTransactionValidator,
+        DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+        TempoTransactionValidator,
     },
 };
 
@@ -56,10 +56,6 @@ pub struct TempoNodeArgs {
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
     pub aa_valid_after_max_secs: u64,
-
-    /// Maximum allowed `valid_before` offset for non-expiring-nonce AA txs.
-    #[arg(long = "txpool.aa-valid-before-max-secs", default_value_t = DEFAULT_AA_VALID_BEFORE_MAX_SECS)]
-    pub aa_valid_before_max_secs: u64,
 
     /// Maximum number of authorizations allowed in an AA transaction.
     #[arg(long = "txpool.max-tempo-authorizations", default_value_t = DEFAULT_MAX_TEMPO_AUTHORIZATIONS)]
@@ -79,7 +75,6 @@ impl TempoNodeArgs {
     pub fn pool_builder(&self) -> TempoPoolBuilder {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
-            aa_valid_before_max_secs: self.aa_valid_before_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
         }
     }
@@ -392,8 +387,6 @@ where
 pub struct TempoPoolBuilder {
     /// Maximum allowed `valid_after` offset for AA txs.
     pub aa_valid_after_max_secs: u64,
-    /// Maximum allowed `valid_before` offset for non-expiring-nonce AA txs.
-    pub aa_valid_before_max_secs: u64,
     /// Maximum number of authorizations allowed in an AA transaction.
     pub max_tempo_authorizations: usize,
 }
@@ -402,12 +395,6 @@ impl TempoPoolBuilder {
     /// Sets the maximum allowed `valid_after` offset for AA txs.
     pub const fn with_aa_tx_valid_after_max_secs(mut self, secs: u64) -> Self {
         self.aa_valid_after_max_secs = secs;
-        self
-    }
-
-    /// Sets the maximum allowed `valid_before` offset for non-expiring-nonce AA txs.
-    pub const fn with_aa_tx_valid_before_max_secs(mut self, secs: u64) -> Self {
-        self.aa_valid_before_max_secs = secs;
         self
     }
 
@@ -422,7 +409,6 @@ impl Default for TempoPoolBuilder {
     fn default() -> Self {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
-            aa_valid_before_max_secs: DEFAULT_AA_VALID_BEFORE_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
         }
     }
@@ -471,7 +457,6 @@ where
             TempoTransactionValidator::new(
                 v,
                 self.aa_valid_after_max_secs,
-                self.aa_valid_before_max_secs,
                 self.max_tempo_authorizations,
                 amm_liquidity_cache.clone(),
             )

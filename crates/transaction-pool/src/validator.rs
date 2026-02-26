@@ -70,9 +70,6 @@ pub const MAX_TOKEN_LIMITS: usize = 256;
 /// they become executable.
 pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 120;
 
-/// Default maximum `valid_before` offset for AA txs. Aligned with `max_queued_lifetime`.
-pub const DEFAULT_AA_VALID_BEFORE_MAX_SECS: u64 = 120;
-
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
@@ -80,8 +77,6 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction, TempoEvmConfig>,
     /// Maximum allowed `valid_after` offset for AA txs.
     pub(crate) aa_valid_after_max_secs: u64,
-    /// Maximum allowed `valid_before` offset for non-expiring-nonce AA txs.
-    pub(crate) aa_valid_before_max_secs: u64,
     /// Maximum number of authorizations allowed in an AA transaction.
     pub(crate) max_tempo_authorizations: usize,
     /// Cache of AMM liquidity for validator tokens.
@@ -95,14 +90,12 @@ where
     pub fn new(
         inner: EthTransactionValidator<Client, TempoPooledTransaction, TempoEvmConfig>,
         aa_valid_after_max_secs: u64,
-        aa_valid_before_max_secs: u64,
         max_tempo_authorizations: usize,
         amm_liquidity_cache: AmmLiquidityCache,
     ) -> Self {
         Self {
             inner,
             aa_valid_after_max_secs,
-            aa_valid_before_max_secs,
             max_tempo_authorizations,
             amm_liquidity_cache,
         }
@@ -322,18 +315,22 @@ where
         if let Some(valid_before) = tx.valid_before {
             // Uses tip_timestamp, as if the node is lagging lagging, the maintenance task will evict expired txs.
             let min_allowed = current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS);
-            let max_allowed = if is_expiring_nonce {
-                current_time.saturating_add(TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS)
-            } else {
-                current_time.saturating_add(self.aa_valid_before_max_secs)
-            };
-
-            if valid_before <= min_allowed || valid_before > max_allowed {
+            if valid_before <= min_allowed {
                 return Err(TempoPoolTransactionError::InvalidValidBefore {
                     valid_before,
                     min_allowed,
-                    max_allowed,
                 });
+            }
+
+            // For expiring nonce transactions, valid_before must also be within the max expiry window
+            if is_expiring_nonce {
+                let max_allowed = current_time.saturating_add(TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS);
+                if valid_before > max_allowed {
+                    return Err(TempoPoolTransactionError::ExpiringNonceValidBeforeTooFar {
+                        valid_before,
+                        max_allowed,
+                    });
+                }
             }
         }
 
@@ -1185,7 +1182,6 @@ mod tests {
         let validator = TempoTransactionValidator::new(
             inner,
             DEFAULT_AA_VALID_AFTER_MAX_SECS,
-            DEFAULT_AA_VALID_BEFORE_MAX_SECS,
             DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             amm_cache,
         );
@@ -1357,49 +1353,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_aa_valid_before_upper_bound() {
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // Too far in the future is rejected
-        let tx_too_far = create_aa_transaction(
-            None,
-            Some(current_time + DEFAULT_AA_VALID_BEFORE_MAX_SECS + 1),
-        );
-        let validator = setup_validator(&tx_too_far, current_time);
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, tx_too_far)
-            .await;
-
-        match outcome {
-            TransactionValidationOutcome::Invalid(_, ref err) => {
-                assert!(matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::InvalidValidBefore { .. })
-                ));
-            }
-            _ => panic!("Expected Invalid outcome with InvalidValidBefore error, got: {outcome:?}"),
-        }
-
-        // At boundary is accepted
-        let tx_at_boundary =
-            create_aa_transaction(None, Some(current_time + DEFAULT_AA_VALID_BEFORE_MAX_SECS));
-        let validator = setup_validator(&tx_at_boundary, current_time);
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, tx_at_boundary)
-            .await;
-
-        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
-            assert!(!matches!(
-                err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidBefore { .. })
-            ));
-        }
-    }
-
-    #[tokio::test]
     async fn test_aa_valid_after_check() {
         // NOTE: `setup_validator` will turn `tip_timestamp` into `current_time`
         let current_time = std::time::SystemTime::now()
@@ -1520,7 +1473,6 @@ mod tests {
         let validator = TempoTransactionValidator::new(
             inner,
             DEFAULT_AA_VALID_AFTER_MAX_SECS,
-            DEFAULT_AA_VALID_BEFORE_MAX_SECS,
             DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             AmmLiquidityCache::new(provider).unwrap(),
         );
@@ -2072,7 +2024,7 @@ mod tests {
             .as_secs();
 
         let valid_after = current_time + 60;
-        let valid_before = current_time + 100;
+        let valid_before = current_time + 3600;
 
         let transaction = create_aa_transaction(Some(valid_after), Some(valid_before));
         let validator = setup_validator(&transaction, current_time);
@@ -2337,7 +2289,6 @@ mod tests {
             TempoTransactionValidator::new(
                 inner,
                 DEFAULT_AA_VALID_AFTER_MAX_SECS,
-                DEFAULT_AA_VALID_BEFORE_MAX_SECS,
                 DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
                 amm_cache,
             )
@@ -2869,7 +2820,6 @@ mod tests {
             let validator = TempoTransactionValidator::new(
                 inner,
                 DEFAULT_AA_VALID_AFTER_MAX_SECS,
-                DEFAULT_AA_VALID_BEFORE_MAX_SECS,
                 DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
                 amm_cache,
             );
@@ -3276,7 +3226,6 @@ mod tests {
             TempoTransactionValidator::new(
                 inner,
                 DEFAULT_AA_VALID_AFTER_MAX_SECS,
-                DEFAULT_AA_VALID_BEFORE_MAX_SECS,
                 DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
                 amm_cache,
             )
