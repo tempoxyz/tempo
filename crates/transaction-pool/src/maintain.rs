@@ -403,6 +403,34 @@ impl KeyExpiryTracker {
         }
     }
 
+    /// Removes transaction hashes from key expiry tracking.
+    ///
+    /// When transactions are mined or otherwise removed from the pool, their hashes
+    /// should be cleaned up to avoid unbounded memory growth in `key_to_txs`.
+    fn remove_mined(&mut self, mined_hashes: &[TxHash]) {
+        for hash in mined_hashes {
+            let mut empty_key = None;
+            for (key, (_, txs)) in self.key_to_txs.iter_mut() {
+                if txs.remove(hash) {
+                    if txs.is_empty() {
+                        empty_key = Some(*key);
+                    }
+                    break;
+                }
+            }
+
+            if let Some(key) = empty_key
+                && let Some((expiry, _)) = self.key_to_txs.remove(&key)
+                && let Entry::Occupied(mut entry) = self.expiry_map.entry(expiry)
+            {
+                entry.get_mut().remove(&key);
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
+            }
+        }
+    }
+
     /// Drain all expired keys and return the transaction hashes that should be evicted.
     ///
     /// Keys with expiry <= tip_timestamp are considered expired.
@@ -573,6 +601,7 @@ where
 
                 // Clean up AA tx expiry tracking from expiry_map and tx_to_expiry
                 state.remove_mined(&mined_tx_hashes);
+                state.key_expiry.remove_mined(&mined_tx_hashes);
 
                 // Add expired transactions (from local tracking state)
                 let expired = state.drain_expired(tip_timestamp);
@@ -648,6 +677,12 @@ where
                         let count = removed_txs.len();
 
                         if count > 0 {
+                            // Clean up expiry tracking for paused txs
+                            let paused_hashes: Vec<TxHash> =
+                                removed_txs.iter().map(|tx| *tx.hash()).collect();
+                            state.remove_mined(&paused_hashes);
+                            state.key_expiry.remove_mined(&paused_hashes);
+
                             let entries: Vec<_> = removed_txs
                                 .into_iter()
                                 .map(|tx| {
@@ -1097,6 +1132,48 @@ mod tests {
             let expired = tracker.drain_expired(2000);
             assert_eq!(expired.len(), 1);
             assert!(expired.contains(&tx2));
+        }
+
+        #[test]
+        fn remove_mined_cleans_up_tx_from_key() {
+            let mut tracker = KeyExpiryTracker::default();
+            let account = Address::random();
+            let key_id = Address::random();
+            let tx1 = TxHash::random();
+            let tx2 = TxHash::random();
+
+            tracker.track(account, key_id, 1000, tx1);
+            tracker.track(account, key_id, 1000, tx2);
+
+            // Remove one tx — key should still be tracked with the other
+            tracker.remove_mined(&[tx1]);
+            let key = KeyId { account, key_id };
+            let (_, txs) = tracker.key_to_txs.get(&key).unwrap();
+            assert_eq!(txs.len(), 1);
+            assert!(txs.contains(&tx2));
+            assert!(tracker.expiry_map.contains_key(&1000));
+
+            // Remove the last tx — key and expiry entry should be fully cleaned up
+            tracker.remove_mined(&[tx2]);
+            assert!(!tracker.key_to_txs.contains_key(&key));
+            assert!(!tracker.expiry_map.contains_key(&1000));
+        }
+
+        #[test]
+        fn remove_mined_ignores_unknown_hashes() {
+            let mut tracker = KeyExpiryTracker::default();
+            let account = Address::random();
+            let key_id = Address::random();
+            let tx = TxHash::random();
+            let unknown = TxHash::random();
+
+            tracker.track(account, key_id, 1000, tx);
+            tracker.remove_mined(&[unknown]);
+
+            // Original entry should be untouched
+            let key = KeyId { account, key_id };
+            assert!(tracker.key_to_txs.contains_key(&key));
+            assert!(tracker.expiry_map.contains_key(&1000));
         }
     }
 
