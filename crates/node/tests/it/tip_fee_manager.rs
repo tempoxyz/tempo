@@ -7,6 +7,7 @@ use alloy::{
         SignerSync,
         local::{MnemonicBuilder, PrivateKeySigner},
     },
+    sol_types::SolEvent,
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
@@ -14,10 +15,10 @@ use alloy_primitives::{Address, Signature, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
-    IFeeManager, ITIP20,
+    IFeeManager, ITIP20, ITIP403Registry,
     ITIPFeeAMM::{self},
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
@@ -400,6 +401,175 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         balance_after,
         balance_before - calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price())
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fee_payer_transfer_whitelist_pre_t1c() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let genesis_str = include_str!("../assets/test-genesis.json");
+    let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
+    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
+    genesis["config"].as_object_mut().unwrap().remove("t2Time");
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .build_http_only()
+        .await?;
+
+    let fee_payer_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let fee_payer_addr = fee_payer_signer.address();
+    let provider = ProviderBuilder::new()
+        .wallet(fee_payer_signer.clone())
+        .connect_http(setup.http_url);
+
+    let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
+    let path_usd = ITIP20::new(PATH_USD_ADDRESS, &provider);
+
+    // Create whitelist policy on PATH_USD and whitelist fee_payer
+    let policy_receipt = registry
+        .createPolicy(fee_payer_addr, ITIP403Registry::PolicyType::WHITELIST)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let policy_id = policy_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
+        .next()
+        .expect("PolicyCreated event should be emitted")
+        .policyId;
+
+    path_usd
+        .changeTransferPolicyId(policy_id)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    registry
+        .modifyPolicyWhitelist(policy_id, fee_payer_addr, true)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // pre T1C only checks sender authorization
+    let tx = TransactionRequest::default()
+        .to(Address::ZERO)
+        .value(U256::ZERO);
+    let receipt = provider.send_transaction(tx).await?.get_receipt().await?;
+    assert!(receipt.status());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+
+    let admin = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin_addr = admin.address();
+    let fee_payer_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let fee_payer_addr = fee_payer_signer.address();
+    let provider = ProviderBuilder::new()
+        .wallet(admin.clone())
+        .connect_http(setup.http_url.clone());
+
+    let admin_token = setup_test_token(provider.clone(), admin_addr).await?;
+    admin_token
+        .mint(admin_addr, U256::from(1e18 as u64))
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    fee_manager
+        .setUserToken(*admin_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Create whitelist policy on PATH_USD
+    let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
+    let path_usd = ITIP20::new(PATH_USD_ADDRESS, &provider);
+
+    let policy_receipt = registry
+        .createPolicy(admin_addr, ITIP403Registry::PolicyType::WHITELIST)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let policy_id = policy_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
+        .next()
+        .expect("PolicyCreated event should be emitted")
+        .policyId;
+
+    path_usd
+        .changeTransferPolicyId(policy_id)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    registry
+        .modifyPolicyWhitelist(policy_id, fee_payer_addr, true)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // T1C requires both sender and FeeManager whitelisted
+    let fee_payer_provider = ProviderBuilder::new()
+        .wallet(fee_payer_signer.clone())
+        .connect_http(setup.http_url.clone());
+    let tx = TransactionRequest::default()
+        .to(Address::ZERO)
+        .value(U256::ZERO);
+    let result = fee_payer_provider.send_transaction(tx).await;
+    assert!(
+        result.is_err(),
+        "expected rejection: FeeManager not whitelisted"
+    );
+
+    // Whitelist FeeManager
+    registry
+        .modifyPolicyWhitelist(policy_id, TIP_FEE_MANAGER_ADDRESS, true)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let tx = TransactionRequest::default()
+        .to(Address::ZERO)
+        .value(U256::ZERO);
+    let receipt = fee_payer_provider
+        .send_transaction(tx)
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
 
     Ok(())
 }
