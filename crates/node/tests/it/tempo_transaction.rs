@@ -6012,12 +6012,10 @@ async fn test_v2_keychain_blocks_cross_account_replay_secp256k1() -> eyre::Resul
 
     // Sign with the shared access key but claiming to be Bob
     // This should fail because the V2 signature hash includes user_address
+    // The access key signed keccak256(sig_hash || alice_addr),
+    // but for Bob's tx the validator expects keccak256(sig_hash || bob_addr).
+    // Reuse the inner signature from Alice's keychain sig, but wrap for Bob.
     let replay_sig = {
-        // Get Alice's signature hash and try to use it as Bob's
-        let replay_signed = AASigned::new_unhashed(replay_tx.clone(), alice_keychain_sig.clone());
-        // The access key signed keccak256(sig_hash || alice_addr),
-        // but for Bob's tx the validator expects keccak256(sig_hash || bob_addr).
-        // Reuse the inner signature from Alice's keychain sig, but wrap for Bob.
         let inner_sig = alice_keychain_sig.as_keychain().unwrap().signature.clone();
         TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner_sig))
     };
