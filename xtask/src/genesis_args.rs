@@ -495,6 +495,17 @@ impl GenesisArgs {
             },
         );
 
+        // EIP-2935: Historical block hashes contract
+        // https://etherscan.io/address/0x0000F90827F1C53a10cb7A02335B175320002935
+        genesis_alloc.insert(
+            address!("0x0000F90827F1C53a10cb7A02335B175320002935"),
+            GenesisAccount {
+                code: Some("0x3373fffffffffffffffffffffffffffffffffffffffe14604657602036036042575f35600143038111604257611fff81430311604257611fff9006545f5260205ff35b5f5ffd5b5f35611fff60014303065500".parse().expect("valid eip-2935 bytecode")),
+                nonce: Some(1),
+                ..Default::default()
+            },
+        );
+
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
             homestead_block: Some(0),
