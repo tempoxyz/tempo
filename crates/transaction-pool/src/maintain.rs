@@ -239,8 +239,8 @@ impl TempoPoolState {
     /// Removes expiry tracking metadata for mined transactions.
     ///
     /// Reth removes mined transactions from the pool, but the additional tracking in
-    /// `expiry_map` and `tx_to_expiry` is not cleaned up. This method removes the
-    /// entries from both maps.
+    /// `expiry_map`, `tx_to_expiry`, and `key_expiry` is not cleaned up. This method
+    /// removes the entries from all tracking maps.
     fn remove_mined(&mut self, mined_hashes: &[TxHash]) {
         for hash in mined_hashes {
             if let Some(valid_before) = self.tx_to_expiry.remove(hash)
@@ -252,6 +252,7 @@ impl TempoPoolState {
                     entry.remove();
                 }
             }
+            self.key_expiry.remove_tx(hash);
         }
     }
 
@@ -403,30 +404,28 @@ impl KeyExpiryTracker {
         }
     }
 
-    /// Removes transaction hashes from key expiry tracking.
+    /// Removes a single transaction hash from key expiry tracking.
     ///
-    /// When transactions are mined or otherwise removed from the pool, their hashes
+    /// When a transaction is mined or otherwise removed from the pool, its hash
     /// should be cleaned up to avoid unbounded memory growth in `key_to_txs`.
-    fn remove_mined(&mut self, mined_hashes: &[TxHash]) {
-        for hash in mined_hashes {
-            let mut empty_key = None;
-            for (key, (_, txs)) in self.key_to_txs.iter_mut() {
-                if txs.remove(hash) {
-                    if txs.is_empty() {
-                        empty_key = Some(*key);
-                    }
-                    break;
+    fn remove_tx(&mut self, hash: &TxHash) {
+        let mut empty_key = None;
+        for (key, (_, txs)) in self.key_to_txs.iter_mut() {
+            if txs.remove(hash) {
+                if txs.is_empty() {
+                    empty_key = Some(*key);
                 }
+                break;
             }
+        }
 
-            if let Some(key) = empty_key
-                && let Some((expiry, _)) = self.key_to_txs.remove(&key)
-                && let Entry::Occupied(mut entry) = self.expiry_map.entry(expiry)
-            {
-                entry.get_mut().remove(&key);
-                if entry.get().is_empty() {
-                    entry.remove();
-                }
+        if let Some(key) = empty_key
+            && let Some((expiry, _)) = self.key_to_txs.remove(&key)
+            && let Entry::Occupied(mut entry) = self.expiry_map.entry(expiry)
+        {
+            entry.get_mut().remove(&key);
+            if entry.get().is_empty() {
+                entry.remove();
             }
         }
     }
@@ -601,7 +600,6 @@ where
 
                 // Clean up AA tx expiry tracking from expiry_map and tx_to_expiry
                 state.remove_mined(&mined_tx_hashes);
-                state.key_expiry.remove_mined(&mined_tx_hashes);
 
                 // Add expired transactions (from local tracking state)
                 let expired = state.drain_expired(tip_timestamp);
@@ -681,7 +679,6 @@ where
                             let paused_hashes: Vec<TxHash> =
                                 removed_txs.iter().map(|tx| *tx.hash()).collect();
                             state.remove_mined(&paused_hashes);
-                            state.key_expiry.remove_mined(&paused_hashes);
 
                             let entries: Vec<_> = removed_txs
                                 .into_iter()
@@ -1135,7 +1132,7 @@ mod tests {
         }
 
         #[test]
-        fn remove_mined_cleans_up_tx_from_key() {
+        fn remove_tx_cleans_up_tx_from_key() {
             let mut tracker = KeyExpiryTracker::default();
             let account = Address::random();
             let key_id = Address::random();
@@ -1146,7 +1143,7 @@ mod tests {
             tracker.track(account, key_id, 1000, tx2);
 
             // Remove one tx — key should still be tracked with the other
-            tracker.remove_mined(&[tx1]);
+            tracker.remove_tx(&tx1);
             let key = KeyId { account, key_id };
             let (_, txs) = tracker.key_to_txs.get(&key).unwrap();
             assert_eq!(txs.len(), 1);
@@ -1154,13 +1151,13 @@ mod tests {
             assert!(tracker.expiry_map.contains_key(&1000));
 
             // Remove the last tx — key and expiry entry should be fully cleaned up
-            tracker.remove_mined(&[tx2]);
+            tracker.remove_tx(&tx2);
             assert!(!tracker.key_to_txs.contains_key(&key));
             assert!(!tracker.expiry_map.contains_key(&1000));
         }
 
         #[test]
-        fn remove_mined_ignores_unknown_hashes() {
+        fn remove_tx_ignores_unknown_hashes() {
             let mut tracker = KeyExpiryTracker::default();
             let account = Address::random();
             let key_id = Address::random();
@@ -1168,7 +1165,7 @@ mod tests {
             let unknown = TxHash::random();
 
             tracker.track(account, key_id, 1000, tx);
-            tracker.remove_mined(&[unknown]);
+            tracker.remove_tx(&unknown);
 
             // Original entry should be untouched
             let key = KeyId { account, key_id };
