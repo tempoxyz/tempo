@@ -130,6 +130,22 @@ where
         };
 
         let current_time = self.inner.fork_tracker().tip_timestamp();
+        let spec = self.inner.chain_spec().tempo_hardfork_at(current_time);
+
+        // T1C+: Reject legacy V1 keychain signatures
+        if spec.is_t1c() && tx.signature().is_legacy_keychain() {
+            return Ok(Err(TempoPoolTransactionError::Keychain(
+                "legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)",
+            )));
+        }
+
+        // Pre-T1C: Reject V2 keychain signatures to prevent gossip to older peers
+        if !spec.is_t1c() && tx.signature().is_keychain() && !tx.signature().is_legacy_keychain() {
+            return Ok(Err(TempoPoolTransactionError::Keychain(
+                "V2 keychain signature (type 0x04) is not valid before T1C activation",
+            )));
+        }
+
         let auth = tx.tx().key_authorization.as_ref();
 
         // Ensure that key auth is valid if present.

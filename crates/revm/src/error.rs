@@ -201,10 +201,18 @@ pub enum TempoInvalidTransaction {
 
     /// Legacy V1 keychain signature is no longer accepted (deprecated at T1C).
     ///
-    /// V1 keychain signatures do not bind the user address into the signature hash,
-    /// making them vulnerable to cross-account replay. Use V2 keychain signatures instead.
+    /// V1 keychain signatures do not bind the user address into the signature hash.
+    /// Use V2 keychain signatures instead.
     #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
     LegacyKeychainSignature,
+
+    /// V2 keychain signature used before T1C activation.
+    ///
+    /// V2 signatures (type 0x04) are only valid after the T1C hardfork activates.
+    /// Rejecting them before activation prevents chain splits between upgraded and
+    /// non-upgraded nodes.
+    #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
+    V2KeychainBeforeActivation,
 
     /// Keychain operations are not supported in subblock transactions.
     #[error("keychain operations are not supported in subblock transactions")]

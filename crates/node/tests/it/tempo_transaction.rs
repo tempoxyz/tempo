@@ -550,19 +550,18 @@ fn sign_aa_tx_with_p256_access_key(
     access_pub_key_y: &B256,
     root_key_addr: Address,
 ) -> eyre::Result<TempoSignature> {
-    // V2: sign keccak256(sig_hash || user_address) instead of raw sig_hash
     let sig_hash = tx.signature_hash();
-    let effective_hash =
-        alloy_primitives::keccak256([sig_hash.as_slice(), root_key_addr.as_slice()].concat());
+    let effective_hash = KeychainSignature::signing_hash(sig_hash, root_key_addr);
     let inner = sign_p256_primitive(
         effective_hash,
         access_key_signing_key,
         *access_pub_key_x,
         *access_pub_key_y,
     )?;
-    Ok(TempoSignature::Keychain(
-        tempo_primitives::transaction::KeychainSignature::new(root_key_addr, inner),
-    ))
+    Ok(TempoSignature::Keychain(KeychainSignature::new(
+        root_key_addr,
+        inner,
+    )))
 }
 
 /// Helper to sign AA transaction with secp256k1 access key (wrapped in Keychain signature)
@@ -571,16 +570,15 @@ fn sign_aa_tx_with_secp256k1_access_key(
     access_key_signer: &impl SignerSync,
     root_key_addr: Address,
 ) -> eyre::Result<TempoSignature> {
-    // V2: sign keccak256(sig_hash || user_address) instead of raw sig_hash
     let sig_hash = tx.signature_hash();
-    let effective_hash =
-        alloy_primitives::keccak256([sig_hash.as_slice(), root_key_addr.as_slice()].concat());
+    let effective_hash = KeychainSignature::signing_hash(sig_hash, root_key_addr);
     let signature = access_key_signer.sign_hash_sync(&effective_hash)?;
     let inner_signature = PrimitiveSignature::Secp256k1(signature);
 
-    Ok(TempoSignature::Keychain(
-        tempo_primitives::transaction::KeychainSignature::new(root_key_addr, inner_signature),
-    ))
+    Ok(TempoSignature::Keychain(KeychainSignature::new(
+        root_key_addr,
+        inner_signature,
+    )))
 }
 
 /// Low-level WebAuthn signing. Returns a `PrimitiveSignature::WebAuthn`.

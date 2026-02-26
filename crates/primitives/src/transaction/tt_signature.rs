@@ -352,17 +352,17 @@ impl reth_codecs::Compact for PrimitiveSignature {
 /// Keychain signature version.
 ///
 /// Determines how the signature hash is computed for the inner signature.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub enum KeychainVersion {
     /// Legacy (V1): inner signature signs `sig_hash` directly.
-    /// Deprecated at T1C — vulnerable to cross-account replay when the same access key
-    /// is provisioned on multiple accounts.
+    /// Deprecated at T1C.
+    #[default]
     V1,
     /// V2: inner signature signs `keccak256(sig_hash || user_address)`.
-    /// Binds the signature to the specific user account, preventing cross-account replay.
+    /// Binds the signature to the specific user account.
     V2,
 }
 
@@ -384,6 +384,7 @@ pub struct KeychainSignature {
     /// The actual signature from the access key (can be Secp256k1, P256, or WebAuthn, but NOT another Keychain)
     pub signature: PrimitiveSignature,
     /// Keychain signature version (V1 = legacy, V2 = includes user_address in sig hash)
+    #[cfg_attr(feature = "serde", serde(default))]
     pub version: KeychainVersion,
     /// Cached access key ID recovered from the inner signature.
     /// This is an implementation detail - use `key_id()` to access.
@@ -403,8 +404,7 @@ pub struct KeychainSignature {
 impl KeychainSignature {
     /// Create a new V2 KeychainSignature (recommended).
     ///
-    /// V2 signatures include the user_address in the signature hash,
-    /// preventing cross-account replay attacks.
+    /// V2 signatures include the user_address in the signature hash.
     pub fn new(user_address: Address, signature: PrimitiveSignature) -> Self {
         Self {
             user_address,
@@ -430,7 +430,7 @@ impl KeychainSignature {
     /// Compute the effective signature hash for key recovery.
     ///
     /// - V1: returns `sig_hash` directly (legacy, deprecated)
-    /// - V2: returns `keccak256(sig_hash || user_address)` (replay-safe)
+    /// - V2: returns `keccak256(sig_hash || user_address)`
     fn effective_sig_hash(&self, sig_hash: &B256) -> B256 {
         match self.version {
             KeychainVersion::V1 => *sig_hash,
@@ -469,6 +469,17 @@ impl KeychainSignature {
     /// Returns true if this is a legacy V1 keychain signature.
     pub fn is_legacy(&self) -> bool {
         self.version == KeychainVersion::V1
+    }
+
+    /// Compute the hash that an access key should sign for a V2 keychain transaction.
+    ///
+    /// Returns `keccak256(sig_hash || user_address)` which binds the signature to the
+    /// specific user account.
+    pub fn signing_hash(sig_hash: B256, user_address: Address) -> B256 {
+        let mut buf = [0u8; 52]; // 32 + 20
+        buf[..32].copy_from_slice(sig_hash.as_slice());
+        buf[32..].copy_from_slice(user_address.as_slice());
+        keccak256(buf)
     }
 }
 
@@ -1608,7 +1619,7 @@ mod tests {
     }
 
     #[test]
-    fn test_keychain_v2_prevents_cross_account_replay() {
+    fn test_keychain_v2_binds_user_address() {
         use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
 
         let (signing_key, _access_key_address) = generate_secp256k1_keypair();
@@ -1634,9 +1645,8 @@ mod tests {
         let recovered_a = sig_a.recover_signer(&sig_hash).unwrap();
         assert_eq!(recovered_a, user_a);
 
-        // Replay attempt: same inner signature but for user_b
-        // This should still "succeed" (recover_signer returns user_b) but the
-        // key_id will be wrong — it won't match any authorized key for user_b
+        // Same inner signature but for user_b — key_id will differ
+        // because user_address is part of the signed hash
         let sig_b = TempoSignature::Keychain(KeychainSignature::new(user_b, inner_primitive));
         let recovered_b = sig_b.recover_signer(&sig_hash).unwrap();
         assert_eq!(
@@ -1649,7 +1659,7 @@ mod tests {
         let key_id_b = sig_b.as_keychain().unwrap().key_id(&sig_hash).unwrap();
         assert_ne!(
             key_id_a, key_id_b,
-            "V2 cross-account replay should recover different key_ids"
+            "V2 should recover different key_ids for different user_addresses"
         );
     }
 

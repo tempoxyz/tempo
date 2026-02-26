@@ -1266,9 +1266,17 @@ where
             )
             .map_err(TempoInvalidTransaction::from)?;
 
-            // T1C+: Reject legacy V1 keychain signatures (vulnerable to cross-account replay)
+            // T1C+: Reject legacy V1 keychain signatures (deprecated)
             if cfg.spec().is_t1c() && aa_env.signature.is_legacy_keychain() {
                 return Err(TempoInvalidTransaction::LegacyKeychainSignature.into());
+            }
+
+            // Pre-T1C: Reject V2 keychain signatures to prevent chain splits
+            if !cfg.spec().is_t1c()
+                && aa_env.signature.is_keychain()
+                && !aa_env.signature.is_legacy_keychain()
+            {
+                return Err(TempoInvalidTransaction::V2KeychainBeforeActivation.into());
             }
 
             let has_keychain_fields =
