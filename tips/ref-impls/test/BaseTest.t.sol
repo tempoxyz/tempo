@@ -1,23 +1,24 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import {AccountKeychain} from "../src/AccountKeychain.sol";
-import {FeeManager} from "../src/FeeManager.sol";
-import {Nonce} from "../src/Nonce.sol";
-import {StablecoinDEX} from "../src/StablecoinDEX.sol";
-import {TIP20} from "../src/TIP20.sol";
-import {TIP20Factory} from "../src/TIP20Factory.sol";
-import {TIP403Registry} from "../src/TIP403Registry.sol";
-import {IAccountKeychain} from "../src/interfaces/IAccountKeychain.sol";
-import {INonce} from "../src/interfaces/INonce.sol";
-import {ITIP20} from "../src/interfaces/ITIP20.sol";
-import {IValidatorConfig} from "../src/interfaces/IValidatorConfig.sol";
-import {IValidatorConfigV2} from "../src/interfaces/IValidatorConfigV2.sol";
-import {Test, console} from "forge-std/Test.sol";
+import { AccountKeychain } from "../src/AccountKeychain.sol";
+import { FeeManager } from "../src/FeeManager.sol";
+import { Nonce } from "../src/Nonce.sol";
+import { StablecoinDEX } from "../src/StablecoinDEX.sol";
+import { TIP20 } from "../src/TIP20.sol";
+import { TIP20Factory } from "../src/TIP20Factory.sol";
+import { TIP403Registry } from "../src/TIP403Registry.sol";
+import { IAccountKeychain } from "../src/interfaces/IAccountKeychain.sol";
+import { INonce } from "../src/interfaces/INonce.sol";
+import { ITIP20 } from "../src/interfaces/ITIP20.sol";
+import { IValidatorConfig } from "../src/interfaces/IValidatorConfig.sol";
+import { IValidatorConfigV2 } from "../src/interfaces/IValidatorConfigV2.sol";
+import { Test, console } from "forge-std/Test.sol";
 
 /// @notice Base test framework for all spec tests
 /// pathUSD is just a TIP20 at a special address (0x20C0...) with token_id=0
 contract BaseTest is Test {
+
     // Registry precompiles
     address internal constant _ACCOUNT_KEYCHAIN = 0xaAAAaaAA00000000000000000000000000000000;
     address internal constant _TIP403REGISTRY = 0x403c000000000000000000000000000000000000;
@@ -65,7 +66,8 @@ contract BaseTest is Test {
     function setUp() public virtual {
         // Is this tempo chain?
         isTempo = _TIP403REGISTRY.code.length + _TIP20FACTORY.code.length + _PATH_USD.code.length
-                + _STABLECOIN_DEX.code.length + _NONCE.code.length + _ACCOUNT_KEYCHAIN.code.length > 0;
+                + _STABLECOIN_DEX.code.length + _NONCE.code.length + _ACCOUNT_KEYCHAIN.code.length
+            > 0;
 
         console.log("Tests running with isTempo =", isTempo);
 
@@ -77,7 +79,11 @@ contract BaseTest is Test {
             deployCodeTo("FeeManager", _FEE_AMM);
             deployCodeTo("TIP20Factory", _TIP20FACTORY);
             // Deploy pathUSD as a TIP20 at the special address
-            deployCodeTo("TIP20.sol", abi.encode("pathUSD", "pathUSD", "USD", address(0), pathUSDAdmin), _PATH_USD);
+            deployCodeTo(
+                "TIP20.sol",
+                abi.encode("pathUSD", "pathUSD", "USD", address(0), pathUSDAdmin),
+                _PATH_USD
+            );
             deployCodeTo("Nonce", _NONCE);
             // Deploy ValidatorConfig with admin as owner
             deployCodeTo("ValidatorConfig.sol", abi.encode(admin), _VALIDATOR_CONFIG);
@@ -133,7 +139,10 @@ contract BaseTest is Test {
             vm.store(_PATH_USD, tempoAdminRoleSlot, bytes32(uint256(1)));
         }
 
-        token1 = TIP20(factory.createToken("TOKEN1", "T1", "USD", pathUSD, admin, bytes32("token1")));
-        token2 = TIP20(factory.createToken("TOKEN2", "T2", "USD", pathUSD, admin, bytes32("token2")));
+        token1 =
+            TIP20(factory.createToken("TOKEN1", "T1", "USD", pathUSD, admin, bytes32("token1")));
+        token2 =
+            TIP20(factory.createToken("TOKEN2", "T2", "USD", pathUSD, admin, bytes32("token2")));
     }
+
 }
