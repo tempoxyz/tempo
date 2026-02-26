@@ -445,6 +445,9 @@ impl TIP20Token {
             return Err(TIP20Error::protected_address().into());
         }
 
+        // Check and update spending limits for access keys
+        self.check_and_update_spending_limit(msg_sender, call.amount)?;
+
         self._transfer(call.from, Address::ZERO, call.amount)?;
 
         let total_supply = self.total_supply()?;
@@ -997,7 +1000,7 @@ impl TIP20Token {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256};
-    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20Factory};
+    use tempo_contracts::precompiles::{AccountKeychainError, DEFAULT_FEE_TOKEN, ITIP20Factory};
 
     use super::*;
     use crate::{
@@ -2129,6 +2132,87 @@ pub(crate) mod tests {
                 amount - burn_amount
             );
             assert_eq!(token.total_supply()?, amount - burn_amount);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_respects_spending_limits() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+        let access_key = Address::random();
+        let target = Address::random();
+        let amount = U256::from(1000);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_AT_ROLE)
+                .with_mint(target, amount)
+                .apply()?;
+
+            // Setup access key with spending limit for burner
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Use main key to authorize the access key
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(burner)?;
+
+            keychain.authorize_key(
+                burner,
+                crate::account_keychain::authorizeKeyCall {
+                    keyId: access_key,
+                    signatureType: crate::account_keychain::SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![crate::account_keychain::TokenLimit {
+                        token: token.address,
+                        amount: U256::from(100),
+                    }],
+                },
+            )?;
+
+            // Now simulate burner using the access key
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(burner)?;
+
+            // Burn within spending limit should succeed
+            token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: target,
+                    amount: U256::from(50),
+                },
+            )?;
+
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: target })?,
+                amount - U256::from(50)
+            );
+
+            // Burn exceeding remaining spending limit should fail
+            let result = token.burn_at(
+                burner,
+                ITIP20::burnAtCall {
+                    from: target,
+                    amount: U256::from(51),
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::AccountKeychainError(
+                    AccountKeychainError::SpendingLimitExceeded(_)
+                ))
+            ));
+
+            // Verify balance unchanged after failed burn
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: target })?,
+                amount - U256::from(50)
+            );
 
             Ok(())
         })
