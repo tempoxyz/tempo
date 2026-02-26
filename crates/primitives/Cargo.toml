@@ -22,7 +22,7 @@ reth-rpc-convert = { workspace = true, optional = true }
 revm.workspace = true
 
 # Alloy
-alloy-consensus = { workspace = true, features = ["secp256k1", "k256"] }
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -36,6 +36,7 @@ derive_more.workspace = true
 modular-bitfield = { version = "0.11.2", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+once_cell = { version = "1.21", default-features = false }
 
 # Cryptography for P256 and WebAuthn signature verification
 p256 = { workspace = true, features = ["ecdsa"] }
@@ -59,7 +60,25 @@ rand.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
-default = ["reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
+default = ["std", "reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
+std = [
+	"alloy-consensus/secp256k1",
+	"alloy-consensus/std",
+	"alloy-eips/std",
+	"alloy-primitives/std",
+	"alloy-rlp/std",
+	"alloy-serde?/std",
+	"base64/std",
+	"derive_more/std",
+	"once_cell/std",
+	"p256/std",
+	"reth-ethereum-primitives?/std",
+	"reth-primitives-traits?/std",
+	"revm/std",
+	"serde/std",
+	"serde_json/std",
+	"sha2/std"
+]
 reth = ["dep:reth-ethereum-primitives", "dep:reth-primitives-traits"]
 serde = [
 	"dep:alloy-serde",

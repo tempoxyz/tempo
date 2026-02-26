@@ -17,6 +17,13 @@ pub use tempo_contracts::precompiles::{
 use alloy::primitives::{Address, U256, uint};
 use tempo_precompiles_macros::contract;
 
+/// Fee manager precompile that handles transaction fee collection and distribution.
+///
+/// Users and validators choose their preferred TIP-20 fee token. When they differ, fees are
+/// swapped through the built-in AMM (`TIPFeeAMM`).
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = TIP_FEE_MANAGER_ADDRESS)]
 pub struct TipFeeManager {
     validator_tokens: Mapping<Address, Address>,
@@ -29,9 +36,16 @@ pub struct TipFeeManager {
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
-    /// T2+: Tracks liquidity reserved for a pending fee swap during `collect_fee_pre_tx`.
+    /// T1C+: Tracks liquidity reserved for a pending fee swap during `collect_fee_pre_tx`.
     /// Checked by `burn` and `rebalance_swap` to prevent withdrawals that would violate the reservation.
     pending_fee_swap_reservation: Mapping<B256, u128>,
+
+    // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
+    // macro is refactored and has 2 independent layouts (persistent and transient).
+    // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
+    /// T2+: The fee token used for the current transaction (TIP-1007).
+    /// Set by the handler before execution, read via `getFeeToken()`.
+    tx_fee_token: Address,
 }
 
 impl TipFeeManager {
@@ -133,7 +147,7 @@ impl TipFeeManager {
             let pool_id = PoolKey::new(user_token, validator_token).get_id();
             let amount_out_needed = self.check_sufficient_liquidity(pool_id, max_amount)?;
 
-            if self.storage.spec().is_t2() {
+            if self.storage.spec().is_t1c() {
                 self.reserve_pool_liquidity(pool_id, amount_out_needed)?;
             }
         }
@@ -229,6 +243,14 @@ impl TipFeeManager {
         ))?;
 
         Ok(())
+    }
+
+    pub fn get_fee_token(&self) -> Result<Address> {
+        self.tx_fee_token.t_read()
+    }
+
+    pub fn set_fee_token(&mut self, token: Address) -> Result<()> {
+        self.tx_fee_token.t_write(token)
     }
 
     pub fn user_tokens(&self, call: IFeeManager::userTokensCall) -> Result<Address> {

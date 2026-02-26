@@ -14,6 +14,11 @@ use crate::{
 };
 use alloy::primitives::{Address, U256};
 
+/// Registry for TIP-403 transfer policies. TIP20 tokens reference an ID from this registry
+/// to police transfers between sender and receiver addresses.
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = TIP403_REGISTRY_ADDRESS)]
 pub struct TIP403Registry {
     policy_id_counter: u64,
@@ -54,6 +59,7 @@ pub enum AuthRole {
     MintRecipient,
 }
 
+/// Base policy metadata. Packed into a single storage slot.
 #[derive(Debug, Clone, Storable)]
 pub struct PolicyData {
     // NOTE: enums are defined as u8, and leverage the sol! macro's `TryInto<u8>` impl
