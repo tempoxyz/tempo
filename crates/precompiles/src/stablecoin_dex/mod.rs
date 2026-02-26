@@ -527,6 +527,9 @@ impl StablecoinDEX {
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
 
+        // CHECKPOINT START: atomically batch all state-changing operations
+        let batch = self.storage.checkpoint();
+
         // Check book existence
         let book = self.books[book_key].read()?;
         self.validate_or_create_pair(&book, token)?;
@@ -575,9 +578,6 @@ impl StablecoinDEX {
         // Direction: DEX → sender (order placer receives non-escrow token when filled)
         TIP20Token::from_address(non_escrow_token)?
             .ensure_transfer_authorized(self.address, sender)?;
-
-        // CHECKPOINT START: atomically batch all state-changing operations
-        let batch = self.storage.checkpoint();
 
         // Debit from user's balance only. This is set to true after a flip order is filled and the
         // subsequent flip order is being placed.
