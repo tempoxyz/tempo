@@ -77,7 +77,7 @@ impl Default for TxBuilder {
             fee_token: None,
             valid_after: None,
             valid_before: None,
-            chain_id: 1337, // DEV chain_id
+            chain_id: 42431, // MODERATO chain_id
             calls: None,
             authorization_list: None,
             access_list: Default::default(),
@@ -348,7 +348,7 @@ pub(crate) fn wrap_valid_tx(
     }
 }
 
-/// Creates a mock provider configured with the DEV chain spec (all hardforks active).
+/// Creates a mock provider with the DEV chain spec (all hardforks active at genesis).
 pub(crate) fn create_mock_provider()
 -> MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec> {
     MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(DEV.clone()))
