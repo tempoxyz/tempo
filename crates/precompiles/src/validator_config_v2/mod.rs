@@ -289,6 +289,7 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_validator(
         &mut self,
         addr: Address,
