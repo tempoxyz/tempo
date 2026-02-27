@@ -3937,6 +3937,52 @@ async fn test_keychain_authorization_in_auth_list_is_skipped() -> eyre::Result<(
     Ok(())
 }
 
+/// V1 keychain signature inside `tempo_authorization_list` must be rejected post-T1C.
+/// Outer sig is a normal secp256k1 primitive, only the auth list entry carries V1 keychain.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_v1_keychain_in_auth_list_rejected_post_t1c() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (setup, provider, sender_signer, sender_addr) =
+        setup_test_with_funded_account().await?;
+    let chain_id = provider.get_chain_id().await?;
+
+    // Build an EIP-7702 authorization and sign it with a V1 keychain sig
+    let delegate_address = ACCOUNT_KEYCHAIN_ADDRESS;
+    let (auth, sig_hash) = build_authorization(chain_id, delegate_address);
+
+    let inner_signer = alloy::signers::local::PrivateKeySigner::random();
+    let inner_signature = inner_signer.sign_hash_sync(&sig_hash)?;
+    let v1_keychain_sig = TempoSignature::Keychain(KeychainSignature::new_v1(
+        Address::random(), // arbitrary user_address
+        PrimitiveSignature::Secp256k1(inner_signature),
+    ));
+    let auth_signed =
+        tempo_primitives::transaction::TempoSignedAuthorization::new_unchecked(auth, v1_keychain_sig);
+
+    // Tx with primitive outer sig and V1-keychain auth list entry
+    let nonce = provider.get_transaction_count(sender_addr).await?;
+    let mut tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(sender_addr)],
+        2_000_000,
+    );
+    tx.tempo_authorization_list = vec![auth_signed];
+
+    let outer_sig = sign_aa_tx_secp256k1(&tx, &sender_signer)?;
+    let envelope: TempoTxEnvelope = AASigned::new_unhashed(tx, outer_sig).into();
+
+    setup
+        .node
+        .rpc
+        .inject_tx(envelope.encoded_2718().into())
+        .await
+        .expect_err("V1 keychain sig in auth list must be rejected post-T1C");
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
