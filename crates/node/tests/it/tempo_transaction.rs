@@ -6211,7 +6211,19 @@ async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
         nonce_bob,
     )
     .await?;
-    let nonce_bob = nonce_bob + 1;
+    let mut nonce_bob = nonce_bob + 1;
+
+    // Advance Bob's nonce to match Alice's — the replay needs identical sig_hash
+    let dummy_tx = create_basic_aa_tx(
+        chain_id,
+        nonce_bob,
+        vec![create_balance_of_call(bob_addr)],
+        2_000_000,
+    );
+    let dummy_sig = sign_aa_tx_secp256k1(&dummy_tx, &bob_signer)?;
+    submit_and_mine_aa_tx(&mut setup, dummy_tx, dummy_sig).await?;
+    nonce_bob += 1;
+    assert_eq!(nonce_alice, nonce_bob, "nonces must match for replay");
 
     // Alice sends a V1 keychain tx, succeeds pre-T1C
     let alice_tx = create_basic_aa_tx(
@@ -6222,20 +6234,15 @@ async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
     );
     let alice_v1_sig =
         sign_aa_tx_with_secp256k1_access_key_v1(&alice_tx, &access_key_signer, alice_addr)?;
-    submit_and_mine_aa_tx(&mut setup, alice_tx, alice_v1_sig.clone()).await?;
+    submit_and_mine_aa_tx(&mut setup, alice_tx.clone(), alice_v1_sig.clone()).await?;
 
     // Extract Alice's inner sig, re-wrap for Bob with V1
     let inner = alice_v1_sig.as_keychain().unwrap().signature.clone();
     let bob_replay_sig = TempoSignature::Keychain(KeychainSignature::new_v1(bob_addr, inner));
 
-    // Bob's replay tx succeeds — this is the vulnerability V2 fixes
-    let bob_tx = create_basic_aa_tx(
-        chain_id,
-        nonce_bob,
-        vec![create_balance_of_call(bob_addr)],
-        2_000_000,
-    );
-    let replay_env: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, bob_replay_sig).into();
+    // Replay Alice's EXACT tx body for Bob — V1 doesn't bind user_address in the
+    // inner sig, so the same sig verifies against the same sig_hash for any user.
+    let replay_env: TempoTxEnvelope = AASigned::new_unhashed(alice_tx, bob_replay_sig).into();
     setup
         .node
         .rpc

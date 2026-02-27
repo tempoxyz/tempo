@@ -2339,7 +2339,7 @@ mod tests {
                 user_address,
                 key_id,
                 authorized_key_slot_value,
-                moderato_with_t1c(),
+                Arc::unwrap_or_clone(MODERATO.clone()),
             )
         }
 
