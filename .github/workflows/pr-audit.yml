@@ -12,7 +12,15 @@ jobs:
       - name: Publish event
         run: |
           set -euo pipefail
-          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }}             -H "Content-Type: application/json"             -d '{
+
+          echo "${EVENTS_KEY}" > ${{ runner.temp }}/key
+          echo "${EVENTS_CERT}" > ${{ runner.temp }}/cert
+
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            -H "Content-Type: application/json" \
+            --key ${{ runner.temp }}/key \
+            --cert ${{ runner.temp }}/cert \
+            -d '{
               "repository": "${{ github.repository }}",
               "event": "pr_audit",
               "data": {

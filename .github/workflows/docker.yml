@@ -198,7 +198,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "${EVENTS_KEY}" > ${{ runner.temp }}/key
+          echo "${EVENTS_CERT}" > ${{ runner.temp }}/cert
+
           curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            --key ${{ runner.temp }}/key \
+            --cert ${{ runner.temp }}/cert \
             -H "Content-Type: application/json" \
             -d '{
               "repository": "${{ github.repository }}",
@@ -214,7 +220,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "${EVENTS_KEY}" > ${{ runner.temp }}/key
+          echo "${EVENTS_CERT}" > ${{ runner.temp }}/cert
+
           curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            --key ${{ runner.temp }}/key \
+            --cert ${{ runner.temp }}/cert \
             -H "Content-Type: application/json" \
             -d '{
               "repository": "${{ github.repository }}",
