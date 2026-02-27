@@ -144,7 +144,7 @@ contract ValidatorConfigV2Test is BaseTest {
             _signAdd(PRIV_KEY_2, validator3, ingress3, egress3)
         );
 
-        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
+        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getActiveValidators();
         assertEq(vals.length, 5); // 2 setup + 3 added
 
         // First two are migrated setup validators
@@ -331,13 +331,16 @@ contract ValidatorConfigV2Test is BaseTest {
             _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
         );
 
-        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
-        assertEq(vals.length, 4); // 2 setup + original (deactivated) + rotated
-        assertEq(vals[2].deactivatedAtHeight, uint64(block.number));
-        assertEq(vals[3].validatorAddress, validator1);
-        assertEq(vals[3].publicKey, PUB_KEY_3);
-        assertEq(vals[3].addedAtHeight, uint64(block.number));
-        assertEq(vals[3].deactivatedAtHeight, 0);
+        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getActiveValidators();
+        assertEq(vals.length, 4); // 2 setup + rotated
+        assertEq(vals[2].validatorAddress, validator1);
+        assertEq(vals[2].publicKey, PUB_KEY_3);
+        assertEq(vals[2].addedAtHeight, uint64(block.number));
+        assertEq(vals[2].deactivatedAtHeight, 0);
+
+        // Original validator lives on in the global array.
+        IValidatorConfigV2.Validator memory val = validatorConfigV2.validatorByPublicKey(PUB_KEY_0);
+        assertEq(val.deactivatedAtHeight, uint64(block.number));
     }
 
     function test_rotateValidator_passByValidator() public {
@@ -359,8 +362,8 @@ contract ValidatorConfigV2Test is BaseTest {
             _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
         );
 
-        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
-        assertEq(vals.length, 4); // 2 setup + original (deactivated) + rotated
+        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getActiveValidators();
+        assertEq(vals.length, 4); // 2 setup + rotated
         assertEq(vals[3].publicKey, PUB_KEY_3);
     }
 
@@ -704,35 +707,6 @@ contract ValidatorConfigV2Test is BaseTest {
     /*//////////////////////////////////////////////////////////////
                           VIEW FUNCTIONS
     //////////////////////////////////////////////////////////////*/
-
-    function test_getAllValidators_pass() public {
-        _initializeV2();
-
-        IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getAllValidators();
-        assertEq(vals.length, 2); // 2 setup validators migrated
-        assertEq(vals[0].validatorAddress, setupVal1);
-        assertEq(vals[1].validatorAddress, setupVal2);
-
-        validatorConfigV2.addValidator(
-            validator1,
-            PUB_KEY_0,
-            ingress1,
-            egress1,
-            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
-        );
-        validatorConfigV2.addValidator(
-            validator2,
-            PUB_KEY_1,
-            ingress2,
-            egress2,
-            _signAdd(PRIV_KEY_1, validator2, ingress2, egress2)
-        );
-
-        vals = validatorConfigV2.getAllValidators();
-        assertEq(vals.length, 4); // 2 setup + 2 added
-        assertEq(vals[2].validatorAddress, validator1);
-        assertEq(vals[3].validatorAddress, validator2);
-    }
 
     function test_getActiveValidators_pass() public {
         _initializeV2();
