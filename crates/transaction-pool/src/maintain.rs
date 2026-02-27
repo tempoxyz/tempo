@@ -403,9 +403,13 @@ impl KeyExpiryTracker {
 
     /// Removes a single transaction hash from key expiry tracking.
     fn untrack(&mut self, hash: &TxHash) {
-        let Some(key) = self.tx_to_key.remove(hash) else { return };
+        let Some(key) = self.tx_to_key.remove(hash) else {
+            return;
+        };
 
-        let Some((expiry, txs)) = self.key_to_txs.get_mut(&key) else { return };
+        let Some((expiry, txs)) = self.key_to_txs.get_mut(&key) else {
+            return;
+        };
         txs.remove(hash);
 
         if txs.is_empty() {
