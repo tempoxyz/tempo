@@ -805,7 +805,10 @@ where
                         "Processing transaction invalidation events"
                     );
                     let evicted = pool.evict_invalidated_transactions(&updates);
-                    metrics.transactions_invalidated.increment(evicted as u64);
+                    for hash in &evicted {
+                        state.untrack_expiry(hash);
+                    }
+                    metrics.transactions_invalidated.increment(evicted.len() as u64);
                     metrics
                         .invalidation_eviction_duration_seconds
                         .record(invalidation_start.elapsed());
