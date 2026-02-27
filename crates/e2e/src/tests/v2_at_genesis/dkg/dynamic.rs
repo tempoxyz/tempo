@@ -121,7 +121,7 @@ impl AssertValidatorIsAdded {
                 let mut added_signer= None;
                 let mut dealers = None;
                 let mut network_epoch = None;
-                let mut peers = None;
+                
                 let mut players = None;
                 for line in context.encode().lines() {
                     if !line.starts_with(CONSENSUS_NODE_PREFIX) {
@@ -145,15 +145,15 @@ impl AssertValidatorIsAdded {
                         }
                     }
 
-                    if key.ends_with("_dkg_manager_ceremony_players") {
+                    if key.ends_with("_dkg_manager_ceremony_players")
+                    && key.contains(&added_uid)
+                    {
                         players.replace(value.parse::<u32>().unwrap());
                     }
-                    if key.ends_with("_dkg_manager_ceremony_dealers") {
-                        dealers.replace(value.parse::<u32>().unwrap());
-                    }
-                    if key.ends_with("peer_manager_peers")
+                    if key.ends_with("_dkg_manager_ceremony_dealers")
+                    && key.contains(&added_uid)
                     {
-                        peers.replace(value.parse::<u32>().unwrap());
+                        dealers.replace(value.parse::<u32>().unwrap());
                     }
                     if key.ends_with("_epoch_manager_how_often_signer_total")
                     && key.contains(&added_uid) {

@@ -49,7 +49,7 @@ use crate::{
     consensus::{Digest, block::Block},
     validators::{
         can_use_v2_at_block_hash, read_active_and_known_peers_at_block_hash_v1,
-        read_validator_config_at_block_hash,
+        read_active_and_known_peers_at_block_hash_v2, read_validator_config_at_block_hash,
     },
 };
 
@@ -1143,7 +1143,7 @@ where
         );
 
         let next_players =
-            determine_next_players(state, &self.config.execution_node, request.digest)
+            determine_next_players_at_hash(state, &self.config.execution_node, request.digest.0)
                 .wrap_err("could not determine who the next players are supposed to be")?;
         request
             .response
@@ -1636,16 +1636,17 @@ pub(crate) fn read_syncers_if_v2_not_initialized(
 ///
 /// If the execution layer does not have a block corresponding to `digest`
 /// available then it cannot propose or verify a block.
-fn determine_next_players(
+#[instrument(skip_all, fields(%hash), err(level = Level::WARN))]
+fn determine_next_players_at_hash(
     state: &State,
     node: &TempoFullNode,
-    digest: Digest,
+    hash: B256,
 ) -> eyre::Result<ordered::Set<PublicKey>> {
-    let next_players = if can_use_v2_at_block_hash(node, digest.0, None)
+    let next_players = if can_use_v2_at_block_hash(node, hash, None)
         .wrap_err("failed determining if validator config v2 can be used")?
     {
         debug!("reading next players from validator config v2 contract");
-        read_active_and_known_peers_at_block_hash_v1(node, &ordered::Set::default(), digest.0)
+        read_active_and_known_peers_at_block_hash_v2(node, &ordered::Set::default(), hash)
             .wrap_err("failed reading peers from  validator config v2")?
             .into_keys()
     } else {

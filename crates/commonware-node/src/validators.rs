@@ -94,7 +94,7 @@ pub(crate) fn read_active_and_known_peers_at_block_hash_v1(
 ///
 /// This returns both the validators that are `active` as per the contract, and
 /// those that are `known`.
-fn read_active_and_known_peers_at_block_hash_v2(
+pub(crate) fn read_active_and_known_peers_at_block_hash_v2(
     node: &TempoFullNode,
     known: &ordered::Set<PublicKey>,
     hash: B256,
