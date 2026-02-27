@@ -148,15 +148,16 @@ impl ValidatorConfigV2 {
         Ok(self.validators.len()? as u64)
     }
 
+    /// Get active validator by address with index.
     /// Returns the validator at the given global index, or errors if the index
     /// is out of bounds or the validator has been deactivated.
-    fn require_active_at_idx(&self, idx: u64) -> Result<ValidatorV2> {
+    fn get_active_validator(&self, idx: u64) -> Result<ValidatorV2> {
         if idx >= self.validators.len()? as u64 {
             Err(ValidatorConfigV2Error::validator_not_found())?
         }
         let v = self.validators[idx as usize].read()?;
         if v.deactivated_at_height != 0 {
-            Err(ValidatorConfigV2Error::validator_not_found())?
+            Err(ValidatorConfigV2Error::validator_already_deleted())?
         }
         Ok(v)
     }
@@ -331,33 +332,9 @@ impl ValidatorConfigV2 {
 
         self.validators.push(v)?;
 
-        self.address_to_index[addr].write(count + 1)?;
-        self.pubkey_to_index[pubkey].write(count + 1)
-    }
-
-    fn delete_active(&mut self, global_idx: u64) -> Result<()> {
-        let active_idx = self.validators[global_idx as usize].active_idx.read()?;
-        if active_idx == 0 {
-            Err(ValidatorConfigV2Error::validator_not_found())?
-        }
-        let active_idx_0 = (active_idx - 1) as usize;
-
-        let last_idx = self.active_indices.len()? - 1;
-        let last_global_idx1 = self.active_indices[last_idx].read()?;
-
-        self.active_indices[active_idx_0].write(last_global_idx1)?;
-        self.active_indices.pop()?;
-
-        if active_idx_0 != last_idx {
-            // Update swapped entry's active_idx
-            self.validators[(last_global_idx1 - 1) as usize]
-                .active_idx
-                .write(active_idx)?;
-        }
-        // Clear removed entry's active_idx
-        self.validators[global_idx as usize].active_idx.write(0)?;
-
-        Ok(())
+        self.pubkey_to_index[pubkey].write(count + 1)?;
+        // if there are duplicated vals with addresses, the latter validator entry is correct
+        self.address_to_index[addr].write(count + 1)
     }
 
     /// Allows reusing addresses of deactivated validators.
@@ -482,11 +459,22 @@ impl ValidatorConfigV2 {
 
         self.active_ingress_ips[Self::ingress_ip_key(&v.ingress)?].delete()?;
 
-        self.delete_active(call.idx)?;
+        self.validators[call.idx as usize]
+            .deactivated_at_height
+            .write(block_height)?;
 
-        let mut v = self.validators[call.idx as usize].read()?;
-        v.deactivated_at_height = block_height;
-        self.validators[call.idx as usize].write(v)
+        // Pop-and-swap for active_indices
+        let active_index = (v.active_idx - 1) as usize;
+        let last_pos = self.active_indices.len()? - 1;
+
+        if active_index != last_pos {
+            let last_val = self.active_indices[last_pos].read()?;
+            let current_val = self.active_indices[active_index].read()?;
+            self.active_indices[active_index].write(last_val)?;
+            self.active_indices[last_pos].write(current_val)?;
+        }
+        self.active_indices.pop()?;
+        self.validators[call.idx as usize].active_idx.write(0)
     }
 
     pub fn transfer_ownership(
@@ -517,7 +505,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::rotateValidatorCall,
     ) -> Result<()> {
-        let v = self.require_active_at_idx(call.idx)?;
+        let v = self.get_active_validator(call.idx)?;
         self.require_initialized_owner_or_validator(sender, v.validator_address)?;
         self.require_new_pubkey(call.publicKey)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
@@ -571,7 +559,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::setIpAddressesCall,
     ) -> Result<()> {
-        let mut v = self.require_active_at_idx(call.idx)?;
+        let mut v = self.get_active_validator(call.idx)?;
         if sender != v.validator_address && !self.config.read()?.is_owner(sender) {
             Err(ValidatorConfigV2Error::unauthorized())?
         }
@@ -592,7 +580,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::transferValidatorOwnershipCall,
     ) -> Result<()> {
-        let mut v = self.require_active_at_idx(call.idx)?;
+        let mut v = self.get_active_validator(call.idx)?;
         self.require_initialized_owner_or_validator(sender, v.validator_address)?;
         self.require_new_address(call.newAddress)?;
 
@@ -600,8 +588,8 @@ impl ValidatorConfigV2 {
         v.validator_address = call.newAddress;
         self.validators[call.idx as usize].write(v)?;
 
-        self.address_to_index[call.newAddress].write(call.idx + 1)?;
-        self.address_to_index[old_address].delete()
+        self.address_to_index[old_address].delete()?;
+        self.address_to_index[call.newAddress].write(call.idx + 1)
     }
 
     // =========================================================================
@@ -1308,7 +1296,7 @@ mod tests {
             );
             assert_eq!(
                 result,
-                Err(ValidatorConfigV2Error::validator_not_found().into())
+                Err(ValidatorConfigV2Error::validator_already_deleted().into())
             );
 
             Ok(())

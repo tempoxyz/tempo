@@ -32,7 +32,7 @@ crate::sol! {
         // View functions
         // =====================================================================
 
-        /// Get validators starting from a given index (including deleted)
+        /// Get validators starting from a given index (including deactivated)
         function getValidators(uint64 startIndex) external view returns (Validator[] memory validators);
 
         /// Get only active validators (deactivatedAtHeight == 0)
@@ -44,7 +44,7 @@ crate::sol! {
         /// Get the contract owner
         function owner() external view returns (address);
 
-        /// Get total count of validators ever added (including deleted)
+        /// Get total count of validators ever added (including deactivated)
         function validatorCount() external view returns (uint64);
 
         /// Get validator by index

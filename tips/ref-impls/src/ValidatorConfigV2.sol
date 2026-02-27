@@ -118,15 +118,16 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         v.deactivatedAtHeight = uint64(block.number);
 
         // do a pop-and-swap for validatorsArray
-        uint64 activeIndex = validatorsArray[idx].activeIdx - 1;
+        uint64 toDeactivateIndex = v.activeIdx - 1;
         uint256 lastPos = activeIndices.length - 1;
 
-        if (activeIndex != lastPos) {
-            (activeIndices[lastPos], activeIndices[activeIndex]) =
-            (activeIndices[activeIndex], activeIndices[lastPos]);
+        if (toDeactivateIndex != lastPos) {
+            (activeIndices[lastPos], activeIndices[toDeactivateIndex]) =
+            (activeIndices[toDeactivateIndex], activeIndices[lastPos]);
+            validatorsArray[lastPos].activeIdx = toDeactivateIndex + 1;
         }
         activeIndices.pop();
-        validatorsArray[idx].activeIdx = 0;
+        v.activeIdx = 0;
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -440,6 +441,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert AddressAlreadyHasValidator();
         }
         _validateRotateParams(publicKey, ingress, egress);
+        _requireUniqueIngressIp(ingress);
     }
 
     function _validateRotateParams(
@@ -458,7 +460,6 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
         _validateIpPort(ingress, "ingress");
         _validateIp(egress, "egress");
-        _requireUniqueIngressIp(ingress);
     }
 
     function _addValidator(
