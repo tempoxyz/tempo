@@ -534,7 +534,7 @@ impl StablecoinDEX {
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
 
-        // CHECKPOINT START: place_flip performs multiple state mutations that
+        // CHECKPOINT START: `place_flip` performs multiple state mutations that
         // must succeed or fail as a unit. The guard auto-reverts on drop.
         let batch = self.storage.checkpoint();
 
