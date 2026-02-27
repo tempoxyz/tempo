@@ -11798,9 +11798,11 @@ name = "tempo"
 version = "1.3.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-network",
  "alloy-primitives",
  "alloy-provider",
  "alloy-rpc-types-eth",
+ "alloy-signer-local",
  "alloy-sol-types",
  "base64 0.22.1",
  "clap",
@@ -11978,11 +11980,13 @@ dependencies = [
 name = "tempo-commonware-node-config"
 version = "1.3.0"
 dependencies = [
+ "alloy-primitives",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-utils",
  "const-hex",
  "rand 0.8.5",
+ "tempo-contracts",
  "thiserror 2.0.18",
 ]
 

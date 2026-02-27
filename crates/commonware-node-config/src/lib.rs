@@ -12,6 +12,8 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 
+pub mod validator;
+
 #[cfg(test)]
 mod tests;
 

@@ -3,7 +3,7 @@ use alloy::{
     primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
-use alloy_primitives::{B256, Bytes, Keccak256};
+use alloy_primitives::{B256, Bytes};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -38,14 +38,15 @@ use std::{
     path::{Path, PathBuf},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_commonware_node_config::{SigningKey, SigningShare};
+use tempo_commonware_node_config::{
+    SigningKey, SigningShare,
+    validator::{self, ADD_VALIDATOR_NAMESPACE},
+};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{
-        ITIP20Factory, IValidatorConfig, IValidatorConfigV2, VALIDATOR_CONFIG_V2_ADDRESS,
-    },
+    precompiles::{ITIP20Factory, IValidatorConfig, IValidatorConfigV2},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -60,7 +61,7 @@ use tempo_precompiles::{
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
-    validator_config_v2::{VALIDATOR_NS_ADD, ValidatorConfigV2},
+    validator_config_v2::ValidatorConfigV2,
 };
 
 /// Generate genesis allocation file for testing
@@ -1008,28 +1009,26 @@ fn initialize_validator_config_v2(
                 let public_key = validator.public_key();
                 let pubkey: B256 = public_key.encode().as_ref().try_into().unwrap();
                 let addr = validator.addr;
-                let ingress = addr.to_string();
-                let egress = addr.ip().to_string();
 
-                // message: keccak256(chainId || contractAddr || validatorAddr || ingress || egress)
-                let mut hasher = Keccak256::new();
-                hasher.update(chain_id.to_be_bytes());
-                hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-                hasher.update(validator_address.as_slice());
-                hasher.update(ingress.as_bytes());
-                hasher.update(egress.as_bytes());
-                let message = hasher.finalize();
+                let config = validator::ValidatorConfig {
+                    chain_id,
+                    validator_address,
+                    public_key: pubkey,
+                    ingress: addr,
+                    egress: addr.ip(),
+                };
 
+                let message = config.message_hash();
                 let private_key = validator.signing_key.clone().into_inner();
-                let signature = private_key.sign(VALIDATOR_NS_ADD, message.as_slice());
+                let signature = private_key.sign(ADD_VALIDATOR_NAMESPACE, message.as_slice());
 
                 v2.add_validator(
                     admin,
                     IValidatorConfigV2::addValidatorCall {
                         validatorAddress: validator_address,
                         publicKey: pubkey,
-                        ingress: ingress.clone(),
-                        egress: egress.clone(),
+                        ingress: addr.to_string(),
+                        egress: addr.ip().to_string(),
                         signature: signature.encode().to_vec().into(),
                     },
                 )
