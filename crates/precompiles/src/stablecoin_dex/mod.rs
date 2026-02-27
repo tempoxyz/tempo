@@ -534,7 +534,8 @@ impl StablecoinDEX {
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
 
-        // CHECKPOINT START: atomically batch all state-changing operations
+        // CHECKPOINT START: place_flip performs multiple state mutations that
+        // must succeed or fail as a unit. The guard auto-reverts on drop.
         let batch = self.storage.checkpoint();
 
         // Check book existence
@@ -4780,7 +4781,7 @@ mod tests {
                 // verify that `OrderPlaced` event was never emitted due to poisoned tick's revert
                 assert!(
                     exchange.emitted_events().last().is_some_and(
-                        |e| e.topics()[0] == IStablecoinDEX::OrderFilled::SIGNATURE_HASH
+                        |e| e.topics()[0] != IStablecoinDEX::OrderPlaced::SIGNATURE_HASH
                     )
                 );
 

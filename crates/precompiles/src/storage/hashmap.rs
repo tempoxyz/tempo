@@ -28,7 +28,10 @@ pub struct HashMapStorageProvider {
 /// Snapshot of mutable state for checkpoint/revert support.
 ///
 /// PERF: naive cloning strategy due to its limited usage.
-struct Snapshot(HashMap<(Address, U256), U256>);
+struct Snapshot {
+    internals: HashMap<(Address, U256), U256>,
+    events: HashMap<Address, Vec<LogData>>,
+}
 
 impl HashMapStorageProvider {
     pub fn new(chain_id: u64) -> Self {
@@ -164,7 +167,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn checkpoint(&mut self) -> JournalCheckpoint {
         let idx = self.snapshots.len();
-        self.snapshots.push(Snapshot(self.internals.clone()));
+        self.snapshots.push(Snapshot {
+            internals: self.internals.clone(),
+            events: self.events.clone(),
+        });
         JournalCheckpoint {
             log_i: 0,
             journal_i: idx,
@@ -177,7 +183,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
         if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_i..).next() {
-            self.internals = snapshot.0;
+            self.internals = snapshot.internals;
+            self.events = snapshot.events;
         }
     }
 }

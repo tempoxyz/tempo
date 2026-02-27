@@ -1,7 +1,7 @@
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
 use revm::{
-    context::{Block, CfgEnv},
+    context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
     state::{AccountInfo, Bytecode},
 };
@@ -242,7 +242,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn checkpoint(&mut self) -> revm::context::journaled_state::JournalCheckpoint {
+    fn checkpoint(&mut self) -> JournalCheckpoint {
         self.internals.checkpoint()
     }
 
