@@ -113,6 +113,7 @@ serde-bincode-compat = [
 	"alloy-rpc-types-eth?/serde-bincode-compat",
 ]
 arbitrary = [
+	"std",
 	"dep:arbitrary",
 	"serde",
 	"alloy-consensus/arbitrary",

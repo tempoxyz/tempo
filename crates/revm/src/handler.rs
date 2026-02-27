@@ -74,7 +74,9 @@ const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
-/// See TIP-1009 for full specification.
+/// See [TIP-1009] for full specification.
+///
+/// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
 ///
 /// Operations charged:
 /// - 2 cold SLOADs: `seen[tx_hash]`, `ring[idx]` (unique slots per tx)
@@ -3251,11 +3253,13 @@ mod tests {
 
     /// Test that T1 hardfork correctly charges 250k gas for nonce == 0.
     ///
-    /// This test validates TIP-1000's requirement:
+    /// This test validates [TIP-1000]'s requirement:
     /// "Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas"
     ///
     /// The test proves the audit finding (claiming only 22,100 gas is charged) is a false positive
     /// by using delta-based assertions: gas(nonce=0) - gas(nonce>0) == new_account_cost.
+    ///
+    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_t1_2d_nonce_key_charges_250k_gas() {
         use crate::gas_params::tempo_gas_params;
@@ -3351,12 +3355,14 @@ mod tests {
 
     /// Test that T1 hardfork correctly charges 5k gas for existing 2D nonce keys (nonce > 0).
     ///
-    /// This test validates TIP-1000 Invariant 3:
+    /// This test validates [TIP-1000] Invariant 3:
     /// "SSTORE operations that modify existing non-zero state (non-zero to non-zero)
     /// MUST continue to charge 5,000 gas"
     ///
     /// When using an existing 2D nonce key (nonce_key != 0 && nonce > 0), the nonce value
     /// transitions from N to N+1 (non-zero to non-zero), which must charge EXISTING_NONCE_KEY_GAS.
+    ///
+    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_t1_existing_2d_nonce_key_charges_5k_gas() {
         use crate::gas_params::tempo_gas_params;

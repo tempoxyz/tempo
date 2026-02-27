@@ -57,8 +57,10 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
 /// TIP-20 token contract — the native token standard on Tempo.
 ///
 /// Implements ERC-20-like functionality (balances, allowances, transfers) with additional
-/// features: role-based access control, pausability, supply caps, transfer policies (TIP-403),
+/// features: role-based access control, pausability, supply caps, transfer policies ([TIP-403]),
 /// and opt-in staking rewards.
+///
+/// [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
 ///
 /// Each token lives at a deterministic address with the `0x20C0` prefix.
 ///
@@ -793,7 +795,9 @@ impl TIP20Token {
     }
 
     /// Checks if the transfer is authorized.
-    /// TIP-1015: For T2+, uses directional sender/recipient checks.
+    /// [TIP-1015]: For T2+, uses directional sender/recipient checks.
+    ///
+    /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
         let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();

@@ -29,6 +29,10 @@ use tempo_precompiles::{
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
+/// Evict transactions this many seconds before they expire to prevent broadcasting
+/// near-expiry txs that peers would reject as bad transactions.
+const EVICTION_BUFFER_SECS: u64 = 3;
+
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
 /// Collects all invalidation events from a block into a single structure,
@@ -548,12 +552,16 @@ where
                     .map(|tx| *tx.tx_hash())
                     .collect();
 
+                // Evict transactions slightly before they expire to prevent
+                // broadcasting near-expiry txs that peers would reject.
+                let max_expiry = tip_timestamp.saturating_add(EVICTION_BUFFER_SECS);
+
                 // Add expired transactions (from local tracking state)
-                let expired = state.drain_expired(tip_timestamp);
+                let expired = state.drain_expired(max_expiry);
                 updates.expired_txs = expired.into_iter().filter(|h| pool.contains(h)).collect();
 
                 // Add transactions using expired keychain keys
-                let key_expired = state.key_expiry.drain_expired(tip_timestamp);
+                let key_expired = state.key_expiry.drain_expired(max_expiry);
                 let key_expired: Vec<TxHash> =
                     key_expired.into_iter().filter(|h| pool.contains(h)).collect();
 

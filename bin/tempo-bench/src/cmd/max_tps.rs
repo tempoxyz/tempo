@@ -178,9 +178,11 @@ pub struct MaxTpsArgs {
 
     /// Use 2D nonces instead of expiring nonces.
     ///
-    /// By default, tempo-bench uses expiring nonces (TIP-1009) which use a circular buffer
+    /// By default, tempo-bench uses expiring nonces ([TIP-1009]) which use a circular buffer
     /// for replay protection, avoiding state bloat. Use this flag to switch to 2D nonces
     /// which store nonce state per (address, nonce_key) pair.
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[arg(long)]
     use_2d_nonces: bool,
 

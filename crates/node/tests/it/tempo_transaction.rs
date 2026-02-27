@@ -5296,11 +5296,11 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     println!("Current block timestamp for TEST 2: {test2_timestamp}, using nonce: {nonce}");
 
     // Set expiry to just enough time in the future to authorize and use the key once
-    // Each block advances timestamp by ~1 second, so 3 seconds should be enough for:
+    // Each block advances timestamp by ~1 second, so 5 seconds should be enough for:
     // - authorization tx (1 block)
     // - use key tx (1 block)
     // Then after expiry, advancing a few more blocks should exceed the expiry
-    let short_expiry_timestamp = test2_timestamp + 3;
+    let short_expiry_timestamp = test2_timestamp + 5;
     println!("Setting key expiry to: {short_expiry_timestamp} (current: {test2_timestamp})");
 
     let short_expiry_key_auth = create_key_authorization(

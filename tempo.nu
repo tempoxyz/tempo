@@ -126,7 +126,7 @@ def "main kill" [
 
     # Remove stale IPC socket
     if $has_stale_ipc {
-        rm /tmp/reth.ipc
+        rm --force /tmp/reth.ipc
         print "Removed /tmp/reth.ipc"
     }
     print "Done."
@@ -214,7 +214,7 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
     let datadir = $"($LOCALNET_DIR)/reth"
     let log_dir = $"($LOCALNET_DIR)/logs"
 
-    let args = (build-base-args $genesis_path $datadir $log_dir 8545 9001)
+    let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
         | append (build-dev-args)
         | append (log-filter-args $loud)
         | append $extra_args
@@ -225,16 +225,16 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
 }
 
 # Build base node arguments shared between dev and consensus modes
-def build-base-args [genesis_path: string, datadir: string, log_dir: string, http_port: int, reth_metrics_port: int] {
+def build-base-args [genesis_path: string, datadir: string, log_dir: string, bind_ip: string, http_port: int, reth_metrics_port: int] {
     [
         "node"
         "--chain" $genesis_path
         "--datadir" $datadir
         "--http"
-        "--http.addr" "0.0.0.0"
+        "--http.addr" $bind_ip
         "--http.port" $"($http_port)"
         "--http.api" "all"
-        "--metrics" $"0.0.0.0:($reth_metrics_port)"
+        "--metrics" $"($bind_ip):($reth_metrics_port)"
         "--log.file.directory" $log_dir
         "--faucet.enabled"
         "--faucet.private-key" "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -274,9 +274,9 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
             }
             rm -rf $LOCALNET_DIR
 
-            # Generate validator addresses (port 8000, 8100, 8200, ...)
-            # Using 100-port gaps to avoid collisions with system services (e.g., Intuit on 8021)
-            let validators = (0..<$nodes | each { |i| $"127.0.0.1:($i * 100 + 8000)" } | str join ",")
+            # Generate validator addresses with distinct loopback IPs (required by ValidatorConfigV2
+            # ingress uniqueness check which is per-IP, not per-socket-address)
+            let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
             cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators $validators --force | ignore
@@ -290,9 +290,10 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
     let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
     let trusted_peers = ($validator_dirs | each { |d|
         let addr = ($d | path basename)
+        let ip = ($addr | split row ":" | get 0)
         let port = ($addr | split row ":" | get 1 | into int)
         let identity = (open $"($d)/enode.identity" | str trim)
-        $"enode://($identity)@127.0.0.1:($port + 1)"
+        $"enode://($identity)@($ip):($port + 1)"
     } | str join ",")
 
     print $"Found ($validator_dirs | length) validator configs"
@@ -301,6 +302,24 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
         "./target/debug/tempo"
     } else {
         $"./target/($profile)/tempo"
+    }
+
+    # Ensure loopback aliases exist for distinct validator IPs (macOS only has 127.0.0.1 by default)
+    if (sys host | get name) == "Darwin" {
+        let extra_ips = ($validator_dirs | each { |d| $d | path basename | split row ":" | get 0 } | where { |ip| $ip != "127.0.0.1" })
+        if ($extra_ips | length) > 0 {
+            print $"Adding macOS loopback aliases for validator IPs: ($extra_ips | str join ', ') \(sudo required\)..."
+        }
+        for dir in $validator_dirs {
+            let ip = ($dir | path basename | split row ":" | get 0)
+            if $ip != "127.0.0.1" {
+                try { sudo ifconfig lo0 alias $ip up } catch { |e|
+                    print $"(ansi red)Failed to add loopback alias ($ip): ($e.msg)(ansi reset)"
+                    print "Run: sudo ifconfig lo0 alias $ip up"
+                    exit 1
+                }
+            }
+        }
     }
 
     # Start background nodes first (all except node 0)
@@ -361,12 +380,14 @@ def build-consensus-node-args [node_dir: string, genesis_path: string, trusted_p
     let http_port = 8545 + $node_index
     let reth_metrics_port = 9001 + $node_index
 
-    (build-base-args $genesis_path $node_dir $log_dir $http_port $reth_metrics_port)
+    (build-base-args $genesis_path $node_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
         | append (build-consensus-args $node_dir $trusted_peers $port)
 }
 
 # Build consensus mode specific arguments
 def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
+    let addr = ($node_dir | path basename)
+    let ip = ($addr | split row ":" | get 0)
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
@@ -374,18 +395,22 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
     let execution_p2p_port = $port + 1
     let metrics_port = $port + 2
     let authrpc_port = $port + 3
+    let discv5_port = $port + 4
 
     [
         "--consensus.signing-key" $signing_key
         "--consensus.signing-share" $signing_share
-        "--consensus.listen-address" $"127.0.0.1:($port)"
-        "--consensus.metrics-address" $"127.0.0.1:($metrics_port)"
+        "--consensus.listen-address" $"($ip):($port)"
+        "--consensus.metrics-address" $"($ip):($metrics_port)"
         "--trusted-peers" $trusted_peers
         "--port" $"($execution_p2p_port)"
         "--discovery.port" $"($execution_p2p_port)"
+        "--discovery.v5.port" $"($discv5_port)"
         "--p2p-secret-key" $enode_key
         "--authrpc.port" $"($authrpc_port)"
         "--consensus.fee-recipient" "0x0000000000000000000000000000000000000000"
+        "--consensus.use-local-defaults"
+        "--consensus.bypass-ip-check"
     ]
 }
 
@@ -864,7 +889,7 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
             let datadir = $"($LOCALNET_DIR)/reth-cov"
             let log_dir = $"($LOCALNET_DIR)/logs-cov"
             rm -rf $datadir
-            let args = (build-base-args $genesis_path $datadir $log_dir 8545 9001)
+            let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
                 | append (build-dev-args)
                 | append ["--log.stdout.filter" "warn"]
                 | append [
@@ -1045,6 +1070,7 @@ def main [] {
     print "  P2P:           8001 + N*100"
     print "  Metrics:       8002 + N*100"
     print "  AuthRPC:       8003 + N*100"
+    print "  Discv5:        8004 + N*100"
     print "  HTTP RPC:      8545 + N"
     print "  Reth Metrics:  9001 + N"
 }

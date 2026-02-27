@@ -357,13 +357,13 @@ pub enum TempoPoolTransactionError {
     #[error("Expiring nonce transactions must have nonce == 0")]
     ExpiringNonceNonceNotZero,
 
-    /// Thrown when an access key has expired.
-    #[error("Access key expired: expiry {expiry} <= current time {current_time}")]
-    AccessKeyExpired { expiry: u64, current_time: u64 },
+    /// Thrown when an access key has expired or is expiring within the propagation buffer.
+    #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
+    AccessKeyExpired { expiry: u64, min_allowed: u64 },
 
-    /// Thrown when a KeyAuthorization has expired.
-    #[error("KeyAuthorization expired: expiry {expiry} <= current time {current_time}")]
-    KeyAuthorizationExpired { expiry: u64, current_time: u64 },
+    /// Thrown when a KeyAuthorization has expired or is expiring within the propagation buffer.
+    #[error("KeyAuthorization expired: expiry {expiry} <= min allowed {min_allowed}")]
+    KeyAuthorizationExpired { expiry: u64, min_allowed: u64 },
 
     /// Thrown when a keychain transaction's fee token cost exceeds the spending limit.
     #[error(
@@ -785,6 +785,20 @@ mod tests {
                     fee_payer: Address::ZERO,
                 },
                 false,
+            ),
+            (
+                TempoPoolTransactionError::AccessKeyExpired {
+                    expiry: 100,
+                    min_allowed: 200,
+                },
+                true,
+            ),
+            (
+                TempoPoolTransactionError::KeyAuthorizationExpired {
+                    expiry: 100,
+                    min_allowed: 200,
+                },
+                true,
             ),
             (TempoPoolTransactionError::InvalidFeePayerSignature, true),
             (TempoPoolTransactionError::NonZeroValue, true),
