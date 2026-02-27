@@ -96,6 +96,11 @@ pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
     precompiles
 }
 
+/// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
+/// lookup function that matches addresses to their precompile: TIP-20 tokens (by prefix),
+/// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
+/// AccountKeychain, and ValidatorConfigV2. Each precompile is wrapped via the `tempo_precompile!`
+/// macro which enforces direct-call-only (no delegatecall) and sets up the storage context.
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
     let cfg = cfg.clone();
 
