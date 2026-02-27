@@ -256,7 +256,7 @@ impl TIP20Setup {
 
     /// Initialize pathUSD if needed and return it.
     fn path_usd_inner(&self) -> Result<TIP20Token> {
-        if is_initialized(PATH_USD_ADDRESS) {
+        if is_initialized(PATH_USD_ADDRESS)? {
             return TIP20Token::from_address(PATH_USD_ADDRESS);
         }
 
@@ -279,7 +279,7 @@ impl TIP20Setup {
     /// Initialize the TIP20 factory if needed.
     pub fn factory() -> Result<TIP20Factory> {
         let mut factory = TIP20Factory::new();
-        if !is_initialized(TIP20_FACTORY_ADDRESS) {
+        if !is_initialized(TIP20_FACTORY_ADDRESS)? {
             factory.initialize()?;
         }
         Ok(factory)
@@ -315,7 +315,7 @@ impl TIP20Setup {
             }
             Action::ConfigureToken { address } => {
                 assert!(
-                    is_initialized(address),
+                    is_initialized(address)?,
                     "token not initialized, use `fn create` instead"
                 );
                 TIP20Token::from_address(address)?
@@ -375,7 +375,7 @@ impl TIP20Setup {
 
 /// Checks if a contract at the given address has bytecode deployed.
 #[cfg(any(test, feature = "test-utils"))]
-fn is_initialized(address: Address) -> bool {
+fn is_initialized(address: Address) -> Result<bool> {
     crate::storage::StorageCtx.has_bytecode(address)
 }
 

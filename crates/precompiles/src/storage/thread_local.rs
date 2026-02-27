@@ -344,12 +344,8 @@ impl StorageCtx {
     }
 
     /// Checks if a contract at the given address has bytecode deployed.
-    pub fn has_bytecode(&self, address: Address) -> bool {
-        if let Some(account_info) = self.get_account_info(address) {
-            !account_info.is_empty_code_hash()
-        } else {
-            false
-        }
+    pub fn has_bytecode(&self, address: Address) -> Result<bool> {
+        self.with_account_info(address, |info| Ok(!info.is_empty_code_hash()))
     }
 }
 
