@@ -1277,15 +1277,18 @@ where
             .map_err(TempoInvalidTransaction::from)?;
 
             // Validate keychain signature version (outer + authorization list).
+            // Skip during gas estimation — the mock signature version doesn't affect gas.
             // TODO(tanishk): Pre-T1C V2 rejection can be removed after T1C activation.
-            aa_env
-                .signature
-                .validate_version(cfg.spec().is_t1c())
-                .map_err(TempoInvalidTransaction::from)?;
-            for auth in &aa_env.tempo_authorization_list {
-                auth.signature()
+            if !cfg.is_balance_check_disabled() {
+                aa_env
+                    .signature
                     .validate_version(cfg.spec().is_t1c())
                     .map_err(TempoInvalidTransaction::from)?;
+                for auth in &aa_env.tempo_authorization_list {
+                    auth.signature()
+                        .validate_version(cfg.spec().is_t1c())
+                        .map_err(TempoInvalidTransaction::from)?;
+                }
             }
 
             let has_keychain_fields =
