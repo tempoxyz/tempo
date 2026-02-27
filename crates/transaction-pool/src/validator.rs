@@ -2339,7 +2339,7 @@ mod tests {
                 user_address,
                 key_id,
                 authorized_key_slot_value,
-                Arc::unwrap_or_clone(MODERATO.clone()),
+                moderato_with_t1c(),
             )
         }
 
@@ -2609,13 +2609,33 @@ mod tests {
             )
         }
 
-        /// Helper: sign a KeyAuthorization and build a transaction with it.
+        /// Helper: sign a KeyAuthorization and build a V2 transaction with it.
         fn build_key_auth_tx(
             chain_id: u64,
             access_key_signer: &PrivateKeySigner,
             access_key_address: Address,
             user_signer: &PrivateKeySigner,
             user_address: Address,
+        ) -> TempoPooledTransaction {
+            build_key_auth_tx_versioned(
+                chain_id,
+                access_key_signer,
+                access_key_address,
+                user_signer,
+                user_address,
+                KeychainVersion::V2,
+            )
+        }
+
+        /// Helper: sign a KeyAuthorization and build a transaction with the given
+        /// keychain version.
+        fn build_key_auth_tx_versioned(
+            chain_id: u64,
+            access_key_signer: &PrivateKeySigner,
+            access_key_address: Address,
+            user_signer: &PrivateKeySigner,
+            user_address: Address,
+            version: KeychainVersion,
         ) -> TempoPooledTransaction {
             let key_auth = KeyAuthorization {
                 chain_id,
@@ -2630,10 +2650,11 @@ mod tests {
                 .expect("signing failed");
             let signed_key_auth =
                 key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
-            create_aa_with_keychain_signature(
+            create_aa_with_keychain_signature_versioned(
                 user_address,
                 access_key_signer,
                 Some(signed_key_auth),
+                version,
             )
         }
 
@@ -2643,17 +2664,24 @@ mod tests {
         fn test_key_authorization_chain_id_pre_t1c() -> Result<(), ProviderError> {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
+            let moderato = Arc::unwrap_or_clone(MODERATO.clone());
 
             // chain_id=0 (wildcard) → accepted
-            let tx = build_key_auth_tx(
+            let tx = build_key_auth_tx_versioned(
                 0,
                 &access_key_signer,
                 access_key_address,
                 &user_signer,
                 user_address,
+                KeychainVersion::V1,
             );
-            let validator =
-                setup_validator_with_keychain_storage(&tx, user_address, access_key_address, None);
+            let validator = setup_validator_with_keychain_storage_spec(
+                &tx,
+                user_address,
+                access_key_address,
+                None,
+                moderato.clone(),
+            );
             let sp = validator.inner.client().latest().unwrap();
             let result = validator.validate_against_keychain(&tx, &sp)?;
             assert!(
@@ -2662,15 +2690,21 @@ mod tests {
             );
 
             // chain_id=42431 (matching MODERATO) → accepted
-            let tx = build_key_auth_tx(
+            let tx = build_key_auth_tx_versioned(
                 42431,
                 &access_key_signer,
                 access_key_address,
                 &user_signer,
                 user_address,
+                KeychainVersion::V1,
             );
-            let validator =
-                setup_validator_with_keychain_storage(&tx, user_address, access_key_address, None);
+            let validator = setup_validator_with_keychain_storage_spec(
+                &tx,
+                user_address,
+                access_key_address,
+                None,
+                moderato.clone(),
+            );
             let sp = validator.inner.client().latest().unwrap();
             let result = validator.validate_against_keychain(&tx, &sp)?;
             assert!(
@@ -2679,15 +2713,21 @@ mod tests {
             );
 
             // chain_id=99999 (wrong) → rejected
-            let tx = build_key_auth_tx(
+            let tx = build_key_auth_tx_versioned(
                 99999,
                 &access_key_signer,
                 access_key_address,
                 &user_signer,
                 user_address,
+                KeychainVersion::V1,
             );
-            let validator =
-                setup_validator_with_keychain_storage(&tx, user_address, access_key_address, None);
+            let validator = setup_validator_with_keychain_storage_spec(
+                &tx,
+                user_address,
+                access_key_address,
+                None,
+                moderato,
+            );
             let sp = validator.inner.client().latest().unwrap();
             let result = validator.validate_against_keychain(&tx, &sp);
             assert!(

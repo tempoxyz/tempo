@@ -6140,12 +6140,15 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
 async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Pre-T1C genesis so V1 keychain sigs are accepted
+    // Pre-T1C genesis so V1 keychain sigs are accepted.
+    // Set t1cTime and t2Time far in the future instead of removing them,
+    // because the genesis deserializer requires all hardfork fields.
     let genesis_json = include_str!("../assets/test-genesis.json").to_string();
     let mut genesis: serde_json::Value = serde_json::from_str(&genesis_json)?;
     let config = genesis["config"].as_object_mut().unwrap();
-    config.remove("t1cTime");
-    config.remove("t2Time");
+    let far_future = serde_json::Value::Number(serde_json::Number::from(u64::MAX));
+    config.insert("t1cTime".to_string(), far_future.clone());
+    config.insert("t2Time".to_string(), far_future);
     let mut setup = TestNodeBuilder::new()
         .with_genesis(serde_json::to_string(&genesis)?)
         .build_with_node_access()
@@ -6250,11 +6253,7 @@ async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
         .await
         .expect("V1 cross-account replay enters pool pre-T1C");
     setup.node.advance_block().await?;
-    let receipt = provider
-        .get_transaction_receipt(*replay_env.tx_hash())
-        .await?
-        .expect("replay tx receipt must exist");
-    assert!(receipt.status(),);
+    assert_receipt_status(&provider, *replay_env.tx_hash(), true).await?;
 
     Ok(())
 }
