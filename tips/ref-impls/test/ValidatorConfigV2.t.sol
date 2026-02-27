@@ -332,7 +332,7 @@ contract ValidatorConfigV2Test is BaseTest {
         );
 
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getActiveValidators();
-        assertEq(vals.length, 4); // 2 setup + rotated
+        assertEq(vals.length, 3); // 2 setup + rotated
         assertEq(vals[2].validatorAddress, validator1);
         assertEq(vals[2].publicKey, PUB_KEY_3);
         assertEq(vals[2].addedAtHeight, uint64(block.number));
@@ -363,8 +363,8 @@ contract ValidatorConfigV2Test is BaseTest {
         );
 
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getActiveValidators();
-        assertEq(vals.length, 4); // 2 setup + rotated
-        assertEq(vals[3].publicKey, PUB_KEY_3);
+        assertEq(vals.length, 3); // 2 setup + rotated
+        assertEq(vals[2].publicKey, PUB_KEY_3);
     }
 
     function test_rotateValidator_fail() public {
