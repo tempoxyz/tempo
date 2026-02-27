@@ -7,12 +7,11 @@ use crate::transaction::TempoPooledTransaction;
 use alloy_consensus::{Transaction, TxEip1559};
 use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{Address, B256, Signature, TxKind, U256};
-use reth_chainspec::ForkCondition;
 use reth_primitives_traits::Recovered;
 use reth_provider::test_utils::MockEthProvider;
 use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
 use std::time::Instant;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::MODERATO};
+use tempo_chainspec::{TempoChainSpec, spec::DEV};
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
@@ -78,7 +77,7 @@ impl Default for TxBuilder {
             fee_token: None,
             valid_after: None,
             valid_before: None,
-            chain_id: 42431, // MODERATO chain_id
+            chain_id: 1337, // DEV chain_id
             calls: None,
             authorization_list: None,
             access_list: Default::default(),
@@ -349,12 +348,8 @@ pub(crate) fn wrap_valid_tx(
     }
 }
 
-/// Creates a mock provider configured with a MODERATO-based chain spec with T1C enabled.
+/// Creates a mock provider configured with the DEV chain spec (all hardforks active).
 pub(crate) fn create_mock_provider()
 -> MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec> {
-    let mut spec = std::sync::Arc::unwrap_or_clone(MODERATO.clone());
-    spec.inner
-        .hardforks
-        .extend([(TempoHardfork::T1C, ForkCondition::Timestamp(0))]);
-    MockEthProvider::default().with_chain_spec(spec)
+    MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(DEV.clone()))
 }

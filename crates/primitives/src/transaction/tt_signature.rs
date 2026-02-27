@@ -364,6 +364,7 @@ impl reth_codecs::Compact for PrimitiveSignature {
 pub enum KeychainVersion {
     /// Legacy (V1): inner signature signs `sig_hash` directly.
     /// Deprecated at T1C.
+    /// TODO(tanishk): change default to V2 after T1C
     #[default]
     V1,
     /// V2: inner signature signs `keccak256(sig_hash || user_address)`.

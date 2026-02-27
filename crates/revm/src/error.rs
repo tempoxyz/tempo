@@ -212,6 +212,8 @@ pub enum TempoInvalidTransaction {
     /// V2 signatures (type 0x04) are only valid after the T1C hardfork activates.
     /// Rejecting them before activation prevents chain splits between upgraded and
     /// non-upgraded nodes.
+    ///
+    /// TODO(tanishk): This variant can be removed after T1C activation on all networks.
     #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
     V2KeychainBeforeActivation,
 
