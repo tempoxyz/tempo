@@ -403,26 +403,18 @@ impl KeyExpiryTracker {
 
     /// Removes a single transaction hash from key expiry tracking.
     fn untrack(&mut self, hash: &TxHash) {
-        let Some(key) = self.tx_to_key.remove(hash) else {
-            return;
-        };
+        let Some(key) = self.tx_to_key.remove(hash) else { return };
 
-        let alloy_primitives::map::Entry::Occupied(mut key_entry) = self.key_to_txs.entry(key)
-        else {
-            return;
-        };
+        let Some((expiry, txs)) = self.key_to_txs.get_mut(&key) else { return };
+        txs.remove(hash);
 
-        // Remove this tx from the key's tx set. `key_to_txs` values are `(expiry, txs)`.
-        key_entry.get_mut().1.remove(hash);
-
-        // If no transactions remain for this key, clean up its corresponding entry.
-        if key_entry.get().1.is_empty() {
-            let (key, (expiry, _)) = key_entry.remove_entry();
-
-            if let Entry::Occupied(mut exp) = self.expiry_map.entry(expiry) {
-                exp.get_mut().remove(&key);
-                if exp.get().is_empty() {
-                    exp.remove();
+        if txs.is_empty() {
+            let expiry = *expiry;
+            self.key_to_txs.remove(&key);
+            if let Some(keys) = self.expiry_map.get_mut(&expiry) {
+                keys.remove(&key);
+                if keys.is_empty() {
+                    self.expiry_map.remove(&expiry);
                 }
             }
         }
