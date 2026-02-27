@@ -13,8 +13,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "${EVENTS_KEY}" > ${{ runner.temp }}/key
-          echo "${EVENTS_CERT}" > ${{ runner.temp }}/cert
+          echo "${{ secrets.EVENTS_KEY }}" > ${{ runner.temp }}/key
+          echo "${{ secrets.EVENTS_CERT }}" > ${{ runner.temp }}/cert
 
           curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
             -H "Content-Type: application/json" \
