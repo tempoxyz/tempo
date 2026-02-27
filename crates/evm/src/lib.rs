@@ -305,7 +305,9 @@ mod tests {
         assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
     }
 
-    /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per TIP-1000.
+    /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per [TIP-1000].
+    ///
+    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_evm_env_t1_gas_cap() {
         use tempo_chainspec::spec::DEV;

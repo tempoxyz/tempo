@@ -38,12 +38,16 @@ pub const TEMPO_T0_BASE_FEE: u64 = 10_000_000_000;
 /// - Economic: 1,000 microdollars = 0.001 USD = 0.1 cents
 pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
 
-/// TIP-1010 general (non-payment) gas limit: 30 million gas per block.
+/// [TIP-1010] general (non-payment) gas limit: 30 million gas per block.
 /// Cap for non-payment transactions.
+///
+/// [TIP-1010]: <https://docs.tempo.xyz/protocol/tips/tip-1010>
 pub const TEMPO_T1_GENERAL_GAS_LIMIT: u64 = 30_000_000;
 
 /// TIP-1010 per-transaction gas limit cap: 30 million gas.
-/// Allows maximum-sized contract deployments under TIP-1000 state creation costs.
+/// Allows maximum-sized contract deployments under [TIP-1000] state creation costs.
+///
+/// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
 pub const TEMPO_T1_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
 
 // End-of-block system transactions

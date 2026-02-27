@@ -43,8 +43,10 @@ pub struct TipFeeManager {
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
-    /// T2+: The fee token used for the current transaction (TIP-1007).
+    /// T2+: The fee token used for the current transaction ([TIP-1007]).
     /// Set by the handler before execution, read via `getFeeToken()`.
+    ///
+    /// [TIP-1007]: <https://docs.tempo.xyz/protocol/tips/tip-1007>
     tx_fee_token: Address,
 }
 

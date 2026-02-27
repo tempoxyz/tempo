@@ -291,7 +291,9 @@ mod tests {
     }
 
     /// Create an EVM with T1 hardfork enabled and a funded account.
-    /// This applies TIP-1000 gas params via `tempo_gas_params()`.
+    /// This applies [TIP-1000] gas params via `tempo_gas_params()`.
+    ///
+    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     fn create_funded_evm_t1(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
