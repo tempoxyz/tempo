@@ -6046,7 +6046,6 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     println!("  ✓ Wrong chain_id KeyAuthorization rejected as expected");
 
     // Test 2: chain_id = 0 (wildcard) should be rejected post-T1C
-    println!("\nTest 2: KeyAuthorization with chain_id = 0 (wildcard) should be rejected post-T1C");
     let key_auth_wildcard = create_key_authorization(
         &root_signer,
         access_key_addr,
@@ -6097,10 +6096,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         error_msg.contains("chain_id does not match"),
         "Error must mention chain_id mismatch. Got: {error_msg}"
     );
-    println!("  ✓ Wildcard chain_id=0 rejected post-T1C as expected");
-
     // Test 3: Matching chain_id should be accepted
-    println!("\nTest 3: KeyAuthorization with matching chain_id should be accepted");
     let key_auth_matching = create_key_authorization(
         &root_signer,
         access_key_addr,
@@ -6139,8 +6135,6 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     )
     .await?;
-    println!("  ✓ Matching chain_id KeyAuthorization accepted (tx: {tx_hash})");
-
     Ok(())
 }
 

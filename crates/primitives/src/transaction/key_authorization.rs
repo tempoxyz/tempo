@@ -283,4 +283,66 @@ mod tests {
         assert!(!make_auth(Some(1000), None).never_expires());
         assert!(!make_auth(Some(0), None).never_expires()); // 0 is still Some
     }
+
+    fn make_auth_with_chain_id(chain_id: u64) -> KeyAuthorization {
+        KeyAuthorization {
+            chain_id,
+            key_type: SignatureType::Secp256k1,
+            key_id: Address::random(),
+            expiry: None,
+            limits: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_chain_id_pre_t1c() {
+        let expected = 42431;
+
+        // Matching chain_id → ok
+        assert!(
+            make_auth_with_chain_id(expected)
+                .validate_chain_id(expected, false)
+                .is_ok()
+        );
+
+        // Wildcard chain_id=0 → ok pre-T1C
+        assert!(
+            make_auth_with_chain_id(0)
+                .validate_chain_id(expected, false)
+                .is_ok()
+        );
+
+        // Wrong chain_id → err
+        let err = make_auth_with_chain_id(999)
+            .validate_chain_id(expected, false)
+            .unwrap_err();
+        assert_eq!(err.expected, expected);
+        assert_eq!(err.got, 999);
+    }
+
+    #[test]
+    fn test_validate_chain_id_post_t1c() {
+        let expected = 42431;
+
+        // Matching chain_id → ok
+        assert!(
+            make_auth_with_chain_id(expected)
+                .validate_chain_id(expected, true)
+                .is_ok()
+        );
+
+        // Wildcard chain_id=0 → rejected post-T1C
+        let err = make_auth_with_chain_id(0)
+            .validate_chain_id(expected, true)
+            .unwrap_err();
+        assert_eq!(err.expected, expected);
+        assert_eq!(err.got, 0);
+
+        // Wrong chain_id → rejected
+        let err = make_auth_with_chain_id(999)
+            .validate_chain_id(expected, true)
+            .unwrap_err();
+        assert_eq!(err.expected, expected);
+        assert_eq!(err.got, 999);
+    }
 }
