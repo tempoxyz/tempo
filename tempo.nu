@@ -22,9 +22,9 @@ const PRESETS = {
 # Helper functions
 # ============================================================================
 
-# Convert consensus port to node index (e.g., 8000 -> 0, 8100 -> 1)
-def port-to-node-index [port: int] {
-    ($port - 8000) / 100 | into int
+# Convert validator IP to node index (e.g., 127.0.0.1 -> 0, 127.0.0.2 -> 1)
+def ip-to-node-index [ip: string] {
+    ($ip | split row "." | get 3 | into int) - 1
 }
 
 # Build log filter args based on --loud flag
@@ -214,7 +214,7 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
     let datadir = $"($LOCALNET_DIR)/reth"
     let log_dir = $"($LOCALNET_DIR)/logs"
 
-    let args = (build-base-args $genesis_path $datadir $log_dir 8545 9001)
+    let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
         | append (build-dev-args)
         | append (log-filter-args $loud)
         | append $extra_args
@@ -225,16 +225,16 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
 }
 
 # Build base node arguments shared between dev and consensus modes
-def build-base-args [genesis_path: string, datadir: string, log_dir: string, http_port: int, reth_metrics_port: int] {
+def build-base-args [genesis_path: string, datadir: string, log_dir: string, bind_ip: string, http_port: int, reth_metrics_port: int] {
     [
         "node"
         "--chain" $genesis_path
         "--datadir" $datadir
         "--http"
-        "--http.addr" "0.0.0.0"
+        "--http.addr" $bind_ip
         "--http.port" $"($http_port)"
         "--http.api" "all"
-        "--metrics" $"0.0.0.0:($reth_metrics_port)"
+        "--metrics" $"($bind_ip):($reth_metrics_port)"
         "--log.file.directory" $log_dir
         "--faucet.enabled"
         "--faucet.private-key" "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -274,9 +274,8 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
             }
             rm -rf $LOCALNET_DIR
 
-            # Generate validator addresses (port 8000, 8100, 8200, ...)
-            # Using 100-port gaps to avoid collisions with system services (e.g., Intuit on 8021)
-            let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
+            # Generate validator addresses with distinct loopback IPs and fixed port
+            let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):8000" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
             cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators $validators --force | ignore
@@ -333,20 +332,20 @@ def run-consensus-node [
     background: bool
 ] {
     let addr = ($node_dir | path basename)
-    let port = ($addr | split row ":" | get 1 | into int)
-    let node_index = (port-to-node-index $port)
+    let ip = ($addr | split row ":" | get 0)
+    let node_index = (ip-to-node-index $ip)
     let http_port = 8545 + $node_index
 
     let log_dir = $"($LOGS_DIR)/($addr)"
     mkdir $log_dir
 
-    let args = (build-consensus-node-args $node_dir $genesis_path $trusted_peers $port $log_dir)
+    let args = (build-consensus-node-args $node_dir $genesis_path $trusted_peers $log_dir)
         | append (log-filter-args $loud)
         | append $extra_args
 
     let cmd = wrap-samply [$tempo_bin ...$args] $samply $samply_args
 
-    print $"  Node ($addr) -> http://localhost:($http_port)(if $background { '' } else { ' (foreground)' })"
+    print $"  Node ($addr) -> http://($ip):($http_port)(if $background { '' } else { ' (foreground)' })"
 
     if $background {
         job spawn { sh -c $"($cmd | str join ' ') 2>&1" | lines | each { |line| print $"[($addr)] ($line)" } }
@@ -357,37 +356,34 @@ def run-consensus-node [
 }
 
 # Build full node arguments for consensus mode
-def build-consensus-node-args [node_dir: string, genesis_path: string, trusted_peers: string, port: int, log_dir: string] {
-    let node_index = (port-to-node-index $port)
-    let http_port = 8545 + $node_index
-    let reth_metrics_port = 9001 + $node_index
+def build-consensus-node-args [node_dir: string, genesis_path: string, trusted_peers: string, log_dir: string] {
+    let addr = ($node_dir | path basename)
+    let ip = ($addr | split row ":" | get 0)
+    let port = ($addr | split row ":" | get 1 | into int)
 
-    (build-base-args $genesis_path $node_dir $log_dir $http_port $reth_metrics_port)
-        | append (build-consensus-args $node_dir $trusted_peers $port)
+    (build-base-args $genesis_path $node_dir $log_dir $ip 8545 9001)
+        | append (build-consensus-args $node_dir $trusted_peers $ip $port)
 }
 
 # Build consensus mode specific arguments
-def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
-    let addr = ($node_dir | path basename)
-    let ip = ($addr | split row ":" | get 0)
+def build-consensus-args [node_dir: string, trusted_peers: string, ip: string, port: int] {
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
-
-    let execution_p2p_port = $port + 1
-    let metrics_port = $port + 2
-    let authrpc_port = $port + 3
 
     [
         "--consensus.signing-key" $signing_key
         "--consensus.signing-share" $signing_share
         "--consensus.listen-address" $"($ip):($port)"
-        "--consensus.metrics-address" $"($ip):($metrics_port)"
+        "--consensus.metrics-address" $"($ip):(($port) + 2)"
         "--trusted-peers" $trusted_peers
-        "--port" $"($execution_p2p_port)"
-        "--discovery.port" $"($execution_p2p_port)"
+        "--port" $"(($port) + 1)"
+        "--discovery.port" $"(($port) + 1)"
+        "--discovery.addr" $ip
+        "--addr" $ip
         "--p2p-secret-key" $enode_key
-        "--authrpc.port" $"($authrpc_port)"
+        "--authrpc.port" $"(($port) + 3)"
+        "--authrpc.addr" $ip
         "--consensus.fee-recipient" "0x0000000000000000000000000000000000000000"
     ]
 }
@@ -477,7 +473,7 @@ def "main bench" [
     # Wait for nodes to be ready
     sleep 2sec
     print "Waiting for nodes to be ready..."
-    let rpc_urls = (0..<$num_nodes | each { |i| $"http://localhost:(8545 + $i)" })
+    let rpc_urls = (0..<$num_nodes | each { |i| $"http://127.0.0.($i + 1):8545" })
     for url in $rpc_urls {
         wait-for-rpc $url
     }
@@ -867,7 +863,7 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
             let datadir = $"($LOCALNET_DIR)/reth-cov"
             let log_dir = $"($LOCALNET_DIR)/logs-cov"
             rm -rf $datadir
-            let args = (build-base-args $genesis_path $datadir $log_dir 8545 9001)
+            let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
                 | append (build-dev-args)
                 | append ["--log.stdout.filter" "warn"]
                 | append [
@@ -1043,11 +1039,11 @@ def main [] {
     print "  nu tempo.nu localnet --mode dev --samply --accounts 50000 --reset"
     print "  nu tempo.nu localnet --mode consensus --nodes 3"
     print ""
-    print "Port assignments (consensus mode, per node N=0,1,2...):"
-    print "  Consensus:     8000 + N*100"
-    print "  P2P:           8001 + N*100"
-    print "  Metrics:       8002 + N*100"
-    print "  AuthRPC:       8003 + N*100"
-    print "  HTTP RPC:      8545 + N"
-    print "  Reth Metrics:  9001 + N"
+    print "Port assignments (consensus mode, per node N=0,1,2... on 127.0.0.(N+1)):"
+    print "  Consensus:     127.0.0.(N+1):8000"
+    print "  P2P:           127.0.0.(N+1):8001"
+    print "  Metrics:       127.0.0.(N+1):8002"
+    print "  AuthRPC:       127.0.0.(N+1):8003"
+    print "  HTTP RPC:      127.0.0.(N+1):8545"
+    print "  Reth Metrics:  127.0.0.(N+1):9001"
 }
