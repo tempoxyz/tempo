@@ -2074,9 +2074,9 @@ dependencies = [
 
 [[package]]
 name = "c-kzg"
-version = "2.1.5"
+version = "2.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e00bf4b112b07b505472dbefd19e37e53307e2bfed5a79e0cc161d58ccd0e687"
+checksum = "1a0f582957c24870b7bfd12bf562c40b4734b533cafbaf8ded31d6d85f462c01"
 dependencies = [
  "arbitrary",
  "blst",
@@ -11816,13 +11816,19 @@ dependencies = [
  "pyroscope",
  "pyroscope_pprofrs",
  "rand 0.8.5",
+ "reth-chainspec",
+ "reth-cli",
  "reth-cli-commands",
  "reth-cli-runner",
  "reth-cli-util",
+ "reth-db-api",
  "reth-ethereum",
  "reth-ethereum-cli",
  "reth-node-builder",
+ "reth-primitives-traits",
+ "reth-provider",
  "reth-rpc-server-types",
+ "reth-storage-api",
  "rustls",
  "serde",
  "serde_json",
@@ -12420,6 +12426,7 @@ dependencies = [
  "alloy",
  "alloy-primitives",
  "clap",
+ "coins-bip32",
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
@@ -12442,6 +12449,7 @@ dependencies = [
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-precompiles",
+ "tempo-primitives",
  "tempo-revm",
  "tokio",
 ]
@@ -14486,18 +14494,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.39"
+version = "0.8.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db6d35d663eadb6c932438e763b262fe1a70987f9ae936e60158176d710cae4a"
+checksum = "a789c6e490b576db9f7e6b6d661bcc9799f7c0ac8352f56ea20193b2681532e5"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.39"
+version = "0.8.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4122cd3169e94605190e77839c9a40d40ed048d305bfdc146e7df40ab0f3e517"
+checksum = "f65c489a7071a749c849713807783f70672b28094011623e200cb86dcb835953"
 dependencies = [
  "proc-macro2",
  "quote",

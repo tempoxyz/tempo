@@ -313,7 +313,7 @@ fn create_signed_key_authorization(
     };
 
     let authorization = KeyAuthorization {
-        chain_id: 0, // Wildcard - valid on any chain
+        chain_id: 1337, // Must match test genesis chain_id (T1C rejects wildcard 0)
         key_type,
         key_id: Address::random(), // Random key being authorized
         expiry: None,              // Never expires
@@ -5412,11 +5412,11 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     println!("Current block timestamp for TEST 2: {test2_timestamp}, using nonce: {nonce}");
 
     // Set expiry to just enough time in the future to authorize and use the key once
-    // Each block advances timestamp by ~1 second, so 3 seconds should be enough for:
+    // Each block advances timestamp by ~1 second, so 5 seconds should be enough for:
     // - authorization tx (1 block)
     // - use key tx (1 block)
     // Then after expiry, advancing a few more blocks should exceed the expiry
-    let short_expiry_timestamp = test2_timestamp + 3;
+    let short_expiry_timestamp = test2_timestamp + 5;
     println!("Setting key expiry to: {short_expiry_timestamp} (current: {test2_timestamp})");
 
     let short_expiry_key_auth = create_key_authorization(
@@ -6143,7 +6143,9 @@ async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
     // Pre-T1C genesis so V1 keychain sigs are accepted
     let genesis_json = include_str!("../assets/test-genesis.json").to_string();
     let mut genesis: serde_json::Value = serde_json::from_str(&genesis_json)?;
-    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
+    let config = genesis["config"].as_object_mut().unwrap();
+    config.remove("t1cTime");
+    config.remove("t2Time");
     let mut setup = TestNodeBuilder::new()
         .with_genesis(serde_json::to_string(&genesis)?)
         .build_with_node_access()
@@ -6426,15 +6428,14 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     );
     println!("  ✓ Wrong chain_id KeyAuthorization rejected as expected");
 
-    // Test 2: chain_id = 0 (wildcard) should be accepted
-    println!("\nTest 2: KeyAuthorization with chain_id = 0 (wildcard) should be accepted");
+    // Test 2: chain_id = 0 (wildcard) should be rejected post-T1C
     let key_auth_wildcard = create_key_authorization(
         &root_signer,
         access_key_addr,
-        mock_p256_sig,
+        mock_p256_sig.clone(),
         0,    // Wildcard chain_id
         None, // Never expires
-        Some(spending_limits),
+        Some(spending_limits.clone()),
     )?;
 
     let tx_wildcard = TempoTransaction {
@@ -6460,14 +6461,63 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
 
     let sig_hash = tx_wildcard.signature_hash();
     let signature = root_signer.sign_hash_sync(&sig_hash)?;
-    let tx_hash = submit_and_mine_aa_tx(
-        &mut setup,
+    let signed_tx = AASigned::new_unhashed(
         tx_wildcard,
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+    );
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    let inject_result = setup.node.rpc.inject_tx(encoded.into()).await;
+    assert!(
+        inject_result.is_err(),
+        "Transaction with wildcard chain_id=0 MUST be rejected post-T1C"
+    );
+    let error_msg = inject_result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("chain_id does not match"),
+        "Error must mention chain_id mismatch. Got: {error_msg}"
+    );
+    // Test 3: Matching chain_id should be accepted
+    let key_auth_matching = create_key_authorization(
+        &root_signer,
+        access_key_addr,
+        mock_p256_sig,
+        chain_id, // Matching chain_id
+        None,
+        Some(spending_limits),
+    )?;
+
+    let tx_matching = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: Some(key_auth_matching),
+        tempo_authorization_list: vec![],
+    };
+
+    let sig_hash = tx_matching.signature_hash();
+    let signature = root_signer.sign_hash_sync(&sig_hash)?;
+    submit_and_mine_aa_tx(
+        &mut setup,
+        tx_matching,
         TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     )
     .await?;
-    println!("  ✓ Wildcard chain_id KeyAuthorization accepted (tx: {tx_hash})");
-
     Ok(())
 }
 

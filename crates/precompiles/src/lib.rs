@@ -114,23 +114,23 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
 
     precompiles.set_precompile_lookup(move |address: &Address| {
         if is_tip20_prefix(*address) {
-            Some(TIP20Precompile::create(*address, &cfg))
+            Some(TIP20Token::create_precompile(*address, &cfg))
         } else if *address == TIP20_FACTORY_ADDRESS {
-            Some(TIP20FactoryPrecompile::create(&cfg))
+            Some(TIP20Factory::create_precompile(&cfg))
         } else if *address == TIP403_REGISTRY_ADDRESS {
-            Some(TIP403RegistryPrecompile::create(&cfg))
+            Some(TIP403Registry::create_precompile(&cfg))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
-            Some(TipFeeManagerPrecompile::create(&cfg))
+            Some(TipFeeManager::create_precompile(&cfg))
         } else if *address == STABLECOIN_DEX_ADDRESS {
-            Some(StablecoinDEXPrecompile::create(&cfg))
+            Some(StablecoinDEX::create_precompile(&cfg))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
-            Some(NoncePrecompile::create(&cfg))
+            Some(NonceManager::create_precompile(&cfg))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
-            Some(ValidatorConfigPrecompile::create(&cfg))
+            Some(ValidatorConfig::create_precompile(&cfg))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
-            Some(AccountKeychainPrecompile::create(&cfg))
+            Some(AccountKeychain::create_precompile(&cfg))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
-            Some(ValidatorConfigV2Precompile::create(&cfg))
+            Some(ValidatorConfigV2::create_precompile(&cfg))
         } else {
             None
         }
@@ -167,79 +167,68 @@ macro_rules! tempo_precompile {
     }};
 }
 
-/// EVM precompile wrapper for [`TipFeeManager`].
-pub struct TipFeeManagerPrecompile;
-impl TipFeeManagerPrecompile {
-    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TipFeeManager", cfg, |input| { TipFeeManager::new() })
+impl TipFeeManager {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("TipFeeManager", cfg, |input| { Self::new() })
     }
 }
 
-/// EVM precompile wrapper for [`TIP403Registry`].
-pub struct TIP403RegistryPrecompile;
-impl TIP403RegistryPrecompile {
-    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP403Registry", cfg, |input| { TIP403Registry::new() })
+impl TIP403Registry {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("TIP403Registry", cfg, |input| { Self::new() })
     }
 }
 
-/// EVM precompile wrapper for [`TIP20Factory`].
-pub struct TIP20FactoryPrecompile;
-impl TIP20FactoryPrecompile {
-    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP20Factory", cfg, |input| { TIP20Factory::new() })
+impl TIP20Factory {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("TIP20Factory", cfg, |input| { Self::new() })
     }
 }
 
-/// EVM precompile wrapper for [`TIP20Token`].
-pub struct TIP20Precompile;
-impl TIP20Precompile {
-    pub fn create(address: Address, cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+impl TIP20Token {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(address: Address, cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("TIP20Token", cfg, |input| {
-            TIP20Token::from_address(address).expect("TIP20 prefix already verified")
+            Self::from_address(address).expect("TIP20 prefix already verified")
         })
     }
 }
 
-/// EVM precompile wrapper for [`StablecoinDEX`].
-pub struct StablecoinDEXPrecompile;
-impl StablecoinDEXPrecompile {
-    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("StablecoinDEX", cfg, |input| { StablecoinDEX::new() })
+impl StablecoinDEX {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("StablecoinDEX", cfg, |input| { Self::new() })
     }
 }
 
-/// EVM precompile wrapper for [`NonceManager`].
-pub struct NoncePrecompile;
-impl NoncePrecompile {
-    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("NonceManager", cfg, |input| { NonceManager::new() })
+impl NonceManager {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("NonceManager", cfg, |input| { Self::new() })
     }
 }
 
-/// EVM precompile wrapper for [`AccountKeychain`].
-pub struct AccountKeychainPrecompile;
-impl AccountKeychainPrecompile {
-    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("AccountKeychain", cfg, |input| { AccountKeychain::new() })
+impl AccountKeychain {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("AccountKeychain", cfg, |input| { Self::new() })
     }
 }
 
-/// EVM precompile wrapper for [`ValidatorConfig`].
-pub struct ValidatorConfigPrecompile;
-impl ValidatorConfigPrecompile {
-    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("ValidatorConfig", cfg, |input| { ValidatorConfig::new() })
+impl ValidatorConfig {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("ValidatorConfig", cfg, |input| { Self::new() })
     }
 }
 
-/// EVM precompile wrapper for [`ValidatorConfigV2`].
-pub struct ValidatorConfigV2Precompile;
-impl ValidatorConfigV2Precompile {
-    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("ValidatorConfigV2", cfg, |input| {
-            ValidatorConfigV2::new()
-        })
+impl ValidatorConfigV2 {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("ValidatorConfigV2", cfg, |input| { Self::new() })
     }
 }
 

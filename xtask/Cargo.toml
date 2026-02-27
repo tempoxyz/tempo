@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
+tempo-primitives.workspace = true
 tempo-commonware-node-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true
@@ -31,7 +32,8 @@ alloy = { workspace = true, features = [
   "sol-types",
   "getrandom",
 ] }
-alloy-primitives.workspace = true
+alloy-primitives = { workspace = true, features = ["asm-keccak"] }
+coins-bip32.workspace = true
 clap = { workspace = true, features = ["derive"] }
 commonware-codec.workspace = true
 commonware-consensus.workspace = true

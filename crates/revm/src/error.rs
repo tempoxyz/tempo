@@ -4,6 +4,7 @@ use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
 use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
 use tempo_primitives::transaction::KeychainVersionError;
+use tempo_primitives::transaction::KeyAuthorizationChainIdError;
 
 /// Tempo-specific invalid transaction errors.
 ///
@@ -295,6 +296,15 @@ pub enum FeePaymentError {
     /// Other error.
     #[error("{0}")]
     Other(String),
+}
+
+impl From<KeyAuthorizationChainIdError> for TempoInvalidTransaction {
+    fn from(err: KeyAuthorizationChainIdError) -> Self {
+        Self::KeyAuthorizationChainIdMismatch {
+            expected: err.expected,
+            got: err.got,
+        }
+    }
 }
 
 impl<DBError> From<FeePaymentError> for EVMError<DBError, TempoInvalidTransaction> {
