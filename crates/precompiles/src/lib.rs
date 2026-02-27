@@ -78,6 +78,14 @@ pub fn input_cost(calldata_len: usize) -> u64 {
 /// Precompiles must provide a dispatcher that decodes the 4-byte function selector from calldata,
 /// ABI-decodes the arguments, and routes to the corresponding method.
 pub trait Precompile {
+    /// Dispatches an EVM call to this precompile.
+    ///
+    /// Implementations should deduct calldata gas upfront via [`input_cost`], then decode the
+    /// 4-byte function selector from `calldata` and route to the matching method using
+    /// `dispatch_call` combined with the `view`, `mutate`, or `mutate_void` helpers.
+    ///
+    /// Business-logic errors are returned as reverted [`PrecompileOutput`]s with ABI-encoded
+    /// error data, while fatal failures (e.g. out-of-gas) are returned as [`PrecompileError`].
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
@@ -96,6 +104,11 @@ pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
     precompiles
 }
 
+/// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
+/// lookup function that matches addresses to their precompile: TIP-20 tokens (by prefix),
+/// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
+/// AccountKeychain, and ValidatorConfigV2. Each precompile is wrapped via the `tempo_precompile!`
+/// macro which enforces direct-call-only (no delegatecall) and sets up the storage context.
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
     let cfg = cfg.clone();
 
