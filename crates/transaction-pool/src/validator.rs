@@ -148,14 +148,9 @@ where
             // Validate chain_id.
             // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
             // Pre-T1C: chain_id == 0 is wildcard, works on any chain.
-            let chain_id = self.inner.chain_spec().chain_id();
-            if spec.is_t1c() {
-                if auth.chain_id != chain_id {
-                    return Ok(Err(TempoPoolTransactionError::Keychain(
-                        "KeyAuthorization chain_id does not match current chain",
-                    )));
-                }
-            } else if auth.chain_id != 0 && auth.chain_id != chain_id {
+            if let Err(_) =
+                auth.validate_chain_id(self.inner.chain_spec().chain_id(), spec.is_t1c())
+            {
                 return Ok(Err(TempoPoolTransactionError::Keychain(
                     "KeyAuthorization chain_id does not match current chain",
                 )));
@@ -2273,8 +2268,23 @@ mod tests {
             key_id: Address,
             authorized_key_slot_value: Option<U256>,
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
-            let provider = MockEthProvider::<TempoPrimitives>::new()
-                .with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
+            setup_validator_with_keychain_storage_spec(
+                transaction,
+                user_address,
+                key_id,
+                authorized_key_slot_value,
+                Arc::unwrap_or_clone(MODERATO.clone()),
+            )
+        }
+
+        fn setup_validator_with_keychain_storage_spec(
+            transaction: &TempoPooledTransaction,
+            user_address: Address,
+            key_id: Address,
+            authorized_key_slot_value: Option<U256>,
+            chain_spec: TempoChainSpec,
+        ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
+            let provider = MockEthProvider::<TempoPrimitives>::new().with_chain_spec(chain_spec);
 
             // Add sender account
             provider.add_account(
@@ -2524,35 +2534,12 @@ mod tests {
         ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
             use tempo_chainspec::spec::DEV;
 
-            let provider = MockEthProvider::<TempoPrimitives>::new()
-                .with_chain_spec(Arc::unwrap_or_clone(DEV.clone()));
-
-            provider.add_account(
-                transaction.sender(),
-                ExtendedAccount::new(transaction.nonce(), U256::ZERO),
-            );
-            provider.add_block(B256::random(), Default::default());
-
-            if let Some(slot_value) = authorized_key_slot_value {
-                let storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
-                provider.add_account(
-                    ACCOUNT_KEYCHAIN_ADDRESS,
-                    ExtendedAccount::new(0, U256::ZERO)
-                        .extend_storage([(storage_slot.into(), slot_value)]),
-                );
-            }
-
-            let inner =
-                EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                    .disable_balance_check()
-                    .build(InMemoryBlobStore::default());
-            let amm_cache =
-                AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-            TempoTransactionValidator::new(
-                inner,
-                DEFAULT_AA_VALID_AFTER_MAX_SECS,
-                DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
-                amm_cache,
+            setup_validator_with_keychain_storage_spec(
+                transaction,
+                user_address,
+                key_id,
+                authorized_key_slot_value,
+                Arc::unwrap_or_clone(DEV.clone()),
             )
         }
 

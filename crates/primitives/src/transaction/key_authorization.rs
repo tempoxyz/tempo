@@ -88,6 +88,31 @@ impl KeyAuthorization {
         }
     }
 
+    /// Validates that this key authorization's `chain_id` is compatible with `expected_chain_id`.
+    ///
+    /// - Post-T1C: `chain_id` must exactly match (wildcard `0` is no longer allowed).
+    /// - Pre-T1C: `chain_id == 0` is a wildcard (valid on any chain), otherwise must match.
+    pub fn validate_chain_id(
+        &self,
+        expected_chain_id: u64,
+        is_t1c: bool,
+    ) -> Result<(), KeyAuthorizationChainIdError> {
+        if is_t1c {
+            if self.chain_id != expected_chain_id {
+                return Err(KeyAuthorizationChainIdError {
+                    expected: expected_chain_id,
+                    got: self.chain_id,
+                });
+            }
+        } else if self.chain_id != 0 && self.chain_id != expected_chain_id {
+            return Err(KeyAuthorizationChainIdError {
+                expected: expected_chain_id,
+                got: self.chain_id,
+            });
+        }
+        Ok(())
+    }
+
     /// Calculates a heuristic for the in-memory size of the key authorization
     pub fn size(&self) -> usize {
         size_of::<Self>()
@@ -96,6 +121,15 @@ impl KeyAuthorization {
                 .as_ref()
                 .map_or(0, |limits| limits.capacity() * size_of::<TokenLimit>())
     }
+}
+
+/// Error returned when a [`KeyAuthorization`]'s `chain_id` does not match the expected value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyAuthorizationChainIdError {
+    /// The expected chain ID (current chain).
+    pub expected: u64,
+    /// The chain ID from the KeyAuthorization.
+    pub got: u64,
 }
 
 /// Signed key authorization that can be attached to a transaction.

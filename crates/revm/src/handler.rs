@@ -917,22 +917,9 @@ where
             // Validate KeyAuthorization chain_id.
             // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
             // Pre-T1C: chain_id == 0 allows replay on any chain (wildcard).
-            let expected_chain_id = cfg.chain_id();
-            if spec.is_t1c() {
-                if key_auth.chain_id != expected_chain_id {
-                    return Err(TempoInvalidTransaction::KeyAuthorizationChainIdMismatch {
-                        expected: expected_chain_id,
-                        got: key_auth.chain_id,
-                    }
-                    .into());
-                }
-            } else if key_auth.chain_id != 0 && key_auth.chain_id != expected_chain_id {
-                return Err(TempoInvalidTransaction::KeyAuthorizationChainIdMismatch {
-                    expected: expected_chain_id,
-                    got: key_auth.chain_id,
-                }
-                .into());
-            }
+            key_auth
+                .validate_chain_id(cfg.chain_id(), spec.is_t1c())
+                .map_err(TempoInvalidTransaction::from)?;
 
             let keychain_checkpoint = if spec.is_t1() {
                 Some(journal.checkpoint())
