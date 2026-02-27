@@ -15,26 +15,12 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     // Constants
     // =========================================================================
 
-    uint256 private constant _SLOADS_PER_VALIDATOR = 9;
-    uint256 private constant _GAS_PER_COLD_SLOAD = 2100;
-    uint256 private constant _GAS_BUFFER = 10_000;
+    /// @dev Gas budget per validator iteration: 9 cold SLOADs × 2100 gas + 10k buffer.
+    uint256 private constant _GAS_PER_VALIDATOR = 9 * 2100 + 10_000;
 
     // =========================================================================
     // Storage
     // =========================================================================
-
-    /// @dev Internal storage struct with bookkeeping fields not exposed in the public Validator struct.
-    struct ValidatorStorage {
-        bytes32 publicKey;
-        address validatorAddress;
-        string ingress;
-        string egress;
-        uint64 index;
-        /// @dev 1-indexed position in activeIndices; 0 = inactive.
-        uint64 activeIdx;
-        uint64 addedAtHeight;
-        uint64 deactivatedAtHeight;
-    }
 
     /// @dev Slot 0: bit 255 = initialized flag, bits 191-254 = initializedAtHeight, bits 0-159 = owner address
     address private _owner;
@@ -131,7 +117,16 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         v.deactivatedAtHeight = uint64(block.number);
 
-        _deleteActive(idx);
+        // do a pop-and-swap for validatorsArray
+        uint64 activeIndex = validatorsArray[idx].activeIdx - 1;
+        uint256 lastPos = activeIndices.length - 1;
+
+        if (activeIndex != lastPos) {
+            (activeIndices[lastPos], activeIndices[activeIndex]) =
+            (activeIndices[activeIndex], activeIndices[lastPos]);
+        }
+        activeIndices.pop();
+        validatorsArray[idx].activeIdx = 0;
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -165,7 +160,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage oldValidator = validatorsArray[idx];
         if (oldValidator.deactivatedAtHeight != 0) {
-            revert ValidatorNotFound();
+            revert ValidatorAlreadyDeleted();
         }
 
         address validatorAddress = oldValidator.validatorAddress;
@@ -205,10 +200,6 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         oldValidator.ingress = ingress;
         oldValidator.egress = egress;
         oldValidator.addedAtHeight = uint64(block.number);
-        // oldValidator.index unchanged
-        // oldValidator.activeIdx unchanged
-        // oldValidator.deactivatedAtHeight stays 0
-        // oldValidator.validatorAddress unchanged
 
         // Point new pubkey to original slot
         pubkeyToIndex[publicKey] = idx + 1;
@@ -223,7 +214,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage v = validatorsArray[idx];
         if (v.deactivatedAtHeight != 0) {
-            revert ValidatorNotFound();
+            revert ValidatorAlreadyDeleted();
         }
 
         _checkOnlyOwnerOrValidator(v.validatorAddress);
@@ -255,15 +246,15 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage v = validatorsArray[idx];
         if (v.deactivatedAtHeight != 0) {
-            revert ValidatorNotFound();
+            revert ValidatorAlreadyDeleted();
         }
 
         address currentAddress = v.validatorAddress;
         _checkOnlyOwnerOrValidator(currentAddress);
 
         v.validatorAddress = newAddress;
-        addressToIndex[newAddress] = idx + 1;
         delete addressToIndex[currentAddress];
+        addressToIndex[newAddress] = idx + 1;
     }
 
     // =========================================================================
@@ -287,7 +278,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
 
         Validator[] memory result = new Validator[](len - startIndex);
-        uint256 gasPerIteration = _SLOADS_PER_VALIDATOR * _GAS_PER_COLD_SLOAD + _GAS_BUFFER;
+        uint256 gasPerIteration = _GAS_PER_VALIDATOR;
 
         uint256 count;
         for (uint256 i = startIndex; i < len; i++) {
@@ -450,7 +441,6 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert AddressAlreadyHasValidator();
         }
         _validateRotateParams(publicKey, ingress, egress);
-        _requireUniqueIngressIp(ingress);
     }
 
     function _validateRotateParams(
@@ -469,6 +459,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
         _validateIpPort(ingress, "ingress");
         _validateIp(egress, "egress");
+        _requireUniqueIngressIp(ingress);
     }
 
     function _addValidator(
@@ -581,23 +572,6 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         // No port found, return as-is
         return socketAddr;
-    }
-
-    /// @dev Removes the validator at global index `globalIdx` from the active set.
-    ///      Uses the validator's stored `activeIdx` for O(1) swap-remove.
-    function _deleteActive(uint64 globalIdx) internal {
-        uint64 activeIndex = validatorsArray[globalIdx].activeIdx;
-        assert(activeIndex != 0);
-
-        uint256 lastPos = activeIndices.length - 1;
-        uint64 lastGlobalIdx1 = activeIndices[lastPos];
-        activeIndices[activeIndex - 1] = lastGlobalIdx1;
-        activeIndices.pop();
-
-        if (activeIndex - 1 != lastPos) {
-            validatorsArray[lastGlobalIdx1 - 1].activeIdx = activeIndex;
-        }
-        validatorsArray[globalIdx].activeIdx = 0;
     }
 
     function _validateIpPort(string calldata input, string memory field) internal pure {

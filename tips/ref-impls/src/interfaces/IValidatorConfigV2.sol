@@ -74,6 +74,19 @@ interface IValidatorConfigV2 {
     // Structs
     // =========================================================================
 
+    /// @dev Internal storage struct with bookkeeping fields not exposed in the public Validator struct.
+    struct ValidatorStorage {
+        bytes32 publicKey;
+        address validatorAddress;
+        string ingress;
+        string egress;
+        uint64 index;
+        /// @dev 1-indexed position in activeIndices; 0 = inactive.
+        uint64 activeIdx;
+        uint64 addedAtHeight;
+        uint64 deactivatedAtHeight;
+    }
+
     /// @notice Validator information returned by view functions
     /// @param publicKey Ed25519 communication public key (non-zero, unique across all validators)
     /// @param validatorAddress Ethereum-style address of the validator (unique across active validators)
