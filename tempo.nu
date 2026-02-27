@@ -126,7 +126,7 @@ def "main kill" [
 
     # Remove stale IPC socket
     if $has_stale_ipc {
-        rm /tmp/reth.ipc
+        rm --force /tmp/reth.ipc
         print "Removed /tmp/reth.ipc"
     }
     print "Done."
@@ -275,7 +275,7 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
             rm -rf $LOCALNET_DIR
 
             # Generate validator addresses with distinct loopback IPs (required by ValidatorConfigV2
-            # ingress uniqueness check) and distinct ports for local binding
+            # ingress uniqueness check which is per-IP, not per-socket-address)
             let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
@@ -290,9 +290,10 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
     let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
     let trusted_peers = ($validator_dirs | each { |d|
         let addr = ($d | path basename)
+        let ip = ($addr | split row ":" | get 0)
         let port = ($addr | split row ":" | get 1 | into int)
         let identity = (open $"($d)/enode.identity" | str trim)
-        $"enode://($identity)@127.0.0.1:($port + 1)"
+        $"enode://($identity)@($ip):($port + 1)"
     } | str join ",")
 
     print $"Found ($validator_dirs | length) validator configs"
@@ -301,6 +302,24 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
         "./target/debug/tempo"
     } else {
         $"./target/($profile)/tempo"
+    }
+
+    # Ensure loopback aliases exist for distinct validator IPs (macOS only has 127.0.0.1 by default)
+    if (sys host | get name) == "Darwin" {
+        let extra_ips = ($validator_dirs | each { |d| $d | path basename | split row ":" | get 0 } | where { |ip| $ip != "127.0.0.1" })
+        if ($extra_ips | length) > 0 {
+            print $"Adding macOS loopback aliases for validator IPs: ($extra_ips | str join ', ') (sudo required)..."
+        }
+        for dir in $validator_dirs {
+            let ip = ($dir | path basename | split row ":" | get 0)
+            if $ip != "127.0.0.1" {
+                try { sudo ifconfig lo0 alias $ip up } catch { |e|
+                    print $"(ansi red)Failed to add loopback alias ($ip): ($e.msg)(ansi reset)"
+                    print "Run: sudo ifconfig lo0 alias $ip up"
+                    exit 1
+                }
+            }
+        }
     }
 
     # Start background nodes first (all except node 0)
@@ -367,6 +386,8 @@ def build-consensus-node-args [node_dir: string, genesis_path: string, trusted_p
 
 # Build consensus mode specific arguments
 def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
+    let addr = ($node_dir | path basename)
+    let ip = ($addr | split row ":" | get 0)
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
@@ -379,8 +400,8 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
     [
         "--consensus.signing-key" $signing_key
         "--consensus.signing-share" $signing_share
-        "--consensus.listen-address" $"127.0.0.1:($port)"
-        "--consensus.metrics-address" $"127.0.0.1:($metrics_port)"
+        "--consensus.listen-address" $"($ip):($port)"
+        "--consensus.metrics-address" $"($ip):($metrics_port)"
         "--trusted-peers" $trusted_peers
         "--port" $"($execution_p2p_port)"
         "--discovery.port" $"($execution_p2p_port)"
@@ -388,6 +409,8 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
         "--p2p-secret-key" $enode_key
         "--authrpc.port" $"($authrpc_port)"
         "--consensus.fee-recipient" "0x0000000000000000000000000000000000000000"
+        "--consensus.use-local-defaults"
+        "--consensus.bypass-ip-check"
     ]
 }
 
