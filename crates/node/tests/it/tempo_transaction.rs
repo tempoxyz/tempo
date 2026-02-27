@@ -520,6 +520,37 @@ async fn submit_and_mine_aa_tx(
     Ok(tx_hash)
 }
 
+/// Authorize an access key on an account: creates the key authorization, wraps it
+/// in a tx signed by the root key, submits and mines it.
+async fn authorize_access_key(
+    setup: &mut SingleNodeSetup,
+    root_signer: &impl SignerSync,
+    root_addr: Address,
+    access_key_addr: Address,
+    access_key_mock_sig: TempoSignature,
+    chain_id: u64,
+    nonce: u64,
+) -> eyre::Result<()> {
+    let auth = create_key_authorization(
+        root_signer,
+        access_key_addr,
+        access_key_mock_sig,
+        chain_id,
+        None,
+        None,
+    )?;
+    let mut tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    tx.key_authorization = Some(auth);
+    let sig = sign_aa_tx_secp256k1(&tx, root_signer)?;
+    submit_and_mine_aa_tx(setup, tx, sig).await?;
+    Ok(())
+}
+
 /// Low-level P256 prehash signing. Returns a `PrimitiveSignature::P256`.
 fn sign_p256_primitive(
     sig_hash: B256,
@@ -5890,170 +5921,12 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Test that V2 keychain signatures prevent cross-account replay attacks.
-///
-/// Scenario: The same secp256k1 access key is authorized on two different accounts (Alice and Bob).
-/// A V2 keychain signature made for Alice's account MUST NOT be valid on Bob's account,
-/// because V2 binds the user_address into the signature hash.
-///
-/// Tests both secp256k1 and P256 inner signature types.
+/// V2 keychain cross-account replay prevention. A shared access key
+/// authorized on Alice and Bob must not allow replaying Alice's inner sig on Bob.
+/// Tests both secp256k1 and P256.
 #[tokio::test]
-async fn test_v2_keychain_blocks_cross_account_replay_secp256k1() -> eyre::Result<()> {
+async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    println!("\n=== Testing V2 Keychain Cross-Account Replay Prevention (secp256k1) ===\n");
-
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-
-    // Alice = root signer (account 0), Bob = account 1
-    let alice_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
-    let alice_addr = alice_signer.address();
-    let bob_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-    let bob_addr = bob_signer.address();
-    let provider = ProviderBuilder::new()
-        .wallet(alice_signer.clone())
-        .connect_http(setup.node.rpc_url());
-    let chain_id = provider.get_chain_id().await?;
-
-    // Generate a shared secp256k1 access key
-    let access_key_signer = alloy::signers::local::PrivateKeySigner::random();
-    let access_key_addr = access_key_signer.address();
-    println!("Shared access key: {access_key_addr}");
-
-    let mut nonce_alice = provider.get_transaction_count(alice_addr).await?;
-
-    // Fund Bob
-    fund_address_with_fee_tokens(
-        &mut setup,
-        &provider,
-        &alice_signer,
-        alice_addr,
-        bob_addr,
-        U256::from(100u64) * U256::from(10).pow(U256::from(18)),
-        chain_id,
-    )
-    .await?;
-    nonce_alice += 1;
-
-    // Authorize access key on Alice
-    let alice_key_auth = create_key_authorization(
-        &alice_signer,
-        access_key_addr,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
-        chain_id,
-        None,
-        None,
-    )?;
-    let mut auth_tx_alice = create_basic_aa_tx(
-        chain_id,
-        nonce_alice,
-        vec![create_balance_of_call(alice_addr)],
-        2_000_000,
-    );
-    auth_tx_alice.key_authorization = Some(alice_key_auth);
-    let sig = sign_aa_tx_secp256k1(&auth_tx_alice, &alice_signer)?;
-    submit_and_mine_aa_tx(&mut setup, auth_tx_alice, sig).await?;
-    nonce_alice += 1;
-    println!("✓ Access key authorized on Alice");
-
-    // Authorize same access key on Bob
-    let bob_key_auth = create_key_authorization(
-        &bob_signer,
-        access_key_addr,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
-        chain_id,
-        None,
-        None,
-    )?;
-    let nonce_bob = provider.get_transaction_count(bob_addr).await?;
-    let mut auth_tx_bob = create_basic_aa_tx(
-        chain_id,
-        nonce_bob,
-        vec![create_balance_of_call(bob_addr)],
-        2_000_000,
-    );
-    auth_tx_bob.key_authorization = Some(bob_key_auth);
-    let sig_bob = sign_aa_tx_secp256k1(&auth_tx_bob, &bob_signer)?;
-    submit_and_mine_aa_tx(&mut setup, auth_tx_bob, sig_bob).await?;
-    println!("✓ Access key authorized on Bob");
-
-    // Step 1: Create and send a valid V2 keychain tx for Alice
-    let alice_tx = create_basic_aa_tx(
-        chain_id,
-        nonce_alice,
-        vec![create_balance_of_call(alice_addr)],
-        2_000_000,
-    );
-    let alice_keychain_sig =
-        sign_aa_tx_with_secp256k1_access_key(&alice_tx, &access_key_signer, alice_addr)?;
-    submit_and_mine_aa_tx(&mut setup, alice_tx.clone(), alice_keychain_sig.clone()).await?;
-    println!("✓ Alice's V2 keychain tx succeeded");
-
-    // Step 2: Attempt to replay Alice's signature on Bob's account
-    // Create the same tx body but with nonce from Bob, and reuse Alice's signature
-    let replay_nonce_bob = provider.get_transaction_count(bob_addr).await?;
-    let replay_tx = create_basic_aa_tx(
-        chain_id,
-        replay_nonce_bob,
-        vec![create_balance_of_call(bob_addr)],
-        2_000_000,
-    );
-
-    // Sign with the shared access key but claiming to be Bob
-    // This should fail because the V2 signature hash includes user_address
-    // The access key signed keccak256(sig_hash || alice_addr),
-    // but for Bob's tx the validator expects keccak256(sig_hash || bob_addr).
-    // Reuse the inner signature from Alice's keychain sig, but wrap for Bob.
-    let replay_sig = {
-        let inner_sig = alice_keychain_sig.as_keychain().unwrap().signature.clone();
-        TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner_sig))
-    };
-
-    let replay_envelope: TempoTxEnvelope = AASigned::new_unhashed(replay_tx, replay_sig).into();
-    let replay_result = setup
-        .node
-        .rpc
-        .inject_tx(replay_envelope.encoded_2718().into())
-        .await;
-
-    // The replay must fail - either rejected at pool (key recovery mismatch) or execution
-    match replay_result {
-        Err(e) => {
-            println!("✓ Cross-account replay rejected at pool level: {e}");
-        }
-        Ok(_) => {
-            // If it made it into the pool, it should fail at execution
-            setup.node.advance_block().await?;
-            let receipt = provider
-                .get_transaction_receipt(*replay_envelope.tx_hash())
-                .await?;
-            if let Some(receipt) = receipt {
-                assert!(
-                    !receipt.status(),
-                    "Cross-account replay tx must not succeed"
-                );
-                println!("✓ Cross-account replay failed at execution");
-            } else {
-                println!("✓ Cross-account replay tx was not included");
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Test that V2 keychain signatures prevent cross-account replay with P256 inner signatures.
-#[tokio::test]
-async fn test_v2_keychain_blocks_cross_account_replay_p256() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-    println!("\n=== Testing V2 Keychain Cross-Account Replay Prevention (P256) ===\n");
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
@@ -6070,13 +5943,14 @@ async fn test_v2_keychain_blocks_cross_account_replay_p256() -> eyre::Result<()>
         .connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
-    // Generate a shared P256 access key
-    let (p256_signing_key, pub_x, pub_y, p256_key_addr) = generate_p256_access_key();
-    println!("Shared P256 access key: {p256_key_addr}");
+    // Shared access keys, same key authorized on both accounts
+    let secp_access_signer = alloy::signers::local::PrivateKeySigner::random();
+    let secp_access_addr = secp_access_signer.address();
+    let (p256_access_signer, pub_x, pub_y, p256_access_addr) = generate_p256_access_key();
 
     let mut nonce_alice = provider.get_transaction_count(alice_addr).await?;
 
-    // Fund Bob
+    // Fund Bob so he can receive txs
     fund_address_with_fee_tokens(
         &mut setup,
         &provider,
@@ -6089,102 +5963,111 @@ async fn test_v2_keychain_blocks_cross_account_replay_p256() -> eyre::Result<()>
     .await?;
     nonce_alice += 1;
 
-    // Authorize P256 access key on Alice
-    let alice_key_auth = create_key_authorization(
-        &alice_signer,
-        p256_key_addr,
-        create_mock_p256_sig(pub_x, pub_y),
-        chain_id,
-        None,
-        None,
-    )?;
-    let mut auth_tx_alice = create_basic_aa_tx(
-        chain_id,
-        nonce_alice,
-        vec![create_balance_of_call(alice_addr)],
-        2_000_000,
-    );
-    auth_tx_alice.key_authorization = Some(alice_key_auth);
-    let sig = sign_aa_tx_secp256k1(&auth_tx_alice, &alice_signer)?;
-    submit_and_mine_aa_tx(&mut setup, auth_tx_alice, sig).await?;
-    nonce_alice += 1;
-    println!("✓ P256 access key authorized on Alice");
+    let secp_mock = || {
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        ))
+    };
+    let p256_mock = || create_mock_p256_sig(pub_x, pub_y);
 
-    // Authorize same P256 access key on Bob
-    let bob_key_auth = create_key_authorization(
-        &bob_signer,
-        p256_key_addr,
-        create_mock_p256_sig(pub_x, pub_y),
-        chain_id,
-        None,
-        None,
-    )?;
-    let nonce_bob = provider.get_transaction_count(bob_addr).await?;
-    let mut auth_tx_bob = create_basic_aa_tx(
-        chain_id,
-        nonce_bob,
-        vec![create_balance_of_call(bob_addr)],
-        2_000_000,
-    );
-    auth_tx_bob.key_authorization = Some(bob_key_auth);
-    let sig_bob = sign_aa_tx_secp256k1(&auth_tx_bob, &bob_signer)?;
-    submit_and_mine_aa_tx(&mut setup, auth_tx_bob, sig_bob).await?;
-    println!("✓ P256 access key authorized on Bob");
+    // Authorize both keys on Alice and Bob
+    for (key_addr, mock_sig) in [
+        (secp_access_addr, secp_mock()),
+        (p256_access_addr, p256_mock()),
+    ] {
+        authorize_access_key(
+            &mut setup,
+            &alice_signer,
+            alice_addr,
+            key_addr,
+            mock_sig,
+            chain_id,
+            nonce_alice,
+        )
+        .await?;
+        nonce_alice += 1;
+    }
+    let mut nonce_bob = provider.get_transaction_count(bob_addr).await?;
+    for (key_addr, mock_sig) in [
+        (secp_access_addr, secp_mock()),
+        (p256_access_addr, p256_mock()),
+    ] {
+        authorize_access_key(
+            &mut setup,
+            &bob_signer,
+            bob_addr,
+            key_addr,
+            mock_sig,
+            chain_id,
+            nonce_bob,
+        )
+        .await?;
+        nonce_bob += 1;
+    }
 
-    // Step 1: Create and send a valid V2 keychain tx for Alice with P256
+    // secp256k1: Alice sends a valid V2 keychain tx
     let alice_tx = create_basic_aa_tx(
         chain_id,
         nonce_alice,
         vec![create_balance_of_call(alice_addr)],
         2_000_000,
     );
-    let alice_keychain_sig =
-        sign_aa_tx_with_p256_access_key(&alice_tx, &p256_signing_key, &pub_x, &pub_y, alice_addr)?;
-    submit_and_mine_aa_tx(&mut setup, alice_tx.clone(), alice_keychain_sig.clone()).await?;
-    println!("✓ Alice's V2 P256 keychain tx succeeded");
+    let alice_sig =
+        sign_aa_tx_with_secp256k1_access_key(&alice_tx, &secp_access_signer, alice_addr)?;
+    submit_and_mine_aa_tx(&mut setup, alice_tx, alice_sig.clone()).await?;
+    nonce_alice += 1;
 
-    // Step 2: Attempt to replay Alice's P256 signature on Bob's account
-    let replay_nonce_bob = provider.get_transaction_count(bob_addr).await?;
-    let replay_tx = create_basic_aa_tx(
+    // Extract Alice's inner sig, re-wrap claiming Bob's address.
+    // Pool rejects because V2 hash includes user_address, so key recovery yields a
+    // different (unauthorized) key.
+    let bob_tx = create_basic_aa_tx(
         chain_id,
-        replay_nonce_bob,
+        nonce_bob,
         vec![create_balance_of_call(bob_addr)],
         2_000_000,
     );
-
-    // Reuse Alice's inner P256 signature but wrap for Bob
-    let replay_sig = {
-        let inner_sig = alice_keychain_sig.as_keychain().unwrap().signature.clone();
-        TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner_sig))
-    };
-
-    let replay_envelope: TempoTxEnvelope = AASigned::new_unhashed(replay_tx, replay_sig).into();
-    let replay_result = setup
+    let inner = alice_sig.as_keychain().unwrap().signature.clone();
+    let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
+    let replay_tx: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, replay_sig).into();
+    setup
         .node
         .rpc
-        .inject_tx(replay_envelope.encoded_2718().into())
-        .await;
+        .inject_tx(replay_tx.encoded_2718().into())
+        .await
+        .expect_err("secp256k1 cross-account replay must be rejected at pool level");
 
-    match replay_result {
-        Err(e) => {
-            println!("✓ P256 cross-account replay rejected at pool level: {e}");
-        }
-        Ok(_) => {
-            setup.node.advance_block().await?;
-            let receipt = provider
-                .get_transaction_receipt(*replay_envelope.tx_hash())
-                .await?;
-            if let Some(receipt) = receipt {
-                assert!(
-                    !receipt.status(),
-                    "P256 cross-account replay tx must not succeed"
-                );
-                println!("✓ P256 cross-account replay failed at execution");
-            } else {
-                println!("✓ P256 cross-account replay tx was not included");
-            }
-        }
-    }
+    // P256: Alice sends a valid V2 keychain tx
+    let alice_tx = create_basic_aa_tx(
+        chain_id,
+        nonce_alice,
+        vec![create_balance_of_call(alice_addr)],
+        2_000_000,
+    );
+    let alice_sig = sign_aa_tx_with_p256_access_key(
+        &alice_tx,
+        &p256_access_signer,
+        &pub_x,
+        &pub_y,
+        alice_addr,
+    )?;
+    submit_and_mine_aa_tx(&mut setup, alice_tx, alice_sig.clone()).await?;
+
+    // Same replay: extract inner sig, re-wrap for Bob, pool rejects
+    let bob_tx = create_basic_aa_tx(
+        chain_id,
+        nonce_bob,
+        vec![create_balance_of_call(bob_addr)],
+        2_000_000,
+    );
+    let inner = alice_sig.as_keychain().unwrap().signature.clone();
+    let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
+    let replay_env: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, replay_sig).into();
+    setup
+        .node
+        .rpc
+        .inject_tx(replay_env.encoded_2718().into())
+        .await
+        .expect_err("P256 cross-account replay must be rejected at pool level");
 
     Ok(())
 }
