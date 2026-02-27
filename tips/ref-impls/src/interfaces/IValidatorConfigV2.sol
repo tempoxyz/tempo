@@ -183,7 +183,8 @@ interface IValidatorConfigV2 {
     // View Functions
     // =========================================================================
 
-    /// @notice Get only active validators (where deactivatedAtHeight == 0)
+    /// @notice Get only active validators (where deactivatedAtHeight == 0).
+    /// @notice The order of validators is not stable and should not be relied upon.
     /// @return validators Array of active validators
     function getActiveValidators() external view returns (Validator[] memory validators);
 
