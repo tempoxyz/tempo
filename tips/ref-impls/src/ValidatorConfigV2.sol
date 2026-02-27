@@ -29,6 +29,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     Validator[] internal validatorsArray;
 
+    // Indices into the validatorsArray. This array does not preserve order.
+    // Stored Values is arrayIndex +1.
+    uint64[] internal activeValidators;
+
     /// @dev 1-indexed: 0 means not found. Stored value is arrayIndex + 1.
     mapping(address => uint64) internal addressToIndex;
 
@@ -98,6 +102,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         external
         onlyOwnerOrValidator(validatorAddress)
     {
+        // idx is 1-indexed.
         uint64 idx = addressToIndex[validatorAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
@@ -112,6 +117,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         delete activeIngressIpHashes[ingressIpHash];
 
         v.deactivatedAtHeight = uint64(block.number);
+
+        _deleteActive(idx);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -140,6 +147,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         onlyInitialized
         onlyOwnerOrValidator(validatorAddress)
     {
+        // idx is 1-indexed.
         uint64 idx = addressToIndex[validatorAddress];
         if (idx == 0) {
             revert ValidatorNotFound();
@@ -162,6 +170,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _updateIngressIp(oldValidator.ingress, ingress);
 
         oldValidator.deactivatedAtHeight = uint64(block.number);
+
+        _deleteActive(idx);
 
         _addValidator(validatorAddress, publicKey, ingress, egress, 0);
     }
@@ -229,26 +239,12 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     // =========================================================================
 
     /// @inheritdoc IValidatorConfigV2
-    function getAllValidators() external view returns (Validator[] memory) {
-        return validatorsArray;
-    }
-
-    /// @inheritdoc IValidatorConfigV2
     function getActiveValidators() external view returns (Validator[] memory validators) {
-        uint64 len = uint64(validatorsArray.length);
+        uint64 len = uint64(activeValidators.length);
         validators = new Validator[](len);
-        uint64 idx = 0;
         for (uint64 i = 0; i < len; i++) {
-            Validator storage v = validatorsArray[i];
-            if (v.deactivatedAtHeight == 0) {
-                validators[idx] = v;
-                idx++;
-            }
-        }
-        // Modify array.length to the correct length
-        // We're doing this in assembly because it's not possible to do in solidity
-        assembly {
-            mstore(validators, idx)
+            Validator storage v = validatorsArray[activeValidators[i] - 1];
+            validators[i] = v;
         }
     }
 
@@ -432,6 +428,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         if (deactivatedAtHeight == 0) {
             bytes32 ingressIpHash = _getIngressIpHash(ingress);
             activeIngressIpHashes[ingressIpHash] = true;
+            activeValidators.push(idx + 1); // 1-indexed
         }
     }
 
@@ -510,6 +507,26 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         // No port found, return as-is
         return socketAddr;
+    }
+
+    /// Looks for `index` in the `activeValidators` array and removes it.
+    /// This function does not preserve order.
+    ///
+    /// This function expects that `idx` is 1-indexed.
+    function _deleteActive(uint64 idx) internal {
+        uint64 target; // 1-indexed
+        for (uint64 i = 0; i < uint64(activeValidators.length); i++) {
+            if (activeValidators[i] == idx) {
+                target = i+1;
+                break;
+            }
+        }
+
+        // Swap-remove
+        if (target != 0) {
+            activeValidators[target-1] = activeValidators[activeValidators.length-1];
+            activeValidators.pop();
+        }
     }
 
     function _validateIpPort(string calldata input, string memory field) internal pure {
