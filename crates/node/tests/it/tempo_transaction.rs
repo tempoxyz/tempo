@@ -6129,7 +6129,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
 
     let sig_hash = tx_matching.signature_hash();
     let signature = root_signer.sign_hash_sync(&sig_hash)?;
-    let tx_hash = submit_and_mine_aa_tx(
+    submit_and_mine_aa_tx(
         &mut setup,
         tx_matching,
         TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
