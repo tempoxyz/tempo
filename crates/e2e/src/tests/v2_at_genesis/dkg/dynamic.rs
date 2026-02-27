@@ -121,8 +121,8 @@ impl AssertValidatorIsAdded {
                 let mut added_signer= None;
                 let mut dealers = None;
                 let mut network_epoch = None;
-                
                 let mut players = None;
+
                 for line in context.encode().lines() {
                     if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                         continue;

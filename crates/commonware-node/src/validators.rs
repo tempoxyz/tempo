@@ -203,7 +203,7 @@ where
 /// Validators can be read from the V2 contract if the following conditions hold:
 ///
 /// 1. `timestamp(hash) >= T2`.
-/// 2. `intialization_height(<state>) <= number(hash)`.
+/// 2. `initialization_height(<state>) <= number(hash)`.
 /// 3. `is_init(<state>) == true`.
 ///
 /// `<state>` is read at either `hash` or `latest` if set.
@@ -215,7 +215,6 @@ where
 ///
 /// If `initialization_height == 0`, then `is_init` is used to determine if
 /// the contract was initialized at genesis or not.
-/// ```
 pub(crate) fn can_use_v2_at_block_hash(
     node: &TempoFullNode,
     hash: B256,
