@@ -497,7 +497,9 @@ mod codec {
                 }
                 TempoTxType::AA => {
                     let (tx, buf) = TempoTransaction::from_compact(buf, buf.len());
-                    // For Tempo transactions, we need to decode the signature bytes as TempoSignature
+                    // The provided `signature` is unused for AA transactions. The real
+                    // `TempoSignature` was appended to the buffer in `to_tx_compact` and
+                    // is decoded here instead.
                     let (sig_bytes, buf) = Bytes::from_compact(buf, buf.len());
                     let aa_sig = TempoSignature::from_bytes(&sig_bytes)
                         .map_err(|e| panic!("Failed to decode AA signature: {e}"))
@@ -534,7 +536,13 @@ mod codec {
                 Self::Eip1559(tx) => tx.signature(),
                 Self::Eip7702(tx) => tx.signature(),
                 Self::AA(_tx) => {
-                    // TODO: Will this work?
+                    // The `Envelope` trait requires `&Signature` (ECDSA), but AA transactions
+                    // use `TempoSignature` which is a different type. We return a dummy zero
+                    // signature here because `CompactEnvelope::to_compact` calls this to
+                    // serialize a signature into the buffer. The actual `TempoSignature` is
+                    // encoded separately in `ToTxCompact::to_tx_compact` and decoded back in
+                    // `FromTxCompact::from_tx_compact`, where the dummy signature passed in
+                    // is ignored for the AA variant.
                     &TEMPO_SYSTEM_TX_SIGNATURE
                 }
             }
