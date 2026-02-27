@@ -374,6 +374,7 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
     let execution_p2p_port = $port + 1
     let metrics_port = $port + 2
     let authrpc_port = $port + 3
+    let discv5_port = $port + 4
 
     [
         "--consensus.signing-key" $signing_key
@@ -383,6 +384,7 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
         "--trusted-peers" $trusted_peers
         "--port" $"($execution_p2p_port)"
         "--discovery.port" $"($execution_p2p_port)"
+        "--discovery.v5.port" $"($discv5_port)"
         "--p2p-secret-key" $enode_key
         "--authrpc.port" $"($authrpc_port)"
         "--consensus.fee-recipient" "0x0000000000000000000000000000000000000000"
@@ -1045,6 +1047,7 @@ def main [] {
     print "  P2P:           8001 + N*100"
     print "  Metrics:       8002 + N*100"
     print "  AuthRPC:       8003 + N*100"
+    print "  Discv5:        8004 + N*100"
     print "  HTTP RPC:      8545 + N"
     print "  Reth Metrics:  9001 + N"
 }
