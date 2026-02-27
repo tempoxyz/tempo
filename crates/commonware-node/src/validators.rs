@@ -45,7 +45,7 @@ pub(crate) fn read_active_and_known_peers_at_block_hash(
     known: &ordered::Set<PublicKey>,
     hash: B256,
 ) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
-    if can_use_v2_at_block_hash(node, hash)
+    if can_use_v2_at_block_hash(node, hash, None)
         .wrap_err("failed to determine validator config v2 status")?
     {
         read_active_and_known_peers_at_block_hash_v2(node, known, hash)
@@ -201,12 +201,32 @@ where
 /// Returns if the validator config v2 can be used exactly at `hash` and the
 /// timestamp of the corresponding `header`.
 ///
-/// Validator Config V2 can be used if:
+/// If `latest` is set, then the function will look at the timestamp of `hash`
+/// to determine hardfork activation, but `latest` to determine contract
+/// initialization. This is an optimization that makes use of the fact that
+/// the initialization height is stored in the contract.
 ///
-/// 1. if `header.timestamp` is active at the hardfork timestamp.
-/// 2. if `header.number` is equal or greater than the contract initialization height.
-/// 3. if the contract initialization flag is set.
-pub(crate) fn can_use_v2_at_block_hash(node: &TempoFullNode, hash: B256) -> eyre::Result<bool> {
+/// Validators can be read from the V2 contract if the following conditions hold:
+///
+/// 1. `timestamp(hash) >= T2`.
+/// 2. `intialization_height(<state>) <= number(hash)`.
+/// 3. `is_init(<state>) == true`.
+///
+/// `<state>` is read at either `hash` or `latest` if set.
+///
+/// This makes use of the following assumption:
+///
+/// If `initialization_height > 0`, then `is_init == true` always (invariant of
+/// the smart contract).
+///
+/// If `initialization_height == 0`, then `is_init` is used to determine if
+/// the contract was initialized at genesis or not.
+/// ```
+pub(crate) fn can_use_v2_at_block_hash(
+    node: &TempoFullNode,
+    hash: B256,
+    latest: Option<B256>,
+) -> eyre::Result<bool> {
     let header = node
         .provider
         .header(hash)
@@ -215,35 +235,15 @@ pub(crate) fn can_use_v2_at_block_hash(node: &TempoFullNode, hash: B256) -> eyre
         .wrap_err_with(|| {
             format!("failed reading header for block hash `{hash}` from execution layer")
         })?;
+    let state_hash = latest.unwrap_or(hash);
     Ok(node
         .chain_spec()
         .is_t2_active_at_timestamp(header.timestamp())
-        && is_v2_initialized_at_block_hash(node, hash)
+        && is_v2_initialized_at_block_hash(node, state_hash)
             .wrap_err("failed reading validator config v2 initialization flag")?
-        && v2_initialization_height_at_block_hash(node, hash)
+        && v2_initialization_height_at_block_hash(node, state_hash)
             .wrap_err("failed reading validator config v2 initialization height")?
             <= header.number())
-}
-
-#[instrument(skip_all, fields(validators_to_decode = contract_vals.len()))]
-pub(crate) fn decode_from_contract(
-    contract_vals: Vec<IValidatorConfig::Validator>,
-) -> ordered::Map<PublicKey, DecodedValidatorV1> {
-    let mut decoded = HashMap::new();
-    for val in contract_vals.into_iter() {
-        // NOTE: not reporting errors because `decode_from_contract` emits
-        // events on success and error
-        if let Ok(val) = DecodedValidatorV1::decode_from_contract(val)
-            && let Some(old) = decoded.insert(val.public_key.clone(), val)
-        {
-            warn!(
-                %old,
-                new = %decoded.get(&old.public_key).expect("just inserted it"),
-                "replaced peer because public keys were duplicated",
-            );
-        }
-    }
-    ordered::Map::from_iter_dedup(decoded)
 }
 
 /// A ContractValidator is a peer read from the validator config smart const.
@@ -321,10 +321,6 @@ impl DecodedValidatorV1 {
             egress: self.outbound,
         }
     }
-
-    pub(crate) fn is_active(&self) -> bool {
-        self.active
-    }
 }
 
 impl std::fmt::Display for DecodedValidatorV1 {
@@ -349,10 +345,6 @@ pub(crate) struct DecodedValidatorV2 {
 }
 
 impl DecodedValidatorV2 {
-    pub(crate) fn public_key(&self) -> &PublicKey {
-        &self.public_key
-    }
-
     #[instrument(ret(Display, level = Level::DEBUG), err(level = Level::WARN))]
     pub(crate) fn decode_from_contract(
         IValidatorConfigV2::Validator {
