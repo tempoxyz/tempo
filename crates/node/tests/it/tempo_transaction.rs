@@ -3943,8 +3943,7 @@ async fn test_keychain_authorization_in_auth_list_is_skipped() -> eyre::Result<(
 async fn test_v1_keychain_in_auth_list_rejected_post_t1c() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (setup, provider, sender_signer, sender_addr) =
-        setup_test_with_funded_account().await?;
+    let (setup, provider, sender_signer, sender_addr) = setup_test_with_funded_account().await?;
     let chain_id = provider.get_chain_id().await?;
 
     // Build an EIP-7702 authorization and sign it with a V1 keychain sig
@@ -3957,8 +3956,10 @@ async fn test_v1_keychain_in_auth_list_rejected_post_t1c() -> eyre::Result<()> {
         Address::random(), // arbitrary user_address
         PrimitiveSignature::Secp256k1(inner_signature),
     ));
-    let auth_signed =
-        tempo_primitives::transaction::TempoSignedAuthorization::new_unchecked(auth, v1_keychain_sig);
+    let auth_signed = tempo_primitives::transaction::TempoSignedAuthorization::new_unchecked(
+        auth,
+        v1_keychain_sig,
+    );
 
     // Tx with primitive outer sig and V1-keychain auth list entry
     let nonce = provider.get_transaction_count(sender_addr).await?;
