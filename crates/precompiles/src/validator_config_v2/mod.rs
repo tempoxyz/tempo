@@ -22,6 +22,8 @@ use tracing::trace;
 pub const VALIDATOR_NS_ADD: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
 /// Signature namespace for `rotateValidator` operations.
 pub const VALIDATOR_NS_ROTATE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR";
+/// Gas budget per inactive-validator read (worst-case: 9 cold SLOADs + buffer).
+const GAS_PER_INACTIVE_VALIDATOR: u64 = 9 * 2100 + 10_000;
 
 #[derive(Debug, Storable)]
 struct ValidatorV2 {
@@ -62,7 +64,8 @@ impl Config {
 #[contract(addr = VALIDATOR_CONFIG_V2_ADDRESS)]
 pub struct ValidatorConfigV2 {
     config: Config,
-    validators: Vec<ValidatorV2>,
+    active_validators: Vec<ValidatorV2>,
+    inactive_validators: Vec<ValidatorV2>,
     address_to_index: Mapping<Address, u64>,
     pubkey_to_index: Mapping<B256, u64>,
     next_dkg_ceremony: u64,
@@ -134,30 +137,32 @@ impl ValidatorConfigV2 {
     }
 
     pub fn validator_count(&self) -> Result<u64> {
-        Ok(self.validators.len()? as u64)
+        Ok(self.active_validators.len()? as u64 + self.inactive_validators.len()? as u64)
     }
 
-    /// Get active validator by address with index.
-    ///
-    /// Returns the validator's array index and data if found and active.
-    /// Returns error if validator not found or already deactivated.
-    fn get_active_validator(&self, addr: Address) -> Result<(usize, ValidatorV2)> {
-        let idx1 = self.address_to_index[addr].read()?;
-        if idx1 == 0 {
-            Err(ValidatorConfigV2Error::validator_not_found())?
-        }
-        let idx = (idx1 - 1) as usize;
-        let v = self.validators[idx].read()?;
-        if v.deactivated_at_height != 0 {
-            Err(ValidatorConfigV2Error::validator_already_deleted())?
-        }
-        Ok((idx, v))
+    pub fn active_validator_count(&self) -> Result<u64> {
+        Ok(self.active_validators.len()? as u64)
     }
 
-    fn read_validator_at(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
-        debug_assert!(index < self.validator_count()?, "OOB index");
+    pub fn inactive_validator_count(&self) -> Result<u64> {
+        Ok(self.inactive_validators.len()? as u64)
+    }
 
-        let v = self.validators[index as usize].read()?;
+    fn read_active_validator_at(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
+        let v = self.active_validators[index as usize].read()?;
+        Ok(IValidatorConfigV2::Validator {
+            publicKey: v.public_key,
+            validatorAddress: v.validator_address,
+            ingress: v.ingress,
+            egress: v.egress,
+            index: v.index,
+            addedAtHeight: v.added_at_height,
+            deactivatedAtHeight: v.deactivated_at_height,
+        })
+    }
+
+    fn read_inactive_validator_at(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
+        let v = self.inactive_validators[index as usize].read()?;
         Ok(IValidatorConfigV2::Validator {
             publicKey: v.public_key,
             validatorAddress: v.validator_address,
@@ -170,10 +175,10 @@ impl ValidatorConfigV2 {
     }
 
     pub fn validator_by_index(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
-        if index >= self.validator_count()? {
+        if index >= self.active_validator_count()? {
             Err(ValidatorConfigV2Error::validator_not_found())?
         }
-        self.read_validator_at(index)
+        self.read_active_validator_at(index)
     }
 
     pub fn validator_by_address(&self, addr: Address) -> Result<IValidatorConfigV2::Validator> {
@@ -181,7 +186,7 @@ impl ValidatorConfigV2 {
         if idx1 == 0 {
             Err(ValidatorConfigV2Error::validator_not_found())?
         }
-        self.read_validator_at(idx1 - 1)
+        self.read_active_validator_at(idx1 - 1)
     }
 
     pub fn validator_by_public_key(&self, pubkey: B256) -> Result<IValidatorConfigV2::Validator> {
@@ -189,26 +194,32 @@ impl ValidatorConfigV2 {
         if idx1 == 0 {
             Err(ValidatorConfigV2Error::validator_not_found())?
         }
-        self.read_validator_at(idx1 - 1)
+        self.read_active_validator_at(idx1 - 1)
     }
 
-    pub fn get_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
-        let count = self.validator_count()?;
+    pub fn get_active_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
+        let count = self.active_validator_count()?;
         let mut out = Vec::with_capacity(count as usize);
         for i in 0..count {
-            out.push(self.read_validator_at(i)?);
+            out.push(self.read_active_validator_at(i)?);
         }
         Ok(out)
     }
 
-    pub fn get_active_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
-        let count = self.validator_count()?;
-        let mut out = Vec::new();
-        for i in 0..count {
-            let v = self.read_validator_at(i)?;
-            if v.deactivatedAtHeight == 0 {
-                out.push(v);
+    pub fn get_inactive_validators(
+        &self,
+        start_index: u64,
+    ) -> Result<Vec<IValidatorConfigV2::Validator>> {
+        let count = self.inactive_validator_count()?;
+        if start_index >= count {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::with_capacity((count - start_index) as usize);
+        for i in start_index..count {
+            if self.storage.gas_remaining() < GAS_PER_INACTIVE_VALIDATOR {
+                break;
             }
+            out.push(self.read_inactive_validator_at(i)?);
         }
         Ok(out)
     }
@@ -283,40 +294,46 @@ impl ValidatorConfigV2 {
         addr: Address,
         pubkey: B256,
         ingress: String,
+        ingress_hash: B256,
         egress: String,
         added_at_height: u64,
         deactivated_at_height: u64,
     ) -> Result<()> {
-        let count = self.validator_count()?;
-
-        let v = ValidatorV2 {
-            public_key: pubkey,
-            validator_address: addr,
-            ingress,
-            egress,
-            index: count,
-            added_at_height,
-            deactivated_at_height,
-        };
-
-        self.validators.push(v)?;
-
-        self.address_to_index[addr].write(count + 1)?;
-        self.pubkey_to_index[pubkey].write(count + 1)
+        if deactivated_at_height == 0 {
+            let idx = self.active_validator_count()?;
+            let v = ValidatorV2 {
+                public_key: pubkey,
+                validator_address: addr,
+                ingress,
+                egress,
+                index: idx,
+                added_at_height,
+                deactivated_at_height: 0,
+            };
+            self.active_validators.push(v)?;
+            self.address_to_index[addr].write(idx + 1)?;
+            self.pubkey_to_index[pubkey].write(idx + 1)?;
+            self.active_ingress_ips[ingress_hash].write(true)?;
+        } else {
+            let v = ValidatorV2 {
+                public_key: pubkey,
+                validator_address: addr,
+                ingress,
+                egress,
+                index: 0,
+                added_at_height,
+                deactivated_at_height,
+            };
+            self.inactive_validators.push(v)?;
+        }
+        Ok(())
     }
 
-    /// Allows reusing addresses of deactivated validators.
     fn require_new_address(&self, addr: Address) -> Result<()> {
         if addr.is_zero() {
             Err(ValidatorConfigV2Error::invalid_validator_address())?
         }
-        let idx1 = self.address_to_index[addr].read()?;
-        if idx1 != 0
-            && self.validators[(idx1 - 1) as usize]
-                .deactivated_at_height
-                .read()?
-                == 0
-        {
+        if self.address_to_index[addr].read()? != 0 {
             Err(ValidatorConfigV2Error::address_already_has_validator())?
         }
         Ok(())
@@ -395,12 +412,11 @@ impl ValidatorConfigV2 {
 
         let block_height = self.storage.block_number();
 
-        self.active_ingress_ips[ingress_hash].write(true)?;
-
         self.append_validator(
             call.validatorAddress,
             call.publicKey,
             call.ingress,
+            ingress_hash,
             call.egress,
             block_height,
             0,
@@ -412,17 +428,43 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::deactivateValidatorCall,
     ) -> Result<()> {
-        if sender != call.validatorAddress && !self.config.read()?.is_owner(sender) {
+        let active_len = self.active_validator_count()?;
+        if call.idx >= active_len {
+            Err(ValidatorConfigV2Error::validator_not_found())?
+        }
+
+        let mut to_deactivate = self.active_validators[call.idx as usize].read()?;
+
+        if sender != to_deactivate.validator_address && !self.config.read()?.is_owner(sender) {
             Err(ValidatorConfigV2Error::unauthorized())?
         }
+
         let block_height = self.storage.block_number();
 
-        let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
+        self.active_ingress_ips[Self::ingress_ip_key(&to_deactivate.ingress)?].delete()?;
 
-        self.active_ingress_ips[Self::ingress_ip_key(&v.ingress)?].delete()?;
+        let deactivated_addr = to_deactivate.validator_address;
+        let deactivated_pubkey = to_deactivate.public_key;
 
-        v.deactivated_at_height = block_height;
-        self.validators[idx].write(v)
+        to_deactivate.deactivated_at_height = block_height;
+        self.inactive_validators.push(to_deactivate)?;
+        self.address_to_index[deactivated_addr].write(0)?;
+        self.pubkey_to_index[deactivated_pubkey].write(0)?;
+
+        // swap and pop
+        let last_idx = active_len - 1;
+        if call.idx != last_idx {
+            let mut last = self.active_validators[last_idx as usize].read()?;
+            let last_addr = last.validator_address;
+            let last_pubkey = last.public_key;
+            last.index = call.idx;
+            self.active_validators[call.idx as usize].write(last)?;
+            self.address_to_index[last_addr].write(call.idx + 1)?;
+            self.pubkey_to_index[last_pubkey].write(call.idx + 1)?;
+        }
+        self.active_validators.pop()?;
+
+        Ok(())
     }
 
     pub fn transfer_ownership(
@@ -453,7 +495,16 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::rotateValidatorCall,
     ) -> Result<()> {
-        self.require_initialized_owner_or_validator(sender, call.validatorAddress)?;
+        let active_len = self.active_validator_count()?;
+        if call.idx >= active_len {
+            Err(ValidatorConfigV2Error::validator_not_found())?
+        }
+
+        let mut old = self.active_validators[call.idx as usize].read()?;
+        let old_addr = old.validator_address;
+        let old_pubkey = old.public_key;
+
+        self.require_initialized_owner_or_validator(sender, old_addr)?;
         self.require_new_pubkey(call.publicKey)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
@@ -461,27 +512,32 @@ impl ValidatorConfigV2 {
             VALIDATOR_NS_ROTATE,
             &call.publicKey,
             &call.signature,
-            call.validatorAddress,
+            old_addr,
             &call.ingress,
             &call.egress,
         )?;
 
         let block_height = self.storage.block_number();
-        let (idx, mut old) = self.get_active_validator(call.validatorAddress)?;
 
         self.update_ingress_ip_tracking(&old.ingress, &call.ingress)?;
 
         old.deactivated_at_height = block_height;
-        self.validators[idx].write(old)?;
+        old.index = 0;
+        self.inactive_validators.push(old)?;
+        self.pubkey_to_index[old_pubkey].write(0)?;
 
-        self.append_validator(
-            call.validatorAddress,
-            call.publicKey,
-            call.ingress,
-            call.egress,
-            block_height,
-            0,
-        )?;
+        // Replace in place
+        let new_val = ValidatorV2 {
+            public_key: call.publicKey,
+            validator_address: old_addr,
+            ingress: call.ingress,
+            egress: call.egress,
+            index: call.idx,
+            added_at_height: block_height,
+            deactivated_at_height: 0,
+        };
+        self.active_validators[call.idx as usize].write(new_val)?;
+        self.pubkey_to_index[call.publicKey].write(call.idx + 1)?;
 
         Ok(())
     }
@@ -491,18 +547,23 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::setIpAddressesCall,
     ) -> Result<()> {
-        if sender != call.validatorAddress && !self.config.read()?.is_owner(sender) {
+        if call.idx >= self.active_validator_count()? {
+            Err(ValidatorConfigV2Error::validator_not_found())?
+        }
+
+        let mut v = self.active_validators[call.idx as usize].read()?;
+
+        if sender != v.validator_address && !self.config.read()?.is_owner(sender) {
             Err(ValidatorConfigV2Error::unauthorized())?
         }
 
-        let (idx, mut v) = self.get_active_validator(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
         self.update_ingress_ip_tracking(&v.ingress, &call.ingress)?;
 
         v.ingress = call.ingress;
         v.egress = call.egress;
-        self.validators[idx].write(v)?;
+        self.active_validators[call.idx as usize].write(v)?;
 
         Ok(())
     }
@@ -512,17 +573,22 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::transferValidatorOwnershipCall,
     ) -> Result<()> {
-        self.require_initialized_owner_or_validator(sender, call.currentAddress)?;
+        if call.idx >= self.active_validator_count()? {
+            Err(ValidatorConfigV2Error::validator_not_found())?
+        }
+
         self.require_new_address(call.newAddress)?;
 
-        let (idx, mut v) = self.get_active_validator(call.currentAddress)?;
-        let idx1 = (idx + 1) as u64; // Convert back to 1-indexed
+        let mut v = self.active_validators[call.idx as usize].read()?;
+        let curr_addr = v.validator_address;
+
+        self.require_initialized_owner_or_validator(sender, curr_addr)?;
 
         v.validator_address = call.newAddress;
-        self.validators[idx].write(v)?;
+        self.active_validators[call.idx as usize].write(v)?;
 
-        self.address_to_index[call.newAddress].write(idx1)?;
-        self.address_to_index[call.currentAddress].delete()
+        self.address_to_index[call.newAddress].write(call.idx + 1)?;
+        self.address_to_index[curr_addr].delete()
     }
 
     // =========================================================================
@@ -574,8 +640,13 @@ impl ValidatorConfigV2 {
         }
         let v1_val = v1.validators(v1.validators_array(call.idx)?)?;
 
-        self.require_new_address(v1_val.validatorAddress)?;
-        self.require_new_pubkey(v1_val.publicKey)?;
+        let deactivated_at_height = if v1_val.active {
+            self.require_new_address(v1_val.validatorAddress)?;
+            self.require_new_pubkey(v1_val.publicKey)?;
+            0
+        } else {
+            block_height
+        };
 
         let egress = v1_val
             .outboundAddress
@@ -585,22 +656,15 @@ impl ValidatorConfigV2 {
 
         let ingress_hash = self.require_unique_ingress_ip(&v1_val.inboundAddress)?;
 
-        let deactivated_at_height = if v1_val.active { 0 } else { block_height };
-
         self.append_validator(
             v1_val.validatorAddress,
             v1_val.publicKey,
             v1_val.inboundAddress,
+            ingress_hash,
             egress,
             block_height,
             deactivated_at_height,
-        )?;
-
-        if deactivated_at_height == 0 {
-            self.active_ingress_ips[ingress_hash].write(true)?;
-        }
-
-        Ok(())
+        )
     }
 
     pub fn initialize_if_migrated(&mut self, sender: Address) -> Result<()> {
@@ -900,25 +964,22 @@ mod tests {
             vc.storage.set_block_number(300);
             vc.deactivate_validator(
                 owner,
-                IValidatorConfigV2::deactivateValidatorCall {
-                    validatorAddress: validator,
-                },
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
             )?;
 
-            let v = vc.validator_by_index(0)?;
-            assert_eq!(v.deactivatedAtHeight, 300);
+            // After deactivation, active count is 0, validator is in inactive
+            assert_eq!(vc.active_validator_count()?, 0);
+            assert_eq!(vc.inactive_validator_count()?, 1);
 
-            // Double deactivation fails
+            // Double deactivation fails (idx 0 is out of bounds)
             vc.storage.set_block_number(301);
             let result = vc.deactivate_validator(
                 owner,
-                IValidatorConfigV2::deactivateValidatorCall {
-                    validatorAddress: validator,
-                },
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
             );
             assert_eq!(
                 result,
-                Err(ValidatorConfigV2Error::validator_already_deleted().into())
+                Err(ValidatorConfigV2Error::validator_not_found().into())
             );
 
             Ok(())
@@ -950,30 +1011,24 @@ mod tests {
             vc.storage.set_block_number(300);
             let result = vc.deactivate_validator(
                 third_party,
-                IValidatorConfigV2::deactivateValidatorCall {
-                    validatorAddress: v1,
-                },
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
             );
             assert_eq!(result, Err(ValidatorConfigV2Error::unauthorized().into()));
 
-            // Validator can deactivate itself
-            vc.deactivate_validator(
-                v1,
-                IValidatorConfigV2::deactivateValidatorCall {
-                    validatorAddress: v1,
-                },
-            )?;
-            assert_eq!(vc.validator_by_index(0)?.deactivatedAtHeight, 300);
+            // Validator can deactivate itself (v1 is at idx 0)
+            vc.deactivate_validator(v1, IValidatorConfigV2::deactivateValidatorCall { idx: 0 })?;
+            // After deactivating v1 at idx 0, v2 was swapped into idx 0
+            assert_eq!(vc.active_validator_count()?, 1);
+            assert_eq!(vc.validator_by_index(0)?.validatorAddress, v2);
 
-            // Owner can deactivate another validator
+            // Owner can deactivate another validator (v2 is now at idx 0)
             vc.storage.set_block_number(301);
             vc.deactivate_validator(
                 owner,
-                IValidatorConfigV2::deactivateValidatorCall {
-                    validatorAddress: v2,
-                },
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
             )?;
-            assert_eq!(vc.validator_by_index(1)?.deactivatedAtHeight, 301);
+            assert_eq!(vc.active_validator_count()?, 0);
+            assert_eq!(vc.inactive_validator_count()?, 2);
 
             Ok(())
         })
@@ -1018,7 +1073,7 @@ mod tests {
             vc.rotate_validator(
                 owner,
                 IValidatorConfigV2::rotateValidatorCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     publicKey: new_pubkey,
                     ingress: "10.0.0.1:8000".to_string(),
                     egress: "10.0.0.1".to_string(),
@@ -1026,16 +1081,13 @@ mod tests {
                 },
             )?;
 
-            // Should now have 2 entries
+            // Should now have 2 entries (1 active + 1 inactive)
             assert_eq!(vc.validator_count()?, 2);
+            assert_eq!(vc.active_validator_count()?, 1);
+            assert_eq!(vc.inactive_validator_count()?, 1);
 
-            // Old entry deactivated
-            let old = vc.validator_by_index(0)?;
-            assert_eq!(old.deactivatedAtHeight, 300);
-            assert_eq!(old.publicKey, old_pubkey);
-
-            // New entry active with same address
-            let new = vc.validator_by_index(1)?;
+            // New entry replaced in place at index 0
+            let new = vc.validator_by_index(0)?;
             assert_eq!(new.deactivatedAtHeight, 0);
             assert_eq!(new.publicKey, new_pubkey);
             assert_eq!(new.validatorAddress, validator);
@@ -1045,9 +1097,12 @@ mod tests {
             let by_addr = vc.validator_by_address(validator)?;
             assert_eq!(by_addr.publicKey, new_pubkey);
 
-            // Old pubkey still resolves to the old entry
-            let by_old_pk = vc.validator_by_public_key(old_pubkey)?;
-            assert_eq!(by_old_pk.deactivatedAtHeight, 300);
+            // Old pubkey was cleared — lookup fails
+            let by_old_pk = vc.validator_by_public_key(old_pubkey);
+            assert_eq!(
+                by_old_pk,
+                Err(ValidatorConfigV2Error::validator_not_found().into())
+            );
 
             Ok(())
         })
@@ -1079,16 +1134,14 @@ mod tests {
             vc.storage.set_block_number(300);
             vc.deactivate_validator(
                 owner,
-                IValidatorConfigV2::deactivateValidatorCall {
-                    validatorAddress: v1,
-                },
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
             )?;
 
             let active = vc.get_active_validators()?;
             assert_eq!(active.len(), 1);
             assert_eq!(active[0].validatorAddress, v2);
 
-            assert_eq!(vc.get_validators()?.len(), 2);
+            assert_eq!(vc.validator_count()?, 2);
 
             Ok(())
         })
@@ -1112,7 +1165,7 @@ mod tests {
             vc.set_ip_addresses(
                 owner,
                 IValidatorConfigV2::setIpAddressesCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     ingress: "10.0.0.1:8000".to_string(),
                     egress: "10.0.0.1".to_string(),
                 },
@@ -1126,7 +1179,7 @@ mod tests {
             vc.set_ip_addresses(
                 validator,
                 IValidatorConfigV2::setIpAddressesCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     ingress: "10.0.0.2:8000".to_string(),
                     egress: "10.0.0.2".to_string(),
                 },
@@ -1193,7 +1246,7 @@ mod tests {
             vc.transfer_validator_ownership(
                 owner,
                 IValidatorConfigV2::transferValidatorOwnershipCall {
-                    currentAddress: validator,
+                    idx: 0,
                     newAddress: new_address,
                 },
             )?;
@@ -1232,21 +1285,20 @@ mod tests {
             vc.storage.set_block_number(300);
             vc.deactivate_validator(
                 owner,
-                IValidatorConfigV2::deactivateValidatorCall {
-                    validatorAddress: validator,
-                },
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
             )?;
 
+            // After deactivation, active count is 0, so idx 0 is out of bounds
             let result = vc.transfer_validator_ownership(
                 owner,
                 IValidatorConfigV2::transferValidatorOwnershipCall {
-                    currentAddress: validator,
+                    idx: 0,
                     newAddress: Address::random(),
                 },
             );
             assert_eq!(
                 result,
-                Err(ValidatorConfigV2Error::validator_already_deleted().into())
+                Err(ValidatorConfigV2Error::validator_not_found().into())
             );
 
             Ok(())
@@ -1454,7 +1506,7 @@ mod tests {
             v2.set_ip_addresses(
                 owner,
                 IValidatorConfigV2::setIpAddressesCall {
-                    validatorAddress: v1_addr,
+                    idx: 0,
                     ingress: "192.168.1.1:8000".to_string(),
                     egress: migrated.egress,
                 },
@@ -1593,9 +1645,7 @@ mod tests {
             vc.storage.set_block_number(300);
             vc.deactivate_validator(
                 owner,
-                IValidatorConfigV2::deactivateValidatorCall {
-                    validatorAddress: validator_addr,
-                },
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
             )?;
 
             // Now add new validator with SAME address but different pubkey - should succeed
@@ -1617,29 +1667,28 @@ mod tests {
                 ),
             )?;
 
-            // Should have 2 validators
+            // Should have 2 validators (1 active + 1 inactive)
             assert_eq!(vc.validator_count()?, 2);
+            assert_eq!(vc.active_validator_count()?, 1);
+            assert_eq!(vc.inactive_validator_count()?, 1);
 
-            // First one is deactivated
-            let v1 = vc.validator_by_index(0)?;
-            assert_eq!(v1.validatorAddress, validator_addr);
-            assert_eq!(v1.publicKey, pubkey1);
-            assert_eq!(v1.deactivatedAtHeight, 300);
-
-            // Second one is active with same address
-            let v2 = vc.validator_by_index(1)?;
-            assert_eq!(v2.validatorAddress, validator_addr);
-            assert_eq!(v2.publicKey, pubkey2);
-            assert_eq!(v2.deactivatedAtHeight, 0);
+            // Active one is the new validator at index 0
+            let v = vc.validator_by_index(0)?;
+            assert_eq!(v.validatorAddress, validator_addr);
+            assert_eq!(v.publicKey, pubkey2);
+            assert_eq!(v.deactivatedAtHeight, 0);
 
             // Lookup by address returns the NEW active validator
             let by_addr = vc.validator_by_address(validator_addr)?;
             assert_eq!(by_addr.publicKey, pubkey2);
             assert_eq!(by_addr.deactivatedAtHeight, 0);
 
-            // Lookup by old pubkey returns old deactivated validator
-            let by_old_pk = vc.validator_by_public_key(pubkey1)?;
-            assert_eq!(by_old_pk.deactivatedAtHeight, 300);
+            // Old pubkey was cleared — lookup fails
+            let by_old_pk = vc.validator_by_public_key(pubkey1);
+            assert_eq!(
+                by_old_pk,
+                Err(ValidatorConfigV2Error::validator_not_found().into())
+            );
 
             // Lookup by new pubkey returns new active validator
             let by_new_pk = vc.validator_by_public_key(pubkey2)?;
@@ -1692,9 +1741,7 @@ mod tests {
             vc.storage.set_block_number(300);
             vc.deactivate_validator(
                 owner,
-                IValidatorConfigV2::deactivateValidatorCall {
-                    validatorAddress: v1,
-                },
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
             )?;
 
             // Should allow IP reuse after deactivation
@@ -1738,7 +1785,7 @@ mod tests {
             v2.set_ip_addresses(
                 owner,
                 IValidatorConfigV2::setIpAddressesCall {
-                    validatorAddress: v1_addr,
+                    idx: 0,
                     ingress: "10.0.0.1:8000".to_string(),
                     egress: "10.0.0.1".to_string(),
                 },
@@ -1781,7 +1828,7 @@ mod tests {
             let result = v2.set_ip_addresses(
                 non_owner,
                 IValidatorConfigV2::setIpAddressesCall {
-                    validatorAddress: v1_addr,
+                    idx: 0,
                     ingress: "10.0.0.1:8000".to_string(),
                     egress: "10.0.0.1".to_string(),
                 },
@@ -1825,7 +1872,7 @@ mod tests {
             let result = vc.rotate_validator(
                 owner,
                 IValidatorConfigV2::rotateValidatorCall {
-                    validatorAddress: v1,
+                    idx: 0,
                     publicKey: new_pk,
                     ingress: "192.168.2.1:8000".to_string(),
                     egress: "192.168.2.1".to_string(),
@@ -1902,7 +1949,7 @@ mod tests {
             let result = vc.set_ip_addresses(
                 third_party,
                 IValidatorConfigV2::setIpAddressesCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     ingress: "10.0.0.1:8000".to_string(),
                     egress: "10.0.0.1".to_string(),
                 },
@@ -1912,7 +1959,7 @@ mod tests {
             let result = vc.transfer_validator_ownership(
                 third_party,
                 IValidatorConfigV2::transferValidatorOwnershipCall {
-                    currentAddress: validator,
+                    idx: 0,
                     newAddress: Address::random(),
                 },
             );
@@ -1948,7 +1995,7 @@ mod tests {
             vc.rotate_validator(
                 owner,
                 IValidatorConfigV2::rotateValidatorCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     publicKey: new_pubkey,
                     ingress: "192.168.1.1:8000".to_string(),
                     egress: "192.168.1.1".to_string(),
@@ -1957,8 +2004,8 @@ mod tests {
             )?;
 
             assert_eq!(vc.validator_count()?, 2);
-            assert_eq!(vc.validator_by_index(0)?.deactivatedAtHeight, 300);
-            assert_eq!(vc.validator_by_index(1)?.deactivatedAtHeight, 0);
+            assert_eq!(vc.active_validator_count()?, 1);
+            assert_eq!(vc.validator_by_index(0)?.deactivatedAtHeight, 0);
             assert_eq!(vc.validator_by_address(validator)?.publicKey, new_pubkey);
             assert_eq!(
                 vc.validator_by_address(validator)?.ingress,
@@ -1996,7 +2043,7 @@ mod tests {
             vc.rotate_validator(
                 owner,
                 IValidatorConfigV2::rotateValidatorCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     publicKey: new_pubkey,
                     ingress: "192.168.1.1:8001".to_string(),
                     egress: "192.168.1.1".to_string(),
@@ -2005,8 +2052,8 @@ mod tests {
             )?;
 
             assert_eq!(vc.validator_count()?, 2);
-            assert_eq!(vc.validator_by_index(0)?.deactivatedAtHeight, 300);
-            assert_eq!(vc.validator_by_index(1)?.deactivatedAtHeight, 0);
+            assert_eq!(vc.active_validator_count()?, 1);
+            assert_eq!(vc.validator_by_index(0)?.deactivatedAtHeight, 0);
             assert_eq!(vc.validator_by_address(validator)?.publicKey, new_pubkey);
             assert_eq!(
                 vc.validator_by_address(validator)?.ingress,
@@ -2037,7 +2084,7 @@ mod tests {
             vc.set_ip_addresses(
                 owner,
                 IValidatorConfigV2::setIpAddressesCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     ingress: "10.0.0.1:8000".to_string(),
                     egress: "192.168.1.1".to_string(),
                 },
@@ -2070,7 +2117,7 @@ mod tests {
             vc.set_ip_addresses(
                 owner,
                 IValidatorConfigV2::setIpAddressesCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     ingress: "192.168.1.1:8001".to_string(),
                     egress: "192.168.1.1".to_string(),
                 },
@@ -2103,7 +2150,7 @@ mod tests {
             vc.set_ip_addresses(
                 owner,
                 IValidatorConfigV2::setIpAddressesCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     ingress: "192.168.1.1:8000".to_string(),
                     egress: "10.0.0.1".to_string(),
                 },
@@ -2140,7 +2187,7 @@ mod tests {
             let result = vc.set_ip_addresses(
                 owner,
                 IValidatorConfigV2::setIpAddressesCall {
-                    validatorAddress: v2,
+                    idx: 1,
                     ingress: "192.168.1.1:9000".to_string(),
                     egress: "192.168.2.1".to_string(),
                 },
@@ -2169,7 +2216,7 @@ mod tests {
             vc.set_ip_addresses(
                 owner,
                 IValidatorConfigV2::setIpAddressesCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     ingress: "192.168.1.1:9000".to_string(),
                     egress: "192.168.1.1".to_string(),
                 },
@@ -2202,7 +2249,7 @@ mod tests {
             vc.transfer_validator_ownership(
                 validator,
                 IValidatorConfigV2::transferValidatorOwnershipCall {
-                    currentAddress: validator,
+                    idx: 0,
                     newAddress: new_address,
                 },
             )?;
@@ -2245,27 +2292,13 @@ mod tests {
             vc.storage.set_block_number(300);
             vc.deactivate_validator(
                 owner,
-                IValidatorConfigV2::deactivateValidatorCall {
-                    validatorAddress: addr1,
-                },
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
             )?;
 
-            // Try to add a new validator reusing the deleted pubkey — should fail
-            let addr2 = Address::random();
-            let result = vc.add_validator(
-                owner,
-                make_add_call(
-                    addr2,
-                    pubkey,
-                    "192.168.2.1:8000",
-                    "192.168.2.1",
-                    vec![0u8; 64],
-                ),
-            );
-            assert_eq!(
-                result,
-                Err(ValidatorConfigV2Error::public_key_already_exists().into())
-            );
+            // After deactivation, pubkeyToIndex is cleared to 0, so pubkey can be reused.
+            // Verify the uniqueness check passes (pubkeyToIndex was cleared).
+            assert_eq!(vc.pubkey_to_index[pubkey].read()?, 0);
+            assert!(vc.require_new_pubkey(pubkey).is_ok());
 
             Ok(())
         })
@@ -2338,9 +2371,7 @@ mod tests {
             vc.storage.set_block_number(300);
             vc.deactivate_validator(
                 owner,
-                IValidatorConfigV2::deactivateValidatorCall {
-                    validatorAddress: v1,
-                },
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
             )?;
 
             // Should allow IPv6 reuse after deactivation
@@ -2381,7 +2412,7 @@ mod tests {
             vc.rotate_validator(
                 owner,
                 IValidatorConfigV2::rotateValidatorCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     publicKey: new_pubkey,
                     ingress: "[2001:db8::1]:8000".to_string(),
                     egress: "2001:db8::1".to_string(),
@@ -2390,10 +2421,9 @@ mod tests {
             )?;
 
             assert_eq!(vc.validator_count()?, 2);
-            let old = vc.validator_by_index(0)?;
-            assert_eq!(old.deactivatedAtHeight, 300);
+            assert_eq!(vc.active_validator_count()?, 1);
 
-            let new = vc.validator_by_index(1)?;
+            let new = vc.validator_by_index(0)?;
             assert_eq!(new.deactivatedAtHeight, 0);
             assert_eq!(new.ingress, "[2001:db8::1]:8000");
             assert_eq!(new.egress, "2001:db8::1");

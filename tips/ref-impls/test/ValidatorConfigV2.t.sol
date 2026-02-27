@@ -757,8 +757,7 @@ contract ValidatorConfigV2Test is BaseTest {
         active = validatorConfigV2.getActiveValidators();
         assertEq(active.length, 3); // 2 setup + validator2
 
-        IValidatorConfigV2.Validator[] memory inactive =
-            validatorConfigV2.getInactiveValidators(0);
+        IValidatorConfigV2.Validator[] memory inactive = validatorConfigV2.getInactiveValidators(0);
         assertEq(inactive.length, 1);
         assertEq(inactive[0].validatorAddress, validator1);
         assertGt(inactive[0].deactivatedAtHeight, 0);

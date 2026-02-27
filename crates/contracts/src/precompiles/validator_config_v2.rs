@@ -32,11 +32,17 @@ crate::sol! {
         // View functions
         // =====================================================================
 
-        /// Get the complete set of validators (including deleted)
-        function getAllValidators() external view returns (Validator[] memory validators);
-
         /// Get only active validators (deactivatedAtHeight == 0)
         function getActiveValidators() external view returns (Validator[] memory validators);
+
+        /// Get inactive (deactivated) validators with pagination
+        function getInactiveValidators(uint64 startIndex) external view returns (Validator[] memory validators);
+
+        /// Get the number of inactive (deactivated) validators
+        function inactiveValidatorCount() external view returns (uint64);
+
+        /// Get the number of currently active validators
+        function activeValidatorCount() external view returns (uint64);
 
         /// Get the block height at which the contract was initialized
         function getInitializedAtHeight() external view returns (uint64);
@@ -76,11 +82,11 @@ crate::sol! {
         ) external;
 
         /// Deactivate a validator (owner or validator)
-        function deactivateValidator(address validatorAddress) external;
+        function deactivateValidator(uint64 idx) external;
 
         /// Rotate a validator to new identity (owner or validator)
         function rotateValidator(
-            address validatorAddress,
+            uint64 idx,
             bytes32 publicKey,
             string calldata ingress,
             string calldata egress,
@@ -89,14 +95,14 @@ crate::sol! {
 
         /// Update IP addresses (owner or validator)
         function setIpAddresses(
-            address validatorAddress,
+            uint64 idx,
             string calldata ingress,
             string calldata egress
         ) external;
 
         /// Transfer validator ownership to new address (owner or validator)
         function transferValidatorOwnership(
-            address currentAddress,
+            uint64 idx,
             address newAddress
         ) external;
 
@@ -129,7 +135,6 @@ crate::sol! {
         error NotIpPort(string input, string backtrace);
         error PublicKeyAlreadyExists();
         error Unauthorized();
-        error ValidatorAlreadyDeleted();
         error AddressAlreadyHasValidator();
         error ValidatorNotFound();
     }
@@ -150,10 +155,6 @@ impl ValidatorConfigV2Error {
 
     pub const fn validator_not_found() -> Self {
         Self::ValidatorNotFound(IValidatorConfigV2::ValidatorNotFound {})
-    }
-
-    pub const fn validator_already_deleted() -> Self {
-        Self::ValidatorAlreadyDeleted(IValidatorConfigV2::ValidatorAlreadyDeleted {})
     }
 
     pub const fn invalid_public_key() -> Self {

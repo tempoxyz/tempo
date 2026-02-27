@@ -398,6 +398,10 @@ where
         unreachable!("'gas_used' not implemented in read-only context yet")
     }
 
+    fn gas_remaining(&self) -> u64 {
+        u64::MAX
+    }
+
     fn gas_refunded(&self) -> i64 {
         unreachable!("'gas_refunded' not implemented in read-only context yet")
     }

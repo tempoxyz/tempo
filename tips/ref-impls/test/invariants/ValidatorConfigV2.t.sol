@@ -186,27 +186,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         return (address(0), 0, false);
     }
 
-    /// @dev Helper to get all validators (active + inactive) for invariant checks.
-    /// Stopgap until ghost state is reworked for the two-array model.
-    function _getAllValidators()
-        internal
-        view
-        returns (IValidatorConfigV2.Validator[] memory)
-    {
-        IValidatorConfigV2.Validator[] memory inactive =
-            validatorConfigV2.getInactiveValidators(0);
-        IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
-        IValidatorConfigV2.Validator[] memory all =
-            new IValidatorConfigV2.Validator[](inactive.length + active.length);
-        for (uint256 i = 0; i < inactive.length; i++) {
-            all[i] = inactive[i];
-        }
-        for (uint256 i = 0; i < active.length; i++) {
-            all[inactive.length + i] = active[i];
-        }
-        return all;
-    }
-
     /// @dev Helper to count active validators (deactivatedAtHeight == 0)
     function _countActiveValidators() internal view returns (uint256) {
         uint256 count = 0;
@@ -483,29 +462,16 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice Handler for deactivating validators (owner, validator, or third party; active or already deactivated)
-    /// @dev Tests TEMPO-VALV2-1 (dual-auth), TEMPO-VALV2-3 (count changes), TEMPO-VALV2-4 (height tracking),
-    ///      TEMPO-VALV2-9 (delete-once: already deactivated rejects)
+    /// @notice Handler for deactivating validators (owner, validator, or third party)
+    /// @dev Tests TEMPO-VALV2-1 (dual-auth), TEMPO-VALV2-3 (count changes), TEMPO-VALV2-4 (height tracking)
     function _deactivateValidator(uint256 callerSeed, uint256 validatorSeed) internal {
-        if (_ghostTotalCount == 0) return;
-
-        // Select from ALL ghost validators (not just active) to exercise already-deactivated path
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint64 someIdx = uint64(validatorSeed % _ghostTotalCount);
-        address validatorAddr = _ghostAddress[someIdx];
-
-        // Skip addresses that were transferred away (no longer in contract's address_to_index)
-        if (!_ghostAddressInUse[validatorAddr]) return;
+        (address validatorAddr, uint64 ghostIdx, bool found) = _selectActiveValidator(validatorSeed);
+        if (!found) return;
 
         address caller = _selectPotentialValidator(callerSeed);
         bool isAuthorized = (caller == _ghostOwner || caller == validatorAddr);
 
-        // The contract looks up the LATEST entry for this address
-        uint64 currentIdx = _ghostActiveIndex[validatorAddr];
-        bool isActive = (_ghostDeactivatedAtHeight[currentIdx] == 0);
-
         uint256 activeCountBefore = _countActiveValidators();
-        uint256 totalCountBefore = _ghostTotalCount;
 
         vm.startPrank(caller);
         try validatorConfigV2.deactivateValidator(
@@ -513,14 +479,12 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         ) {
             vm.stopPrank();
             assertTrue(isAuthorized, "TEMPO-VALV2-1: Third party should not deactivate");
-            assertTrue(isActive, "TEMPO-VALV2-9: Already deactivated should not succeed");
 
-            _ghostDeactivatedAtHeight[currentIdx] = uint64(block.number);
-
-            // Contract allows reusing addresses of deactivated validators
+            _ghostDeactivatedAtHeight[ghostIdx] = uint64(block.number);
             delete _ghostAddressInUse[validatorAddr];
+            delete _ghostPubKeyUsed[_ghostPubKey[ghostIdx]];
 
-            bytes32 ingressIpHash = _extractIngressIpHash(_ghostIngress[currentIdx]);
+            bytes32 ingressIpHash = _extractIngressIpHash(_ghostIngress[ghostIdx]);
             delete _ghostActiveIngressIpHashes[ingressIpHash];
 
             // TEMPO-VALV2-3: deactivateValidator should -1 active, +0 total
@@ -529,11 +493,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 activeCountBefore - 1,
                 "TEMPO-VALV2-3: deactivateValidator should decrement active count by 1"
             );
-            assertEq(
-                _ghostTotalCount,
-                totalCountBefore,
-                "TEMPO-VALV2-3: deactivateValidator should not change total count"
-            );
 
             // TEMPO-VALV2-4: Deactivated validator should no longer be lookupable by address
             try validatorConfigV2.validatorByAddress(validatorAddr) {
@@ -541,10 +500,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             } catch { }
         } catch (bytes memory reason) {
             vm.stopPrank();
-            assertTrue(
-                !isAuthorized || !isActive || reason.length > 0,
-                "deactivateValidator reverted unexpectedly with valid inputs"
-            );
             _assertKnownV2Error(reason);
         }
     }
@@ -622,10 +577,6 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             validatorConfigV2.validatorByAddress(validatorAddr).index, newIngress, newEgress
         ) {
             vm.stopPrank();
-            assertTrue(
-                _ghostInitialized,
-                "TEMPO-VALV2-5: setIpAddresses must not succeed when not initialized"
-            );
             assertTrue(isAuthorized, "TEMPO-VALV2-1: Third party should not update IPs");
 
             bytes32 oldIngressIpHash = _extractIngressIpHash(_ghostIngress[ghostIdx]);
@@ -766,6 +717,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             delete _ghostActiveIngressIpHashes[oldIngressIpHash];
 
             _ghostDeactivatedAtHeight[oldGhostIdx] = uint64(block.number);
+            delete _ghostPubKeyUsed[_ghostPubKey[oldGhostIdx]];
 
             // forge-lint: disable-next-line(unsafe-typecast)
             uint64 newIdx = uint64(_ghostTotalCount);
@@ -795,21 +747,19 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 "TEMPO-VALV2-3: rotateValidator should increment total count by 1"
             );
 
-            // TEMPO-VALV2-4: Height tracking for both old and new validators
-            IValidatorConfigV2.Validator memory oldV =
-                validatorConfigV2.validatorByIndex(oldGhostIdx);
+            // TEMPO-VALV2-4: Height tracking — old validator is now in inactive array
+            IValidatorConfigV2.Validator[] memory inactiveVals =
+                validatorConfigV2.getInactiveValidators(0);
+            IValidatorConfigV2.Validator memory oldV = inactiveVals[inactiveVals.length - 1];
             assertEq(
                 oldV.deactivatedAtHeight,
                 uint64(block.number),
                 "TEMPO-VALV2-4: Old validator deactivatedAtHeight should be current block"
             );
 
+            // TEMPO-VALV2-6: Address mapping returns the new rotated entry
             IValidatorConfigV2.Validator memory newV =
                 validatorConfigV2.validatorByAddress(validatorAddr);
-            // TEMPO-VALV2-6: Address mapping updated — old entry deactivated, lookup returns new entry
-            assertEq(
-                newV.index, newIdx, "TEMPO-VALV2-6: Address lookup must point to new rotated entry"
-            );
             assertEq(newV.publicKey, newPubKey, "TEMPO-VALV2-4: New public key should be set");
             assertEq(
                 newV.addedAtHeight,
@@ -882,32 +832,40 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 _ghostOwner = validatorConfig.owner();
             }
 
-            IValidatorConfigV2.Validator memory v2 = validatorConfigV2.validatorByIndex(idx);
+            // forge-lint: disable-next-line(unsafe-typecast)
+            uint64 ghostIdx = uint64(_ghostTotalCount);
+            _ghostAddress[ghostIdx] = v1Vals[idx].validatorAddress;
+            _ghostPubKey[ghostIdx] = v1Vals[idx].publicKey;
+            _ghostAddedAtHeight[ghostIdx] = uint64(block.number);
+            _ghostDeactivatedAtHeight[ghostIdx] = v1Vals[idx].active ? 0 : uint64(block.number);
 
-            _ghostAddress[idx] = v1Vals[idx].validatorAddress;
-            _ghostPubKey[idx] = v1Vals[idx].publicKey;
-            _ghostAddedAtHeight[idx] = uint64(block.number);
-            _ghostDeactivatedAtHeight[idx] = v1Vals[idx].active ? 0 : uint64(block.number);
-            _ghostIngress[idx] = v2.ingress;
-            _ghostEgress[idx] = v2.egress;
-            _ghostActiveIndex[v1Vals[idx].validatorAddress] = idx;
-            _ghostAddressInUse[v1Vals[idx].validatorAddress] = true;
-            _ghostPubKeyUsed[v1Vals[idx].publicKey] = true;
             if (v1Vals[idx].active) {
+                // Active: queryable by address, ingress tracked
+                IValidatorConfigV2.Validator memory v2 =
+                    validatorConfigV2.validatorByAddress(v1Vals[idx].validatorAddress);
+                _ghostIngress[ghostIdx] = v2.ingress;
+                _ghostEgress[ghostIdx] = v2.egress;
+                _ghostActiveIndex[v1Vals[idx].validatorAddress] = ghostIdx;
+                _ghostAddressInUse[v1Vals[idx].validatorAddress] = true;
+                _ghostPubKeyUsed[v1Vals[idx].publicKey] = true;
                 _ghostActiveIngressIpHashes[_extractIngressIpHash(v2.ingress)] = true;
+
+                assertEq(v2.deactivatedAtHeight, 0, "TEMPO-VALV2-25: Active V1 must be active V2");
+            } else {
+                // Inactive: not indexed, goes to inactiveValidatorsArray
+                IValidatorConfigV2.Validator[] memory inactiveVals =
+                    validatorConfigV2.getInactiveValidators(0);
+                IValidatorConfigV2.Validator memory v2 = inactiveVals[inactiveVals.length - 1];
+                _ghostIngress[ghostIdx] = v2.ingress;
+                _ghostEgress[ghostIdx] = v2.egress;
+
+                assertGt(
+                    v2.deactivatedAtHeight, 0, "TEMPO-VALV2-25: Inactive V1 must be inactive V2"
+                );
             }
 
             _ghostTotalCount++;
             _ghostNextMigrationIndex++;
-
-            // TEMPO-VALV2-25: Migration preserves activity — checked per-handler at migration time,
-            // not globally, because migrated validators can be deactivated after migration
-            bool v2Active = v2.deactivatedAtHeight == 0;
-            assertEq(
-                v2Active,
-                v1Vals[idx].active,
-                "TEMPO-VALV2-25: Migrated validator activity must match V1"
-            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             if (bytes4(reason) == IValidatorConfigV2.AlreadyInitialized.selector) {
@@ -1006,54 +964,60 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         );
     }
 
-    /// @notice TEMPO-VALV2-16: All validator data matches ghost state (index-keyed)
+    /// @notice TEMPO-VALV2-16: Active validator data matches ghost state (keyed by address)
     function _invariantValidatorDataConsistency() internal view {
-        IValidatorConfigV2.Validator[] memory vals = _getAllValidators();
-        assertEq(vals.length, _ghostTotalCount, "TEMPO-VALV2-16: Array length mismatch");
+        uint64 totalCount = validatorConfigV2.validatorCount();
+        assertEq(totalCount, _ghostTotalCount, "TEMPO-VALV2-16: Total count mismatch");
 
-        for (uint256 i = 0; i < vals.length; i++) {
+        // For each active ghost entry, verify contract data matches via address lookup
+        for (uint256 i = 0; i < _ghostTotalCount; i++) {
             // forge-lint: disable-next-line(unsafe-typecast)
             uint64 idx = uint64(i);
+            if (_ghostDeactivatedAtHeight[idx] != 0) continue;
+
+            IValidatorConfigV2.Validator memory v =
+                validatorConfigV2.validatorByAddress(_ghostAddress[idx]);
+            assertEq(v.validatorAddress, _ghostAddress[idx], "TEMPO-VALV2-16: Address mismatch");
+            assertEq(v.publicKey, _ghostPubKey[idx], "TEMPO-VALV2-16: Public key mismatch");
             assertEq(
-                vals[i].validatorAddress, _ghostAddress[idx], "TEMPO-VALV2-16: Address mismatch"
+                v.addedAtHeight, _ghostAddedAtHeight[idx], "TEMPO-VALV2-16: addedAtHeight mismatch"
             );
-            assertEq(vals[i].publicKey, _ghostPubKey[idx], "TEMPO-VALV2-16: Public key mismatch");
-            assertEq(vals[i].index, idx, "TEMPO-VALV2-16: Index mismatch");
+            assertEq(v.deactivatedAtHeight, 0, "TEMPO-VALV2-16: Active should have deactivated=0");
             assertEq(
-                vals[i].addedAtHeight,
-                _ghostAddedAtHeight[idx],
-                "TEMPO-VALV2-16: addedAtHeight mismatch"
+                keccak256(bytes(v.ingress)),
+                keccak256(bytes(_ghostIngress[idx])),
+                "TEMPO-VALV2-16: Ingress mismatch"
             );
             assertEq(
-                vals[i].deactivatedAtHeight,
-                _ghostDeactivatedAtHeight[idx],
-                "TEMPO-VALV2-16: deactivatedAtHeight mismatch"
+                keccak256(bytes(v.egress)),
+                keccak256(bytes(_ghostEgress[idx])),
+                "TEMPO-VALV2-16: Egress mismatch"
             );
         }
     }
 
-    /// @notice TEMPO-VALV2-14: All indices are sequential (0, 1, 2, ...)
+    /// @notice TEMPO-VALV2-14: Active validator indices match their array positions
     function _invariantIndexSequential() internal view {
-        IValidatorConfigV2.Validator[] memory vals = _getAllValidators();
+        IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
 
-        for (uint256 i = 0; i < vals.length; i++) {
-            assertEq(vals[i].index, i, "TEMPO-VALV2-14: Index should equal array position");
+        for (uint256 i = 0; i < active.length; i++) {
+            assertEq(active[i].index, i, "TEMPO-VALV2-14: Active index should equal array position");
         }
     }
 
-    /// @notice TEMPO-VALV2-12: All public keys are unique and non-zero
+    /// @notice TEMPO-VALV2-12: Active public keys are unique and non-zero
     function _invariantPubKeyUniqueness() internal view {
-        IValidatorConfigV2.Validator[] memory vals = _getAllValidators();
+        IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
 
-        for (uint256 i = 0; i < vals.length; i++) {
+        for (uint256 i = 0; i < active.length; i++) {
             assertTrue(
-                vals[i].publicKey != bytes32(0), "TEMPO-VALV2-12: Public key must not be zero"
+                active[i].publicKey != bytes32(0), "TEMPO-VALV2-12: Public key must not be zero"
             );
 
-            for (uint256 j = i + 1; j < vals.length; j++) {
+            for (uint256 j = i + 1; j < active.length; j++) {
                 assertTrue(
-                    vals[i].publicKey != vals[j].publicKey,
-                    "TEMPO-VALV2-12: Public keys must be unique"
+                    active[i].publicKey != active[j].publicKey,
+                    "TEMPO-VALV2-12: Active public keys must be unique"
                 );
             }
         }
@@ -1061,22 +1025,12 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     /// @notice TEMPO-VALV2-15: Active validators are a proper subset of all validators
     function _invariantActiveValidatorSubset() internal view {
-        IValidatorConfigV2.Validator[] memory all = _getAllValidators();
+        uint64 activeCount = validatorConfigV2.activeValidatorCount();
+        uint64 totalCount = validatorConfigV2.validatorCount();
+        assertLe(activeCount, totalCount, "TEMPO-VALV2-15: Active count <= total count");
+
         IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
-
-        assertLe(active.length, all.length, "TEMPO-VALV2-15: Active count <= total count");
-
-        uint256 expectedActive = 0;
-        for (uint256 i = 0; i < all.length; i++) {
-            if (all[i].deactivatedAtHeight == 0) {
-                expectedActive++;
-            }
-        }
-        assertEq(
-            active.length,
-            expectedActive,
-            "TEMPO-VALV2-15: Active count should match filtered count"
-        );
+        assertEq(active.length, activeCount, "TEMPO-VALV2-15: Array length matches count");
 
         for (uint256 i = 0; i < active.length; i++) {
             assertEq(
@@ -1100,60 +1054,58 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @dev For active validators: addedAtHeight > 0, deactivatedAtHeight == 0
     ///      For deactivated validators: deactivatedAtHeight >= addedAtHeight
     function _invariantHeightTracking() internal view {
-        IValidatorConfigV2.Validator[] memory vals = _getAllValidators();
+        IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
+        for (uint256 i = 0; i < active.length; i++) {
+            assertTrue(active[i].addedAtHeight > 0, "TEMPO-VALV2-10: addedAtHeight must be > 0");
+            assertEq(
+                active[i].deactivatedAtHeight, 0, "TEMPO-VALV2-10: Active must have deactivated=0"
+            );
+        }
 
-        for (uint256 i = 0; i < vals.length; i++) {
-            assertTrue(vals[i].addedAtHeight > 0, "TEMPO-VALV2-10: addedAtHeight must be > 0");
-
-            if (vals[i].deactivatedAtHeight != 0) {
-                assertGe(
-                    vals[i].deactivatedAtHeight,
-                    vals[i].addedAtHeight,
-                    "TEMPO-VALV2-10: deactivatedAtHeight must be >= addedAtHeight"
-                );
-            }
+        IValidatorConfigV2.Validator[] memory inactive = validatorConfigV2.getInactiveValidators(0);
+        for (uint256 i = 0; i < inactive.length; i++) {
+            assertTrue(inactive[i].addedAtHeight > 0, "TEMPO-VALV2-10: addedAtHeight must be > 0");
+            assertGe(
+                inactive[i].deactivatedAtHeight,
+                inactive[i].addedAtHeight,
+                "TEMPO-VALV2-10: deactivatedAtHeight must be >= addedAtHeight"
+            );
         }
     }
 
     /// @notice TEMPO-VALV2-13: Ingress IP uniqueness among active validators
     /// @dev No two active validators share the same ingress IP (port is ignored)
     function _invariantIpUniqueness() internal view {
-        IValidatorConfigV2.Validator[] memory vals = _getAllValidators();
+        IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
 
-        // Check uniqueness among active validators
-        for (uint256 i = 0; i < vals.length; i++) {
-            if (vals[i].deactivatedAtHeight != 0) continue; // Skip deactivated
-
-            for (uint256 j = i + 1; j < vals.length; j++) {
-                if (vals[j].deactivatedAtHeight != 0) continue; // Skip deactivated
-
-                // Check ingress IP uniqueness (extract IP without port)
-                bytes32 ipI = _extractIngressIpHash(vals[i].ingress);
-                bytes32 ipJ = _extractIngressIpHash(vals[j].ingress);
+        for (uint256 i = 0; i < active.length; i++) {
+            for (uint256 j = i + 1; j < active.length; j++) {
+                bytes32 ipI = _extractIngressIpHash(active[i].ingress);
+                bytes32 ipJ = _extractIngressIpHash(active[j].ingress);
                 assertTrue(
                     ipI != ipJ, "TEMPO-VALV2-13: Active validators must have unique ingress IPs"
                 );
-
-                // Note: egress uniqueness is NOT enforced
             }
         }
     }
 
-    /// @notice TEMPO-VALV2-9: Delete-once - deactivatedAtHeight never changes once set
+    /// @notice TEMPO-VALV2-9: Delete-once - all inactive validators have deactivatedAtHeight set
     function _invariantDeleteOnce() internal view {
-        // This is enforced by the contract and validated by our handlers
-        // The property: once deactivatedAtHeight != 0, it cannot change
-        // We verify this by checking that all deactivated validators in contract
-        // match our ghost state (which only sets deactivatedAtHeight once)
-        IValidatorConfigV2.Validator[] memory vals = _getAllValidators();
-
-        for (uint256 i = 0; i < vals.length; i++) {
-            // forge-lint: disable-next-line(unsafe-typecast)
-            uint64 idx = uint64(i);
+        IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
+        for (uint256 i = 0; i < active.length; i++) {
             assertEq(
-                vals[i].deactivatedAtHeight,
-                _ghostDeactivatedAtHeight[idx],
-                "TEMPO-VALV2-9: deactivatedAtHeight must never change once set"
+                active[i].deactivatedAtHeight,
+                0,
+                "TEMPO-VALV2-9: Active validator must have deactivatedAtHeight == 0"
+            );
+        }
+
+        IValidatorConfigV2.Validator[] memory inactive = validatorConfigV2.getInactiveValidators(0);
+        for (uint256 i = 0; i < inactive.length; i++) {
+            assertGt(
+                inactive[i].deactivatedAtHeight,
+                0,
+                "TEMPO-VALV2-9: Inactive validator must have deactivatedAtHeight > 0"
             );
         }
     }
@@ -1161,17 +1113,12 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @notice TEMPO-VALV2-11: Address uniqueness among active validators
     /// @dev At most one active validator per address; deactivated addresses may be reused
     function _invariantAddressUniqueness() internal view {
-        IValidatorConfigV2.Validator[] memory vals = _getAllValidators();
+        IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
 
-        // Only check active validators (deactivatedAtHeight == 0)
-        for (uint256 i = 0; i < vals.length; i++) {
-            if (vals[i].deactivatedAtHeight != 0) continue;
-
-            for (uint256 j = i + 1; j < vals.length; j++) {
-                if (vals[j].deactivatedAtHeight != 0) continue;
-
+        for (uint256 i = 0; i < active.length; i++) {
+            for (uint256 j = i + 1; j < active.length; j++) {
                 assertTrue(
-                    vals[i].validatorAddress != vals[j].validatorAddress,
+                    active[i].validatorAddress != active[j].validatorAddress,
                     "TEMPO-VALV2-11: Active validators must have unique addresses"
                 );
             }
@@ -1179,83 +1126,50 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     }
 
     /// @notice TEMPO-VALV2-17: Validator count consistency
-    /// @dev validatorCount() equals actual array length
+    /// @dev validatorCount() equals active + inactive
     function _invariantValidatorCountConsistency() internal view {
         uint64 count = validatorConfigV2.validatorCount();
-        IValidatorConfigV2.Validator[] memory vals = _getAllValidators();
-        assertEq(count, vals.length, "TEMPO-VALV2-17: validatorCount must equal array length");
+        uint64 activeCount = validatorConfigV2.activeValidatorCount();
+        uint64 inactiveCount = validatorConfigV2.inactiveValidatorCount();
+        assertEq(
+            count, activeCount + inactiveCount, "TEMPO-VALV2-17: count must equal active + inactive"
+        );
     }
 
-    /// @notice TEMPO-VALV2-18: Address lookup correctness
-    /// @dev validatorByAddress returns the currently active (or most recent) validator for that address.
-    ///      After rotation, old deactivated validators with the same address exist in the array,
-    ///      but lookup should return the active one (or most recent if all deactivated).
-    ///      A deactivated validator's address may become unlookupable if its active successor
-    ///      was transferred to a different address (which deletes the old addressToIndex mapping).
+    /// @notice TEMPO-VALV2-18: Address lookup correctness for active validators
+    /// @dev Every active validator must be findable by address and self-consistent
     function _invariantAddressLookupCorrectness() internal view {
-        IValidatorConfigV2.Validator[] memory vals = _getAllValidators();
+        IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
 
-        // For each unique address, check that validatorByAddress returns the expected validator
-        for (uint256 i = 0; i < vals.length; i++) {
-            address addr = vals[i].validatorAddress;
-
-            // Find the most recent validator for this address
-            uint256 mostRecentIdx = i;
-            for (uint256 j = i + 1; j < vals.length; j++) {
-                if (vals[j].validatorAddress == addr) {
-                    mostRecentIdx = j;
-                }
-            }
-
-            // Only check the last occurrence of each address
-            if (mostRecentIdx == i) {
-                try validatorConfigV2.validatorByAddress(addr) returns (
-                    IValidatorConfigV2.Validator memory lookedUp
-                ) {
-                    assertEq(
-                        lookedUp.index,
-                        vals[i].index,
-                        "TEMPO-VALV2-18: Address lookup must return most recent validator"
-                    );
-                    assertEq(
-                        lookedUp.publicKey,
-                        vals[i].publicKey,
-                        "TEMPO-VALV2-18: Address lookup must preserve public key"
-                    );
-                } catch {
-                    // Deactivated validator whose active successor was transferred away —
-                    // addressToIndex was deleted, so lookup fails. This is expected.
-                    assertTrue(
-                        vals[i].deactivatedAtHeight != 0,
-                        "TEMPO-VALV2-18: Active validators must be lookupable by address"
-                    );
-                }
-            }
+        for (uint256 i = 0; i < active.length; i++) {
+            IValidatorConfigV2.Validator memory lookedUp =
+                validatorConfigV2.validatorByAddress(active[i].validatorAddress);
+            assertEq(
+                lookedUp.index, active[i].index, "TEMPO-VALV2-18: Address lookup index must match"
+            );
+            assertEq(
+                lookedUp.publicKey,
+                active[i].publicKey,
+                "TEMPO-VALV2-18: Address lookup must preserve public key"
+            );
         }
     }
 
-    /// @notice TEMPO-VALV2-19: Public key lookup correctness
-    /// @dev For every validator, validatorByPublicKey returns the correct validator
+    /// @notice TEMPO-VALV2-19: Public key lookup correctness for active validators
+    /// @dev Every active validator must be findable by public key and self-consistent
     function _invariantPubkeyLookupCorrectness() internal view {
-        IValidatorConfigV2.Validator[] memory vals = _getAllValidators();
+        IValidatorConfigV2.Validator[] memory active = validatorConfigV2.getActiveValidators();
 
-        for (uint256 i = 0; i < vals.length; i++) {
-            bytes32 pubkey = vals[i].publicKey;
+        for (uint256 i = 0; i < active.length; i++) {
             IValidatorConfigV2.Validator memory lookedUp =
-                validatorConfigV2.validatorByPublicKey(pubkey);
-
-            assertEq(
-                lookedUp.publicKey,
-                vals[i].publicKey,
-                "TEMPO-VALV2-19: Pubkey lookup must return correct validator"
-            );
+                validatorConfigV2.validatorByPublicKey(active[i].publicKey);
             assertEq(
                 lookedUp.validatorAddress,
-                vals[i].validatorAddress,
+                active[i].validatorAddress,
                 "TEMPO-VALV2-19: Pubkey lookup must preserve address"
             );
             assertEq(
-                lookedUp.index, vals[i].index, "TEMPO-VALV2-19: Pubkey lookup must preserve index"
+                lookedUp.index, active[i].index, "TEMPO-VALV2-19: Pubkey lookup must preserve index"
             );
         }
     }

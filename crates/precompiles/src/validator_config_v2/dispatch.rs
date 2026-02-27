@@ -23,11 +23,17 @@ impl Precompile for ValidatorConfigV2 {
             IValidatorConfigV2Calls::abi_decode,
             |call| match call {
                 IValidatorConfigV2Calls::owner(call) => view(call, |_| self.owner()),
-                IValidatorConfigV2Calls::getAllValidators(call) => {
-                    view(call, |_| self.get_validators())
-                }
                 IValidatorConfigV2Calls::getActiveValidators(call) => {
                     view(call, |_| self.get_active_validators())
+                }
+                IValidatorConfigV2Calls::getInactiveValidators(call) => {
+                    view(call, |c| self.get_inactive_validators(c.startIndex))
+                }
+                IValidatorConfigV2Calls::inactiveValidatorCount(call) => {
+                    view(call, |_| self.inactive_validator_count())
+                }
+                IValidatorConfigV2Calls::activeValidatorCount(call) => {
+                    view(call, |_| self.active_validator_count())
                 }
                 IValidatorConfigV2Calls::getInitializedAtHeight(call) => {
                     view(call, |_| self.get_initialized_at_height())
@@ -221,7 +227,7 @@ mod tests {
             let result = vc.call(&calldata, owner)?;
             assert!(!result.reverted);
 
-            let validators = vc.get_validators()?;
+            let validators = vc.get_active_validators()?;
             assert_eq!(validators.len(), 1);
             assert_eq!(validators[0].validatorAddress, validator_addr);
             assert_eq!(validators[0].publicKey, public_key);
