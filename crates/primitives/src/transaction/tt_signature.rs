@@ -371,8 +371,24 @@ pub enum KeychainVersion {
     V2,
 }
 
-/// Keychain signature wrapping another signature with a user address
-/// This allows an access key to sign on behalf of a root account
+/// Keychain version validation error.
+///
+/// Returned by [`TempoSignature::validate_version`] when a keychain
+/// signature's version is incompatible with the current hardfork.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeychainVersionError {
+    /// Legacy V1 keychain signature used after T1C activation (permanently invalid).
+    LegacyPostT1C,
+    /// V2 keychain signature used before T1C activation (not yet valid).
+    V2BeforeActivation,
+}
+
+/// Keychain signature wrapping another signature with a user address.
+/// This allows an access key to sign on behalf of a root account.
+///
+/// No `Compact` impl — always wrapped in [`TempoSignature`] whose `Compact` delegates
+/// to `to_bytes()`/`from_bytes()` which encodes the version via the wire type byte
+/// (`0x03` = V1, `0x04` = V2).
 ///
 /// Format (V1): 0x03 || user_address (20 bytes) || inner_signature
 /// Format (V2): 0x04 || user_address (20 bytes) || inner_signature
@@ -439,12 +455,7 @@ impl KeychainSignature {
     fn effective_sig_hash(&self, sig_hash: &B256) -> B256 {
         match self.version {
             KeychainVersion::V1 => *sig_hash,
-            KeychainVersion::V2 => {
-                let mut buf = [0u8; 52]; // 32 + 20
-                buf[..32].copy_from_slice(sig_hash.as_slice());
-                buf[32..].copy_from_slice(self.user_address.as_slice());
-                keccak256(buf)
-            }
+            KeychainVersion::V2 => Self::signing_hash(*sig_hash, self.user_address),
         }
     }
 
@@ -508,11 +519,6 @@ impl core::hash::Hash for KeychainSignature {
         self.version.hash(state);
     }
 }
-
-// Note: No Compact impl for KeychainSignature. It is never stored directly in the DB —
-// it is always wrapped in TempoSignature, whose Compact impl delegates to to_bytes()/from_bytes()
-// which encodes the version via the wire type byte (0x03 = V1, 0x04 = V2). Omitting Compact
-// here ensures no one accidentally uses it for storage, which would lose the version field.
 
 // Manual Arbitrary implementation that excludes cached_key_id (cache field)
 #[cfg(any(test, feature = "arbitrary"))]
@@ -689,7 +695,27 @@ impl TempoSignature {
 
     /// Check if this is a V2 Keychain signature.
     pub fn is_v2_keychain(&self) -> bool {
-        matches!(self, Self::Keychain(k) if !k.is_legacy())
+        matches!(
+            self,
+            Self::Keychain(KeychainSignature {
+                version: KeychainVersion::V2,
+                ..
+            })
+        )
+    }
+
+    /// Validates keychain signature version compatibility with the current hardfork.
+    ///
+    /// - Post-T1C: legacy V1 keychain signatures are rejected.
+    /// - Pre-T1C: V2 keychain signatures are rejected to prevent chain splits.
+    pub fn validate_version(&self, is_t1c: bool) -> Result<(), KeychainVersionError> {
+        if is_t1c && self.is_legacy_keychain() {
+            return Err(KeychainVersionError::LegacyPostT1C);
+        }
+        if !is_t1c && self.is_v2_keychain() {
+            return Err(KeychainVersionError::V2BeforeActivation);
+        }
+        Ok(())
     }
 
     /// Get the Keychain signature if this is a Keychain signature

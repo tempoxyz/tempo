@@ -3,6 +3,7 @@
 use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
 use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
+use tempo_primitives::transaction::KeychainVersionError;
 
 /// Tempo-specific invalid transaction errors.
 ///
@@ -254,6 +255,15 @@ impl<DBError> From<TempoInvalidTransaction> for EVMError<DBError, TempoInvalidTr
 impl From<&'static str> for TempoInvalidTransaction {
     fn from(err: &'static str) -> Self {
         Self::CallsValidation(err)
+    }
+}
+
+impl From<KeychainVersionError> for TempoInvalidTransaction {
+    fn from(err: KeychainVersionError) -> Self {
+        match err {
+            KeychainVersionError::LegacyPostT1C => Self::LegacyKeychainSignature,
+            KeychainVersionError::V2BeforeActivation => Self::V2KeychainBeforeActivation,
+        }
     }
 }
 

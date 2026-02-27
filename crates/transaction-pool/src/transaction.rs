@@ -428,6 +428,19 @@ impl PoolTransactionError for TempoPoolTransactionError {
     }
 }
 
+impl From<tempo_primitives::transaction::KeychainVersionError> for TempoPoolTransactionError {
+    fn from(err: tempo_primitives::transaction::KeychainVersionError) -> Self {
+        match err {
+            tempo_primitives::transaction::KeychainVersionError::LegacyPostT1C => {
+                Self::LegacyKeychainPostT1C
+            }
+            tempo_primitives::transaction::KeychainVersionError::V2BeforeActivation => {
+                Self::V2KeychainPreT1C
+            }
+        }
+    }
+}
+
 impl InMemorySize for TempoPooledTransaction {
     fn size(&self) -> usize {
         self.inner.size()

@@ -284,9 +284,7 @@ impl TxBuilder {
             }
             KeychainVersion::V2 => {
                 // V2: sign keccak256(sig_hash || user_address)
-                let hash = alloy_primitives::keccak256(
-                    [sig_hash.as_slice(), user_address.as_slice()].concat(),
-                );
+                let hash = KeychainSignature::signing_hash(sig_hash, user_address);
                 let signature = access_key_signer
                     .sign_hash_sync(&hash)
                     .expect("signing failed");

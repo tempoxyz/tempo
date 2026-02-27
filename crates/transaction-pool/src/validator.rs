@@ -132,23 +132,13 @@ where
         let current_time = self.inner.fork_tracker().tip_timestamp();
         let spec = self.inner.chain_spec().tempo_hardfork_at(current_time);
 
-        // T1C+: Reject legacy V1 keychain signatures
-        if spec.is_t1c() && tx.signature().is_legacy_keychain() {
-            return Ok(Err(TempoPoolTransactionError::LegacyKeychainPostT1C));
+        // Validate keychain signature version (outer + authorization list).
+        if let Err(e) = tx.signature().validate_version(spec.is_t1c()) {
+            return Ok(Err(e.into()));
         }
-
-        // Pre-T1C: Reject V2 keychain signatures to prevent gossip to older peers
-        if !spec.is_t1c() && tx.signature().is_v2_keychain() {
-            return Ok(Err(TempoPoolTransactionError::V2KeychainPreT1C));
-        }
-
-        // Apply the same version gating to keychain sigs in the authorization list
         for auth_sig in &tx.tx().tempo_authorization_list {
-            if spec.is_t1c() && auth_sig.signature().is_legacy_keychain() {
-                return Ok(Err(TempoPoolTransactionError::LegacyKeychainPostT1C));
-            }
-            if !spec.is_t1c() && auth_sig.signature().is_v2_keychain() {
-                return Ok(Err(TempoPoolTransactionError::V2KeychainPreT1C));
+            if let Err(e) = auth_sig.signature().validate_version(spec.is_t1c()) {
+                return Ok(Err(e.into()));
             }
         }
 
@@ -197,7 +187,7 @@ where
             )));
         }
 
-        // This should fail happen because we validate the signature validity in `recover_signer`.
+        // This should never happen because we validate the signature validity in `recover_signer`.
         let Ok(key_id) = sig.key_id(&tx.signature_hash()) else {
             return Ok(Err(TempoPoolTransactionError::Keychain(
                 "Failed to recover access key ID from Keychain signature",
@@ -2312,11 +2302,9 @@ mod tests {
                     ))
                 }
                 KeychainVersion::V2 => {
-                    let effective_hash = alloy_primitives::keccak256(
-                        [sig_hash.as_slice(), user_address.as_slice()].concat(),
-                    );
+                    let sig_hash = KeychainSignature::signing_hash(sig_hash, user_address);
                     let signature = access_key_signer
-                        .sign_hash_sync(&effective_hash)
+                        .sign_hash_sync(&sig_hash)
                         .expect("signing failed");
                     TempoSignature::Keychain(KeychainSignature::new(
                         user_address,
@@ -2801,13 +2789,10 @@ mod tests {
                     Signature::test_signature(),
                 )),
             );
-            let sig_hash = unsigned.signature_hash();
-
             // V2: sign keccak256(sig_hash || user_address) instead of raw sig_hash
-            let effective_hash =
-                alloy_primitives::keccak256([sig_hash.as_slice(), real_user.as_slice()].concat());
+            let sig_hash = KeychainSignature::signing_hash(unsigned.signature_hash(), real_user);
             let signature = access_key_signer
-                .sign_hash_sync(&effective_hash)
+                .sign_hash_sync(&sig_hash)
                 .expect("signing failed");
 
             // Create keychain signature with DIFFERENT user_address than what sender() returns
