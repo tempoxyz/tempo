@@ -148,7 +148,10 @@ where
             // Validate chain_id.
             // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
             // Pre-T1C: chain_id == 0 is wildcard, works on any chain.
-            if auth.validate_chain_id(self.inner.chain_spec().chain_id(), spec.is_t1c()).is_err() {
+            if auth
+                .validate_chain_id(self.inner.chain_spec().chain_id(), spec.is_t1c())
+                .is_err()
+            {
                 return Ok(Err(TempoPoolTransactionError::Keychain(
                     "KeyAuthorization chain_id does not match current chain",
                 )));
