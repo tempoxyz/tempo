@@ -276,7 +276,7 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
 
             # Generate validator addresses (port 8000, 8100, 8200, ...)
             # Using 100-port gaps to avoid collisions with system services (e.g., Intuit on 8021)
-            let validators = (0..<$nodes | each { |i| $"127.0.0.1:($i * 100 + 8000)" } | str join ",")
+            let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
             cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators $validators --force | ignore
@@ -291,8 +291,9 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
     let trusted_peers = ($validator_dirs | each { |d|
         let addr = ($d | path basename)
         let port = ($addr | split row ":" | get 1 | into int)
+        let ip = ($addr | split row ":" | get 0)
         let identity = (open $"($d)/enode.identity" | str trim)
-        $"enode://($identity)@127.0.0.1:($port + 1)"
+        $"enode://($identity)@($ip):($port + 1)"
     } | str join ",")
 
     print $"Found ($validator_dirs | length) validator configs"
@@ -367,6 +368,8 @@ def build-consensus-node-args [node_dir: string, genesis_path: string, trusted_p
 
 # Build consensus mode specific arguments
 def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
+    let addr = ($node_dir | path basename)
+    let ip = ($addr | split row ":" | get 0)
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
@@ -378,8 +381,8 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
     [
         "--consensus.signing-key" $signing_key
         "--consensus.signing-share" $signing_share
-        "--consensus.listen-address" $"127.0.0.1:($port)"
-        "--consensus.metrics-address" $"127.0.0.1:($metrics_port)"
+        "--consensus.listen-address" $"($ip):($port)"
+        "--consensus.metrics-address" $"($ip):($metrics_port)"
         "--trusted-peers" $trusted_peers
         "--port" $"($execution_p2p_port)"
         "--discovery.port" $"($execution_p2p_port)"
