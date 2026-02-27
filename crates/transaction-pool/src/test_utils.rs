@@ -282,7 +282,7 @@ impl TxBuilder {
                 )
             }
             KeychainVersion::V2 => {
-                // V2: sign keccak256(sig_hash || user_address)
+                // V2: sign keccak256(0x04 || sig_hash || user_address)
                 let hash = KeychainSignature::signing_hash(sig_hash, user_address);
                 let signature = access_key_signer
                     .sign_hash_sync(&hash)

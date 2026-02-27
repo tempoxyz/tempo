@@ -2959,7 +2959,7 @@ mod tests {
                     Signature::test_signature(),
                 )),
             );
-            // V2: sign keccak256(sig_hash || user_address) instead of raw sig_hash
+            // V2: sign keccak256(0x04 || sig_hash || user_address)
             let sig_hash = KeychainSignature::signing_hash(unsigned.signature_hash(), real_user);
             let signature = access_key_signer
                 .sign_hash_sync(&sig_hash)

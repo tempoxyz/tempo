@@ -367,8 +367,8 @@ pub enum KeychainVersion {
     /// TODO(tanishk): change default to V2 after T1C
     #[default]
     V1,
-    /// V2: inner signature signs `keccak256(sig_hash || user_address)`.
-    /// Binds the signature to the specific user account.
+    /// V2: inner signature signs `keccak256(0x04 || sig_hash || user_address)`.
+    /// Binds the signature to the specific user account with a domain separator.
     V2,
 }
 
@@ -452,7 +452,7 @@ impl KeychainSignature {
     /// Compute the effective signature hash for key recovery.
     ///
     /// - V1: returns `sig_hash` directly (legacy, deprecated)
-    /// - V2: returns `keccak256(sig_hash || user_address)`
+    /// - V2: returns `keccak256(0x04 || sig_hash || user_address)`
     fn effective_sig_hash(&self, sig_hash: &B256) -> B256 {
         match self.version {
             KeychainVersion::V1 => *sig_hash,
@@ -491,12 +491,15 @@ impl KeychainSignature {
 
     /// Compute the hash that an access key should sign for a V2 keychain transaction.
     ///
-    /// Returns `keccak256(sig_hash || user_address)` which binds the signature to the
-    /// specific user account.
+    /// Returns `keccak256(0x04 || sig_hash || user_address)`.
+    /// The `0x04` domain separator ([`SIGNATURE_TYPE_KEYCHAIN_V2`]) prevents
+    /// cross-scheme signature confusion, following the same pattern as
+    /// EIP-7702 (`0x05`) and Tempo fee-payer signatures (`0x78`).
     pub fn signing_hash(sig_hash: B256, user_address: Address) -> B256 {
-        let mut buf = [0u8; 52]; // 32 + 20
-        buf[..32].copy_from_slice(sig_hash.as_slice());
-        buf[32..].copy_from_slice(user_address.as_slice());
+        let mut buf = [0u8; 53]; // 1 + 32 + 20
+        buf[0] = SIGNATURE_TYPE_KEYCHAIN_V2;
+        buf[1..33].copy_from_slice(sig_hash.as_slice());
+        buf[33..].copy_from_slice(user_address.as_slice());
         keccak256(buf)
     }
 }
@@ -1621,11 +1624,12 @@ mod tests {
         let (signing_key, access_key_address) = generate_secp256k1_keypair();
         let user_address = Address::repeat_byte(0xDD);
 
-        // V2: inner signature signs keccak256(sig_hash || user_address)
+        // V2: inner signature signs keccak256(0x04 || sig_hash || user_address)
         let sig_hash = B256::from([0x22; 32]);
-        let mut buf = [0u8; 52];
-        buf[..32].copy_from_slice(sig_hash.as_slice());
-        buf[32..].copy_from_slice(user_address.as_slice());
+        let mut buf = [0u8; 53]; // 1 + 32 + 20
+        buf[0] = SIGNATURE_TYPE_KEYCHAIN_V2;
+        buf[1..33].copy_from_slice(sig_hash.as_slice());
+        buf[33..].copy_from_slice(user_address.as_slice());
         let effective_hash = keccak256(buf);
         let inner_sig = sign_hash(&signing_key, &effective_hash);
 

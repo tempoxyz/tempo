@@ -692,7 +692,7 @@ fn sign_aa_tx_with_webauthn_access_key(
     origin: &str,
     root_key_addr: Address,
 ) -> eyre::Result<TempoSignature> {
-    // V2: sign keccak256(sig_hash || user_address) instead of raw sig_hash
+    // V2: sign keccak256(0x04 || sig_hash || user_address)
     let sig_hash = KeychainSignature::signing_hash(tx.signature_hash(), root_key_addr);
     let inner = sign_webauthn_primitive(sig_hash, signing_key, pub_key_x, pub_key_y, origin)?;
     Ok(TempoSignature::Keychain(KeychainSignature::new(
