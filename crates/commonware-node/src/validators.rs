@@ -134,10 +134,7 @@ fn read_active_and_known_peers_at_block_hash_v2(
     .map(|(_height, _hash, value)| value)
 }
 
-pub(crate) fn v2_initialization_height_at_block_hash(
-    node: &TempoFullNode,
-    hash: B256,
-) -> eyre::Result<u64> {
+fn v2_initialization_height_at_block_hash(node: &TempoFullNode, hash: B256) -> eyre::Result<u64> {
     read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
         config
             .get_initialized_at_height()
@@ -146,10 +143,7 @@ pub(crate) fn v2_initialization_height_at_block_hash(
     .map(|(_, _, activation_height)| activation_height)
 }
 
-pub(crate) fn is_v2_initialized_at_block_hash(
-    node: &TempoFullNode,
-    hash: B256,
-) -> eyre::Result<bool> {
+fn is_v2_initialized_at_block_hash(node: &TempoFullNode, hash: B256) -> eyre::Result<bool> {
     read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
         config.is_initialized().map_err(eyre::Report::new)
     })
