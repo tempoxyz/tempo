@@ -632,6 +632,23 @@ fn sign_aa_tx_with_secp256k1_access_key(
     )))
 }
 
+/// Helper to sign AA transaction with secp256k1 access key using legacy V1 keychain signature.
+/// V1 signs the raw sig_hash without binding user_address.
+fn sign_aa_tx_with_secp256k1_access_key_v1(
+    tx: &TempoTransaction,
+    access_key_signer: &impl SignerSync,
+    root_key_addr: Address,
+) -> eyre::Result<TempoSignature> {
+    let sig_hash = tx.signature_hash();
+    let signature = access_key_signer.sign_hash_sync(&sig_hash)?;
+    let inner_signature = PrimitiveSignature::Secp256k1(signature);
+
+    Ok(TempoSignature::Keychain(KeychainSignature::new_v1(
+        root_key_addr,
+        inner_signature,
+    )))
+}
+
 /// Low-level WebAuthn signing. Returns a `PrimitiveSignature::WebAuthn`.
 fn sign_webauthn_primitive(
     sig_hash: B256,
@@ -6068,6 +6085,120 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
         .inject_tx(replay_env.encoded_2718().into())
         .await
         .expect_err("P256 cross-account replay must be rejected at pool level");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Pre-T1C genesis so V1 keychain sigs are accepted
+    let genesis_json = include_str!("../assets/test-genesis.json").to_string();
+    let mut genesis: serde_json::Value = serde_json::from_str(&genesis_json)?;
+    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
+    let mut setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .build_with_node_access()
+        .await?;
+
+    let alice_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let alice_addr = alice_signer.address();
+    let bob_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let bob_addr = bob_signer.address();
+    let provider = ProviderBuilder::new()
+        .wallet(alice_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    // Shared access key authorized on both accounts
+    let access_key_signer = alloy::signers::local::PrivateKeySigner::random();
+    let access_key_addr = access_key_signer.address();
+
+    let mut nonce_alice = provider.get_transaction_count(alice_addr).await?;
+
+    fund_address_with_fee_tokens(
+        &mut setup,
+        &provider,
+        &alice_signer,
+        alice_addr,
+        bob_addr,
+        U256::from(100u64) * U256::from(10).pow(U256::from(18)),
+        chain_id,
+    )
+    .await?;
+    nonce_alice += 1;
+
+    let secp_mock = || {
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        ))
+    };
+
+    // Authorize key on both accounts
+    authorize_access_key(
+        &mut setup,
+        &alice_signer,
+        alice_addr,
+        access_key_addr,
+        secp_mock(),
+        chain_id,
+        nonce_alice,
+    )
+    .await?;
+    nonce_alice += 1;
+    let nonce_bob = provider.get_transaction_count(bob_addr).await?;
+    authorize_access_key(
+        &mut setup,
+        &bob_signer,
+        bob_addr,
+        access_key_addr,
+        secp_mock(),
+        chain_id,
+        nonce_bob,
+    )
+    .await?;
+    let nonce_bob = nonce_bob + 1;
+
+    // Alice sends a V1 keychain tx, succeeds pre-T1C
+    let alice_tx = create_basic_aa_tx(
+        chain_id,
+        nonce_alice,
+        vec![create_balance_of_call(alice_addr)],
+        2_000_000,
+    );
+    let alice_v1_sig =
+        sign_aa_tx_with_secp256k1_access_key_v1(&alice_tx, &access_key_signer, alice_addr)?;
+    submit_and_mine_aa_tx(&mut setup, alice_tx, alice_v1_sig.clone()).await?;
+
+    // Extract Alice's inner sig, re-wrap for Bob with V1
+    let inner = alice_v1_sig.as_keychain().unwrap().signature.clone();
+    let bob_replay_sig = TempoSignature::Keychain(KeychainSignature::new_v1(bob_addr, inner));
+
+    // Bob's replay tx succeeds — this is the vulnerability V2 fixes
+    let bob_tx = create_basic_aa_tx(
+        chain_id,
+        nonce_bob,
+        vec![create_balance_of_call(bob_addr)],
+        2_000_000,
+    );
+    let replay_env: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, bob_replay_sig).into();
+    setup
+        .node
+        .rpc
+        .inject_tx(replay_env.encoded_2718().into())
+        .await
+        .expect("V1 cross-account replay enters pool pre-T1C");
+    setup.node.advance_block().await?;
+    let receipt = provider
+        .get_transaction_receipt(*replay_env.tx_hash())
+        .await?
+        .expect("replay tx receipt must exist");
+    assert!(receipt.status(),);
 
     Ok(())
 }
