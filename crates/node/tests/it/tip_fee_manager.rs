@@ -473,7 +473,7 @@ async fn test_fee_payer_transfer_whitelist_pre_t1c() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    // Create whitelist policy: whitelist fee_payer AND FeeManager
+    // Create whitelist policy: whitelist fee_payer only (FeeManager not whitelisted pre-T1C)
     let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
     let policy_receipt = registry
         .createPolicy(admin_addr, ITIP403Registry::PolicyType::WHITELIST)
@@ -498,13 +498,6 @@ async fn test_fee_payer_transfer_whitelist_pre_t1c() -> eyre::Result<()> {
         .await?
         .get_receipt()
         .await?;
-    registry
-        .modifyPolicyWhitelist(policy_id, TIP_FEE_MANAGER_ADDRESS, true)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
 
     let admin_token_contract = ITIP20::new(token_addr, &provider);
     let receipt = admin_token_contract
@@ -516,7 +509,7 @@ async fn test_fee_payer_transfer_whitelist_pre_t1c() -> eyre::Result<()> {
         .await?;
     assert!(receipt.status(), "changeTransferPolicyId should succeed");
 
-    // Pre-T1C: tx with whitelisted sender + FeeManager should succeed
+    // Pre-T1C: tx should succeed without whitelisting the FeeManager
     let tx = TransactionRequest::default()
         .to(Address::ZERO)
         .value(U256::ZERO);
