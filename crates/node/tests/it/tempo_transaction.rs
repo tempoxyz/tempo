@@ -116,7 +116,7 @@ async fn fund_address_with_fee_tokens(
         nonce: provider.get_transaction_count(funder_addr).await?,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -791,7 +791,7 @@ fn create_basic_aa_tx(
         // Use AlphaUSD to match fund_address_with_fee_tokens
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -1154,7 +1154,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             nonce,
             fee_token: None,
             fee_payer_signature: None,
-            valid_before: Some(u64::MAX),
+            valid_before: None,
             ..Default::default()
         };
 
@@ -1566,7 +1566,7 @@ async fn send_tx(
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -1816,7 +1816,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
         nonce: nonce_seq,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -3314,7 +3314,7 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -4018,7 +4018,7 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
         }],
         nonce_key: U256::ZERO, // Protocol nonce (key 0)
         nonce,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -4800,7 +4800,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth.clone()),
@@ -4838,7 +4838,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -4900,7 +4900,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -4962,7 +4962,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -5252,7 +5252,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -5698,7 +5698,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth),
@@ -5759,7 +5759,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None, // No auth needed - key already authorized
@@ -5832,7 +5832,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -5938,7 +5938,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(invalid_key_auth),
@@ -6396,7 +6396,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth_wrong_chain),
@@ -6452,7 +6452,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth_wildcard),
@@ -6559,7 +6559,7 @@ async fn test_aa_create_correct_contract_address() -> eyre::Result<()> {
         nonce_key: U256::ZERO,
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -8091,7 +8091,7 @@ async fn run_fill_sign_send_test_secp256k1(test_case: &FillTestCase) -> eyre::Re
         fill_transaction_from_case(&provider, test_case, alice_addr, current_timestamp).await?;
     tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     if request_context.expected_valid_before.is_none() {
-        tx.valid_before = Some(u64::MAX);
+        tx.valid_before = None;
     }
 
     let signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
