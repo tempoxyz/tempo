@@ -301,7 +301,7 @@ where
                 Err(error) => {
                     warn!(
                         reason = %eyre::Report::new(error),
-                        "failed reading latests finalized block number and hash \
+                        "failed reading latest finalized block number and hash \
                         from execution layer ",
                     );
                     return;
