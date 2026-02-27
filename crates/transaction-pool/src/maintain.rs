@@ -237,7 +237,7 @@ impl TempoPoolState {
     }
 
     /// Removes expiry and key-expiry tracking for a single transaction.
-    fn untrack_expiry(&mut self, hash: &TxHash, is_keychain: bool) {
+    fn untrack_expiry(&mut self, hash: &TxHash) {
         if let Some(valid_before) = self.tx_to_expiry.remove(hash)
             && let Entry::Occupied(mut entry) = self.expiry_map.entry(valid_before)
         {
@@ -247,9 +247,7 @@ impl TempoPoolState {
             }
         }
 
-        if is_keychain {
-            self.key_expiry.untrack(hash);
-        }
+        self.key_expiry.untrack(hash);
     }
 
     /// Collects and removes all expired transactions up to the given timestamp.
@@ -598,10 +596,7 @@ where
                 tip.blocks_iter()
                     .flat_map(|block| block.body().transactions())
                     .for_each(|tx| {
-                    state.untrack_expiry(
-                        tx.tx_hash(),
-                        tx.as_aa().is_some_and(|aa| aa.signature().is_keychain())
-                    )
+                    state.untrack_expiry(tx.tx_hash())
                 });
 
                 // Add expired transactions (from local tracking state)
@@ -680,7 +675,7 @@ where
                         if count > 0 {
                             // Clean up expiry tracking for paused txs
                             for tx in &removed_txs {
-                                state.untrack_expiry(tx.hash(), tx.transaction.is_keychain());
+                                state.untrack_expiry(tx.hash());
                             }
 
                             let entries: Vec<_> = removed_txs
@@ -842,7 +837,7 @@ where
                         );
                         // Clean up expiry tracking for stale txs to prevent orphaned entries
                         for hash in &stale_to_evict {
-                            state.untrack_expiry(hash, false);
+                            state.untrack_expiry(hash);
                         }
                         pool.remove_transactions(stale_to_evict);
                     }
@@ -1040,16 +1035,16 @@ mod tests {
         state.expiry_map.entry(1000).or_default().push(hash_b);
         state.tx_to_expiry.insert(hash_b, 1000);
 
-        // Mine hash_a and an unknown hash (not keychain txs)
-        state.untrack_expiry(&hash_a, false);
-        state.untrack_expiry(&hash_unknown, false);
+        // Mine hash_a and an unknown hash
+        state.untrack_expiry(&hash_a);
+        state.untrack_expiry(&hash_unknown);
 
         // hash_a removed from both maps
         assert!(!state.tx_to_expiry.contains_key(&hash_a));
         assert_eq!(state.expiry_map[&1000], vec![hash_b]);
 
         // Mine hash_b should remove the expiry_map entry entirely
-        state.untrack_expiry(&hash_b, false);
+        state.untrack_expiry(&hash_b);
         assert!(!state.tx_to_expiry.contains_key(&hash_b));
         assert!(!state.expiry_map.contains_key(&1000));
     }
