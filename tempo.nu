@@ -71,32 +71,46 @@ def find-tempo-pids [] {
 # 1. Run `tempo init` to create the database
 # 2. Generate state bloat binary file
 # 3. Run `tempo init-from-binary-dump` to load the bloat
-def init-with-bloat [tempo_bin: string, genesis_path: string, datadir: string, bloat_size: int, profile: string] {
+# Generate the bloat binary file once (skips if already exists)
+def generate-bloat-file [bloat_size: int, profile: string] {
     let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
-
-    # Check if we need to regenerate (bloat file missing or datadir missing)
-    if ($bloat_file | path exists) and ($datadir | path exists) {
-        print $"State bloat already applied \(($bloat_size) MiB\)"
+    if ($bloat_file | path exists) {
+        print $"State bloat file already exists \(($bloat_size) MiB\)"
         return
     }
-
-    # Remove existing datadir to ensure fresh init
-    if ($datadir | path exists) {
-        print "Removing existing datadir for fresh bloat initialization..."
-        rm -rf $datadir
-    }
-
-    print $"Initializing node database..."
-    run-external $tempo_bin "init" "--chain" $genesis_path "--datadir" $datadir
-
     print $"Generating state bloat \(($bloat_size) MiB\)..."
     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
     cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_size --out $bloat_file ...$token_args
+}
 
-    print "Loading state bloat into database..."
+# Load the bloat file into a single node's database
+def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: string] {
+    let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
+    let db_path = $"($datadir)/db"
+
+    # Skip if this node already has a database with bloat loaded
+    if ($db_path | path exists) {
+        print $"State bloat already loaded into ($datadir | path basename)"
+        return
+    }
+
+    # Remove existing reth database files while preserving key files (signing.key, signing.share, etc.)
+    if ($datadir | path exists) {
+        for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
+            let path = $"($datadir)/($subdir)"
+            if ($path | path exists) { rm -rf $path }
+        }
+        for file in [reth.toml jwt.hex] {
+            let path = $"($datadir)/($file)"
+            if ($path | path exists) { rm $path }
+        }
+    }
+
+    print $"Initializing ($datadir | path basename) database..."
+    run-external $tempo_bin "init" "--chain" $genesis_path "--datadir" $datadir
+
+    print $"Loading state bloat into ($datadir | path basename)..."
     run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
-
-    print $"State bloat applied successfully \(($bloat_size) MiB\)"
 }
 
 # ============================================================================
@@ -233,7 +247,8 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
     let genesis_path = if $genesis != "" {
         # Custom genesis provided - check if bloat requires init
         if $bloat > 0 {
-            init-with-bloat $tempo_bin $genesis $datadir $bloat $profile
+            generate-bloat-file $bloat $profile
+            load-bloat-into-node $tempo_bin $genesis $datadir
         }
         $genesis
     } else {
@@ -254,7 +269,8 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
 
         # Apply state bloat if requested (requires fresh init)
         if $bloat > 0 {
-            init-with-bloat $tempo_bin $default_genesis $datadir $bloat $profile
+            generate-bloat-file $bloat $profile
+            load-bloat-into-node $tempo_bin $default_genesis $datadir
         }
 
         $default_genesis
@@ -370,8 +386,9 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
 
     # Apply state bloat to each node's datadir if requested
     if $bloat > 0 {
+        generate-bloat-file $bloat $profile
         for node_dir in $validator_dirs {
-            init-with-bloat $tempo_bin $genesis_path $node_dir $bloat $profile
+            load-bloat-into-node $tempo_bin $genesis_path $node_dir
         }
     }
 
