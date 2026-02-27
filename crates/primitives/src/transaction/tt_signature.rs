@@ -695,7 +695,13 @@ impl TempoSignature {
 
     /// Check if this is a V2 Keychain signature.
     pub fn is_v2_keychain(&self) -> bool {
-        matches!(self, Self::Keychain(KeychainSignature { version: KeychainVersion::V2, .. }))
+        matches!(
+            self,
+            Self::Keychain(KeychainSignature {
+                version: KeychainVersion::V2,
+                ..
+            })
+        )
     }
 
     /// Validates keychain signature version compatibility with the current hardfork.
