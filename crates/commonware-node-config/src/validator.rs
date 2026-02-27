@@ -32,12 +32,17 @@ impl ValidatorConfig {
     /// Returns the keccak256 hash of the message preimage:
     /// `keccak256(chainId || contractAddr || validatorAddr || ingress || egress)`.
     pub fn message_hash(&self) -> B256 {
+        let ingress = self.ingress.to_string();
+        let egress = self.egress.to_string();
+
         let mut hasher = Keccak256::new();
         hasher.update(self.chain_id.to_be_bytes());
         hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
         hasher.update(self.validator_address.as_slice());
-        hasher.update(self.ingress.to_string().as_bytes());
-        hasher.update(self.egress.to_string().as_bytes());
+        hasher.update(ingress.len().to_be_bytes());
+        hasher.update(ingress.as_bytes());
+        hasher.update(egress.len().to_be_bytes());
+        hasher.update(egress.as_bytes());
         hasher.finalize()
     }
 
