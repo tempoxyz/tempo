@@ -483,10 +483,6 @@ impl MaxTpsArgs {
             swaps = counters.swaps.load(Ordering::Relaxed),
             orders = counters.orders.load(Ordering::Relaxed),
             erc20_transfers = counters.erc20_transfers.load(Ordering::Relaxed),
-            "Generated transactions",
-        );
-
-        info!(
             success = counters.success.load(Ordering::Relaxed),
             failed = counters.failed.load(Ordering::Relaxed),
             "Finished sending transactions"
