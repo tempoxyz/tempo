@@ -75,6 +75,11 @@ pub trait PrecompileStorageProvider {
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
 
+    /// Returns the remaining gas available.
+    fn gas_remaining(&self) -> u64 {
+        u64::MAX
+    }
+
     /// Returns the gas refunded so far.
     fn gas_refunded(&self) -> i64;
 
