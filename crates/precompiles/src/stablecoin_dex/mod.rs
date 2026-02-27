@@ -4769,8 +4769,8 @@ mod tests {
 
                 if spec.is_t1c() {
                     // Checkpoint reverts both sub_balance and order_id
-                    assert_eq!(alice_base, amount,);
-                    assert_eq!(next_id_after, next_id_before,);
+                    assert_eq!(alice_base, amount);
+                    assert_eq!(next_id_after, next_id_before);
                 } else {
                     // No checkpoint — partial state leaks
                     assert_eq!(alice_base, 0);
