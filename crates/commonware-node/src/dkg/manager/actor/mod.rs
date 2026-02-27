@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, num::NonZeroU32, task::Poll, time::Duration};
 
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Sealable as _};
+use alloy_primitives::B256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
@@ -25,7 +26,7 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Handle, IoBuf, Metrics as _, Spawner, spawn_cell};
-use commonware_utils::{Acknowledgement, N3f1, NZU32, TryFromIterator as _, ordered};
+use commonware_utils::{Acknowledgement, N3f1, NZU32, ordered};
 
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
@@ -33,9 +34,10 @@ use futures::{
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
-use reth_ethereum::network::NetworkInfo;
-use reth_provider::{BlockNumReader, HeaderProvider};
-use tempo_chainspec::hardfork::TempoHardforks;
+use reth_ethereum::{
+    chainspec::EthChainSpec, network::NetworkInfo, rpc::eth::primitives::BlockNumHash,
+};
+use reth_provider::{BlockIdReader as _, HeaderProvider as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
@@ -46,9 +48,8 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn, warn_span};
 use crate::{
     consensus::{Digest, block::Block},
     validators::{
-        DecodedValidatorV2, can_use_v2_at_block_hash, decode_from_contract,
-        is_v2_initialized_at_height, read_validator_config_at_block_hash,
-        read_validator_config_at_height,
+        can_use_v2_at_block_hash, read_active_and_known_peers_at_block_hash_v1,
+        read_active_and_known_peers_at_block_hash_v2, read_validator_config_at_block_hash,
     },
 };
 
@@ -782,7 +783,6 @@ where
             &self.config.execution_node,
             &block,
             &self.metrics.attempts_to_read_validator_contract,
-            &self.metrics.read_players_from_v1_contract,
         )
         .await
         .wrap_err("failed reading contract to determine syncers")?;
@@ -851,7 +851,6 @@ where
             &self.config.execution_node,
             &block,
             &self.metrics.attempts_to_read_validator_contract,
-            &self.metrics.read_players_from_v1_contract,
         )
         .await
         .wrap_err("failed reading contract; must be able to read contract to continue")?;
@@ -1134,27 +1133,18 @@ where
 
         // Check if next ceremony should be full.
         let next_epoch = state.epoch.next();
-        let will_be_re_dkg = read_re_dkg_epoch(
-            &self.config.execution_node,
-            request.digest,
-            &self.metrics.read_re_dkg_epoch_from_v1_contract,
-            &self.metrics.read_re_dkg_epoch_from_v2_contract,
-        )
-        // in theory it should never fail, but if it does, just stick to reshare.
-        .is_ok_and(|epoch| epoch == next_epoch.get());
+        let will_be_re_dkg = read_re_dkg_epoch(&self.config.execution_node, request.digest)
+            // in theory it should never fail, but if it does, just stick to reshare.
+            .is_ok_and(|epoch| epoch == next_epoch.get());
         info!(
             will_be_re_dkg,
             %next_epoch,
             "determined if the next epoch will be a reshare or full re-dkg process",
         );
 
-        let next_players = determine_next_players(
-            state,
-            &self.config.execution_node,
-            request.digest,
-            &self.metrics.read_players_from_v2_contract,
-        )
-        .wrap_err("could not determine who the next players are supposed to be")?;
+        let next_players =
+            determine_next_players_at_hash(state, &self.config.execution_node, request.digest.0)
+                .wrap_err("could not determine who the next players are supposed to be")?;
         request
             .response
             .send(OnchainDkgOutcome {
@@ -1203,18 +1193,18 @@ async fn read_initial_state_and_set_floor<TContext>(
 where
     TContext: Clock + CryptoRngCore,
 {
-    let newest_height = node
+    let latest_finalized = node
         .provider
-        .best_block_number()
-        .map(Height::new)
-        .wrap_err("failed reading newest block number from database")?;
+        .finalized_block_num_hash()
+        .wrap_err("unable to read highest finalized block from execution layer")?
+        .unwrap_or_else(|| BlockNumHash::new(0, node.chain_spec().genesis_hash()));
 
     let epoch_info = epoch_strategy
-        .containing(newest_height)
+        .containing(Height::new(latest_finalized.number))
         .expect("epoch strategy is for all heights");
 
-    let last_boundary = if epoch_info.last() == newest_height {
-        newest_height
+    let latest_boundary = if epoch_info.last().get() == latest_finalized.number {
+        latest_finalized.number
     } else {
         epoch_info
             .epoch()
@@ -1224,58 +1214,54 @@ where
                     .last(previous)
                     .expect("epoch strategy is for all epochs")
             })
+            .get()
     };
     info!(
-        %newest_height,
-        %last_boundary,
+        %latest_boundary,
+        latest_finalized.number,
+        %latest_finalized.hash,
         "execution layer reported newest available block, reading on-chain \
         DKG outcome from last boundary height, and validator state from newest \
         block"
     );
-    let header = node
+
+    let boundary_header = node
         .provider
-        .header_by_number(last_boundary.get())
+        .header_by_number(latest_boundary)
         .map_or_else(
             |e| Err(eyre::Report::new(e)),
             |header| header.ok_or_eyre("execution layer reported it had no header"),
         )
         .wrap_err_with(|| {
-            format!("failed to read header for last boundary block number `{last_boundary}`")
+            format!("failed to read header for latest boundary block number `{latest_boundary}`")
         })?;
 
-    let onchain_outcome =
-        tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-            .wrap_err("the boundary header did not contain the on-chain DKG outcome")?;
-
-    // Don't need to read the syncers if past the hardfork and V2 is already
-    // active on that epoch.
-    let syncers = if node
-        .chain_spec()
-        .is_t2_active_at_timestamp(header.timestamp())
-        && is_v2_initialized_at_height(node, header.number())
-            .wrap_err("unable to determine if v2 contract is already initialized")?
-    {
-        ordered::Set::default()
-    } else {
-        let (_read_height, _read_hash, raw_validators) = read_validator_config_at_height(
-            node,
-            last_boundary.get(),
-            |config: &ValidatorConfig| {
-                config
-                    .get_validators()
-                    .wrap_err("failed to query contract for validator config")
-            },
-        )?;
-        info!(
-            ?raw_validators,
-            "read validators from validator config v1 contract",
-        );
-        ordered::Set::from_iter_dedup(
-            decode_from_contract(raw_validators)
-                .iter_pairs()
-                .filter_map(|(k, v)| v.is_active().then_some(k.clone())),
+    let parent_of_boundary_header = node
+        .provider
+        .header_by_number(latest_boundary.saturating_sub(1))
+        .map_or_else(
+            |e| Err(eyre::Report::new(e)),
+            |header| header.ok_or_eyre("execution layer reported it had no header"),
         )
-    };
+        .wrap_err_with(|| {
+            format!(
+                "failed to read header for the boundary's parent `{}`",
+                latest_boundary.saturating_sub(1)
+            )
+        })?;
+
+    let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
+        &mut boundary_header.extra_data().as_ref(),
+    )
+    .wrap_err("the boundary header did not contain the on-chain DKG outcome")?;
+
+    let syncers = read_syncers_if_v2_not_initialized(
+        1,
+        node,
+        parent_of_boundary_header.hash_slow(),
+        boundary_header.hash_slow(),
+    )
+    .wrap_err("failed determining syncers")?;
 
     let share = state::ShareState::Plaintext('verify_initial_share: {
         let Some(share) = share else {
@@ -1298,8 +1284,8 @@ where
         Some(share)
     });
 
-    info!(%newest_height, "setting sync floor");
-    marshal.set_floor(newest_height).await;
+    info!(%latest_boundary, "setting sync floor");
+    marshal.set_floor(Height::new(latest_boundary)).await;
 
     Ok(State {
         epoch: onchain_outcome.epoch,
@@ -1333,12 +1319,6 @@ struct Metrics {
 
     rounds_skipped: Counter,
     attempts_to_read_validator_contract: Counter,
-
-    read_players_from_v1_contract: Counter,
-    read_players_from_v2_contract: Counter,
-
-    read_re_dkg_epoch_from_v1_contract: Counter,
-    read_re_dkg_epoch_from_v2_contract: Counter,
 }
 
 impl Metrics {
@@ -1449,34 +1429,6 @@ impl Metrics {
             attempts_to_read_validator_contract.clone(),
         );
 
-        let read_players_from_v1_contract = Counter::default();
-        context.register(
-            "read_players_from_v1_contract",
-            "the number of times the players (or syncers) were read from the validator config v1 contract",
-            read_players_from_v1_contract.clone(),
-        );
-
-        let read_players_from_v2_contract = Counter::default();
-        context.register(
-            "read_players_from_v2_contract",
-            "the number of times the players were read from the validator config v2 contract",
-            read_players_from_v2_contract.clone(),
-        );
-
-        let read_re_dkg_epoch_from_v1_contract = Counter::default();
-        context.register(
-            "read_re_dkg_epoch_from_v1_contract",
-            "the number of times the next re-DKG epoch was read from the validator config v1 contract",
-            read_re_dkg_epoch_from_v1_contract.clone(),
-        );
-
-        let read_re_dkg_epoch_from_v2_contract = Counter::default();
-        context.register(
-            "read_re_dkg_epoch_from_v2_contract",
-            "the number of times the next re-DKG epoch was read from the validator config v2 contract",
-            read_re_dkg_epoch_from_v2_contract.clone(),
-        );
-
         Self {
             syncing_players,
             shares_distributed,
@@ -1493,10 +1445,6 @@ impl Metrics {
             successes,
             rounds_skipped,
             attempts_to_read_validator_contract,
-            read_players_from_v1_contract,
-            read_players_from_v2_contract,
-            read_re_dkg_epoch_from_v1_contract,
-            read_re_dkg_epoch_from_v2_contract,
         }
     }
 
@@ -1603,35 +1551,35 @@ async fn read_syncers_if_v2_not_initialized_with_retry(
     node: &TempoFullNode,
     boundary_block: &Block,
     total_attempts: &Counter,
-    v1_read: &Counter,
 ) -> eyre::Result<ordered::Set<PublicKey>> {
     let mut attempts = 0;
     const MIN_RETRY: Duration = Duration::from_secs(1);
     const MAX_RETRY: Duration = Duration::from_secs(30);
 
+    let parent_hash = boundary_block.parent_hash();
+    let block_hash = boundary_block.hash();
     'read_contract: loop {
         total_attempts.inc();
         attempts += 1;
 
         if let Ok(syncers) =
-            read_syncers_if_v2_not_initialized(attempts, node, boundary_block, v1_read)
+            read_syncers_if_v2_not_initialized(attempts, node, parent_hash, block_hash)
         {
             break 'read_contract Ok(syncers);
         }
 
         let retry_after = MIN_RETRY.saturating_mul(attempts).min(MAX_RETRY);
         let is_syncing = node.network.is_syncing();
-        let best_block = node.provider.best_block_number();
-        let blocks_behind = best_block
+        let best_finalized_block = node.provider.finalized_block_number().ok().flatten();
+        let blocks_behind = best_finalized_block
             .as_ref()
-            .ok()
             .map(|best| boundary_block.number().saturating_sub(*best));
         tracing::warn_span!("read_validator_config_with_retry").in_scope(|| {
             warn!(
                 attempts,
                 retry_after = %tempo_telemetry_util::display_duration(retry_after),
                 is_syncing,
-                best_block = %tempo_telemetry_util::display_result(&best_block),
+                best_finalized_block = %tempo_telemetry_util::display_option(&best_finalized_block),
                 height_if_v1 = boundary_block.number(),
                 blocks_behind = %tempo_telemetry_util::display_option(&blocks_behind),
                 "reading validator config from contract failed; will retry",
@@ -1647,55 +1595,38 @@ async fn read_syncers_if_v2_not_initialized_with_retry(
 /// returns an empty set because after the hardfork syncers do not need to be
 /// tracked.
 ///
-/// IMPORTANT: it is expected that this function is only called on boundary
-/// blocks. It relies on the fact that the next players are read from the V2
-/// smart contract at boundary - 1, i.e. not on the boundary height but one
-/// before (of course assuming the contract is initialized and we are past the
-/// boundary).
+/// IMPORTANT: it is expected that this function is called on boundary blocks.
+/// Post-T2 hardfork, the next players are determined from the V2 smart contract
+/// on the boundary block's parent(!) block, not on the boundary block itself.
 ///
-/// The implementation reads the immutable v2 initialization height to avoid
-/// having to read a state at a specific block: if the initialization has already
-/// happened, `initialization_height <= height`, then reading validator v1
-/// is skipped and an empty list returned.
+/// Therefore, this function checks if the hardfork already happened by the
+/// timestamp of the block identified by `parent_hash`, and likewise if the
+/// contract was initialized at the state of `parent_hash`.
 #[instrument(
     skip_all,
     fields(
         attempt = _attempt,
-        block.digest = %boundary_block.digest(),
-        block.height = %boundary_block.height(),
+        parent_hash,
+        block_hash,
     ),
     err
 )]
 pub(crate) fn read_syncers_if_v2_not_initialized(
     _attempt: u32,
     node: &TempoFullNode,
-    boundary_block: &Block,
-    read_v1: &Counter,
+    parent_hash: B256,
+    block_hash: B256,
 ) -> eyre::Result<ordered::Set<PublicKey>> {
-    if can_use_v2_at_block_hash(node, boundary_block.parent_digest().0)
+    if can_use_v2_at_block_hash(node, parent_hash, Some(block_hash))
         .wrap_err("unable to determine if the validator config v2 can be used or not")?
     {
         return Ok(ordered::Set::default());
     }
-    read_v1.inc();
-    let (_read_height, _read_hash, raw_validators) = read_validator_config_at_block_hash(
-        node,
-        boundary_block.digest().0,
-        |config: &ValidatorConfig| {
-            config
-                .get_validators()
-                .wrap_err("failed to query contract for validator config")
-        },
-    )?;
-    info!(
-        ?raw_validators,
-        "read validators from validator config v1 contract",
-    );
-    Ok(ordered::Set::from_iter_dedup(
-        decode_from_contract(raw_validators)
-            .iter_pairs()
-            .filter_map(|(k, v)| v.is_active().then_some(k.clone())),
-    ))
+    let peers =
+        read_active_and_known_peers_at_block_hash_v1(node, &ordered::Set::default(), block_hash)
+            .wrap_err("unable to read peers from validator config v1 contract")?;
+    info!(?peers, "read validators from validator config v1 contract");
+    Ok(peers.into_keys())
 }
 
 /// Determines the next players depending on the header timestamp identified by `digest`.
@@ -1705,37 +1636,19 @@ pub(crate) fn read_syncers_if_v2_not_initialized(
 ///
 /// If the execution layer does not have a block corresponding to `digest`
 /// available then it cannot propose or verify a block.
-fn determine_next_players(
+#[instrument(skip_all, fields(%hash), err(level = Level::WARN))]
+fn determine_next_players_at_hash(
     state: &State,
     node: &TempoFullNode,
-    digest: Digest,
-    read_v2: &Counter,
+    hash: B256,
 ) -> eyre::Result<ordered::Set<PublicKey>> {
-    let next_players = if can_use_v2_at_block_hash(node, digest.0)
+    let next_players = if can_use_v2_at_block_hash(node, hash, None)
         .wrap_err("failed determining if validator config v2 can be used")?
     {
-        read_v2.inc();
         debug!("reading next players from validator config v2 contract");
-        let (read_height, _, raw_validators) =
-            read_validator_config_at_block_hash(node, digest.0, |config: &ValidatorConfigV2| {
-                config
-                    .get_validators()
-                    .wrap_err("failed to query contract for validator config")
-            })
-            .wrap_err("failed reading raw validator config v2")?;
-
-        let decoded_validators = raw_validators
-            .into_iter()
-            .map(DecodedValidatorV2::decode_from_contract)
-            .collect::<Result<Vec<_>, _>>()
-            .wrap_err("failed decoding an entry in v2 on-chain validator set")?;
-
-        ordered::Set::try_from_iter(decoded_validators.into_iter().filter_map(|validator| {
-            validator
-                .is_active_at_height(read_height)
-                .then_some(validator.public_key().clone())
-        }))
-        .wrap_err("failed reading validator config v2")?
+        read_active_and_known_peers_at_block_hash_v2(node, &ordered::Set::default(), hash)
+            .wrap_err("failed reading peers from  validator config v2")?
+            .into_keys()
     } else {
         debug!("using validator config v1 syncers from state");
         state.syncers.clone()
@@ -1763,16 +1676,10 @@ fn determine_next_players(
     err(level = Level::WARN)
     ret,
 )]
-pub(crate) fn read_re_dkg_epoch(
-    node: &TempoFullNode,
-    digest: Digest,
-    v1_counter: &Counter,
-    v2_counter: &Counter,
-) -> eyre::Result<u64> {
-    if can_use_v2_at_block_hash(node, digest.0)
+pub(crate) fn read_re_dkg_epoch(node: &TempoFullNode, digest: Digest) -> eyre::Result<u64> {
+    if can_use_v2_at_block_hash(node, digest.0, None)
         .wrap_err("failed determining if validator config v2 can be used")?
     {
-        v2_counter.inc();
         read_validator_config_at_block_hash(node, digest.0, |config: &ValidatorConfigV2| {
             config
                 .get_next_full_dkg_ceremony()
@@ -1780,7 +1687,6 @@ pub(crate) fn read_re_dkg_epoch(
         })
         .map(|(_, _, epoch)| epoch)
     } else {
-        v1_counter.inc();
         read_validator_config_at_block_hash(node, digest.0, |config: &ValidatorConfig| {
             config
                 .get_next_full_dkg_ceremony()

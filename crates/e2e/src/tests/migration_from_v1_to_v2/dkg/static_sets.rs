@@ -167,28 +167,6 @@ impl AssertTransition {
                     let mut parts = line.split_whitespace();
                     let metric = parts.next().unwrap();
                     let value = parts.next().unwrap();
-                    if metric.ends_with("_dkg_manager_read_players_from_v1_contract_total") {
-                        assert_eq!(
-                            initialization_epoch.get(),
-                            value.parse::<u64>().unwrap(),
-                            "v1 contract must only have been read for however \
-                            many epochs it took to initialize the v2 contract"
-                        );
-                    }
-                    if metric.ends_with("_dkg_manager_read_players_from_v2_contract_total") {
-                        assert!(value.parse::<u64>().unwrap() > 0);
-                    }
-                    if metric.ends_with("_dkg_manager_read_re_dkg_epoch_from_v1_contract_total") {
-                        assert_eq!(
-                            initialization_epoch.get(),
-                            value.parse::<u64>().unwrap(),
-                            "v1 contract must only have been read for however \
-                            many epochs it took to initialize the v2 contract"
-                        );
-                    }
-                    if metric.ends_with("_dkg_manager_read_re_dkg_epoch_from_v2_contract_total") {
-                        assert!(value.parse::<u64>().unwrap() > 0);
-                    }
                     if metric.ends_with("_dkg_manager_syncing_players") {
                         assert_eq!(
                             0,

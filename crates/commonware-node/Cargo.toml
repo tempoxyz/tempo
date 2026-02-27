@@ -46,7 +46,6 @@ eyre.workspace = true
 futures.workspace = true
 governor.workspace = true
 indexmap.workspace = true
-itertools.workspace = true
 jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
 pin-project = "1.1.10"
