@@ -76,8 +76,8 @@ pub(crate) fn read_active_and_known_peers_at_block_hash_v1(
                 && let Some(dupe) = all.insert(decoded.public_key.clone(), decoded)
             {
                 warn!(
-                        %dupe.public_key,
-                        "replaced peer because public keys were duplicated",
+                    duplicate = %dupe.public_key,
+                    "found duplicate public keys",
                 );
             }
         }
@@ -105,34 +105,33 @@ fn read_active_and_known_peers_at_block_hash_v2(
             .get_active_validators()
             .wrap_err("failed getting active validator set")?
         {
-            let idx = raw.index;
-            let decoded = DecodedValidatorV2::decode_from_contract(raw).wrap_err_with(|| {
-                format!("invariant violation: contract contained invalid entry at index `{idx}`")
-            })?;
-            if all.insert(decoded.public_key.clone(), decoded.to_address()).is_some() {
-                eyre::bail!(
-                    "invariant violation: contract had a duplicate entry for public key `{}`",
-                    decoded.public_key
+            if let Ok(decoded) = DecodedValidatorV2::decode_from_contract(raw)
+                && all
+                    .insert(decoded.public_key.clone(), decoded.to_address())
+                    .is_some()
+            {
+                warn!(
+                    duplicate = %decoded.public_key,
+                    "found duplicate public keys",
                 );
             }
         }
         for member in known {
             if !all.contains_key(member) {
-                let val = config
+                let decoded = config
                     .validator_by_public_key(public_key_to_b256(member))
-                    .wrap_err_with(|| format!("invariant violation: contract did not contain entry for committee member `{member}`"))?;
-                let idx = val.index;
-                let decoded =
-                    DecodedValidatorV2::decode_from_contract(val).wrap_err_with(|| {
-                        format!(
-                            "invariant violation: contract contained invalid entry at index `{idx}`"
-                        )
-                    })?;
+                    .map_err(eyre::Report::new)
+                    .and_then(DecodedValidatorV2::decode_from_contract)
+                    .expect(
+                        "invariant: known peers must have an entry in the \
+                        smart contract and be well formed",
+                    );
                 all.insert(decoded.public_key.clone(), decoded.to_address());
             }
         }
         Ok(ordered::Map::try_from_iter(all).expect("hashmaps don't contain duplicates"))
-    }).map(|(_height, _hash, value)| value)
+    })
+    .map(|(_height, _hash, value)| value)
 }
 
 pub(crate) fn v2_initialization_height_at_block_hash(
