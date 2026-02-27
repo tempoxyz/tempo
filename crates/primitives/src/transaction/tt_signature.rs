@@ -1701,6 +1701,32 @@ mod tests {
     }
 
     #[test]
+    fn test_signing_hash_properties() {
+        let hash_a = B256::from([0x11; 32]);
+        let hash_b = B256::from([0x22; 32]);
+        let addr_a = Address::repeat_byte(0xAA);
+        let addr_b = Address::repeat_byte(0xBB);
+
+        // Different addresses produce different signing hashes
+        assert_ne!(
+            KeychainSignature::signing_hash(hash_a, addr_a),
+            KeychainSignature::signing_hash(hash_a, addr_b),
+        );
+
+        // Different tx hashes produce different signing hashes
+        assert_ne!(
+            KeychainSignature::signing_hash(hash_a, addr_a),
+            KeychainSignature::signing_hash(hash_b, addr_a),
+        );
+
+        // Deterministic: same inputs yield same output
+        assert_eq!(
+            KeychainSignature::signing_hash(hash_a, addr_a),
+            KeychainSignature::signing_hash(hash_a, addr_a),
+        );
+    }
+
+    #[test]
     fn test_webauthn_rejects_challenge_injection() {
         let (tx_hash, attack_hash) = (B256::from([0xAA; 32]), B256::from([0xFF; 32]));
         let (challenge, attack_challenge) = (
@@ -1811,11 +1837,13 @@ mod tests {
 
     #[test]
     fn test_tempo_signature_keychain_too_short_for_address() {
-        let mut data = vec![SIGNATURE_TYPE_KEYCHAIN];
-        data.extend_from_slice(&[0u8; 19]);
-        let result = TempoSignature::from_bytes(&data);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("too short"));
+        for type_byte in [SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_KEYCHAIN_V2] {
+            let mut data = vec![type_byte];
+            data.extend_from_slice(&[0u8; 19]);
+            let result = TempoSignature::from_bytes(&data);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("too short"));
+        }
     }
 
     #[test]
