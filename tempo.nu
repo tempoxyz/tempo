@@ -308,7 +308,7 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
     if (sys host | get name) == "Darwin" {
         let extra_ips = ($validator_dirs | each { |d| $d | path basename | split row ":" | get 0 } | where { |ip| $ip != "127.0.0.1" })
         if ($extra_ips | length) > 0 {
-            print $"Adding macOS loopback aliases for validator IPs: ($extra_ips | str join ', ') (sudo required)..."
+            print $"Adding macOS loopback aliases for validator IPs: ($extra_ips | str join ', ') \(sudo required\)..."
         }
         for dir in $validator_dirs {
             let ip = ($dir | path basename | split row ":" | get 0)
