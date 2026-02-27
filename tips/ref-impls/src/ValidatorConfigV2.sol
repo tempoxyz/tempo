@@ -203,7 +203,6 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         // Point new pubkey to original slot
         pubkeyToIndex[publicKey] = idx + 1;
-        // addressToIndex unchanged — same address, same slot
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -271,13 +270,13 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function getValidators(uint64 startIndex) external view returns (Validator[] memory) {
+    function getValidators(uint64 startIndex) external view returns (Validator[] memory result) {
         uint256 len = validatorsArray.length;
         if (startIndex >= len) {
-            return new Validator[](0);
+            return result;
         }
 
-        Validator[] memory result = new Validator[](len - startIndex);
+        result = new Validator[](len - startIndex);
         uint256 gasPerIteration = _GAS_PER_VALIDATOR;
 
         uint256 count;
@@ -493,8 +492,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         });
 
         validatorsArray.push(newVal);
-        addressToIndex[validatorAddress] = idx + 1; // 1-indexed
         pubkeyToIndex[publicKey] = idx + 1; // 1-indexed
+        // if there are duplicated vals with addresses, the latter validator entry is correct
+        addressToIndex[validatorAddress] = idx + 1; // 1-indexed.
     }
 
     // Note: This is a stub implementation. The precompile implementation

@@ -81,7 +81,6 @@ interface IValidatorConfigV2 {
         string ingress;
         string egress;
         uint64 index;
-        /// @dev 1-indexed position in activeIndices; 0 = inactive.
         uint64 activeIdx;
         uint64 addedAtHeight;
         uint64 deactivatedAtHeight;
