@@ -114,6 +114,13 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
     incentive_gas_used: u64,
+
+    /// Tracks total cumulative gas used (execution + storage creation) for receipts.
+    /// This differs from block gas limit accounting which only counts execution gas.
+    cumulative_total_gas_used: u64,
+    /// Tracks cumulative storage creation gas used (TIP-1016).
+    /// Used to derive execution-only gas for the block header.
+    cumulative_storage_creation_gas: u64,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -141,6 +148,8 @@ where
             section: BlockSection::StartOfBlock,
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
+            cumulative_total_gas_used: 0,
+            cumulative_storage_creation_gas: 0,
         }
     }
 
@@ -402,7 +411,16 @@ where
         let TempoTxResult { inner, tx } = output;
         let next_section = self.validate_tx(&tx, inner.result.result.gas_used())?;
 
-        let gas_used = self.inner.commit_transaction(inner)?;
+        // Extract storage creation gas tracked by the EVM (TIP-1016).
+        let storage_creation_gas = inner.result.result.gas().state_gas_spent();
+
+        let total_gas_used = self.inner.commit_transaction(inner)?;
+        self.cumulative_total_gas_used += total_gas_used;
+        self.cumulative_storage_creation_gas += storage_creation_gas;
+
+        // Execution gas excludes storage creation gas (TIP-1016).
+        // Only execution gas counts toward protocol limits (block gas limit).
+        let gas_used = total_gas_used - storage_creation_gas;
 
         // TODO: remove once revm supports emitting logs for reverted transactions
         //
@@ -456,7 +474,7 @@ where
     }
 
     fn finish(
-        self,
+        mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // Check that we ended in the System section with all end-of-block system txs seen
         if self.section
@@ -468,6 +486,12 @@ where
                 BlockValidationError::msg("end-of-block system transactions not seen").into(),
             );
         }
+
+        // The inner executor's gas_used tracks total gas (execution + storage)
+        // because that's what goes into receipt cumulative_gas_used. For the
+        // block header, we need execution gas only (TIP-1016).
+        self.inner.gas_used -= self.cumulative_storage_creation_gas;
+
         self.inner.finish()
     }
 
@@ -513,6 +537,16 @@ where
     /// Get the current section for assertions.
     pub(crate) fn section(&self) -> BlockSection {
         self.section
+    }
+
+    /// Get the cumulative total gas used (execution + storage) for assertions.
+    pub(crate) fn cumulative_total_gas_used(&self) -> u64 {
+        self.cumulative_total_gas_used
+    }
+
+    /// Get the non-shared gas left for assertions.
+    pub(crate) fn non_shared_gas_left(&self) -> u64 {
+        self.non_shared_gas_left
     }
 }
 
@@ -567,7 +601,7 @@ mod tests {
         )];
         let result: ExecutionResult<TempoHaltReason> = ExecutionResult::Success {
             reason: revm::context::result::SuccessReason::Return,
-            gas: ResultGas::new(21000, 21000, 0, 0, 0),
+            gas: ResultGas::new(21000, 21000, 0, 0, 0, 0),
             logs,
             output: revm::context::result::Output::Call(Bytes::new()),
         };
@@ -1077,7 +1111,7 @@ mod tests {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
                         reason: revm::context::result::SuccessReason::Return,
-                        gas: ResultGas::new(21000, 21000, 0, 0, 0),
+                        gas: ResultGas::new(21000, 21000, 0, 0, 0, 0),
                         logs: vec![],
                         output: revm::context::result::Output::Call(Bytes::new()),
                     },
@@ -1109,6 +1143,167 @@ mod tests {
 
         let result = executor.finish();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_commit_transaction_tracks_total_cumulative_gas() {
+        // commit_transaction should track cumulative total gas (for receipts)
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let tx = create_legacy_tx();
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new(21000, 21000, 0, 0, 0, 0),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            tx,
+        };
+
+        let exec_gas = executor.commit_transaction(output).unwrap();
+
+        // With zero storage creation gas, execution gas equals total gas
+        assert_eq!(exec_gas, 21000);
+        assert_eq!(executor.cumulative_total_gas_used(), 21000);
+    }
+
+    #[test]
+    fn test_cumulative_total_gas_accumulates_across_transactions() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        // Commit first transaction (21000 gas)
+        let tx1 = create_legacy_tx();
+        let output1 = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new(21000, 21000, 0, 0, 0, 0),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx1.tx_type(),
+            },
+            tx: tx1,
+        };
+        executor.commit_transaction(output1).unwrap();
+
+        // Commit second transaction (50000 gas)
+        let tx2 = create_legacy_tx();
+        let output2 = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new(50000, 50000, 0, 0, 0, 0),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx2.tx_type(),
+            },
+            tx: tx2,
+        };
+        executor.commit_transaction(output2).unwrap();
+
+        assert_eq!(executor.cumulative_total_gas_used(), 71000);
+
+        // Receipts should have cumulative total gas
+        let receipts = executor.receipts();
+        assert_eq!(receipts[0].cumulative_gas_used, 21000);
+        assert_eq!(receipts[1].cumulative_gas_used, 71000);
+    }
+
+    #[test]
+    fn test_finish_returns_execution_gas_for_block_header() {
+        // BlockExecutionResult.gas_used (used for block header) should be
+        // execution gas only, not total gas including storage creation.
+        // For now these are equal, but the plumbing ensures correctness
+        // when the EVM starts reporting storage gas separately.
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_section(BlockSection::NonShared)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        // Manually set state to simulate a committed transaction
+        executor.section = BlockSection::System {
+            seen_subblocks_signatures: true,
+        };
+        executor.inner.gas_used += 21000;
+        executor.cumulative_total_gas_used += 21000;
+
+        let (_, result) = executor.finish().unwrap();
+        // Block header gas_used should be execution gas
+        assert_eq!(result.gas_used, 21000);
+    }
+
+    #[test]
+    fn test_non_shared_gas_uses_execution_gas_only() {
+        // non_shared_gas_left should be decremented by execution gas,
+        // which currently equals total gas since storage_creation_gas is 0.
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let initial_non_shared = executor.non_shared_gas_left();
+
+        let tx = create_legacy_tx();
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::new(50_000, 50_000, 0, 0, 0, 0),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            tx,
+        };
+        executor.commit_transaction(output).unwrap();
+
+        assert_eq!(executor.non_shared_gas_left(), initial_non_shared - 50_000);
     }
 
     #[test]

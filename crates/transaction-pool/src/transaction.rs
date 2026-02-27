@@ -44,6 +44,18 @@ pub struct TempoPooledTransaction {
     /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
     /// `None` for non-keychain transactions or keys that never expire.
     key_expiry: OnceLock<Option<u64>>,
+    /// Intrinsic state gas (TIP-1016 storage creation gas component).
+    ///
+    /// Set during validation for T2+ transactions. The state gas portion does NOT count
+    /// against protocol limits (block/transaction execution gas caps), only against
+    /// the user's `gas_limit`.
+    ///
+    /// NOTE: This value is hardfork-specific (gas parameters vary by fork). If a
+    /// transaction survives a hardfork boundary, the cached value may be stale.
+    /// Future fork transitions that change state gas parameters should add pool
+    /// maintenance logic (like `evict_underpriced_transactions_for_t1`) to
+    /// re-validate or evict affected transactions.
+    intrinsic_state_gas: OnceLock<u64>,
 }
 
 impl TempoPooledTransaction {
@@ -70,6 +82,7 @@ impl TempoPooledTransaction {
             nonce_key_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
+            intrinsic_state_gas: OnceLock::new(),
         }
     }
 
@@ -198,6 +211,27 @@ impl TempoPooledTransaction {
     /// Returns `None` if not a keychain tx, key never expires, or not yet validated.
     pub fn key_expiry(&self) -> Option<u64> {
         self.key_expiry.get().copied().flatten()
+    }
+
+    /// Sets the intrinsic state gas for this transaction (TIP-1016).
+    ///
+    /// Called during validation for T2+ transactions. State gas is the storage creation
+    /// gas component that does NOT count against protocol limits.
+    pub fn set_intrinsic_state_gas(&self, state_gas: u64) {
+        let _ = self.intrinsic_state_gas.set(state_gas);
+    }
+
+    /// Returns the intrinsic state gas, or 0 if not set (pre-T2 or not yet validated).
+    pub fn intrinsic_state_gas(&self) -> u64 {
+        self.intrinsic_state_gas.get().copied().unwrap_or(0)
+    }
+
+    /// Returns the execution gas limit (gas_limit minus state gas).
+    ///
+    /// For T2+ this is the portion that counts against protocol limits.
+    /// For pre-T2, state gas is 0, so this equals `gas_limit()`.
+    pub fn execution_gas_limit(&self) -> u64 {
+        self.gas_limit().saturating_sub(self.intrinsic_state_gas())
     }
 }
 
@@ -931,7 +965,7 @@ mod tests {
             .build();
 
         // Test various Transaction trait methods
-        assert_eq!(tx.chain_id(), Some(1));
+        assert_eq!(tx.chain_id(), Some(42431));
         assert_eq!(tx.nonce(), 0);
         assert_eq!(tx.gas_limit(), 1_000_000);
         assert_eq!(tx.max_fee_per_gas(), 20_000_000_000);
@@ -949,6 +983,36 @@ mod tests {
 
         // PoolTransaction::cost() returns &U256::ZERO for Tempo
         assert_eq!(*tx.cost(), U256::ZERO);
+    }
+
+    #[test]
+    fn test_intrinsic_state_gas_defaults_to_zero() {
+        let tx = TxBuilder::aa(Address::random())
+            .gas_limit(1_000_000)
+            .build();
+
+        assert_eq!(tx.intrinsic_state_gas(), 0);
+        assert_eq!(tx.execution_gas_limit(), 1_000_000);
+    }
+
+    #[test]
+    fn test_set_intrinsic_state_gas() {
+        let tx = TxBuilder::aa(Address::random())
+            .gas_limit(1_000_000)
+            .build();
+
+        tx.set_intrinsic_state_gas(245_000);
+        assert_eq!(tx.intrinsic_state_gas(), 245_000);
+        assert_eq!(tx.execution_gas_limit(), 755_000);
+    }
+
+    #[test]
+    fn test_execution_gas_limit_saturates() {
+        let tx = TxBuilder::aa(Address::random()).gas_limit(100).build();
+
+        // State gas larger than gas_limit should saturate to 0
+        tx.set_intrinsic_state_gas(200);
+        assert_eq!(tx.execution_gas_limit(), 0);
     }
 }
 
