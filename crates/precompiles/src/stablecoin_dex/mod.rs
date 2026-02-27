@@ -4773,8 +4773,8 @@ mod tests {
                     assert_eq!(next_id_after, next_id_before,);
                 } else {
                     // No checkpoint — partial state leaks
-                    assert_eq!(alice_base, 0,);
-                    assert_eq!(next_id_after, next_id_before + 1,);
+                    assert_eq!(alice_base, 0);
+                    assert_eq!(next_id_after, next_id_before + 1);
                 }
 
                 // verify that `OrderPlaced` event was never emitted due to poisoned tick's revert
