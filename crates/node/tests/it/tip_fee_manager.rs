@@ -723,6 +723,8 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
 /// TIP-1007: getFeeToken() returns address(0) in eth_call simulation contexts
 /// because the handler skips writing the fee token to transient storage when
 /// `disable_fee_charge` is set (per TIP-1007 spec).
+///
+/// [TIP-1007]: <https://docs.tempo.xyz/protocol/tips/tip-1007>
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_fee_token_eth_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -747,9 +749,11 @@ async fn test_get_fee_token_eth_call() -> eyre::Result<()> {
     Ok(())
 }
 
-/// TIP-1007: getFeeToken() returns the correct fee token during real transaction
+/// [TIP-1007]: getFeeToken() returns the correct fee token during real transaction
 /// execution, is consistent across multiple calls within the same tx, and
 /// transient storage is properly cleared between transactions.
+///
+/// [TIP-1007]: <https://docs.tempo.xyz/protocol/tips/tip-1007>
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_fee_token_during_execution() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();

@@ -18,6 +18,9 @@ const PRESETS = {
     "tempo-mix": [0.8, 0, 0.19, 0.01]
 }
 
+# TIP20 token IDs created by localnet genesis (pathUSD, AlphaUSD, BetaUSD, ThetaUSD)
+const TIP20_TOKEN_IDS = [0, 1, 2, 3]
+
 # ============================================================================
 # Helper functions
 # ============================================================================
@@ -62,6 +65,52 @@ def build-tempo [bins: list<string>, profile: string, features: string] {
 # Find tempo process PIDs (excluding tempo-bench)
 def find-tempo-pids [] {
     ps | where name =~ "tempo" | where name !~ "tempo-bench" | get pid
+}
+
+# Initialize node with state bloat
+# 1. Run `tempo init` to create the database
+# 2. Generate state bloat binary file
+# 3. Run `tempo init-from-binary-dump` to load the bloat
+# Generate the bloat binary file once (skips if already exists)
+def generate-bloat-file [bloat_size: int, profile: string] {
+    let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
+    if ($bloat_file | path exists) {
+        print $"State bloat file already exists \(($bloat_size) MiB\)"
+        return
+    }
+    print $"Generating state bloat \(($bloat_size) MiB\)..."
+    let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_size --out $bloat_file ...$token_args
+}
+
+# Load the bloat file into a single node's database
+def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: string] {
+    let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
+    let db_path = $"($datadir)/db"
+
+    # Skip if this node already has a database with bloat loaded
+    if ($db_path | path exists) {
+        print $"State bloat already loaded into ($datadir | path basename)"
+        return
+    }
+
+    # Remove existing reth database files while preserving key files (signing.key, signing.share, etc.)
+    if ($datadir | path exists) {
+        for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
+            let path = $"($datadir)/($subdir)"
+            if ($path | path exists) { rm -rf $path }
+        }
+        for file in [reth.toml jwt.hex] {
+            let path = $"($datadir)/($file)"
+            if ($path | path exists) { rm $path }
+        }
+    }
+
+    print $"Initializing ($datadir | path basename) database..."
+    run-external $tempo_bin "init" "--chain" $genesis_path "--datadir" $datadir
+
+    print $"Loading state bloat into ($datadir | path basename)..."
+    run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
 }
 
 # ============================================================================
@@ -126,7 +175,7 @@ def "main kill" [
 
     # Remove stale IPC socket
     if $has_stale_ipc {
-        rm /tmp/reth.ipc
+        rm --force /tmp/reth.ipc
         print "Removed /tmp/reth.ipc"
     }
     print "Done."
@@ -151,6 +200,7 @@ def "main localnet" [
     --node-args: string = ""    # Additional node arguments (space-separated)
     --skip-build                # Skip building (assumes binary is already built)
     --force                     # Kill dangling processes without prompting
+    --bloat: int = 0            # Generate state bloat (size in MiB) for TIP20 tokens
 ] {
     validate-mode $mode
 
@@ -175,9 +225,9 @@ def "main localnet" [
             print "Error: --nodes is only valid with --mode consensus"
             exit 1
         }
-        run-dev-node $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args
+        run-dev-node $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
     } else {
-        run-consensus-nodes $nodes $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args
+        run-consensus-nodes $nodes $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
     }
 }
 
@@ -185,8 +235,21 @@ def "main localnet" [
 # Dev mode
 # ============================================================================
 
-def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
+def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
+    let tempo_bin = if $profile == "dev" {
+        "./target/debug/tempo"
+    } else {
+        $"./target/($profile)/tempo"
+    }
+    let datadir = $"($LOCALNET_DIR)/reth"
+    let log_dir = $"($LOCALNET_DIR)/logs"
+
     let genesis_path = if $genesis != "" {
+        # Custom genesis provided - check if bloat requires init
+        if $bloat > 0 {
+            generate-bloat-file $bloat $profile
+            load-bloat-into-node $tempo_bin $genesis $datadir
+        }
         $genesis
     } else {
         let default_genesis = $"($LOCALNET_DIR)/genesis.json"
@@ -203,18 +266,17 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
             print $"Generating genesis with ($accounts) accounts..."
             cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts --no-dkg-in-genesis
         }
+
+        # Apply state bloat if requested (requires fresh init)
+        if $bloat > 0 {
+            generate-bloat-file $bloat $profile
+            load-bloat-into-node $tempo_bin $default_genesis $datadir
+        }
+
         $default_genesis
     }
 
-    let tempo_bin = if $profile == "dev" {
-        "./target/debug/tempo"
-    } else {
-        $"./target/($profile)/tempo"
-    }
-    let datadir = $"($LOCALNET_DIR)/reth"
-    let log_dir = $"($LOCALNET_DIR)/logs"
-
-    let args = (build-base-args $genesis_path $datadir $log_dir 8545 9001)
+    let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
         | append (build-dev-args)
         | append (log-filter-args $loud)
         | append $extra_args
@@ -225,16 +287,16 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
 }
 
 # Build base node arguments shared between dev and consensus modes
-def build-base-args [genesis_path: string, datadir: string, log_dir: string, http_port: int, reth_metrics_port: int] {
+def build-base-args [genesis_path: string, datadir: string, log_dir: string, bind_ip: string, http_port: int, reth_metrics_port: int] {
     [
         "node"
         "--chain" $genesis_path
         "--datadir" $datadir
         "--http"
-        "--http.addr" "0.0.0.0"
+        "--http.addr" $bind_ip
         "--http.port" $"($http_port)"
         "--http.api" "all"
-        "--metrics" $"0.0.0.0:($reth_metrics_port)"
+        "--metrics" $"($bind_ip):($reth_metrics_port)"
         "--log.file.directory" $log_dir
         "--faucet.enabled"
         "--faucet.private-key" "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -259,7 +321,7 @@ def build-dev-args [] {
 # Consensus mode
 # ============================================================================
 
-def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
+def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
     # Check if we need to generate localnet (only if no custom genesis provided)
     if $genesis == "" {
         let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
@@ -274,9 +336,9 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
             }
             rm -rf $LOCALNET_DIR
 
-            # Generate validator addresses (port 8000, 8100, 8200, ...)
-            # Using 100-port gaps to avoid collisions with system services (e.g., Intuit on 8021)
-            let validators = (0..<$nodes | each { |i| $"127.0.0.1:($i * 100 + 8000)" } | str join ",")
+            # Generate validator addresses with distinct loopback IPs (required by ValidatorConfigV2
+            # ingress uniqueness check which is per-IP, not per-socket-address)
+            let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
             cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators $validators --force | ignore
@@ -290,9 +352,10 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
     let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
     let trusted_peers = ($validator_dirs | each { |d|
         let addr = ($d | path basename)
+        let ip = ($addr | split row ":" | get 0)
         let port = ($addr | split row ":" | get 1 | into int)
         let identity = (open $"($d)/enode.identity" | str trim)
-        $"enode://($identity)@127.0.0.1:($port + 1)"
+        $"enode://($identity)@($ip):($port + 1)"
     } | str join ",")
 
     print $"Found ($validator_dirs | length) validator configs"
@@ -301,6 +364,32 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
         "./target/debug/tempo"
     } else {
         $"./target/($profile)/tempo"
+    }
+
+    # Ensure loopback aliases exist for distinct validator IPs (macOS only has 127.0.0.1 by default)
+    if (sys host | get name) == "Darwin" {
+        let extra_ips = ($validator_dirs | each { |d| $d | path basename | split row ":" | get 0 } | where { |ip| $ip != "127.0.0.1" })
+        if ($extra_ips | length) > 0 {
+            print $"Adding macOS loopback aliases for validator IPs: ($extra_ips | str join ', ') \(sudo required\)..."
+        }
+        for dir in $validator_dirs {
+            let ip = ($dir | path basename | split row ":" | get 0)
+            if $ip != "127.0.0.1" {
+                try { sudo ifconfig lo0 alias $ip up } catch { |e|
+                    print $"(ansi red)Failed to add loopback alias ($ip): ($e.msg)(ansi reset)"
+                    print "Run: sudo ifconfig lo0 alias $ip up"
+                    exit 1
+                }
+            }
+        }
+    }
+
+    # Apply state bloat to each node's datadir if requested
+    if $bloat > 0 {
+        generate-bloat-file $bloat $profile
+        for node_dir in $validator_dirs {
+            load-bloat-into-node $tempo_bin $genesis_path $node_dir
+        }
     }
 
     # Start background nodes first (all except node 0)
@@ -361,12 +450,14 @@ def build-consensus-node-args [node_dir: string, genesis_path: string, trusted_p
     let http_port = 8545 + $node_index
     let reth_metrics_port = 9001 + $node_index
 
-    (build-base-args $genesis_path $node_dir $log_dir $http_port $reth_metrics_port)
+    (build-base-args $genesis_path $node_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
         | append (build-consensus-args $node_dir $trusted_peers $port)
 }
 
 # Build consensus mode specific arguments
 def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
+    let addr = ($node_dir | path basename)
+    let ip = ($addr | split row ":" | get 0)
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
@@ -374,18 +465,22 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
     let execution_p2p_port = $port + 1
     let metrics_port = $port + 2
     let authrpc_port = $port + 3
+    let discv5_port = $port + 4
 
     [
         "--consensus.signing-key" $signing_key
         "--consensus.signing-share" $signing_share
-        "--consensus.listen-address" $"127.0.0.1:($port)"
-        "--consensus.metrics-address" $"127.0.0.1:($metrics_port)"
+        "--consensus.listen-address" $"($ip):($port)"
+        "--consensus.metrics-address" $"($ip):($metrics_port)"
         "--trusted-peers" $trusted_peers
         "--port" $"($execution_p2p_port)"
         "--discovery.port" $"($execution_p2p_port)"
+        "--discovery.v5.port" $"($discv5_port)"
         "--p2p-secret-key" $enode_key
         "--authrpc.port" $"($authrpc_port)"
         "--consensus.fee-recipient" "0x0000000000000000000000000000000000000000"
+        "--consensus.use-local-defaults"
+        "--consensus.bypass-ip-check"
     ]
 }
 
@@ -411,6 +506,7 @@ def "main bench" [
     --features: string = $DEFAULT_FEATURES          # Cargo features
     --node-args: string = ""                        # Additional node arguments (space-separated)
     --bench-args: string = ""                       # Additional tempo-bench arguments (space-separated)
+    --bloat: int = 0                                # Generate state bloat (size in MiB) for TIP20 tokens
 ] {
     validate-mode $mode
 
@@ -465,6 +561,7 @@ def "main bench" [
     | append (if $samply_args != "" { [$"--samply-args=\"($samply_args)\""] } else { [] })
     | append (if $loud { ["--loud"] } else { [] })
     | append (if $node_args != "" { [$"--node-args=\"($node_args)\""] } else { [] })
+    | append (if $bloat > 0 { ["--bloat" $"($bloat)"] } else { [] })
 
     # Spawn nodes as a background job (pipe output to show logs)
     let node_cmd_str = ($node_cmd | str join " ")
@@ -864,7 +961,7 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
             let datadir = $"($LOCALNET_DIR)/reth-cov"
             let log_dir = $"($LOCALNET_DIR)/logs-cov"
             rm -rf $datadir
-            let args = (build-base-args $genesis_path $datadir $log_dir 8545 9001)
+            let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
                 | append (build-dev-args)
                 | append ["--log.stdout.filter" "warn"]
                 | append [
@@ -998,11 +1095,13 @@ def main [] {
     print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
     print "  --node-args <ARGS>       Additional node arguments (space-separated)"
     print "  --bench-args <ARGS>      Additional tempo-bench arguments (space-separated)"
+    print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print ""
     print "Localnet flags:"
     print "  --mode <dev|consensus>   Mode (default: dev)"
     print "  --nodes <N>              Number of validators for consensus (default: 3)"
     print "  --accounts <N>           Genesis accounts (default: 1000)"
+    print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print "  --samply                 Enable samply profiling (foreground node only)"
     print "  --samply-args <ARGS>     Additional samply arguments (space-separated)"
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
@@ -1038,6 +1137,7 @@ def main [] {
     print "  nu tempo.nu coverage --tests --live --preset tempo-mix    # everything merged"
     print "  nu tempo.nu infra up"
     print "  nu tempo.nu localnet --mode dev --samply --accounts 50000 --reset"
+    print "  nu tempo.nu localnet --mode dev --bloat 1024 --reset"
     print "  nu tempo.nu localnet --mode consensus --nodes 3"
     print ""
     print "Port assignments (consensus mode, per node N=0,1,2...):"
@@ -1045,6 +1145,7 @@ def main [] {
     print "  P2P:           8001 + N*100"
     print "  Metrics:       8002 + N*100"
     print "  AuthRPC:       8003 + N*100"
+    print "  Discv5:        8004 + N*100"
     print "  HTTP RPC:      8545 + N"
     print "  Reth Metrics:  9001 + N"
 }

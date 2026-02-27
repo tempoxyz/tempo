@@ -158,9 +158,9 @@ where
     pub fn evict_invalidated_transactions(
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
-    ) -> usize {
+    ) -> Vec<TxHash> {
         if !updates.has_invalidation_events() {
-            return 0;
+            return Vec::new();
         }
 
         // Fetch state provider if any check needs on-chain reads:
@@ -399,11 +399,10 @@ where
             }
         }
 
-        let evicted_count = to_remove.len();
-        if evicted_count > 0 {
+        if !to_remove.is_empty() {
             tracing::debug!(
                 target: "txpool",
-                total = evicted_count,
+                total = to_remove.len(),
                 revoked_count,
                 spending_limit_count,
                 spending_limit_spend_count,
@@ -413,9 +412,9 @@ where
                 unwhitelisted_count,
                 "Evicting invalidated transactions"
             );
-            self.remove_transactions(to_remove);
+            self.remove_transactions(to_remove.clone());
         }
-        evicted_count
+        to_remove
     }
 
     fn add_validated_transactions(

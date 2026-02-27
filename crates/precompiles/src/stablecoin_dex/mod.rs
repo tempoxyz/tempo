@@ -1080,9 +1080,13 @@ impl StablecoinDEX {
         ))
     }
 
-    /// Cancel a stale order where the maker is forbidden by TIP-403 policy
+    /// Cancel a stale order where the maker is forbidden by [TIP-403] policy
     /// Allows anyone to clean up stale orders from blacklisted makers
-    /// TIP-1015: For T2+, checks sender authorization (maker must be able to send the escrowed token)
+    /// [TIP-1015]: For T2+, checks sender authorization
+    /// (maker must be able to send the escrowed token)
+    ///
+    /// [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
+    /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
         let order = self.orders[order_id].read()?;
 
