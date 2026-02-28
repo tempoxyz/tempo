@@ -767,14 +767,13 @@ impl Read for State {
         buf: &mut impl bytes::Buf,
         cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
-        let range_cfg = RangeCfg::from(1..=(u16::MAX as usize));
         Ok(Self {
             epoch: ReadExt::read(buf)?,
             seed: ReadExt::read(buf)?,
             output: Read::read_cfg(buf, cfg)?,
             share: ReadExt::read(buf)?,
-            players: Read::read_cfg(buf, &(range_cfg, ()))?,
-            syncers: Read::read_cfg(buf, &(range_cfg, ()))?,
+            players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?,
+            syncers: Read::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?,
             is_full_dkg: ReadExt::read(buf)?,
         })
     }
@@ -1339,6 +1338,7 @@ impl ReducedBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use commonware_codec::Encode as _;
     use commonware_cryptography::{
         bls12381::{dkg, primitives::sharing::Mode},
         ed25519::PrivateKey,
@@ -1393,6 +1393,30 @@ mod tests {
             syncers: peers,
             is_full_dkg: false,
         }
+    }
+
+    #[test]
+    fn state_round_trip_with() {
+        let executor = deterministic::Runner::default();
+        executor.start(|mut context| async move {
+            let state = make_test_state(&mut context, 0);
+            let mut bytes = state.encode();
+            assert_eq!(
+                state,
+                State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap(),
+            );
+
+            let state_without_syncers = {
+                let mut s = make_test_state(&mut context, 0);
+                s.syncers = Default::default();
+                s
+            };
+            let mut bytes = state_without_syncers.encode();
+            assert_eq!(
+                state_without_syncers,
+                State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap(),
+            );
+        });
     }
 
     #[test]

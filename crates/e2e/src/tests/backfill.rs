@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Clock, Runner as _,
+    Clock, Metrics, Runner as _,
     deterministic::{self, Context, Runner},
 };
 use futures::future::join_all;
@@ -34,7 +34,6 @@ async fn run_validator_late_join_test(
         context.sleep(Duration::from_secs(1)).await;
     }
 
-    // Start the last node
     last.start(context).await;
     assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
 
@@ -43,6 +42,7 @@ async fn run_validator_late_join_test(
     // Assert that last node is able to catch up and progress
     while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
         context.sleep(Duration::from_millis(100)).await;
+        assert_no_new_epoch(context, 0);
     }
     // Verify backfill behavior
     let actual_runs = get_pipeline_runs(metrics_recorder);
@@ -83,4 +83,24 @@ fn validator_can_join_later_with_pipeline_sync() {
     Runner::from(deterministic::Config::default().with_seed(0)).start(|mut context| async move {
         run_validator_late_join_test(&mut context, 65, 70, true).await;
     });
+}
+
+#[track_caller]
+fn assert_no_new_epoch(context: &impl Metrics, max_epoch: u64) {
+    let metrics = context.encode();
+    for line in metrics.lines() {
+        let mut parts = line.split_whitespace();
+        let metric = parts.next().unwrap();
+        let value = parts.next().unwrap();
+
+        if metric.ends_with("_peers_blocked") {
+            let value = value.parse::<u64>().unwrap();
+            assert_eq!(value, 0);
+        }
+
+        if metric.ends_with("_epoch_manager_latest_epoch") {
+            let value = value.parse::<u64>().unwrap();
+            assert!(value <= max_epoch, "epoch progressed; sync likely failed");
+        }
+    }
 }

@@ -8,9 +8,11 @@ mod consensus_rpc;
 mod dkg;
 mod linkage;
 mod metrics;
+mod migration_from_v1_to_v2;
 mod restart;
 mod subblocks;
 mod sync;
+mod v2_at_genesis;
 
 #[test_traced]
 fn spawning_execution_node_works() {
@@ -26,7 +28,7 @@ fn spawning_execution_node_works() {
     // #[test]
     // fn spawning_execution_node_works() {
     // let _telemetry = tracing_subscriber::fmt()
-    //     .with_max_level(Level::DEBUG)
+    //     .with_max_level(tracing::Level::DEBUG)
     //     .with_test_writer()
     //     .try_init();
     // <rest>

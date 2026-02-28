@@ -8,7 +8,10 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::{
         dkg::Output,
-        primitives::{sharing::Sharing, variant::MinSig},
+        primitives::{
+            sharing::Sharing,
+            variant::{MinSig, Variant},
+        },
     },
     ed25519::PublicKey,
 };
@@ -55,6 +58,10 @@ impl OnchainDkgOutcome {
 
     pub fn sharing(&self) -> &Sharing<MinSig> {
         self.output.public()
+    }
+
+    pub fn network_identity(&self) -> &<MinSig as Variant>::Public {
+        self.sharing().public()
     }
 }
 

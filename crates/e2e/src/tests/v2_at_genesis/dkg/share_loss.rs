@@ -23,6 +23,7 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
         let setup = Setup::new()
             .seed(seed)
             .epoch_length(epoch_length)
+            .t2_time(0)
             .connect_execution_layer_nodes(true);
 
         let (mut validators, _execution_runtime) =
@@ -57,7 +58,7 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
 
-                if metric.ends_with("_peers_blocked") {
+                if metrics.ends_with("_peers_blocked") {
                     let value = value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }

@@ -11,21 +11,6 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 use crate::{CONSENSUS_NODE_PREFIX, TestingNode};
 
-/// Returns the target epoch to wait for depending on `event_height`.
-///
-/// If `event_height` is less than a boundary height, then the next epoch is
-/// returned. Otherwise, the one *after* the next is returned.
-pub(crate) fn target_epoch(epoch_length: u64, event_height: u64) -> Epoch {
-    let strat = FixedEpocher::new(NZU64!(epoch_length));
-    let event_height = Height::new(event_height);
-    let info = strat.containing(event_height).unwrap();
-    if info.last() == event_height {
-        info.epoch().next().next()
-    } else {
-        info.epoch().next()
-    }
-}
-
 /// Reads the DKG outcome from a block, returns None if block doesn't exist or has no outcome.
 pub(crate) fn read_outcome_from_validator(
     validator: &TestingNode<Context>,
