@@ -29,6 +29,7 @@ contract TIP20Test is BaseTest {
     event Approval(address indexed owner, address indexed spender, uint256 amount);
     event Mint(address indexed to, uint256 amount);
     event Burn(address indexed from, uint256 amount);
+    event BurnAt(address indexed from, uint256 amount);
     event NextQuoteTokenSet(address indexed updater, TIP20 indexed nextQuoteToken);
     event QuoteTokenUpdate(address indexed updater, TIP20 indexed newQuoteToken);
     event RewardDistributed(address indexed funder, uint256 amount);
@@ -2710,6 +2711,154 @@ contract TIP20Test is BaseTest {
             )
         );
         assertEq(token.DOMAIN_SEPARATOR(), expected);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        SECTION: BURN AT TESTS (TIP-1006)
+    //////////////////////////////////////////////////////////////*/
+
+    function testBurnAt_Success() public {
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+
+        uint256 aliceBalanceBefore = token.balanceOf(alice);
+        uint256 totalSupplyBefore = token.totalSupply();
+        uint256 burnAmount = 100e18;
+
+        token.burnAt(alice, burnAmount);
+
+        assertEq(token.balanceOf(alice), aliceBalanceBefore - burnAmount);
+        assertEq(token.totalSupply(), totalSupplyBefore - burnAmount);
+        vm.stopPrank();
+    }
+
+    function testBurnAt_RevertsIf_Unauthorized() public {
+        vm.prank(alice);
+        try token.burnAt(bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+        }
+    }
+
+    function testBurnAt_RevertsIf_ProtectedAddress_FeeManager() public {
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+
+        try token.burnAt(0xfeEC000000000000000000000000000000000000, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.ProtectedAddress.selector));
+        }
+        vm.stopPrank();
+    }
+
+    function testBurnAt_RevertsIf_ProtectedAddress_StablecoinDEX() public {
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+
+        try token.burnAt(0xDEc0000000000000000000000000000000000000, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.ProtectedAddress.selector));
+        }
+        vm.stopPrank();
+    }
+
+    function testBurnAt_SucceedsFrom_PolicyBlockedAddress() public {
+        // Create a policy that blocks alice
+        address[] memory accounts = new address[](1);
+        accounts[0] = alice;
+        uint64 blockingPolicy = registry.createPolicyWithAccounts(
+            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
+        );
+
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+        token.changeTransferPolicyId(blockingPolicy);
+
+        uint256 aliceBalanceBefore = token.balanceOf(alice);
+        uint256 totalSupplyBefore = token.totalSupply();
+
+        // burnAt should succeed even from a blocked address (unlike burnBlocked which requires it)
+        token.burnAt(alice, 100e18);
+
+        assertEq(token.balanceOf(alice), aliceBalanceBefore - 100e18);
+        assertEq(token.totalSupply(), totalSupplyBefore - 100e18);
+        vm.stopPrank();
+    }
+
+    function testBurnAt_SucceedsFrom_PolicyAuthorizedAddress() public {
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+
+        uint256 aliceBalanceBefore = token.balanceOf(alice);
+        uint256 totalSupplyBefore = token.totalSupply();
+
+        // burnAt should succeed from an authorized address (unlike burnBlocked which reverts)
+        token.burnAt(alice, 100e18);
+
+        assertEq(token.balanceOf(alice), aliceBalanceBefore - 100e18);
+        assertEq(token.totalSupply(), totalSupplyBefore - 100e18);
+        vm.stopPrank();
+    }
+
+    function testBurnAt_RevertsIf_InsufficientBalance() public {
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+
+        uint256 aliceBalance = token.balanceOf(alice);
+
+        try token.burnAt(alice, aliceBalance + 1) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(
+                err,
+                abi.encodeWithSelector(
+                    ITIP20.InsufficientBalance.selector,
+                    aliceBalance,
+                    aliceBalance + 1,
+                    address(token)
+                )
+            );
+        }
+        vm.stopPrank();
+    }
+
+    function testBurnAt_EmitsCorrectEvents() public {
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+
+        uint256 burnAmount = 100e18;
+
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(alice, address(0), burnAmount);
+
+        vm.expectEmit(true, true, true, true);
+        emit BurnAt(alice, burnAmount);
+
+        token.burnAt(alice, burnAmount);
+        vm.stopPrank();
+    }
+
+    function testBurnAt_RewardAccountingUpdated() public {
+        // alice opts into rewards
+        vm.prank(alice);
+        token.setRewardRecipient(alice);
+
+        uint128 optedInSupplyBefore = token.optedInSupply();
+        uint256 aliceBalanceBefore = token.balanceOf(alice);
+
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_AT_ROLE(), admin);
+
+        uint256 burnAmount = 100e18;
+        token.burnAt(alice, burnAmount);
+
+        // optedInSupply should decrease since alice is opted in
+        assertEq(token.optedInSupply(), optedInSupplyBefore - uint128(burnAmount));
+        assertEq(token.balanceOf(alice), aliceBalanceBefore - burnAmount);
+        vm.stopPrank();
     }
 
 }

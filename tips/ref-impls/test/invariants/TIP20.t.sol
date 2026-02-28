@@ -914,6 +914,103 @@ contract TIP20InvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @notice Handler for burning tokens from any account via burnAt
+    /// @dev Tests TIP-1006 (burnAt functionality)
+    function burnAt(uint256 tokenSeed, uint256 targetSeed, uint256 amount) external {
+        TIP20 token = _selectBaseToken(tokenSeed);
+        address target = _selectActor(targetSeed);
+
+        uint256 targetBalance = token.balanceOf(target);
+        vm.assume(targetBalance > 0);
+
+        amount = bound(amount, 1, targetBalance);
+
+        uint128 optedInSupplyBefore = token.optedInSupply();
+        (address rewardRecipient,,) = token.userRewardInfo(target);
+        bool targetOptedIn = rewardRecipient != address(0);
+        uint256 totalSupplyBefore = token.totalSupply();
+
+        vm.startPrank(admin);
+        token.grantRole(_BURN_AT_ROLE, admin);
+        try token.burnAt(target, amount) {
+            vm.stopPrank();
+
+            _tokenBurnSum[address(token)] += amount;
+
+            // Balance should decrease
+            assertEq(
+                token.balanceOf(target),
+                targetBalance - amount,
+                "TIP-1006: Target balance not decreased"
+            );
+
+            // Total supply should decrease
+            assertEq(
+                token.totalSupply(),
+                totalSupplyBefore - amount,
+                "TIP-1006: Total supply not decreased"
+            );
+
+            // Opted-in supply should decrease by burned amount if target was opted in
+            uint128 optedInSupplyAfter = token.optedInSupply();
+            if (targetOptedIn) {
+                assertEq(
+                    optedInSupplyAfter,
+                    optedInSupplyBefore - uint128(amount),
+                    "TIP-1006: Opted-in supply not decreased after burnAt"
+                );
+            } else {
+                assertEq(
+                    optedInSupplyAfter,
+                    optedInSupplyBefore,
+                    "TIP-1006: Opted-in supply changed unexpectedly after burnAt"
+                );
+            }
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
+        }
+    }
+
+    /// @notice Handler for attempting burnAt on protected addresses
+    /// @dev Tests TIP-1006 (protected addresses cannot be burned from)
+    function burnAtProtectedAddress(uint256 tokenSeed, uint256 amount) external {
+        TIP20 token = _selectBaseToken(tokenSeed);
+
+        amount = bound(amount, 1, 1_000_000);
+
+        address feeManager = 0xfeEC000000000000000000000000000000000000;
+        address dex = 0xDEc0000000000000000000000000000000000000;
+
+        vm.startPrank(admin);
+        token.grantRole(_BURN_AT_ROLE, admin);
+
+        // Try to burn from FeeManager - should revert with ProtectedAddress
+        try token.burnAt(feeManager, amount) {
+            vm.stopPrank();
+            revert("TIP-1006: Should revert for FeeManager");
+        } catch (bytes memory reason) {
+            assertEq(
+                bytes4(reason),
+                ITIP20.ProtectedAddress.selector,
+                "TIP-1006: Should revert with ProtectedAddress for FeeManager"
+            );
+        }
+
+        // Try to burn from DEX - should revert with ProtectedAddress
+        try token.burnAt(dex, amount) {
+            vm.stopPrank();
+            revert("TIP-1006: Should revert for DEX");
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertEq(
+                bytes4(reason),
+                ITIP20.ProtectedAddress.selector,
+                "TIP-1006: Should revert with ProtectedAddress for DEX"
+            );
+        }
+    }
+
     /// @notice Handler for unauthorized mint attempts
     /// @dev Tests TEMPO-TIP26 (only ISSUER_ROLE can mint)
     function mintUnauthorized(uint256 actorSeed, uint256 tokenSeed, uint256 amount) external {
