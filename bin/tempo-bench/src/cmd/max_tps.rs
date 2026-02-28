@@ -168,6 +168,25 @@ pub struct MaxTpsArgs {
     #[arg(long)]
     faucet_url: Option<Url>,
 
+    /// Private key of a funded account to use for funding bench accounts.
+    ///
+    /// When set, transfers `--fund-token` from this account to each bench account instead
+    /// of using the faucet. Automatically enables `--existing-recipients` and skips DEX/ERC-20
+    /// setup, so bench accounts only send TIP-20 transfers between themselves.
+    ///
+    /// Intended for mainnet benchmarking where the faucet is not available.
+    #[arg(long, env = "TEMPO_BENCH_FUND_KEY")]
+    fund_key: Option<String>,
+
+    /// TIP-20 token to distribute when using `--fund-key`. Defaults to `--fee-token`.
+    #[arg(long)]
+    fund_token: Option<Address>,
+
+    /// Amount of tokens (in smallest unit, e.g. microdollars) to send to each bench account
+    /// when using `--fund-key`. Defaults to 1,000,000,000 (1000 tokens).
+    #[arg(long, default_value_t = 1_000_000_000)]
+    fund_amount: u64,
+
     /// Clear the transaction pool before running the benchmark.
     ///
     /// Calls admin_clearTxpool.
@@ -197,6 +216,11 @@ impl MaxTpsArgs {
 
     pub async fn run(self) -> eyre::Result<()> {
         RethTracer::new().init()?;
+
+        ensure!(
+            !(self.faucet && self.fund_key.is_some()),
+            "--faucet and --fund-key are mutually exclusive"
+        );
 
         let accounts = self.accounts.get();
 
@@ -300,8 +324,34 @@ impl MaxTpsArgs {
         // Grab first provider to call some RPC methods
         let provider = signer_providers[0].1.clone();
 
-        // Fund accounts from faucet if requested
-        if self.faucet {
+        let mainnet_mode = self.fund_key.is_some();
+        let account_addresses: Vec<Address> = signer_providers
+            .iter()
+            .map(|(signer, _)| signer.address())
+            .collect();
+
+        // Fund accounts
+        if let Some(ref fund_key) = self.fund_key {
+            let fund_token = self.fund_token.unwrap_or(self.fee_token);
+            info!(
+                %fund_token,
+                fund_amount = self.fund_amount,
+                accounts = account_addresses.len(),
+                "Funding accounts from private key (mainnet mode)"
+            );
+            let target_url = self.target_urls.first().unwrap().clone();
+            fund_accounts_from_key(
+                fund_key,
+                target_url,
+                fund_token,
+                self.fund_amount,
+                &account_addresses,
+                self.max_concurrent_requests,
+                self.max_concurrent_transactions,
+            )
+            .await
+            .context("Failed to fund accounts from private key")?;
+        } else if self.faucet {
             let faucet_provider: DynProvider<TempoNetwork> =
                 if let Some(ref faucet_url) = self.faucet_url {
                     info!(%faucet_url, "Using custom faucet URL");
@@ -313,10 +363,7 @@ impl MaxTpsArgs {
                 };
             fund_accounts(
                 &faucet_provider,
-                &signer_providers
-                    .iter()
-                    .map(|(signer, _)| signer.address())
-                    .collect::<Vec<_>>(),
+                &account_addresses,
                 self.max_concurrent_requests,
                 self.max_concurrent_transactions,
             )
@@ -341,48 +388,61 @@ impl MaxTpsArgs {
         .await
         .context("Failed to set default fee token")?;
 
-        // Setup DEX
-        let user_tokens = 2;
-        info!(user_tokens, "Setting up DEX");
-        let (quote_token, user_tokens) = dex::setup(
-            signer_providers,
-            user_tokens,
-            self.max_concurrent_requests,
-            self.max_concurrent_transactions,
-        )
-        .await?;
-
-        let erc20_tokens = if self.erc20_weight > 0.0 {
-            let num_erc20_tokens = 1;
-            info!(num_erc20_tokens, "Setting up ERC-20 tokens");
-            erc20::setup(
+        // In mainnet mode, skip DEX/ERC-20 setup and use the fund token directly.
+        let (quote_token, user_tokens, erc20_tokens) = if mainnet_mode {
+            let fund_token = self.fund_token.unwrap_or(self.fee_token);
+            info!(%fund_token, "Mainnet mode: skipping DEX/ERC-20 setup, using fund token for transfers");
+            (fund_token, vec![fund_token], Vec::new())
+        } else {
+            // Setup DEX
+            let user_tokens_count = 2;
+            info!(user_tokens_count, "Setting up DEX");
+            let (quote_token, user_tokens) = dex::setup(
                 signer_providers,
-                num_erc20_tokens,
+                user_tokens_count,
                 self.max_concurrent_requests,
                 self.max_concurrent_transactions,
             )
-            .await?
-        } else {
-            Vec::new()
+            .await?;
+
+            let erc20_tokens = if self.erc20_weight > 0.0 {
+                let num_erc20_tokens = 1;
+                info!(num_erc20_tokens, "Setting up ERC-20 tokens");
+                erc20::setup(
+                    signer_providers,
+                    num_erc20_tokens,
+                    self.max_concurrent_requests,
+                    self.max_concurrent_transactions,
+                )
+                .await?
+            } else {
+                Vec::new()
+            };
+
+            (quote_token, user_tokens, erc20_tokens)
         };
 
         // Generate and send transactions
         let total_txs = self.tps * self.duration;
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
-        let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
-        let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let erc20_weight = (self.erc20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
 
-        let recipients = if self.existing_recipients {
-            let addrs: Vec<Address> = signer_providers
-                .iter()
-                .map(|(signer, _)| signer.address())
-                .collect();
+        // In mainnet mode, force TIP-20 only and existing recipients
+        let (tip20_weight, place_order_weight, swap_weight, erc20_weight) = if mainnet_mode {
+            (Self::WEIGHT_PRECISION as u64, 0, 0, 0)
+        } else {
+            let place_order_weight =
+                (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
+            let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
+            (tip20_weight, place_order_weight, swap_weight, erc20_weight)
+        };
+
+        let recipients = if self.existing_recipients || mainnet_mode {
             info!(
-                recipients = addrs.len(),
+                recipients = account_addresses.len(),
                 "Using existing signer addresses as recipients"
             );
-            Some(addrs)
+            Some(account_addresses)
         } else {
             None
         };
@@ -823,6 +883,71 @@ async fn fund_accounts(
             .await
             .expect("Failed to fund accounts");
     }
+    Ok(())
+}
+
+/// Funds accounts by sending TIP-20 transfers from a funded private key.
+///
+/// Used for mainnet benchmarking where the faucet is not available.
+#[allow(clippy::too_many_arguments)]
+async fn fund_accounts_from_key(
+    fund_key: &str,
+    target_url: Url,
+    token: Address,
+    amount_per_account: u64,
+    addresses: &[Address],
+    max_concurrent_requests: usize,
+    max_concurrent_transactions: usize,
+) -> eyre::Result<()> {
+    use alloy::signers::local::PrivateKeySigner;
+
+    let signer: PrivateKeySigner = fund_key.parse().context("Invalid --fund-key")?;
+    let funder = signer.address();
+    info!(%funder, accounts = addresses.len(), %token, amount_per_account, "Funding accounts from key");
+
+    let provider: DynProvider<TempoNetwork> = ProviderBuilder::default()
+        .fetch_chain_id()
+        .with_gas_estimation()
+        .with_nonce_management(alloy::providers::fillers::CachedNonceManager::default())
+        .wallet(EthereumWallet::from(signer))
+        .connect_http(target_url)
+        .erased();
+
+    let tip20 = ITIP20Instance::new(token, provider.clone());
+    let progress = ProgressBar::new(addresses.len() as u64);
+
+    let chunks = addresses
+        .iter()
+        .map(|addr| {
+            let tip20 = tip20.clone();
+            let addr = *addr;
+            async move {
+                tip20
+                    .transfer(addr, U256::from(amount_per_account))
+                    .send()
+                    .await
+            }
+        })
+        .chunks(max_concurrent_transactions);
+
+    for chunk in chunks.into_iter() {
+        let pending_txs: Vec<_> = stream::iter(chunk)
+            .buffer_unordered(max_concurrent_requests)
+            .try_collect()
+            .await?;
+        assert_receipts(
+            pending_txs.into_iter().inspect(|_| progress.inc(1)).map(
+                |pending: PendingTransactionBuilder<TempoNetwork>| async move {
+                    Ok(pending.get_receipt().await?)
+                },
+            ),
+            max_concurrent_requests,
+        )
+        .await
+        .context("Failed to fund account from key")?;
+    }
+
+    info!(%funder, "All accounts funded");
     Ok(())
 }
 
