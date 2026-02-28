@@ -12087,6 +12087,7 @@ dependencies = [
  "alloy-evm",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-sol-types",
  "commonware-codec",
  "commonware-cryptography",
  "derive_more",

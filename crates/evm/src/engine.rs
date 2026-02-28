@@ -1,6 +1,7 @@
 use crate::TempoEvmConfig;
 use alloy_consensus::crypto::RecoveryError;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, TxKind, U256, keccak256};
+use alloy_sol_types::SolCall;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
@@ -8,9 +9,70 @@ use reth_evm::{
 };
 use reth_primitives_traits::{SealedBlock, SignedTransaction};
 use std::sync::Arc;
+use tempo_contracts::precompiles::ITIP20;
 use tempo_payload_types::TempoExecutionData;
-use tempo_primitives::{Block, TempoTxEnvelope};
+use tempo_primitives::{Block, TempoTxEnvelope, transaction::envelope::TIP20_PAYMENT_PREFIX};
 use tempo_revm::TempoTxEnv;
+
+/// TIP-20 `balances` mapping slot index in the contract storage layout.
+const TIP20_BALANCES_SLOT: U256 = U256::from_limbs([9, 0, 0, 0]);
+
+/// Computes the storage slot for `TIP20Token.balances[account]`.
+///
+/// Equivalent to `TIP20Token::from_address(token).balances[account].slot()` from
+/// `tempo-precompiles`, inlined here to avoid pulling in that dependency.
+/// Uses the same `keccak256(left_pad(key, 32) || slot)` layout as
+/// [`StorageKey::mapping_slot`](tempo_precompiles::storage::StorageKey::mapping_slot).
+#[inline]
+fn tip20_balance_slot(account: Address) -> U256 {
+    let mut buf = [0u8; 64];
+    buf[12..32].copy_from_slice(account.as_slice());
+    buf[32..].copy_from_slice(&TIP20_BALANCES_SLOT.to_be_bytes::<32>());
+    U256::from_be_bytes(keccak256(buf).0)
+}
+
+/// Warms the global `keccak256` cache with TIP-20 balance storage slots
+/// for sender and recipient by decoding transfer-like calldata.
+///
+/// Called during parallel tx recovery so that subsequent `keccak256` calls
+/// at execution time hit the cache instead of rehashing.
+fn warm_tip20_balance_slot_keccaks(tx: &TempoTxEnvelope, sender: Address) {
+    for (kind, input) in tx.calls() {
+        let TxKind::Call(token) = kind else { continue };
+
+        // Only process TIP-20 contracts
+        if !token.as_slice().starts_with(&TIP20_PAYMENT_PREFIX) {
+            continue;
+        }
+
+        let Some(&selector) = input.first_chunk::<4>() else {
+            continue;
+        };
+
+        match selector {
+            // transfer(address to, uint256 amount)
+            // transferWithMemo(address to, uint256 amount, bytes32 memo)
+            ITIP20::transferCall::SELECTOR | ITIP20::transferWithMemoCall::SELECTOR => {
+                if input.len() >= 36 {
+                    let recipient = Address::from_slice(&input[16..36]);
+                    tip20_balance_slot(sender);
+                    tip20_balance_slot(recipient);
+                }
+            }
+            // transferFrom(address from, address to, uint256 amount)
+            // transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo)
+            ITIP20::transferFromCall::SELECTOR | ITIP20::transferFromWithMemoCall::SELECTOR => {
+                if input.len() >= 68 {
+                    let from = Address::from_slice(&input[16..36]);
+                    let to = Address::from_slice(&input[48..68]);
+                    tip20_balance_slot(from);
+                    tip20_balance_slot(to);
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     fn evm_env_for_payload(
@@ -61,6 +123,12 @@ struct RecoveredInBlock {
 impl RecoveredInBlock {
     fn new((block, index): (Arc<SealedBlock<Block>>, usize)) -> Result<Self, RecoveryError> {
         let sender = block.body().transactions[index].try_recover()?;
+
+        // Warm the global keccak256 cache with TIP-20 balance storage slots
+        // while we're already running in parallel during tx recovery.
+        let tx = &block.body().transactions[index];
+        warm_tip20_balance_slot_keccaks(tx, sender);
+
         Ok(Self {
             block,
             index,
@@ -252,5 +320,96 @@ mod tests {
             block.header().gas_limit()
         );
         assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
+    }
+
+    #[test]
+    fn test_tip20_balance_slot_matches_mapping_layout() {
+        // The balance slot for an account should be keccak256(left_pad(account, 32) || U256(9))
+        let account = Address::repeat_byte(0xAB);
+        let slot = tip20_balance_slot(account);
+
+        // Manually compute expected value
+        let mut buf = [0u8; 64];
+        buf[12..32].copy_from_slice(account.as_slice());
+        buf[32..].copy_from_slice(&U256::from(9).to_be_bytes::<32>());
+        let expected = U256::from_be_bytes(keccak256(buf).0);
+
+        assert_eq!(slot, expected);
+    }
+
+    #[test]
+    fn test_warm_tip20_balance_slot_keccaks_does_not_panic() {
+        use alloy_sol_types::SolCall as _;
+        use tempo_contracts::precompiles::ITIP20;
+
+        let sender = Address::repeat_byte(0x01);
+        let recipient = Address::repeat_byte(0x02);
+        // TIP-20 token address with the 0x20C0 prefix
+        let token = Address::new([
+            0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        ]);
+
+        // transfer to TIP-20 contract
+        let calldata = ITIP20::transferCall {
+            to: recipient,
+            amount: U256::from(1000),
+        }
+        .abi_encode();
+
+        let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(1),
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 100_000,
+                to: TxKind::Call(token),
+                value: U256::ZERO,
+                input: calldata.into(),
+            },
+            Signature::test_signature(),
+        ));
+
+        // Should not panic — just warms the keccak cache
+        warm_tip20_balance_slot_keccaks(&tx, sender);
+
+        // Non-TIP20 target — should be a no-op
+        let contract = Address::repeat_byte(0xFF);
+        let calldata2 = ITIP20::transferCall {
+            to: recipient,
+            amount: U256::from(1000),
+        }
+        .abi_encode();
+
+        let tx2 = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(1),
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 100_000,
+                to: TxKind::Call(contract),
+                value: U256::ZERO,
+                input: calldata2.into(),
+            },
+            Signature::test_signature(),
+        ));
+
+        warm_tip20_balance_slot_keccaks(&tx2, sender);
+
+        // Empty calldata — should be a no-op
+        let tx3 = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(1),
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(token),
+                value: U256::from(1),
+                input: Bytes::new(),
+            },
+            Signature::test_signature(),
+        ));
+
+        warm_tip20_balance_slot_keccaks(&tx3, sender);
     }
 }
