@@ -252,7 +252,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn checkpoint_revert(&mut self, checkpoint: revm::context::journaled_state::JournalCheckpoint) {
+    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
         self.internals.checkpoint_revert(checkpoint)
     }
 }
