@@ -381,6 +381,10 @@ where
         unreachable!("'chain_id' not implemented in read-only context yet")
     }
 
+    fn block_number(&self) -> u64 {
+        unreachable!("'block_number' not implemented in read-only context yet")
+    }
+
     fn timestamp(&self) -> U256 {
         unreachable!("'timestamp' not implemented in read-only context yet")
     }
