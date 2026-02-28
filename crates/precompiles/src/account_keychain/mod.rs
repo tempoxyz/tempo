@@ -454,7 +454,23 @@ impl AccountKeychain {
         }
 
         // Update remaining limit
-        self.spending_limits[limit_key][token].write(remaining - amount)
+        let new_remaining = remaining - amount;
+        self.spending_limits[limit_key][token].write(new_remaining)?;
+
+        // T2+: Emit AccessKeySpend event
+        if self.storage.spec().is_t2() {
+            self.emit_event(AccountKeychainEvent::AccessKeySpend(
+                IAccountKeychain::AccessKeySpend {
+                    account,
+                    publicKey: key_id,
+                    token,
+                    amount,
+                    remainingLimit: new_remaining,
+                },
+            ))?;
+        }
+
+        Ok(())
     }
 
     /// Refund spending limit after a fee refund.

@@ -63,6 +63,11 @@ interface IAccountKeychain {
         address indexed account, address indexed publicKey, address indexed token, uint256 newLimit
     );
 
+    /// @notice Emitted when an access key spends tokens (T2+)
+    event AccessKeySpend(
+        address indexed account, address indexed publicKey, address indexed token, uint256 amount, uint256 remainingLimit
+    );
+
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
     //////////////////////////////////////////////////////////////*/
