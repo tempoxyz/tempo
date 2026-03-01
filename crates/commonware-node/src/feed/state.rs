@@ -130,49 +130,156 @@ impl FeedStateHandle {
         }
     }
 
-    /// Serve identity transition proof from cache, returning a subsection if needed.
-    fn serve_from_cache(
+    /// Ensure the identity cache covers `start_epoch` by walking backwards
+    /// if needed. After this returns, the cache is guaranteed to contain
+    /// transition data covering `start_epoch` (as far back as available data allows).
+    async fn try_fill_transitions(
         &self,
-        cache: &IdentityTransitionCache,
+        marshal: &mut marshal::Mailbox,
+        epocher: &FixedEpocher,
         start_epoch: u64,
-        full: bool,
-    ) -> IdentityTransitionResponse {
-        // Filter transitions to only include those at or before start_epoch
-        let transitions: Vec<_> = cache
-            .transitions
-            .iter()
-            .filter(|t| t.transition_epoch <= start_epoch)
-            .cloned()
-            .collect();
-
-        // Determine identity at start_epoch:
-        // - If start_epoch == from_epoch, use cached identity
-        // - Otherwise, find the first transition AFTER start_epoch and use its old_identity
-        //   (that was the identity at start_epoch before that transition happened)
-        // - If no transition after start_epoch, identity hasn't changed since from_epoch
-        let identity = if start_epoch == cache.from_epoch {
-            cache.identity.clone()
-        } else {
-            // Find first transition that happened AFTER start_epoch
-            cache
-                .transitions
-                .iter()
-                .find(|t| t.transition_epoch > start_epoch)
-                .map(|t| t.old_identity.clone())
-                .unwrap_or_else(|| cache.identity.clone())
-        };
-
-        // If not full, only return the most recent transition
-        let transitions = if full {
-            transitions
-        } else {
-            transitions.into_iter().take(1).collect()
-        };
-
-        IdentityTransitionResponse {
-            identity,
-            transitions,
+    ) -> Result<(), IdentityProofError> {
+        // Check if cache already covers this epoch
+        let cached = self.identity_cache.read().clone();
+        if let Some(ref cache) = cached
+            && start_epoch <= cache.from_epoch
+            && start_epoch >= cache.to_epoch
+        {
+            return Ok(());
         }
+
+        // Identity active at epoch N is set by the last block of epoch N-1
+        // (epoch 0 uses its own last block - genesis identity)
+        let epoch_outcome = get_outcome(marshal, epocher, start_epoch.saturating_sub(1)).await?;
+        let epoch_pubkey = *epoch_outcome.sharing().public();
+        let epoch_identity = hex::encode(epoch_pubkey.encode());
+
+        // Fast path: if the identity matches the cached one, no new transitions
+        // occurred — just extend the cache's from_epoch forward.
+        if let Some(ref cache) = cached
+            && start_epoch > cache.from_epoch
+            && epoch_identity == cache.identity
+        {
+            let mut updated = cache.clone();
+            updated.from_epoch = start_epoch;
+
+            *self.identity_cache.write() = Some(updated);
+            return Ok(());
+        }
+
+        // Walk backwards to find all identity transitions
+        let mut transitions = Vec::new();
+        let mut pubkey = epoch_pubkey;
+        let mut search_epoch = start_epoch.saturating_sub(1);
+        while search_epoch > 0 {
+            // Absorb cached transitions and stop.
+            if let Some(ref cache) = cached
+                && search_epoch <= cache.from_epoch
+            {
+                transitions.extend(cache.transitions.iter().cloned());
+                search_epoch = cache.to_epoch;
+                // We dont continue downwards past to_epoch since the walk only stops if
+                // DKG parsing fails (Internal Error state) or data is unavailable (Pruned).
+                // Both which are not recoverable in the current runtime.
+                break;
+            }
+
+            let prev_outcome = get_outcome(marshal, epocher, search_epoch - 1).await?;
+            let prev_pubkey = *prev_outcome.sharing().public();
+
+            // If keys differ, there was a full DKG at search_epoch
+            if pubkey != prev_pubkey {
+                let proof_height = epocher
+                    .last(Epoch::new(search_epoch))
+                    .expect("fixed epocher is valid for all epochs");
+
+                let Some(proof_block) = marshal.get_block(proof_height).await else {
+                    tracing::info!(
+                        height = proof_height.get(),
+                        search_epoch,
+                        "stopping identity transition walk early (proof block pruned)"
+                    );
+                    break;
+                };
+
+                let Some(finalization) = marshal.get_finalization(proof_height).await else {
+                    tracing::info!(
+                        height = proof_height.get(),
+                        search_epoch,
+                        "stopping identity transition walk early (finalization pruned)"
+                    );
+                    break;
+                };
+
+                transitions.push(IdentityTransition {
+                    transition_epoch: search_epoch,
+                    old_identity: hex::encode(prev_pubkey.encode()),
+                    new_identity: hex::encode(pubkey.encode()),
+                    proof: Some(TransitionProofData {
+                        header: TempoHeaderResponse::from_consensus_header(
+                            proof_block.clone_sealed_header(),
+                            0,
+                        ),
+                        finalization_certificate: hex::encode(finalization.encode()),
+                    }),
+                });
+            }
+
+            pubkey = prev_pubkey;
+            search_epoch -= 1;
+        }
+
+        // Append genesis identity as terminal marker when we reached it.
+        if search_epoch == 0 {
+            let has_genesis = transitions
+                .last()
+                .is_some_and(|t| t.transition_epoch == 0 && t.proof.is_none());
+
+            if !has_genesis {
+                match get_outcome(marshal, epocher, 0).await {
+                    Ok(genesis_outcome) => {
+                        let genesis_pubkey = *genesis_outcome.sharing().public();
+                        let genesis_identity = hex::encode(genesis_pubkey.encode());
+                        transitions.push(IdentityTransition {
+                            transition_epoch: 0,
+                            old_identity: genesis_identity.clone(),
+                            new_identity: genesis_identity,
+                            proof: None,
+                        });
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            ?err,
+                            "failed to fetch genesis outcome; omitting genesis marker"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Build updated cache. The walk absorbs cached transitions in the correct order
+        let new_cache = if let Some(ref c) = cached {
+            IdentityTransitionCache {
+                from_epoch: start_epoch.max(c.from_epoch),
+                to_epoch: search_epoch.min(c.to_epoch),
+                transitions: Arc::new(transitions),
+                identity: if start_epoch >= c.from_epoch {
+                    epoch_identity
+                } else {
+                    c.identity.clone()
+                },
+            }
+        } else {
+            IdentityTransitionCache {
+                from_epoch: start_epoch,
+                to_epoch: search_epoch,
+                identity: epoch_identity,
+                transitions: Arc::new(transitions),
+            }
+        };
+
+        *self.identity_cache.write() = Some(new_cache);
+        Ok(())
     }
 }
 
@@ -262,189 +369,45 @@ impl ConsensusFeed for FeedStateHandle {
                 .get()
         };
 
-        // Check if we can serve from cache
-        let cached = self.identity_cache.read().clone();
-        if let Some(ref cache) = cached {
-            // Requested epoch is within cached range - return subsection
-            if start_epoch <= cache.from_epoch && start_epoch >= cache.to_epoch {
-                return Ok(self.serve_from_cache(cache, start_epoch, full));
-            }
-        }
+        // Ensure cached transitions are up to date
+        self.try_fill_transitions(&mut marshal, &epocher, start_epoch)
+            .await?;
 
-        // Identity active at epoch N is set by the last block of epoch N-1
-        // (epoch 0 uses its own last block - genesis identity)
-        let identity_outcome =
-            get_outcome(&mut marshal, &epocher, start_epoch.saturating_sub(1)).await?;
-        let mut curr_pubkey = *identity_outcome.sharing().public();
-        let identity = hex::encode(curr_pubkey.encode());
+        let cache = self
+            .identity_cache
+            .read()
+            .clone()
+            .ok_or(IdentityProofError::NotReady)?;
 
-        let mut transitions = Vec::new();
+        // Filter transitions to only include those at or before start_epoch
+        let transitions: Vec<_> = cache
+            .transitions
+            .iter()
+            .filter(|t| t.transition_epoch <= start_epoch)
+            .cloned()
+            .collect();
 
-        // Walk backwards comparing public keys to detect full DKG transitions.
-        // On errors, we return what we've collected so far rather than failing entirely.
-        let mut search_epoch = start_epoch.saturating_sub(1);
-        let mut reached_genesis = start_epoch == 0;
+        // Determine identity at start_epoch by finding the closest transition
+        // AFTER start_epoch and using its old_identity (the key before that change).
+        // Transitions are newest-to-oldest, so the last match is the closest.
+        let identity = cache
+            .transitions
+            .iter()
+            .filter(|t| t.transition_epoch > start_epoch)
+            .last()
+            .map(|t| t.old_identity.clone())
+            .unwrap_or_else(|| cache.identity.clone());
 
-        // If we have a cache, try to connect to it instead of walking all the way
-        let cache_connect_epoch = cached.as_ref().map(|c| c.from_epoch);
-
-        while search_epoch > 0 {
-            // Check if we can connect to cached data
-            if let Some(connect_epoch) = cache_connect_epoch
-                && search_epoch <= connect_epoch
-                && let Some(ref cache) = cached
-            {
-                // Append cached transitions and stop walking
-                transitions.extend(cache.transitions.iter().cloned());
-                search_epoch = cache.to_epoch;
-                reached_genesis = cache.to_epoch == 0;
-                break;
-            }
-
-            let prev_outcome = match get_outcome(&mut marshal, &epocher, search_epoch - 1).await {
-                Ok(o) => o,
-                Err(err) => {
-                    tracing::info!(
-                        ?err,
-                        start_epoch,
-                        search_epoch,
-                        "stopping identity transition walk early (failed to fetch previous outcome)"
-                    );
-                    break;
-                }
-            };
-            let prev_pubkey = *prev_outcome.sharing().public();
-
-            // If keys differ, there was a full DKG at search_epoch
-            if curr_pubkey != prev_pubkey {
-                // Fetch the block and certificate that committed the new identity
-                let proof_height = epocher
-                    .last(Epoch::new(search_epoch))
-                    .expect("fixed epocher is valid for all epochs");
-
-                let Some(proof_block) = marshal.get_block(proof_height).await else {
-                    tracing::info!(
-                        height = proof_height.get(),
-                        start_epoch,
-                        search_epoch,
-                        "stopping identity transition walk early (proof block pruned)"
-                    );
-                    break;
-                };
-
-                let Some(finalization) = marshal.get_finalization(proof_height).await else {
-                    tracing::info!(
-                        height = proof_height.get(),
-                        start_epoch,
-                        search_epoch,
-                        "stopping identity transition walk early (finalization pruned)"
-                    );
-                    break;
-                };
-
-                transitions.push(IdentityTransition {
-                    transition_epoch: search_epoch,
-                    old_identity: hex::encode(prev_pubkey.encode()),
-                    new_identity: hex::encode(curr_pubkey.encode()),
-                    proof: Some(TransitionProofData {
-                        header: TempoHeaderResponse::from_consensus_header(
-                            proof_block.clone_sealed_header(),
-                            0,
-                        ),
-                        finalization_certificate: hex::encode(finalization.encode()),
-                    }),
-                });
-
-                if !full {
-                    break;
-                }
-            }
-
-            curr_pubkey = prev_pubkey;
-            search_epoch -= 1;
-        }
-
-        // If we walked all the way to epoch 0, we reached genesis
-        if full && search_epoch == 0 {
-            reached_genesis = true;
-        }
-
-        // Include genesis identity as explicit terminal marker when we reached it.
-        // There is never a finalization certificate for genesis, so proof is None.
-        if full && reached_genesis {
-            // Only add genesis marker if not already present from cache
-            let has_genesis = transitions
-                .last()
-                .is_some_and(|t| t.transition_epoch == 0 && t.proof.is_none());
-            if !has_genesis {
-                match get_outcome(&mut marshal, &epocher, 0).await {
-                    Ok(genesis_outcome) => {
-                        let genesis_pubkey = *genesis_outcome.sharing().public();
-                        let genesis_identity = hex::encode(genesis_pubkey.encode());
-                        transitions.push(IdentityTransition {
-                            transition_epoch: 0,
-                            old_identity: genesis_identity.clone(),
-                            new_identity: genesis_identity,
-                            proof: None,
-                        });
-                    }
-                    Err(err) => {
-                        tracing::debug!(
-                            ?err,
-                            "failed to fetch genesis outcome; omitting genesis marker"
-                        );
-                    }
-                }
-            }
-        }
-
-        // Update cache if this is a full query and we made progress
-        if full {
-            let new_cache = IdentityTransitionCache {
-                from_epoch: start_epoch,
-                to_epoch: search_epoch,
-                identity: identity.clone(),
-                transitions: Arc::new(transitions.clone()),
-            };
-            // Only update if this extends the cache (newer start OR older end)
-            let should_update = cached
-                .as_ref()
-                .map(|c| start_epoch > c.from_epoch || search_epoch < c.to_epoch)
-                .unwrap_or(true);
-            // Merge with existing cache if we're extending
-            let new_cache = if let Some(ref c) = cached {
-                IdentityTransitionCache {
-                    from_epoch: start_epoch.max(c.from_epoch),
-                    to_epoch: search_epoch.min(c.to_epoch),
-                    identity: if start_epoch >= c.from_epoch {
-                        identity.clone()
-                    } else {
-                        c.identity.clone()
-                    },
-                    transitions: if start_epoch > c.from_epoch {
-                        // Merge: new transitions + cached (deduplicated)
-                        let mut merged = transitions.clone();
-                        for t in c.transitions.iter() {
-                            if !merged
-                                .iter()
-                                .any(|m| m.transition_epoch == t.transition_epoch)
-                            {
-                                merged.push(t.clone());
-                            }
-                        }
-                        merged.sort_by_key(|t| std::cmp::Reverse(t.transition_epoch));
-                        Arc::new(merged)
-                    } else {
-                        Arc::new(transitions.clone())
-                    },
-                }
-            } else {
-                new_cache
-            };
-            if should_update {
-                *self.identity_cache.write() = Some(new_cache);
-            }
-        }
+        // If not full, only return the most recent real transition (exclude genesis marker)
+        let transitions = if full {
+            transitions
+        } else {
+            transitions
+                .into_iter()
+                .filter(|t| t.transition_epoch > 0)
+                .take(1)
+                .collect()
+        };
 
         Ok(IdentityTransitionResponse {
             identity,
