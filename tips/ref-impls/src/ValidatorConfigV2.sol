@@ -122,9 +122,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         uint256 lastPos = activeIndices.length - 1;
 
         if (toDeactivateIndex != lastPos) {
-            (activeIndices[lastPos], activeIndices[toDeactivateIndex]) =
-            (activeIndices[toDeactivateIndex], activeIndices[lastPos]);
-            validatorsArray[lastPos].activeIdx = toDeactivateIndex + 1;
+            uint64 movedVal = activeIndices[lastPos];
+            activeIndices[toDeactivateIndex] = movedVal;
+            validatorsArray[movedVal - 1].activeIdx = toDeactivateIndex + 1;
         }
         activeIndices.pop();
         v.activeIdx = 0;
@@ -273,16 +273,12 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     /// @inheritdoc IValidatorConfigV2
     function getValidators(uint64 startIndex) external view returns (Validator[] memory result) {
         uint256 len = validatorsArray.length;
-        if (startIndex >= len) {
-            return result;
-        }
 
-        result = new Validator[](len - startIndex);
-        uint256 gasPerIteration = _GAS_PER_VALIDATOR;
+        result = new Validator[](len > startIndex ? len - startIndex : 0);
 
         uint256 count;
         for (uint256 i = startIndex; i < len; i++) {
-            if (gasleft() < gasPerIteration) {
+            if (gasleft() < _GAS_PER_VALIDATOR) {
                 assembly {
                     mstore(result, count)
                 }
