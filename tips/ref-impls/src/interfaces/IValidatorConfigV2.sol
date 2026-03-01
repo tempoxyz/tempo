@@ -30,7 +30,7 @@ interface IValidatorConfigV2 {
     /// @notice Thrown when validator is not found
     error ValidatorNotFound();
 
-    /// @notice Thrown when trying to delete a validator that is already deleted
+    /// @notice Thrown when trying to deactivate an already-deactivated validator
     error ValidatorAlreadyDeleted();
 
     /// @notice Thrown when public key is invalid (zero)
@@ -74,12 +74,24 @@ interface IValidatorConfigV2 {
     // Structs
     // =========================================================================
 
-    /// @notice Validator information (V2 - append-only, delete-once)
+    /// @dev Internal storage struct with bookkeeping fields not exposed in the public Validator struct.
+    struct ValidatorStorage {
+        bytes32 publicKey;
+        address validatorAddress;
+        string ingress;
+        string egress;
+        uint64 index;
+        uint64 activeIdx;
+        uint64 addedAtHeight;
+        uint64 deactivatedAtHeight;
+    }
+
+    /// @notice Validator information returned by view functions
     /// @param publicKey Ed25519 communication public key (non-zero, unique across all validators)
-    /// @param validatorAddress Ethereum-style address of the validator (unique across all validators)
+    /// @param validatorAddress Ethereum-style address of the validator (unique across active validators)
     /// @param ingress Address where other validators can connect (format: `<ip>:<port>`)
     /// @param egress IP address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>`)
-    /// @param index Position in validators array (assigned at creation, immutable)
+    /// @param index Position in validators array (stable across rotations for the same slot)
     /// @param addedAtHeight Block height when validator was added
     /// @param deactivatedAtHeight Block height when validator was deleted (0 = active)
     struct Validator {
@@ -113,20 +125,20 @@ interface IValidatorConfigV2 {
         string calldata egress,
         bytes calldata signature
     )
-        external;
+        external
+        returns (uint64 index);
 
     /// @notice Deactivates a validator (owner or validator only)
     /// @dev Marks the validator as deactivated by setting deactivatedAtHeight to the current block height.
     ///      The validator's entry remains in storage for historical queries.
-    ///      The public key remains reserved and cannot be reused. The address remains
-    ///      reserved unless reassigned via transferValidatorOwnership.
-    /// @param validatorAddress The validator address to deactivate
-    function deactivateValidator(address validatorAddress) external;
+    ///      The public key remains reserved and cannot be reused.
+    /// @param idx The global index into the validators array
+    function deactivateValidator(uint64 idx) external;
 
     /// @notice Rotate a validator to a new identity (owner or validator only)
-    /// @dev Atomically deletes the specified validator entry and adds a new one. This is equivalent
-    ///      to calling deactivateValidator followed by addValidator, but executed atomically.
-    ///      Can be called by the contract owner or by the validator's own address.
+    /// @dev Copies the current validator's data to the end of the array as a deactivated snapshot,
+    ///      then overwrites the original slot with the new identity. The validator's global index
+    ///      is preserved across rotations.
     ///      The same validation rules as addValidator apply:
     ///      - The new public key must not already exist
     ///      - Ingress parseable as <ip>:<port>
@@ -134,13 +146,13 @@ interface IValidatorConfigV2 {
     ///      - The signature must prove ownership of the new public key
     ///      The signature must be an Ed25519 signature over:
     ///      keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR", chainId, contractAddress, validatorAddress, ingress, egress))
-    /// @param validatorAddress The address of the validator to rotate
+    /// @param idx The global index of the validator to rotate
     /// @param publicKey The new validator's Ed25519 communication public key
     /// @param ingress The new validator's inbound address `<ip>:<port>` for incoming connections
     /// @param egress The new validator's outbound IP address `<ip>` for firewall whitelisting
     /// @param signature Ed25519 signature (64 bytes) proving ownership of the new public key
     function rotateValidator(
-        address validatorAddress,
+        uint64 idx,
         bytes32 publicKey,
         string calldata ingress,
         string calldata egress,
@@ -152,23 +164,18 @@ interface IValidatorConfigV2 {
     /// @dev Can be called by the contract owner or by the validator's own address.
     ///      This allows validators to update their network addresses without requiring
     ///      a full rotation.
-    /// @param validatorAddress The address of the validator to update
+    /// @param idx The global index of the validator to update
     /// @param ingress The new inbound address `<ip>:<port>` for incoming connections
     /// @param egress The new outbound IP address `<ip>` for firewall whitelisting
-    function setIpAddresses(
-        address validatorAddress,
-        string calldata ingress,
-        string calldata egress
-    )
-        external;
+    function setIpAddresses(uint64 idx, string calldata ingress, string calldata egress) external;
 
     /// @notice Transfer a validator entry to a new address (owner or validator only)
     /// @dev Can be called by the contract owner or by the validator's own address.
     ///      Updates the validator's address in the lookup maps.
     ///      Reverts if the new address already exists in the validator set.
-    /// @param currentAddress The current address of the validator to transfer
+    /// @param idx The global index of the validator to transfer
     /// @param newAddress The new address to assign to the validator
-    function transferValidatorOwnership(address currentAddress, address newAddress) external;
+    function transferValidatorOwnership(uint64 idx, address newAddress) external;
 
     /// @notice Transfer owner of the contract (owner only)
     /// @param newOwner The new owner address
@@ -188,6 +195,13 @@ interface IValidatorConfigV2 {
     /// @return validators Array of active validators
     function getActiveValidators() external view returns (Validator[] memory validators);
 
+    /// @notice Get validators with gas-bounded pagination over the entire array
+    /// @dev Iterates from startIndex through the validators array. May return fewer
+    ///      entries than remaining if gas is insufficient. Use validatorCount() to
+    ///      detect truncation and paginate with startIndex.
+    /// @param startIndex The index into the validators array to begin from
+    /// @return validators Array of validators starting from startIndex (may be truncated)
+    function getValidators(uint64 startIndex) external view returns (Validator[] memory validators);
     /// @notice Get the owner of the precompile
     /// @return The owner address
     function owner() external view returns (address);

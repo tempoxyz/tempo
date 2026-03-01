@@ -227,6 +227,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn gas_remaining(&self) -> u64 {
+        self.gas_remaining
+    }
+
+    #[inline]
     fn gas_refunded(&self) -> i64 {
         self.gas_refunded
     }
