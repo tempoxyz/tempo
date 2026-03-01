@@ -4,6 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod bootnodes;
+pub mod features;
 pub mod hardfork;
 pub mod spec;
 pub use spec::TempoChainSpec;
