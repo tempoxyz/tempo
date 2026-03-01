@@ -123,6 +123,7 @@ crate::sol! {
         error InvalidSignature();
         error InvalidSignatureFormat();
         error InvalidValidatorAddress();
+        error MigrationStateMismatch(uint64 idx);
         error MigrationNotComplete();
         error NotInitialized();
         error NotIp(string input, string backtrace);
@@ -178,6 +179,10 @@ impl ValidatorConfigV2Error {
 
     pub const fn already_initialized() -> Self {
         Self::AlreadyInitialized(IValidatorConfigV2::AlreadyInitialized {})
+    }
+
+    pub const fn migration_state_mismatch(idx: u64) -> Self {
+        Self::MigrationStateMismatch(IValidatorConfigV2::MigrationStateMismatch { idx })
     }
 
     pub const fn migration_not_complete() -> Self {

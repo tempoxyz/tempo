@@ -614,8 +614,21 @@ impl ValidatorConfigV2 {
 
         // NOTE: this count comparison is sufficient because `add_validator` and
         // `rotate_validator` are blocked until the contract is initialized.
-        if self.validator_count()? < v1.validator_count()? {
+        let v2_count = self.validator_count()?;
+        let v1_count = v1.validator_count()?;
+        if v2_count < v1_count {
             Err(ValidatorConfigV2Error::migration_not_complete())?
+        }
+
+        for i in 0..v1_count {
+            let v1_val = v1.validators(v1.validators_array(i)?)?;
+            let v2_val = self.validators[i as usize].read()?;
+            if v1_val.active && v2_val.deactivated_at_height != 0 {
+                Err(ValidatorConfigV2Error::migration_state_mismatch(i))?
+            }
+            if !v1_val.active && v2_val.deactivated_at_height == 0 {
+                Err(ValidatorConfigV2Error::migration_state_mismatch(i))?
+            }
         }
 
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;

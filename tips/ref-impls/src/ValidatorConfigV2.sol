@@ -356,6 +356,17 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert MigrationNotComplete();
         }
 
+        for (uint64 i = 0; i < v1Validators.length; i++) {
+            bool v1Active = v1Validators[i].active;
+            uint64 v2Deactivated = validatorsArray[i].deactivatedAtHeight;
+            if (v1Active && v2Deactivated != 0) {
+                revert MigrationStateMismatch(i);
+            }
+            if (!v1Active && v2Deactivated == 0) {
+                revert MigrationStateMismatch(i);
+            }
+        }
+
         nextDkgCeremony = v1.getNextFullDkgCeremony();
 
         _initialized = true;

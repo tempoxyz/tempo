@@ -51,6 +51,10 @@ interface IValidatorConfigV2 {
     /// @notice Thrown when migration is not complete (not all V1 validators migrated)
     error MigrationNotComplete();
 
+    /// @notice Thrown when a migrated validator's active/deactivated state does not match V1
+    /// @param idx The index of the validator with mismatched state
+    error MigrationStateMismatch(uint64 idx);
+
     /// @notice Thrown when migration index is out of order
     error InvalidMigrationIndex();
 
