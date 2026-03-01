@@ -44,9 +44,9 @@ impl AmmLiquidityCache {
         };
         let tip = client.best_block_number()?;
 
-        for header in
-            client.sealed_headers_range(tip.saturating_sub(LAST_SEEN_WINDOW as u64 + 1)..=tip)?
-        {
+        for header in client.sealed_headers_range(
+            tip.saturating_sub(LAST_SEEN_WINDOW.saturating_sub(1) as u64)..=tip,
+        )? {
             this.on_new_block(&header, &client)?;
         }
 
@@ -134,9 +134,9 @@ impl AmmLiquidityCache {
     {
         self.clear();
         let tip = client.best_block_number()?;
-        for header in
-            client.sealed_headers_range(tip.saturating_sub(LAST_SEEN_WINDOW as u64 + 1)..=tip)?
-        {
+        for header in client.sealed_headers_range(
+            tip.saturating_sub(LAST_SEEN_WINDOW.saturating_sub(1) as u64)..=tip,
+        )? {
             self.on_new_block(&header, client)?;
         }
         Ok(())
