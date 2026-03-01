@@ -46,7 +46,7 @@ library TxBuilder {
     uint64 constant STATE_CREATION_COST = 250_000; // SSTORE zero→non-zero
     uint64 constant CREATE_BASE_COST = 500_000; // CREATE/CREATE2 base
     uint64 constant CODE_DEPOSIT_COST = 1000; // per byte
-    uint64 constant CREATE_FIELDS_COST = 500_000; // keccak + codesize (2 × 250,000)
+    uint64 constant CREATE_FIELDS_COST = 500_000; // keccak + nonce (2 × 250,000)
 
     // ============ Gas Calculation Helpers ============
 
