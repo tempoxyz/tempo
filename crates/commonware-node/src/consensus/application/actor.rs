@@ -414,7 +414,7 @@ impl Inner<Init> {
 
         // Respond with the verification result ASAP. Also generates
         // the event reporting the result of the verification.
-        let _ = report_verification_result(response, &result);
+        let _ = report_verification_result(response, &result, round, payload);
 
         // 2. make the forkchoice state available && cache the block
         if let Ok((block, true)) = result {
@@ -435,6 +435,13 @@ impl Inner<Init> {
         }
     }
 
+    #[instrument(
+        skip_all,
+        fields(
+            epoch = %round.epoch(),
+            view = %round.view(),
+        ),
+    )]
     async fn propose<TContext: Pacer>(
         mut self,
         context: TContext,
@@ -912,11 +919,17 @@ fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
 fn report_verification_result(
     response: oneshot::Sender<bool>,
     verification_result: &eyre::Result<(Block, bool)>,
+    round: Round,
+    digest: Digest,
 ) -> eyre::Result<()> {
     match &verification_result {
-        Ok((_, is_good)) => {
+        Ok((block, is_good)) => {
             info!(
                 proposal_valid = is_good,
+                block_height = %block.height(),
+                block_digest = %block.digest(),
+                epoch = %round.epoch(),
+                view = %round.view(),
                 "returning proposal verification result to consensus",
             );
             response.send(*is_good).map_err(|_| {
@@ -929,6 +942,9 @@ fn report_verification_result(
         Err(error) => {
             info!(
                 %error,
+                block_digest = %digest,
+                epoch = %round.epoch(),
+                view = %round.view(),
                 "could not decide proposal, dropping response channel",
             );
         }
