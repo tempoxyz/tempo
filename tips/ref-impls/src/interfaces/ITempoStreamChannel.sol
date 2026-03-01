@@ -9,13 +9,11 @@ interface ITempoStreamChannel {
 
     struct Channel {
         address payer;
-        address payee;
-        address token;
-        address authorizedSigner;
-        uint128 deposit;
-        uint128 settled;
         uint64 closeRequestedAt;
         bool finalized;
+        address payee;
+        uint128 deposit;
+        uint128 settled;
     }
 
     function CLOSE_GRACE_PERIOD() external view returns (uint64);
@@ -31,15 +29,44 @@ interface ITempoStreamChannel {
         external
         returns (bytes32 channelId);
 
-    function settle(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external;
+    function settle(
+        bytes32 channelId,
+        uint128 cumulativeAmount,
+        bytes calldata signature,
+        address token,
+        address authorizedSigner,
+        bytes32 salt
+    )
+        external;
 
-    function topUp(bytes32 channelId, uint256 additionalDeposit) external;
+    function topUp(
+        bytes32 channelId,
+        uint256 additionalDeposit,
+        address token,
+        address authorizedSigner,
+        bytes32 salt
+    )
+        external;
 
-    function close(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external;
+    function close(
+        bytes32 channelId,
+        uint128 cumulativeAmount,
+        bytes calldata signature,
+        address token,
+        address authorizedSigner,
+        bytes32 salt
+    )
+        external;
 
     function requestClose(bytes32 channelId) external;
 
-    function withdraw(bytes32 channelId) external;
+    function withdraw(
+        bytes32 channelId,
+        address token,
+        address authorizedSigner,
+        bytes32 salt
+    )
+        external;
 
     function getChannel(bytes32 channelId) external view returns (Channel memory);
 
@@ -129,5 +156,6 @@ interface ITempoStreamChannel {
     error CloseNotReady();
     error InvalidPayee();
     error DepositOverflow();
+    error InvalidChannelParams();
 
 }
