@@ -214,10 +214,8 @@ impl ValidatorConfigV2 {
         start_index: u64,
     ) -> Result<Vec<IValidatorConfigV2::Validator>> {
         let count = self.validator_count()?;
-        if start_index >= count {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::with_capacity((count - start_index) as usize);
+        let cap = count.saturating_sub(start_index) as usize;
+        let mut out = Vec::with_capacity(cap);
         for i in start_index..count {
             if self.storage.gas_remaining() < GAS_PER_VALIDATOR {
                 break;
@@ -468,10 +466,11 @@ impl ValidatorConfigV2 {
         let last_pos = self.active_indices.len()? - 1;
 
         if active_index != last_pos {
-            let last_val = self.active_indices[last_pos].read()?;
-            let current_val = self.active_indices[active_index].read()?;
-            self.active_indices[active_index].write(last_val)?;
-            self.active_indices[last_pos].write(current_val)?;
+            let moved_val = self.active_indices[last_pos].read()?;
+            self.active_indices[active_index].write(moved_val)?;
+            self.validators[(moved_val - 1) as usize]
+                .active_idx
+                .write((active_index + 1) as u64)?;
         }
         self.active_indices.pop()?;
         self.validators[call.idx as usize].active_idx.write(0)
