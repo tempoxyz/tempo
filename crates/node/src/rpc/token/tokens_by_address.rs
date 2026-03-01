@@ -10,6 +10,9 @@ pub struct TokensByAddressResponse {
     pub next_cursor: Option<String>,
     /// Array of items matching the input query
     pub tokens: Vec<AccountToken>,
+    /// When `true`, the indexer cache is behind and the response may be incomplete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_stale: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
