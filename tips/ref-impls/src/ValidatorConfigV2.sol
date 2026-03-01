@@ -466,7 +466,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         string memory egress,
         uint64 deactivatedAtHeight
     )
-        internal returns (uint64 idx)
+        internal
+        returns (uint64 idx)
     {
         idx = uint64(validatorsArray.length);
         uint64 activeIdx = 0;
