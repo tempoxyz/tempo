@@ -86,6 +86,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         external
         onlyInitialized
         onlyOwner
+        returns (uint64 index)
     {
         _validateAddParams(validatorAddress, publicKey, ingress, egress);
 
@@ -96,7 +97,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"), publicKey, message, signature
         );
 
-        _addValidator(validatorAddress, publicKey, ingress, egress, 0);
+        return _addValidator(validatorAddress, publicKey, ingress, egress, 0);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -465,9 +466,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         string memory egress,
         uint64 deactivatedAtHeight
     )
-        internal
+        internal returns (uint64 idx)
     {
-        uint64 idx = uint64(validatorsArray.length);
+        idx = uint64(validatorsArray.length);
         uint64 activeIdx = 0;
 
         if (deactivatedAtHeight == 0) {

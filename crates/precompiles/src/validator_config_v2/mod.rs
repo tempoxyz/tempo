@@ -308,7 +308,7 @@ impl ValidatorConfigV2 {
         egress: String,
         added_at_height: u64,
         deactivated_at_height: u64,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let count = self.validator_count()?;
         let mut active_idx = 0u64;
 
@@ -332,7 +332,9 @@ impl ValidatorConfigV2 {
 
         self.pubkey_to_index[pubkey].write(count + 1)?;
         // if there are duplicated vals with addresses, the latter validator entry is correct
-        self.address_to_index[addr].write(count + 1)
+        self.address_to_index[addr].write(count + 1)?;
+
+        Ok(count)
     }
 
     /// Allows reusing addresses of deactivated validators.
@@ -407,7 +409,7 @@ impl ValidatorConfigV2 {
         &mut self,
         sender: Address,
         call: IValidatorConfigV2::addValidatorCall,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         self.require_initialized_owner(sender)?;
         self.require_new_pubkey(call.publicKey)?;
         self.require_new_address(call.validatorAddress)?;

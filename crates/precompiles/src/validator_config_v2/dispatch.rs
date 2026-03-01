@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
+use crate::{Precompile, dispatch_call, input_cost, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::IValidatorConfigV2::IValidatorConfigV2Calls;
@@ -52,7 +52,7 @@ impl Precompile for ValidatorConfigV2 {
                 }
 
                 IValidatorConfigV2Calls::addValidator(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.add_validator(s, c))
+                    mutate(call, msg_sender, |s, c| self.add_validator(s, c))
                 }
                 IValidatorConfigV2Calls::deactivateValidator(call) => {
                     mutate_void(call, msg_sender, |s, c| self.deactivate_validator(s, c))

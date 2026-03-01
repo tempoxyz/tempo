@@ -73,7 +73,7 @@ crate::sol! {
             string calldata ingress,
             string calldata egress,
             bytes calldata signature
-        ) external;
+        ) external returns (uint64 index);
 
         /// Deactivate a validator (owner or validator)
         function deactivateValidator(uint64 idx) external;
