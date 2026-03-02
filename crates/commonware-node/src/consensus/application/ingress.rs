@@ -7,6 +7,7 @@ use commonware_consensus::{
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::channel::oneshot;
 use futures::{SinkExt as _, channel::mpsc};
+use tracing::warn;
 
 use crate::consensus::Digest;
 
@@ -157,10 +158,48 @@ impl Relay for Mailbox {
     type Digest = Digest;
 
     async fn broadcast(&mut self, digest: Self::Digest) {
-        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
-        self.inner
-            .send(Broadcast { payload: digest }.into())
-            .await
-            .expect("application is present and ready to receive broadcasts");
+        if let Err(err) = self.inner.send(Broadcast { payload: digest }.into()).await {
+            warn!(
+                ?err,
+                %digest,
+                "application mailbox is closed; dropping broadcast digest"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::B256;
+    use commonware_consensus::Relay;
+    use futures::{StreamExt as _, channel::mpsc};
+
+    use super::{Mailbox, Message};
+    use crate::consensus::Digest;
+
+    #[tokio::test]
+    async fn broadcast_forwards_digest_when_receiver_is_alive() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut mailbox = Mailbox::from_sender(tx);
+        let digest = Digest(B256::ZERO);
+
+        mailbox.broadcast(digest).await;
+
+        let message = rx.next().await.expect("message should be forwarded");
+        let Message::Broadcast(broadcast) = message else {
+            panic!("expected broadcast message");
+        };
+        assert_eq!(broadcast.payload, digest);
+    }
+
+    #[tokio::test]
+    async fn broadcast_does_not_panic_when_receiver_is_dropped() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+
+        let mut mailbox = Mailbox::from_sender(tx);
+        let digest = Digest(B256::ZERO);
+
+        mailbox.broadcast(digest).await;
     }
 }
