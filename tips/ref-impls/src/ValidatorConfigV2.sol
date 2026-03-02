@@ -362,7 +362,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         uint64 v1Count = uint64(v1Validators.length);
         uint64 totalProcessed = uint64(validatorsArray.length) + migrationSkippedCount;
 
-        if (idx + totalProcessed + 1 != v1Count) {
+        if (idx >= v1Count || idx + totalProcessed + 1 != v1Count) {
             revert InvalidMigrationIndex();
         }
 
