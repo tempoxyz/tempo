@@ -22,7 +22,7 @@ use tempo_precompiles::{
     validator_config::{IValidatorConfig, ValidatorConfig},
 };
 
-use tracing::{Level, info, instrument, warn};
+use tracing::{Level, debug, info, instrument, warn};
 
 pub(crate) enum ReadTarget {
     AtLeast { height: Height },
@@ -81,8 +81,16 @@ pub(crate) async fn read_validator_config_with_retry(
             );
         });
         tokio::select! {
-            _ = canon_events.next() => {}
-            _ = context.sleep(retry_after) => {}
+            _ = canon_events.next() => {
+                tracing::info_span!("read_validator_config_with_retry").in_scope(|| {
+                    debug!("woke from canonical state notification");
+                });
+            }
+            _ = context.sleep(retry_after) => {
+                tracing::info_span!("read_validator_config_with_retry").in_scope(|| {
+                    debug!("woke from retry timeout");
+                });
+            }
         }
     }
 }
