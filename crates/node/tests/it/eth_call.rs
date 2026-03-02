@@ -460,6 +460,121 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
     Ok(())
 }
 
+/// Regression test for CHAIN-763: on mainnet, `validatorTokens[address(0)]` was pre-seeded with
+/// a DONOTUSE token in genesis. The old code used `Address::ZERO` as beneficiary for RPC gas
+/// estimation, so `get_validator_token(Address::ZERO)` returned DONOTUSE instead of falling back
+/// to `DEFAULT_FEE_TOKEN` (PathUSD), causing gas estimation to fail.
+///
+/// The fix uses `TIP_FEE_MANAGER_ADDRESS` as the sentinel beneficiary, which is guaranteed to
+/// have no validator token set (its mapping is always zero → falls back to PathUSD).
+///
+/// This test pre-seeds `validatorTokens[address(0)]` with a non-default token in genesis storage
+/// and verifies that `eth_estimateGas` still succeeds.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Inject validatorTokens[address(0)] = non-PathUSD token into the fee manager genesis storage.
+    //
+    // Storage layout: validatorTokens is a mapping(address => address) at slot 0.
+    // keccak256(abi.encode(address(0), uint256(0))) gives the storage key.
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
+
+    let fee_manager_storage =
+        genesis["alloc"]["0xfeec000000000000000000000000000000000000"]["storage"]
+            .as_object_mut()
+            .expect("fee manager storage must exist");
+
+    // keccak256(abi.encode(address(0), uint256(0)))
+    let validator_tokens_zero_slot =
+        "0xad3228b676f7d3cd4284a5443f17f1962b36e491b30a40b2405849e597ba5fb5";
+    // Use an existing non-PathUSD TIP20 token from genesis as the "DONOTUSE" stand-in
+    let non_default_token = "0x00000000000000000000000020c0000000000000000000000000000000000001";
+
+    fee_manager_storage.insert(
+        validator_tokens_zero_slot.to_string(),
+        serde_json::Value::String(non_default_token.to_string()),
+    );
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet_address = wallet.address();
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .build_http_only()
+        .await?;
+
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(setup.http_url);
+
+    // Verify the pre-seeded state: validatorTokens[address(0)] should be non-zero
+    let fee_manager =
+        IFeeManager::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let zero_addr_token = fee_manager.validatorTokens(Address::ZERO).call().await?;
+    assert_ne!(
+        zero_addr_token,
+        Address::ZERO,
+        "validatorTokens[address(0)] should be pre-seeded"
+    );
+    assert_ne!(
+        zero_addr_token, PATH_USD_ADDRESS,
+        "validatorTokens[address(0)] should NOT be PathUSD"
+    );
+
+    // Setup a user fee token with liquidity so the user can pay fees
+    let user_fee_token = setup_test_token(provider.clone(), wallet_address).await?;
+
+    user_fee_token
+        .mint(wallet_address, U256::from(u128::MAX))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    fee_amm
+        .mint(
+            *user_fee_token.address(),
+            PATH_USD_ADDRESS,
+            U256::from(u32::MAX),
+            wallet_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_manager
+        .setUserToken(*user_fee_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Gas estimation should succeed because the fix uses TIP_FEE_MANAGER_ADDRESS as
+    // beneficiary, which has no validator token set and falls back to PathUSD.
+    let recipient = Address::random();
+    let calldata = user_fee_token
+        .transfer(recipient, U256::ONE)
+        .calldata()
+        .clone();
+    let tx = TransactionRequest::default()
+        .from(wallet_address)
+        .to(*user_fee_token.address())
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .input(TransactionInput::new(calldata));
+
+    let gas = provider.estimate_gas(tx).await?;
+    assert!(
+        gas > 0,
+        "gas estimation must succeed with pre-seeded validatorTokens[address(0)]"
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
