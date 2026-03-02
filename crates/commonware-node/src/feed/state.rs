@@ -1,11 +1,10 @@
 //! Shared state for the feed module.
 
-use crate::{alias::marshal, consensus::Digest};
+use crate::alias::marshal;
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::hex;
 use commonware_codec::{Encode, ReadExt as _};
 use commonware_consensus::{
-    Heightable as _,
     marshal::ingress::mailbox::Identifier,
     types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
@@ -118,18 +117,6 @@ impl FeedStateHandle {
         epocher
     }
 
-    /// Fill in the height for a block if it's missing by querying the marshal.
-    async fn maybe_fill_height(&self, block: &mut CertifiedBlock) {
-        if block.height.is_none()
-            && let Some(mut marshal) = self.marshal()
-        {
-            block.height = marshal
-                .get_block(&Digest(block.digest))
-                .await
-                .map(|b| b.height().get());
-        }
-    }
-
     /// Serve identity transition proof from cache, returning a subsection if needed.
     fn serve_from_cache(
         &self,
@@ -198,17 +185,19 @@ impl ConsensusFeed for FeedStateHandle {
     async fn get_finalization(&self, query: Query) -> Option<CertifiedBlock> {
         match query {
             Query::Latest => {
-                let mut block = self.state.read().latest_finalized.clone()?;
-                self.maybe_fill_height(&mut block).await;
+                let block = self.state.read().latest_finalized.clone()?;
                 Some(block)
             }
             Query::Height(height) => {
                 let mut marshal = self.marshal()?;
+
                 let finalization = marshal.get_finalization(Height::new(height)).await?;
+                let block = marshal.get_block(Height::new(height)).await?;
 
                 Some(CertifiedBlock {
                     epoch: finalization.proposal.round.epoch().get(),
                     view: finalization.proposal.round.view().get(),
+                    block: Some(block.into_inner().into_block()),
                     height: Some(height),
                     digest: finalization.proposal.payload.0,
                     certificate: hex::encode(finalization.encode()),
@@ -218,17 +207,13 @@ impl ConsensusFeed for FeedStateHandle {
     }
 
     async fn get_latest(&self) -> ConsensusState {
-        let (mut finalized, notarized) = {
+        let (finalized, notarized) = {
             let state = self.state.read();
             (
                 state.latest_finalized.clone(),
                 state.latest_notarized.clone(),
             )
         };
-
-        if let Some(ref mut block) = finalized {
-            self.maybe_fill_height(block).await;
-        }
 
         ConsensusState {
             finalized,
