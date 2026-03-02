@@ -422,14 +422,14 @@ contract ValidatorConfigV2Test is BaseTest {
             );
         }
 
-        // 5. ValidatorNotFound (after deactivation)
+        // 5. ValidatorAlreadyDeleted (after deactivation)
         validatorConfigV2.deactivateValidator(2);
         try validatorConfigV2.rotateValidator(
             2, PUB_KEY_3, ingress2, egress2, _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorNotFound.selector));
+            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector));
         }
 
         if (isTempo) {
@@ -507,12 +507,12 @@ contract ValidatorConfigV2Test is BaseTest {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.Unauthorized.selector));
         }
 
-        // 3. ValidatorNotFound (after deactivation)
+        // 3. ValidatorAlreadyDeleted (after deactivation)
         validatorConfigV2.deactivateValidator(2);
         try validatorConfigV2.setIpAddresses(2, ingress2, egress2) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorNotFound.selector));
+            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector));
         }
     }
 
@@ -612,12 +612,12 @@ contract ValidatorConfigV2Test is BaseTest {
             );
         }
 
-        // 5. ValidatorNotFound (after deactivation)
+        // 5. ValidatorAlreadyDeleted (after deactivation)
         validatorConfigV2.deactivateValidator(2);
         try validatorConfigV2.transferValidatorOwnership(2, validator3) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorNotFound.selector));
+            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector));
         }
     }
 
