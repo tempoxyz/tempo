@@ -429,7 +429,9 @@ contract ValidatorConfigV2Test is BaseTest {
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector));
+            assertEq(
+                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector)
+            );
         }
 
         if (isTempo) {
@@ -512,7 +514,9 @@ contract ValidatorConfigV2Test is BaseTest {
         try validatorConfigV2.setIpAddresses(2, ingress2, egress2) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector));
+            assertEq(
+                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector)
+            );
         }
     }
 
@@ -617,7 +621,9 @@ contract ValidatorConfigV2Test is BaseTest {
         try validatorConfigV2.transferValidatorOwnership(2, validator3) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector));
+            assertEq(
+                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector)
+            );
         }
     }
 
