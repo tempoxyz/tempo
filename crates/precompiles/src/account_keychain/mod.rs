@@ -414,8 +414,8 @@ impl AccountKeychain {
     /// * `account` - The account that owns the key
     /// * `key_id` - The key identifier to validate
     /// * `current_timestamp` - Current block timestamp for expiry check
-    /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256, 2=WebAuthn).
-    ///                         Pass `None` to skip validation (for backward compatibility pre-T1).
+    /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256,
+    ///   2=WebAuthn). Pass `None` to skip validation (for backward compatibility pre-T1).
     ///
     /// # Errors
     /// - `KeyAlreadyRevoked` — the key has been permanently revoked
