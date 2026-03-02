@@ -463,7 +463,7 @@ impl ValidatorConfigV2 {
             .deactivated_at_height
             .write(block_height)?;
 
-        // Pop-and-swap for active_indices
+        // Swap-and-pop for active_indices
         let active_index = (v.active_idx - 1) as usize;
         let last_pos = self.active_indices.len()? - 1;
 
