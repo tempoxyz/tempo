@@ -37,7 +37,7 @@ use rand_core::CryptoRngCore;
 use reth_ethereum::{
     chainspec::EthChainSpec, network::NetworkInfo, rpc::eth::primitives::BlockNumHash,
 };
-use reth_provider::{BlockIdReader as _, HeaderProvider as _};
+use reth_provider::{BlockIdReader as _, CanonStateSubscriptions as _, HeaderProvider as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
@@ -1556,6 +1556,8 @@ async fn read_syncers_if_v2_not_initialized_with_retry(
     const MIN_RETRY: Duration = Duration::from_secs(1);
     const MAX_RETRY: Duration = Duration::from_secs(30);
 
+    let mut canon_events = node.provider.canonical_state_stream();
+
     let parent_hash = boundary_block.parent_hash();
     let block_hash = boundary_block.hash();
     'read_contract: loop {
@@ -1585,7 +1587,18 @@ async fn read_syncers_if_v2_not_initialized_with_retry(
                 "reading validator config from contract failed; will retry",
             );
         });
-        context.sleep(retry_after).await;
+        tokio::select! {
+            _ = canon_events.next() => {
+                tracing::info_span!("read_validator_config_with_retry").in_scope(|| {
+                    debug!("woke from canonical state notification");
+                });
+            }
+            _ = context.sleep(retry_after) => {
+                tracing::info_span!("read_validator_config_with_retry").in_scope(|| {
+                    debug!("woke from retry timeout");
+                });
+            }
+        }
     }
 }
 
