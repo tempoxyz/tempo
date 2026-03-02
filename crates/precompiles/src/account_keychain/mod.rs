@@ -139,7 +139,17 @@ impl AccountKeychain {
         self.__initialize()
     }
 
-    /// Authorize a new session key for an account. Only callable with the main key.
+    /// Registers a new access key with signature type, expiry, and
+    /// optional per-token spending limits. Only callable with the
+    /// account's main key (not a session key).
+    ///
+    /// # Errors
+    /// - `UnauthorizedCaller` — called from a session key
+    /// - `ZeroPublicKey` — `keyId` is zero
+    /// - `ExpiryInPast` — expiry ≤ current timestamp (T0+)
+    /// - `KeyAlreadyExists` — key ID already registered
+    /// - `KeyAlreadyRevoked` — key was previously revoked
+    /// - `InvalidSignatureType` — unsupported signature type
     pub fn authorize_key(&mut self, msg_sender: Address, call: authorizeKeyCall) -> Result<()> {
         // Check that the transaction key for this transaction is zero (main key)
         let transaction_key = self.transaction_key.t_read()?;
@@ -210,11 +220,13 @@ impl AccountKeychain {
         ))
     }
 
-    /// Revoke an authorized key
+    /// Permanently revokes an access key. Once revoked, a key ID can
+    /// never be re-authorized for this account, preventing replay of
+    /// old `KeyAuthorization` signatures. Main key only.
     ///
-    /// This marks the key as revoked by setting is_revoked to true and expiry to 0.
-    /// Once revoked, a key_id can never be re-authorized for this account, preventing
-    /// replay attacks where old KeyAuthorization signatures could be reused.
+    /// # Errors
+    /// - `UnauthorizedCaller` — called from a session key
+    /// - `KeyNotFound` — key does not exist
     pub fn revoke_key(&mut self, msg_sender: Address, call: revokeKeyCall) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
 

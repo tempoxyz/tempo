@@ -137,10 +137,16 @@ impl TipFeeManager {
         }))
     }
 
-    /// Collects fees from user before transaction execution.
+    /// Collects fees from `fee_payer` before transaction execution.
+    /// Transfers `max_amount` of `user_token` to the fee manager via
+    /// [`TIP20Token`] and, if the validator prefers a different token,
+    /// verifies sufficient [`Pool`](amm::Pool) liquidity (reserving it
+    /// on T1C+). Returns the user's fee token.
     ///
-    /// Transfers max fee to fee manager and checks liquidity for swaps if user and validator tokens differ.
-    /// After tx execution, collect_fee_post_tx refunds unused gas and executes the swap immediately.
+    /// # Errors
+    /// - `InvalidToken` — `user_token` is not a valid TIP-20
+    /// - `PolicyForbids` — TIP-403 rejects the fee transfer
+    /// - `InsufficientLiquidity` — AMM pool cannot cover the swap
     pub fn collect_fee_pre_tx(
         &mut self,
         fee_payer: Address,
@@ -170,10 +176,10 @@ impl TipFeeManager {
         Ok(user_token)
     }
 
-    /// Finalizes fee collection after transaction execution.
-    ///
-    /// Refunds unused tokens to user, executes fee swap if needed, and accumulates fees for the validator.
-    /// Validators call distribute_fees() to collect accumulated fees.
+    /// Finalizes fee collection after transaction execution. Refunds
+    /// unused `user_token` to `fee_payer` via [`TIP20Token`], executes
+    /// the fee swap through the [`Pool`](amm::Pool) if tokens differ,
+    /// and accumulates fees for the validator.
     pub fn collect_fee_post_tx(
         &mut self,
         fee_payer: Address,
@@ -229,7 +235,8 @@ impl TipFeeManager {
         Ok(())
     }
 
-    /// Transfers a validator's accumulated fee balance to their address and zeroes the ledger.
+    /// Transfers a validator's accumulated fee balance to their address
+    /// via [`TIP20Token`] and zeroes the ledger.
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
         let amount = self.collected_fees[validator][token].read()?;
         if amount.is_zero() {

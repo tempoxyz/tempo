@@ -249,9 +249,15 @@ impl StablecoinDEX {
         Ok(current_amount)
     }
 
-    /// Swaps an exact input amount, routing through one or more orderbooks.
+    /// Swaps `amount_in` of `token_in` for `token_out`, routing through
+    /// one or more orderbooks. Deducts input via [`TIP20Token`] transfer
+    /// or DEX balance, then fills orders at best price per hop.
     ///
-    /// Reverts if the output falls below `min_amount_out`.
+    /// # Errors
+    /// - `InvalidBaseToken` — token is not a valid TIP-20
+    /// - `PairNotFound` — no orderbook for the token pair
+    /// - `InsufficientOutput` — output below `min_amount_out`
+    /// - `InsufficientBalance` — sender lacks input funds
     pub fn swap_exact_amount_in(
         &mut self,
         sender: Address,
@@ -283,9 +289,15 @@ impl StablecoinDEX {
         Ok(amount)
     }
 
-    /// Swaps to receive an exact output amount, routing through one or more orderbooks.
+    /// Swaps to receive exactly `amount_out` of `token_out`, routing
+    /// through one or more orderbooks. Works backwards from output to
+    /// compute input, then deducts via [`TIP20Token`] or DEX balance.
     ///
-    /// Reverts if the required input exceeds `max_amount_in`.
+    /// # Errors
+    /// - `InvalidBaseToken` — token is not a valid TIP-20
+    /// - `PairNotFound` — no orderbook for the token pair
+    /// - `MaxInputExceeded` — required input exceeds `max_amount_in`
+    /// - `InsufficientBalance` — sender lacks input funds
     pub fn swap_exact_amount_out(
         &mut self,
         sender: Address,
@@ -358,8 +370,13 @@ impl StablecoinDEX {
     }
 
     /// Creates a new trading pair between `base` and its quote token.
+    /// Both must be USD-denominated tokens validated via
+    /// [`TIP20Factory`]. Reverts if the pair already exists.
     ///
-    /// Both tokens must be USD-denominated TIP-20 tokens. Reverts if the pair already exists.
+    /// # Errors
+    /// - `InvalidBaseToken` — not a valid TIP-20
+    /// - `InvalidCurrency` — token is not USD-denominated
+    /// - `PairAlreadyExists` — orderbook already initialized
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token
         if !TIP20Factory::new().is_tip20(base)? {
@@ -392,18 +409,18 @@ impl StablecoinDEX {
         Ok(book_key)
     }
 
-    /// Place a limit order on the orderbook
+    /// Places a limit order on the orderbook for `token` against its
+    /// quote token. Escrows the appropriate amount via [`TIP20Token`]
+    /// transfer or DEX balance and enforces compliance via the
+    /// [`TIP403Registry`]. Auto-creates the trading pair if needed.
     ///
-    /// Only supports placing an order on a pair between a token and its quote token.
-    ///
-    /// # Arguments
-    /// * `token` - The token to trade (not the quote token)
-    /// * `amount` - Order amount in the token
-    /// * `is_bid` - True for buy orders (using quote token to buy token), false for sell orders
-    /// * `tick` - Price tick: (price - 1) * 1000, where price is denominated in the quote token
-    ///
-    /// # Returns
-    /// The assigned order ID
+    /// # Errors
+    /// - `InvalidBaseToken` — token is not a valid TIP-20
+    /// - `TickOutOfBounds` — tick outside allowed range
+    /// - `InvalidTick` — tick not aligned to spacing
+    /// - `BelowMinimumOrderSize` — amount < `MIN_ORDER_AMOUNT`
+    /// - `InsufficientBalance` — sender lacks escrow funds
+    /// - `PolicyForbids` — TIP-403 rejects the transfer
     pub fn place(
         &mut self,
         sender: Address,
@@ -530,11 +547,19 @@ impl StablecoinDEX {
         self.orders[order.order_id()].write(order)
     }
 
-    /// Place a flip order that auto-flips when filled
+    /// Places a flip order that auto-reverses to the opposite side when
+    /// fully filled, acting as perpetual liquidity. Escrows tokens via
+    /// [`TIP20Token`] and enforces compliance via [`TIP403Registry`].
+    /// For bids `flip_tick` must be > `tick`; for asks, < `tick`.
     ///
-    /// Flip orders automatically create a new order on the opposite side when completely filled.
-    /// For bids: flip_tick must be > tick
-    /// For asks: flip_tick must be < tick
+    /// # Errors
+    /// - `InvalidBaseToken` — token is not a valid TIP-20
+    /// - `TickOutOfBounds` — tick or flip_tick outside allowed range
+    /// - `InvalidTick` — tick not aligned to spacing
+    /// - `InvalidFlipTick` — flip_tick violates side constraint
+    /// - `BelowMinimumOrderSize` — amount < `MIN_ORDER_AMOUNT`
+    /// - `InsufficientBalance` — sender lacks escrow funds
+    /// - `PolicyForbids` — TIP-403 rejects the transfer
     #[allow(clippy::too_many_arguments)]
     pub fn place_flip(
         &mut self,
@@ -1008,8 +1033,12 @@ impl StablecoinDEX {
             .read()
     }
 
-    /// Cancel an order and refund tokens to maker
-    /// Only the order maker can cancel their own order
+    /// Cancels an active order and refunds escrowed tokens to the maker.
+    /// Only the order maker can cancel their own orders.
+    ///
+    /// # Errors
+    /// - `OrderDoesNotExist` — order not found or fully filled
+    /// - `Unauthorized` — caller is not the order maker
     pub fn cancel(&mut self, sender: Address, order_id: u128) -> Result<()> {
         let order = self.orders[order_id].read()?;
 
@@ -1110,13 +1139,15 @@ impl StablecoinDEX {
         ))
     }
 
-    /// Cancel a stale order where the maker is forbidden by [TIP-403] policy
-    /// Allows anyone to clean up stale orders from blacklisted makers
-    /// [TIP-1015]: For T2+, checks sender authorization
-    /// (maker must be able to send the escrowed token)
+    /// Cancels an order whose maker is blocked by [`TIP403Registry`]
+    /// policy, allowing anyone to clean up stale liquidity. On T2+
+    /// checks sender authorization per [TIP-1015].
     ///
-    /// [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
+    ///
+    /// # Errors
+    /// - `OrderDoesNotExist` — order not found or fully filled
+    /// - `OrderNotStale` — maker is still authorized
     pub fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
         let order = self.orders[order_id].read()?;
 
@@ -1140,7 +1171,9 @@ impl StablecoinDEX {
         }
     }
 
-    /// Withdraw tokens from exchange balance
+    /// Withdraws `amount` from the caller's DEX balance, transferring
+    /// tokens back via [`TIP20Token`].
+    /// Errors on `InsufficientBalance`.
     pub fn withdraw(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current_balance = self.balance_of(user, token)?;
         if current_balance < amount {
