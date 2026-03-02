@@ -149,7 +149,7 @@ impl TipFeeManager {
     /// Collects fees from `fee_payer` before transaction execution.
     ///
     /// Transfers `max_amount` of `user_token` to the fee manager via [`TIP20Token`] and, if the
-    /// validator prefers a different token, verifies sufficient [`Pool`](amm::Pool) liquidity
+    /// validator prefers a different token, verifies sufficient pool liquidity
     /// (reserving it on T1C+). Returns the user's fee token.
     ///
     /// # Errors
@@ -188,7 +188,7 @@ impl TipFeeManager {
     /// Finalizes fee collection after transaction execution.
     ///
     /// Refunds unused `user_token` to `fee_payer` via [`TIP20Token`], executes the fee swap
-    /// through the [`Pool`](amm::Pool) if tokens differ, and accumulates fees for the validator.
+    /// through the AMM pool if tokens differ, and accumulates fees for the validator.
     ///
     /// # Errors
     /// - `InvalidToken` — `fee_token` does not have a valid TIP-20 prefix

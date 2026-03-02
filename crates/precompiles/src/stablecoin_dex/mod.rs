@@ -80,12 +80,12 @@ impl StablecoinDEX {
         self.balances[user][token].read()
     }
 
-    /// Returns the minimum representable scaled price ([`MIN_PRICE`]).
+    /// Returns the minimum representable scaled price (`MIN_PRICE`).
     pub fn min_price(&self) -> u32 {
         MIN_PRICE
     }
 
-    /// Returns the maximum representable scaled price ([`MAX_PRICE`]).
+    /// Returns the maximum representable scaled price (`MAX_PRICE`).
     pub fn max_price(&self) -> u32 {
         MAX_PRICE
     }

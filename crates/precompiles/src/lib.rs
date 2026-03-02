@@ -292,7 +292,7 @@ fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) ->
     output
 }
 
-/// Returns an ABI-encoded [`UnknownFunctionSelector`] revert for the given 4-byte selector.
+/// Returns an ABI-encoded `UnknownFunctionSelector` revert for the given 4-byte selector.
 #[inline]
 pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
     error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)

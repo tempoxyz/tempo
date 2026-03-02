@@ -518,7 +518,7 @@ impl TIP403Registry {
 
     /// Core role-based authorization check ([TIP-1015]). Resolves built-in policies (0 = reject,
     /// 1 = allow) immediately, delegates compound policies to their sub-policies, and evaluates
-    /// simple policies via [`is_simple`](Self::is_simple).
+    /// simple policies via `is_simple`.
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     ///

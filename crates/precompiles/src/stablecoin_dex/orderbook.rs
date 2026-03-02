@@ -9,9 +9,9 @@ use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinDEXError;
 use tempo_precompiles_macros::Storable;
 
-/// Minimum allowed tick value (corresponds to [`MIN_PRICE`]).
+/// Minimum allowed tick value (corresponds to `MIN_PRICE`).
 pub const MIN_TICK: i16 = -2000;
-/// Maximum allowed tick value (corresponds to [`MAX_PRICE`]).
+/// Maximum allowed tick value (corresponds to `MAX_PRICE`).
 pub const MAX_TICK: i16 = 2000;
 /// Scaling factor for tick-to-price conversion. A tick of 0 maps to `PRICE_SCALE` (peg).
 pub const PRICE_SCALE: u32 = 100_000;

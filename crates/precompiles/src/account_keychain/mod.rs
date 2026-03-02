@@ -260,7 +260,7 @@ impl AccountKeychain {
     }
 
     /// Updates the spending limit for a key-token pair. Can also convert an unlimited key into a
-    /// limited one. Delegates to [`Self::load_active_key`] for existence/revocation checks.
+    /// limited one. Delegates to `load_active_key` for existence/revocation checks.
     ///
     /// # Errors
     /// - `UnauthorizedCaller` — the transaction was signed by a session key, not the main key

@@ -503,7 +503,7 @@ impl TIP20Token {
     /// # Errors
     /// - `Unauthorized` — caller does not hold `BURN_BLOCKED_ROLE`
     /// - `PolicyForbids` — target address is not blocked by policy
-    /// - `ProtectedAddress` — cannot burn from [`TipFeeManager`] or [`StablecoinDEX`] addresses
+    /// - `ProtectedAddress` — cannot burn from fee manager or stablecoin DEX addresses
     pub fn burn_blocked(
         &mut self,
         msg_sender: Address,
