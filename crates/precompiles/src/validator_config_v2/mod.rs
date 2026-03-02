@@ -331,7 +331,7 @@ impl ValidatorConfigV2 {
         self.validators.push(v)?;
 
         self.pubkey_to_index[pubkey].write(count + 1)?;
-        // if there are duplicated vals with addresses, the latter validator entry is correct
+        // for any dups the prev entries must be deactivated since we check above
         self.address_to_index[addr].write(count + 1)?;
 
         Ok(count)
