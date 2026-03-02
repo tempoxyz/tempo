@@ -63,8 +63,6 @@ impl TipFeeManager {
     pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256);
 
     /// Initializes the fee manager precompile.
-    ///
-    /// This ensures the [`TipFeeManager`] isn't empty and prevents state clear.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
@@ -82,8 +80,14 @@ impl TipFeeManager {
 
     /// Sets the caller's preferred fee token as a validator.
     ///
-    /// Rejects the call if `sender` is the current block's beneficiary (prevents
-    /// mid-block fee-token changes) or if the token is not a valid USD-denominated TIP-20.
+    /// Rejects the call if `sender` is the current block's beneficiary (prevents mid-block
+    /// fee-token changes) or if the token is not a valid USD-denominated TIP-20 registered in
+    /// [`TIP20Factory`].
+    ///
+    /// # Errors
+    /// - `InvalidToken` — token is not a deployed TIP-20 in [`TIP20Factory`]
+    /// - `CannotChangeWithinBlock` — `sender` equals the current block `beneficiary`
+    /// - `InvalidCurrency` — token is not USD-denominated
     pub fn set_validator_token(
         &mut self,
         sender: Address,
@@ -114,7 +118,12 @@ impl TipFeeManager {
         ))
     }
 
-    /// Sets the caller's preferred fee token as a user. Must be a valid USD-denominated TIP-20.
+    /// Sets the caller's preferred fee token as a user. Must be a valid USD-denominated TIP-20
+    /// registered in [`TIP20Factory`].
+    ///
+    /// # Errors
+    /// - `InvalidToken` — token is not a deployed TIP-20 in [`TIP20Factory`]
+    /// - `InvalidCurrency` — token is not USD-denominated
     pub fn set_user_token(
         &mut self,
         sender: Address,
@@ -137,10 +146,16 @@ impl TipFeeManager {
         }))
     }
 
-    /// Collects fees from user before transaction execution.
+    /// Collects fees from `fee_payer` before transaction execution.
     ///
-    /// Transfers max fee to fee manager and checks liquidity for swaps if user and validator tokens differ.
-    /// After tx execution, collect_fee_post_tx refunds unused gas and executes the swap immediately.
+    /// Transfers `max_amount` of `user_token` to the fee manager via [`TIP20Token`] and, if the
+    /// validator prefers a different token, verifies sufficient [`Pool`](amm::Pool) liquidity
+    /// (reserving it on T1C+). Returns the user's fee token.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
+    /// - `PolicyForbids` — TIP-403 policy rejects the fee token transfer
+    /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap
     pub fn collect_fee_pre_tx(
         &mut self,
         fee_payer: Address,
@@ -172,8 +187,13 @@ impl TipFeeManager {
 
     /// Finalizes fee collection after transaction execution.
     ///
-    /// Refunds unused tokens to user, executes fee swap if needed, and accumulates fees for the validator.
-    /// Validators call distribute_fees() to collect accumulated fees.
+    /// Refunds unused `user_token` to `fee_payer` via [`TIP20Token`], executes the fee swap
+    /// through the [`Pool`](amm::Pool) if tokens differ, and accumulates fees for the validator.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `fee_token` does not have a valid TIP-20 prefix
+    /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap
+    /// - `UnderOverflow` — collected-fee accumulator overflows
     pub fn collect_fee_post_tx(
         &mut self,
         fee_payer: Address,
@@ -229,7 +249,11 @@ impl TipFeeManager {
         Ok(())
     }
 
-    /// Transfers a validator's accumulated fee balance to their address and zeroes the ledger.
+    /// Transfers a validator's accumulated fee balance to their address via [`TIP20Token`] and
+    /// zeroes the ledger. No-ops when the balance is zero.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
         let amount = self.collected_fees[validator][token].read()?;
         if amount.is_zero() {
@@ -259,7 +283,7 @@ impl TipFeeManager {
         Ok(())
     }
 
-    /// Returns the fee token for the current transaction (transient, T2+).
+    /// Returns the fee token for the current transaction from transient storage (T2+).
     pub fn get_fee_token(&self) -> Result<Address> {
         self.tx_fee_token.t_read()
     }

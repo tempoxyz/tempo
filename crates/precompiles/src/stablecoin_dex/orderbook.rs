@@ -236,7 +236,10 @@ impl OrderbookHandler {
         Ok(tick >> 8)
     }
 
-    /// Set bit in bitmap to mark tick as active
+    /// Sets the bitmap bit for `tick` to mark it as active on the given side.
+    ///
+    /// # Errors
+    /// - `InvalidTick` — tick is outside `[MIN_TICK, MAX_TICK]`
     pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
         let word_index = self.calc_tick_word_idx(tick)?;
         let bitmap = if is_bid {
@@ -256,7 +259,10 @@ impl OrderbookHandler {
         bitmap.write(current_word | mask)
     }
 
-    /// Clear bit in bitmap to mark tick as inactive
+    /// Clears the bitmap bit for `tick` to mark it as inactive on the given side.
+    ///
+    /// # Errors
+    /// - `InvalidTick` — tick is outside `[MIN_TICK, MAX_TICK]`
     pub fn delete_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
         let word_index = self.calc_tick_word_idx(tick)?;
         let bitmap = if is_bid {
@@ -276,7 +282,10 @@ impl OrderbookHandler {
         bitmap.write(current_word & mask)
     }
 
-    /// Check if a tick is initialized (has orders)
+    /// Returns `true` if the given `tick` has active orders on the specified side.
+    ///
+    /// # Errors
+    /// - `InvalidTick` — tick is outside `[MIN_TICK, MAX_TICK]`
     pub fn is_tick_initialized(&self, tick: i16, is_bid: bool) -> Result<bool> {
         let word_index = self.calc_tick_word_idx(tick)?;
         let bitmap = if is_bid {
@@ -432,7 +441,10 @@ pub fn tick_to_price(tick: i16) -> u32 {
     (PRICE_SCALE as i32 + tick as i32) as u32
 }
 
-/// Convert scaled price to relative tick
+/// Converts a scaled price back to a relative tick.
+///
+/// # Errors
+/// - `TickOutOfBounds` — price is outside `[MIN_PRICE, MAX_PRICE]`
 pub fn price_to_tick(price: u32) -> Result<i16> {
     if !(MIN_PRICE..=MAX_PRICE).contains(&price) {
         let invalid_tick = (price as i32 - PRICE_SCALE as i32) as i16;
@@ -441,7 +453,10 @@ pub fn price_to_tick(price: u32) -> Result<i16> {
     Ok((price as i32 - PRICE_SCALE as i32) as i16)
 }
 
-/// Validate that a tick is aligned to [`TICK_SPACING`].
+/// Validates that a tick is aligned to [`TICK_SPACING`].
+///
+/// # Errors
+/// - `InvalidTick` — tick is not a multiple of [`TICK_SPACING`]
 pub fn validate_tick_spacing(tick: i16) -> Result<()> {
     if tick % TICK_SPACING != 0 {
         return Err(StablecoinDEXError::invalid_tick().into());

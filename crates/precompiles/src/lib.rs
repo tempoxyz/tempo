@@ -65,7 +65,7 @@ pub use account_keychain::AuthorizedKey;
 /// Being careful and pricing it twice as COPY_COST to mitigate different abi decodings.
 pub const INPUT_PER_WORD_COST: u64 = 6;
 
-/// Returns the gas cost for decoding calldata of the given length.
+/// Returns the gas cost for decoding calldata of the given length, rounded up to word boundaries.
 #[inline]
 pub fn input_cost(calldata_len: usize) -> u64 {
     calldata_len
@@ -292,8 +292,7 @@ fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) ->
     output
 }
 
-/// Helper function to return an unknown function selector error.
-/// Returns an ABI-encoded UnknownFunctionSelector error with the selector.
+/// Returns an ABI-encoded [`UnknownFunctionSelector`] revert for the given 4-byte selector.
 #[inline]
 pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
     error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)

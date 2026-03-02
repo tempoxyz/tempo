@@ -136,7 +136,10 @@ impl TempoPrecompileError {
 
     /// ABI-encodes this error and wraps it as a reverted [`PrecompileResult`].
     ///
-    /// System errors (`OutOfGas`, `Fatal`) are returned as `Err` variants instead.
+    /// # Errors
+    ///
+    /// - `PrecompileError::OutOfGas` — if the variant is [`OutOfGas`](Self::OutOfGas)
+    /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
     pub fn into_precompile_result(self, gas: u64) -> PrecompileResult {
         let bytes = match self {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
@@ -173,7 +176,7 @@ impl TempoPrecompileError {
     }
 }
 
-/// Registers all error selectors for a `SolInterface` type into the decoder registry.
+/// Registers all ABI error selectors for a [`SolInterface`] type into the decoder registry.
 pub fn add_errors_to_registry<T: SolInterface>(
     registry: &mut TempoPrecompileErrorRegistry,
     converter: impl Fn(T) -> TempoPrecompileError + 'static + Send + Sync,
@@ -207,8 +210,7 @@ pub type TempoPrecompileErrorRegistry = HashMap<
     Box<dyn for<'a> Fn(&'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> + Send + Sync>,
 >;
 
-/// Returns a HashMap mapping error selectors to their decoder functions
-/// The decoder returns a `TempoPrecompileError` variant for the decoded error
+/// Builds a [`TempoPrecompileErrorRegistry`] mapping every known error selector to its decoder.
 pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
 
@@ -231,7 +233,9 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
 pub static ERROR_REGISTRY: LazyLock<TempoPrecompileErrorRegistry> =
     LazyLock::new(error_decoder_registry);
 
-/// Decode an error from raw bytes using the selector
+/// Decodes raw revert bytes into a typed [`DecodedTempoPrecompileError`] using the global
+/// [`ERROR_REGISTRY`], returning `None` if the data is shorter than 4 bytes or the selector
+/// is unrecognized.
 pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> {
     if data.len() < 4 {
         return None;

@@ -58,7 +58,11 @@ pub fn is_tip20_prefix(token: Address) -> bool {
     token.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
 }
 
-/// Validates that a token has USD currency
+/// Validates that the given token's currency is `"USD"`.
+///
+/// # Errors
+/// - `InvalidToken` — address does not have the TIP-20 prefix
+/// - `InvalidCurrency` — token currency is not `"USD"`
 pub fn validate_usd_currency(token: Address) -> Result<()> {
     if TIP20Token::from_address(token)?.currency()? != USD_CURRENCY {
         return Err(TIP20Error::invalid_currency().into());
@@ -225,7 +229,11 @@ impl TIP20Token {
         self.allowances[call.owner][call.spender].read()
     }
 
-    /// Updates the TIP-403 transfer policy. Requires `DEFAULT_ADMIN_ROLE`.
+    /// Updates the [`TIP403Registry`] transfer policy governing this token's transfers.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
+    /// - `InvalidTransferPolicyId` — policy does not exist in the [`TIP403Registry`]
     pub fn change_transfer_policy_id(
         &mut self,
         msg_sender: Address,
@@ -250,7 +258,12 @@ impl TIP20Token {
         ))
     }
 
-    /// Sets a new supply cap. Must be ≥ current supply and ≤ `U128_MAX`. Requires `DEFAULT_ADMIN_ROLE`.
+    /// Sets a new supply cap. Must be ≥ current total supply and ≤ [`U128_MAX`].
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
+    /// - `InvalidSupplyCap` — new cap is below current total supply
+    /// - `SupplyCapExceeded` — new cap exceeds [`U128_MAX`]
     pub fn set_supply_cap(
         &mut self,
         msg_sender: Address,
@@ -273,7 +286,10 @@ impl TIP20Token {
         }))
     }
 
-    /// Pauses all token transfers. Requires `PAUSE_ROLE`.
+    /// Pauses all token transfers.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `PAUSE_ROLE`
     pub fn pause(&mut self, msg_sender: Address, _call: ITIP20::pauseCall) -> Result<()> {
         self.check_role(msg_sender, *PAUSE_ROLE)?;
         self.paused.write(true)?;
@@ -284,7 +300,10 @@ impl TIP20Token {
         }))
     }
 
-    /// Unpauses token transfers. Requires `UNPAUSE_ROLE`.
+    /// Unpauses token transfers.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `UNPAUSE_ROLE`
     pub fn unpause(&mut self, msg_sender: Address, _call: ITIP20::unpauseCall) -> Result<()> {
         self.check_role(msg_sender, *UNPAUSE_ROLE)?;
         self.paused.write(false)?;
@@ -295,8 +314,14 @@ impl TIP20Token {
         }))
     }
 
-    /// Stages a new quote token for this token. Requires `DEFAULT_ADMIN_ROLE`.
-    /// The update must be finalized via [`Self::complete_quote_token_update`].
+    /// Stages a new quote token. Must be finalized via [`Self::complete_quote_token_update`].
+    /// Validates that the candidate is a deployed TIP-20 token (via [`TIP20Factory`]) and, for
+    /// USD-denominated tokens, that the candidate is also USD-denominated.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
+    /// - `InvalidQuoteToken` — token is pathUSD, candidate is not a deployed TIP-20, or
+    ///   USD currency mismatch
     pub fn set_next_quote_token(
         &mut self,
         msg_sender: Address,
@@ -331,7 +356,12 @@ impl TIP20Token {
         }))
     }
 
-    /// Finalizes the staged quote token update, checking for cycles. Requires `DEFAULT_ADMIN_ROLE`.
+    /// Finalizes the staged quote token update. Walks the quote-token chain to detect cycles
+    /// before committing the change.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
+    /// - `InvalidQuoteToken` — update would create a cycle in the quote-token graph
     pub fn complete_quote_token_update(
         &mut self,
         msg_sender: Address,
@@ -362,7 +392,14 @@ impl TIP20Token {
     }
 
     // Token operations
-    /// Mints new tokens to specified address
+
+    /// Mints `amount` tokens to the specified `to` address.
+    /// Enforces mint-recipient compliance via [`TIP403Registry`] and validates against supply cap.
+    ///
+    /// # Errors
+    /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
+    /// - `Unauthorized` — caller does not hold the `ISSUER_ROLE` role
+    /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         self._mint(msg_sender, call.to, call.amount)?;
         self.emit_event(TIP20Event::Mint(ITIP20::Mint {
@@ -372,7 +409,7 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Mints new tokens to specified address with memo attached
+    /// Like [`Self::mint`], but attaches a 32-byte memo.
     pub fn mint_with_memo(
         &mut self,
         msg_sender: Address,
@@ -428,7 +465,11 @@ impl TIP20Token {
         }))
     }
 
-    /// Burns tokens from sender's balance and reduces total supply
+    /// Burns `amount` from the caller's balance and reduces total supply.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold the `ISSUER_ROLE` role
+    /// - `InsufficientBalance` — caller balance lower than burn amount
     pub fn burn(&mut self, msg_sender: Address, call: ITIP20::burnCall) -> Result<()> {
         self._burn(msg_sender, call.amount)?;
         self.emit_event(TIP20Event::Burn(ITIP20::Burn {
@@ -437,7 +478,7 @@ impl TIP20Token {
         }))
     }
 
-    /// Burns tokens from sender's balance with memo attached
+    /// Like [`Self::burn`], but attaches a 32-byte memo.
     pub fn burn_with_memo(
         &mut self,
         msg_sender: Address,
@@ -457,7 +498,12 @@ impl TIP20Token {
         }))
     }
 
-    /// Burns tokens from blocked addresses that cannot transfer
+    /// Burns tokens from addresses blocked by [`TIP403Registry`] policy.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `BURN_BLOCKED_ROLE`
+    /// - `PolicyForbids` — target address is not blocked by policy
+    /// - `ProtectedAddress` — cannot burn from [`TipFeeManager`] or [`StablecoinDEX`] addresses
     pub fn burn_blocked(
         &mut self,
         msg_sender: Address,
@@ -513,7 +559,12 @@ impl TIP20Token {
         self.set_total_supply(new_supply)
     }
 
-    /// Sets the allowance for `spender` to spend the caller's tokens.
+    /// Sets `spender`'s allowance to `amount` for the caller's tokens.
+    /// Deducts from the caller's [`AccountKeychain`] spending limit
+    /// when the new allowance exceeds the previous one.
+    ///
+    /// # Errors
+    /// - `SpendingLimitExceeded` — new allowance exceeds access key spending limit
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
         // Check and update spending limits for access keys
         AccountKeychain::new().authorize_approve(
@@ -542,7 +593,7 @@ impl TIP20Token {
         self.permit_nonces[call.owner].read()
     }
 
-    /// Returns the EIP-712 domain separator, computed dynamically
+    /// Returns the EIP-712 domain separator, computed dynamically from the token name and chain ID.
     pub fn domain_separator(&self) -> Result<B256> {
         let name = self.name()?;
         let name_hash = keccak256(name.as_bytes());
@@ -560,10 +611,14 @@ impl TIP20Token {
         Ok(keccak256(encoded))
     }
 
-    /// Executes a permit: sets allowance via a signed EIP-2612 message.
+    /// Sets allowance via a signed [EIP-2612] permit. Validates the ECDSA signature, checks the
+    /// deadline, and increments the nonce. Allowed even when the token is paused.
     ///
-    /// Does NOT take msg_sender — the owner is validated from the signature.
-    /// Follows same pause behavior as approve() (allowed when paused).
+    /// [EIP-2612]: https://eips.ethereum.org/EIPS/eip-2612
+    ///
+    /// # Errors
+    /// - `PermitExpired` — current timestamp exceeds permit deadline
+    /// - `InvalidSignature` — ECDSA recovery failed or recovered signer ≠ owner
     pub fn permit(&mut self, call: ITIP20::permitCall) -> Result<()> {
         // 1. Check deadline
         if self.storage.timestamp() > call.deadline {
@@ -626,7 +681,15 @@ impl TIP20Token {
         }))
     }
 
-    /// Transfers tokens from the caller to `to`.
+    /// Transfers `amount` tokens from the caller to `to`. Enforces compliance via the
+    /// [`TIP403Registry`] and deducts from the caller's [`AccountKeychain`] spending limit.
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `InvalidRecipient` — recipient address is zero
+    /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
+    /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    /// - `InsufficientBalance` — sender balance lower than transfer amount
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         self.check_not_paused()?;
@@ -640,7 +703,15 @@ impl TIP20Token {
         Ok(true)
     }
 
-    /// Transfers tokens on behalf of `from` using the caller's allowance.
+    /// Transfers `amount` on behalf of `from` using the caller's allowance.
+    /// Enforces compliance via the [`TIP403Registry`].
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `InvalidRecipient` — recipient address is zero
+    /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
+    /// - `InsufficientAllowance` — caller allowance lower than transfer amount
+    /// - `InsufficientBalance` — `from` balance lower than transfer amount
     pub fn transfer_from(
         &mut self,
         msg_sender: Address,
@@ -649,7 +720,7 @@ impl TIP20Token {
         self._transfer_from(msg_sender, call.from, call.to, call.amount)
     }
 
-    /// Transfer from `from` to `to` address with memo attached
+    /// Like [`Self::transfer_from`], but attaches a 32-byte memo.
     pub fn transfer_from_with_memo(
         &mut self,
         msg_sender: Address,
@@ -667,8 +738,16 @@ impl TIP20Token {
         Ok(true)
     }
 
-    /// Transfer from `from` to `to` address without approval requirement
-    /// This function is not exposed via the public interface and should only be invoked by precompiles
+    /// Transfers `amount` from `from` to `to` without approval, for use
+    /// by other precompiles only (not exposed via ABI). Enforces
+    /// compliance via the [`TIP403Registry`] and [`AccountKeychain`].
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `InvalidRecipient` — recipient address is zero
+    /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
+    /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    /// - `InsufficientBalance` — `from` balance lower than transfer amount
     pub fn system_transfer_from(
         &mut self,
         from: Address,
@@ -713,7 +792,7 @@ impl TIP20Token {
         Ok(true)
     }
 
-    /// Transfers tokens from the caller to `to` with an attached memo.
+    /// Like [`Self::transfer`], but attaches a 32-byte memo.
     pub fn transfer_with_memo(
         &mut self,
         msg_sender: Address,
@@ -737,8 +816,10 @@ impl TIP20Token {
 
 // Utility functions
 impl TIP20Token {
-    /// Create a TIP20Token from an address.
-    /// Returns an error if the address is not a valid TIP20 token.
+    /// Creates a `TIP20Token` handle from a raw address.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — address does not carry the `0x20C0` TIP-20 prefix
     pub fn from_address(address: Address) -> Result<Self> {
         if !is_tip20_prefix(address) {
             return Err(TIP20Error::invalid_token().into());
@@ -756,8 +837,8 @@ impl TIP20Token {
         Self::__new(address)
     }
 
-    /// Initializes a new TIP-20 token with metadata, quote token, and admin role.
-    /// Only called internally from the factory.
+    /// Initializes the TIP-20 token precompile with metadata, quote token, supply cap, and
+    /// default admin role. Called once by [`TIP20Factory`] during token creation.
     pub fn initialize(
         &mut self,
         msg_sender: Address,
@@ -826,7 +907,7 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Checks if the transfer is authorized.
+    /// Check whether a transfer is authorized by the token's [`TIP403Registry`] policy.
     /// [TIP-1015]: For T2+, uses directional sender/recipient checks.
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
@@ -843,7 +924,10 @@ impl TIP20Token {
         Ok(sender_auth && recipient_auth)
     }
 
-    /// Ensures the transfer is authorized.
+    /// Ensures the transfer is authorized by the token's [`TIP403Registry`] policy.
+    ///
+    /// # Errors
+    /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
         if !self.is_transfer_authorized(from, to)? {
             return Err(TIP20Error::policy_forbids().into());
@@ -852,7 +936,10 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Checks and updates spending limits for access keys.
+    /// Checks and deducts `amount` from the caller's [`AccountKeychain`] spending limit.
+    ///
+    /// # Errors
+    /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
@@ -886,7 +973,13 @@ impl TIP20Token {
         self.emit_event(TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }))
     }
 
-    /// Transfers fee tokens from user to fee manager before transaction execution
+    /// Transfers fee tokens from `from` to the fee manager before transaction execution.
+    /// Respects the token's pause state and deducts from the [`AccountKeychain`] spending limit.
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `InsufficientBalance` — sender balance lower than fee amount
+    /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn transfer_fee_pre_tx(&mut self, from: Address, amount: U256) -> Result<()> {
         // This function respects the token's pause state and will revert if the token is paused.
         // transfer_fee_post_tx is intentionally allowed to execute even when the token is paused.
@@ -935,7 +1028,10 @@ impl TIP20Token {
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
     }
 
-    /// Refunds unused fee tokens to user and emits transfer event for gas amount used
+    /// Refunds unused fee tokens from the fee manager back to `to` and emits a transfer event for
+    /// the actual gas spent. Intentionally allowed when paused so that a pause transaction can
+    /// still receive its fee refund. On T1C+, also restores the [`AccountKeychain`] spending limit
+    /// by the refund amount.
     pub fn transfer_fee_post_tx(
         &mut self,
         to: Address,

@@ -20,12 +20,12 @@ pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
 pub const UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
 
 impl TIP20Token {
-    /// Initialize the UNGRANTABLE_ROLE to be self-administered
+    /// Initializes the roles precompile by setting [`UNGRANTABLE_ROLE`] to be self-administered.
     pub fn initialize_roles(&mut self) -> Result<()> {
         self.set_role_admin_internal(UNGRANTABLE_ROLE, UNGRANTABLE_ROLE)
     }
 
-    /// Grant the default admin role to an account
+    /// Grants `DEFAULT_ADMIN_ROLE` to `admin`. Used during token initialization.
     pub fn grant_default_admin(&mut self, msg_sender: Address, admin: Address) -> Result<()> {
         self.grant_role_internal(admin, DEFAULT_ADMIN_ROLE)?;
 
@@ -49,7 +49,10 @@ impl TIP20Token {
         self.get_role_admin_internal(call.role)
     }
 
-    /// Grants `role` to `account`. Caller must hold the role's admin role.
+    /// Grants `role` to `account`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold the admin role for `role`
     pub fn grant_role(
         &mut self,
         msg_sender: Address,
@@ -69,7 +72,10 @@ impl TIP20Token {
         ))
     }
 
-    /// Revokes `role` from `account`. Caller must hold the role's admin role.
+    /// Revokes `role` from `account`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold the admin role for `role`
     pub fn revoke_role(
         &mut self,
         msg_sender: Address,
@@ -90,6 +96,9 @@ impl TIP20Token {
     }
 
     /// Allows the caller to voluntarily give up their own `role`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `role`
     pub fn renounce_role(
         &mut self,
         msg_sender: Address,
@@ -108,7 +117,10 @@ impl TIP20Token {
         ))
     }
 
-    /// Changes the admin role for `role`. Caller must hold the current admin role.
+    /// Changes the admin role that governs `role`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold the current admin role for `role`
     pub fn set_role_admin(
         &mut self,
         msg_sender: Address,
@@ -128,7 +140,10 @@ impl TIP20Token {
         ))
     }
 
-    /// Reverts with `Unauthorized` if `account` does not hold `role`.
+    /// Reverts if `account` does not hold `role`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — account does not hold `role`
     pub fn check_role(&self, account: Address, role: B256) -> Result<()> {
         self.check_role_internal(account, role)
     }

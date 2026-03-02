@@ -19,7 +19,17 @@ use tempo_precompiles_macros::Storable;
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
 impl TIP20Token {
-    /// Allows an authorized user to distribute reward tokens to opted-in recipients.
+    /// Distributes `amount` of reward tokens from the caller into the opted-in reward pool.
+    /// Transfers tokens to the contract and increases the global reward-per-token accumulator
+    /// proportionally to the opted-in supply.
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `InvalidAmount` — `amount` is zero
+    /// - `PolicyForbids` — TIP-403 policy rejects the transfer
+    /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    /// - `InsufficientBalance` — caller balance lower than `amount`
+    /// - `NoOptedInSupply` — no tokens are currently opted into rewards
     pub fn distribute_reward(
         &mut self,
         msg_sender: Address,
@@ -112,6 +122,10 @@ impl TIP20Token {
     ///
     /// This function allows a token holder to designate who should receive their
     /// share of rewards. Setting to zero address opts out of rewards.
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `PolicyForbids` — TIP-403 policy rejects the sender→recipient transfer authorization
     pub fn set_reward_recipient(
         &mut self,
         msg_sender: Address,
@@ -165,6 +179,10 @@ impl TIP20Token {
     ///
     /// This function allows a reward recipient to claim their accumulated rewards
     /// and receive them as token transfers to their own balance.
+    ///
+    /// # Errors
+    /// - `Paused` — token transfers are currently paused
+    /// - `PolicyForbids` — TIP-403 policy rejects the contract→caller transfer authorization
     pub fn claim_rewards(&mut self, msg_sender: Address) -> Result<U256> {
         self.check_not_paused()?;
         self.ensure_transfer_authorized(self.address, msg_sender)?;
