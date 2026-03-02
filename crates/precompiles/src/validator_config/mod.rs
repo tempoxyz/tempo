@@ -77,7 +77,6 @@ impl ValidatorConfig {
     /// Transfers contract ownership to `newOwner`. Owner-only.
     ///
     /// # Errors
-    ///
     /// - `unauthorized` — if `sender` is not the contract owner
     pub fn change_owner(
         &mut self,
@@ -96,7 +95,6 @@ impl ValidatorConfig {
     /// Returns the validator address stored at `index` in the ordered array.
     ///
     /// # Errors
-    ///
     /// - `Panic(ArrayOutOfBounds)` — if `index` is out of range
     pub fn validators_array(&self, index: u64) -> Result<Address> {
         match self.validators_array.at(index as usize)? {
@@ -162,7 +160,6 @@ impl ValidatorConfig {
     /// addresses are valid `<ip>:<port>` pairs before appending to the registry.
     ///
     /// # Errors
-    ///
     /// - `invalid_public_key` — if `publicKey` is zero (sentinel for non-existence)
     /// - `unauthorized` — if `sender` is not the contract owner
     /// - `validator_already_exists` — if a validator with `newValidatorAddress` already exists
@@ -253,7 +250,6 @@ impl ValidatorConfig {
     /// only the contract owner (admin) can effectively call this function.
     ///
     /// # Errors
-    ///
     /// - `invalid_public_key` — if `publicKey` is zero (sentinel for non-existence)
     /// - `validator_not_found` — if `sender` is not a registered validator
     /// - `validator_already_exists` — if rotating to an address that already has a validator
@@ -339,7 +335,6 @@ impl ValidatorConfig {
     /// Deprecated: prefer [`Self::change_validator_status_by_index`] to prevent front-running.
     ///
     /// # Errors
-    ///
     /// - `unauthorized` — if `sender` is not the contract owner
     /// - `validator_not_found` — if no validator exists at `call.validator`
     pub fn change_validator_status(
@@ -363,7 +358,6 @@ impl ValidatorConfig {
     /// Added in T1 to prevent front-running attacks where a validator rotates its address.
     ///
     /// # Errors
-    ///
     /// - `unauthorized` — if `sender` is not the contract owner
     /// - `validator_not_found` — if `call.index` is out of bounds
     pub fn change_validator_status_by_index(
@@ -401,7 +395,6 @@ impl ValidatorConfig {
     /// Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
     ///
     /// # Errors
-    ///
     /// - `unauthorized` — if `sender` is not the contract owner
     pub fn set_next_full_dkg_ceremony(
         &mut self,

@@ -263,7 +263,6 @@ impl AccountKeychain {
     /// limited one. Delegates to [`Self::load_active_key`] for existence/revocation checks.
     ///
     /// # Errors
-    ///
     /// - `UnauthorizedCaller` — the transaction was signed by a session key, not the main key
     /// - `KeyAlreadyRevoked` — the target key has been permanently revoked
     /// - `KeyNotFound` — no key is registered under the given `keyId`
@@ -536,7 +535,6 @@ impl AccountKeychain {
     /// Should be called before executing a transfer.
     ///
     /// # Errors
-    ///
     /// - `KeyAlreadyRevoked` — the session key has been permanently revoked
     /// - `KeyNotFound` — no key is registered for the current transaction key
     /// - `SpendingLimitExceeded` — `amount` exceeds the key's remaining limit for `token`
@@ -571,7 +569,6 @@ impl AccountKeychain {
     /// Should be called before executing an approval.
     ///
     /// # Errors
-    ///
     /// - `KeyAlreadyRevoked` — the session key has been permanently revoked
     /// - `KeyNotFound` — no key is registered for the current transaction key
     /// - `SpendingLimitExceeded` — the approval increase exceeds the remaining limit for `token`

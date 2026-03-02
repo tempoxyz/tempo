@@ -201,7 +201,6 @@ impl ValidatorConfigV2 {
     /// Returns the validator at the given array `index`.
     ///
     /// # Errors
-    ///
     /// - `ValidatorNotFound` — if `index` is out of bounds
     pub fn validator_by_index(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
         if index >= self.validator_count()? {
@@ -213,7 +212,6 @@ impl ValidatorConfigV2 {
     /// Looks up a validator by its Ethereum address.
     ///
     /// # Errors
-    ///
     /// - `ValidatorNotFound` — if no validator is registered for `addr`
     pub fn validator_by_address(&self, addr: Address) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.address_to_index[addr].read()?;
@@ -226,7 +224,6 @@ impl ValidatorConfigV2 {
     /// Looks up a validator by its Ed25519 public key.
     ///
     /// # Errors
-    ///
     /// - `ValidatorNotFound` — if no validator is registered for `pubkey`
     pub fn validator_by_public_key(&self, pubkey: B256) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.pubkey_to_index[pubkey].read()?;
@@ -426,7 +423,6 @@ impl ValidatorConfigV2 {
     /// validator's signature before appending the record.
     ///
     /// # Errors
-    ///
     /// - `Unauthorized` — if `sender` is not the contract owner
     /// - `NotInitialized` — if the contract is not yet initialized
     /// - `InvalidPublicKey` — if `publicKey` is zero or cannot be decoded
@@ -476,7 +472,6 @@ impl ValidatorConfigV2 {
     /// Releases the validator's ingress IP so it can be reused by a new validator.
     ///
     /// # Errors
-    ///
     /// - `Unauthorized` — if `sender` is neither the validator nor the owner
     /// - `ValidatorNotFound` — if no validator is registered for the address
     /// - `ValidatorAlreadyDeleted` — if the validator is already deactivated
@@ -501,7 +496,6 @@ impl ValidatorConfigV2 {
     /// Transfers contract ownership to a new address. Owner-only.
     ///
     /// # Errors
-    ///
     /// - `NotInitialized` — if the contract is not yet initialized
     /// - `Unauthorized` — if `sender` is not the contract owner
     pub fn transfer_ownership(
@@ -517,7 +511,6 @@ impl ValidatorConfigV2 {
     /// Sets the epoch at which a fresh DKG ceremony will be triggered. Owner-only.
     ///
     /// # Errors
-    ///
     /// - `NotInitialized` — if the contract is not yet initialized
     /// - `Unauthorized` — if `sender` is not the contract owner
     pub fn set_next_full_dkg_ceremony(
@@ -539,7 +532,6 @@ impl ValidatorConfigV2 {
     /// Ed25519 signature under [`VALIDATOR_NS_ROTATE`].
     ///
     /// # Errors
-    ///
     /// - `NotInitialized` — if the contract is not yet initialized
     /// - `Unauthorized` — if `sender` is neither the validator nor the owner
     /// - `InvalidPublicKey` — if `publicKey` is zero or cannot be decoded
@@ -591,7 +583,6 @@ impl ValidatorConfigV2 {
     /// Updates a validator's ingress and egress endpoints in-place. Owner or validator.
     ///
     /// # Errors
-    ///
     /// - `Unauthorized` — if `sender` is neither the validator nor the owner
     /// - `ValidatorNotFound` — if no active validator exists for the address
     /// - `ValidatorAlreadyDeleted` — if the validator is already deactivated
@@ -622,7 +613,6 @@ impl ValidatorConfigV2 {
     /// Transfers a validator's controlling address to a new address. Owner or validator.
     ///
     /// # Errors
-    ///
     /// - `NotInitialized` — if the contract is not yet initialized
     /// - `Unauthorized` — if `sender` is neither the validator nor the owner
     /// - `InvalidValidatorAddress` — if `newAddress` is zero
@@ -681,7 +671,6 @@ impl ValidatorConfigV2 {
     /// Must be called sequentially (`idx` must equal the current V2 count).
     ///
     /// # Errors
-    ///
     /// - `AlreadyInitialized` — if the contract is already initialized
     /// - `Unauthorized` — if `sender` is not the contract owner
     /// - `InvalidMigrationIndex` — if `idx` does not equal the current V2 validator count
@@ -741,7 +730,6 @@ impl ValidatorConfigV2 {
     /// Also copies the V1 `next_dkg_ceremony` value into V2 storage.
     ///
     /// # Errors
-    ///
     /// - `AlreadyInitialized` — if the contract is already initialized
     /// - `Unauthorized` — if `sender` is not the contract owner
     /// - `MigrationNotComplete` — if fewer validators have been migrated than exist in V1

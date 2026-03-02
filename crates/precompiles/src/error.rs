@@ -137,7 +137,6 @@ impl TempoPrecompileError {
     /// ABI-encodes this error and wraps it as a reverted [`PrecompileResult`].
     ///
     /// # Errors
-    ///
     /// - `PrecompileError::OutOfGas` — if the variant is [`OutOfGas`](Self::OutOfGas)
     /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
     pub fn into_precompile_result(self, gas: u64) -> PrecompileResult {
