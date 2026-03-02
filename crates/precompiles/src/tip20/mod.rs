@@ -1,3 +1,12 @@
+//! [TIP-20] token standard — Tempo's native fungible token implementation.
+//!
+//! Provides ERC-20-like balances, allowances, and transfers with Tempo extensions:
+//! role-based access control, pausability, supply caps, transfer policies ([TIP-403]),
+//! opt-in staking rewards, EIP-2612 permits, and quote-token graphs.
+//!
+//! [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
+//! [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
+
 pub mod dispatch;
 pub mod rewards;
 pub mod roles;
@@ -124,42 +133,52 @@ pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROL
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
 
 impl TIP20Token {
+    /// Returns the token name.
     pub fn name(&self) -> Result<String> {
         self.name.read()
     }
 
+    /// Returns the token symbol.
     pub fn symbol(&self) -> Result<String> {
         self.symbol.read()
     }
 
+    /// Returns the token decimals (always 6 for TIP-20).
     pub fn decimals(&self) -> Result<u8> {
         Ok(TIP20_DECIMALS)
     }
 
+    /// Returns the token's currency denomination (e.g. `"USD"`).
     pub fn currency(&self) -> Result<String> {
         self.currency.read()
     }
 
+    /// Returns the current total supply.
     pub fn total_supply(&self) -> Result<U256> {
         self.total_supply.read()
     }
 
+    /// Returns the active quote token address used for pricing.
     pub fn quote_token(&self) -> Result<Address> {
         self.quote_token.read()
     }
 
+    /// Returns the pending next quote token address (set but not yet finalized).
     pub fn next_quote_token(&self) -> Result<Address> {
         self.next_quote_token.read()
     }
 
+    /// Returns the maximum mintable supply.
     pub fn supply_cap(&self) -> Result<U256> {
         self.supply_cap.read()
     }
 
+    /// Returns whether the token is currently paused.
     pub fn paused(&self) -> Result<bool> {
         self.paused.read()
     }
 
+    /// Returns the TIP-403 transfer policy ID governing this token's transfers.
     pub fn transfer_policy_id(&self) -> Result<u64> {
         self.transfer_policy_id.read()
     }
@@ -196,16 +215,17 @@ impl TIP20Token {
         *BURN_BLOCKED_ROLE
     }
 
-    // View functions
+    /// Returns the token balance of `account`.
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
         self.balances[call.account].read()
     }
 
+    /// Returns the remaining allowance that `spender` can transfer on behalf of `owner`.
     pub fn allowance(&self, call: ITIP20::allowanceCall) -> Result<U256> {
         self.allowances[call.owner][call.spender].read()
     }
 
-    // Admin functions
+    /// Updates the TIP-403 transfer policy. Requires `DEFAULT_ADMIN_ROLE`.
     pub fn change_transfer_policy_id(
         &mut self,
         msg_sender: Address,
@@ -230,6 +250,7 @@ impl TIP20Token {
         ))
     }
 
+    /// Sets a new supply cap. Must be ≥ current supply and ≤ `U128_MAX`. Requires `DEFAULT_ADMIN_ROLE`.
     pub fn set_supply_cap(
         &mut self,
         msg_sender: Address,
@@ -252,6 +273,7 @@ impl TIP20Token {
         }))
     }
 
+    /// Pauses all token transfers. Requires `PAUSE_ROLE`.
     pub fn pause(&mut self, msg_sender: Address, _call: ITIP20::pauseCall) -> Result<()> {
         self.check_role(msg_sender, *PAUSE_ROLE)?;
         self.paused.write(true)?;
@@ -262,6 +284,7 @@ impl TIP20Token {
         }))
     }
 
+    /// Unpauses token transfers. Requires `UNPAUSE_ROLE`.
     pub fn unpause(&mut self, msg_sender: Address, _call: ITIP20::unpauseCall) -> Result<()> {
         self.check_role(msg_sender, *UNPAUSE_ROLE)?;
         self.paused.write(false)?;
@@ -272,6 +295,8 @@ impl TIP20Token {
         }))
     }
 
+    /// Stages a new quote token for this token. Requires `DEFAULT_ADMIN_ROLE`.
+    /// The update must be finalized via [`Self::complete_quote_token_update`].
     pub fn set_next_quote_token(
         &mut self,
         msg_sender: Address,
@@ -306,6 +331,7 @@ impl TIP20Token {
         }))
     }
 
+    /// Finalizes the staged quote token update, checking for cycles. Requires `DEFAULT_ADMIN_ROLE`.
     pub fn complete_quote_token_update(
         &mut self,
         msg_sender: Address,
@@ -487,7 +513,7 @@ impl TIP20Token {
         self.set_total_supply(new_supply)
     }
 
-    // Standard token functions
+    /// Sets the allowance for `spender` to spend the caller's tokens.
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
         // Check and update spending limits for access keys
         AccountKeychain::new().authorize_approve(
@@ -600,6 +626,7 @@ impl TIP20Token {
         }))
     }
 
+    /// Transfers tokens from the caller to `to`.
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         self.check_not_paused()?;
@@ -613,6 +640,7 @@ impl TIP20Token {
         Ok(true)
     }
 
+    /// Transfers tokens on behalf of `from` using the caller's allowance.
     pub fn transfer_from(
         &mut self,
         msg_sender: Address,
@@ -685,7 +713,7 @@ impl TIP20Token {
         Ok(true)
     }
 
-    // TIP20 extension functions
+    /// Transfers tokens from the caller to `to` with an attached memo.
     pub fn transfer_with_memo(
         &mut self,
         msg_sender: Address,
@@ -728,7 +756,8 @@ impl TIP20Token {
         Self::__new(address)
     }
 
-    /// Only called internally from the factory, which won't try to re-initialize a token.
+    /// Initializes a new TIP-20 token with metadata, quote token, and admin role.
+    /// Only called internally from the factory.
     pub fn initialize(
         &mut self,
         msg_sender: Address,

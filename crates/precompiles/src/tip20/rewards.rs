@@ -1,3 +1,11 @@
+//! Opt-in staking [rewards system] for TIP-20 tokens.
+//!
+//! Token holders opt in by setting a reward recipient via [`TIP20Token::set_reward_recipient`].
+//! Rewards are distributed pro-rata across the opted-in supply and tracked via a global
+//! reward-per-token accumulator scaled by [`ACC_PRECISION`].
+//!
+//! [Reward system]: <https://docs.tempo.xyz/protocol/tip20-rewards/overview>
+
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
@@ -223,7 +231,7 @@ impl TIP20Token {
         self.opted_in_supply.read()
     }
 
-    /// Sets the total supply of tokens opted into rewards in storage.
+    /// Sets the total supply of tokens opted into rewards.
     pub fn set_opted_in_supply(&mut self, value: u128) -> Result<()> {
         self.opted_in_supply.write(value)
     }
@@ -330,8 +338,11 @@ impl TIP20Token {
 /// Per-user reward tracking state for the opt-in staking rewards system.
 #[derive(Debug, Clone, Storable)]
 pub struct UserRewardInfo {
+    /// Address that receives this user's accrued rewards (`Address::ZERO` = opted out).
     pub reward_recipient: Address,
+    /// Snapshot of the global reward-per-token at the user's last update.
     pub reward_per_token: U256,
+    /// Accumulated but unclaimed reward balance.
     pub reward_balance: U256,
 }
 

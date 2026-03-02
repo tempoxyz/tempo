@@ -1,3 +1,9 @@
+//! Storable type system for EVM storage.
+//!
+//! Defines the core traits ([`StorableType`], [`Storable`], [`FromWord`], [`Packable`])
+//! and types ([`Slot`], [`Mapping`], [`Set`], [`VecHandler`], [`ArrayHandler`]) that
+//! enable type-safe access to EVM storage slots with automatic packing.
+
 mod slot;
 pub use slot::*;
 

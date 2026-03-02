@@ -1,3 +1,7 @@
+//! [Fee manager] precompile for transaction fee collection, distribution, and token swaps.
+//!
+//! [Fee manager]: <https://docs.tempo.xyz/protocol/fees>
+
 pub mod amm;
 pub mod dispatch;
 
@@ -51,10 +55,12 @@ pub struct TipFeeManager {
 }
 
 impl TipFeeManager {
-    // Constants
-    pub const FEE_BPS: u64 = 25; // 0.25% fee
+    /// Swap fee in basis points (0.25%).
+    pub const FEE_BPS: u64 = 25;
+    /// Basis-point denominator (10 000 = 100%).
     pub const BASIS_POINTS: u64 = 10000;
-    pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256); // 1e9
+    /// Minimum TIP-20 balance required for fee operations (1e9).
+    pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256);
 
     /// Initializes the contract
     ///
@@ -63,6 +69,7 @@ impl TipFeeManager {
         self.__initialize()
     }
 
+    /// Returns the validator's preferred fee token, falling back to [`DEFAULT_FEE_TOKEN`].
     pub fn get_validator_token(&self, beneficiary: Address) -> Result<Address> {
         let token = self.validator_tokens[beneficiary].read()?;
 
@@ -73,6 +80,10 @@ impl TipFeeManager {
         }
     }
 
+    /// Sets the caller's preferred fee token as a validator.
+    ///
+    /// Rejects the call if `sender` is the current block's beneficiary (prevents
+    /// mid-block fee-token changes) or if the token is not a valid USD-denominated TIP-20.
     pub fn set_validator_token(
         &mut self,
         sender: Address,
@@ -103,6 +114,7 @@ impl TipFeeManager {
         ))
     }
 
+    /// Sets the caller's preferred fee token as a user. Must be a valid USD-denominated TIP-20.
     pub fn set_user_token(
         &mut self,
         sender: Address,
@@ -217,7 +229,7 @@ impl TipFeeManager {
         Ok(())
     }
 
-    /// Transfers the validator's fee balance for a specific token to their address.
+    /// Transfers a validator's accumulated fee balance to their address and zeroes the ledger.
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
         let amount = self.collected_fees[validator][token].read()?;
         if amount.is_zero() {
@@ -247,18 +259,22 @@ impl TipFeeManager {
         Ok(())
     }
 
+    /// Returns the fee token for the current transaction (transient, T2+).
     pub fn get_fee_token(&self) -> Result<Address> {
         self.tx_fee_token.t_read()
     }
 
+    /// Stores the fee token for the current transaction in transient storage.
     pub fn set_fee_token(&mut self, token: Address) -> Result<()> {
         self.tx_fee_token.t_write(token)
     }
 
+    /// Reads the stored fee token preference for a user.
     pub fn user_tokens(&self, call: IFeeManager::userTokensCall) -> Result<Address> {
         self.user_tokens[call.user].read()
     }
 
+    /// Reads the stored fee token preference for a validator, defaulting to [`DEFAULT_FEE_TOKEN`].
     pub fn validator_tokens(&self, call: IFeeManager::validatorTokensCall) -> Result<Address> {
         let token = self.validator_tokens[call.validator].read()?;
 

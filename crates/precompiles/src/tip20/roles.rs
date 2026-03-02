@@ -1,3 +1,11 @@
+//! Role-based [access control] for TIP-20 tokens.
+//!
+//! Implements `AccessControl`: each role has an admin role that can grant/revoke it.
+//! [`DEFAULT_ADMIN_ROLE`] is the root admin; [`UNGRANTABLE_ROLE`] is self-administered
+//! and cannot be granted externally.
+//!
+//! [Access control]: <https://docs.tempo.xyz/protocol/tip20/overview#role-based-access-control-rbac>
+
 use alloy::primitives::{Address, B256};
 
 use crate::{
@@ -31,15 +39,17 @@ impl TIP20Token {
         ))
     }
 
-    // Public functions that handle calldata and emit events
+    /// Returns whether `account` holds the given `role`.
     pub fn has_role(&self, call: IRolesAuth::hasRoleCall) -> Result<bool> {
         self.has_role_internal(call.account, call.role)
     }
 
+    /// Returns the admin role that governs `role`.
     pub fn get_role_admin(&self, call: IRolesAuth::getRoleAdminCall) -> Result<B256> {
         self.get_role_admin_internal(call.role)
     }
 
+    /// Grants `role` to `account`. Caller must hold the role's admin role.
     pub fn grant_role(
         &mut self,
         msg_sender: Address,
@@ -59,6 +69,7 @@ impl TIP20Token {
         ))
     }
 
+    /// Revokes `role` from `account`. Caller must hold the role's admin role.
     pub fn revoke_role(
         &mut self,
         msg_sender: Address,
@@ -78,6 +89,7 @@ impl TIP20Token {
         ))
     }
 
+    /// Allows the caller to voluntarily give up their own `role`.
     pub fn renounce_role(
         &mut self,
         msg_sender: Address,
@@ -96,6 +108,7 @@ impl TIP20Token {
         ))
     }
 
+    /// Changes the admin role for `role`. Caller must hold the current admin role.
     pub fn set_role_admin(
         &mut self,
         msg_sender: Address,
@@ -115,16 +128,17 @@ impl TIP20Token {
         ))
     }
 
-    // Utility functions for checking roles without calldata
+    /// Reverts with `Unauthorized` if `account` does not hold `role`.
     pub fn check_role(&self, account: Address, role: B256) -> Result<()> {
         self.check_role_internal(account, role)
     }
 
-    // Internal implementation functions
+    /// Low-level role check without calldata decoding.
     pub fn has_role_internal(&self, account: Address, role: B256) -> Result<bool> {
         self.roles[account][role].read()
     }
 
+    /// Low-level role grant without authorization checks or events.
     pub fn grant_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
         self.roles[account][role].write(true)
     }

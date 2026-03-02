@@ -1,3 +1,8 @@
+//! 2D nonce management precompile and expiring nonce replay protection,
+//! enabling concurrent transaction execution as part of [Tempo Transactions].
+//!
+//! [Tempo Transactions]: <https://docs.tempo.xyz/protocol/transactions>
+
 pub mod dispatch;
 
 pub use tempo_contracts::precompiles::INonce;

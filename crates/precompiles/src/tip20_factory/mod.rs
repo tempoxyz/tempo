@@ -1,4 +1,7 @@
-// Module for tip20_factory precompile
+//! [TIP-20] token factory precompile — deploys new [TIP-20] tokens at deterministic addresses.
+//!
+//! [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
+
 pub mod dispatch;
 
 pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryError, TIP20FactoryEvent};
@@ -89,6 +92,10 @@ impl TIP20Factory {
             .with_account_info(token, |info| Ok(!info.is_empty_code_hash()))
     }
 
+    /// Deploys a new TIP-20 token at a deterministic address derived from `sender` and `salt`.
+    ///
+    /// Validates that the token does not already exist, the quote token is a deployed TIP-20
+    /// of a compatible currency, and the derived address is outside the reserved range.
     pub fn create_token(
         &mut self,
         sender: Address,
@@ -148,8 +155,9 @@ impl TIP20Factory {
         Ok(token_address)
     }
 
-    /// Creates a token at a reserved address
-    /// Internal function used to deploy TIP20s at reserved addresses at genesis or hardforks
+    /// Deploys a TIP-20 token at a reserved address (lower 8 bytes < `RESERVED_SIZE`).
+    ///
+    /// Used during genesis or hardforks to bootstrap protocol tokens like pathUSD.
     pub fn create_token_reserved_address(
         &mut self,
         address: Address,

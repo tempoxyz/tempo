@@ -1,3 +1,10 @@
+//! [TIP-403] transfer policy registry precompile.
+//!
+//! Manages whitelist, blacklist, and compound transfer policies that TIP-20
+//! tokens reference to gate sender/recipient authorization.
+//!
+//! [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
+
 pub mod dispatch;
 
 use crate::StorageCtx;
@@ -52,8 +59,11 @@ pub struct PolicyRecord {
 /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
 #[derive(Debug, Clone, Default, Storable)]
 pub struct CompoundPolicyData {
+    /// Sub-policy ID used to authorize the sender.
     pub sender_policy_id: u64,
+    /// Sub-policy ID used to authorize the recipient.
     pub recipient_policy_id: u64,
+    /// Sub-policy ID used to authorize mint recipients.
     pub mint_recipient_policy_id: u64,
 }
 
@@ -77,13 +87,16 @@ pub enum AuthRole {
 #[derive(Debug, Clone, Storable)]
 pub struct PolicyData {
     // NOTE: enums are defined as u8, and leverage the sol! macro's `TryInto<u8>` impl
+    /// Discriminant of the [`PolicyType`] enum, stored as `u8` for slot packing.
     pub policy_type: u8,
+    /// Address authorized to modify this policy.
     pub admin: Address,
 }
 
 // NOTE(rusowsky): can be removed once revm uses precompiles rather than directly
 // interacting with storage slots.
 impl PolicyData {
+    /// Decodes a [`PolicyData`] from a raw EVM storage slot word.
     pub fn decode_from_slot(slot_value: U256) -> Self {
         use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
 
@@ -92,6 +105,7 @@ impl PolicyData {
             .expect("unable to decode PoliciData from slot")
     }
 
+    /// Encodes this [`PolicyData`] into a single EVM storage slot word.
     pub fn encode_to_slot(&self) -> U256 {
         use crate::storage::packing::insert_into_word;
         use __packing_policy_data::{ADMIN_LOC as A_LOC, POLICY_TYPE_LOC as PT_LOC};
@@ -139,12 +153,13 @@ impl TIP403Registry {
         self.__initialize()
     }
 
-    // View functions
+    /// Returns the next policy ID to be assigned (always ≥ 2).
     pub fn policy_id_counter(&self) -> Result<u64> {
         // Initialize policy ID counter to 2 if it's 0 (skip special policies)
         self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
+    /// Returns `true` if the given policy ID exists (built-in or user-created).
     pub fn policy_exists(&self, call: ITIP403Registry::policyExistsCall) -> Result<bool> {
         // Built-in policies (0 and 1) always exist
         if self.builtin_authorization(call.policyId).is_some() {
@@ -156,6 +171,7 @@ impl TIP403Registry {
         Ok(call.policyId < counter)
     }
 
+    /// Returns the type and admin of a policy. Reverts if the policy does not exist.
     pub fn policy_data(
         &self,
         call: ITIP403Registry::policyDataCall,
@@ -208,6 +224,7 @@ impl TIP403Registry {
         })
     }
 
+    /// Creates a new simple (whitelist or blacklist) policy and returns its ID.
     pub fn create_policy(
         &mut self,
         msg_sender: Address,
@@ -249,6 +266,7 @@ impl TIP403Registry {
         Ok(new_policy_id)
     }
 
+    /// Creates a simple policy and pre-populates it with an initial set of accounts.
     pub fn create_policy_with_accounts(
         &mut self,
         msg_sender: Address,
@@ -321,6 +339,7 @@ impl TIP403Registry {
         Ok(new_policy_id)
     }
 
+    /// Transfers admin control of a policy. Only callable by the current admin.
     pub fn set_policy_admin(
         &mut self,
         msg_sender: Address,
@@ -351,6 +370,7 @@ impl TIP403Registry {
         ))
     }
 
+    /// Adds or removes an account from a whitelist policy. Admin-only.
     pub fn modify_policy_whitelist(
         &mut self,
         msg_sender: Address,
@@ -380,6 +400,7 @@ impl TIP403Registry {
         ))
     }
 
+    /// Adds or removes an account from a blacklist policy. Admin-only.
     pub fn modify_policy_blacklist(
         &mut self,
         msg_sender: Address,
@@ -607,7 +628,9 @@ impl AuthRole {
     }
 }
 
+/// Extension trait for [`PolicyType`] validation.
 trait PolicyTypeExt {
+    /// Validates that this is a simple policy type and returns its `u8` discriminant.
     fn ensure_is_simple(&self) -> Result<u8>;
 }
 

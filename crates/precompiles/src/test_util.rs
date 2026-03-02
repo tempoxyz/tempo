@@ -379,6 +379,7 @@ fn is_initialized(address: Address) -> Result<bool> {
     crate::storage::StorageCtx.has_bytecode(address)
 }
 
+/// Looks up the admin of a TIP-20 token by scanning `TokenCreated` events from the factory.
 #[cfg(any(test, feature = "test-utils"))]
 fn get_tip20_admin(token: Address) -> Option<Address> {
     use alloy::{primitives::Log, sol_types::SolEvent};

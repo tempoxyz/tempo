@@ -1,4 +1,10 @@
-//! Stablecoin DEX types and utilities.
+//! On-chain CLOB (Central Limit Order Book) for [stablecoin trading].
+//!
+//! Supports limit orders, market swaps, and flip orders across USD-denominated
+//! TIP-20 token pairs with tick-based pricing and price-time priority.
+//!
+//! [stablecoin trading]: <https://docs.tempo.xyz/protocol/exchange>
+
 pub mod dispatch;
 pub mod error;
 pub mod order;
@@ -205,6 +211,7 @@ impl StablecoinDEX {
         }
     }
 
+    /// Quotes the input amount required to receive exactly `amount_out` tokens.
     pub fn quote_swap_exact_amount_out(
         &self,
         token_in: Address,
@@ -223,6 +230,7 @@ impl StablecoinDEX {
         Ok(current_amount)
     }
 
+    /// Quotes the output amount received for exactly `amount_in` input tokens.
     pub fn quote_swap_exact_amount_in(
         &self,
         token_in: Address,
@@ -241,6 +249,9 @@ impl StablecoinDEX {
         Ok(current_amount)
     }
 
+    /// Swaps an exact input amount, routing through one or more orderbooks.
+    ///
+    /// Reverts if the output falls below `min_amount_out`.
     pub fn swap_exact_amount_in(
         &mut self,
         sender: Address,
@@ -272,6 +283,9 @@ impl StablecoinDEX {
         Ok(amount)
     }
 
+    /// Swaps to receive an exact output amount, routing through one or more orderbooks.
+    ///
+    /// Reverts if the required input exceeds `max_amount_in`.
     pub fn swap_exact_amount_out(
         &mut self,
         sender: Address,
@@ -343,6 +357,9 @@ impl StablecoinDEX {
         Ok(tick)
     }
 
+    /// Creates a new trading pair between `base` and its quote token.
+    ///
+    /// Both tokens must be USD-denominated TIP-20 tokens. Reverts if the pair already exists.
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token
         if !TIP20Factory::new().is_tip20(base)? {

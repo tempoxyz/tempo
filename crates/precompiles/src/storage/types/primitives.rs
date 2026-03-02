@@ -1,4 +1,6 @@
-//! Single-word primitives (up-to 32 bytes) implementation for the storage traits.
+//! `StorableType`, `FromWord`, and `StorageKey` implementations for single-word primitives.
+//!
+//! Covers Rust integers, Alloy integers, Alloy fixed bytes, `bool`, and `Address`.
 
 use alloy::primitives::{Address, U256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};

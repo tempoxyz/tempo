@@ -9,9 +9,11 @@ use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinDEXError;
 use tempo_precompiles_macros::Storable;
 
-/// Constants from Solidity implementation
+/// Minimum allowed tick value (corresponds to [`MIN_PRICE`]).
 pub const MIN_TICK: i16 = -2000;
+/// Maximum allowed tick value (corresponds to [`MAX_PRICE`]).
 pub const MAX_TICK: i16 = 2000;
+/// Scaling factor for tick-to-price conversion. A tick of 0 maps to `PRICE_SCALE` (peg).
 pub const PRICE_SCALE: u32 = 100_000;
 
 /// Rounding direction for price conversions.
@@ -83,9 +85,9 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
     result.try_into().ok()
 }
 
-// PRICE_SCALE + MIN_TICK = 100_000 - 2000
+/// Lowest representable scaled price (`PRICE_SCALE + MIN_TICK`).
 pub(crate) const MIN_PRICE: u32 = 98_000;
-// PRICE_SCALE + MAX_TICK = 100_000 + 2000
+/// Highest representable scaled price (`PRICE_SCALE + MAX_TICK`).
 pub(crate) const MAX_PRICE: u32 = 102_000;
 
 /// Represents a price level in the orderbook with a doubly-linked list of orders
@@ -208,6 +210,7 @@ impl Orderbook {
 }
 
 impl OrderbookHandler {
+    /// Returns a reference to the tick level handler for the given tick and side.
     pub fn tick_level_handler(&self, tick: i16, is_bid: bool) -> &TickLevelHandler {
         if is_bid {
             &self.bids[tick]
@@ -216,6 +219,7 @@ impl OrderbookHandler {
         }
     }
 
+    /// Returns a mutable reference to the tick level handler for the given tick and side.
     pub fn tick_level_handler_mut(&mut self, tick: i16, is_bid: bool) -> &mut TickLevelHandler {
         if is_bid {
             &mut self.bids[tick]
@@ -291,7 +295,7 @@ impl OrderbookHandler {
         Ok((word & mask) != U256::ZERO)
     }
 
-    /// Find next initialized ask tick higher than current tick
+    /// Finds the next initialized tick with liquidity. Searches downward for bids, upward for asks.
     pub fn next_initialized_tick(&self, tick: i16, is_bid: bool) -> Result<(i16, bool)> {
         if is_bid {
             self.next_initialized_bid_tick(tick)

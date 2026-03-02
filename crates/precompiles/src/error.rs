@@ -1,3 +1,9 @@
+//! Unified error handling for Tempo precompiles.
+//!
+//! Provides [`TempoPrecompileError`] — the top-level error enum — along with an
+//! ABI-selector-based decoder registry for mapping raw revert bytes back to
+//! typed error variants.
+
 use std::{
     collections::HashMap,
     sync::{Arc, LazyLock},
@@ -43,7 +49,7 @@ pub enum TempoPrecompileError {
     #[error("TIP403 registry error: {0:?}")]
     TIP403RegistryError(TIP403RegistryError),
 
-    /// Error from TIP  fee manager
+    /// Error from TIP fee manager
     #[error("TIP fee manager error: {0:?}")]
     FeeManagerError(FeeManagerError),
 
@@ -55,6 +61,7 @@ pub enum TempoPrecompileError {
     #[error("Tempo Transaction nonce error: {0:?}")]
     NonceError(NonceError),
 
+    /// EVM panic (i.e. arithmetic under/overflow, out-of-bounds access).
     #[error("Panic({0:?})")]
     Panic(PanicKind),
 
@@ -70,12 +77,15 @@ pub enum TempoPrecompileError {
     #[error("Account keychain error: {0:?}")]
     AccountKeychainError(AccountKeychainError),
 
+    /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
 
+    /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
     UnknownFunctionSelector([u8; 4]),
 
+    /// Unrecoverable internal error (e.g. database failure).
     #[error("Fatal precompile error: {0:?}")]
     #[from(skip)]
     Fatal(String),
@@ -114,14 +124,19 @@ impl TempoPrecompileError {
         }
     }
 
+    /// Creates an arithmetic under/overflow panic error.
     pub fn under_overflow() -> Self {
         Self::Panic(PanicKind::UnderOverflow)
     }
 
+    /// Creates an array out-of-bounds panic error.
     pub fn array_oob() -> Self {
         Self::Panic(PanicKind::ArrayOutOfBounds)
     }
 
+    /// ABI-encodes this error and wraps it as a reverted [`PrecompileResult`].
+    ///
+    /// System errors (`OutOfGas`, `Fatal`) are returned as `Err` variants instead.
     pub fn into_precompile_result(self, gas: u64) -> PrecompileResult {
         let bytes = match self {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
@@ -228,8 +243,9 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
         .and_then(|decoder| decoder(data))
 }
 
-/// Extension trait to convert `Result<T, TempoPrecompileError` into `PrecompileResult`
+/// Extension trait to convert `Result<T, TempoPrecompileError>` into a [`PrecompileResult`].
 pub trait IntoPrecompileResult<T> {
+    /// Converts `self` into a [`PrecompileResult`], using `encode_ok` for the success path.
     fn into_precompile_result(
         self,
         gas: u64,

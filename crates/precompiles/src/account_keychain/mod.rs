@@ -1,3 +1,11 @@
+//! [Account keychain] precompile for managing session keys and spending limits.
+//!
+//! Each account can authorize secondary keys (session keys) with per-token spending caps,
+//! signature type constraints, and expiry. The main key (address zero) retains full control
+//! and is the only key allowed to authorize, revoke, or update other keys.
+//!
+//! [Account keychain]: <https://docs.tempo.xyz/protocol/transactions/AccountKeychain>
+
 pub mod dispatch;
 
 use __packing_authorized_key::{
@@ -126,13 +134,12 @@ impl AccountKeychain {
         keccak256(data)
     }
 
-    /// Initializes the account keychain contract.
+    /// Initializes the account keychain storage layout.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
 
-    /// Authorize a new key for an account
-    /// This can only be called by the account itself (using main key)
+    /// Authorize a new session key for an account. Only callable with the main key.
     pub fn authorize_key(&mut self, msg_sender: Address, call: authorizeKeyCall) -> Result<()> {
         // Check that the transaction key for this transaction is zero (main key)
         let transaction_key = self.transaction_key.t_read()?;
@@ -286,7 +293,7 @@ impl AccountKeychain {
         ))
     }
 
-    /// Get key information
+    /// Returns key info for the given account-key pair, or a blank entry if inexistent or revoked.
     pub fn get_key(&self, call: getKeyCall) -> Result<KeyInfo> {
         let key = self.keys[call.account][call.keyId].read()?;
 
@@ -318,7 +325,8 @@ impl AccountKeychain {
         })
     }
 
-    /// Get remaining spending limit
+    /// Returns the remaining spending limit for a key-token pair, or a blank entry if inexistent
+    /// or revoked (T2+).
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
         // T2+: return zero if key doesn't exist or has been revoked
         if self.storage.spec().is_t2() {
@@ -332,7 +340,7 @@ impl AccountKeychain {
         self.spending_limits[limit_key][call.token].read()
     }
 
-    /// Get the transaction key used in the current transaction
+    /// Returns the session key used to authorize the current transaction (`Address::ZERO` = main key).
     pub fn get_transaction_key(
         &self,
         _call: getTransactionKeyCall,
@@ -424,7 +432,9 @@ impl AccountKeychain {
         Ok(())
     }
 
-    /// Verify and update spending for a token transfer
+    /// Deducts `amount` from the key's remaining spending limit for `token`, failing if exceeded.
+    ///
+    /// No-ops for the main key or keys with `enforce_limits == false`.
     pub fn verify_and_update_spending(
         &mut self,
         account: Address,

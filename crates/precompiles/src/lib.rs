@@ -232,16 +232,21 @@ impl ValidatorConfigV2 {
     }
 }
 
+/// Dispatches a parameterless view call, encoding the return via `T`.
 #[inline]
 fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
     f().into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
+/// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
 #[inline]
 fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
+/// Dispatches a state-mutating call that returns ABI-encoded data.
+///
+/// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
 fn mutate<T: SolCall>(
     call: T,
@@ -257,6 +262,9 @@ fn mutate<T: SolCall>(
     f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
+/// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
+///
+/// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
 fn mutate_void<T: SolCall>(
     call: T,
@@ -272,6 +280,7 @@ fn mutate_void<T: SolCall>(
     f(sender, call).into_precompile_result(0, |()| Bytes::new())
 }
 
+/// Fills gas accounting fields on a [`PrecompileOutput`] from the storage context.
 #[inline]
 fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) -> PrecompileOutput {
     output.gas_used = storage.gas_used();
@@ -290,7 +299,12 @@ pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
     error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
 }
 
-/// Helper function to decode calldata and dispatch it.
+/// Decodes calldata via `decode`, then dispatches to `f`.
+///
+/// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
+/// (ABI-encoded [`UnknownFunctionSelector`]), and malformed ABI data (empty revert).
+///
+/// Gas accounting is applied via [`fill_precompile_output`].
 #[inline]
 fn dispatch_call<T>(
     calldata: &[u8],
@@ -326,6 +340,7 @@ fn dispatch_call<T>(
     }
 }
 
+/// Asserts that `result` is a reverted output whose bytes decode to `expected_error`.
 #[cfg(test)]
 pub fn expect_precompile_revert<E>(result: &PrecompileResult, expected_error: E)
 where

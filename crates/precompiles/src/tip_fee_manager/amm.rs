@@ -10,8 +10,8 @@ use alloy::{
 };
 use tempo_precompiles_macros::Storable;
 
-/// Constants from the Solidity reference implementation
-pub const M: U256 = uint!(9970_U256); // m = 0.9970 (scaled by 10000)
+/// Fee multiplier for fee swaps: 0.9970 scaled by 10000 (30 bps fee).
+pub const M: U256 = uint!(9970_U256);
 /// Fee multiplier for rebalance swaps: 0.9985 scaled by 10000.
 pub const N: U256 = uint!(9985_U256);
 /// Scale factor for fixed-point AMM arithmetic (10000).
@@ -19,7 +19,7 @@ pub const SCALE: U256 = uint!(10000_U256);
 /// Minimum liquidity locked permanently when initializing a pool.
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 
-/// Compute amount out for a fee swap
+/// Computes the output amount for a fee swap: `amount_in * M / SCALE`.
 #[inline]
 pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
     amount_in
@@ -28,10 +28,12 @@ pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
         .ok_or(TempoPrecompileError::under_overflow())
 }
 
-/// Pool structure matching the Solidity implementation
+/// AMM pool reserves for a user-token / validator-token pair.
 #[derive(Debug, Clone, Default, Storable)]
 pub struct Pool {
+    /// Reserve of the user's fee token.
     pub reserve_user_token: u128,
+    /// Reserve of the validator's fee token.
     pub reserve_validator_token: u128,
 }
 
@@ -47,12 +49,15 @@ impl From<Pool> for ITIPFeeAMM::Pool {
 /// Identifies a directional token pair in the fee AMM.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Storable)]
 pub struct PoolKey {
+    /// The fee token chosen by the user (transaction sender).
     pub user_token: Address,
+    /// The fee token chosen by the validator (block producer).
     pub validator_token: Address,
 }
 
 // TODO(rusowsky): remove this and create a read-only wrapper that is callable from read-only ctx with db access
 impl Pool {
+    /// Decodes a [`Pool`] directly from a raw EVM storage slot value.
     pub fn decode_from_slot(slot_value: U256) -> Self {
         use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
 
@@ -114,7 +119,8 @@ impl TipFeeManager {
         self.pending_fee_swap_reservation[pool_id].t_write(amount)
     }
 
-    /// Swap to rebalance a fee token pool
+    /// Executes a rebalance swap: sells `amount_out` of user-token from the pool in exchange for
+    /// validator-token at the rebalance rate (`N / SCALE`). Used by arbitrageurs to rebalance reserves.
     pub fn rebalance_swap(
         &mut self,
         msg_sender: Address,
@@ -191,7 +197,10 @@ impl TipFeeManager {
         Ok(amount_in)
     }
 
-    /// Mint LP tokens
+    /// Mints LP tokens by depositing validator-token into a pool.
+    ///
+    /// On first deposit the pool is initialized with equal reserves and [`MIN_LIQUIDITY`] is locked.
+    /// Subsequent deposits mint pro-rata to existing supply.
     pub fn mint(
         &mut self,
         msg_sender: Address,
@@ -308,7 +317,10 @@ impl TipFeeManager {
         Ok(liquidity)
     }
 
-    /// Burn LP tokens for a given pool
+    /// Burns LP tokens and returns the pro-rata share of both pool tokens to `to`.
+    ///
+    /// On T1C+ the burn is rejected if the remaining validator-token reserve would fall below
+    /// the pending fee-swap reservation.
     pub fn burn(
         &mut self,
         msg_sender: Address,
