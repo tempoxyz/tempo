@@ -116,20 +116,6 @@ fn main() -> eyre::Result<()> {
     type TempoCli =
         Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
 
-    // Build the clap command for built-in subcommand introspection. This is
-    // used by the plugin system to avoid intercepting built-in commands.
-    let mut cmd = TempoCli::command();
-
-    // Git-style plugin dispatch: if argv[1] matches a `tempo-*` binary on
-    // PATH (and isn't a built-in subcommand), exec into it before doing any
-    // heavy initialization. This never returns if a plugin matches.
-    plugin::try_dispatch(&cmd)?;
-
-    // Append discovered external subcommands to --help output.
-    if let Some(help) = plugin::external_subcommands_help(&cmd) {
-        cmd = cmd.after_help(help);
-    }
-
     install_crypto_provider();
 
     reth_cli_util::sigsegv_handler::install();
@@ -152,6 +138,13 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
+    // Build the clap command, append discovered `tempo-*` plugins to --help,
+    // then parse. Unrecognized subcommands are caught by clap's
+    // `external_subcommand` and dispatched to `tempo-<name>` binaries.
+    let mut cmd = TempoCli::command();
+    if let Some(help) = plugin::external_subcommands_help(&cmd) {
+        cmd = cmd.after_help(help);
+    }
     let matches = cmd.get_matches();
     let mut cli = TempoCli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 

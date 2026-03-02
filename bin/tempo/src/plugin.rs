@@ -1,8 +1,8 @@
 //! Git-style CLI plugin system.
 //!
-//! Intercepts subcommands before clap parsing and delegates to external
-//! `tempo-<name>` binaries. For example, if `tempo-foo` exists on `$PATH`,
-//! then `tempo foo arg1 arg2` execs into `tempo-foo arg1 arg2`.
+//! Unrecognized subcommands are caught by clap's `external_subcommand`
+//! attribute and dispatched to `tempo-<name>` binaries. For example,
+//! `tempo foo arg1 arg2` execs into `tempo-foo arg1 arg2`.
 //!
 //! Binary resolution order:
 //!   1. Same directory as the running `tempo` binary
@@ -46,39 +46,16 @@ struct PluginRoute {
     forward_subcommand: bool,
 }
 
-/// Try to dispatch to an external plugin binary.
+/// Dispatch an external subcommand caught by clap's `external_subcommand`.
 ///
-/// Must be called before `Cli::parse()`. Only checks `argv[1]` — the first
-/// argument after the program name. This avoids ambiguity with global flags
-/// that take values (e.g. `--log.stdout.filter debug`).
-///
-/// Resolution order:
-///   1. Skip flags (anything starting with `-`)
-///   2. Skip built-in clap subcommands
-///   3. Check explicit [`PLUGIN_ROUTES`] aliases
-///   4. Try generic `tempo-{name}` binary lookup
-///
-/// If a plugin matches and the binary exists, this function execs into it
-/// and **never returns**. Otherwise returns `Ok(())` for normal CLI parsing.
-pub(crate) fn try_dispatch(cli: &clap::Command) -> eyre::Result<()> {
-    let args: Vec<OsString> = env::args_os().collect();
-
-    // Only look at argv[1] — the first arg after the program name.
-    let Some(subcmd) = args.get(1) else {
-        return Ok(());
-    };
-
-    // Don't intercept flags.
-    if subcmd.to_string_lossy().starts_with('-') {
-        return Ok(());
-    }
-
+/// `args[0]` is the subcommand name, `args[1..]` are its arguments.
+/// Checks explicit [`PLUGIN_ROUTES`] first, then falls back to generic
+/// `tempo-{name}` lookup.
+pub(crate) fn dispatch_external(args: Vec<OsString>) -> eyre::Result<()> {
+    let subcmd = args
+        .first()
+        .ok_or_else(|| eyre::eyre!("external subcommand received with no arguments"))?;
     let subcmd_str = subcmd.to_string_lossy();
-
-    // Never intercept built-in subcommands.
-    if is_builtin_subcommand(cli, &subcmd_str) {
-        return Ok(());
-    }
 
     // Check explicit route aliases first.
     if let Some(route) = PLUGIN_ROUTES
@@ -87,9 +64,9 @@ pub(crate) fn try_dispatch(cli: &clap::Command) -> eyre::Result<()> {
     {
         if let Some(bin_path) = find_binary(route.binary) {
             let forward_args = if route.forward_subcommand {
-                &args[1..]
+                &args[..]
             } else {
-                &args[2..]
+                &args[1..]
             };
             exec_plugin(&bin_path, forward_args);
         }
@@ -97,11 +74,14 @@ pub(crate) fn try_dispatch(cli: &clap::Command) -> eyre::Result<()> {
 
     // Generic lookup: `tempo foo` → `tempo-foo`.
     let bin_name = format!("{PLUGIN_PREFIX}{subcmd_str}");
-    if let Some(bin_path) = find_binary(&bin_name) {
-        exec_plugin(&bin_path, &args[2..]);
+    match find_binary(&bin_name) {
+        Some(bin_path) => exec_plugin(&bin_path, &args[1..]),
+        None => Err(eyre::eyre!(
+            "unknown command `{subcmd_str}`\n\n\
+             No built-in command or `{bin_name}` binary found.\n\
+             Install it or check your PATH."
+        )),
     }
-
-    Ok(())
 }
 
 /// Format an `after_help` section listing discovered external subcommands.
@@ -262,94 +242,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Simulates the dispatch decision without actually exec'ing.
-    /// Returns `Some((binary_name, forwarded_args))` if a plugin would match.
-    fn dispatch_plan(cli: &clap::Command, argv: &[&str]) -> Option<(String, Vec<String>)> {
-        let args: Vec<OsString> = argv.iter().map(OsString::from).collect();
-
-        let subcmd = args.get(1)?;
-        if subcmd.to_string_lossy().starts_with('-') {
-            return None;
-        }
-
-        let subcmd_str = subcmd.to_string_lossy();
-        if is_builtin_subcommand(cli, &subcmd_str) {
-            return None;
-        }
-
-        // Check explicit routes.
-        if let Some(route) = PLUGIN_ROUTES
-            .iter()
-            .find(|r| r.subcommand == subcmd_str.as_ref())
-        {
-            let forward: Vec<String> = if route.forward_subcommand {
-                args[1..]
-                    .iter()
-                    .map(|s| s.to_string_lossy().into())
-                    .collect()
-            } else {
-                args[2..]
-                    .iter()
-                    .map(|s| s.to_string_lossy().into())
-                    .collect()
-            };
-            return Some((route.binary.to_string(), forward));
-        }
-
-        // Generic lookup.
-        let bin_name = format!("{PLUGIN_PREFIX}{subcmd_str}");
-        let forward: Vec<String> = args[2..]
-            .iter()
-            .map(|s| s.to_string_lossy().into())
-            .collect();
-        Some((bin_name, forward))
-    }
-
-    /// Minimal clap command with a few "built-in" subcommands for testing.
-    fn test_cli() -> clap::Command {
-        clap::Command::new("tempo")
-            .subcommand(clap::Command::new("node"))
-            .subcommand(clap::Command::new("db"))
-            .subcommand(clap::Command::new("stage"))
-    }
-
-    #[test]
-    fn generic_plugin_dispatch() {
-        let cli = test_cli();
-        let plan = dispatch_plan(&cli, &["tempo", "wallet", "send", "1.0"]).unwrap();
-        assert_eq!(plan.0, "tempo-wallet");
-        assert_eq!(plan.1, &["send", "1.0"]);
-    }
-
-    #[test]
-    fn builtin_subcommand_not_dispatched() {
-        let cli = test_cli();
-        assert!(dispatch_plan(&cli, &["tempo", "node", "--chain", "moderato"]).is_none());
-        assert!(dispatch_plan(&cli, &["tempo", "db", "stats"]).is_none());
-        assert!(dispatch_plan(&cli, &["tempo", "stage", "run"]).is_none());
-    }
-
-    #[test]
-    fn no_args_returns_none() {
-        let cli = test_cli();
-        assert!(dispatch_plan(&cli, &["tempo"]).is_none());
-    }
-
-    #[test]
-    fn flag_not_dispatched() {
-        let cli = test_cli();
-        assert!(dispatch_plan(&cli, &["tempo", "--help"]).is_none());
-        assert!(dispatch_plan(&cli, &["tempo", "-V"]).is_none());
-    }
-
-    #[test]
-    fn unknown_subcommand_dispatches_generically() {
-        let cli = test_cli();
-        let plan = dispatch_plan(&cli, &["tempo", "cast", "call", "0x..."]).unwrap();
-        assert_eq!(plan.0, "tempo-cast");
-        assert_eq!(plan.1, &["call", "0x..."]);
-    }
-
     #[test]
     fn discover_plugins_in_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -399,10 +291,10 @@ mod tests {
         assert!(found.contains("node"));
         assert!(found.contains("foo"));
 
-        // But discover_plugins filters out builtins. We can't easily test
-        // discover_plugins because it scans real PATH, but we can verify
-        // the filtering logic directly.
-        let cli = test_cli();
+        // Verify the filtering logic: built-ins are excluded.
+        let cli = clap::Command::new("tempo")
+            .subcommand(clap::Command::new("node"))
+            .subcommand(clap::Command::new("db"));
         let filtered: Vec<String> = found
             .into_iter()
             .filter(|name| !is_builtin_subcommand(&cli, name))
