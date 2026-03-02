@@ -460,33 +460,38 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
     Ok(())
 }
 
-/// Regression test for CHAIN-763: on mainnet (andantino), `validatorTokens[address(0)]` was
-/// pre-seeded with a DONOTUSE token in genesis. The old code used `Address::ZERO` as beneficiary
-/// for RPC gas estimation, so `get_validator_token(Address::ZERO)` returned DONOTUSE instead of
-/// falling back to `DEFAULT_FEE_TOKEN` (PathUSD), causing gas estimation to fail.
+/// Regression test: on mainnet (presto), `validatorTokens[address(0)]` was pre-seeded with a
+/// DONOTUSE token in genesis. The old code used `Address::ZERO` as beneficiary for RPC gas
+/// estimation, so `get_validator_token(Address::ZERO)` returned DONOTUSE instead of falling
+/// back to `DEFAULT_FEE_TOKEN` (PathUSD), causing gas estimation to fail.
 ///
 /// The fix uses `TIP_FEE_MANAGER_ADDRESS` as the sentinel beneficiary, which is guaranteed to
 /// have no validator token set (its mapping is always zero → falls back to PathUSD).
 ///
-/// This test copies the fee manager storage from the andantino (mainnet) genesis — which already
-/// has the DONOTUSE token at `validatorTokens[address(0)]` — into the test genesis, and verifies
-/// that `eth_estimateGas` still succeeds.
+/// This test grafts the pre-seeded `validatorTokens[address(0)]` slot from the presto (mainnet)
+/// genesis into the test genesis and verifies that `eth_estimateGas` still succeeds.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Graft the andantino (mainnet) fee manager storage into the test genesis.
-    // Andantino has validatorTokens[address(0)] pre-seeded with a DONOTUSE token —
+    // Graft the presto (mainnet) fee manager storage into the test genesis.
+    // Presto has validatorTokens[address(0)] pre-seeded with a DONOTUSE token —
     // the exact state that caused the original bug.
     let mut test_genesis: serde_json::Value =
         serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
-    let andantino_genesis: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../chainspec/src/genesis/andantino.json"
-    ))?;
+    let presto_genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../../../chainspec/src/genesis/presto.json"))?;
 
     let fee_manager_addr = "0xfeec000000000000000000000000000000000000";
-    test_genesis["alloc"][fee_manager_addr]["storage"] =
-        andantino_genesis["alloc"][fee_manager_addr]["storage"].clone();
+    let presto_storage = presto_genesis["alloc"][fee_manager_addr]["storage"]
+        .as_object()
+        .expect("presto fee manager storage must exist");
+    let test_storage = test_genesis["alloc"][fee_manager_addr]["storage"]
+        .as_object_mut()
+        .expect("test fee manager storage must exist");
+    for (k, v) in presto_storage {
+        test_storage.insert(k.clone(), v.clone());
+    }
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let wallet_address = wallet.address();
