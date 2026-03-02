@@ -23,7 +23,7 @@ mod init_state;
 mod plugin;
 mod tempo_cmd;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
@@ -113,10 +113,22 @@ fn install_crypto_provider() {
 }
 
 fn main() -> eyre::Result<()> {
-    // Git-style plugin dispatch: intercept subcommands like `tempo wallet` and
-    // exec into the corresponding `tempo-wallet` binary before doing any heavy
-    // initialization. This never returns if a plugin matches.
-    plugin::try_dispatch()?;
+    type TempoCli =
+        Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
+
+    // Build the clap command for built-in subcommand introspection. This is
+    // used by the plugin system to avoid intercepting built-in commands.
+    let mut cmd = TempoCli::command();
+
+    // Git-style plugin dispatch: if argv[1] matches a `tempo-*` binary on
+    // PATH (and isn't a built-in subcommand), exec into it before doing any
+    // heavy initialization. This never returns if a plugin matches.
+    plugin::try_dispatch(&cmd)?;
+
+    // Append discovered external subcommands to --help output.
+    if let Some(help) = plugin::external_subcommands_help(&cmd) {
+        cmd = cmd.after_help(help);
+    }
 
     install_crypto_provider();
 
@@ -140,12 +152,8 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let mut cli = Cli::<
-        TempoChainSpecParser,
-        TempoArgs,
-        DefaultRpcModuleValidator,
-        tempo_cmd::TempoSubcommand,
-    >::parse();
+    let matches = cmd.get_matches();
+    let mut cli = TempoCli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;

@@ -68,6 +68,9 @@ tracing.workspace = true
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [[bin]]
 name = "tempo"
 path = "src/main.rs"
