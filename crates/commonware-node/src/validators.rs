@@ -1,11 +1,10 @@
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
-use futures::StreamExt as _;
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::types::Height;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
+use futures::StreamExt as _;
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::{
     evm::revm::{State, database::StateProviderDatabase},
@@ -16,6 +15,7 @@ use reth_provider::{
     BlockHashReader as _, BlockIdReader as _, BlockNumReader as _, BlockReader as _, BlockSource,
     CanonStateSubscriptions as _, StateProviderFactory as _,
 };
+use std::{collections::HashMap, net::SocketAddr, time::Duration};
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::StorageCtx,
