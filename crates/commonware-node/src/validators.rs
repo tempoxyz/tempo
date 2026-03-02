@@ -1,7 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
 use futures::StreamExt as _;
-
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::types::Height;
