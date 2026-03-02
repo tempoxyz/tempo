@@ -1,5 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
+use futures::StreamExt as _;
+
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::types::Height;
@@ -14,7 +16,7 @@ use reth_ethereum::{
 use reth_node_builder::{Block as _, ConfigureEvm as _};
 use reth_provider::{
     BlockHashReader as _, BlockIdReader as _, BlockNumReader as _, BlockReader as _, BlockSource,
-    StateProviderFactory as _,
+    CanonStateSubscriptions as _, StateProviderFactory as _,
 };
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
@@ -40,6 +42,8 @@ pub(crate) async fn read_validator_config_with_retry(
     let mut attempts = 0;
     const MIN_RETRY: Duration = Duration::from_secs(1);
     const MAX_RETRY: Duration = Duration::from_secs(30);
+
+    let mut canon_events = node.provider.canonical_state_stream();
 
     'read_contract: loop {
         total_attempts.inc();
@@ -78,7 +82,10 @@ pub(crate) async fn read_validator_config_with_retry(
                 "reading validator config from contract failed; will retry",
             );
         });
-        context.sleep(retry_after).await;
+        tokio::select! {
+            _ = canon_events.next() => {}
+            _ = context.sleep(retry_after) => {}
+        }
     }
 }
 
