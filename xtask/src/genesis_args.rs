@@ -172,7 +172,7 @@ pub(crate) struct GenesisArgs {
     t2_time: u64,
 
     /// T3 hardfork activation time.
-    #[arg(long, default_value = "0")]
+    #[arg(long, default_value = "9999999999")]
     t3_time: u64,
 
     /// Whether to skip initializing validator config v1
