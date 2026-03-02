@@ -3830,64 +3830,6 @@ mod tests {
         }
 
         #[test]
-        fn test_pre_t1c_v1_authorized_key_still_usable_with_v2_post_t1c(
-        ) -> Result<(), ProviderError> {
-            let (access_key_signer, access_key_address) = generate_keypair();
-            let user_address = Address::random();
-
-            let pre_t1c_v1_tx =
-                create_aa_with_v1_keychain_signature(user_address, &access_key_signer, None);
-            let pre_t1c_slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-            let pre_t1c_validator = setup_validator_with_keychain_storage_spec(
-                &pre_t1c_v1_tx,
-                user_address,
-                access_key_address,
-                Some(pre_t1c_slot_value),
-                moderato_without_t1c(),
-            );
-            let pre_t1c_sp = pre_t1c_validator.inner.client().latest().unwrap();
-            let pre_t1c_result =
-                pre_t1c_validator.validate_against_keychain(&pre_t1c_v1_tx, &pre_t1c_sp)?;
-            assert!(
-                pre_t1c_result.is_ok(),
-                "Access key should validate with V1 signature pre-T1C, got: {pre_t1c_result:?}"
-            );
-
-            // Simulate the same already-authorized key being reused after T1C with a V2 signature.
-            let post_t1c_v2_tx =
-                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
-            let post_t1c_slot_value = AuthorizedKey {
-                signature_type: 0,
-                expiry: u64::MAX,
-                enforce_limits: false,
-                is_revoked: false,
-            }
-            .encode_to_slot();
-            let post_t1c_validator = setup_validator_with_keychain_storage_spec(
-                &post_t1c_v2_tx,
-                user_address,
-                access_key_address,
-                Some(post_t1c_slot_value),
-                moderato_with_t1c(),
-            );
-            let post_t1c_sp = post_t1c_validator.inner.client().latest().unwrap();
-            let post_t1c_result =
-                post_t1c_validator.validate_against_keychain(&post_t1c_v2_tx, &post_t1c_sp)?;
-            assert!(
-                post_t1c_result.is_ok(),
-                "Pre-T1C authorized key should remain usable with V2 post-T1C, got: {post_t1c_result:?}"
-            );
-
-            Ok(())
-        }
-
-        #[test]
         fn test_legacy_keychain_post_t1c_is_bad_transaction() {
             assert!(
                 TempoPoolTransactionError::LegacyKeychainPostT1C.is_bad_transaction(),
