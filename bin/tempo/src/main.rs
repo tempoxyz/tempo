@@ -20,6 +20,7 @@ static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::ne
 
 mod defaults;
 mod init_state;
+mod plugin;
 mod tempo_cmd;
 
 use clap::Parser;
@@ -112,6 +113,11 @@ fn install_crypto_provider() {
 }
 
 fn main() -> eyre::Result<()> {
+    // Git-style plugin dispatch: intercept subcommands like `tempo wallet` and
+    // exec into the corresponding `tempo-wallet` binary before doing any heavy
+    // initialization. This never returns if a plugin matches.
+    plugin::try_dispatch()?;
+
     install_crypto_provider();
 
     reth_cli_util::sigsegv_handler::install();
