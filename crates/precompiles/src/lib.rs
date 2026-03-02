@@ -301,7 +301,7 @@ pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
 /// Decodes calldata via `decode`, then dispatches to `f`.
 ///
 /// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
-/// (ABI-encoded [`UnknownFunctionSelector`]), and malformed ABI data (empty revert).
+/// (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty revert).
 ///
 /// Gas accounting is applied via [`fill_precompile_output`].
 #[inline]
