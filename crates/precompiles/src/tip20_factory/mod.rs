@@ -57,7 +57,7 @@ pub(crate) fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u6
 
 // Precompile functions
 impl TIP20Factory {
-    /// Initializes the TIP20 factory contract.
+    /// Initializes the TIP-20 factory precompile.
     pub fn initialize(&mut self) -> Result<()> {
         // must ensure the account is not empty, by setting some code
         self.__initialize()

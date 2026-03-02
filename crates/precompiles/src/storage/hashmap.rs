@@ -15,8 +15,6 @@ pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
     accounts: HashMap<Address, AccountInfo>,
-    /// Emitted events keyed by contract address.
-    pub events: HashMap<Address, Vec<LogData>>,
     chain_id: u64,
     timestamp: U256,
     beneficiary: Address,
@@ -24,6 +22,9 @@ pub struct HashMapStorageProvider {
     spec: TempoHardfork,
     is_static: bool,
     snapshots: Vec<Snapshot>,
+
+    /// Emitted events keyed by contract address.
+    pub events: HashMap<Address, Vec<LogData>>,
 }
 
 /// Snapshot of mutable state for checkpoint/revert support.

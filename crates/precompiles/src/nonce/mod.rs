@@ -56,7 +56,7 @@ pub struct NonceManager {
 }
 
 impl NonceManager {
-    /// Initializes the nonce manager contract.
+    /// Initializes the nonce manager precompile.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }

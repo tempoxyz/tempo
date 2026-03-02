@@ -58,7 +58,7 @@ impl StablecoinDEX {
         self.address
     }
 
-    /// Initializes the contract
+    /// Initializes the stablecoin DEX precompile.
     ///
     /// This ensures the [`StablecoinDEX`] isn't empty and prevents state clear.
     pub fn initialize(&mut self) -> Result<()> {

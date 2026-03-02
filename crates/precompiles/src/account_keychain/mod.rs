@@ -134,7 +134,7 @@ impl AccountKeychain {
         keccak256(data)
     }
 
-    /// Initializes the account keychain storage layout.
+    /// Initializes the account keychain precompile.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }

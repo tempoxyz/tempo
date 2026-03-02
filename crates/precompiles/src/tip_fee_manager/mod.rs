@@ -62,7 +62,7 @@ impl TipFeeManager {
     /// Minimum TIP-20 balance required for fee operations (1e9).
     pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256);
 
-    /// Initializes the contract
+    /// Initializes the fee manager precompile.
     ///
     /// This ensures the [`TipFeeManager`] isn't empty and prevents state clear.
     pub fn initialize(&mut self) -> Result<()> {

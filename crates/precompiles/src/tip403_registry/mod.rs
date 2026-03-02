@@ -148,7 +148,7 @@ impl PolicyData {
 }
 
 impl TIP403Registry {
-    /// Initializes the registry contract.
+    /// Initializes the TIP-403 registry precompile.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
