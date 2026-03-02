@@ -3,6 +3,9 @@ target
 scripts/logs
 scripts/data
 
+# Coverage
+coverage/
+
 # Benchmarking artifacts
 contrib/bench/logs/
 report.json
@@ -30,3 +33,6 @@ _
 .vercel
 .env*.local
 .worktrees/
+
+# LLVM coverage profraw files
+*.profraw

@@ -23,6 +23,7 @@ pub const VALIDATOR_NS_ADD: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
 /// Signature namespace for `rotateValidator` operations.
 pub const VALIDATOR_NS_ROTATE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR";
 
+/// Per-validator record stored in the `validators` vector.
 #[derive(Debug, Storable)]
 struct ValidatorV2 {
     public_key: B256,
@@ -34,6 +35,7 @@ struct ValidatorV2 {
     deactivated_at_height: u64,
 }
 
+/// Contract-level configuration (owner, initialization flag, and init height).
 #[derive(Debug, Storable)]
 struct Config {
     owner: Address,
@@ -59,6 +61,9 @@ impl Config {
 ///
 /// Index-canonical storage: the `validators` vec is the source of truth.
 /// `address_to_index` and `pubkey_to_index` are 1-indexed lookup pointers (0 = not found).
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = VALIDATOR_CONFIG_V2_ADDRESS)]
 pub struct ValidatorConfigV2 {
     config: Config,

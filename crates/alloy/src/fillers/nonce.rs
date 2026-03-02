@@ -70,10 +70,12 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
     }
 }
 
-/// A [`TxFiller`] that populates transactions with expiring nonce fields (TIP-1009).
+/// A [`TxFiller`] that populates transactions with expiring nonce fields ([TIP-1009]).
 ///
 /// Sets `nonce_key` to `U256::MAX`, `nonce` to `0`, and `valid_before` to current time + expiry window.
 /// This enables transactions to use the circular buffer replay protection instead of 2D nonce storage.
+///
+/// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
 #[derive(Clone, Copy, Debug)]
 pub struct ExpiringNonceFiller {
     /// Expiry window in seconds from current time.
@@ -89,7 +91,9 @@ impl Default for ExpiringNonceFiller {
 }
 
 impl ExpiringNonceFiller {
-    /// Default expiry window in seconds (25s, within the 30s max allowed by TIP-1009).
+    /// Default expiry window in seconds (25s, within the 30s max allowed by [TIP-1009]).
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     pub const DEFAULT_EXPIRY_SECS: u64 = 25;
 
     /// Create a new filler with a custom expiry window.

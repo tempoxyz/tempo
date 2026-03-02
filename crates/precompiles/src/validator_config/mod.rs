@@ -27,7 +27,10 @@ struct Validator {
     outbound_address: String,
 }
 
-/// Validator Config precompile for managing consensus validators
+/// Validator Config precompile for managing consensus validators.
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = VALIDATOR_CONFIG_ADDRESS)]
 pub struct ValidatorConfig {
     owner: Address,
