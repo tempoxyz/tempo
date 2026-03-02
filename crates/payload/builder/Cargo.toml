@@ -35,7 +35,7 @@ reth-transaction-pool.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
-alloy-rlp = "0.3"
+alloy-rlp.workspace = true
 
 either.workspace = true
 metrics.workspace = true

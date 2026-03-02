@@ -811,13 +811,19 @@ async fn verify_block<TContext: Pacer>(
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {
-        PayloadStatusEnum::Valid | PayloadStatusEnum::Accepted => Ok(true),
+        PayloadStatusEnum::Valid => Ok(true),
         PayloadStatusEnum::Invalid { validation_error } => {
             info!(
                 validation_error,
                 "execution layer returned that the block was invalid"
             );
             Ok(false)
+        }
+        PayloadStatusEnum::Accepted => {
+            bail!(
+                "failed validating block because payload was accepted, meaning \
+                that this was not actually executed by the execution layer for some reason"
+            )
         }
         PayloadStatusEnum::Syncing => {
             bail!(
