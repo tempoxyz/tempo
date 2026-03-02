@@ -1,6 +1,6 @@
 [package]
 name = "tempo-contracts"
-description = "TODO:"
+description = "Generated bindings and helpers for Tempo system contracts"
 
 version.workspace = true
 edition.workspace = true
