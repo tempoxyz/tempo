@@ -43,7 +43,7 @@ use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
 use tokio::sync::broadcast;
-use tracing::{Instrument, Level, Span, debug, error, instrument, warn};
+use tracing::{Instrument, Level, Span, debug, error, info, instrument, warn};
 
 /// Maximum number of stored subblock transactions. Used to prevent DOS attacks.
 ///
@@ -59,6 +59,7 @@ pub(crate) struct Config<TContext> {
     pub(crate) fee_recipient: Address,
     pub(crate) time_to_build_subblock: Duration,
     pub(crate) subblock_broadcast_interval: Duration,
+    pub(crate) disabled: bool,
     pub(crate) epoch_strategy: FixedEpocher,
 }
 
@@ -96,6 +97,8 @@ pub(crate) struct Actor<TContext> {
     time_to_build_subblock: Duration,
     /// How often to broadcast subblocks to the current proposer.
     subblock_broadcast_interval: Duration,
+    /// Whether subblock building and broadcasting is disabled.
+    disabled: bool,
     /// The epoch strategy used by tempo.
     epoch_strategy: FixedEpocher,
 
@@ -118,9 +121,13 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             fee_recipient,
             time_to_build_subblock,
             subblock_broadcast_interval,
+            disabled,
             epoch_strategy,
         }: Config<TContext>,
     ) -> Self {
+        if disabled {
+            info!("subblock actor is disabled, will not build or broadcast subblocks");
+        }
         let (actions_tx, actions_rx) = mpsc::unbounded();
         Self {
             our_subblock: PendingSubblock::None,
@@ -134,6 +141,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             fee_recipient,
             time_to_build_subblock,
             subblock_broadcast_interval,
+            disabled,
             epoch_strategy,
             consensus_tip: None,
             subblocks: Default::default(),
@@ -237,6 +245,9 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
 
     #[instrument(skip_all, fields(transaction.tx_hash = %transaction.tx_hash()))]
     fn on_new_subblock_transaction(&self, transaction: Recovered<TempoTxEnvelope>) {
+        if self.disabled {
+            return;
+        }
         if !transaction
             .subblock_proposer()
             .is_some_and(|k| k.matches(self.signer.public_key()))
@@ -325,8 +336,9 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         debug!(?next_proposer, ?next_round, "determined next proposer");
 
         // Spawn new subblock building task if the current one is assuming different proposer or parent hash.
-        if self.our_subblock.parent_hash() != Some(*tip)
-            || self.our_subblock.target_proposer() != Some(&next_proposer)
+        if !self.disabled
+            && (self.our_subblock.parent_hash() != Some(*tip)
+                || self.our_subblock.target_proposer() != Some(&next_proposer))
         {
             debug!(%tip, %next_proposer, "building new subblock");
             self.build_new_subblock(*tip, next_proposer, scheme);

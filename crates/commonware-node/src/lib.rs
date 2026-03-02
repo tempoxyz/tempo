@@ -110,6 +110,7 @@ pub async fn run_consensus_stack(
         new_payload_wait_time: config.time_to_build_proposal.into_duration(),
         time_to_build_subblock: config.time_to_build_subblock.into_duration(),
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
+        disable_subblocks: config.disable_subblocks,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
 
         feed_state,

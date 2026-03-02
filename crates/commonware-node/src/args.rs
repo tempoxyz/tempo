@@ -219,6 +219,11 @@ pub struct Args {
     #[arg(long = "consensus.backfill-frequency", default_value = "8")]
     pub backfill_frequency: std::num::NonZeroU32,
 
+    /// Disable local subblock production and broadcasting. The node will still
+    /// accept and validate subblocks from other validators.
+    #[arg(long = "consensus.disable-subblocks", default_value_t = false)]
+    pub disable_subblocks: bool,
+
     /// The interval at which to broadcast subblocks to the next proposer.
     /// Each built subblock is immediately broadcasted to the next proposer (if it's known).
     /// We broadcast subblock every `subblock-broadcast-interval` to ensure the next
