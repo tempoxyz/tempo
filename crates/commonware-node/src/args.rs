@@ -17,6 +17,7 @@ pub struct Args {
     #[arg(
         long = "consensus.signing-key",
         required_unless_present_any = ["follow", "dev"],
+        conflicts_with = "follow",
     )]
     signing_key: Option<PathBuf>,
 
@@ -61,6 +62,7 @@ pub struct Args {
     #[arg(
         long = "consensus.fee-recipient",
         required_unless_present_any = ["follow", "dev"],
+        conflicts_with = "follow",
     )]
     pub fee_recipient: Option<alloy_primitives::Address>,
 
