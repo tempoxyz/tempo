@@ -108,17 +108,21 @@ impl PolicyData {
             .expect("unable to insert 'admin'")
     }
 
-    /// Decodes the raw `policy_type` u8 to a `PolicyType` enum.
+    /// Decodes the raw `policy_type` u8 into a [`PolicyType`] enum.
+    ///
+    /// * `WHITELIST` and `BLACKLIST` are valid on all specs.
+    /// * `COMPOUND` is only valid (spec T2+).
+    /// * invalid values return `TIP403RegistryError::invalid_policy_type` (spec T1C+), otherwise `TempoPrecompileError::under_overflow`
     fn policy_type(&self) -> Result<PolicyType> {
-        let is_t2 = StorageCtx.spec().is_t2();
+        let spec = StorageCtx.spec();
 
         match self.policy_type.try_into() {
-            Ok(ty) if is_t2 || ty != PolicyType::COMPOUND => Ok(ty),
-            _ => Err(if is_t2 {
-                TIP403RegistryError::invalid_policy_type().into()
-            } else {
-                TempoPrecompileError::under_overflow()
-            }),
+            Ok(PolicyType::COMPOUND) if spec.is_t2() => Ok(PolicyType::COMPOUND),
+            Ok(PolicyType::COMPOUND) | Err(_) if spec.is_t1c() => {
+                Err(TIP403RegistryError::invalid_policy_type().into())
+            }
+            Ok(PolicyType::COMPOUND) | Err(_) => Err(TempoPrecompileError::under_overflow()),
+            Ok(ty) => Ok(ty),
         }
     }
 
@@ -614,13 +618,13 @@ trait PolicyTypeExt {
 impl PolicyTypeExt for PolicyType {
     /// Validates and returns the policy type to store, handling backward compatibility.
     ///
-    /// Pre-T1: Converts `COMPOUND` and `__Invalid` to 255 to match original ABI decoding behavior.
-    /// T2+: Only allows `WHITELIST` and `BLACKLIST`.
+    /// Pre-T1C: Converts `COMPOUND` and `__Invalid` to 255 to match original ABI decoding behavior.
+    /// T1C+: Only allows `WHITELIST` and `BLACKLIST`.
     fn ensure_is_simple(&self) -> Result<u8> {
         match self {
             Self::WHITELIST | Self::BLACKLIST => Ok(*self as u8),
             Self::COMPOUND | Self::__Invalid => {
-                if StorageCtx.spec().is_t2() {
+                if StorageCtx.spec().is_t1c() {
                     Err(TIP403RegistryError::incompatible_policy_type().into())
                 } else {
                     Ok(Self::__Invalid as u8)
@@ -1369,7 +1373,7 @@ mod tests {
     fn test_create_policy_rejects_non_simple_policy_types() -> eyre::Result<()> {
         let admin = Address::random();
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
@@ -1398,7 +1402,7 @@ mod tests {
 
     #[test]
     fn test_create_policy_with_accounts_rejects_non_simple_policy_types() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
         let admin = Address::random();
         let account = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -1598,8 +1602,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t2_to_t2_migration_invalid_policy_still_fails() -> eyre::Result<()> {
-        // Create a policy with invalid type on pre-T2
+    fn test_pre_t1c_to_t1c_migration_invalid_policy_still_fails() -> eyre::Result<()> {
+        // Create a policy with invalid type on pre-T1C
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         let admin = Address::random();
         let user = Address::random();
@@ -1615,12 +1619,12 @@ mod tests {
             )
         })?;
 
-        // Upgrade to T2 and try to use the policy
-        let mut storage = storage.with_spec(TempoHardfork::T2);
+        // Upgrade to T1C and try to use the policy
+        let mut storage = storage.with_spec(TempoHardfork::T1C);
         StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();
 
-            // policy_data should fail with InvalidPolicyType on T2
+            // policy_data should fail with InvalidPolicyType on T1C
             let result = registry.policy_data(ITIP403Registry::policyDataCall {
                 policyId: policy_id,
             });
@@ -1630,7 +1634,7 @@ mod tests {
                 TIP403RegistryError::invalid_policy_type().into()
             );
 
-            // is_authorized should also fail with InvalidPolicyType on T2
+            // is_authorized should also fail with InvalidPolicyType on T1C
             let result = registry.is_authorized_as(policy_id, user, AuthRole::Transfer);
             assert!(result.is_err());
             assert_eq!(
@@ -1643,8 +1647,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t2_validate_policy_type_returns_correct_u8() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+    fn test_t1c_validate_policy_type_returns_correct_u8() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
@@ -1676,7 +1680,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_simple_errors_on_invalid_policy_type_t2() -> eyre::Result<()> {
+    fn test_is_simple_errors_on_invalid_policy_type_t1c() -> eyre::Result<()> {
         // This test verifies that is_simple explicitly errors for __Invalid
         // rather than returning false. We need to manually create a policy
         // with an invalid type to test this edge case.
@@ -1684,7 +1688,7 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
 
-        // Create policy with COMPOUND on pre-T2 (stores as 255)
+        // Create policy with COMPOUND on pre-T1C (stores as 255)
         let policy_id = StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             registry.create_policy(
@@ -1696,8 +1700,8 @@ mod tests {
             )
         })?;
 
-        // Now on T2, is_authorized should error with InvalidPolicyType
-        let mut storage = storage.with_spec(TempoHardfork::T2);
+        // Now on T1C, is_authorized should error with InvalidPolicyType
+        let mut storage = storage.with_spec(TempoHardfork::T1C);
         StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();
 
@@ -1810,8 +1814,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t2_create_policy_rejects_invalid_types() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+    fn test_t1c_create_policy_rejects_invalid_types() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -1841,8 +1845,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t2_create_policy_emits_correct_type() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+    fn test_t1c_create_policy_emits_correct_type() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -1965,8 +1969,8 @@ mod tests {
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // T2+: should return InvalidPolicyType error
-        let mut storage = storage.with_spec(TempoHardfork::T2);
+        // T1C+: should return InvalidPolicyType error
+        let mut storage = storage.with_spec(TempoHardfork::T1C);
         StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();
 
