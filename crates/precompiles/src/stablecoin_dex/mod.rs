@@ -396,6 +396,8 @@ impl StablecoinDEX {
     }
 
     /// Creates a new trading pair between `base` and its quote token.
+    /// Both must be USD-denominated tokens validated via
+    /// [`TIP20Factory`]. Reverts if the pair already exists.
     ///
     /// # Errors
     /// - `InvalidBaseToken` — token address does not have a valid TIP-20 prefix

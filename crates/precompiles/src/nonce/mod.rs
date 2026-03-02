@@ -117,7 +117,10 @@ impl NonceManager {
         Ok(expiry != 0 && expiry > now)
     }
 
-    /// Checks and marks an expiring nonce transaction.
+    /// Validates and records an expiring nonce transaction. Uses a
+    /// circular buffer that overwrites expired entries as the pointer
+    /// advances. The hash is `keccak256(encode_for_signing || sender)`,
+    /// invariant to fee payer changes.
     ///
     /// Uses a circular buffer that overwrites expired entries as the pointer advances.
     ///
