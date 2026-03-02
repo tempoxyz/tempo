@@ -81,8 +81,7 @@ impl Mailbox {
             .wrap_err("failed sending message to actor")?;
         rx.await
             .wrap_err("actor dropped channel before responding with ceremony info")
-            // TODO: replace by Result::flatten once MRSV >= 1.89
-            .and_then(|res| res)
+            .flatten()
     }
 }
 
