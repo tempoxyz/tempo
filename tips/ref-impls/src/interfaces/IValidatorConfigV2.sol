@@ -15,6 +15,22 @@ pragma solidity >=0.8.13 <0.9.0;
 interface IValidatorConfigV2 {
 
     // =========================================================================
+    // Events
+    // =========================================================================
+
+    event ValidatorAdded(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey);
+    event ValidatorDeactivated(uint64 indexed index, address indexed validatorAddress);
+    event IpAddressesUpdated(uint64 indexed index, string ingress, string egress);
+    event ValidatorOwnershipTransferred(
+        uint64 indexed index, address indexed oldAddress, address indexed newAddress
+    );
+    event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
+    event ValidatorMigrated(
+        uint64 indexed index, address indexed validatorAddress, bytes32 publicKey
+    );
+    event Initialized(uint64 height);
+
+    // =========================================================================
     // Errors
     // =========================================================================
 

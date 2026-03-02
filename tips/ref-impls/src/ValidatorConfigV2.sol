@@ -96,7 +96,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"), publicKey, message, signature
         );
 
-        return _addValidator(validatorAddress, publicKey, ingress, egress, 0);
+        index = _addValidator(validatorAddress, publicKey, ingress, egress, 0);
+        emit ValidatorAdded(index, validatorAddress, publicKey);
+        emit IpAddressesUpdated(index, ingress, egress);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -116,6 +118,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         delete activeIngressIpHashes[ingressIpHash];
 
         v.deactivatedAtHeight = uint64(block.number);
+        emit ValidatorDeactivated(idx, v.validatorAddress);
 
         // do a pop-and-swap for validatorsArray
         uint64 toDeactivateIndex = v.activeIdx - 1;
@@ -132,6 +135,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     /// @inheritdoc IValidatorConfigV2
     function transferOwnership(address newOwner) external onlyOwner {
+        emit OwnershipTransferred(_owner, newOwner);
         _owner = newOwner;
     }
 
@@ -204,6 +208,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         // Point new pubkey to original slot
         pubkeyToIndex[publicKey] = idx + 1;
+
+        emit ValidatorDeactivated(appendedIdx, validatorAddress);
+        emit ValidatorAdded(idx, validatorAddress, publicKey);
+        emit IpAddressesUpdated(idx, ingress, egress);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -225,6 +233,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         v.ingress = ingress;
         v.egress = egress;
+        emit IpAddressesUpdated(idx, ingress, egress);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -255,6 +264,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         v.validatorAddress = newAddress;
         delete addressToIndex[currentAddress];
         addressToIndex[newAddress] = idx + 1;
+        emit ValidatorOwnershipTransferred(idx, currentAddress, newAddress);
     }
 
     // =========================================================================
@@ -375,13 +385,14 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             return;
         }
 
-        _addValidator(
+        uint64 migratedIdx = _addValidator(
             v1Val.validatorAddress,
             v1Val.publicKey,
             v1Val.inboundAddress,
             egress,
             nowActive ? 0 : uint64(block.number)
         );
+        emit ValidatorMigrated(migratedIdx, v1Val.validatorAddress, v1Val.publicKey);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -399,6 +410,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         _initialized = true;
         _initializedAtHeight = uint64(block.number);
+        emit Initialized(uint64(block.number));
     }
 
     // =========================================================================

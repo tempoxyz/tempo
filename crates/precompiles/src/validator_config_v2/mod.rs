@@ -1,7 +1,7 @@
 pub mod dispatch;
 
-use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 pub use tempo_contracts::precompiles::{IValidatorConfigV2, ValidatorConfigV2Error};
+use tempo_contracts::precompiles::{VALIDATOR_CONFIG_V2_ADDRESS, ValidatorConfigV2Event};
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
@@ -410,14 +410,31 @@ impl ValidatorConfigV2 {
 
         self.active_ingress_ips[ingress_hash].write(true)?;
 
-        self.append_validator(
+        let index = self.append_validator(
             call.validatorAddress,
             call.publicKey,
-            call.ingress,
-            call.egress,
+            call.ingress.clone(),
+            call.egress.clone(),
             block_height,
             0,
-        )
+        )?;
+
+        self.emit_event(ValidatorConfigV2Event::ValidatorAdded(
+            IValidatorConfigV2::ValidatorAdded {
+                index,
+                validatorAddress: call.validatorAddress,
+                publicKey: call.publicKey,
+            },
+        ))?;
+        self.emit_event(ValidatorConfigV2Event::IpAddressesUpdated(
+            IValidatorConfigV2::IpAddressesUpdated {
+                index,
+                ingress: call.ingress,
+                egress: call.egress,
+            },
+        ))?;
+
+        Ok(index)
     }
 
     pub fn deactivate_validator(
@@ -456,7 +473,14 @@ impl ValidatorConfigV2 {
                 .write((active_index + 1) as u64)?;
         }
         self.active_indices.pop()?;
-        self.validators[call.idx as usize].active_idx.write(0)
+        self.validators[call.idx as usize].active_idx.write(0)?;
+
+        self.emit_event(ValidatorConfigV2Event::ValidatorDeactivated(
+            IValidatorConfigV2::ValidatorDeactivated {
+                index: call.idx,
+                validatorAddress: v.validator_address,
+            },
+        ))
     }
 
     pub fn transfer_ownership(
@@ -465,8 +489,16 @@ impl ValidatorConfigV2 {
         call: IValidatorConfigV2::transferOwnershipCall,
     ) -> Result<()> {
         let mut config = self.require_initialized_owner(sender)?;
+        let old_owner = config.owner;
         config.owner = call.newOwner;
-        self.config.write(config)
+        self.config.write(config)?;
+
+        self.emit_event(ValidatorConfigV2Event::OwnershipTransferred(
+            IValidatorConfigV2::OwnershipTransferred {
+                oldOwner: old_owner,
+                newOwner: call.newOwner,
+            },
+        ))
     }
 
     pub fn set_next_full_dkg_ceremony(
@@ -525,15 +557,34 @@ impl ValidatorConfigV2 {
         // Modify in-place at the original index
         let mut updated = self.validators[call.idx as usize].read()?;
         updated.public_key = call.publicKey;
-        updated.ingress = call.ingress;
-        updated.egress = call.egress;
+        updated.ingress = call.ingress.clone();
+        updated.egress = call.egress.clone();
         updated.added_at_height = block_height;
         self.validators[call.idx as usize].write(updated)?;
 
         // Set pubkey_to_index for new pubkey
         self.pubkey_to_index[call.publicKey].write(call.idx + 1)?;
 
-        Ok(())
+        self.emit_event(ValidatorConfigV2Event::ValidatorDeactivated(
+            IValidatorConfigV2::ValidatorDeactivated {
+                index: appended_idx,
+                validatorAddress: v.validator_address,
+            },
+        ))?;
+        self.emit_event(ValidatorConfigV2Event::ValidatorAdded(
+            IValidatorConfigV2::ValidatorAdded {
+                index: call.idx,
+                validatorAddress: v.validator_address,
+                publicKey: call.publicKey,
+            },
+        ))?;
+        self.emit_event(ValidatorConfigV2Event::IpAddressesUpdated(
+            IValidatorConfigV2::IpAddressesUpdated {
+                index: call.idx,
+                ingress: call.ingress,
+                egress: call.egress,
+            },
+        ))
     }
 
     pub fn set_ip_addresses(
@@ -550,11 +601,17 @@ impl ValidatorConfigV2 {
 
         self.update_ingress_ip_tracking(&v.ingress, &call.ingress)?;
 
-        v.ingress = call.ingress;
-        v.egress = call.egress;
+        v.ingress = call.ingress.clone();
+        v.egress = call.egress.clone();
         self.validators[call.idx as usize].write(v)?;
 
-        Ok(())
+        self.emit_event(ValidatorConfigV2Event::IpAddressesUpdated(
+            IValidatorConfigV2::IpAddressesUpdated {
+                index: call.idx,
+                ingress: call.ingress,
+                egress: call.egress,
+            },
+        ))
     }
 
     pub fn transfer_validator_ownership(
@@ -571,7 +628,15 @@ impl ValidatorConfigV2 {
         self.validators[call.idx as usize].write(v)?;
 
         self.address_to_index[old_address].delete()?;
-        self.address_to_index[call.newAddress].write(call.idx + 1)
+        self.address_to_index[call.newAddress].write(call.idx + 1)?;
+
+        self.emit_event(ValidatorConfigV2Event::ValidatorOwnershipTransferred(
+            IValidatorConfigV2::ValidatorOwnershipTransferred {
+                index: call.idx,
+                oldAddress: old_address,
+                newAddress: call.newAddress,
+            },
+        ))
     }
 
     // =========================================================================
@@ -669,7 +734,7 @@ impl ValidatorConfigV2 {
             return Ok(());
         }
 
-        self.append_validator(
+        let migrated_idx = self.append_validator(
             v1_val.validatorAddress,
             v1_val.publicKey,
             v1_val.inboundAddress,
@@ -682,7 +747,13 @@ impl ValidatorConfigV2 {
             self.active_ingress_ips[ingress_hash].write(true)?;
         }
 
-        Ok(())
+        self.emit_event(ValidatorConfigV2Event::ValidatorMigrated(
+            IValidatorConfigV2::ValidatorMigrated {
+                index: migrated_idx,
+                validatorAddress: v1_val.validatorAddress,
+                publicKey: v1_val.publicKey,
+            },
+        ))
     }
 
     pub fn initialize_if_migrated(&mut self, sender: Address) -> Result<()> {
@@ -703,9 +774,14 @@ impl ValidatorConfigV2 {
         trace!(address=%self.address, "Initializing validator config v2 precompile after migration");
 
         // Initialize the precompile config
-        config.init_at_height = self.storage.block_number();
+        let height = self.storage.block_number();
+        config.init_at_height = height;
         config.is_init = true;
-        self.config.write(config)
+        self.config.write(config)?;
+
+        self.emit_event(ValidatorConfigV2Event::Initialized(
+            IValidatorConfigV2::Initialized { height },
+        ))
     }
 }
 
