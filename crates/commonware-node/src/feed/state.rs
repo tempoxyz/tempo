@@ -6,7 +6,7 @@ use alloy_primitives::hex;
 use commonware_codec::{Encode, ReadExt as _};
 use commonware_consensus::{
     marshal::ingress::mailbox::Identifier,
-    types::{Epoch, Epocher as _, FixedEpocher, Height},
+    types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
 };
 use parking_lot::RwLock;
 use reth_rpc_convert::transaction::FromConsensusHeader;
@@ -212,13 +212,26 @@ impl ConsensusFeed for FeedStateHandle {
     }
 
     async fn get_latest(&self) -> ConsensusState {
-        let (finalized, notarized) = {
+        let (finalized, mut notarized) = {
             let state = self.state.read();
             (
                 state.latest_finalized.clone(),
                 state.latest_notarized.clone(),
             )
         };
+
+        let finalized_round = finalized
+            .as_ref()
+            .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)));
+
+        let notarized_round = notarized
+            .as_ref()
+            .map(|n| Round::new(Epoch::new(n.epoch), View::new(n.view)));
+
+        // Only include the notarization if it is ahead.
+        if finalized_round.is_some_and(|f| notarized_round.is_none_or(|n| n <= f)) {
+            notarized = None;
+        }
 
         ConsensusState {
             finalized,
