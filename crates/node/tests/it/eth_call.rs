@@ -460,23 +460,18 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
     Ok(())
 }
 
-/// Regression test: on mainnet (presto), `validatorTokens[address(0)]` was pre-seeded with a
+/// Regression test: on mainnet, `validatorTokens[address(0)]` was pre-seeded with a
 /// DONOTUSE token in genesis. The old code used `Address::ZERO` as beneficiary for RPC gas
 /// estimation, so `get_validator_token(Address::ZERO)` returned DONOTUSE instead of falling
 /// back to `DEFAULT_FEE_TOKEN` (PathUSD), causing gas estimation to fail.
 ///
 /// The fix uses `TIP_FEE_MANAGER_ADDRESS` as the sentinel beneficiary, which is guaranteed to
 /// have no validator token set (its mapping is always zero → falls back to PathUSD).
-///
-/// This test grafts the pre-seeded `validatorTokens[address(0)]` slot from the presto (mainnet)
-/// genesis into the test genesis and verifies that `eth_estimateGas` still succeeds.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Graft the presto (mainnet) fee manager storage into the test genesis.
-    // Presto has validatorTokens[address(0)] pre-seeded with a DONOTUSE token —
-    // the exact state that caused the original bug.
+    // Craft test genesis with mainnet's fee manager storage (pre-seeded with DONOTUSE token).
     let mut test_genesis: serde_json::Value =
         serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
     let presto_genesis: serde_json::Value =
