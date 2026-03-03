@@ -100,33 +100,34 @@ impl<TContext: Spawner> Actor<TContext> {
             if let Some((round, mut pending)) = self.pending.pop_first() {
                 select!(
                     result = &mut pending.block_rx => {
-                        if let Ok(block) = result {
-                            self.handle_activity(pending.activity, block);
-                        } else {
-                            warn_span!("feed_actor").in_scope(|| {
-                                warn!(?round, "block subscription cancelled");
-                            });
+                        match result {
+                            Ok(block) => self.handle_activity(pending.activity, block),
+                            Err(err) => warn_span!("feed_actor").in_scope(||
+                                warn!(?round, ?err, "pending block subscription cancelled")
+                            ),
                         }
                     },
-                    activity = self.receiver.next() => {
-                        self.pending.insert(round, pending);
 
+                    // If a newer activity arrives, reinsert the pending subscription and subscribe to the new activity.
+                    activity = self.receiver.next() => {
                         let Some(activity) = activity else {
-                            break;
+                            break; // exit
                         };
 
+                        self.pending.insert(round, pending);
                         self.subscribe(activity).await;
                     },
                 );
             } else {
                 let Some(activity) = self.receiver.next().await else {
-                    info_span!("feed_actor").in_scope(|| info!("shutting down"));
-                    break;
+                    break; // exit
                 };
 
                 self.subscribe(activity).await;
             }
         }
+
+        info_span!("feed_actor").in_scope(|| info!("shutting down"));
     }
 
     /// Subscribe to the block for an activity
@@ -139,22 +140,20 @@ impl<TContext: Spawner> Actor<TContext> {
 
         match &activity {
             // Prune stale state on incoming finalizations (notarizations)
-            Activity::Finalization(_) => {
-                self.pending
-                    .retain(|&r, p| matches!(&p.activity, Activity::Finalization(_)) || r > round);
-            }
-            // Notarizations are only listened to if they are not covered by the latest finalized round.
-            Activity::Notarization(_) => {
+            Activity::Finalization(_) => self
+                .pending
+                .retain(|&r, p| matches!(&p.activity, Activity::Finalization(_)) || r > round),
+
+            // Only accept notarizations if they are ahead of the latest finalized round.
+            Activity::Notarization(_)
                 if self
                     .state
                     .read()
                     .latest_finalized
                     .as_ref()
-                    .is_some_and(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)) >= round)
-                {
-                    return;
-                }
-            }
+                    .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)))
+                    .is_none_or(|f| f < round) => {}
+
             _ => return,
         }
 
