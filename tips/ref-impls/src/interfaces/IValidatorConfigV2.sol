@@ -36,6 +36,7 @@ interface IValidatorConfigV2 {
         string egress,
         address caller
     );
+    event FeeRecipientUpdated(uint64 indexed index, address feeRecipient, address caller);
     event IpAddressesUpdated(uint64 indexed index, string ingress, string egress, address caller);
     event ValidatorOwnershipTransferred(
         uint64 indexed index, address indexed oldAddress, address indexed newAddress, address caller
@@ -113,6 +114,7 @@ interface IValidatorConfigV2 {
         address validatorAddress;
         string ingress;
         string egress;
+        address feeRecipient;
         uint64 index;
         uint64 activeIdx;
         uint64 addedAtHeight;
@@ -127,11 +129,13 @@ interface IValidatorConfigV2 {
     /// @param index Position in validators array (stable across rotations for the same slot)
     /// @param addedAtHeight Block height when validator was added
     /// @param deactivatedAtHeight Block height when validator was deleted (0 = active)
+    /// @param feeRecipient The fee recipient the node will set when proposing blocks as a leader.
     struct Validator {
         bytes32 publicKey;
         address validatorAddress;
         string ingress;
         string egress;
+        address feeRecipient;
         uint64 index;
         uint64 addedAtHeight;
         uint64 deactivatedAtHeight;
@@ -150,12 +154,14 @@ interface IValidatorConfigV2 {
     /// @param publicKey The validator's Ed25519 communication public key
     /// @param ingress The validator's inbound address `<ip>:<port>` for incoming connections
     /// @param egress The validator's outbound IP address `<ip>` for firewall whitelisting
+    /// @param feeRecipient The fee recipient the validator sets when proposing.
     /// @param signature Ed25519 signature (64 bytes) proving ownership of the public key
     function addValidator(
         address validatorAddress,
         bytes32 publicKey,
         string calldata ingress,
         string calldata egress,
+        address feeRecipient,
         bytes calldata signature
     )
         external
@@ -201,6 +207,15 @@ interface IValidatorConfigV2 {
     /// @param ingress The new inbound address `<ip>:<port>` for incoming connections
     /// @param egress The new outbound IP address `<ip>` for firewall whitelisting
     function setIpAddresses(uint64 idx, string calldata ingress, string calldata egress) external;
+
+    /// @notice Update validator fee recipient (owner or validator only).
+    /// @dev Can be called by the contract owner or by the validator's own address.
+    /// @param idx Validator index.
+    /// @param address New fee recipient.
+    function setFeeRecipient(
+        uint64 idx,
+        address feeRecipient,
+    ) external;
 
     /// @notice Transfer a validator entry to a new address (owner or validator only)
     /// @dev Can be called by the contract owner or by the validator's own address.

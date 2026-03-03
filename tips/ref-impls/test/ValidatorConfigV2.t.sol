@@ -452,6 +452,75 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
+                         SET FEE RECIPIENT
+    //////////////////////////////////////////////////////////////*/
+    function test_setFeeRecipient_pass() public {
+        _initializeV2();
+        validatorConfigV2.addValidator(
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            validator1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1, validator1)
+        );
+
+        // Owner updates validator1 at idx 2
+        validatorConfigV2.setFeeRecipient(2, validator2);
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(validator1);
+        assertEq(v.feeRecipient, validator2);
+
+        // Validator updates own IPs
+        vm.prank(validator1);
+        validatorConfigV2.setFeeRecipient(2, validator3);
+        v = validatorConfigV2.validatorByAddress(validator1);
+        assertEq(v.feeRecipient, validator3);
+
+        // IPv6 ingress
+        validatorConfigV2.setIpAddresses(2, "[2001:db8::1]:8000", "192.168.1.2");
+        v = validatorConfigV2.validatorByAddress(validator1);
+        assertEq(keccak256(bytes(v.ingress)), keccak256(bytes("[2001:db8::1]:8000")));
+    }
+
+    function test_setFeeRecipient_fail() public {
+        _initializeV2();
+
+        // 1. ValidatorNotFound (out of bounds)
+        try validatorConfigV2.setFeeRecipient(99, validator2) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorNotFound.selector));
+        }
+
+        validatorConfigV2.addValidator(
+            validator1,
+            PUB_KEY_0,
+            ingress1,
+            egress1,
+            validator1,
+            _signAdd(PRIV_KEY_0, validator1, ingress1, egress1)
+        );
+
+        // 2. Unauthorized
+        vm.prank(nonOwner);
+        try validatorConfigV2.setFeeRecipient(2, validator2) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.Unauthorized.selector));
+        }
+
+        // 3. ValidatorAlreadyDeactivated (after deactivation)
+        validatorConfigV2.deactivateValidator(2);
+        try validatorConfigV2.setFeeRecipient(2, validator2) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(
+                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeactivated.selector)
+            );
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
                          SET IP ADDRESSES
     //////////////////////////////////////////////////////////////*/
 
