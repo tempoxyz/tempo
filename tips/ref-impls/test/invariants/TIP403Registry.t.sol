@@ -403,6 +403,25 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         );
     }
 
+    /// @notice Handler for checking non-existent policy reverts (T2+)
+    /// @dev Tests TEMPO-REG20: isAuthorized must revert with PolicyNotFound for non-existent policies
+    /// forge-config: default.hardfork = "tempo:T2"
+    function checkNonExistentPolicyRevertsT2(uint64 policyId) external {
+        uint64 counter = registry.policyIdCounter();
+        uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
+        address account = _selectActor(uint256(policyId));
+
+        try registry.isAuthorized(nonExistentId, account) {
+            revert("TEMPO-REG20: Non-existent policy should revert with PolicyNotFound");
+        } catch (bytes memory reason) {
+            assertEq(
+                bytes4(reason),
+                ITIP403Registry.PolicyNotFound.selector,
+                "TEMPO-REG20: Should revert with PolicyNotFound"
+            );
+        }
+    }
+
     /// @notice Handler for checking authorization of accounts never added to a policy
     /// @dev Verifies default authorization behavior for whitelist (reject unknown) and blacklist (allow unknown)
     function checkUnknownAccountAuth(uint256 policySeed, uint256 accountSeed) external {
@@ -532,38 +551,4 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         assertTrue(isKnown, "Unknown error encountered");
     }
 
-}
-
-/// @title TIP403Registry T2 Invariant Tests
-/// @notice Invariant tests for T2-specific TIP403Registry behavior
-/// @dev Tests TEMPO-REG20: isAuthorized reverts with PolicyNotFound for non-existent policies
-/// forge-config: default.hardfork = "tempo:T2"
-contract TIP403RegistryT2InvariantTest is InvariantBaseTest {
-
-    address[] private _actors;
-
-    function setUp() public override {
-        super.setUp();
-        targetContract(address(this));
-        _setupInvariantBase();
-        (_actors,) = _buildActors(10);
-    }
-
-    /// @notice Handler: isAuthorized must revert with PolicyNotFound for non-existent policies
-    /// @dev Tests TEMPO-REG20
-    function checkNonExistentPolicyReverts(uint64 policyId, uint256 actorSeed) external {
-        uint64 counter = registry.policyIdCounter();
-        uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
-        address account = _actors[bound(actorSeed, 0, _actors.length - 1)];
-
-        try registry.isAuthorized(nonExistentId, account) {
-            revert("TEMPO-REG20: Non-existent policy should revert with PolicyNotFound");
-        } catch (bytes memory reason) {
-            assertEq(
-                bytes4(reason),
-                ITIP403Registry.PolicyNotFound.selector,
-                "TEMPO-REG20: Should revert with PolicyNotFound"
-            );
-        }
-    }
 }
