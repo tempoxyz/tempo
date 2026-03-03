@@ -64,7 +64,7 @@ interface IValidatorConfigV2 {
     error ValidatorNotFound();
 
     /// @notice Thrown when trying to deactivate an already-deactivated validator
-    error ValidatorAlreadyDeleted();
+    error ValidatorAlreadyDeactivated();
 
     /// @notice Thrown when public key is invalid (zero)
     error InvalidPublicKey();

@@ -231,7 +231,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             || selector == IValidatorConfigV2.NotIp.selector
             || selector == IValidatorConfigV2.InvalidSignature.selector
             || selector == IValidatorConfigV2.IngressAlreadyExists.selector
-            || selector == IValidatorConfigV2.ValidatorAlreadyDeleted.selector;
+            || selector == IValidatorConfigV2.ValidatorAlreadyDeactivated.selector;
         assertTrue(isKnown, string.concat("Unknown error: ", vm.toString(selector)));
     }
 

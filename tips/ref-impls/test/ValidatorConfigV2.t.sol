@@ -298,13 +298,13 @@ contract ValidatorConfigV2Test is BaseTest {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorNotFound.selector));
         }
 
-        // 3. ValidatorAlreadyDeleted (already deactivated)
+        // 3. ValidatorAlreadyDeactivated (already deactivated)
         validatorConfigV2.deactivateValidator(2);
         try validatorConfigV2.deactivateValidator(2) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
-                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector)
+                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeactivated.selector)
             );
         }
     }
@@ -422,7 +422,7 @@ contract ValidatorConfigV2Test is BaseTest {
             );
         }
 
-        // 5. ValidatorAlreadyDeleted (after deactivation)
+        // 5. ValidatorAlreadyDeactivated (after deactivation)
         validatorConfigV2.deactivateValidator(2);
         try validatorConfigV2.rotateValidator(
             2, PUB_KEY_3, ingress2, egress2, _signRotate(PRIV_KEY_3, validator1, ingress2, egress2)
@@ -430,7 +430,7 @@ contract ValidatorConfigV2Test is BaseTest {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
-                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector)
+                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeactivated.selector)
             );
         }
 
@@ -509,13 +509,13 @@ contract ValidatorConfigV2Test is BaseTest {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.Unauthorized.selector));
         }
 
-        // 3. ValidatorAlreadyDeleted (after deactivation)
+        // 3. ValidatorAlreadyDeactivated (after deactivation)
         validatorConfigV2.deactivateValidator(2);
         try validatorConfigV2.setIpAddresses(2, ingress2, egress2) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
-                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector)
+                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeactivated.selector)
             );
         }
     }
@@ -616,13 +616,13 @@ contract ValidatorConfigV2Test is BaseTest {
             );
         }
 
-        // 5. ValidatorAlreadyDeleted (after deactivation)
+        // 5. ValidatorAlreadyDeactivated (after deactivation)
         validatorConfigV2.deactivateValidator(2);
         try validatorConfigV2.transferValidatorOwnership(2, validator3) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
-                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeleted.selector)
+                err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorAlreadyDeactivated.selector)
             );
         }
     }

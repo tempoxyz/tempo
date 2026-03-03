@@ -111,7 +111,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage v = validatorsArray[idx];
         if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         _checkOnlyOwnerOrValidator(v.validatorAddress);
@@ -169,7 +169,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage oldValidator = validatorsArray[idx];
         if (oldValidator.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         address validatorAddress = oldValidator.validatorAddress;
@@ -227,7 +227,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage v = validatorsArray[idx];
         if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         _checkOnlyOwnerOrValidator(v.validatorAddress);
@@ -260,7 +260,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage v = validatorsArray[idx];
         if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         address currentAddress = v.validatorAddress;
