@@ -10,7 +10,10 @@
 //! deterministic runtime to spend real life time to wait for the execution
 //! layer calls to complete.
 
-use std::{sync::Arc, time::{Duration, Instant}};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
