@@ -1,7 +1,7 @@
 use alloy::primitives::{Address, LogData, U256};
 use alloy_evm::{Database, EvmInternals};
 use revm::{
-    context::{Block, CfgEnv, JournalTr, Transaction},
+    context::{Block, CfgEnv, JournalTr, Transaction, journaled_state::JournalCheckpoint},
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
@@ -174,6 +174,65 @@ impl StorageCtx {
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
     }
+
+    /// Creates a journal checkpoint and returns a RAII guard.
+    ///
+    /// All state mutations after this call will be atomically
+    /// reverted if the guard is dropped without calling
+    /// [`CheckpointGuard::commit`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if no storage context is set.
+    pub fn checkpoint(&mut self) -> CheckpointGuard {
+        // spec: only available +T1C. Prior to that checkpoints are a no-op.
+        let checkpoint = Self::with_storage(|s| {
+            if s.spec().is_t1c() {
+                Some(s.checkpoint())
+            } else {
+                None
+            }
+        });
+
+        CheckpointGuard { checkpoint }
+    }
+}
+
+/// RAII guard for atomic state mutation batching.
+///
+/// On drop, automatically reverts all state changes made since the checkpoint
+/// unless [`commit`](CheckpointGuard::commit) was called.
+///
+/// # SPEC
+/// Only active +T1C, previously it is a no-op (no checkpoint is created).
+///
+/// # Examples
+///
+/// ```ignore
+/// let guard = self.storage.checkpoint();
+/// self.sstore(addr, key, value)?;  // reverted on drop (T1C+)
+/// self.emit_event(...)?;
+/// guard.commit();  // finalizes all mutations
+/// ```
+pub struct CheckpointGuard {
+    checkpoint: Option<JournalCheckpoint>,
+}
+
+impl CheckpointGuard {
+    /// Commits all state changes since the checkpoint.
+    pub fn commit(mut self) {
+        if self.checkpoint.take().is_some() {
+            StorageCtx::with_storage(|s| s.checkpoint_commit());
+        }
+    }
+}
+
+impl Drop for CheckpointGuard {
+    fn drop(&mut self) {
+        if let Some(cp) = self.checkpoint.take() {
+            StorageCtx::with_storage(|s| s.checkpoint_revert(cp));
+        }
+    }
 }
 
 impl<'evm> StorageCtx {
@@ -285,12 +344,8 @@ impl StorageCtx {
     }
 
     /// Checks if a contract at the given address has bytecode deployed.
-    pub fn has_bytecode(&self, address: Address) -> bool {
-        if let Some(account_info) = self.get_account_info(address) {
-            !account_info.is_empty_code_hash()
-        } else {
-            false
-        }
+    pub fn has_bytecode(&self, address: Address) -> Result<bool> {
+        self.with_account_info(address, |info| Ok(!info.is_empty_code_hash()))
     }
 }
 

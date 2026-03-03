@@ -86,6 +86,17 @@ contract FeeManager is IFeeManager, FeeAMM {
         }
     }
 
+    function getFeeToken() external view returns (address) {
+        address token;
+        // NOTE: The slot used here (0) is specific to this reference implementation.
+        // The production Rust precompile uses a different transient slot determined
+        // by the `contract` macro's layout (currently slot 7).
+        assembly {
+            token := tload(0)
+        }
+        return token;
+    }
+
     function distributeFees(address validator, address token) external {
         uint256 amount = collectedFees[validator][token];
         if (amount == 0) {

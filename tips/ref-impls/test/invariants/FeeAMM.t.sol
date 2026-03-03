@@ -1106,26 +1106,59 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         }
         uint256 ammPathUsdBalance = pathUSD.balanceOf(address(amm));
 
-        // Check collected fees for all tokens (FEE5) - O(tokens × actors)
+        // Check combined solvency per token (FEE5) - reserves + collected fees <= balance
+        // A token's total obligations = sum of reserves across all pools referencing it + collected fees
+        uint256 totalTokens = numTokens + 1; // _tokens + pathUSD
         for (uint256 i = 0; i < numTokens; i++) {
             address token = address(_tokens[i]);
+
+            // Sum collected fees for this token across all actors
             uint256 totalCollected = 0;
-            for (uint256 j = 0; j < numActors; j++) {
-                totalCollected += amm.collectedFees(_actors[j], token);
+            for (uint256 a = 0; a < numActors; a++) {
+                totalCollected += amm.collectedFees(_actors[a], token);
             }
+
+            // Sum reserves for this token across all pools where it appears
+            uint256 totalReserves = 0;
+            for (uint256 j = 0; j < totalTokens; j++) {
+                address other = j == 0 ? address(pathUSD) : address(_tokens[j - 1]);
+                if (other == token) continue;
+
+                // token as userToken in pool(token, other)
+                IFeeAMM.Pool memory p1 = amm.getPool(token, other);
+                totalReserves += uint256(p1.reserveUserToken);
+
+                // token as validatorToken in pool(other, token)
+                IFeeAMM.Pool memory p2 = amm.getPool(other, token);
+                totalReserves += uint256(p2.reserveValidatorToken);
+            }
+
             assertTrue(
-                totalCollected <= ammBalances[i], "TEMPO-FEE5: Collected fees exceed AMM balance"
+                totalReserves + totalCollected <= ammBalances[i],
+                "TEMPO-FEE5: Combined reserves + collected fees exceed AMM balance"
             );
         }
-        // Check pathUSD collected fees
-        uint256 totalPathUsdCollected = 0;
-        for (uint256 j = 0; j < numActors; j++) {
-            totalPathUsdCollected += amm.collectedFees(_actors[j], address(pathUSD));
+        // Check pathUSD combined solvency
+        {
+            uint256 totalPathUsdCollected = 0;
+            for (uint256 a = 0; a < numActors; a++) {
+                totalPathUsdCollected += amm.collectedFees(_actors[a], address(pathUSD));
+            }
+            uint256 totalPathUsdReserves = 0;
+            for (uint256 j = 0; j < numTokens; j++) {
+                address other = address(_tokens[j]);
+                // pathUSD as userToken in pool(pathUSD, other)
+                IFeeAMM.Pool memory p1 = amm.getPool(address(pathUSD), other);
+                totalPathUsdReserves += uint256(p1.reserveUserToken);
+                // pathUSD as validatorToken in pool(other, pathUSD)
+                IFeeAMM.Pool memory p2 = amm.getPool(other, address(pathUSD));
+                totalPathUsdReserves += uint256(p2.reserveValidatorToken);
+            }
+            assertTrue(
+                totalPathUsdReserves + totalPathUsdCollected <= ammPathUsdBalance,
+                "TEMPO-FEE5: Combined pathUSD reserves + collected fees exceed AMM balance"
+            );
         }
-        assertTrue(
-            totalPathUsdCollected <= ammPathUsdBalance,
-            "TEMPO-FEE5: Collected pathUSD fees exceed AMM balance"
-        );
 
         // Check all token pairs - single O(n²) loop for AMM13, AMM14, AMM15, AMM20
         for (uint256 i = 0; i < numTokens; i++) {

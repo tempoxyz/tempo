@@ -152,7 +152,7 @@ impl AA2dPool {
         // Handle expiring nonce transactions separately - they use expiring nonce hash as unique ID
         // Only treat as expiring nonce if T1 hardfork is active
         if hardfork.is_t1() && transaction.transaction.is_expiring_nonce() {
-            return self.add_expiring_nonce_transaction(transaction);
+            return self.add_expiring_nonce_transaction(transaction, hardfork);
         }
 
         let tx_id = transaction
@@ -323,6 +323,7 @@ impl AA2dPool {
     fn add_expiring_nonce_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        hardfork: TempoHardfork,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         let tx_hash = *transaction.hash();
         let expiring_nonce_hash = Self::expiring_nonce_hash(&transaction);
@@ -346,7 +347,7 @@ impl AA2dPool {
         let pending_tx = PendingTransaction {
             submission_id: self.next_id(),
             priority: CoinbaseTipOrdering::default()
-                .priority(&transaction.transaction, TempoHardfork::T1.base_fee()),
+                .priority(&transaction.transaction, hardfork.base_fee()),
             transaction: transaction.clone(),
         };
 

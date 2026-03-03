@@ -53,7 +53,7 @@ fn build_create_key_auth_tx(
         nonce_key: U256::ZERO,
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         key_authorization: Some(signed_key_auth),
         ..Default::default()
     };
@@ -90,7 +90,7 @@ fn build_2d_nonce_transfer_tx(
         nonce_key: U256::from(nonce_key),
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -108,6 +108,7 @@ fn make_pre_t1b_genesis() -> eyre::Result<String> {
     let genesis_str = include_str!("../assets/test-genesis.json");
     let mut genesis: serde_json::Value = serde_json::from_str(genesis_str)?;
     genesis["config"].as_object_mut().unwrap().remove("t1bTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
     Ok(serde_json::to_string(&genesis)?)
 }

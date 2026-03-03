@@ -185,20 +185,21 @@ abstract contract InvariantChecker is HandlerBase {
     /// @notice Verify CREATE addresses for a single account
     /// @param account The account to verify
     function _verifyCreateAddressesForAccount(address account) internal view {
-        uint256 createCount = ghost_createCount[account];
+        uint256[] storage nonces = ghost_createNonces[account];
 
-        for (uint256 n = 0; n < createCount; n++) {
+        assertEq(nonces.length, ghost_createCount[account], "C5: create nonce list/count mismatch");
+
+        for (uint256 i = 0; i < nonces.length; i++) {
+            uint256 n = nonces[i];
             bytes32 key = keccak256(abi.encodePacked(account, n));
             address recorded = ghost_createAddresses[key];
 
-            if (recorded != address(0)) {
-                // C5: Recorded address matches computed address
-                address computed = TxBuilder.computeCreateAddress(account, n);
-                assertEq(recorded, computed, "C5: CREATE address mismatch");
+            assertTrue(recorded != address(0), "C5: missing recorded CREATE address");
 
-                // C5: Code exists at the address
-                assertTrue(recorded.code.length > 0, "C5: No code at CREATE address");
-            }
+            address computed = TxBuilder.computeCreateAddress(account, n);
+            assertEq(recorded, computed, "C5: CREATE address mismatch");
+
+            assertTrue(recorded.code.length > 0, "C5: No code at CREATE address");
         }
     }
 
@@ -279,6 +280,12 @@ abstract contract InvariantChecker is HandlerBase {
 
         // K3: KeyAuthorization chain_id must be 0 (any) or match current
         assertEq(ghost_keyWrongChainAllowed, 0, "K3: Wrong chain key auth unexpectedly allowed");
+
+        // K7: Revoked keys must not be usable
+        assertEq(ghost_keyRevokedAllowed, 0, "K7: Revoked key unexpectedly allowed");
+
+        // K8: Expired keys must not be usable
+        assertEq(ghost_keyExpiredAllowed, 0, "K8: Expired key unexpectedly allowed");
 
         // K12: Keys with zero spending limit cannot spend anything
         assertEq(ghost_keyZeroLimitAllowed, 0, "K12: Zero-limit key unexpectedly allowed to spend");

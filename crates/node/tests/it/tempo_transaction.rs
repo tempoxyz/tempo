@@ -47,6 +47,7 @@ use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
+use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::TempoNetwork;
@@ -115,7 +116,7 @@ async fn fund_address_with_fee_tokens(
         nonce: provider.get_transaction_count(funder_addr).await?,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -312,7 +313,7 @@ fn create_signed_key_authorization(
     };
 
     let authorization = KeyAuthorization {
-        chain_id: 0, // Wildcard - valid on any chain
+        chain_id: 1337, // Must match test genesis chain_id (T1C rejects wildcard 0)
         key_type,
         key_id: Address::random(), // Random key being authorized
         expiry: None,              // Never expires
@@ -519,6 +520,37 @@ async fn submit_and_mine_aa_tx(
     Ok(tx_hash)
 }
 
+/// Authorize an access key on an account: creates the key authorization, wraps it
+/// in a tx signed by the root key, submits and mines it.
+async fn authorize_access_key(
+    setup: &mut SingleNodeSetup,
+    root_signer: &impl SignerSync,
+    root_addr: Address,
+    access_key_addr: Address,
+    access_key_mock_sig: TempoSignature,
+    chain_id: u64,
+    nonce: u64,
+) -> eyre::Result<()> {
+    let auth = create_key_authorization(
+        root_signer,
+        access_key_addr,
+        access_key_mock_sig,
+        chain_id,
+        None,
+        None,
+    )?;
+    let mut tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    tx.key_authorization = Some(auth);
+    let sig = sign_aa_tx_secp256k1(&tx, root_signer)?;
+    submit_and_mine_aa_tx(setup, tx, sig).await?;
+    Ok(())
+}
+
 /// Low-level P256 prehash signing. Returns a `PrimitiveSignature::P256`.
 fn sign_p256_primitive(
     sig_hash: B256,
@@ -541,6 +573,28 @@ fn sign_p256_primitive(
     }))
 }
 
+/// Helper to sign AA transaction with P256 access key using legacy V1 keychain signature.
+/// V1 signs the raw sig_hash without binding user_address.
+fn sign_aa_tx_with_p256_access_key_v1(
+    tx: &TempoTransaction,
+    access_key_signing_key: &p256::ecdsa::SigningKey,
+    access_pub_key_x: &B256,
+    access_pub_key_y: &B256,
+    root_key_addr: Address,
+) -> eyre::Result<TempoSignature> {
+    let sig_hash = tx.signature_hash();
+    let inner = sign_p256_primitive(
+        sig_hash,
+        access_key_signing_key,
+        *access_pub_key_x,
+        *access_pub_key_y,
+    )?;
+    Ok(TempoSignature::Keychain(KeychainSignature::new_v1(
+        root_key_addr,
+        inner,
+    )))
+}
+
 /// Helper to sign AA transaction with P256 access key (wrapped in Keychain signature)
 fn sign_aa_tx_with_p256_access_key(
     tx: &TempoTransaction,
@@ -549,15 +603,17 @@ fn sign_aa_tx_with_p256_access_key(
     access_pub_key_y: &B256,
     root_key_addr: Address,
 ) -> eyre::Result<TempoSignature> {
+    let sig_hash = KeychainSignature::signing_hash(tx.signature_hash(), root_key_addr);
     let inner = sign_p256_primitive(
-        tx.signature_hash(),
+        sig_hash,
         access_key_signing_key,
         *access_pub_key_x,
         *access_pub_key_y,
     )?;
-    Ok(TempoSignature::Keychain(
-        tempo_primitives::transaction::KeychainSignature::new(root_key_addr, inner),
-    ))
+    Ok(TempoSignature::Keychain(KeychainSignature::new(
+        root_key_addr,
+        inner,
+    )))
 }
 
 /// Helper to sign AA transaction with secp256k1 access key (wrapped in Keychain signature)
@@ -566,13 +622,31 @@ fn sign_aa_tx_with_secp256k1_access_key(
     access_key_signer: &impl SignerSync,
     root_key_addr: Address,
 ) -> eyre::Result<TempoSignature> {
+    let sig_hash = KeychainSignature::signing_hash(tx.signature_hash(), root_key_addr);
+    let signature = access_key_signer.sign_hash_sync(&sig_hash)?;
+    let inner_signature = PrimitiveSignature::Secp256k1(signature);
+
+    Ok(TempoSignature::Keychain(KeychainSignature::new(
+        root_key_addr,
+        inner_signature,
+    )))
+}
+
+/// Helper to sign AA transaction with secp256k1 access key using legacy V1 keychain signature.
+/// V1 signs the raw sig_hash without binding user_address.
+fn sign_aa_tx_with_secp256k1_access_key_v1(
+    tx: &TempoTransaction,
+    access_key_signer: &impl SignerSync,
+    root_key_addr: Address,
+) -> eyre::Result<TempoSignature> {
     let sig_hash = tx.signature_hash();
     let signature = access_key_signer.sign_hash_sync(&sig_hash)?;
     let inner_signature = PrimitiveSignature::Secp256k1(signature);
 
-    Ok(TempoSignature::Keychain(
-        tempo_primitives::transaction::KeychainSignature::new(root_key_addr, inner_signature),
-    ))
+    Ok(TempoSignature::Keychain(KeychainSignature::new_v1(
+        root_key_addr,
+        inner_signature,
+    )))
 }
 
 /// Low-level WebAuthn signing. Returns a `PrimitiveSignature::WebAuthn`.
@@ -618,13 +692,9 @@ fn sign_aa_tx_with_webauthn_access_key(
     origin: &str,
     root_key_addr: Address,
 ) -> eyre::Result<TempoSignature> {
-    let inner = sign_webauthn_primitive(
-        tx.signature_hash(),
-        signing_key,
-        pub_key_x,
-        pub_key_y,
-        origin,
-    )?;
+    // V2: sign keccak256(0x04 || sig_hash || user_address)
+    let sig_hash = KeychainSignature::signing_hash(tx.signature_hash(), root_key_addr);
+    let inner = sign_webauthn_primitive(sig_hash, signing_key, pub_key_x, pub_key_y, origin)?;
     Ok(TempoSignature::Keychain(KeychainSignature::new(
         root_key_addr,
         inner,
@@ -721,7 +791,7 @@ fn create_basic_aa_tx(
         // Use AlphaUSD to match fund_address_with_fee_tokens
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -1084,7 +1154,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             nonce,
             fee_token: None,
             fee_payer_signature: None,
-            valid_before: Some(u64::MAX),
+            valid_before: None,
             ..Default::default()
         };
 
@@ -1496,7 +1566,7 @@ async fn send_tx(
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -1746,7 +1816,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
         nonce: nonce_seq,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -3244,7 +3314,7 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -3867,6 +3937,53 @@ async fn test_keychain_authorization_in_auth_list_is_skipped() -> eyre::Result<(
     Ok(())
 }
 
+/// V1 keychain signature inside `tempo_authorization_list` must be rejected post-T1C.
+/// Outer sig is a normal secp256k1 primitive, only the auth list entry carries V1 keychain.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_v1_keychain_in_auth_list_rejected_post_t1c() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (setup, provider, sender_signer, sender_addr) = setup_test_with_funded_account().await?;
+    let chain_id = provider.get_chain_id().await?;
+
+    // Build an EIP-7702 authorization and sign it with a V1 keychain sig
+    let delegate_address = ACCOUNT_KEYCHAIN_ADDRESS;
+    let (auth, sig_hash) = build_authorization(chain_id, delegate_address);
+
+    let inner_signer = alloy::signers::local::PrivateKeySigner::random();
+    let inner_signature = inner_signer.sign_hash_sync(&sig_hash)?;
+    let v1_keychain_sig = TempoSignature::Keychain(KeychainSignature::new_v1(
+        Address::random(), // arbitrary user_address
+        PrimitiveSignature::Secp256k1(inner_signature),
+    ));
+    let auth_signed = tempo_primitives::transaction::TempoSignedAuthorization::new_unchecked(
+        auth,
+        v1_keychain_sig,
+    );
+
+    // Tx with primitive outer sig and V1-keychain auth list entry
+    let nonce = provider.get_transaction_count(sender_addr).await?;
+    let mut tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(sender_addr)],
+        2_000_000,
+    );
+    tx.tempo_authorization_list = vec![auth_signed];
+
+    let outer_sig = sign_aa_tx_secp256k1(&tx, &sender_signer)?;
+    let envelope: TempoTxEnvelope = AASigned::new_unhashed(tx, outer_sig).into();
+
+    setup
+        .node
+        .rpc
+        .inject_tx(envelope.encoded_2718().into())
+        .await
+        .expect_err("V1 keychain sig in auth list must be rejected post-T1C");
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -3901,7 +4018,7 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
         }],
         nonce_key: U256::ZERO, // Protocol nonce (key 0)
         nonce,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -4683,7 +4800,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth.clone()),
@@ -4721,7 +4838,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -4783,7 +4900,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -4845,7 +4962,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -5135,7 +5252,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -5295,11 +5412,11 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     println!("Current block timestamp for TEST 2: {test2_timestamp}, using nonce: {nonce}");
 
     // Set expiry to just enough time in the future to authorize and use the key once
-    // Each block advances timestamp by ~1 second, so 3 seconds should be enough for:
+    // Each block advances timestamp by ~1 second, so 5 seconds should be enough for:
     // - authorization tx (1 block)
     // - use key tx (1 block)
     // Then after expiry, advancing a few more blocks should exceed the expiry
-    let short_expiry_timestamp = test2_timestamp + 3;
+    let short_expiry_timestamp = test2_timestamp + 5;
     println!("Setting key expiry to: {short_expiry_timestamp} (current: {test2_timestamp})");
 
     let short_expiry_key_auth = create_key_authorization(
@@ -5581,7 +5698,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth),
@@ -5642,7 +5759,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None, // No auth needed - key already authorized
@@ -5715,7 +5832,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
@@ -5821,7 +5938,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(invalid_key_auth),
@@ -5864,6 +5981,279 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         error_msg.contains("Invalid KeyAuthorization signature"),
         "Error must mention 'Invalid KeyAuthorization signature'. Got: {error_msg}"
     );
+
+    Ok(())
+}
+
+/// V2 keychain cross-account replay prevention. A shared access key
+/// authorized on Alice and Bob must not allow replaying Alice's inner sig on Bob.
+/// Tests both secp256k1 and P256.
+#[tokio::test]
+async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+
+    let alice_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let alice_addr = alice_signer.address();
+    let bob_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let bob_addr = bob_signer.address();
+    let provider = ProviderBuilder::new()
+        .wallet(alice_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    // Shared access keys, same key authorized on both accounts
+    let secp_access_signer = alloy::signers::local::PrivateKeySigner::random();
+    let secp_access_addr = secp_access_signer.address();
+    let (p256_access_signer, pub_x, pub_y, p256_access_addr) = generate_p256_access_key();
+
+    let mut nonce_alice = provider.get_transaction_count(alice_addr).await?;
+
+    // Fund Bob so he can receive txs
+    fund_address_with_fee_tokens(
+        &mut setup,
+        &provider,
+        &alice_signer,
+        alice_addr,
+        bob_addr,
+        U256::from(100u64) * U256::from(10).pow(U256::from(18)),
+        chain_id,
+    )
+    .await?;
+    nonce_alice += 1;
+
+    let secp_mock = || {
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        ))
+    };
+    let p256_mock = || create_mock_p256_sig(pub_x, pub_y);
+
+    // Authorize both keys on Alice and Bob
+    for (key_addr, mock_sig) in [
+        (secp_access_addr, secp_mock()),
+        (p256_access_addr, p256_mock()),
+    ] {
+        authorize_access_key(
+            &mut setup,
+            &alice_signer,
+            alice_addr,
+            key_addr,
+            mock_sig,
+            chain_id,
+            nonce_alice,
+        )
+        .await?;
+        nonce_alice += 1;
+    }
+    let mut nonce_bob = provider.get_transaction_count(bob_addr).await?;
+    for (key_addr, mock_sig) in [
+        (secp_access_addr, secp_mock()),
+        (p256_access_addr, p256_mock()),
+    ] {
+        authorize_access_key(
+            &mut setup,
+            &bob_signer,
+            bob_addr,
+            key_addr,
+            mock_sig,
+            chain_id,
+            nonce_bob,
+        )
+        .await?;
+        nonce_bob += 1;
+    }
+
+    // secp256k1: Alice sends a valid V2 keychain tx
+    let alice_tx = create_basic_aa_tx(
+        chain_id,
+        nonce_alice,
+        vec![create_balance_of_call(alice_addr)],
+        2_000_000,
+    );
+    let alice_sig =
+        sign_aa_tx_with_secp256k1_access_key(&alice_tx, &secp_access_signer, alice_addr)?;
+    submit_and_mine_aa_tx(&mut setup, alice_tx, alice_sig.clone()).await?;
+    nonce_alice += 1;
+
+    // Extract Alice's inner sig, re-wrap claiming Bob's address.
+    // Pool rejects because V2 hash includes user_address, so key recovery yields a
+    // different (unauthorized) key.
+    let bob_tx = create_basic_aa_tx(
+        chain_id,
+        nonce_bob,
+        vec![create_balance_of_call(bob_addr)],
+        2_000_000,
+    );
+    let inner = alice_sig.as_keychain().unwrap().signature.clone();
+    let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
+    let replay_tx: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, replay_sig).into();
+    setup
+        .node
+        .rpc
+        .inject_tx(replay_tx.encoded_2718().into())
+        .await
+        .expect_err("secp256k1 cross-account replay must be rejected at pool level");
+
+    // P256: Alice sends a valid V2 keychain tx
+    let alice_tx = create_basic_aa_tx(
+        chain_id,
+        nonce_alice,
+        vec![create_balance_of_call(alice_addr)],
+        2_000_000,
+    );
+    let alice_sig = sign_aa_tx_with_p256_access_key(
+        &alice_tx,
+        &p256_access_signer,
+        &pub_x,
+        &pub_y,
+        alice_addr,
+    )?;
+    submit_and_mine_aa_tx(&mut setup, alice_tx, alice_sig.clone()).await?;
+
+    // Same replay: extract inner sig, re-wrap for Bob, pool rejects
+    let bob_tx = create_basic_aa_tx(
+        chain_id,
+        nonce_bob,
+        vec![create_balance_of_call(bob_addr)],
+        2_000_000,
+    );
+    let inner = alice_sig.as_keychain().unwrap().signature.clone();
+    let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
+    let replay_env: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, replay_sig).into();
+    setup
+        .node
+        .rpc
+        .inject_tx(replay_env.encoded_2718().into())
+        .await
+        .expect_err("P256 cross-account replay must be rejected at pool level");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Pre-T1C genesis so V1 keychain sigs are accepted.
+    // Set t1cTime and t2Time far in the future instead of removing them,
+    // because the genesis deserializer requires all hardfork fields.
+    let genesis_json = include_str!("../assets/test-genesis.json").to_string();
+    let mut genesis: serde_json::Value = serde_json::from_str(&genesis_json)?;
+    let config = genesis["config"].as_object_mut().unwrap();
+    let far_future = serde_json::Value::Number(serde_json::Number::from(u64::MAX));
+    config.insert("t1cTime".to_string(), far_future.clone());
+    config.insert("t2Time".to_string(), far_future);
+    let mut setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .build_with_node_access()
+        .await?;
+
+    let alice_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let alice_addr = alice_signer.address();
+    let bob_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let bob_addr = bob_signer.address();
+    let provider = ProviderBuilder::new()
+        .wallet(alice_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    // Shared access key authorized on both accounts
+    let access_key_signer = alloy::signers::local::PrivateKeySigner::random();
+    let access_key_addr = access_key_signer.address();
+
+    let mut nonce_alice = provider.get_transaction_count(alice_addr).await?;
+
+    fund_address_with_fee_tokens(
+        &mut setup,
+        &provider,
+        &alice_signer,
+        alice_addr,
+        bob_addr,
+        U256::from(100u64) * U256::from(10).pow(U256::from(18)),
+        chain_id,
+    )
+    .await?;
+    nonce_alice += 1;
+
+    let secp_mock = || {
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        ))
+    };
+
+    // Authorize key on both accounts
+    authorize_access_key(
+        &mut setup,
+        &alice_signer,
+        alice_addr,
+        access_key_addr,
+        secp_mock(),
+        chain_id,
+        nonce_alice,
+    )
+    .await?;
+    nonce_alice += 1;
+    let nonce_bob = provider.get_transaction_count(bob_addr).await?;
+    authorize_access_key(
+        &mut setup,
+        &bob_signer,
+        bob_addr,
+        access_key_addr,
+        secp_mock(),
+        chain_id,
+        nonce_bob,
+    )
+    .await?;
+    let mut nonce_bob = nonce_bob + 1;
+
+    // Advance Bob's nonce to match Alice's — the replay needs identical sig_hash
+    let dummy_tx = create_basic_aa_tx(
+        chain_id,
+        nonce_bob,
+        vec![create_balance_of_call(bob_addr)],
+        2_000_000,
+    );
+    let dummy_sig = sign_aa_tx_secp256k1(&dummy_tx, &bob_signer)?;
+    submit_and_mine_aa_tx(&mut setup, dummy_tx, dummy_sig).await?;
+    nonce_bob += 1;
+    assert_eq!(nonce_alice, nonce_bob, "nonces must match for replay");
+
+    // Alice sends a V1 keychain tx, succeeds pre-T1C
+    let alice_tx = create_basic_aa_tx(
+        chain_id,
+        nonce_alice,
+        vec![create_balance_of_call(alice_addr)],
+        2_000_000,
+    );
+    let alice_v1_sig =
+        sign_aa_tx_with_secp256k1_access_key_v1(&alice_tx, &access_key_signer, alice_addr)?;
+    submit_and_mine_aa_tx(&mut setup, alice_tx.clone(), alice_v1_sig.clone()).await?;
+
+    // Extract Alice's inner sig, re-wrap for Bob with V1
+    let inner = alice_v1_sig.as_keychain().unwrap().signature.clone();
+    let bob_replay_sig = TempoSignature::Keychain(KeychainSignature::new_v1(bob_addr, inner));
+
+    // Replay Alice's EXACT tx body for Bob — V1 doesn't bind user_address in the
+    // inner sig, so the same sig verifies against the same sig_hash for any user.
+    let replay_env: TempoTxEnvelope = AASigned::new_unhashed(alice_tx, bob_replay_sig).into();
+    setup
+        .node
+        .rpc
+        .inject_tx(replay_env.encoded_2718().into())
+        .await
+        .expect("V1 cross-account replay enters pool pre-T1C");
+    setup.node.advance_block().await?;
+    assert_receipt_status(&provider, *replay_env.tx_hash(), true).await?;
 
     Ok(())
 }
@@ -6012,7 +6402,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth_wrong_chain),
@@ -6044,15 +6434,14 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     );
     println!("  ✓ Wrong chain_id KeyAuthorization rejected as expected");
 
-    // Test 2: chain_id = 0 (wildcard) should be accepted
-    println!("\nTest 2: KeyAuthorization with chain_id = 0 (wildcard) should be accepted");
+    // Test 2: chain_id = 0 (wildcard) should be rejected post-T1C
     let key_auth_wildcard = create_key_authorization(
         &root_signer,
         access_key_addr,
-        mock_p256_sig,
+        mock_p256_sig.clone(),
         0,    // Wildcard chain_id
         None, // Never expires
-        Some(spending_limits),
+        Some(spending_limits.clone()),
     )?;
 
     let tx_wildcard = TempoTransaction {
@@ -6069,7 +6458,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         nonce,
         fee_token: None,
         fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth_wildcard),
@@ -6078,14 +6467,63 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
 
     let sig_hash = tx_wildcard.signature_hash();
     let signature = root_signer.sign_hash_sync(&sig_hash)?;
-    let tx_hash = submit_and_mine_aa_tx(
-        &mut setup,
+    let signed_tx = AASigned::new_unhashed(
         tx_wildcard,
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+    );
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    let inject_result = setup.node.rpc.inject_tx(encoded.into()).await;
+    assert!(
+        inject_result.is_err(),
+        "Transaction with wildcard chain_id=0 MUST be rejected post-T1C"
+    );
+    let error_msg = inject_result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("chain_id does not match"),
+        "Error must mention chain_id mismatch. Got: {error_msg}"
+    );
+    // Test 3: Matching chain_id should be accepted
+    let key_auth_matching = create_key_authorization(
+        &root_signer,
+        access_key_addr,
+        mock_p256_sig,
+        chain_id, // Matching chain_id
+        None,
+        Some(spending_limits),
+    )?;
+
+    let tx_matching = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: Some(key_auth_matching),
+        tempo_authorization_list: vec![],
+    };
+
+    let sig_hash = tx_matching.signature_hash();
+    let signature = root_signer.sign_hash_sync(&sig_hash)?;
+    submit_and_mine_aa_tx(
+        &mut setup,
+        tx_matching,
         TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     )
     .await?;
-    println!("  ✓ Wildcard chain_id KeyAuthorization accepted (tx: {tx_hash})");
-
     Ok(())
 }
 
@@ -6127,7 +6565,7 @@ async fn test_aa_create_correct_contract_address() -> eyre::Result<()> {
         nonce_key: U256::ZERO,
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(u64::MAX),
+        valid_before: None,
         ..Default::default()
     };
 
@@ -7659,7 +8097,7 @@ async fn run_fill_sign_send_test_secp256k1(test_case: &FillTestCase) -> eyre::Re
         fill_transaction_from_case(&provider, test_case, alice_addr, current_timestamp).await?;
     tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     if request_context.expected_valid_before.is_none() {
-        tx.valid_before = Some(u64::MAX);
+        tx.valid_before = None;
     }
 
     let signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
@@ -7927,5 +8365,112 @@ async fn test_e2e_fill_sign_send_matrix() -> eyre::Result<()> {
     }
 
     println!("\n✓ All {} test cases passed", test_matrix.len());
+    Ok(())
+}
+
+/// Tests keychain signature V2 e2e: authorize a key, use it with V2 signature, verify it works.
+/// Also verifies that V1 signatures are rejected (current chain runs post-T1C).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    let (access_key_signing, pub_x, pub_y, access_key_addr) = generate_p256_access_key();
+
+    let mut nonce = provider.get_transaction_count(root_addr).await?;
+
+    // Step 1: Authorize the access key via root key
+    let key_auth = create_key_authorization(
+        &root_signer,
+        access_key_addr,
+        create_mock_p256_sig(pub_x, pub_y),
+        chain_id,
+        None,
+        None,
+    )?;
+
+    let mut auth_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    auth_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+    auth_tx.key_authorization = Some(key_auth);
+
+    let root_sig = sign_aa_tx_secp256k1(&auth_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, auth_tx, root_sig).await?;
+    nonce += 1;
+    println!("✓ Access key authorized");
+
+    // Step 2: Use the access key with V2 signature — should succeed
+    let recipient = Address::random();
+    let mut transfer_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_transfer_call(recipient, U256::from(1_000_000u64))],
+        2_000_000,
+    );
+    transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+
+    let v2_sig = sign_aa_tx_with_p256_access_key(
+        &transfer_tx,
+        &access_key_signing,
+        &pub_x,
+        &pub_y,
+        root_addr,
+    )?;
+
+    // Verify the signature is V2
+    assert!(!v2_sig.is_legacy_keychain());
+    assert!(v2_sig.is_keychain());
+
+    let tx_hash = submit_and_mine_aa_tx(&mut setup, transfer_tx, v2_sig).await?;
+    let receipt = provider
+        .get_transaction_receipt(tx_hash)
+        .await?
+        .expect("receipt must exist");
+    assert!(receipt.status(), "V2 keychain transfer must succeed");
+    println!("✓ V2 keychain signature accepted and transfer succeeded");
+
+    // Step 3: V1 signature should be rejected at pool level (post-T1C)
+    nonce += 1;
+    let mut v1_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    v1_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+
+    let v1_sig =
+        sign_aa_tx_with_p256_access_key_v1(&v1_tx, &access_key_signing, &pub_x, &pub_y, root_addr)?;
+
+    assert!(v1_sig.is_legacy_keychain());
+
+    let signed_v1 = AASigned::new_unhashed(v1_tx, v1_sig);
+    let envelope_v1: TempoTxEnvelope = signed_v1.into();
+    let inject_result = setup
+        .node
+        .rpc
+        .inject_tx(envelope_v1.encoded_2718().into())
+        .await;
+
+    assert!(
+        inject_result.is_err(),
+        "V1 keychain signature should be rejected post-T1C"
+    );
+    println!(
+        "✓ V1 keychain signature rejected post-T1C: {}",
+        inject_result.unwrap_err()
+    );
+
     Ok(())
 }

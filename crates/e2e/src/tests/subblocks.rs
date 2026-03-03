@@ -78,7 +78,7 @@ fn subblocks_are_included() {
                 ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
 
-            let receipts = &block.execution_outcome().receipts;
+            let receipts = &block.execution_outcome().receipts()[0];
 
             // Assert that block only contains our subblock transactions and the system transactions
             assert_eq!(
@@ -107,9 +107,8 @@ fn subblocks_are_included() {
             if !expected_transactions.is_empty() {
                 let fee_token_storage = &block
                     .execution_outcome()
-                    .state
-                    .state
-                    .get(&DEFAULT_FEE_TOKEN)
+                    .state()
+                    .account(&DEFAULT_FEE_TOKEN)
                     .unwrap()
                     .storage;
 
@@ -185,7 +184,7 @@ fn subblocks_are_included_with_failing_txs() {
                 ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
                 ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
-            let receipts = &block.execution_outcome().receipts;
+            let receipts = &block.execution_outcome().receipts()[0];
 
             // Assert that block only contains our subblock transactions and system transactions
             assert_eq!(
@@ -259,9 +258,8 @@ fn subblocks_are_included_with_failing_txs() {
 
                 let slot = block
                     .execution_outcome()
-                    .state
-                    .state
-                    .get(&NONCE_PRECOMPILE_ADDRESS)
+                    .state()
+                    .account(&NONCE_PRECOMPILE_ADDRESS)
                     .unwrap()
                     .storage
                     .get(&nonce_slot)
@@ -277,9 +275,8 @@ fn subblocks_are_included_with_failing_txs() {
             for (fee_recipient, expected_fee) in expected_fees {
                 let fee_token_storage = &block
                     .execution_outcome()
-                    .state
-                    .state
-                    .get(&DEFAULT_FEE_TOKEN)
+                    .state()
+                    .account(&DEFAULT_FEE_TOKEN)
                     .unwrap()
                     .storage;
 

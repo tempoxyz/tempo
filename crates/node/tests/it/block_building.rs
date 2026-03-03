@@ -10,6 +10,7 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_network::{Ethereum, TxSignerSync};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
+use reth_node_api::BuiltPayload;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
 use tempo_node::node::TempoNode;
