@@ -402,11 +402,15 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             "TEMPO-REG14: Non-existent policy should not exist"
         );
 
-        // TEMPO-REG20: Non-existent policy must revert with PolicyNotFound
+        // TEMPO-REG20: Non-existent policy behavior depends on hardfork
+        // Pre-T2: isAuthorized returns false (default empty whitelist)
+        // Post-T2: isAuthorized reverts with PolicyNotFound
         address account = _selectActor(uint256(policyId));
-        try registry.isAuthorized(nonExistentId, account) {
-            revert("TEMPO-REG20: Non-existent policy should revert with PolicyNotFound");
+        try registry.isAuthorized(nonExistentId, account) returns (bool authorized) {
+            // Pre-T2: call succeeds but returns false
+            assertFalse(authorized, "TEMPO-REG20: Non-existent policy should not authorize");
         } catch (bytes memory reason) {
+            // Post-T2: call reverts with PolicyNotFound
             assertEq(
                 bytes4(reason),
                 ITIP403Registry.PolicyNotFound.selector,
