@@ -52,7 +52,9 @@ hardfork!(
         T1B,
         /// T1.C hardfork
         T1C,
-        /// T2 hardfork - adds compound transfer policies (TIP-1015)
+        /// T2 hardfork - adds compound transfer policies ([TIP-1015])
+        ///
+        /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
         T2,
     }
 );
@@ -118,7 +120,9 @@ impl TempoHardfork {
 
     /// Returns the per-transaction gas limit cap.
     /// - Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas)
-    /// - T1A+: 30M gas (allows maximum-sized contract deployments under TIP-1000 state creation)
+    /// - T1A+: 30M gas (allows maximum-sized contract deployments under [TIP-1000] state creation)
+    ///
+    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
         match self {
             Self::T1A | Self::T1B | Self::T1C | Self::T2 => {

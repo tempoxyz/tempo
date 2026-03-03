@@ -1,7 +1,7 @@
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
 use revm::{
-    context::{Block, CfgEnv},
+    context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
     state::{AccountInfo, Bytecode},
 };
@@ -9,6 +9,9 @@ use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
+/// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
+///
+/// Wraps `EvmInternals` and tracks gas consumption for storage operations.
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     gas_remaining: u64,
@@ -236,6 +239,21 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn is_static(&self) -> bool {
         self.is_static
+    }
+
+    #[inline]
+    fn checkpoint(&mut self) -> JournalCheckpoint {
+        self.internals.checkpoint()
+    }
+
+    #[inline]
+    fn checkpoint_commit(&mut self) {
+        self.internals.checkpoint_commit()
+    }
+
+    #[inline]
+    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+        self.internals.checkpoint_revert(checkpoint)
     }
 }
 

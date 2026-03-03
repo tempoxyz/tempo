@@ -1,7 +1,10 @@
-//! Tests for per-transaction gas limit caps across hardforks (TIP-1000/1010).
+//! Tests for per-transaction gas limit caps across hardforks ([TIP-1000]/[TIP-1010]).
 //!
 //! Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas).
 //! Post-T1A (TIP-1010): per-tx gas limit cap is 30M (`TEMPO_T1_TX_GAS_LIMIT_CAP`).
+//!
+//! [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
+//! [TIP-1010]: <https://docs.tempo.xyz/protocol/tips/tip-1010>
 
 use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
