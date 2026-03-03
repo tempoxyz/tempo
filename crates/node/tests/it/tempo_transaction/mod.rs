@@ -63,7 +63,6 @@ async fn run_all_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
 
     check(env.run_send_matrix().await)?;
     check(env.run_raw_send_matrix().await)?;
-    check(env.run_estimate_gas_matrix().await)?;
     check(env.run_fill_transaction_matrix().await)?;
     check(env.run_fill_sign_send_matrix().await)?;
     check(env.run_fee_payer_cosign_scenario().await)?;
@@ -84,6 +83,21 @@ async fn test_matrices_local() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_gas_estimation_snapshots() -> eyre::Result<()> {
+    let mut localnet = helpers::Localnet::new().await?;
+    let results = localnet.run_estimate_gas_matrix().await?;
+    let mut gas_estimation: indexmap::IndexMap<String, u64> = results.into_iter().collect();
+    gas_estimation.sort_by(|_, a, _, b| a.cmp(b));
+    insta::assert_yaml_snapshot!(gas_estimation);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_matrices_testnet() -> eyre::Result<()> {
-    run_all_matrices(&mut testnet::Testnet::new().await?).await
+    let mut env = testnet::Testnet::new().await?;
+
+    run_all_matrices(&mut env).await?;
+    env.run_estimate_gas_matrix().await?;
+
+    Ok(())
 }
