@@ -424,8 +424,8 @@ impl ValidatorConfigV2 {
                 index,
                 validatorAddress: call.validatorAddress,
                 publicKey: call.publicKey,
-                ingress: call.ingress.clone(),
-                egress: call.egress.clone(),
+                ingress: call.ingress,
+                egress: call.egress,
             },
         ))?;
 
