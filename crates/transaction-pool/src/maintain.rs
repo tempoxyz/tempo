@@ -33,8 +33,8 @@ use tempo_precompiles::{
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
-/// Evict transactions this many seconds before they expire to prevent broadcasting
-/// near-expiry txs that peers would reject as bad transactions.
+/// Evict transactions this many seconds before they expire to reduce propagation
+/// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
 
 /// Aggregated block-level invalidation events for the transaction pool.
