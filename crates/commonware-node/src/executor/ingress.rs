@@ -4,7 +4,7 @@ use futures::{
     SinkExt as _,
     channel::{mpsc, oneshot},
 };
-use tracing::Span;
+use tracing::{Span, warn};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -79,9 +79,8 @@ impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
     async fn report(&mut self, update: Self::Activity) {
-        self.inner
-            .send(Message::in_current_span(update))
-            .await
-            .expect("actor is present and ready to receive broadcasts");
+        if let Err(error) = self.inner.send(Message::in_current_span(update)).await {
+            warn!(%error, "executor mailbox is closed; dropping finalization activity");
+        }
     }
 }
