@@ -403,10 +403,10 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         );
     }
 
-    /// @notice Handler for checking non-existent policy reverts (T2+)
+    /// @notice Handler for checking isAuthorized reverts for non-existent policies (T2+)
     /// @dev Tests TEMPO-REG20: isAuthorized must revert with PolicyNotFound for non-existent policies
     /// forge-config: default.hardfork = "tempo:T2"
-    function checkNonExistentPolicyRevertsT2(uint64 policyId) external {
+    function checkIsAuthorizedRevertsNonExistentPolicy(uint64 policyId) external {
         uint64 counter = registry.policyIdCounter();
         uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
         address account = _selectActor(uint256(policyId));
