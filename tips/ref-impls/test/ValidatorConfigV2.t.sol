@@ -53,7 +53,12 @@ contract ValidatorConfigV2Test is BaseTest {
     {
         bytes32 message = keccak256(
             abi.encodePacked(
-                uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress, feeRecipient
+                uint64(block.chainid),
+                address(validatorConfigV2),
+                validatorAddress,
+                ingress,
+                egress,
+                feeRecipient
             )
         );
         // Forge's signEd25519 does simple concat(namespace, message), but the Rust
@@ -173,7 +178,9 @@ contract ValidatorConfigV2Test is BaseTest {
 
     function test_addValidator_fail() public {
         // 1. NotInitialized
-        try validatorConfigV2.addValidator(validator1, PUB_KEY_0, ingress1, egress1, validator1, "") {
+        try validatorConfigV2.addValidator(
+            validator1, PUB_KEY_0, ingress1, egress1, validator1, ""
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.NotInitialized.selector));
@@ -183,14 +190,18 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // 2. Unauthorized
         vm.prank(nonOwner);
-        try validatorConfigV2.addValidator(validator1, PUB_KEY_0, ingress1, egress1, validator1, "") {
+        try validatorConfigV2.addValidator(
+            validator1, PUB_KEY_0, ingress1, egress1, validator1, ""
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.Unauthorized.selector));
         }
 
         // 3. InvalidPublicKey (zero)
-        try validatorConfigV2.addValidator(validator1, bytes32(0), ingress1, egress1, validator1, "") {
+        try validatorConfigV2.addValidator(
+            validator1, bytes32(0), ingress1, egress1, validator1, ""
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidPublicKey.selector));
@@ -206,7 +217,9 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         // 5. PublicKeyAlreadyExists (SETUP_PUB_KEY_A already migrated)
-        try validatorConfigV2.addValidator(validator2, SETUP_PUB_KEY_A, ingress2, egress2, validator2, "") {
+        try validatorConfigV2.addValidator(
+            validator2, SETUP_PUB_KEY_A, ingress2, egress2, validator2, ""
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(

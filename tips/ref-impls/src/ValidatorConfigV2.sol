@@ -94,7 +94,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validateAddParams(validatorAddress, publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress, feeRecipient)
+            abi.encodePacked(
+                block.chainid, address(this), validatorAddress, ingress, egress, feeRecipient
+            )
         );
         _verifyEd25519Signature(
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"), publicKey, message, signature

@@ -213,10 +213,7 @@ interface IValidatorConfigV2 {
     /// @dev Can be called by the contract owner or by the validator's own address.
     /// @param idx Validator index.
     /// @param feeRecipient New fee recipient.
-    function setFeeRecipient(
-        uint64 idx,
-        address feeRecipient
-    ) external;
+    function setFeeRecipient(uint64 idx, address feeRecipient) external;
 
     /// @notice Transfer a validator entry to a new address (owner or validator only)
     /// @dev Can be called by the contract owner or by the validator's own address.

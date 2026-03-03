@@ -123,7 +123,12 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     {
         bytes32 message = keccak256(
             abi.encodePacked(
-                uint64(block.chainid), address(validatorConfigV2), validatorAddress, ingress, egress, feeRecipient
+                uint64(block.chainid),
+                address(validatorConfigV2),
+                validatorAddress,
+                ingress,
+                egress,
+                feeRecipient
             )
         );
         bytes memory ns = bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR");
@@ -399,7 +404,9 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         uint256 totalCountBefore = _ghostTotalCount;
 
         vm.startPrank(caller);
-        try validatorConfigV2.addValidator(validatorAddr, pubKey, ingress, egress, validatorAddr, sig) {
+        try validatorConfigV2.addValidator(
+            validatorAddr, pubKey, ingress, egress, validatorAddr, sig
+        ) {
             vm.stopPrank();
             assertTrue(
                 _ghostInitialized,
