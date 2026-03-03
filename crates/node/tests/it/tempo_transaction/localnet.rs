@@ -1676,7 +1676,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
         &alice_signer,
         alice_addr,
         bob_addr,
-        U256::from(100u64) * U256::from(10).pow(U256::from(18)),
+        U256::from(100e6),
         DEFAULT_FEE_TOKEN,
         chain_id,
     )
@@ -1835,7 +1835,7 @@ async fn test_v1_keychain_cross_account_replay_pre_t1c() -> eyre::Result<()> {
         &alice_signer,
         alice_addr,
         bob_addr,
-        U256::from(100u64) * U256::from(10).pow(U256::from(18)),
+        U256::from(100e6),
         DEFAULT_FEE_TOKEN,
         chain_id,
     )

@@ -1276,9 +1276,9 @@ pub(crate) fn build_fill_request_context(
         .map(|offset| resolve_timestamp_offset(current_timestamp, offset));
 
     let valid_before = valid_before_offset.or_else(|| match test_case.nonce_mode {
-        NonceMode::Expiring => Some(current_timestamp + 20),
+        NonceMode::Expiring => Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS / 2),
         NonceMode::ExpiringAtBoundary => {
-            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS)
+            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS - 1)
         }
         NonceMode::ExpiringExceedsBoundary => {
             Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS + 3600)
