@@ -894,7 +894,12 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     /// @notice Handler: isAuthorized must revert with PolicyNotFound for non-existent policies
     /// @dev Tests TEMPO-REG20 (T2-specific: isAuthorized reverts instead of returning false)
-    function checkIsAuthorizedRevertsNonExistentPolicy(uint64 policyId, uint256 actorSeed) external {
+    function checkIsAuthorizedRevertsNonExistentPolicy(
+        uint64 policyId,
+        uint256 actorSeed
+    )
+        external
+    {
         uint64 counter = registry.policyIdCounter();
         uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
         address account = _actors[bound(actorSeed, 0, _actors.length - 1)];
