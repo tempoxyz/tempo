@@ -16,7 +16,7 @@ use alloy_primitives::TxKind;
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::tip20::ITIP20::{self, transferCall};
@@ -104,6 +104,10 @@ impl super::types::TestEnv for Localnet {
 
     fn chain_id(&self) -> u64 {
         self.chain_id
+    }
+
+    fn hardfork(&self) -> TempoHardfork {
+        TempoHardfork::T1C
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
@@ -429,6 +433,7 @@ pub(crate) fn create_signed_key_authorization(
     signer: &impl SignerSync,
     key_type: SignatureType,
     num_limits: usize,
+    chain_id: u64,
 ) -> SignedKeyAuthorization {
     let limits = if num_limits == 0 {
         None
@@ -444,7 +449,7 @@ pub(crate) fn create_signed_key_authorization(
     };
 
     let authorization = KeyAuthorization {
-        chain_id: 1337, // Must match test genesis chain_id (T1C rejects wildcard 0)
+        chain_id, // Must match chain_id (T1C rejects wildcard 0)
         key_type,
         key_id: Address::random(), // Random key being authorized
         expiry: None,              // Never expires

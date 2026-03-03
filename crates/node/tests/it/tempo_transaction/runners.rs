@@ -266,6 +266,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
                     &signer,
                     key_type.unwrap_or(SignatureType::Secp256k1),
                     *num_limits,
+                    env.chain_id(),
                 );
                 request.key_id = Some(auth.key_id);
                 request.key_authorization = Some(auth);
@@ -277,7 +278,12 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
                 key_type,
                 num_limits,
             } => {
-                let auth = create_signed_key_authorization(&signer, *key_type, *num_limits);
+                let auth = create_signed_key_authorization(
+                    &signer,
+                    *key_type,
+                    *num_limits,
+                    env.chain_id(),
+                );
                 request.key_authorization = Some(auth);
             }
         }

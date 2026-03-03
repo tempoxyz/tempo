@@ -10,6 +10,7 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use reth_primitives_traits::transaction::TxHashRef;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use super::helpers::*;
@@ -28,8 +29,7 @@ pub(super) struct Testnet {
 impl Testnet {
     pub(super) async fn new() -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
-        // TODO(rusowsky): turn back into `TEMPO_TESTNET_RPC_URL` once T2 is activated
-        let rpc_url = std::env::var("TEMPO_DEVNET_RPC_URL").unwrap_or(TESTNET_RPC_URL.to_string());
+        let rpc_url = std::env::var("TEMPO_TESTNET_RPC_URL").unwrap_or(TESTNET_RPC_URL.to_string());
         let provider = alloy::providers::RootProvider::new_http(rpc_url.parse()?);
         let chain_id = provider.get_chain_id().await?;
         Ok(Self { provider, chain_id })
@@ -45,6 +45,10 @@ impl super::types::TestEnv for Testnet {
 
     fn chain_id(&self) -> u64 {
         self.chain_id
+    }
+
+    fn hardfork(&self) -> TempoHardfork {
+        TempoHardfork::T1B
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {

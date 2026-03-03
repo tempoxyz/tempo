@@ -3,6 +3,7 @@ use alloy::{
     providers::Provider,
     signers::local::PrivateKeySigner,
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::SignatureType;
 
@@ -16,6 +17,9 @@ pub(crate) trait TestEnv: Sized {
 
     fn provider(&self) -> &Self::P;
     fn chain_id(&self) -> u64;
+
+    /// Currently active hardfork
+    fn hardfork(&self) -> TempoHardfork;
 
     /// Fund `addr` with fee tokens so it can transact.
     /// Returns the funded amount.
