@@ -892,6 +892,29 @@ contract TIP1015InvariantTest is InvariantBaseTest {
         vm.stopPrank();
     }
 
+    /// @notice Handler: isAuthorized must revert with PolicyNotFound for non-existent policies
+    /// @dev Tests TEMPO-REG20 (T2-specific: isAuthorized reverts instead of returning false)
+    function checkIsAuthorizedRevertsNonExistentPolicy(
+        uint64 policyId,
+        uint256 actorSeed
+    )
+        external
+    {
+        uint64 counter = registry.policyIdCounter();
+        uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
+        address account = _actors[bound(actorSeed, 0, _actors.length - 1)];
+
+        try registry.isAuthorized(nonExistentId, account) {
+            revert("TEMPO-REG20: Non-existent policy should revert with PolicyNotFound");
+        } catch (bytes memory reason) {
+            assertEq(
+                bytes4(reason),
+                ITIP403Registry.PolicyNotFound.selector,
+                "TEMPO-REG20: Should revert with PolicyNotFound"
+            );
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                          GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
