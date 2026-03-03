@@ -353,10 +353,6 @@ impl ValidatorConfigV2 {
     ///
     /// Constructs the message according to the validator config v2 specification
     /// and verifies the Ed25519 signature using the appropriate namespace.
-    ///
-    /// **FORMAT**:
-    /// - Namespace: [`VALIDATOR_NS_ADD`] or [`VALIDATOR_NS_ROTATE`]
-    /// - Message: `keccak256(abi.encodePacked(chainId, contractAddr, validatorAddr, ingress, egress))`
     fn verify_validator_add_signature(
         &self,
         pubkey: &B256,
@@ -391,10 +387,6 @@ impl ValidatorConfigV2 {
     ///
     /// Constructs the message according to the validator config v2 specification
     /// and verifies the Ed25519 signature using the appropriate namespace.
-    ///
-    /// **FORMAT**:
-    /// - Namespace: [`VALIDATOR_NS_ADD`] or [`VALIDATOR_NS_ROTATE`]
-    /// - Message: `keccak256(abi.encodePacked(chainId, contractAddr, validatorAddr, ingress, egress))`
     fn verify_validator_rotate_signature(
         &self,
         pubkey: &B256,
