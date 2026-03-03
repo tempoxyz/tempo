@@ -10,7 +10,10 @@
 //! deterministic runtime to spend real life time to wait for the execution
 //! layer calls to complete.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
@@ -444,6 +447,8 @@ impl Inner<Init> {
         parent_digest: Digest,
         round: Round,
     ) -> eyre::Result<Block> {
+        let propose_start = Instant::now();
+
         let parent = get_parent(
             &self.execution_node,
             round,
@@ -574,13 +579,16 @@ impl Inner<Init> {
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
             .wrap_err("failed requesting new payload from the execution layer")?;
 
+        let elapsed = propose_start.elapsed();
+        let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
+        let remaining_return = self.payload_return_time.saturating_sub(elapsed);
         debug!(
-            resolve_time_ms = self.payload_resolve_time.as_millis(),
-            return_time_ms = self.payload_return_time.as_millis(),
+            resolve_time_ms = remaining_resolve.as_millis(),
+            return_time_ms = remaining_return.as_millis(),
             "sleeping before payload builder resolving"
         );
-        let payload_return_time_fut = context.sleep(self.payload_return_time);
-        context.sleep(self.payload_resolve_time).await;
+        let payload_return_time_fut = context.sleep(remaining_return);
+        context.sleep(remaining_resolve).await;
 
         interrupt_handle.interrupt();
 
