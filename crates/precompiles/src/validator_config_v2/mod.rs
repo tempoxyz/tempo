@@ -154,7 +154,7 @@ impl ValidatorConfigV2 {
         }
         let v = self.validators[idx as usize].read()?;
         if v.deactivated_at_height != 0 {
-            Err(ValidatorConfigV2Error::validator_already_deleted())?
+            Err(ValidatorConfigV2Error::validator_already_deactivated())?
         }
         Ok(v)
     }
@@ -442,7 +442,7 @@ impl ValidatorConfigV2 {
         }
         let v = self.validators[call.idx as usize].read()?;
         if v.deactivated_at_height != 0 {
-            Err(ValidatorConfigV2Error::validator_already_deleted())?
+            Err(ValidatorConfigV2Error::validator_already_deactivated())?
         }
         let config = self.config.read()?;
         if sender != v.validator_address && !config.is_owner(sender) {
@@ -1070,7 +1070,7 @@ mod tests {
             );
             assert_eq!(
                 result,
-                Err(ValidatorConfigV2Error::validator_already_deleted().into())
+                Err(ValidatorConfigV2Error::validator_already_deactivated().into())
             );
 
             Ok(())
@@ -1385,7 +1385,7 @@ mod tests {
             );
             assert_eq!(
                 result,
-                Err(ValidatorConfigV2Error::validator_already_deleted().into())
+                Err(ValidatorConfigV2Error::validator_already_deactivated().into())
             );
 
             Ok(())
