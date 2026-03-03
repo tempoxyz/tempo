@@ -3844,6 +3844,30 @@ mod tests {
                 "Pre-T1C V2 rejection should NOT be a bad transaction (transient)"
             );
         }
+
+        #[test]
+        fn test_expired_access_key_is_not_bad_transaction() {
+            assert!(
+                !TempoPoolTransactionError::AccessKeyExpired {
+                    expiry: 1,
+                    min_allowed: 4,
+                }
+                .is_bad_transaction(),
+                "Expired access key rejection should NOT be a bad transaction (timing-sensitive)"
+            );
+        }
+
+        #[test]
+        fn test_expired_key_authorization_is_not_bad_transaction() {
+            assert!(
+                !TempoPoolTransactionError::KeyAuthorizationExpired {
+                    expiry: 1,
+                    min_allowed: 4,
+                }
+                .is_bad_transaction(),
+                "Expired key authorization rejection should NOT be a bad transaction (timing-sensitive)"
+            );
+        }
     }
 
     // ============================================
