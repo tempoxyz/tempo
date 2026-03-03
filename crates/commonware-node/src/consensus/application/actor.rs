@@ -580,11 +580,8 @@ impl Inner<Init> {
         let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
         let remaining_return = self.payload_return_time.saturating_sub(elapsed);
         debug!(
-            resolve_time_ms = self.payload_resolve_time.as_millis(),
-            return_time_ms = self.payload_return_time.as_millis(),
-            elapsed_ms = elapsed.as_millis(),
-            remaining_resolve_ms = remaining_resolve.as_millis(),
-            remaining_return_ms = remaining_return.as_millis(),
+            resolve_time_ms = remaining_resolve.as_millis(),
+            return_time_ms = remaining_return.as_millis(),
             "sleeping before payload builder resolving"
         );
         let payload_return_time_fut = context.sleep(remaining_return);
