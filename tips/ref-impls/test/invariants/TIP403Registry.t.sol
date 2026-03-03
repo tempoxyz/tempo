@@ -391,7 +391,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for checking non-existent policies
-    /// @dev Tests TEMPO-REG14 (policy existence checks)
+    /// @dev Tests TEMPO-REG14 (policy existence checks), TEMPO-REG20 (never authorizes)
     function checkNonExistentPolicy(uint64 policyId) external {
         uint64 counter = registry.policyIdCounter();
         uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
@@ -401,18 +401,12 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             registry.policyExists(nonExistentId),
             "TEMPO-REG14: Non-existent policy should not exist"
         );
-    }
 
-    /// @notice Handler for checking isAuthorized reverts for non-existent policies (T2+)
-    /// @dev Tests TEMPO-REG20: isAuthorized must revert with PolicyNotFound for non-existent policies
-    /// forge-config: default.hardfork = "tempo:T2"
-    function checkIsAuthorizedRevertsNonExistentPolicy(uint64 policyId) external {
-        uint64 counter = registry.policyIdCounter();
-        uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
+        // TEMPO-REG20: Non-existent policy must never authorize
+        // Pre-T2: returns false; Post-T2: reverts with PolicyNotFound
         address account = _selectActor(uint256(policyId));
-
-        try registry.isAuthorized(nonExistentId, account) {
-            revert("TEMPO-REG20: Non-existent policy should revert with PolicyNotFound");
+        try registry.isAuthorized(nonExistentId, account) returns (bool authorized) {
+            assertFalse(authorized, "TEMPO-REG20: Non-existent policy should not authorize");
         } catch (bytes memory reason) {
             assertEq(
                 bytes4(reason),
