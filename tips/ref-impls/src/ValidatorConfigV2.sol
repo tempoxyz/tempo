@@ -97,8 +97,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         );
 
         index = _addValidator(validatorAddress, publicKey, ingress, egress, 0);
-        emit ValidatorAdded(index, validatorAddress, publicKey);
-        emit IpAddressesUpdated(index, ingress, egress);
+        emit ValidatorAdded(index, validatorAddress, publicKey, ingress, egress);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -141,7 +140,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     /// @inheritdoc IValidatorConfigV2
     function setNextFullDkgCeremony(uint64 epoch) external onlyInitialized onlyOwner {
+        uint64 previousEpoch = nextDkgCeremony;
         nextDkgCeremony = epoch;
+        emit NextFullDkgCeremonySet(previousEpoch, epoch);
     }
 
     // =========================================================================
@@ -199,6 +200,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         // Update pubkeyToIndex: old pubkey → deactivated copy
         pubkeyToIndex[oldValidator.publicKey] = appendedIdx + 1;
+        bytes32 oldPublicKey = oldValidator.publicKey;
 
         // Modify slot in-place with new identity
         oldValidator.publicKey = publicKey;
@@ -209,9 +211,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         // Point new pubkey to original slot
         pubkeyToIndex[publicKey] = idx + 1;
 
-        emit ValidatorDeactivated(appendedIdx, validatorAddress);
-        emit ValidatorAdded(idx, validatorAddress, publicKey);
-        emit IpAddressesUpdated(idx, ingress, egress);
+        emit ValidatorRotated(
+            idx, appendedIdx, validatorAddress, oldPublicKey, publicKey, ingress, egress, msg.sender
+        );
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -233,7 +235,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         v.ingress = ingress;
         v.egress = egress;
-        emit IpAddressesUpdated(idx, ingress, egress);
+        emit IpAddressesUpdated(idx, ingress, egress, msg.sender);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -264,7 +266,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         v.validatorAddress = newAddress;
         delete addressToIndex[currentAddress];
         addressToIndex[newAddress] = idx + 1;
-        emit ValidatorOwnershipTransferred(idx, currentAddress, newAddress);
+        emit ValidatorOwnershipTransferred(idx, currentAddress, newAddress, msg.sender);
     }
 
     // =========================================================================

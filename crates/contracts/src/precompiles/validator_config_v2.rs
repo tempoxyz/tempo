@@ -116,12 +116,23 @@ crate::sol! {
         // Events
         // =====================================================================
 
-        event ValidatorAdded(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey);
+        event ValidatorAdded(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey, string ingress, string egress);
         event ValidatorDeactivated(uint64 indexed index, address indexed validatorAddress);
-        event IpAddressesUpdated(uint64 indexed index, string ingress, string egress);
-        event ValidatorOwnershipTransferred(uint64 indexed index, address indexed oldAddress, address indexed newAddress);
+        event ValidatorRotated(
+            uint64 indexed index,
+            uint64 indexed deactivatedIndex,
+            address indexed validatorAddress,
+            bytes32 oldPublicKey,
+            bytes32 newPublicKey,
+            string ingress,
+            string egress,
+            address caller
+        );
+        event IpAddressesUpdated(uint64 indexed index, string ingress, string egress, address caller);
+        event ValidatorOwnershipTransferred(uint64 indexed index, address indexed oldAddress, address indexed newAddress, address caller);
         event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
         event ValidatorMigrated(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey);
+        event NextFullDkgCeremonySet(uint64 indexed previousEpoch, uint64 indexed nextEpoch);
         event Initialized(uint64 height);
 
         // =====================================================================
