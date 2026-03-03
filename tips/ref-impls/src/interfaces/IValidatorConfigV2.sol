@@ -23,7 +23,8 @@ interface IValidatorConfigV2 {
         address indexed validatorAddress,
         bytes32 publicKey,
         string ingress,
-        string egress
+        string egress,
+        address feeRecipient
     );
     event ValidatorDeactivated(uint64 indexed index, address indexed validatorAddress);
     event ValidatorRotated(
@@ -211,10 +212,10 @@ interface IValidatorConfigV2 {
     /// @notice Update validator fee recipient (owner or validator only).
     /// @dev Can be called by the contract owner or by the validator's own address.
     /// @param idx Validator index.
-    /// @param address New fee recipient.
+    /// @param feeRecipient New fee recipient.
     function setFeeRecipient(
         uint64 idx,
-        address feeRecipient,
+        address feeRecipient
     ) external;
 
     /// @notice Transfer a validator entry to a new address (owner or validator only)

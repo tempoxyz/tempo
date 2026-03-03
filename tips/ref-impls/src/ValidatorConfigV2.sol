@@ -258,7 +258,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         v.feeRecipient = feeRecipient;
 
-        emit IpAddressesUpdated(idx, feeRecipient, msg.sender);
+        emit FeeRecipientUpdated(idx, feeRecipient, msg.sender);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -438,6 +438,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             v1Val.publicKey,
             v1Val.inboundAddress,
             egress,
+            address(0),
             nowActive ? 0 : uint64(block.number)
         );
         emit ValidatorMigrated(migratedIdx, v1Val.validatorAddress, v1Val.publicKey);
@@ -471,6 +472,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             validatorAddress: v.validatorAddress,
             ingress: v.ingress,
             egress: v.egress,
+            feeRecipient: v.feeRecipient,
             index: v.index,
             addedAtHeight: v.addedAtHeight,
             deactivatedAtHeight: v.deactivatedAtHeight
