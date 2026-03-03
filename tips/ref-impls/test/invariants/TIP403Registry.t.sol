@@ -15,9 +15,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     /// @dev Ghost variable for counter monotonicity tracking (TEMPO-REG15)
     uint64 private _lastSeenCounter;
 
-    /// @dev Whether the T2 hardfork is active (isAuthorized reverts for non-existent policies)
-    bool private _isT2;
-
     /// @dev Policies created during base setup (derived, not hardcoded)
     uint64 private _basePoliciesCreated;
 
@@ -140,13 +137,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         _basePoliciesCreated = registry.policyIdCounter() - counterBefore;
 
         (_actors,) = _buildActors(10);
-
-        // Detect T2 hardfork: isAuthorized reverts for non-existent policies post-T2
-        try registry.isAuthorized(type(uint64).max, address(this)) {
-            _isT2 = false;
-        } catch {
-            _isT2 = true;
-        }
 
         // One-time constant checks (immutable after deployment)
         // TEMPO-REG13: Special policies 0 and 1 always exist
@@ -401,7 +391,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for checking non-existent policies
-    /// @dev Tests TEMPO-REG14 (policy existence checks), TEMPO-REG20 (reverts with PolicyNotFound)
+    /// @dev Tests TEMPO-REG14 (policy existence checks)
     function checkNonExistentPolicy(uint64 policyId) external {
         uint64 counter = registry.policyIdCounter();
         uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
@@ -411,27 +401,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
             registry.policyExists(nonExistentId),
             "TEMPO-REG14: Non-existent policy should not exist"
         );
-
-        // TEMPO-REG20: Non-existent policy behavior depends on hardfork
-        address account = _selectActor(uint256(policyId));
-        if (_isT2) {
-            // Post-T2: isAuthorized must revert with PolicyNotFound
-            try registry.isAuthorized(nonExistentId, account) {
-                revert("TEMPO-REG20: Non-existent policy should revert with PolicyNotFound");
-            } catch (bytes memory reason) {
-                assertEq(
-                    bytes4(reason),
-                    ITIP403Registry.PolicyNotFound.selector,
-                    "TEMPO-REG20: Should revert with PolicyNotFound"
-                );
-            }
-        } else {
-            // Pre-T2: isAuthorized returns false (default empty whitelist)
-            assertFalse(
-                registry.isAuthorized(nonExistentId, account),
-                "TEMPO-REG20: Non-existent policy should not authorize"
-            );
-        }
     }
 
     /// @notice Handler for checking authorization of accounts never added to a policy
@@ -563,4 +532,38 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         assertTrue(isKnown, "Unknown error encountered");
     }
 
+}
+
+/// @title TIP403Registry T2 Invariant Tests
+/// @notice Invariant tests for T2-specific TIP403Registry behavior
+/// @dev Tests TEMPO-REG20: isAuthorized reverts with PolicyNotFound for non-existent policies
+/// forge-config: default.hardfork = "tempo:T2"
+contract TIP403RegistryT2InvariantTest is InvariantBaseTest {
+
+    address[] private _actors;
+
+    function setUp() public override {
+        super.setUp();
+        targetContract(address(this));
+        _setupInvariantBase();
+        (_actors,) = _buildActors(10);
+    }
+
+    /// @notice Handler: isAuthorized must revert with PolicyNotFound for non-existent policies
+    /// @dev Tests TEMPO-REG20
+    function checkNonExistentPolicyReverts(uint64 policyId, uint256 actorSeed) external {
+        uint64 counter = registry.policyIdCounter();
+        uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
+        address account = _actors[bound(actorSeed, 0, _actors.length - 1)];
+
+        try registry.isAuthorized(nonExistentId, account) {
+            revert("TEMPO-REG20: Non-existent policy should revert with PolicyNotFound");
+        } catch (bytes memory reason) {
+            assertEq(
+                bytes4(reason),
+                ITIP403Registry.PolicyNotFound.selector,
+                "TEMPO-REG20: Should revert with PolicyNotFound"
+            );
+        }
+    }
 }
