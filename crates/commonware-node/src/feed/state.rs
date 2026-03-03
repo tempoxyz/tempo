@@ -94,6 +94,11 @@ impl FeedStateHandle {
         &self.events_tx
     }
 
+    /// Get read access to the internal state.
+    pub(super) fn read(&self) -> parking_lot::RwLockReadGuard<'_, FeedState> {
+        self.state.read()
+    }
+
     /// Get write access to the internal state.
     pub(super) fn write(&self) -> parking_lot::RwLockWriteGuard<'_, FeedState> {
         self.state.write()
@@ -189,16 +194,16 @@ impl ConsensusFeed for FeedStateHandle {
                 Some(block)
             }
             Query::Height(height) => {
+                let height = Height::new(height);
                 let mut marshal = self.marshal()?;
 
-                let finalization = marshal.get_finalization(Height::new(height)).await?;
-                let block = marshal.get_block(Height::new(height)).await?;
+                let finalization = marshal.get_finalization(height).await?;
+                let block = marshal.get_block(height).await?;
 
                 Some(CertifiedBlock {
                     epoch: finalization.proposal.round.epoch().get(),
                     view: finalization.proposal.round.view().get(),
-                    block: Some(block.into_inner().into_block()),
-                    height: Some(height),
+                    block: block.into_inner().into_block(),
                     digest: finalization.proposal.payload.0,
                     certificate: hex::encode(finalization.encode()),
                 })

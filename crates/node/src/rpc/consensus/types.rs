@@ -18,12 +18,8 @@ pub struct CertifiedBlock {
     /// Hex-encoded full notarization or finalization.
     pub certificate: String,
 
-    // The Tempo block. Option wrapper will be removed after one release so that
-    // any caller reading from an older node can still parse this response type.
-    pub block: Option<Block>,
-
-    /// Deprecated: To be removed after one release in favor of `block`.
-    pub height: Option<u64>,
+    /// The Tempo block.
+    pub block: Block,
 }
 
 /// Consensus event emitted.
