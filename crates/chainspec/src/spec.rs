@@ -483,13 +483,27 @@ mod tests {
             TempoHardfork::T1B
         );
 
-        // T1C not yet scheduled on mainnet
-        assert!(!mainnet_chainspec.is_t1c_active_at_timestamp(u64::MAX));
+        // Before T1C activation (1773327600 = Mar 12th 2026 16:00 CET)
+        assert!(!mainnet_chainspec.is_t1c_active_at_timestamp(1773327599));
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1773327599),
+            TempoHardfork::T1B
+        );
+
+        // At and after T1C activation
+        assert!(mainnet_chainspec.is_t1c_active_at_timestamp(1773327600));
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(1773327600),
+            TempoHardfork::T1C
+        );
+
+        // T1C stays active on mainnet
+        assert!(mainnet_chainspec.is_t1c_active_at_timestamp(u64::MAX));
         // T2 not yet scheduled on mainnet
         assert!(!mainnet_chainspec.is_t2_active_at_timestamp(u64::MAX));
         assert_eq!(
             mainnet_chainspec.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::T1B
+            TempoHardfork::T1C
         );
 
         let moderato_genesis = super::TempoChainSpecParser::parse("moderato")
@@ -529,13 +543,27 @@ mod tests {
             TempoHardfork::T1B
         );
 
-        // T1C not yet scheduled on moderato
-        assert!(!moderato_genesis.is_t1c_active_at_timestamp(u64::MAX));
+        // Before T1C activation (1773068400 = Mar 9th 2026 16:00 CET)
+        assert!(!moderato_genesis.is_t1c_active_at_timestamp(1773068399));
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1773068399),
+            TempoHardfork::T1B
+        );
+
+        // At and after T1C activation
+        assert!(moderato_genesis.is_t1c_active_at_timestamp(1773068400));
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1773068400),
+            TempoHardfork::T1C
+        );
+
+        // T1C stays active on moderato
+        assert!(moderato_genesis.is_t1c_active_at_timestamp(u64::MAX));
         // T2 not yet scheduled on moderato
         assert!(!moderato_genesis.is_t2_active_at_timestamp(u64::MAX));
         assert_eq!(
             moderato_genesis.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::T1B
+            TempoHardfork::T1C
         );
 
         let testnet_chainspec = super::TempoChainSpecParser::parse("testnet")
