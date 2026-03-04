@@ -395,6 +395,20 @@ mod tests {
     }
 
     #[test]
+    fn test_is_t1c_active() {
+        // pre-T1C (false)
+        assert!(!is_t1c_active(&TempoHardfork::Genesis));
+        assert!(!is_t1c_active(&TempoHardfork::T0));
+        assert!(!is_t1c_active(&TempoHardfork::T1));
+        assert!(!is_t1c_active(&TempoHardfork::T1A));
+        assert!(!is_t1c_active(&TempoHardfork::T1B));
+
+        // T1C and later (true)
+        assert!(is_t1c_active(&TempoHardfork::T1C));
+        assert!(is_t1c_active(&TempoHardfork::T2));
+    }
+
+    #[test]
     fn test_webauthn_size_clamped_to_max() {
         // Attempt to create a signature with u32::MAX size (would be ~4GB without fix)
         let malicious_key_data = Bytes::from(0xFFFFFFFFu32.to_be_bytes().to_vec());
