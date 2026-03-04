@@ -74,7 +74,9 @@ const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
-/// See TIP-1009 for full specification.
+/// See [TIP-1009] for full specification.
+///
+/// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
 ///
 /// Operations charged:
 /// - 2 cold SLOADs: `seen[tx_hash]`, `ring[idx]` (unique slots per tx)
@@ -684,6 +686,18 @@ where
         })
         .map_err(|e| EVMError::Custom(e.to_string()))?;
 
+        // TIP-1007: Set the fee token in transient storage so contracts can read it
+        // via `IFeeManager.getFeeToken()` during execution.
+        // Skip in simulation contexts (eth_call) so getFeeToken() returns address(0)
+        // per the TIP-1007 spec.
+        if cfg.spec().is_t2() && !cfg.disable_fee_charge {
+            let fee_token = self.fee_token;
+            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+                TipFeeManager::new().set_fee_token(fee_token)
+            })
+            .map_err(|e| EVMError::Custom(e.to_string()))?;
+        }
+
         // Validate fee token has TIP20 prefix before loading balance.
         // This prevents panics in get_token_balance for invalid fee tokens.
         // Note: Full fee token validation (currency check) happens in load_fee_fields,
@@ -900,16 +914,12 @@ where
                 .into());
             }
 
-            // Validate KeyAuthorization chain_id (following EIP-7702 pattern)
-            // chain_id == 0 allows replay on any chain (wildcard)
-            let expected_chain_id = cfg.chain_id();
-            if key_auth.chain_id != 0 && key_auth.chain_id != expected_chain_id {
-                return Err(TempoInvalidTransaction::KeyAuthorizationChainIdMismatch {
-                    expected: expected_chain_id,
-                    got: key_auth.chain_id,
-                }
-                .into());
-            }
+            // Validate KeyAuthorization chain_id.
+            // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
+            // Pre-T1C: chain_id == 0 allows replay on any chain (wildcard).
+            key_auth
+                .validate_chain_id(cfg.chain_id(), spec.is_t1c())
+                .map_err(TempoInvalidTransaction::from)?;
 
             let keychain_checkpoint = if spec.is_t1() {
                 Some(journal.checkpoint())
@@ -1265,6 +1275,24 @@ where
                 !aa_env.tempo_authorization_list.is_empty(),
             )
             .map_err(TempoInvalidTransaction::from)?;
+
+            // Validate keychain signature version (outer + authorization list).
+            // Skipped during gas estimation (balance check disabled) because the RPC layer
+            // fabricates mock signatures via `create_mock_tempo_signature` which always
+            // produces V2. Pre-T1C that would be rejected here, but the version has no
+            // effect on gas cost so skipping is safe.
+            // TODO(tanishk): Pre-T1C V2 rejection can be removed after T1C activation.
+            if !cfg.is_balance_check_disabled() {
+                aa_env
+                    .signature
+                    .validate_version(cfg.spec().is_t1c())
+                    .map_err(TempoInvalidTransaction::from)?;
+                for auth in &aa_env.tempo_authorization_list {
+                    auth.signature()
+                        .validate_version(cfg.spec().is_t1c())
+                        .map_err(TempoInvalidTransaction::from)?;
+                }
+            }
 
             let has_keychain_fields =
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
@@ -3239,11 +3267,13 @@ mod tests {
 
     /// Test that T1 hardfork correctly charges 250k gas for nonce == 0.
     ///
-    /// This test validates TIP-1000's requirement:
+    /// This test validates [TIP-1000]'s requirement:
     /// "Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas"
     ///
     /// The test proves the audit finding (claiming only 22,100 gas is charged) is a false positive
     /// by using delta-based assertions: gas(nonce=0) - gas(nonce>0) == new_account_cost.
+    ///
+    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_t1_2d_nonce_key_charges_250k_gas() {
         use crate::gas_params::tempo_gas_params;
@@ -3339,12 +3369,14 @@ mod tests {
 
     /// Test that T1 hardfork correctly charges 5k gas for existing 2D nonce keys (nonce > 0).
     ///
-    /// This test validates TIP-1000 Invariant 3:
+    /// This test validates [TIP-1000] Invariant 3:
     /// "SSTORE operations that modify existing non-zero state (non-zero to non-zero)
     /// MUST continue to charge 5,000 gas"
     ///
     /// When using an existing 2D nonce key (nonce_key != 0 && nonce > 0), the nonce value
     /// transitions from N to N+1 (non-zero to non-zero), which must charge EXISTING_NONCE_KEY_GAS.
+    ///
+    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_t1_existing_2d_nonce_key_charges_5k_gas() {
         use crate::gas_params::tempo_gas_params;

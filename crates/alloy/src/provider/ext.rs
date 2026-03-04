@@ -23,7 +23,9 @@ pub trait TempoProviderBuilderExt {
 
     /// Returns a provider builder with the recommended Tempo fillers and the expiring nonce filler.
     ///
-    /// See [`ExpiringNonceFiller`] for more information on expiring nonces (TIP-1009).
+    /// See [`ExpiringNonceFiller`] for more information on expiring nonces ([TIP-1009]).
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     fn with_expiring_nonces(
         self,
     ) -> ProviderBuilder<

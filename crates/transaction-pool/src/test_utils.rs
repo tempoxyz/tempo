@@ -11,13 +11,13 @@ use reth_primitives_traits::Recovered;
 use reth_provider::test_utils::MockEthProvider;
 use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
 use std::time::Instant;
-use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
+use tempo_chainspec::{TempoChainSpec, spec::DEV};
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
         TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signature::{KeychainVersion, PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
     },
 };
@@ -214,7 +214,7 @@ impl TxBuilder {
         TempoPooledTransaction::new(recovered)
     }
 
-    /// Build an AA transaction with a keychain signature.
+    /// Build an AA transaction with a V2 keychain signature.
     ///
     /// The `user_address` is the account that owns the keychain key,
     /// and `access_key_signer` is the private key used to sign (whose address becomes key_id).
@@ -222,6 +222,16 @@ impl TxBuilder {
         self,
         user_address: Address,
         access_key_signer: &alloy_signer_local::PrivateKeySigner,
+    ) -> TempoPooledTransaction {
+        self.build_keychain_with_version(user_address, access_key_signer, KeychainVersion::V2)
+    }
+
+    /// Build an AA transaction with a keychain signature of the specified version.
+    pub(crate) fn build_keychain_with_version(
+        self,
+        user_address: Address,
+        access_key_signer: &alloy_signer_local::PrivateKeySigner,
+        version: KeychainVersion,
     ) -> TempoPooledTransaction {
         use alloy_signer::SignerSync;
         use tempo_primitives::transaction::tt_signature::KeychainSignature;
@@ -257,15 +267,36 @@ impl TxBuilder {
         let unsigned = AASigned::new_unhashed(tx.clone(), temp_sig);
         let sig_hash = unsigned.signature_hash();
 
-        // Sign with the access key
-        let signature = access_key_signer
-            .sign_hash_sync(&sig_hash)
-            .expect("signing failed");
-
-        let keychain_sig = TempoSignature::Keychain(KeychainSignature::new(
-            user_address,
-            PrimitiveSignature::Secp256k1(signature),
-        ));
+        let (effective_hash, keychain_sig) = match version {
+            KeychainVersion::V1 => {
+                // V1: sign raw sig_hash directly
+                let signature = access_key_signer
+                    .sign_hash_sync(&sig_hash)
+                    .expect("signing failed");
+                (
+                    sig_hash,
+                    TempoSignature::Keychain(KeychainSignature::new_v1(
+                        user_address,
+                        PrimitiveSignature::Secp256k1(signature),
+                    )),
+                )
+            }
+            KeychainVersion::V2 => {
+                // V2: sign keccak256(0x04 || sig_hash || user_address)
+                let hash = KeychainSignature::signing_hash(sig_hash, user_address);
+                let signature = access_key_signer
+                    .sign_hash_sync(&hash)
+                    .expect("signing failed");
+                (
+                    hash,
+                    TempoSignature::Keychain(KeychainSignature::new(
+                        user_address,
+                        PrimitiveSignature::Secp256k1(signature),
+                    )),
+                )
+            }
+        };
+        let _ = effective_hash;
 
         let signed_tx = AASigned::new_unhashed(tx, keychain_sig);
         let envelope: TempoTxEnvelope = signed_tx.into();
@@ -317,8 +348,8 @@ pub(crate) fn wrap_valid_tx(
     }
 }
 
-/// Creates a mock provider configured with the MODERATO chain spec.
+/// Creates a mock provider with the DEV chain spec (all hardforks active at genesis).
 pub(crate) fn create_mock_provider()
 -> MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec> {
-    MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()))
+    MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(DEV.clone()))
 }

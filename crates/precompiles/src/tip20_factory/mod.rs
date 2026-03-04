@@ -23,6 +23,13 @@ const TIP20_PREFIX_BYTES: [u8; 12] = [
     0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
+/// Factory contract for deploying new TIP-20 tokens at deterministic addresses.
+///
+/// Tokens are deployed at `TIP20_PREFIX || keccak256(sender, salt)[..8]`.
+/// The first 1024 addresses are reserved for protocol-deployed tokens.
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = TIP20_FACTORY_ADDRESS)]
 pub struct TIP20Factory {}
 
