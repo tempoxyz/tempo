@@ -5056,7 +5056,6 @@ mod tests {
         assert!(promoted.is_empty(), "No promotions expected");
 
         // Step 4: Verify that tx7 AND tx8 are both queued (not pending)
-        // BUG: Current code only marks tx7 as non-pending, tx8 incorrectly stays pending
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(
             pending, 1,
