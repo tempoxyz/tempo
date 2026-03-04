@@ -441,6 +441,9 @@ sed -i '/^reth-/d' "$ALLOY_TOML"
 sed -i '/^tempo-evm\b/d' "$ALLOY_TOML"
 sed -i '/^tempo-revm\b/d' "$ALLOY_TOML"
 
+# Remove "reth" from tempo-primitives features (reth feature is stripped from tempo-primitives)
+sed -i 's/features = \["serde", "reth"\]/features = ["serde"]/' "$ALLOY_TOML"
+
 # Strip features
 strip_features "$ALLOY_TOML" tempo-compat
 
@@ -502,7 +505,7 @@ sed -i 's/use alloy_consensus::{ReceiptWithBloom, TxType/use alloy_consensus::{T
 sed -i 's/use tempo_primitives::TempoReceipt;//' "${ALLOY_SRC}/rpc/receipt.rs"
 sed -i '/use alloy_consensus::ReceiptWithBloom;/d' "${ALLOY_SRC}/rpc/receipt.rs"
 sed -i 's/TransactionReceipt<ReceiptWithBloom<TempoReceipt<Log>>>/TransactionReceipt/' "${ALLOY_SRC}/rpc/receipt.rs"
-sed -i '/use alloy_rpc_types_eth::{Log, TransactionReceipt};/s/, Log//' "${ALLOY_SRC}/rpc/receipt.rs"
+sed -i 's/use alloy_rpc_types_eth::{Log, TransactionReceipt};/use alloy_rpc_types_eth::TransactionReceipt;/' "${ALLOY_SRC}/rpc/receipt.rs"
 
 
 
