@@ -421,6 +421,7 @@ impl MaxTpsArgs {
 
         let rate_limiter =
             RateLimiter::direct(Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap()));
+        let start_block_number = provider.get_block_number().await?;
 
         let mut pending_txs =
             generate_transactions(signer_provider_manager.clone(), gen_input, counters.clone())
@@ -491,25 +492,6 @@ impl MaxTpsArgs {
         );
 
         let end_block_number = provider.get_block_number().await?;
-
-        info!("Retrieving first block number from sent transactions");
-        let start_block_number = loop {
-            if let Some(first_tx) = pending_txs.pop_front() {
-                debug!(hash = %first_tx.tx_hash(), "Retrieving transaction receipt for first block number");
-                if let Ok(first_tx_receipt) = first_tx
-                    .with_timeout(Some(Duration::from_secs(5)))
-                    .get_receipt()
-                    .await
-                {
-                    break first_tx_receipt.block_number;
-                }
-            } else {
-                break None;
-            }
-        };
-        let Some(start_block_number) = start_block_number else {
-            eyre::bail!("Failed to retrieve start block number")
-        };
 
         // Collect a sample of receipts and print the stats
         let sample_size = pending_txs.len().min(self.sample_size);
