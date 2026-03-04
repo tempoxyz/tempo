@@ -9,6 +9,7 @@ use reth_rpc_convert::{
     transaction::FromConsensusHeader,
 };
 use reth_rpc_eth_types::EthApiError;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoBlockEnv;
 use tempo_primitives::{
     SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
@@ -137,9 +138,10 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
                 // For Keychain signatures, use the caller's address as the root key address
+                let spec = to_tempo_spec(&evm_env.cfg_env.spec);
                 let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
                 let mock_signature =
-                    create_mock_tempo_signature(&key_type, key_data.as_ref(), key_id, caller_addr);
+                    create_mock_tempo_sig(&key_type, key_data.as_ref(), key_id, caller_addr, spec);
 
                 let mut calls = calls;
                 if let Some(to) = &inner.to {
@@ -184,25 +186,46 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
     }
 }
 
+/// Extracts the [`TempoHardfork`] from a generic `Spec`.
+///
+/// [`TryIntoTxEnv`] trait has an unconstrained `Spec` generic, so we can't add a trait bound.
+/// At runtime the spec is always [`TempoHardfork`], so we can safely read the pointer.
+fn to_tempo_spec<Spec>(spec: &Spec) -> TempoHardfork {
+    debug_assert_eq!(
+        std::mem::size_of::<Spec>(),
+        std::mem::size_of::<TempoHardfork>()
+    );
+
+    // SAFETY: `Spec` is always `TempoHardfork` — a fieldless `Copy` enum.
+    unsafe { std::ptr::read(spec as *const Spec as *const TempoHardfork) }
+}
+
 /// Creates a mock AA signature for gas estimation based on key type hints
 ///
 /// - `key_type`: The primitive signature type (secp256k1, P256, WebAuthn)
 /// - `key_data`: Type-specific data (e.g., WebAuthn size)
 /// - `key_id`: If Some, wraps the signature in a Keychain wrapper (+3,000 gas for key validation)
 /// - `caller_addr`: The transaction caller address (used as root key address for Keychain)
-fn create_mock_tempo_signature(
+/// - `spec`: Active [`TempoHardfork`] — determines keychain signature version (V1 pre-T1C, V2 post-T1C)
+fn create_mock_tempo_sig(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
     key_id: Option<Address>,
     caller_addr: alloy_primitives::Address,
+    spec: TempoHardfork,
 ) -> TempoSignature {
     use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 
     let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
 
     if key_id.is_some() {
-        // For Keychain signatures, the root_key_address is the caller (account owner)
-        TempoSignature::Keychain(KeychainSignature::new(caller_addr, inner_sig))
+        // For Keychain signatures, the root_key_address is the caller (account owner).
+        let keychain_sig = if spec.is_t1c() {
+            KeychainSignature::new(caller_addr, inner_sig)
+        } else {
+            KeychainSignature::new_v1(caller_addr, inner_sig)
+        };
+        TempoSignature::Keychain(keychain_sig)
     } else {
         TempoSignature::Primitive(inner_sig)
     }
