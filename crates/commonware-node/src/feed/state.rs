@@ -1,13 +1,12 @@
 //! Shared state for the feed module.
 
-use crate::{alias::marshal, consensus::Digest};
+use crate::alias::marshal;
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::hex;
 use commonware_codec::{Encode, ReadExt as _};
 use commonware_consensus::{
-    Heightable as _,
     marshal::ingress::mailbox::Identifier,
-    types::{Epoch, Epocher as _, FixedEpocher, Height},
+    types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
 };
 use parking_lot::RwLock;
 use reth_rpc_convert::transaction::FromConsensusHeader;
@@ -95,6 +94,11 @@ impl FeedStateHandle {
         &self.events_tx
     }
 
+    /// Get read access to the internal state.
+    pub(super) fn read(&self) -> parking_lot::RwLockReadGuard<'_, FeedState> {
+        self.state.read()
+    }
+
     /// Get write access to the internal state.
     pub(super) fn write(&self) -> parking_lot::RwLockWriteGuard<'_, FeedState> {
         self.state.write()
@@ -116,18 +120,6 @@ impl FeedStateHandle {
             tracing::debug!("epocher not yet set");
         }
         epocher
-    }
-
-    /// Fill in the height for a block if it's missing by querying the marshal.
-    async fn maybe_fill_height(&self, block: &mut CertifiedBlock) {
-        if block.height.is_none()
-            && let Some(mut marshal) = self.marshal()
-        {
-            block.height = marshal
-                .get_block(&Digest(block.digest))
-                .await
-                .map(|b| b.height().get());
-        }
     }
 
     /// Serve identity transition proof from cache, returning a subsection if needed.
@@ -198,18 +190,20 @@ impl ConsensusFeed for FeedStateHandle {
     async fn get_finalization(&self, query: Query) -> Option<CertifiedBlock> {
         match query {
             Query::Latest => {
-                let mut block = self.state.read().latest_finalized.clone()?;
-                self.maybe_fill_height(&mut block).await;
+                let block = self.state.read().latest_finalized.clone()?;
                 Some(block)
             }
             Query::Height(height) => {
+                let height = Height::new(height);
                 let mut marshal = self.marshal()?;
-                let finalization = marshal.get_finalization(Height::new(height)).await?;
+
+                let finalization = marshal.get_finalization(height).await?;
+                let block = marshal.get_block(height).await?;
 
                 Some(CertifiedBlock {
                     epoch: finalization.proposal.round.epoch().get(),
                     view: finalization.proposal.round.view().get(),
-                    height: Some(height),
+                    block: block.into_inner().into_block(),
                     digest: finalization.proposal.payload.0,
                     certificate: hex::encode(finalization.encode()),
                 })
@@ -218,7 +212,7 @@ impl ConsensusFeed for FeedStateHandle {
     }
 
     async fn get_latest(&self) -> ConsensusState {
-        let (mut finalized, notarized) = {
+        let (finalized, mut notarized) = {
             let state = self.state.read();
             (
                 state.latest_finalized.clone(),
@@ -226,8 +220,17 @@ impl ConsensusFeed for FeedStateHandle {
             )
         };
 
-        if let Some(ref mut block) = finalized {
-            self.maybe_fill_height(block).await;
+        let finalized_round = finalized
+            .as_ref()
+            .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)));
+
+        let notarized_round = notarized
+            .as_ref()
+            .map(|n| Round::new(Epoch::new(n.epoch), View::new(n.view)));
+
+        // Only include the notarization if it is ahead.
+        if finalized_round.is_some_and(|f| notarized_round.is_none_or(|n| n <= f)) {
+            notarized = None;
         }
 
         ConsensusState {
