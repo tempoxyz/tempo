@@ -341,21 +341,18 @@ impl MaxTpsArgs {
         .await
         .context("Failed to set default fee token")?;
 
-        // Setup DEX only if any DEX transaction type has non-zero weight
-        let (quote_token, user_tokens) = if self.place_order_weight > 0.0 || self.swap_weight > 0.0
-        {
-            let user_tokens = 2;
-            info!(user_tokens, "Setting up DEX");
-            dex::setup(
-                signer_providers,
-                user_tokens,
-                self.max_concurrent_requests,
-                self.max_concurrent_transactions,
-            )
-            .await?
-        } else {
-            (Address::ZERO, Vec::new())
-        };
+        // Setup TIP-20 tokens (always needed for transfers), and optionally DEX pairs/liquidity
+        let setup_dex = self.place_order_weight > 0.0 || self.swap_weight > 0.0;
+        let user_tokens = 2;
+        info!(user_tokens, setup_dex, "Setting up TIP-20 tokens");
+        let (quote_token, user_tokens) = dex::setup(
+            signer_providers,
+            user_tokens,
+            self.max_concurrent_requests,
+            self.max_concurrent_transactions,
+            setup_dex,
+        )
+        .await?;
 
         let erc20_tokens = if self.erc20_weight > 0.0 {
             let num_erc20_tokens = 1;
