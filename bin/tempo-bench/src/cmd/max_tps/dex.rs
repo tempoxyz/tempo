@@ -6,15 +6,14 @@ use tempo_precompiles::tip20::U128_MAX;
 
 /// This method performs a one-time setup for sending a lot of transactions:
 /// * Deploys the specified number of user tokens.
-/// * Mints user tokens for all signers.
-/// * Optionally (when `setup_dex` is true): creates DEX pairs, approves unlimited spending for
-///   DEX, and seeds initial liquidity by placing DEX flip orders.
+/// * Creates DEX pairs of user tokens with the quote token.
+/// * Mints user tokens for all signers and approves unlimited spending for DEX.
+/// * Seeds initial liquidity by placing DEX flip orders.
 pub(super) async fn setup(
     signer_providers: &[(Secp256k1Signer, DynProvider<TempoNetwork>)],
     user_tokens: usize,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
-    setup_dex: bool,
 ) -> eyre::Result<(Address, Vec<Address>)> {
     // Grab first signer provider
     let (signer, provider) = signer_providers
@@ -48,6 +47,27 @@ pub(super) async fn setup(
         .map(|token| *token.address())
         .collect::<Vec<_>>();
 
+    // Create exchange pairs for each user token
+    info!("Creating exchange pairs");
+    let exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, provider.clone());
+    join_all(
+        user_token_addresses
+            .iter()
+            .copied()
+            .map(|token| {
+                let exchange = exchange.clone();
+                Box::pin(async move {
+                    let tx = exchange.createPair(token);
+                    tx.send().await
+                }) as BoxFuture<'static, _>
+            })
+            .progress(),
+        max_concurrent_requests,
+        max_concurrent_transactions,
+    )
+    .await
+    .context("Failed to create exchange pairs")?;
+
     // Mint user tokens to each signer
     let mint_amount = U128_MAX / U256::from(signer_providers.len());
     info!(%mint_amount, "Minting TIP-20 tokens");
@@ -71,80 +91,52 @@ pub(super) async fn setup(
     .await
     .context("Failed to mint TIP-20 tokens")?;
 
-    if setup_dex {
-        // Create exchange pairs for each user token
-        info!("Creating exchange pairs");
-        let exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, provider.clone());
-        join_all(
-            user_token_addresses
-                .iter()
-                .copied()
-                .map(|token| {
-                    let exchange = exchange.clone();
+    // Approve for each signer quote token and each user token to spend by exchange
+    info!("Approving tokens");
+    join_all(
+        signer_providers
+            .iter()
+            .flat_map(|(_, provider)| {
+                all_token_addresses.iter().copied().map(move |token| {
+                    let token = ITIP20Instance::new(token, provider.clone());
                     Box::pin(async move {
-                        let tx = exchange.createPair(token);
+                        let tx = token.approve(STABLECOIN_DEX_ADDRESS, U256::MAX);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
-                .progress(),
-            max_concurrent_requests,
-            max_concurrent_transactions,
-        )
-        .await
-        .context("Failed to create exchange pairs")?;
+            })
+            .progress_count((signer_providers.len() * all_tokens.len()) as u64),
+        max_concurrent_requests,
+        max_concurrent_transactions,
+    )
+    .await
+    .context("Failed to approve TIP-20 tokens")?;
 
-        // Approve for each signer quote token and each user token to spend by exchange
-        info!("Approving tokens");
-        join_all(
-            signer_providers
-                .iter()
-                .flat_map(|(_, provider)| {
-                    all_token_addresses.iter().copied().map(move |token| {
-                        let token = ITIP20Instance::new(token, provider.clone());
-                        Box::pin(async move {
-                            let tx = token.approve(STABLECOIN_DEX_ADDRESS, U256::MAX);
-                            tx.send().await
-                        }) as BoxFuture<'static, _>
-                    })
+    // Place flip orders of `order_amount` with tick `tick_over` and flip tick `tick_under` for each signer and each token
+    let order_amount = 1000000000000u128;
+    let tick_over = exchange.priceToTick(100010).call().await?;
+    let tick_under = exchange.priceToTick(99990).call().await?;
+    info!(order_amount, tick_over, tick_under, "Placing flip orders");
+    join_all(
+        signer_providers
+            .iter()
+            .flat_map(|(_, provider)| {
+                user_token_addresses.iter().copied().map(move |token| {
+                    let exchange =
+                        IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
+                    Box::pin(async move {
+                        let tx =
+                            exchange.placeFlip(token, order_amount, true, tick_under, tick_over);
+                        tx.send().await
+                    }) as BoxFuture<'static, _>
                 })
-                .progress_count((signer_providers.len() * all_tokens.len()) as u64),
-            max_concurrent_requests,
-            max_concurrent_transactions,
-        )
-        .await
-        .context("Failed to approve TIP-20 tokens")?;
-
-        // Place flip orders of `order_amount` with tick `tick_over` and flip tick `tick_under` for each signer and each token
-        let order_amount = 1000000000000u128;
-        let tick_over = exchange.priceToTick(100010).call().await?;
-        let tick_under = exchange.priceToTick(99990).call().await?;
-        info!(order_amount, tick_over, tick_under, "Placing flip orders");
-        join_all(
-            signer_providers
-                .iter()
-                .flat_map(|(_, provider)| {
-                    user_token_addresses.iter().copied().map(move |token| {
-                        let exchange =
-                            IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
-                        Box::pin(async move {
-                            let tx = exchange.placeFlip(
-                                token,
-                                order_amount,
-                                true,
-                                tick_under,
-                                tick_over,
-                            );
-                            tx.send().await
-                        }) as BoxFuture<'static, _>
-                    })
-                })
-                .progress_count((signer_providers.len() * user_tokens.len()) as u64),
-            max_concurrent_requests,
-            max_concurrent_transactions,
-        )
-        .await
-        .context("Failed to place flip orders")?;
-    }
+            })
+            .progress_count((signer_providers.len() * user_tokens.len()) as u64),
+        max_concurrent_requests,
+        max_concurrent_transactions,
+    )
+    .await
+    .context("Failed to place flip orders")?;
 
     Ok((*quote_token.address(), user_token_addresses))
 }
