@@ -403,11 +403,14 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         };
 
         // Skip subblocks that are not built on top of the tip.
-        eyre::ensure!(
-            subblock.parent_hash == tip,
-            "invalid subblock parent, expected {tip}, got {}",
-            subblock.parent_hash
-        );
+        if subblock.parent_hash != tip {
+            debug!(
+                expected = %tip,
+                got = %subblock.parent_hash,
+                "invalid subblock parent, not expected"
+            );
+            return Ok(());
+        }
 
         // Send acknowledgement to the sender.
         //
