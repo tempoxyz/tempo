@@ -117,6 +117,11 @@ jemalloc-prof = [
 	"reth-ethereum/jemalloc-prof",
 	"reth-node-metrics/jemalloc-prof",
 ]
+jemalloc-symbols = [
+	"jemalloc-prof",
+	"reth-ethereum/jemalloc-symbols",
+	"reth-node-metrics/jemalloc-symbols",
+]
 
 tracy = ["reth-node-core/tracy"]
 
