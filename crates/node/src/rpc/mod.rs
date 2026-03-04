@@ -2,6 +2,7 @@ pub mod admin;
 pub mod consensus;
 pub mod error;
 pub mod eth_ext;
+pub mod helpers;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
