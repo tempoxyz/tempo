@@ -3570,6 +3570,103 @@ async fn test_aa_estimate_gas_matrix() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Regression test: eth_estimateGas must work when the binary contains new hardfork
+/// code but the latest hardfork is not yet activated (matches real testnet rollout).
+///
+/// This catches bugs like the V2 keychain mock signature being rejected pre-T1C
+/// (see PR #2960). Devnet tests always activate all hardforks at t=0, so they miss
+/// the "new binary, old fork" window that exists between deploy and activation.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_estimate_gas_pre_latest_hardfork() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Build a genesis with T1C and T2 deactivated (set to far future).
+    // This simulates the real testnet state after a binary upgrade but before
+    // the hardfork activation timestamp is reached.
+    let genesis_json = include_str!("../assets/test-genesis.json").to_string();
+    let mut genesis: serde_json::Value = serde_json::from_str(&genesis_json)?;
+    let config = genesis["config"].as_object_mut().unwrap();
+    let far_future = serde_json::Value::Number(serde_json::Number::from(u64::MAX));
+    config.insert("t1cTime".to_string(), far_future.clone());
+    config.insert("t2Time".to_string(), far_future);
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .build_with_node_access()
+        .await?;
+
+    let http_url = setup.node.rpc_url();
+    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let signer_addr = signer.address();
+    let wallet = EthereumWallet::from(signer.clone());
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    println!("\n=== eth_estimateGas pre-latest-hardfork (T1C inactive) ===\n");
+    println!("Test address: {signer_addr}");
+
+    let recipient = Address::random();
+
+    let base_tx_request = || TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(signer_addr),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Call(recipient),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+
+    async fn estimate_gas(
+        provider: &impl Provider,
+        request: &TempoTransactionRequest,
+    ) -> eyre::Result<u64> {
+        let hex: String = provider
+            .raw_request("eth_estimateGas".into(), [serde_json::to_value(request)?])
+            .await?;
+        Ok(u64::from_str_radix(hex.trim_start_matches("0x"), 16)?)
+    }
+
+    // Baseline: plain secp256k1 tx
+    let baseline_gas = estimate_gas(&provider, &base_tx_request()).await?;
+    println!("Baseline gas (secp256k1): {baseline_gas}");
+
+    // P256 signature type
+    let mut p256_request = base_tx_request();
+    p256_request.key_type = Some(SignatureType::P256);
+    let p256_gas = estimate_gas(&provider, &p256_request).await?;
+    println!("P256 gas: {p256_gas}");
+    assert!(p256_gas > baseline_gas, "P256 should cost more than baseline");
+
+    // Keychain (secp256k1) — this is the case that broke pre-T1C
+    let keychain_auth = create_signed_key_authorization(&signer, SignatureType::Secp256k1, 0);
+    let mut keychain_request = base_tx_request();
+    keychain_request.key_id = Some(keychain_auth.key_id);
+    keychain_request.key_authorization = Some(keychain_auth);
+    let keychain_gas = estimate_gas(&provider, &keychain_request).await?;
+    println!("Keychain (secp256k1) gas: {keychain_gas}");
+    assert!(
+        keychain_gas > baseline_gas,
+        "Keychain should cost more than baseline"
+    );
+
+    // Key authorization (secp256k1)
+    let key_auth = create_signed_key_authorization(&signer, SignatureType::Secp256k1, 0);
+    let mut key_auth_request = base_tx_request();
+    key_auth_request.key_authorization = Some(key_auth);
+    let key_auth_gas = estimate_gas(&provider, &key_auth_request).await?;
+    println!("Key auth (secp256k1) gas: {key_auth_gas}");
+    assert!(
+        key_auth_gas > baseline_gas,
+        "Key auth should cost more than baseline"
+    );
+
+    println!("\n✓ All pre-hardfork gas estimation cases passed");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tempo_authorization_list() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
