@@ -5,7 +5,7 @@ use alloy_primitives::Address;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
-use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
+use reth_db::{Database, DatabaseEnv, open_db_read_only};
 use reth_ethereum::{
     provider::{
         DatabaseProviderFactory, ProviderFactory,
@@ -168,7 +168,7 @@ where
         if self.execution_database.is_none() {
             let db_path = self.execution_node_datadir.join("db");
             self.execution_database = Some(Arc::new(
-                reth_db::init_db(db_path, DatabaseArguments::default())
+                reth_db::init_db(db_path, execution_runtime::test_db_args())
                     .expect("failed to init database")
                     .with_metrics(),
             ));
@@ -294,7 +294,7 @@ where
     /// # Panics
     /// Panics if consensus is not running.
     #[instrument(skip_all)]
-    async fn stop_consensus(&mut self) {
+    pub async fn stop_consensus(&mut self) {
         let handle = self
             .consensus_handle
             .take()
@@ -414,7 +414,7 @@ where
         let database = Arc::new(
             open_db_read_only(
                 self.execution_node_datadir.join("db"),
-                DatabaseArguments::default(),
+                execution_runtime::test_db_args(),
             )
             .expect("failed to open execution node database")
             .with_metrics(),

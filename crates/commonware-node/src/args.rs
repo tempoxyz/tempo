@@ -16,7 +16,7 @@ pub struct Args {
     /// The file containing the ed25519 signing key for p2p communication.
     #[arg(
         long = "consensus.signing-key",
-        required_unless_present_any = ["follow", "dev"],
+        required_unless_present_any = ["follow", "follow_uncertified", "dev"],
     )]
     signing_key: Option<PathBuf>,
 
@@ -60,7 +60,7 @@ pub struct Args {
     /// coinbase address in genesis if not set.
     #[arg(
         long = "consensus.fee-recipient",
-        required_unless_present_any = ["follow", "dev"],
+        required_unless_present_any = ["follow", "follow_uncertified", "dev"],
     )]
     pub fee_recipient: Option<alloy_primitives::Address>,
 
