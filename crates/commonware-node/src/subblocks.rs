@@ -370,7 +370,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         });
     }
 
-    #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender, msg_bytes = message.len()))]
+    #[instrument(skip_all, err(level = Level::DEBUG), fields(sender = %sender, msg_bytes = message.len()))]
     async fn on_network_message(
         &mut self,
         sender: PublicKey,

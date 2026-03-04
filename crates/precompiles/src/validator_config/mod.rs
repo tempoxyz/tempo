@@ -6,6 +6,7 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     error::{Result, TempoPrecompileError},
+    ip_validation::ensure_address_is_ip_port,
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256};
@@ -26,7 +27,10 @@ struct Validator {
     outbound_address: String,
 }
 
-/// Validator Config precompile for managing consensus validators
+/// Validator Config precompile for managing consensus validators.
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = VALIDATOR_CONFIG_ADDRESS)]
 pub struct ValidatorConfig {
     owner: Address,
@@ -153,22 +157,40 @@ impl ValidatorConfig {
             return Err(ValidatorConfigError::validator_already_exists())?;
         }
 
-        // Validate addresses
-        ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
-            ValidatorConfigError::not_host_port(
-                "inboundAddress".to_string(),
-                call.inboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
-
-        ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
-            ValidatorConfigError::not_ip_port(
-                "outboundAddress".to_string(),
-                call.outboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
+        // Validate addresses.
+        // T2+: use stable Display formatting for errors.
+        // Pre-T2: preserve legacy Debug formatting for consensus compatibility.
+        if self.storage.spec().is_t2() {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+        } else {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+        }
 
         // Store the new validator in the validators mapping
         let count = self.validator_count()?;
@@ -228,21 +250,37 @@ impl ValidatorConfig {
             self.validators[sender].delete()?;
         }
 
-        ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
-            ValidatorConfigError::not_host_port(
-                "inboundAddress".to_string(),
-                call.inboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
-
-        ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
-            ValidatorConfigError::not_ip_port(
-                "outboundAddress".to_string(),
-                call.outboundAddress.clone(),
-                format!("{err:?}"),
-            )
-        })?;
+        if self.storage.spec().is_t2() {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    err.to_string(),
+                )
+            })?;
+        } else {
+            ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
+                ValidatorConfigError::not_host_port(
+                    "inboundAddress".to_string(),
+                    call.inboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+            ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
+                ValidatorConfigError::not_ip_port(
+                    "outboundAddress".to_string(),
+                    call.outboundAddress.clone(),
+                    format!("{err:?}"),
+                )
+            })?;
+        }
 
         let updated_validator = Validator {
             public_key: call.publicKey,
@@ -317,19 +355,6 @@ impl ValidatorConfig {
         self.check_owner(sender)?;
         self.next_dkg_ceremony.write(call.epoch)
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("input was not of the form `<ip>:<port>`")]
-pub struct IpWithPortParseError {
-    #[from]
-    source: std::net::AddrParseError,
-}
-
-pub fn ensure_address_is_ip_port(input: &str) -> core::result::Result<(), IpWithPortParseError> {
-    // Only accept IP addresses (v4 or v6) with port
-    input.parse::<std::net::SocketAddr>()?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -986,27 +1011,5 @@ mod tests {
 
             Ok(())
         })
-    }
-
-    #[test]
-    fn test_ensure_address_is_ip_port_rejects_invalid() {
-        // Test invalid formats are rejected (not silently returning Ok)
-        let invalid_cases = [
-            "not-an-ip:8000",    // hostname, not IP
-            "192.168.1.1",       // missing port
-            "8000",              // just port
-            "",                  // empty
-            "192.168.1.1:abc",   // non-numeric port
-            "192.168.1.1:99999", // port out of range
-        ];
-
-        for invalid in invalid_cases {
-            let result = ensure_address_is_ip_port(invalid);
-            assert!(result.is_err(), "Expected error for '{invalid}', got Ok");
-        }
-
-        // Valid IP:port should succeed
-        assert!(ensure_address_is_ip_port("192.168.1.1:8000").is_ok());
-        assert!(ensure_address_is_ip_port("[::1]:8000").is_ok());
     }
 }

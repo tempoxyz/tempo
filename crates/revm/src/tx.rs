@@ -51,8 +51,14 @@ pub struct TempoBatchCallEnv {
     /// Transaction signature hash (for signature verification)
     pub signature_hash: B256,
 
-    /// Transaction hash (for expiring nonce replay protection)
+    /// Transaction hash
     pub tx_hash: B256,
+
+    /// Expiring nonce hash for replay protection.
+    /// Computed as `keccak256(encode_for_signing || sender)`, which is invariant to fee
+    /// payer changes but unique per sender. Used instead of `tx_hash` for expiring nonce replay
+    /// protection to prevent replay via different fee payer signatures.
+    pub expiring_nonce_hash: Option<B256>,
 
     /// Optional access key ID override for gas estimation.
     /// When provided in eth_call/eth_estimateGas, enables spending limits simulation
@@ -344,6 +350,10 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 key_authorization: key_authorization.clone(),
                 signature_hash: aa_signed.signature_hash(),
                 tx_hash: *aa_signed.hash(),
+                expiring_nonce_hash: aa_signed
+                    .tx()
+                    .is_expiring_nonce_tx()
+                    .then(|| aa_signed.expiring_nonce_hash(caller)),
                 // override_key_id is only used for gas estimation, not actual execution
                 override_key_id: None,
             })),
@@ -393,10 +403,19 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::TxKind;
+    use alloy_evm::FromRecoveredTx;
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use proptest::prelude::*;
     use revm::context::{Transaction, result::InvalidTransaction};
-    use tempo_primitives::transaction::{Call, calc_gas_balance_spending, validate_calls};
+    use tempo_primitives::transaction::{
+        Call, calc_gas_balance_spending,
+        tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
+        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signed::AASigned,
+        validate_calls,
+    };
+
+    use crate::TempoTxEnv;
 
     fn create_call(to: TxKind) -> Call {
         Call {
@@ -474,6 +493,51 @@ mod tests {
             create_call(TxKind::Call(alloy_primitives::Address::random())),
         ];
         assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_from_recovered_tx_expiring_nonce_hash() {
+        let caller = Address::repeat_byte(0xAA);
+
+        let make_aa_signed = |nonce_key: U256| -> AASigned {
+            let tx = tempo_primitives::transaction::TempoTransaction {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                nonce_key,
+                nonce: 0,
+                valid_before: Some(100),
+                calls: vec![Call {
+                    to: TxKind::Call(Address::repeat_byte(0x42)),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                ..Default::default()
+            };
+            let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                Signature::test_signature(),
+            ));
+            AASigned::new_unhashed(tx, sig)
+        };
+
+        // Expiring nonce tx: expiring_nonce_hash should be Some and match direct computation
+        let expiring_signed = make_aa_signed(TEMPO_EXPIRING_NONCE_KEY);
+        let expiring_env = TempoTxEnv::from_recovered_tx(&expiring_signed, caller);
+        let tempo_env = expiring_env.tempo_tx_env.as_ref().unwrap();
+        let expected_hash = expiring_signed.expiring_nonce_hash(caller);
+        assert_eq!(
+            tempo_env.expiring_nonce_hash,
+            Some(expected_hash),
+            "expiring nonce tx must have expiring_nonce_hash set"
+        );
+
+        // Regular 2D nonce tx: expiring_nonce_hash should be None
+        let regular_signed = make_aa_signed(U256::from(42));
+        let regular_env = super::TempoTxEnv::from_recovered_tx(&regular_signed, caller);
+        let regular_tempo_env = regular_env.tempo_tx_env.as_ref().unwrap();
+        assert_eq!(
+            regular_tempo_env.expiring_nonce_hash, None,
+            "regular 2D nonce tx must NOT have expiring_nonce_hash"
+        );
     }
 
     #[test]

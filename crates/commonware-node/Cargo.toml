@@ -15,7 +15,7 @@ tempo-alloy.workspace = true
 tempo-commonware-node-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-node.workspace = true
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
 tempo-telemetry-util.workspace = true

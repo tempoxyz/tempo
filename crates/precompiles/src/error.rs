@@ -15,7 +15,7 @@ use revm::{
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
     TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-    ValidatorConfigError,
+    ValidatorConfigError, ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -62,6 +62,10 @@ pub enum TempoPrecompileError {
     #[error("Validator config error: {0:?}")]
     ValidatorConfigError(ValidatorConfigError),
 
+    /// Error from validator config v2
+    #[error("Validator config v2 error: {0:?}")]
+    ValidatorConfigV2Error(ValidatorConfigV2Error),
+
     /// Error from account keychain precompile
     #[error("Account keychain error: {0:?}")]
     AccountKeychainError(AccountKeychainError),
@@ -104,6 +108,7 @@ impl TempoPrecompileError {
             | Self::FeeManagerError(_)
             | Self::TIP403RegistryError(_)
             | Self::ValidatorConfigError(_)
+            | Self::ValidatorConfigV2Error(_)
             | Self::AccountKeychainError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
@@ -135,6 +140,7 @@ impl TempoPrecompileError {
                 panic.abi_encode().into()
             }
             Self::ValidatorConfigError(e) => e.abi_encode().into(),
+            Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Err(PrecompileError::OutOfGas);
@@ -152,6 +158,7 @@ impl TempoPrecompileError {
     }
 }
 
+/// Registers all error selectors for a `SolInterface` type into the decoder registry.
 pub fn add_errors_to_registry<T: SolInterface>(
     registry: &mut TempoPrecompileErrorRegistry,
     converter: impl Fn(T) -> TempoPrecompileError + 'static + Send + Sync,
@@ -173,11 +180,13 @@ pub fn add_errors_to_registry<T: SolInterface>(
     }
 }
 
+/// A decoded precompile error together with the raw revert bytes.
 pub struct DecodedTempoPrecompileError<'a> {
     pub error: TempoPrecompileError,
     pub revert_bytes: &'a [u8],
 }
 
+/// Maps ABI error selectors to their decoder functions.
 pub type TempoPrecompileErrorRegistry = HashMap<
     Selector,
     Box<dyn for<'a> Fn(&'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> + Send + Sync>,
@@ -197,11 +206,13 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIPFeeAMMError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::NonceError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigV2Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
 
     registry
 }
 
+/// Global lazily-initialized registry of all Tempo precompile error decoders.
 pub static ERROR_REGISTRY: LazyLock<TempoPrecompileErrorRegistry> =
     LazyLock::new(error_decoder_registry);
 

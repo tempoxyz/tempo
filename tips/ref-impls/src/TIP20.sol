@@ -36,6 +36,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     ITIP20 public override quoteToken;
     ITIP20 public override nextQuoteToken;
 
+    bytes32 public constant PERMIT_TYPEHASH = keccak256(
+        "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+    );
+
     bytes32 public constant PAUSE_ROLE = keccak256("PAUSE_ROLE");
     bytes32 public constant UNPAUSE_ROLE = keccak256("UNPAUSE_ROLE");
     bytes32 public constant ISSUER_ROLE = keccak256("ISSUER_ROLE");
@@ -69,6 +73,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     uint128 internal _totalSupply;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => uint256) public nonces;
 
     /*//////////////////////////////////////////////////////////////
                               TIP20 STORAGE
@@ -328,6 +333,51 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
 
         emit Transfer(address(0), to, amount);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            EIP-2612 PERMIT
+    //////////////////////////////////////////////////////////////*/
+
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
+                keccak256(bytes(name)),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    )
+        external
+    {
+        if (block.timestamp > deadline) revert PermitExpired();
+
+        bytes32 structHash = keccak256(
+            abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline)
+        );
+
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+
+        address recovered = ecrecover(digest, v, r, s);
+        if (recovered == address(0) || recovered != owner) {
+            revert InvalidSignature();
+        }
+
+        emit Approval(owner, spender, allowance[owner][spender] = value);
     }
 
     /*//////////////////////////////////////////////////////////////

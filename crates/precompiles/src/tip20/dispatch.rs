@@ -4,9 +4,12 @@ use crate::{
     input_cost, metadata, mutate, mutate_void,
     storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
-    view,
+    unknown_selector, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
@@ -164,6 +167,28 @@ impl Precompile for TIP20Token {
                 view(call, |c| self.get_pending_rewards(c.account))
             }
 
+            TIP20Call::TIP20(ITIP20Calls::permit(call)) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(ITIP20::permitCall::SELECTOR, self.storage.gas_used());
+                }
+                mutate_void(call, msg_sender, |_s, c| self.permit(c))
+            }
+            TIP20Call::TIP20(ITIP20Calls::nonces(call)) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(ITIP20::noncesCall::SELECTOR, self.storage.gas_used());
+                }
+                view(call, |c| self.nonces(c))
+            }
+            TIP20Call::TIP20(ITIP20Calls::DOMAIN_SEPARATOR(call)) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(
+                        ITIP20::DOMAIN_SEPARATORCall::SELECTOR,
+                        self.storage.gas_used(),
+                    );
+                }
+                view(call, |_| self.domain_separator())
+            }
+
             // RolesAuth functions
             TIP20Call::RolesAuth(IRolesAuthCalls::hasRole(call)) => {
                 view(call, |c| self.has_role(c))
@@ -198,10 +223,12 @@ mod tests {
     };
     use alloy::{
         primitives::{Bytes, U256, address},
-        sol_types::{SolCall, SolInterface, SolValue},
+        sol_types::{SolCall, SolError, SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{IRolesAuth, RolesAuthError, TIP20Error};
+    use tempo_contracts::precompiles::{
+        IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
+    };
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
@@ -720,7 +747,9 @@ mod tests {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        let (mut storage, admin) = setup_storage();
+        // Use T2 hardfork so T2-gated selectors (permit, nonces, DOMAIN_SEPARATOR) are active
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
@@ -738,6 +767,49 @@ mod tests {
             );
 
             assert_full_coverage([itip20_unsupported, roles_unsupported]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_permit_selectors_gated_behind_t2() -> eyre::Result<()> {
+        // Pre-T2: permit/nonces/DOMAIN_SEPARATOR should return unknown selector
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            // Test permit selector is gated
+            let permit_calldata = ITIP20::permitCall {
+                owner: Address::random(),
+                spender: Address::random(),
+                value: U256::ZERO,
+                deadline: U256::MAX,
+                v: 27,
+                r: alloy::primitives::B256::ZERO,
+                s: alloy::primitives::B256::ZERO,
+            }
+            .abi_encode();
+            let result = token.call(&permit_calldata, admin)?;
+            assert!(result.reverted);
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+
+            // Test nonces selector is gated
+            let nonces_calldata = ITIP20::noncesCall {
+                owner: Address::random(),
+            }
+            .abi_encode();
+            let result = token.call(&nonces_calldata, admin)?;
+            assert!(result.reverted);
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+
+            // Test DOMAIN_SEPARATOR selector is gated
+            let ds_calldata = ITIP20::DOMAIN_SEPARATORCall {}.abi_encode();
+            let result = token.call(&ds_calldata, admin)?;
+            assert!(result.reverted);
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+
             Ok(())
         })
     }

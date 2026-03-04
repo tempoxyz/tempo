@@ -8,12 +8,15 @@ pub mod tt_signed;
 pub use tt_authorization::{MAGIC, RecoveredTempoAuthorization, TempoSignedAuthorization};
 // Re-export Authorization from alloy for convenience
 pub use tt_signature::{
-    KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
+    KeychainSignature, KeychainVersion, KeychainVersionError, PrimitiveSignature, TempoSignature,
+    derive_p256_address,
 };
 
 pub use alloy_eips::eip7702::Authorization;
-pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
-pub use key_authorization::{KeyAuthorization, SignedKeyAuthorization, TokenLimit};
+pub use envelope::{TIP20_PAYMENT_PREFIX, TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
+pub use key_authorization::{
+    KeyAuthorization, KeyAuthorizationChainIdError, SignedKeyAuthorization, TokenLimit,
+};
 pub use tempo_transaction::{
     Call, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
     SignatureType, TEMPO_EXPIRING_NONCE_KEY, TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS,

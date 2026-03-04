@@ -3,7 +3,27 @@ fail-fast = false
 retries = 2
 test-threads = "num-cpus"
 
+# tempo-e2e tests spawn multiple execution nodes, each creating 4 rayon thread
+# pools (cpu, rpc, trie, storage) via reth's Runtime. Even with test_with_handle()
+# (2 threads per pool), running many in parallel causes OOM on CI.
+# threads-required = 8 means nextest counts each test as needing 8 of the -j slots,
+# so on a 32-vCPU runner (-j 32) at most 4 e2e tests run concurrently.
 [[profile.ci.overrides]]
 filter = "package(tempo-e2e)"
 failure-output = "never"
-threads-required = 2
+threads-required = 8
+
+# tempo-node integration tests (pool, block_building, etc.) also launch full
+# execution nodes with rayon pools. Limit to 4 slots so at most 8 run in parallel.
+[[profile.ci.overrides]]
+filter = "package(tempo-node) & binary(it)"
+threads-required = 4
+
+# Local development defaults (same constraints apply)
+[[profile.default.overrides]]
+filter = "package(tempo-e2e)"
+threads-required = 8
+
+[[profile.default.overrides]]
+filter = "package(tempo-node) & binary(it)"
+threads-required = 4
