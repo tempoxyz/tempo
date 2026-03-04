@@ -505,7 +505,7 @@ sed -i 's/use alloy_consensus::{ReceiptWithBloom, TxType/use alloy_consensus::{T
 sed -i 's/use tempo_primitives::TempoReceipt;//' "${ALLOY_SRC}/rpc/receipt.rs"
 sed -i '/use alloy_consensus::ReceiptWithBloom;/d' "${ALLOY_SRC}/rpc/receipt.rs"
 sed -i 's/TransactionReceipt<ReceiptWithBloom<TempoReceipt<Log>>>/TransactionReceipt/' "${ALLOY_SRC}/rpc/receipt.rs"
-sed -i 's/use alloy_rpc_types_eth::{Log, TransactionReceipt};/use alloy_rpc_types_eth::TransactionReceipt;/' "${ALLOY_SRC}/rpc/receipt.rs"
+sed -i '/use alloy_rpc_types_eth::{Log, TransactionReceipt};/s/, Log//' "${ALLOY_SRC}/rpc/receipt.rs"
 
 
 
