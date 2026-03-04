@@ -138,10 +138,14 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
                 // For Keychain signatures, use the caller's address as the root key address
-                let spec = to_tempo_spec(&evm_env.cfg_env.spec);
                 let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
-                let mock_signature =
-                    create_mock_tempo_sig(&key_type, key_data.as_ref(), key_id, caller_addr, spec);
+                let mock_signature = create_mock_tempo_sig(
+                    &key_type,
+                    key_data.as_ref(),
+                    key_id,
+                    caller_addr,
+                    is_t1c_active(evm_env.spec_id()),
+                );
 
                 let mut calls = calls;
                 if let Some(to) = &inner.to {
@@ -186,18 +190,21 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
     }
 }
 
-/// Extracts the [`TempoHardfork`] from a generic `Spec`.
+/// Returns `true` if the generic `Spec` represents T1C or later.
 ///
-/// [`TryIntoTxEnv`] trait has an unconstrained `Spec` generic, so we can't add a trait bound.
-/// At runtime the spec is always [`TempoHardfork`], so we can safely read the pointer.
-fn to_tempo_spec<Spec>(spec: &Spec) -> TempoHardfork {
-    debug_assert_eq!(
-        std::mem::size_of::<Spec>(),
-        std::mem::size_of::<TempoHardfork>()
-    );
-
-    // SAFETY: `Spec` is always `TempoHardfork` — a fieldless `Copy` enum.
-    unsafe { std::ptr::read(spec as *const Spec as *const TempoHardfork) }
+/// The [`TryIntoTxEnv`] trait has an unconstrained `Spec` generic that prevents adding
+/// a `'static` bound needed for `Any` downcast. At runtime `Spec` is always [`TempoHardfork`].
+/// We read a single `u8` discriminant and compare it to avoid ever creating an invalid enum value.
+/// Defaults to `true` (latest behavior) if the type doesn't match.
+///
+/// NOTE: the `unsafe` block will be removed with the reth release of: <https://github.com/alloy-rs/evm/pull/306>
+fn is_t1c_active<Spec>(spec: &Spec) -> bool {
+    if std::mem::size_of::<Spec>() != std::mem::size_of::<TempoHardfork>() {
+        return true;
+    }
+    // SAFETY: reading a single u8 is always valid for any type with size >= 1.
+    let discriminant = unsafe { std::ptr::read(spec as *const Spec as *const u8) };
+    discriminant >= TempoHardfork::T1C as u8
 }
 
 /// Creates a mock AA signature for gas estimation based on key type hints
@@ -206,13 +213,13 @@ fn to_tempo_spec<Spec>(spec: &Spec) -> TempoHardfork {
 /// - `key_data`: Type-specific data (e.g., WebAuthn size)
 /// - `key_id`: If Some, wraps the signature in a Keychain wrapper (+3,000 gas for key validation)
 /// - `caller_addr`: The transaction caller address (used as root key address for Keychain)
-/// - `spec`: Active [`TempoHardfork`] — determines keychain signature version (V1 pre-T1C, V2 post-T1C)
+/// - `is_t1c`: Whether T1C is active — determines keychain signature version (V1 pre-T1C, V2 post-T1C)
 fn create_mock_tempo_sig(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
     key_id: Option<Address>,
     caller_addr: alloy_primitives::Address,
-    spec: TempoHardfork,
+    is_t1c: bool,
 ) -> TempoSignature {
     use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 
@@ -220,7 +227,7 @@ fn create_mock_tempo_sig(
 
     if key_id.is_some() {
         // For Keychain signatures, the root_key_address is the caller (account owner).
-        let keychain_sig = if spec.is_t1c() {
+        let keychain_sig = if is_t1c {
             KeychainSignature::new(caller_addr, inner_sig)
         } else {
             KeychainSignature::new_v1(caller_addr, inner_sig)
