@@ -1277,11 +1277,6 @@ where
             .map_err(TempoInvalidTransaction::from)?;
 
             // Validate keychain signature version (outer + authorization list).
-            // Skipped during gas estimation (balance check disabled) because the RPC layer
-            // fabricates mock signatures via `create_mock_tempo_signature` which always
-            // produces V2. Pre-T1C that would be rejected here, but the version has no
-            // effect on gas cost so skipping is safe.
-            // TODO(tanishk): Pre-T1C V2 rejection can be removed after T1C activation.
             if !cfg.is_balance_check_disabled() {
                 aa_env
                     .signature
