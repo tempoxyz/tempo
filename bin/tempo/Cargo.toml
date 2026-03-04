@@ -37,6 +37,7 @@ commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-math.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
+commonware-stream.workspace = true
 commonware-utils.workspace = true
 futures = { workspace = true, features = ["executor"] }
 rand_08.workspace = true
