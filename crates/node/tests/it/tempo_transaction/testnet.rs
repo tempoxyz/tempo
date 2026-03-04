@@ -10,7 +10,10 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use reth_primitives_traits::transaction::TxHashRef;
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{
+    hardfork::{TempoHardfork, TempoHardforks},
+    spec::{ANDANTINO, DEV, MODERATO, PRESTO},
+};
 use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use super::helpers::*;
@@ -24,6 +27,7 @@ const RPC_POLL_RETRIES: usize = 30;
 pub(super) struct Testnet {
     provider: alloy::providers::RootProvider,
     chain_id: u64,
+    hardfork: TempoHardfork,
 }
 
 impl Testnet {
@@ -32,7 +36,25 @@ impl Testnet {
         let rpc_url = std::env::var("TEMPO_TESTNET_RPC_URL").unwrap_or(TESTNET_RPC_URL.to_string());
         let provider = alloy::providers::RootProvider::new_http(rpc_url.parse()?);
         let chain_id = provider.get_chain_id().await?;
-        Ok(Self { provider, chain_id })
+
+        // Chain IDs from genesis/*.json (mirrors bootnodes() in spec.rs)
+        let chain_spec = match chain_id {
+            4217 => PRESTO.clone(),     // mainnet
+            42429 => ANDANTINO.clone(), // testnet
+            42431 => MODERATO.clone(),
+            _ => DEV.clone(),
+        };
+        let latest_block: alloy::rpc::types::Block = provider
+            .get_block_by_number(Default::default())
+            .await?
+            .ok_or_else(|| eyre::eyre!("latest block missing"))?;
+        let hardfork = chain_spec.tempo_hardfork_at(latest_block.header.timestamp());
+
+        Ok(Self {
+            provider,
+            chain_id,
+            hardfork,
+        })
     }
 }
 
@@ -48,7 +70,7 @@ impl super::types::TestEnv for Testnet {
     }
 
     fn hardfork(&self) -> TempoHardfork {
-        TempoHardfork::T1B
+        self.hardfork
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
