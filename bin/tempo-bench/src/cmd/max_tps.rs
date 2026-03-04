@@ -347,16 +347,17 @@ impl MaxTpsArgs {
         {
             let user_tokens = 2;
             info!(user_tokens, "Setting up DEX");
-            dex::setup(
+            let (quote_token, user_tokens) = dex::setup(
                 signer_providers,
                 user_tokens,
                 self.max_concurrent_requests,
                 self.max_concurrent_transactions,
             )
-            .await?
+            .await?;
+            (Some(quote_token), user_tokens)
         } else {
             info!(fee_token = %self.fee_token, "Using fee token for TIP-20 transfers");
-            (Address::ZERO, vec![self.fee_token])
+            (None, vec![self.fee_token])
         };
 
         let erc20_tokens = if self.erc20_weight > 0.0 {
@@ -611,7 +612,7 @@ struct GenerateTransactionsInput {
     place_order_weight: u64,
     swap_weight: u64,
     erc20_weight: u64,
-    quote_token: Address,
+    quote_token: Option<Address>,
     user_tokens: Vec<Address>,
     erc20_tokens: Vec<Address>,
     /// When set, transfers go to these existing addresses instead of `Address::random()`.
@@ -691,6 +692,8 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
 
                     // Swap minimum possible amount
+                    let quote_token =
+                        quote_token.expect("quote_token must be set when swap_weight > 0");
                     exchange
                         .quoteSwapExactAmountIn(token, quote_token, 1)
                         .into_transaction_request()
