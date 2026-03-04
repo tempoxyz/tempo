@@ -13,13 +13,20 @@ pub(crate) fn is_pre_hardfork() -> bool {
 
 /// Skips the current test when running in pre-hardfork mode.
 ///
-/// Use this for tests that require T1C/T2 features (V2 keychain signatures,
-/// 2D nonces, etc.) which are expected to fail when those hardforks are
-/// deactivated.
+/// Takes the hardfork name that the test requires (e.g., `T1C`, `T2`),
+/// so each skip documents why the test can't run pre-hardfork.
+///
+/// ```ignore
+/// skip_pre_hardfork!(T1C); // test needs V2 keychain (T1C feature)
+/// skip_pre_hardfork!(T2);  // test needs getFeeToken (T2/TIP-1007 feature)
+/// ```
 macro_rules! skip_pre_hardfork {
-    () => {
+    ($fork:ident) => {
         if $crate::utils::is_pre_hardfork() {
-            eprintln!("skipping test in pre-hardfork mode");
+            eprintln!(
+                "skipping test in pre-hardfork mode (requires {})",
+                stringify!($fork)
+            );
             return Ok(());
         }
     };

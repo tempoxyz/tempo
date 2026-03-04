@@ -577,7 +577,7 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
-    skip_pre_hardfork!();
+    skip_pre_hardfork!(T1C);
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
