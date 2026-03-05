@@ -22,7 +22,10 @@
 //! - Keychain expiry (never-expires, short-expiry, expired, past-expiry).
 //! - Contract creation address correctness.
 //!
-//! ## Localnet-only tests (`localnet.rs`)
+//! ## Localnet-only tests (`local.rs`)
+//!
+//! All local matrix tests are parameterized over [`ForkSchedule`](crate::utils::ForkSchedule)
+//! (Devnet / Testnet / Mainnet) via `test_case`.
 //!
 //! These tests require pool introspection, controlled block mining, or P2P networking:
 //!
@@ -43,7 +46,7 @@ mod runners;
 pub(crate) mod types;
 use types::TestEnv;
 
-mod localnet;
+mod local;
 mod testnet;
 
 /// Run all matrix tests and scenario runners against a single environment.
@@ -86,7 +89,7 @@ async fn run_all_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
 #[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_matrices_local(schedule: ForkSchedule) -> eyre::Result<()> {
-    run_all_matrices(&mut localnet::Localnet::with_schedule(schedule).await?).await
+    run_all_matrices(&mut local::Localnet::with_schedule(schedule).await?).await
 }
 
 #[tokio::test(flavor = "multi_thread")]

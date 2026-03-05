@@ -1,3 +1,8 @@
+//! Shared types and trait definitions for Tempo transaction integration tests.
+//!
+//! Defines the [`TestEnv`] trait that abstracts over local and testnet
+//! environments, plus test-case descriptor types used by the matrix runners.
+
 use alloy::{
     primitives::{Address, B256, U256},
     providers::Provider,

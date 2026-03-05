@@ -1,3 +1,9 @@
+//! Local (single-node) test environment and localnet-only integration tests.
+//!
+//! Contains the [`Localnet`] [`TestEnv`](super::types::TestEnv) implementation
+//! which spins up an in-process node with direct pool/block access, plus tests
+//! that require pool introspection or controlled block mining.
+
 use crate::utils::{ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use alloy::{
     consensus::{BlockHeader, Transaction},
@@ -35,10 +41,7 @@ use tempo_primitives::{
 
 use super::helpers::*;
 
-// ---------------------------------------------------------------------------
-// Localnet — TestEnv implementation for single-node local tests
-// ---------------------------------------------------------------------------
-
+/// Single-node local test environment with direct node access.
 pub(crate) struct Localnet {
     pub setup: SingleNodeSetup,
     pub provider: alloy::providers::RootProvider,

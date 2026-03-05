@@ -1,3 +1,9 @@
+//! Shared helper functions for Tempo transaction integration tests.
+//!
+//! Provides transaction construction, signing (secp256k1 / P256 / WebAuthn),
+//! key authorization, funding, and assertion utilities used by both the
+//! local and testnet test environments.
+
 use crate::utils::SingleNodeSetup;
 use alloy::{
     hex,
