@@ -84,7 +84,15 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validateAddParams(validatorAddress, publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress)
+            abi.encodePacked(
+                block.chainid,
+                address(this),
+                validatorAddress,
+                uint8(bytes(ingress).length),
+                ingress,
+                uint8(bytes(egress).length),
+                egress
+            )
         );
         _verifyEd25519Signature(
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"), publicKey, message, signature
@@ -153,7 +161,15 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validateRotateParams(publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress)
+            abi.encodePacked(
+                block.chainid,
+                address(this),
+                validatorAddress,
+                uint8(bytes(ingress).length),
+                ingress,
+                uint8(bytes(egress).length),
+                egress
+            )
         );
         _verifyEd25519Signature(
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"), publicKey, message, signature
@@ -354,6 +370,17 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         IValidatorConfig.Validator[] memory v1Validators = v1.getValidators();
         if (validatorsArray.length < v1Validators.length) {
             revert MigrationNotComplete();
+        }
+
+        for (uint64 i = 0; i < v1Validators.length; i++) {
+            bool v1Active = v1Validators[i].active;
+            uint64 v2Deactivated = validatorsArray[i].deactivatedAtHeight;
+            if (v1Active && v2Deactivated != 0) {
+                revert MigrationStateMismatch(i);
+            }
+            if (!v1Active && v2Deactivated == 0) {
+                revert MigrationStateMismatch(i);
+            }
         }
 
         nextDkgCeremony = v1.getNextFullDkgCeremony();

@@ -11,7 +11,8 @@ pragma solidity >=0.8.13 <0.9.0;
 ///      - `active` bool replaced by `addedAtHeight` and `deactivatedAtHeight`
 ///      - No `updateValidator` - validators are immutable after creation
 ///      - Requires Ed25519 signature on `addValidator` to prove key ownership
-///      - Both address and public key must be unique across all validators (including deleted)
+///      - Addresses must be unique among active validators (reusable after deactivation)
+///      - Public keys must be unique across all validators (including deleted)
 interface IValidatorConfigV2 {
 
     // =========================================================================
@@ -51,6 +52,10 @@ interface IValidatorConfigV2 {
     /// @notice Thrown when migration is not complete (not all V1 validators migrated)
     error MigrationNotComplete();
 
+    /// @notice Thrown when a migrated validator's active/deactivated state does not match V1
+    /// @param idx The index of the validator with mismatched state
+    error MigrationStateMismatch(uint64 idx);
+
     /// @notice Thrown when migration index is out of order
     error InvalidMigrationIndex();
 
@@ -76,7 +81,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Validator information (V2 - append-only, delete-once)
     /// @param publicKey Ed25519 communication public key (non-zero, unique across all validators)
-    /// @param validatorAddress Ethereum-style address of the validator (unique across all validators)
+    /// @param validatorAddress Ethereum-style address of the validator (unique among active validators)
     /// @param ingress Address where other validators can connect (format: `<ip>:<port>`)
     /// @param egress IP address from which this validator will dial, e.g. for firewall whitelisting (format: `<ip>`)
     /// @param index Position in validators array (assigned at creation, immutable)
@@ -98,7 +103,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Add a new validator (owner only)
     /// @dev The signature must be an Ed25519 signature over:
-    ///      keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ADD_VALIDATOR", chainId, contractAddress, validatorAddress, ingress, egress))
+    ///      keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ADD_VALIDATOR", chainId, contractAddress, validatorAddress, uint8(bytes(ingress).length), ingress, uint8(bytes(egress).length), egress))
     ///      This proves the caller controls the private key corresponding to publicKey.
     ///      Reverts if isInitialized() returns false.
     /// @param validatorAddress The address of the new validator
@@ -118,8 +123,8 @@ interface IValidatorConfigV2 {
     /// @notice Deactivates a validator (owner or validator only)
     /// @dev Marks the validator as deactivated by setting deactivatedAtHeight to the current block height.
     ///      The validator's entry remains in storage for historical queries.
-    ///      The public key remains reserved and cannot be reused. The address remains
-    ///      reserved unless reassigned via transferValidatorOwnership.
+    ///      The public key remains reserved and cannot be reused. The address becomes
+    ///      available for reuse by a new validator or via transferValidatorOwnership.
     /// @param validatorAddress The validator address to deactivate
     function deactivateValidator(address validatorAddress) external;
 
@@ -133,7 +138,7 @@ interface IValidatorConfigV2 {
     ///      - Egress must be parseable as <ip>
     ///      - The signature must prove ownership of the new public key
     ///      The signature must be an Ed25519 signature over:
-    ///      keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR", chainId, contractAddress, validatorAddress, ingress, egress))
+    ///      keccak256(abi.encodePacked("TEMPO", "_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR", chainId, contractAddress, validatorAddress, uint8(bytes(ingress).length), ingress, uint8(bytes(egress).length), egress))
     /// @param validatorAddress The address of the validator to rotate
     /// @param publicKey The new validator's Ed25519 communication public key
     /// @param ingress The new validator's inbound address `<ip>:<port>` for incoming connections

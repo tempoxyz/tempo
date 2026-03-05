@@ -344,7 +344,7 @@ impl ValidatorConfigV2 {
     ///
     /// **FORMAT**:
     /// - Namespace: [`VALIDATOR_NS_ADD`] or [`VALIDATOR_NS_ROTATE`]
-    /// - Message: `keccak256(abi.encodePacked(chainId, contractAddr, validatorAddr, ingress, egress))`
+    /// - Message: `keccak256(chainId || contractAddr || validatorAddr || uint8(ingress.len) || ingress || uint8(egress.len) || egress))`
     fn verify_validator_signature(
         &self,
         namespace: &[u8],
@@ -358,7 +358,9 @@ impl ValidatorConfigV2 {
         hasher.update(self.storage.chain_id().to_be_bytes());
         hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
         hasher.update(validator_address.as_slice());
+        hasher.update([ingress.len() as u8]);
         hasher.update(ingress.as_bytes());
+        hasher.update([egress.len() as u8]);
         hasher.update(egress.as_bytes());
         let message = hasher.finalize();
 
@@ -582,6 +584,14 @@ impl ValidatorConfigV2 {
         self.require_new_address(v1_val.validatorAddress)?;
         self.require_new_pubkey(v1_val.publicKey)?;
 
+        let deactivated_at_height = if v1_val.active {
+            PublicKey::decode(v1_val.publicKey.as_slice())
+                .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
+            0
+        } else {
+            block_height
+        };
+
         let egress = v1_val
             .outboundAddress
             .parse::<std::net::SocketAddr>()
@@ -589,8 +599,6 @@ impl ValidatorConfigV2 {
             .unwrap_or(v1_val.outboundAddress);
 
         let ingress_hash = self.require_unique_ingress_ip(&v1_val.inboundAddress)?;
-
-        let deactivated_at_height = if v1_val.active { 0 } else { block_height };
 
         self.append_validator(
             v1_val.validatorAddress,
@@ -614,8 +622,21 @@ impl ValidatorConfigV2 {
 
         // NOTE: this count comparison is sufficient because `add_validator` and
         // `rotate_validator` are blocked until the contract is initialized.
-        if self.validator_count()? < v1.validator_count()? {
+        let v2_count = self.validator_count()?;
+        let v1_count = v1.validator_count()?;
+        if v2_count < v1_count {
             Err(ValidatorConfigV2Error::migration_not_complete())?
+        }
+
+        for i in 0..v1_count {
+            let v1_val = v1.validators(v1.validators_array(i)?)?;
+            let v2_val = self.validators[i as usize].read()?;
+            if v1_val.active && v2_val.deactivated_at_height != 0 {
+                Err(ValidatorConfigV2Error::migration_state_mismatch(i))?
+            }
+            if !v1_val.active && v2_val.deactivated_at_height == 0 {
+                Err(ValidatorConfigV2Error::migration_state_mismatch(i))?
+            }
         }
 
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;
@@ -660,7 +681,9 @@ mod tests {
         data.extend_from_slice(&1u64.to_be_bytes());
         data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
         data.extend_from_slice(validator_address.as_slice());
+        data.push(ingress.len() as u8);
         data.extend_from_slice(ingress.as_bytes());
+        data.push(egress.len() as u8);
         data.extend_from_slice(egress.as_bytes());
         let message = keccak256(&data);
 
@@ -692,6 +715,11 @@ mod tests {
             egress: egress.to_string(),
             signature: signature.into(),
         }
+    }
+
+    fn valid_pubkey(seed: u64) -> FixedBytes<32> {
+        let pk = PrivateKey::from_seed(seed);
+        FixedBytes::from_slice(&pk.public_key().encode())
     }
 
     /// Helper to make a complete add call with generated keys
@@ -1356,7 +1384,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: v1_addr,
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: valid_pubkey(1),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -1367,7 +1395,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: v2_addr,
-                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    publicKey: valid_pubkey(2),
                     active: false,
                     inboundAddress: "192.168.1.2:8000".to_string(),
                     outboundAddress: "192.168.1.2:9000".to_string(),
@@ -1384,7 +1412,7 @@ mod tests {
             assert_eq!(v2.validator_count()?, 1);
             let migrated = v2.validator_by_index(0)?;
             assert_eq!(migrated.validatorAddress, v1_addr);
-            assert_eq!(migrated.publicKey, FixedBytes::<32>::from([0x11; 32]));
+            assert_eq!(migrated.publicKey, valid_pubkey(1));
             assert_eq!(migrated.deactivatedAtHeight, 0);
 
             // Migrate second validator
@@ -1430,7 +1458,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: v1_addr,
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: valid_pubkey(1),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -1483,7 +1511,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: valid_pubkey(1),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -1494,7 +1522,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    publicKey: valid_pubkey(2),
                     active: true,
                     inboundAddress: "192.168.1.2:8000".to_string(),
                     outboundAddress: "192.168.1.2:9000".to_string(),
@@ -1530,7 +1558,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: valid_pubkey(1),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -1541,7 +1569,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    publicKey: valid_pubkey(2),
                     active: true,
                     inboundAddress: "192.168.1.2:8000".to_string(),
                     outboundAddress: "192.168.1.2:9000".to_string(),
@@ -1560,6 +1588,41 @@ mod tests {
             assert_eq!(
                 result,
                 Err(ValidatorConfigV2Error::migration_not_complete().into())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_migration_rejects_invalid_ed25519_pubkey() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut v1 = v1();
+            v1.initialize(owner)?;
+
+            // [0x02; 32] is not a valid Ed25519 curve point but is non-zero so V1 accepts it.
+            let bad_key = [0x02u8; 32];
+            v1.add_validator(
+                owner,
+                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: Address::random(),
+                    publicKey: FixedBytes::<32>::from(bad_key),
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            let mut v2 = ValidatorConfigV2::new();
+            v2.storage.set_block_number(100);
+            let result =
+                v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 });
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::invalid_public_key().into())
             );
 
             Ok(())
@@ -1727,7 +1790,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: v1_addr,
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: valid_pubkey(1),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -1771,7 +1834,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: v1_addr,
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: valid_pubkey(1),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -1856,7 +1919,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: valid_pubkey(1),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -1866,7 +1929,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    publicKey: valid_pubkey(2),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.2.1:9000".to_string(),
