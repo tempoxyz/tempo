@@ -68,13 +68,13 @@ main() {
         echo ""
     fi
 
-    # Run tempoup to install tempo binary
-    info "Running tempoup to install tempo..."
-    echo ""
-
-    # Try to run tempoup without sudo, then with sudo if needed
-    if ! TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup" 2>/dev/null; then
-        TEMPO_BIN_DIR="$BIN_DIR" sudo "$BIN_DIR/tempoup"
+    if TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup" 2>/dev/null; then
+        info "Running tempoup to install tempo..."
+    elif TEMPO_BIN_DIR="$BIN_DIR" sudo "$BIN_DIR/tempoup" 2>/dev/null; then
+        info "Running tempoup with sudo to install tempo..."
+    else
+        echo "error: failed to run tempoup"
+        exit 1
     fi
 }
 
