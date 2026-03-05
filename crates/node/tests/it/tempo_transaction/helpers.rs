@@ -10,10 +10,7 @@ use alloy::{
     primitives::{Address, B256, Bytes, Signature, U256, keccak256},
     providers::Provider,
     rpc::types::TransactionRequest,
-    signers::{
-        SignerSync,
-        local::PrivateKeySigner,
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
