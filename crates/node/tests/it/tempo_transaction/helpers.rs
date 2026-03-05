@@ -114,7 +114,7 @@ impl super::types::TestEnv for Localnet {
     }
 
     fn hardfork(&self) -> TempoHardfork {
-        TempoHardfork::T1C
+        self.setup.hardfork
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {

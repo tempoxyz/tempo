@@ -41,6 +41,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         chain_id,
         funder_signer: alice_signer,
         funder_addr: alice_addr,
+        ..
     } = localnet;
 
     println!("\n=== Comprehensive 2D Nonce Pool Test ===\n");
@@ -1600,6 +1601,7 @@ async fn test_v1_keychain_in_auth_list_rejected_post_t1c() -> eyre::Result<()> {
         chain_id,
         funder_signer: sender_signer,
         funder_addr: sender_addr,
+        ..
     } = localnet;
 
     // Build an EIP-7702 authorization and sign it with a V1 keychain sig
