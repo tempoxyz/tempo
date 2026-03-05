@@ -106,6 +106,33 @@ impl super::types::TestEnv for Localnet {
         Ok(amount)
     }
 
+    async fn submit_tx_expecting_rejection(
+        &self,
+        encoded: Vec<u8>,
+        expected_reason: Option<&str>,
+    ) -> eyre::Result<()> {
+        // Handler-level rejection
+        let handler_result =
+            self.setup.node.rpc.inject_tx(encoded.clone().into()).await;
+        assert!(handler_result.is_err(), "Handler should reject the transaction");
+
+        // RPC-level rejection
+        let rpc_result = self
+            .provider()
+            .raw_request::<_, B256>("eth_sendRawTransaction".into(), [encoded])
+            .await;
+        assert!(rpc_result.is_err(), "RPC should reject the transaction");
+
+        if let (Some(reason), Err(err)) = (expected_reason, &rpc_result) {
+            let err_str = err.to_string().to_lowercase();
+            assert!(
+                err_str.contains(&reason.to_lowercase()),
+                "Rejection error should contain '{reason}', got: {err}"
+            );
+        }
+        Ok(())
+    }
+
     async fn submit_tx(
         &mut self,
         encoded: Vec<u8>,
