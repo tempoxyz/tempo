@@ -11833,6 +11833,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "tempfile",
  "tempo-alloy",
  "tempo-chainspec",
  "tempo-commonware-node",

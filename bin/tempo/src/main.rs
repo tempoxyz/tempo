@@ -31,9 +31,10 @@ static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
 mod defaults;
 mod init_state;
+mod plugin;
 mod tempo_cmd;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
@@ -123,6 +124,9 @@ fn install_crypto_provider() {
 }
 
 fn main() -> eyre::Result<()> {
+    type TempoCli =
+        Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
+
     install_crypto_provider();
 
     reth_cli_util::sigsegv_handler::install();
@@ -145,12 +149,15 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let mut cli = Cli::<
-        TempoChainSpecParser,
-        TempoArgs,
-        DefaultRpcModuleValidator,
-        tempo_cmd::TempoSubcommand,
-    >::parse();
+    // Build the clap command, append discovered `tempo-*` plugins to --help,
+    // then parse. Unrecognized subcommands are caught by clap's
+    // `external_subcommand` and dispatched to `tempo-<name>` binaries.
+    let mut cmd = TempoCli::command();
+    if let Some(help) = plugin::external_subcommands_help(&cmd) {
+        cmd = cmd.after_help(help);
+    }
+    let matches = cmd.get_matches();
+    let mut cli = TempoCli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
