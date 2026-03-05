@@ -16,14 +16,12 @@
 //!
 //! ### In `spec.rs`:
 //! 3. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo`
-//! 4. Extract `vivace_time` in `TempoChainSpec::from_genesis`
-//! 5. Add `(TempoHardfork::Vivace, vivace_time)` to `tempo_forks` vec
-//! 6. Update tests to include `"vivaceTime": <timestamp>` in genesis JSON
+//! 4. Add `TempoHardfork::Vivace => self.vivace_time` arm to `TempoGenesisInfo::fork_time()`
 //!
 //! ### In genesis files and generator:
-//! 7. Add `"vivaceTime": 0` to `genesis/dev.json`
-//! 8. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
-//! 9. Add insertion of `"vivaceTime"` to chain_config.extra_fields
+//! 5. Add `"vivaceTime": 0` to `genesis/dev.json`
+//! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
+//! 7. Add insertion of `"vivaceTime"` to chain_config.extra_fields
 
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 use alloy_evm::revm::primitives::hardfork::SpecId;
