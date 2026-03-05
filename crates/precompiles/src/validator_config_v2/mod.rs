@@ -1326,7 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_fee_reciient() -> eyre::Result<()> {
+    fn test_set_fee_recipient() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let validator = Address::random();
