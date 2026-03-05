@@ -181,7 +181,7 @@ interface IValidatorConfigV2 {
     ///      is preserved across rotations.
     ///      The same validation rules as addValidator apply:
     ///      - The new public key must not already exist
-    ///      - Ingress parseable as <ip>:<port>
+    ///      - Ingress parseable as <ip>:<port>. Must be different from rotated-out validator (changing port is enough).
     ///      - Egress must be parseable as <ip>
     ///      - The signature must prove ownership of the new public key
     ///      The signature must be an Ed25519 signature over:
