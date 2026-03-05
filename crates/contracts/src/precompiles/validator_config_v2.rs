@@ -26,6 +26,7 @@ crate::sol! {
             address validatorAddress;
             string ingress;
             string egress;
+            address feeRecipient;
             uint64 index;
             uint64 addedAtHeight;
             uint64 deactivatedAtHeight;
@@ -72,6 +73,7 @@ crate::sol! {
             bytes32 publicKey,
             string calldata ingress,
             string calldata egress,
+            address feeRecipient,
             bytes calldata signature
         ) external returns (uint64 index);
 
@@ -85,6 +87,12 @@ crate::sol! {
             string calldata ingress,
             string calldata egress,
             bytes calldata signature
+        ) external;
+
+        /// Update fee recipient.
+        function setFeeRecipient(
+            uint64 idx,
+            address feeRecipient
         ) external;
 
         /// Update IP addresses (owner or validator)
@@ -116,7 +124,7 @@ crate::sol! {
         // Events
         // =====================================================================
 
-        event ValidatorAdded(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey, string ingress, string egress);
+        event ValidatorAdded(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey, string ingress, string egress, address feeRecipient);
         event ValidatorDeactivated(uint64 indexed index, address indexed validatorAddress);
         event ValidatorRotated(
             uint64 indexed index,
@@ -128,6 +136,7 @@ crate::sol! {
             string egress,
             address caller
         );
+        event FeeRecipientUpdated(uint64 indexed index, address feeRecipient, address caller);
         event IpAddressesUpdated(uint64 indexed index, string ingress, string egress, address caller);
         event ValidatorOwnershipTransferred(uint64 indexed index, address indexed oldAddress, address indexed newAddress, address caller);
         event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
