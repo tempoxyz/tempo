@@ -128,6 +128,7 @@ impl TempoGenesisInfo {
     pub fn t2_time(&self) -> Option<u64> {
         self.t2_time
     }
+
 }
 
 /// Tempo chain specification parser.
