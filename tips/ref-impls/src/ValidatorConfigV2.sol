@@ -92,7 +92,14 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         bytes32 message = keccak256(
             abi.encodePacked(
-                block.chainid, address(this), validatorAddress, ingress, egress, feeRecipient
+                block.chainid,
+                address(this),
+                validatorAddress,
+                uint8(bytes(ingress).length),
+                ingress,
+                uint8(bytes(egress).length),
+                egress,
+                feeRecipient
             )
         );
         _verifyEd25519Signature(
@@ -178,7 +185,15 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validateRotateParams(publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress)
+            abi.encodePacked(
+                block.chainid,
+                address(this),
+                validatorAddress,
+                uint8(bytes(ingress).length),
+                ingress,
+                uint8(bytes(egress).length),
+                egress
+            )
         );
         _verifyEd25519Signature(
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"), publicKey, message, signature
@@ -233,8 +248,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         _checkOnlyOwnerOrValidator(v.validatorAddress);
 
-        _validateIpPort(ingress, "ingress");
-        _validateIp(egress, "egress");
+        _validateIpPort(ingress);
+        _validateIp(egress);
         _updateIngressIp(v.ingress, ingress);
 
         v.ingress = ingress;
@@ -490,8 +505,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         if (pubkeyToIndex[publicKey] != 0) {
             revert PublicKeyAlreadyExists();
         }
-        _validateIpPort(ingress, "ingress");
-        _validateIp(egress, "egress");
+        _validateIpPort(ingress);
+        _validateIp(egress);
     }
 
     function _addValidator(
@@ -610,44 +625,43 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         return socketAddr;
     }
 
-    function _validateIpPort(string calldata input, string memory field) internal pure {
+    function _validateIpPort(string calldata input) internal pure {
         bytes memory b = bytes(input);
 
         if (b.length == 0) {
-            revert NotIpPort(field, input, "Empty address");
+            revert NotIpPort(input, "Empty address");
         }
 
         if (b[0] == "[") {
-            _validateIpv6Port(b, field, input);
+            _validateIpv6Port(b, input);
         } else {
-            _validateIpv4Port(b, field, input);
+            _validateIpv4Port(b, input);
         }
     }
 
-    function _validateIp(string calldata input, string memory field) internal pure {
+    function _validateIp(string calldata input) internal pure {
         bytes memory b = bytes(input);
 
         if (b.length == 0) {
-            revert NotIpPort(field, input, "Empty address");
+            revert NotIp(input, "Empty address");
         }
 
         if (b[0] == "[") {
-            _validateIpv6Address(b, 1, b.length - 1, field, input);
+            _validateIpv6Address(b, 1, b.length - 1, input);
         } else {
-            _validateIpv4(b, field, input);
+            _validateIpv4(b, input);
         }
     }
 
     function _validateIpv4Port(
         bytes memory b,
-        string memory field,
         string calldata input
     )
         internal
         pure
     {
         if (b.length < 9) {
-            revert NotIpPort(field, input, "Address too short");
+            revert NotIpPort(input, "Address too short");
         }
 
         uint256 i = 0;
@@ -659,7 +673,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             while (i < b.length && b[i] != "." && b[i] != ":") {
                 bytes1 c = b[i];
                 if (c < "0" || c > "9") {
-                    revert NotIpPort(field, input, "Invalid character in octet");
+                    revert NotIpPort(input, "Invalid character in octet");
                 }
                 value = value * 10 + uint8(c) - 48;
                 digitCount++;
@@ -667,41 +681,40 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             }
 
             if (digitCount == 0 || digitCount > 3) {
-                revert NotIpPort(field, input, "Invalid octet length");
+                revert NotIpPort(input, "Invalid octet length");
             }
             if (value > 255) {
-                revert NotIpPort(field, input, "Octet out of range");
+                revert NotIpPort(input, "Octet out of range");
             }
             if (digitCount > 1 && b[i - digitCount] == "0") {
-                revert NotIpPort(field, input, "Leading zeros not allowed");
+                revert NotIpPort(input, "Leading zeros not allowed");
             }
 
             if (octet < 3) {
                 if (i >= b.length || b[i] != ".") {
-                    revert NotIpPort(field, input, "Expected dot separator");
+                    revert NotIpPort(input, "Expected dot separator");
                 }
                 i++;
             }
         }
 
         if (i >= b.length || b[i] != ":") {
-            revert NotIpPort(field, input, "Missing port separator");
+            revert NotIpPort(input, "Missing port separator");
         }
         i++;
 
-        _validatePort(b, i, field, input);
+        _validatePort(b, i, input);
     }
 
     function _validateIpv4(
         bytes memory b,
-        string memory field,
         string calldata input
     )
         internal
         pure
     {
         if (b.length < 7) {
-            revert NotIpPort(field, input, "Address too short");
+            revert NotIp(input, "Address too short");
         }
 
         uint256 i = 0;
@@ -713,7 +726,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             while (i < b.length && b[i] != ".") {
                 bytes1 c = b[i];
                 if (c < "0" || c > "9") {
-                    revert NotIpPort(field, input, "Invalid character in octet");
+                    revert NotIp(input, "Invalid character in octet");
                 }
                 value = value * 10 + uint8(c) - 48;
                 digitCount++;
@@ -721,38 +734,37 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             }
 
             if (digitCount == 0 || digitCount > 3) {
-                revert NotIpPort(field, input, "Invalid octet length");
+                revert NotIp(input, "Invalid octet length");
             }
             if (value > 255) {
-                revert NotIpPort(field, input, "Octet out of range");
+                revert NotIp(input, "Octet out of range");
             }
             if (digitCount > 1 && b[i - digitCount] == "0") {
-                revert NotIpPort(field, input, "Leading zeros not allowed");
+                revert NotIp(input, "Leading zeros not allowed");
             }
 
             if (octet < 3) {
                 if (i >= b.length || b[i] != ".") {
-                    revert NotIpPort(field, input, "Expected dot separator");
+                    revert NotIp(input, "Expected dot separator");
                 }
                 i++;
             }
         }
 
         if (i != b.length) {
-            revert NotIpPort(field, input, "Unexpected trailing characters");
+            revert NotIp(input, "Unexpected trailing characters");
         }
     }
 
     function _validateIpv6Port(
         bytes memory b,
-        string memory field,
         string calldata input
     )
         internal
         pure
     {
         if (b.length < 6) {
-            revert NotIpPort(field, input, "Address too short");
+            revert NotIpPort(input, "Address too short");
         }
 
         uint256 closeBracket = 0;
@@ -764,30 +776,29 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
 
         if (closeBracket == 0) {
-            revert NotIpPort(field, input, "Missing closing bracket");
+            revert NotIpPort(input, "Missing closing bracket");
         }
 
-        _validateIpv6Address(b, 1, closeBracket, field, input);
+        _validateIpv6Address(b, 1, closeBracket, input);
 
         if (closeBracket + 1 >= b.length || b[closeBracket + 1] != ":") {
-            revert NotIpPort(field, input, "Missing port separator after bracket");
+            revert NotIpPort(input, "Missing port separator after bracket");
         }
 
-        _validatePort(b, closeBracket + 2, field, input);
+        _validatePort(b, closeBracket + 2, input);
     }
 
     function _validateIpv6Address(
         bytes memory b,
         uint256 start,
         uint256 end,
-        string memory field,
         string calldata input
     )
         internal
         pure
     {
         if (start >= end) {
-            revert NotIpPort(field, input, "Empty IPv6 address");
+            revert NotIpPort(input, "Empty IPv6 address");
         }
 
         uint256 groupCount = 0;
@@ -810,7 +821,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
                 bool isHex =
                     (c >= "0" && c <= "9") || (c >= "a" && c <= "f") || (c >= "A" && c <= "F");
                 if (!isHex) {
-                    revert NotIpPort(field, input, "Invalid hex character");
+                    revert NotIpPort(input, "Invalid hex character");
                 }
                 digitCount++;
                 i++;
@@ -818,11 +829,11 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
             if (digitCount == 0) {
                 if (doubleColonPos == type(uint256).max) {
-                    revert NotIpPort(field, input, "Empty group without ::");
+                    revert NotIpPort(input, "Empty group without ::");
                 }
             } else {
                 if (digitCount > 4) {
-                    revert NotIpPort(field, input, "Group exceeds 4 hex digits");
+                    revert NotIpPort(input, "Group exceeds 4 hex digits");
                 }
                 groupCount++;
             }
@@ -831,7 +842,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
                 if (b[i] == ":") {
                     if (i + 1 < end && b[i + 1] == ":") {
                         if (doubleColonPos != type(uint256).max) {
-                            revert NotIpPort(field, input, "Multiple :: not allowed");
+                            revert NotIpPort(input, "Multiple :: not allowed");
                         }
                         doubleColonPos = groupCount;
                         i += 2;
@@ -847,11 +858,11 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         if (doubleColonPos == type(uint256).max) {
             if (groupCount != 8) {
-                revert NotIpPort(field, input, "Must have 8 groups without ::");
+                revert NotIpPort(input, "Must have 8 groups without ::");
             }
         } else {
             if (groupCount >= 8) {
-                revert NotIpPort(field, input, "Too many groups with ::");
+                revert NotIpPort(input, "Too many groups with ::");
             }
         }
     }
@@ -859,14 +870,13 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     function _validatePort(
         bytes memory b,
         uint256 start,
-        string memory field,
         string calldata input
     )
         internal
         pure
     {
         if (start >= b.length) {
-            revert NotIpPort(field, input, "Missing port number");
+            revert NotIpPort(input, "Missing port number");
         }
 
         uint256 port = 0;
@@ -875,23 +885,23 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         for (uint256 i = start; i < b.length; i++) {
             bytes1 c = b[i];
             if (c < "0" || c > "9") {
-                revert NotIpPort(field, input, "Invalid port character");
+                revert NotIpPort(input, "Invalid port character");
             }
             port = port * 10 + uint8(c) - 48;
             digitCount++;
         }
 
         if (digitCount == 0) {
-            revert NotIpPort(field, input, "Empty port number");
+            revert NotIpPort(input, "Empty port number");
         }
         if (digitCount > 5) {
-            revert NotIpPort(field, input, "Port too long");
+            revert NotIpPort(input, "Port too long");
         }
         if (port > 65_535) {
-            revert NotIpPort(field, input, "Port out of range");
+            revert NotIpPort(input, "Port out of range");
         }
         if (digitCount > 1 && b[start] == "0") {
-            revert NotIpPort(field, input, "Leading zeros in port");
+            revert NotIpPort(input, "Leading zeros in port");
         }
     }
 
