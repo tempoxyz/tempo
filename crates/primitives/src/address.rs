@@ -39,12 +39,13 @@
 //! assert_eq!(parsed.address(), address!("742d35CC6634c0532925a3B844bc9e7595F2Bd28"));
 //! ```
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use alloy_primitives::Address;
 use bech32::{Bech32m, Hrp, primitives::decode::CheckedHrpstring};
-use core::fmt;
-use core::str::FromStr;
+use core::{fmt, str::FromStr};
 
 /// HRP for mainnet addresses (no zone).
 const HRP_TEMPO: &str = "tempo";
