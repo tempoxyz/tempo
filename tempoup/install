@@ -72,7 +72,10 @@ main() {
     info "Running tempoup to install tempo..."
     echo ""
 
-    TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup"
+    # Try to run tempoup without sudo, then with sudo if needed
+    if ! TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup" 2>/dev/null; then
+        TEMPO_BIN_DIR="$BIN_DIR" sudo "$BIN_DIR/tempoup"
+    fi
 }
 
 main
