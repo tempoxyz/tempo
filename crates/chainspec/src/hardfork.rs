@@ -7,7 +7,7 @@
 //! When a new hardfork is needed (e.g., `Vivace`):
 //!
 //! ### In `hardfork.rs`:
-//! 1. Append a `Vivace` variant to [`tempo_hardforks!`] — automatically:
+//! 1. Append a `Vivace` variant to [`tempo_hardfork!`] — automatically:
 //!    * defines the enum variant via [`hardfork!`]
 //!    * implements trait `TempoHardforks` by adding `is_vivace()`, `is_vivace_active_at_timestamp()`,
 //!      and updating `tempo_hardfork_at()`
