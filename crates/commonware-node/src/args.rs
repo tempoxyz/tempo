@@ -17,11 +17,12 @@ pub struct Args {
     #[arg(
         long = "consensus.signing-key",
         required_unless_present_any = ["follow", "dev"],
+        conflicts_with = "follow",
     )]
     signing_key: Option<PathBuf>,
 
     /// The file containing a share of the bls12-381 threshold signing key.
-    #[arg(long = "consensus.signing-share")]
+    #[arg(long = "consensus.signing-share", conflicts_with = "follow")]
     pub signing_share: Option<PathBuf>,
 
     /// The socket address that will be bound to listen for consensus communication from
@@ -61,6 +62,7 @@ pub struct Args {
     #[arg(
         long = "consensus.fee-recipient",
         required_unless_present_any = ["follow", "dev"],
+        conflicts_with = "follow",
     )]
     pub fee_recipient: Option<alloy_primitives::Address>,
 
