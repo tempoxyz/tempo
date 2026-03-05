@@ -614,9 +614,11 @@ impl ValidatorConfigV2 {
 
         let v1 = v1();
         let v1_count = v1.validator_count()?;
+        let migrated = self.validator_count()?;
         let skipped = self.migration_skipped_count.read()?;
 
-        if call.idx + v1_count + u64::from(skipped) + 1 != v1_count {
+        let total_processed = migrated + u64::from(skipped);
+        if call.idx >= v1_count || call.idx + total_processed + 1 != v1_count {
             Err(ValidatorConfigV2Error::invalid_migration_index())?
         }
 
