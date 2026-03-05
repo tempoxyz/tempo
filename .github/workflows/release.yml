@@ -77,7 +77,8 @@ jobs:
 
   build-release:
     name: Build Release Binaries
-    needs: get-version
+    needs: [get-version, check-version]
+    if: ${{ always() && needs.check-version.result != 'failure' && needs.check-version.result != 'cancelled' }}
     environment: release
     runs-on: ${{ matrix.platform.os }}
     permissions:
@@ -255,3 +256,10 @@ jobs:
           endpoint: ${{ secrets.R2_BINARIES_ENDPOINT }}
           source_dir: "${{ needs.get-version.outputs.version }}"
           destination_dir: "binaries/${{ needs.get-version.outputs.version }}"
+
+  docker:
+    name: Docker Build
+    needs: [get-version, check-version]
+    if: ${{ always() && needs.check-version.result != 'failure' && needs.check-version.result != 'cancelled' }}
+    uses: ./.github/workflows/docker.yml
+    secrets: inherit
