@@ -7,7 +7,7 @@ use tempo_alloy::address::TempoAddress;
 
 fn main() {
     // Encode a mainnet address (no zone)
-    let addr = TempoAddress::new(address!("742d35CC6634c0532925a3B844bc9e7595F2Bd28"), None);
+    let addr = TempoAddress::new(address!("742d35CC6634c0532925a3B844bc9e7595F2Bd28"));
     println!("Mainnet: {addr}");
 
     // Encode a zone address

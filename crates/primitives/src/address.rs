@@ -24,7 +24,7 @@
 //! use tempo_primitives::address::TempoAddress;
 //!
 //! // Mainnet address (no zone)
-//! let addr = TempoAddress::new(address!("742d35CC6634c0532925a3B844bc9e7595F2Bd28"), None);
+//! let addr = TempoAddress::new(address!("742d35CC6634c0532925a3B844bc9e7595F2Bd28"));
 //! assert_eq!(addr.to_string(), "tempo1qp6z6dwvvc6vq5efyk3ms39une6etu4a9qtj2kk0");
 //!
 //! // Zone address
@@ -69,9 +69,12 @@ pub struct TempoAddress {
 }
 
 impl TempoAddress {
-    /// Creates a new [`TempoAddress`].
-    pub const fn new(address: Address, zone_id: Option<u64>) -> Self {
-        Self { address, zone_id }
+    /// Creates a new mainnet [`TempoAddress`] (no zone).
+    pub const fn new(address: Address) -> Self {
+        Self {
+            address,
+            zone_id: None,
+        }
     }
 
     /// Creates a new [`TempoAddress`] with a zone.
@@ -313,7 +316,7 @@ mod tests {
 
     #[test]
     fn encode_no_zone() {
-        let ta = TempoAddress::new(ADDR, None);
+        let ta = TempoAddress::new(ADDR);
         assert_eq!(
             ta.to_string(),
             "tempo1qp6z6dwvvc6vq5efyk3ms39une6etu4a9qtj2kk0"
@@ -376,7 +379,7 @@ mod tests {
 
     #[test]
     fn roundtrip_no_zone() {
-        let ta = TempoAddress::new(ADDR, None);
+        let ta = TempoAddress::new(ADDR);
         let s = ta.to_string();
         let parsed: TempoAddress = s.parse().unwrap();
         assert_eq!(parsed, ta);
