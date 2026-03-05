@@ -615,9 +615,8 @@ impl ValidatorConfigV2 {
         let v1 = v1();
         let v1_count = v1.validator_count()?;
         let skipped = self.migration_skipped_count.read()?;
-        let total_processed = self.validator_count()? + u64::from(skipped);
 
-        if call.idx + total_processed + 1 != v1_count {
+        if call.idx + v1_count + u64::from(skipped) + 1 != v1_count {
             Err(ValidatorConfigV2Error::invalid_migration_index())?
         }
 
@@ -690,7 +689,9 @@ impl ValidatorConfigV2 {
 
         // NOTE: this count comparison is sufficient because `add_validator` and
         // `rotate_validator` are blocked until the contract is initialized.
-        if self.validator_count()? + u64::from(skipped) < v1.validator_count()? {
+        if self.validator_count()? + u64::from(self.migration_skipped_count.read()?)
+            < v1.validator_count()?
+        {
             Err(ValidatorConfigV2Error::migration_not_complete())?
         }
 
