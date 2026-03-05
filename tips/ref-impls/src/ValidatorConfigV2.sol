@@ -653,13 +653,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
     }
 
-    function _validateIpv4Port(
-        bytes memory b,
-        string calldata input
-    )
-        internal
-        pure
-    {
+    function _validateIpv4Port(bytes memory b, string calldata input) internal pure {
         if (b.length < 9) {
             revert NotIpPort(input, "Address too short");
         }
@@ -706,13 +700,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validatePort(b, i, input);
     }
 
-    function _validateIpv4(
-        bytes memory b,
-        string calldata input
-    )
-        internal
-        pure
-    {
+    function _validateIpv4(bytes memory b, string calldata input) internal pure {
         if (b.length < 7) {
             revert NotIp(input, "Address too short");
         }
@@ -756,13 +744,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
     }
 
-    function _validateIpv6Port(
-        bytes memory b,
-        string calldata input
-    )
-        internal
-        pure
-    {
+    function _validateIpv6Port(bytes memory b, string calldata input) internal pure {
         if (b.length < 6) {
             revert NotIpPort(input, "Address too short");
         }
@@ -867,14 +849,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
     }
 
-    function _validatePort(
-        bytes memory b,
-        uint256 start,
-        string calldata input
-    )
-        internal
-        pure
-    {
+    function _validatePort(bytes memory b, uint256 start, string calldata input) internal pure {
         if (start >= b.length) {
             revert NotIpPort(input, "Missing port number");
         }
