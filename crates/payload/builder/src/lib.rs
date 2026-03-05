@@ -247,6 +247,11 @@ where
             state_provider
         };
         let state = StateProviderDatabase::new(&state_provider);
+        let block_hashes = cached_reads
+            .block_hashes
+            .iter()
+            .map(|(&n, &h)| (n, h))
+            .collect();
         let mut db = State::builder()
             .with_database(if self.disable_state_cache {
                 Box::new(state) as Box<dyn Database<Error = ProviderError>>
@@ -254,6 +259,7 @@ where
                 Box::new(cached_reads.as_db_mut(state))
             })
             .with_bundle_update()
+            .with_block_hashes(block_hashes)
             .build();
 
         let chain_spec = self.provider.chain_spec();
@@ -494,7 +500,10 @@ where
         {
             // Release db
             drop(builder);
+            // Sync block hashes back to cached reads
+            let block_hashes = std::mem::take(&mut db.block_hashes);
             drop(db);
+            cached_reads.block_hashes.extend(block_hashes);
             // can skip building the block
             return Ok(BuildOutcome::Aborted {
                 fees: total_fees,
@@ -646,7 +655,10 @@ where
 
         let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
 
+        // Sync block hashes back to cached reads
+        let block_hashes = std::mem::take(&mut db.block_hashes);
         drop(db);
+        cached_reads.block_hashes.extend(block_hashes);
         Ok(BuildOutcome::Better {
             payload,
             cached_reads,
