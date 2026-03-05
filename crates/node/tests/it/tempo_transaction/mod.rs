@@ -86,7 +86,7 @@ async fn run_all_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
 #[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_matrices_local(schedule: ForkSchedule) -> eyre::Result<()> {
-    run_all_matrices(&mut helpers::Localnet::with_schedule(schedule).await?).await
+    run_all_matrices(&mut localnet::Localnet::with_schedule(schedule).await?).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
