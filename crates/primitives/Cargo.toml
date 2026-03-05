@@ -35,6 +35,7 @@ arbitrary = { workspace = true, features = ["derive"], optional = true }
 derive_more.workspace = true
 modular-bitfield = { version = "0.11.2", optional = true }
 serde = { workspace = true, features = ["derive"] }
+bech32 = { version = "0.11", default-features = false, features = ["alloc"] }
 serde_json.workspace = true
 once_cell = { version = "1.21", default-features = false }
 
@@ -69,6 +70,7 @@ std = [
 	"alloy-rlp/std",
 	"alloy-serde?/std",
 	"base64/std",
+	"bech32/std",
 	"derive_more/std",
 	"once_cell/std",
 	"p256/std",

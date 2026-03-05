@@ -34,10 +34,8 @@ reth-primitives-traits = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 reth-rpc-eth-types = { workspace = true, optional = true }
 
-bech32 = "0.11"
 derive_more.workspace = true
 serde.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
