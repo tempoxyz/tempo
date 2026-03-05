@@ -33,3 +33,4 @@ cargo run --example <example_name> -p tempo-alloy
 | `mint_tokens` | Mint stablecoins to a recipient address |
 | `burn_tokens` | Burn stablecoins from your own balance |
 | `mint_fee_liquidity` | Add liquidity to a fee pool to enable fee payments with your token |
+| `tempo_address` | Encode and decode Tempo bech32m addresses |
