@@ -283,6 +283,7 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_validator(
         &mut self,
         addr: Address,
@@ -949,8 +950,8 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                VALIDATOR_NS_ADD,
                 validator,
+                VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1354,7 +1355,7 @@ mod tests {
 
             // Validator can update its own
             let fee_recipient_2 = Address::random();
-            vc.set_ip_addresses(
+            vc.set_fee_recipient(
                 validator,
                 IValidatorConfigV2::setFeeRecipientCall {
                     idx: 0,
@@ -1384,7 +1385,7 @@ mod tests {
                 make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
-            vc.set_(
+            vc.set_ip_addresses(
                 owner,
                 IValidatorConfigV2::setIpAddressesCall {
                     idx: 0,
