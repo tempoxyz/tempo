@@ -73,7 +73,10 @@ impl TempoAddress {
 
     /// Creates a new [`TempoAddress`] with a zone.
     pub const fn with_zone(address: Address, zone_id: u64) -> Self {
-        Self { address, zone_id: Some(zone_id) }
+        Self {
+            address,
+            zone_id: Some(zone_id),
+        }
     }
 
     /// Returns the underlying [`Address`].
@@ -116,11 +119,14 @@ impl TempoAddress {
 
 impl fmt::Display for TempoAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let hrp_str = if self.zone_id.is_some() { HRP_TEMPOZ } else { HRP_TEMPO };
+        let hrp_str = if self.zone_id.is_some() {
+            HRP_TEMPOZ
+        } else {
+            HRP_TEMPO
+        };
         let hrp = Hrp::parse_unchecked(hrp_str);
         let payload = self.encode_payload();
-        let encoded =
-            bech32::encode::<Bech32m>(hrp, &payload).map_err(|_| fmt::Error)?;
+        let encoded = bech32::encode::<Bech32m>(hrp, &payload).map_err(|_| fmt::Error)?;
         f.write_str(&encoded)
     }
 }
@@ -160,7 +166,9 @@ impl FromStr for TempoAddress {
         };
 
         if addr_bytes.len() != 20 {
-            return Err(TempoAddressError::InvalidPayload("address must be 20 bytes"));
+            return Err(TempoAddressError::InvalidPayload(
+                "address must be 20 bytes",
+            ));
         }
 
         let address = Address::from_slice(addr_bytes);
@@ -175,7 +183,10 @@ impl FromStr for TempoAddress {
 
 impl From<Address> for TempoAddress {
     fn from(address: Address) -> Self {
-        Self { address, zone_id: None }
+        Self {
+            address,
+            zone_id: None,
+        }
     }
 }
 
@@ -297,13 +308,19 @@ mod tests {
     #[test]
     fn encode_no_zone() {
         let ta = TempoAddress::new(ADDR, None);
-        assert_eq!(ta.to_string(), "tempo1qp6z6dwvvc6vq5efyk3ms39une6etu4a9qtj2kk0");
+        assert_eq!(
+            ta.to_string(),
+            "tempo1qp6z6dwvvc6vq5efyk3ms39une6etu4a9qtj2kk0"
+        );
     }
 
     #[test]
     fn encode_zone_1() {
         let ta = TempoAddress::with_zone(ADDR, 1);
-        assert_eq!(ta.to_string(), "tempoz1qqqhgtf4e3nrfszn9yj68wzyhj08t90jh55q74d9uj");
+        assert_eq!(
+            ta.to_string(),
+            "tempoz1qqqhgtf4e3nrfszn9yj68wzyhj08t90jh55q74d9uj"
+        );
     }
 
     #[test]
@@ -381,7 +398,9 @@ mod tests {
 
     #[test]
     fn validate_invalid() {
-        assert!(!TempoAddress::validate("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"));
+        assert!(!TempoAddress::validate(
+            "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+        ));
         assert!(!TempoAddress::validate("not_a_bech32_string"));
         assert!(!TempoAddress::validate(""));
     }
@@ -404,7 +423,10 @@ mod tests {
     fn serde_roundtrip() {
         let ta = TempoAddress::with_zone(ADDR, 1000);
         let json = serde_json::to_string(&ta).unwrap();
-        assert_eq!(json, "\"tempoz1qr77sqm5956uce35cpfjjfdrhpzte8n4jhet62qxx4zvx\"");
+        assert_eq!(
+            json,
+            "\"tempoz1qr77sqm5956uce35cpfjjfdrhpzte8n4jhet62qxx4zvx\""
+        );
         let parsed: TempoAddress = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, ta);
     }
