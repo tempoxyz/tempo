@@ -41,8 +41,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     uint64 internal nextDkgCeremony;
 
-    /// @dev Tracks active ingress IPs by their keccak256 hash
-    mapping(bytes32 => bool) internal activeIngressIpHashes;
+    /// @dev Tracks active ingress socket addresses by their keccak256 hash
+    mapping(bytes32 => bool) internal activeIngressHashes;
 
     uint64 internal migrationSkippedCount;
 
@@ -116,8 +116,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         _checkOnlyOwnerOrValidator(v.validatorAddress);
 
-        bytes32 ingressIpHash = _getIngressIpHash(v.ingress);
-        delete activeIngressIpHashes[ingressIpHash];
+        bytes32 ingressHash = _getIngressHash(v.ingress);
+        delete activeIngressHashes[ingressHash];
 
         v.deactivatedAtHeight = uint64(block.number);
         emit ValidatorDeactivated(idx, v.validatorAddress);
@@ -184,7 +184,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"), publicKey, message, signature
         );
 
-        _updateIngressIp(oldValidator.ingress, ingress);
+        _updateIngress(oldValidator.ingress, ingress);
 
         // Append deactivated snapshot of current values
         uint64 appendedIdx = uint64(validatorsArray.length);
@@ -235,7 +235,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         _validateIpPort(ingress, "ingress");
         _validateIp(egress, "egress");
-        _updateIngressIp(v.ingress, ingress);
+        _updateIngress(v.ingress, ingress);
 
         v.ingress = ingress;
         v.egress = egress;
@@ -402,9 +402,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
 
         bool nowActive = v1Val.active;
-        bytes32 ingressHash = _getIngressIpHash(v1Val.inboundAddress);
+        bytes32 ingressHash = _getIngressHash(v1Val.inboundAddress);
 
-        if (nowActive && activeIngressIpHashes[ingressHash]) {
+        if (nowActive && activeIngressHashes[ingressHash]) {
             migrationSkippedCount++;
             return;
         }
@@ -473,7 +473,6 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert AddressAlreadyHasValidator();
         }
         _validateRotateParams(publicKey, ingress, egress);
-        _requireUniqueIngressIp(ingress);
     }
 
     function _validateRotateParams(
@@ -492,6 +491,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
         _validateIpPort(ingress, "ingress");
         _validateIp(egress, "egress");
+        _requireUniqueIngress(ingress);
     }
 
     function _addValidator(
@@ -511,8 +511,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         if (deactivatedAtHeight == 0) {
             activeIndices.push(idx + 1); // 1-indexed
             activeIdx = uint64(activeIndices.length); // 1-indexed
-            bytes32 ingressIpHash = _getIngressIpHash(ingress);
-            activeIngressIpHashes[ingressIpHash] = true;
+            bytes32 ingressHash = _getIngressHash(ingress);
+            activeIngressHashes[ingressHash] = true;
         }
 
         ValidatorStorage memory newVal = ValidatorStorage({
@@ -544,33 +544,26 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         internal
         pure { }
 
-    /// @dev Check that ingress IP is not already in use by active validators
-    function _requireUniqueIngressIp(string memory ingress) internal view {
-        bytes32 ingressIpHash = _getIngressIpHash(ingress);
-        if (activeIngressIpHashes[ingressIpHash]) {
+    /// @dev Check that ingress is not already in use by active validators
+    function _requireUniqueIngress(string memory ingress) internal view {
+        bytes32 ingressHash = _getIngressHash(ingress);
+        if (activeIngressHashes[ingressHash]) {
             revert IngressAlreadyExists(ingress);
         }
     }
 
-    /// @dev Update ingress IP tracking when ingress changes
-    function _updateIngressIp(string memory oldIngress, string memory newIngress) internal {
-        bytes32 oldIngressIpHash = _getIngressIpHash(oldIngress);
-        bytes32 newIngressIpHash = _getIngressIpHash(newIngress);
+    /// @dev Update ingress tracking when ingress changes
+    function _updateIngress(string memory oldIngress, string memory newIngress) internal {
+        bytes32 oldIngressHash = _getIngressHash(oldIngress);
+        bytes32 newIngressHash = _getIngressHash(newIngress);
 
-        if (oldIngressIpHash != newIngressIpHash) {
-            if (activeIngressIpHashes[newIngressIpHash]) {
+        if (oldIngressHash != newIngressHash) {
+            if (activeIngressHashes[newIngressHash]) {
                 revert IngressAlreadyExists(newIngress);
             }
-            delete activeIngressIpHashes[oldIngressIpHash];
-            activeIngressIpHashes[newIngressIpHash] = true;
+            delete activeIngressHashes[oldIngressHash];
+            activeIngressHashes[newIngressHash] = true;
         }
-    }
-
-    /// @dev Extract and hash IP from ingress (ip:port -> keccak256(ip))
-    /// Handles both IPv4 (192.168.1.1:8000) and IPv6 ([::1]:8000)
-    function _getIngressIpHash(string memory ingress) internal pure returns (bytes32) {
-        string memory ip = _extractIpFromSocket(ingress);
-        return keccak256(bytes(ip));
     }
 
     /// @dev Extract IP from socket address format (ip:port -> ip)
@@ -608,6 +601,12 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         // No port found, return as-is
         return socketAddr;
+    }
+
+    /// @dev Hash ingress socket address
+    /// Handles both IPv4 (192.168.1.1:8000) and IPv6 ([::1]:8000)
+    function _getIngressHash(string memory ingress) internal pure returns (bytes32) {
+        return keccak256(bytes(ingress));
     }
 
     function _validateIpPort(string calldata input, string memory field) internal pure {
