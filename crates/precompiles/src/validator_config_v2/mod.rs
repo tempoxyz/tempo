@@ -10,7 +10,7 @@ use crate::{
     storage::{Handler, Mapping},
     validator_config::ValidatorConfig,
 };
-use alloy::primitives::{Address, B256, Keccak256, keccak256};
+use alloy::primitives::{Address, B256, keccak256};
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
     Verifier,
@@ -363,14 +363,18 @@ impl ValidatorConfigV2 {
         egress: &str,
         fee_recipient: Address,
     ) -> Result<()> {
-        let mut hasher = Keccak256::new();
-        hasher.update(self.storage.chain_id().to_be_bytes());
-        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        hasher.update(validator_address.as_slice());
-        hasher.update(ingress.as_bytes());
-        hasher.update(egress.as_bytes());
-        hasher.update(fee_recipient.as_slice());
-        let message = hasher.finalize();
+        let mut message_data = Vec::new();
+        message_data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
+        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        message_data.extend_from_slice(validator_address.as_slice());
+        message_data
+            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
+        message_data.extend_from_slice(ingress.as_bytes());
+        message_data
+            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
+        message_data.extend_from_slice(egress.as_bytes());
+        message_data.extend_from_slice(fee_recipient.as_slice());
+        let message = keccak256(message_data);
 
         let public_key = PublicKey::decode(pubkey.as_slice())
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
@@ -396,13 +400,17 @@ impl ValidatorConfigV2 {
         ingress: &str,
         egress: &str,
     ) -> Result<()> {
-        let mut hasher = Keccak256::new();
-        hasher.update(self.storage.chain_id().to_be_bytes());
-        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        hasher.update(validator_address.as_slice());
-        hasher.update(ingress.as_bytes());
-        hasher.update(egress.as_bytes());
-        let message = hasher.finalize();
+        let mut message_data = Vec::new();
+        message_data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
+        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        message_data.extend_from_slice(validator_address.as_slice());
+        message_data
+            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
+        message_data.extend_from_slice(ingress.as_bytes());
+        message_data
+            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
+        message_data.extend_from_slice(egress.as_bytes());
+        let message = keccak256(message_data);
 
         let public_key = PublicKey::decode(pubkey.as_slice())
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
@@ -866,18 +874,20 @@ mod tests {
         let private_key = PrivateKey::from_seed(seed);
         let public_key = private_key.public_key();
 
-        // Build message WITHOUT "TEMPO" prefix
-        let mut data = Vec::new();
-        data.extend_from_slice(&1u64.to_be_bytes());
-        data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        data.extend_from_slice(validator_address.as_slice());
-        data.extend_from_slice(ingress.as_bytes());
-        data.extend_from_slice(egress.as_bytes());
-        // `addValidator` signs feeRecipient, while `rotateValidator` does not.
+        let mut message_data = Vec::new();
+        message_data.extend_from_slice(&1u64.to_be_bytes());
+        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        message_data.extend_from_slice(validator_address.as_slice());
+        message_data
+            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
+        message_data.extend_from_slice(ingress.as_bytes());
+        message_data
+            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
+        message_data.extend_from_slice(egress.as_bytes());
         if namespace == VALIDATOR_NS_ADD {
-            data.extend_from_slice(fee_recipient.as_slice());
+            message_data.extend_from_slice(fee_recipient.as_slice());
         }
-        let message = keccak256(&data);
+        let message = keccak256(message_data);
 
         // Sign with namespace
         let signature = private_key.sign(namespace, message.as_slice());
