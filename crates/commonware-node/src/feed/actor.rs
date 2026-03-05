@@ -22,6 +22,7 @@ use tracing::{info, info_span, instrument};
 
 use super::state::FeedStateHandle;
 use crate::{alias::marshal, consensus::Digest};
+use tempo_node::TempoFullNode;
 
 /// Type alias for the activity type used by the feed actor.
 pub(super) type FeedActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
@@ -48,11 +49,13 @@ impl<TContext: Spawner> Actor<TContext> {
         context: TContext,
         marshal: marshal::Mailbox,
         epocher: FixedEpocher,
+        execution_node: TempoFullNode,
         receiver: Receiver,
         state: FeedStateHandle,
     ) -> Self {
         state.set_marshal(marshal.clone());
         state.set_epocher(epocher);
+        state.set_execution_node(execution_node);
 
         Self {
             context: ContextCell::new(context),

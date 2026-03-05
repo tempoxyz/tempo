@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, setup_test_token};
+use crate::utils::{ForkSchedule, TestNodeBuilder, setup_test_token};
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
@@ -19,12 +19,19 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM, UnknownFunctionSelector,
 };
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::TIP20Token};
+use test_case::test_case;
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_call() -> eyre::Result<()> {
+async fn test_eth_call(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_schedule(schedule)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -59,11 +66,17 @@ async fn test_eth_call() -> eyre::Result<()> {
     Ok(())
 }
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_trace_call() -> eyre::Result<()> {
+async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_schedule(schedule)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -153,11 +166,17 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     Ok(())
 }
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_get_logs() -> eyre::Result<()> {
+async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_schedule(schedule)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -212,11 +231,17 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     Ok(())
 }
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_estimate_gas() -> eyre::Result<()> {
+async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_schedule(schedule)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -561,11 +586,17 @@ async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre:
     Ok(())
 }
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
+async fn test_unknown_selector_error_via_rpc(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_schedule(schedule)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
