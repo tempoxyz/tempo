@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 tempo-contracts = { workspace = true, features = ["rpc"] }
 tempo-primitives = { workspace = true, features = ["serde", "reth"] }
+tempo-chainspec = { workspace = true, optional = true }
 tempo-evm = { workspace = true, optional = true }
 tempo-revm = { workspace = true, optional = true }
 
@@ -55,6 +56,7 @@ tempo-compat = [
     "dep:reth-rpc-convert",
     "dep:reth-primitives-traits",
     "dep:reth-rpc-eth-types",
+    "dep:tempo-chainspec",
     "dep:tempo-evm",
     "dep:tempo-revm",
     "tempo-primitives/rpc",

@@ -1,4 +1,4 @@
-use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::{ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use alloy::{
     consensus::BlockHeader,
     hex,
@@ -79,8 +79,15 @@ pub(crate) struct Localnet {
 
 impl Localnet {
     pub(crate) async fn new() -> eyre::Result<Self> {
+        Self::with_schedule(ForkSchedule::Devnet).await
+    }
+
+    pub(crate) async fn with_schedule(schedule: ForkSchedule) -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
-        let setup = TestNodeBuilder::new().build_with_node_access().await?;
+        let setup = TestNodeBuilder::new()
+            .with_schedule(schedule)
+            .build_with_node_access()
+            .await?;
         let provider = alloy::providers::RootProvider::new_http(setup.node.rpc_url());
         let chain_id = provider.get_chain_id().await?;
         let funder_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
