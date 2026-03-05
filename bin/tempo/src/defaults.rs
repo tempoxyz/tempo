@@ -120,14 +120,23 @@ pub(crate) struct TelemetryConfig {
     pub(crate) metrics_auth_header: Option<String>,
 }
 
-fn init_download_urls() {
+fn init_download_urls(chain: &str) {
+    let default_base_url: Cow<'static, str> =
+        match tempo_chainspec::spec::chain_value_parser(chain) {
+            Ok(spec) => match spec.default_snapshot_base_url() {
+                Some(url) => Cow::Owned(url.to_string()),
+                None => Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
+            },
+            Err(_) => Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
+        };
+
     let download_defaults = DownloadDefaults {
         available_snapshots: vec![
             Cow::Owned(format!("{DEFAULT_DOWNLOAD_URL} (mainnet)")),
             Cow::Borrowed("https://snapshots.tempoxyz.dev/42431 (moderato)"),
             Cow::Borrowed("https://snapshots.tempoxyz.dev/42429 (andantino)"),
         ],
-        default_base_url: Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
+        default_base_url,
         long_help: None,
     };
 
@@ -168,8 +177,8 @@ fn init_txpool_defaults() {
         .expect("failed to initialize txpool defaults");
 }
 
-pub(crate) fn init_defaults() {
-    init_download_urls();
+pub(crate) fn init_defaults(chain: &str) {
+    init_download_urls(chain);
     init_payload_builder_defaults();
     init_txpool_defaults();
 }

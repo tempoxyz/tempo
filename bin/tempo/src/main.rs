@@ -143,7 +143,22 @@ fn main() -> eyre::Result<()> {
     }
 
     tempo_node::init_version_metadata();
-    defaults::init_defaults();
+
+    // Early-parse --chain so the download command picks the right snapshot base URL.
+    // Full CLI parsing happens below; this just looks for the value that follows --chain.
+    let chain_arg = std::env::args()
+        .skip_while(|a| a != "--chain" && !a.starts_with("--chain="))
+        .next()
+        .and_then(|a| {
+            if let Some(val) = a.strip_prefix("--chain=") {
+                Some(val.to_string())
+            } else {
+                std::env::args().skip_while(|a| a != "--chain").nth(1)
+            }
+        })
+        .unwrap_or_else(|| "mainnet".to_string());
+
+    defaults::init_defaults(&chain_arg);
 
     let mut cli = Cli::<
         TempoChainSpecParser,
