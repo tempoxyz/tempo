@@ -112,9 +112,8 @@ impl super::types::TestEnv for Localnet {
         expected_reason: Option<&str>,
     ) -> eyre::Result<()> {
         // Handler-level rejection
-        let handler_result =
-            self.setup.node.rpc.inject_tx(encoded.clone().into()).await;
-        assert!(handler_result.is_err(), "Handler should reject the transaction");
+        let handler_result = self.setup.node.rpc.inject_tx(encoded.clone().into()).await;
+        assert!(handler_result.is_err(), "Handler should reject the tx");
 
         // RPC-level rejection
         let rpc_result = self
