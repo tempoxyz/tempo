@@ -80,13 +80,19 @@ impl<TContext: Spawner> Actor<TContext> {
                 };
 
                 let digest = notarization.proposal.payload;
-                let Some(block) = marshal.get_block(&digest).await else {
-                    debug!(
-                        %digest,
-                        round = %notarization.proposal.round,
-                        "notarized block not yet available in marshal; skipping new_payload",
-                    );
-                    continue;
+                let round = notarization.proposal.round;
+                let rx = marshal.subscribe(Some(round), digest).await;
+                let block = match rx.await {
+                    Ok(block) => block,
+                    Err(err) => {
+                        warn!(
+                            %digest,
+                            %round,
+                            %err,
+                            "marshal dropped channel before notarized block was delivered",
+                        );
+                        continue;
+                    }
                 };
 
                 let height = block.height();
