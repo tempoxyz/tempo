@@ -205,7 +205,7 @@ impl Inner<Init> {
         fields(%broadcast.payload),
         err(level = Level::ERROR),
     )]
-    async fn handle_broadcast(mut self, broadcast: Broadcast) -> eyre::Result<()> {
+    async fn handle_broadcast(self, broadcast: Broadcast) -> eyre::Result<()> {
         let Some((round, latest_proposed)) = self.state.latest_proposed_block.read().await.clone()
         else {
             return Err(eyre!("there was no latest block to broadcast"));
@@ -230,7 +230,7 @@ impl Inner<Init> {
         err(level = Level::ERROR)
     )]
     async fn handle_genesis<TContext: commonware_runtime::Clock>(
-        mut self,
+        self,
         mut genesis: Genesis,
         context: TContext,
     ) -> eyre::Result<Digest> {
@@ -391,7 +391,7 @@ impl Inner<Init> {
             proposer = %verify.proposer,
         ),
     )]
-    async fn handle_verify<TContext: Pacer>(mut self, verify: Verify, context: TContext) {
+    async fn handle_verify<TContext: Pacer>(self, verify: Verify, context: TContext) {
         let Verify {
             parent,
             payload,
@@ -436,7 +436,7 @@ impl Inner<Init> {
     }
 
     async fn propose<TContext: Pacer>(
-        mut self,
+        self,
         context: TContext,
         parent_view: View,
         parent_digest: Digest,
@@ -447,7 +447,7 @@ impl Inner<Init> {
             round,
             parent_digest,
             parent_view,
-            &mut self.marshal,
+            &self.marshal,
         )
         .await?;
         debug!(height = %parent.height(), "retrieved parent block",);
@@ -597,7 +597,7 @@ impl Inner<Init> {
     }
 
     async fn verify<TContext: Pacer>(
-        mut self,
+        self,
         context: TContext,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
@@ -606,7 +606,7 @@ impl Inner<Init> {
     ) -> eyre::Result<(Block, bool)> {
         let block_request = self
             .marshal
-            .subscribe(None, payload)
+            .subscribe_by_digest(None, payload)
             .await
             .map_err(|_| eyre!("syncer dropped channel before the block-to-verified was sent"));
 
@@ -617,7 +617,7 @@ impl Inner<Init> {
                 round,
                 parent_digest,
                 parent_view,
-                &mut self.marshal,
+                &self.marshal,
             ),
         )
         .await
@@ -947,7 +947,7 @@ async fn get_parent(
     round: Round,
     parent_digest: Digest,
     parent_view: View,
-    marshal: &mut crate::alias::marshal::Mailbox,
+    marshal: &crate::alias::marshal::Mailbox,
 ) -> eyre::Result<Block> {
     let genesis_digest = execution_node.chain_spec().genesis_hash();
     if parent_digest == Digest(genesis_digest) {
@@ -965,7 +965,7 @@ async fn get_parent(
         Ok(genesis_block)
     } else {
         marshal
-            .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+            .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)
             .await
             .await
             .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))

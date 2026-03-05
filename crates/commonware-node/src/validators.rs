@@ -58,7 +58,7 @@ pub(crate) async fn read_validator_config_with_retry(
                 .unwrap_or(height),
         };
 
-        if let Ok(validators) = read_from_contract_at_height(attempts, node, target_height).await {
+        if let Ok(validators) = read_from_contract_at_height(attempts, node, target_height) {
             break 'read_contract validators;
         }
 
@@ -168,7 +168,7 @@ pub(crate) fn read_validator_config_at_height<T>(
     ),
     err
 )]
-pub(crate) async fn read_from_contract_at_height(
+pub(crate) fn read_from_contract_at_height(
     _attempt: u32,
     node: &TempoFullNode,
     height: Height,
@@ -181,11 +181,11 @@ pub(crate) async fn read_from_contract_at_height(
 
     info!(?raw_validators, "read validators from contract",);
 
-    Ok(decode_from_contract(raw_validators).await)
+    Ok(decode_from_contract(raw_validators))
 }
 
 #[instrument(skip_all, fields(validators_to_decode = contract_vals.len()))]
-async fn decode_from_contract(
+fn decode_from_contract(
     contract_vals: Vec<IValidatorConfig::Validator>,
 ) -> ordered::Map<PublicKey, DecodedValidator> {
     let mut decoded = HashMap::new();
