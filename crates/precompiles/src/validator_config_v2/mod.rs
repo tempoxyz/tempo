@@ -873,7 +873,10 @@ mod tests {
         data.extend_from_slice(validator_address.as_slice());
         data.extend_from_slice(ingress.as_bytes());
         data.extend_from_slice(egress.as_bytes());
-        data.extend_from_slice(fee_recipient.as_slice());
+        // `addValidator` signs feeRecipient, while `rotateValidator` does not.
+        if namespace == VALIDATOR_NS_ADD {
+            data.extend_from_slice(fee_recipient.as_slice());
+        }
         let message = keccak256(&data);
 
         // Sign with namespace
