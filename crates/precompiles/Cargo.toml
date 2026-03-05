@@ -1,6 +1,6 @@
 [package]
 name = "tempo-precompiles"
-description = "TODO:"
+description = "Tempo precompile implementations and runtime hooks"
 
 version.workspace = true
 edition.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "tempo-chainspec"
-description = "TODO:"
+description = "Tempo chain specification and hardfork configuration"
 
 version.workspace = true
 edition.workspace = true

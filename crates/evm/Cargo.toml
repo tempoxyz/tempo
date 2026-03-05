@@ -1,6 +1,6 @@
 [package]
 name = "tempo-evm"
-description = "TODO:"
+description = "Tempo EVM integration and execution pipeline extensions"
 
 version.workspace = true
 edition.workspace = true
