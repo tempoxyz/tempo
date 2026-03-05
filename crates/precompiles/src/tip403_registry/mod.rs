@@ -1,6 +1,7 @@
 pub mod dispatch;
 
 use crate::StorageCtx;
+use scoped_tls::scoped_thread_local;
 pub use tempo_contracts::precompiles::{
     ITIP403Registry::{self, PolicyType},
     TIP403RegistryError, TIP403RegistryEvent,
@@ -71,6 +72,69 @@ pub enum AuthRole {
     Recipient,
     /// Check mint recipient authorization only (spec: +T2).
     MintRecipient,
+}
+
+/// Abstraction over policy authorization backends.
+///
+/// `TIP403Registry` is the default on-chain implementation. Zones can provide their own
+/// (e.g. cache-backed) implementation via [`with_policy_authorizer`].
+pub trait PolicyAuthorizer {
+    /// Check whether `user` is authorized under `policy_id` for the given `role`.
+    fn is_authorized_as(&self, policy_id: u64, user: Address, role: AuthRole) -> Result<bool>;
+
+    /// Check whether a policy with the given ID has been created.
+    fn policy_exists(&self, policy_id: u64) -> Result<bool>;
+}
+
+impl PolicyAuthorizer for TIP403Registry {
+    fn is_authorized_as(&self, policy_id: u64, user: Address, role: AuthRole) -> Result<bool> {
+        self.is_authorized_as(policy_id, user, role)
+    }
+
+    fn policy_exists(&self, policy_id: u64) -> Result<bool> {
+        self.policy_exists(ITIP403Registry::policyExistsCall {
+            policyId: policy_id,
+        })
+    }
+}
+
+// Optional override for the policy authorization backend used by TIP-20 tokens.
+//
+// By default this is **unset**. When no override is installed, `authorize()` and
+// `check_policy_exists()` fall back to `TIP403Registry::new()`, which reads policy
+// data directly from on-chain storage (the standard L1 behaviour).
+//
+// Zones (L2) can install a custom `PolicyAuthorizer` (e.g. one backed by a local
+// cache) by calling `with_policy_authorizer` before entering the precompile closure.
+// This follows the same scoped thread-local pattern used by `StorageCtx`.
+scoped_thread_local!(static POLICY_AUTHORIZER: &dyn PolicyAuthorizer);
+
+/// Enter a scoped policy authorizer context. While inside `f`, all TIP-20
+/// authorization checks use `authorizer` instead of the default `TIP403Registry`.
+pub fn with_policy_authorizer<R>(authorizer: &dyn PolicyAuthorizer, f: impl FnOnce() -> R) -> R {
+    // SAFETY: `scoped_tls` ensures the reference is only accessible within the closure scope.
+    let authorizer: &(dyn PolicyAuthorizer + 'static) = unsafe { std::mem::transmute(authorizer) };
+    POLICY_AUTHORIZER.set(&authorizer, f)
+}
+
+/// Check authorization using the thread-local override, falling back to `TIP403Registry`.
+pub(crate) fn authorize(policy_id: u64, user: Address, role: AuthRole) -> Result<bool> {
+    if POLICY_AUTHORIZER.is_set() {
+        POLICY_AUTHORIZER.with(|a| a.is_authorized_as(policy_id, user, role))
+    } else {
+        TIP403Registry::new().is_authorized_as(policy_id, user, role)
+    }
+}
+
+/// Check policy existence using the thread-local override, falling back to `TIP403Registry`.
+pub(crate) fn check_policy_exists(policy_id: u64) -> Result<bool> {
+    if POLICY_AUTHORIZER.is_set() {
+        POLICY_AUTHORIZER.with(|a| a.policy_exists(policy_id))
+    } else {
+        TIP403Registry::new().policy_exists(ITIP403Registry::policyExistsCall {
+            policyId: policy_id,
+        })
+    }
 }
 
 /// Base policy metadata. Packed into a single storage slot.
