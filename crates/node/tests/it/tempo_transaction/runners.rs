@@ -247,6 +247,30 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
         },
         AuthDef {
+            name: "key_auth_webauthn_0_limits",
+            auth: AuthKind::KeyAuth {
+                key_type: SignatureType::WebAuthn,
+                num_limits: 0,
+            },
+            noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
+        },
+        AuthDef {
+            name: "key_auth_webauthn_1_limit",
+            auth: AuthKind::KeyAuth {
+                key_type: SignatureType::WebAuthn,
+                num_limits: 1,
+            },
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_webauthn_0_limits::noop".into()),
+        },
+        AuthDef {
+            name: "key_auth_webauthn_3_limits",
+            auth: AuthKind::KeyAuth {
+                key_type: SignatureType::WebAuthn,
+                num_limits: 3,
+            },
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_webauthn_0_limits::noop".into()),
+        },
+        AuthDef {
             name: "key_auth_p256_0_limits",
             auth: AuthKind::KeyAuth {
                 key_type: SignatureType::P256,
@@ -276,9 +300,9 @@ fn gas_estimation_cases() -> Vec<GasCase> {
         ("noop", GasPayload::NoOp),
         ("transfer", GasPayload::Transfer),
         ("contract_creation", GasPayload::ContractCreation),
-        ("batch_2_calls", GasPayload::Batch(2)),
-        ("batch_5_calls", GasPayload::Batch(5)),
-        ("batch_10_calls", GasPayload::Batch(10)),
+        ("batch_2_transfers", GasPayload::Batch(2)),
+        ("batch_5_transfers", GasPayload::Batch(5)),
+        ("batch_10_transfers", GasPayload::Batch(10)),
     ];
 
     let mut cases = Vec::new();
@@ -367,7 +391,9 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                     0x60, 0x01, 0x60, 0x00, 0x52, 0x60, 0x01, 0x60, 0x00, 0xf3,
                 ]),
             }],
-            GasPayload::Batch(n) => (0..*n).map(|_| noop_call()).collect(),
+            GasPayload::Batch(n) => (0..*n)
+                .map(|_| create_transfer_call(DEFAULT_FEE_TOKEN, recipient, U256::from(10e6)))
+                .collect(),
         };
 
         let mut request = TempoTransactionRequest {

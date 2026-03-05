@@ -84,10 +84,44 @@ async fn test_matrices_local() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_gas_estimation_snapshots() -> eyre::Result<()> {
+    // Auth group from case name. All `key_auth_*` variants collapse into "key_auth".
+    fn group_of(k: &str) -> &str {
+        let prefix = k.split("::").next().unwrap_or(k);
+        if prefix.starts_with("key_auth") {
+            "key_auth"
+        } else {
+            prefix
+        }
+    }
+
     let mut localnet = helpers::Localnet::new().await?;
     let results = localnet.run_estimate_gas_matrix().await?;
-    let mut gas_estimation: indexmap::IndexMap<String, u64> = results.into_iter().collect();
-    gas_estimation.sort_by(|_, a, _, b| a.cmp(b));
+    let gas_estimation: indexmap::IndexMap<String, u64> = results.into_iter().collect();
+
+    // Cheapest noop per group — used to order groups.
+    let mut noop_gas: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for (k, &v) in gas_estimation
+        .iter()
+        .filter(|(k, _)| k.ends_with("::noop") || *k == "baseline")
+    {
+        noop_gas
+            .entry(group_of(k).to_string())
+            .and_modify(|e| *e = (*e).min(v))
+            .or_insert(v);
+    }
+
+    // baseline → groups by cheapest noop → gas ascending within group.
+    let mut gas_estimation = gas_estimation;
+    gas_estimation.sort_by(|k1, v1, k2, v2| match (k1.as_str(), k2.as_str()) {
+        ("baseline", _) => std::cmp::Ordering::Less,
+        (_, "baseline") => std::cmp::Ordering::Greater,
+        _ => {
+            let (g1, g2) = (group_of(k1), group_of(k2));
+            let ng = |g: &str| noop_gas.get(g).copied().unwrap_or(u64::MAX);
+            ng(g1).cmp(&ng(g2)).then(g1.cmp(g2)).then(v1.cmp(v2))
+        }
+    });
+
     insta::assert_yaml_snapshot!(gas_estimation);
     Ok(())
 }

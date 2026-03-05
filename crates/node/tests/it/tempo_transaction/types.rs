@@ -735,7 +735,7 @@ pub(crate) enum GasPayload {
     Transfer,
     /// Contract creation with fixed initcode.
     ContractCreation,
-    /// N no-op calls.
+    /// N transfer calls.
     Batch(usize),
 }
 
