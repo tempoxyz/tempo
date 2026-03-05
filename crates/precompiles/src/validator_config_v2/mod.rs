@@ -79,46 +79,6 @@ pub struct ValidatorConfigV2 {
 }
 
 impl ValidatorConfigV2 {
-    fn push_len_prefixed_str(data: &mut Vec<u8>, value: &str) {
-        let value_bytes = value.as_bytes();
-        let value_len = u8::try_from(value_bytes.len())
-            .expect("validator ingress/egress length must fit in uint8");
-        data.push(value_len);
-        data.extend_from_slice(value_bytes);
-    }
-
-    pub fn add_signature_message(
-        chain_id: u64,
-        validator_address: Address,
-        ingress: &str,
-        egress: &str,
-        fee_recipient: Address,
-    ) -> B256 {
-        let mut data = Vec::with_capacity(8 + 20 + 20 + 1 + ingress.len() + 1 + egress.len() + 20);
-        data.extend_from_slice(&chain_id.to_be_bytes());
-        data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        data.extend_from_slice(validator_address.as_slice());
-        Self::push_len_prefixed_str(&mut data, ingress);
-        Self::push_len_prefixed_str(&mut data, egress);
-        data.extend_from_slice(fee_recipient.as_slice());
-        keccak256(data)
-    }
-
-    pub fn rotate_signature_message(
-        chain_id: u64,
-        validator_address: Address,
-        ingress: &str,
-        egress: &str,
-    ) -> B256 {
-        let mut data = Vec::with_capacity(8 + 20 + 20 + 1 + ingress.len() + 1 + egress.len());
-        data.extend_from_slice(&chain_id.to_be_bytes());
-        data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        data.extend_from_slice(validator_address.as_slice());
-        Self::push_len_prefixed_str(&mut data, ingress);
-        Self::push_len_prefixed_str(&mut data, egress);
-        keccak256(data)
-    }
-
     /// Bootstraps storage layout and sets the contract owner. Must be called exactly once.
     ///
     /// The contract is fully operational immediately: `is_init` is set to `true`
@@ -403,13 +363,18 @@ impl ValidatorConfigV2 {
         egress: &str,
         fee_recipient: Address,
     ) -> Result<()> {
-        let message = Self::add_signature_message(
-            self.storage.chain_id(),
-            validator_address,
-            ingress,
-            egress,
-            fee_recipient,
-        );
+        let mut message_data = Vec::new();
+        message_data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
+        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        message_data.extend_from_slice(validator_address.as_slice());
+        message_data
+            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
+        message_data.extend_from_slice(ingress.as_bytes());
+        message_data
+            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
+        message_data.extend_from_slice(egress.as_bytes());
+        message_data.extend_from_slice(fee_recipient.as_slice());
+        let message = keccak256(message_data);
 
         let public_key = PublicKey::decode(pubkey.as_slice())
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
@@ -435,12 +400,17 @@ impl ValidatorConfigV2 {
         ingress: &str,
         egress: &str,
     ) -> Result<()> {
-        let message = Self::rotate_signature_message(
-            self.storage.chain_id(),
-            validator_address,
-            ingress,
-            egress,
-        );
+        let mut message_data = Vec::new();
+        message_data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
+        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        message_data.extend_from_slice(validator_address.as_slice());
+        message_data
+            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
+        message_data.extend_from_slice(ingress.as_bytes());
+        message_data
+            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
+        message_data.extend_from_slice(egress.as_bytes());
+        let message = keccak256(message_data);
 
         let public_key = PublicKey::decode(pubkey.as_slice())
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
@@ -891,38 +861,6 @@ mod tests {
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
 
-    fn legacy_add_signature_message(
-        chain_id: u64,
-        validator_address: Address,
-        ingress: &str,
-        egress: &str,
-        fee_recipient: Address,
-    ) -> B256 {
-        let mut data = Vec::new();
-        data.extend_from_slice(&chain_id.to_be_bytes());
-        data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        data.extend_from_slice(validator_address.as_slice());
-        data.extend_from_slice(ingress.as_bytes());
-        data.extend_from_slice(egress.as_bytes());
-        data.extend_from_slice(fee_recipient.as_slice());
-        keccak256(&data)
-    }
-
-    fn legacy_rotate_signature_message(
-        chain_id: u64,
-        validator_address: Address,
-        ingress: &str,
-        egress: &str,
-    ) -> B256 {
-        let mut data = Vec::new();
-        data.extend_from_slice(&chain_id.to_be_bytes());
-        data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        data.extend_from_slice(validator_address.as_slice());
-        data.extend_from_slice(ingress.as_bytes());
-        data.extend_from_slice(egress.as_bytes());
-        keccak256(&data)
-    }
-
     /// Generate a test Ed25519 key pair and create a valid signature
     fn make_test_keypair_and_signature(
         validator_address: Address,
@@ -936,19 +874,20 @@ mod tests {
         let private_key = PrivateKey::from_seed(seed);
         let public_key = private_key.public_key();
 
-        let message = match namespace {
-            VALIDATOR_NS_ADD => ValidatorConfigV2::add_signature_message(
-                1,
-                validator_address,
-                ingress,
-                egress,
-                fee_recipient,
-            ),
-            VALIDATOR_NS_ROTATE => {
-                ValidatorConfigV2::rotate_signature_message(1, validator_address, ingress, egress)
-            }
-            _ => panic!("unsupported validator signature namespace"),
-        };
+        let mut message_data = Vec::new();
+        message_data.extend_from_slice(&1u64.to_be_bytes());
+        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        message_data.extend_from_slice(validator_address.as_slice());
+        message_data
+            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
+        message_data.extend_from_slice(ingress.as_bytes());
+        message_data
+            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
+        message_data.extend_from_slice(egress.as_bytes());
+        if namespace == VALIDATOR_NS_ADD {
+            message_data.extend_from_slice(fee_recipient.as_slice());
+        }
+        let message = keccak256(message_data);
 
         // Sign with namespace
         let signature = private_key.sign(namespace, message.as_slice());
@@ -1006,111 +945,6 @@ mod tests {
             assert!(vc.is_initialized()?);
             assert_eq!(vc.get_initialized_at_height()?, 0);
             assert_eq!(vc.validator_count()?, 0);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_signature_messages_use_length_prefixes() {
-        let chain_id = 1;
-        let validator = Address::random();
-        let fee_recipient = Address::random();
-
-        // These pairs concatenate to the same bytes without boundaries.
-        let (ingress_a, egress_a) = ("a", "bc");
-        let (ingress_b, egress_b) = ("ab", "c");
-
-        assert_eq!(
-            legacy_add_signature_message(chain_id, validator, ingress_a, egress_a, fee_recipient),
-            legacy_add_signature_message(chain_id, validator, ingress_b, egress_b, fee_recipient)
-        );
-        assert_ne!(
-            ValidatorConfigV2::add_signature_message(
-                chain_id,
-                validator,
-                ingress_a,
-                egress_a,
-                fee_recipient
-            ),
-            ValidatorConfigV2::add_signature_message(
-                chain_id,
-                validator,
-                ingress_b,
-                egress_b,
-                fee_recipient
-            )
-        );
-
-        assert_eq!(
-            legacy_rotate_signature_message(chain_id, validator, ingress_a, egress_a),
-            legacy_rotate_signature_message(chain_id, validator, ingress_b, egress_b)
-        );
-        assert_ne!(
-            ValidatorConfigV2::rotate_signature_message(chain_id, validator, ingress_a, egress_a),
-            ValidatorConfigV2::rotate_signature_message(chain_id, validator, ingress_b, egress_b)
-        );
-    }
-
-    #[test]
-    fn test_add_rejects_legacy_unprefixed_signature_digest() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        let validator = Address::random();
-        let fee_recipient = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            let seed = rand_08::random::<u64>();
-            let private_key = PrivateKey::from_seed(seed);
-            let public_key = private_key.public_key();
-            let pubkey_bytes = public_key.encode();
-            let mut pubkey_array = [0u8; 32];
-            pubkey_array.copy_from_slice(&pubkey_bytes);
-            let pubkey = FixedBytes::<32>::from(pubkey_array);
-
-            let ingress = "192.168.1.1:8000";
-            let egress = "192.168.1.1";
-
-            let legacy_message =
-                legacy_add_signature_message(1, validator, ingress, egress, fee_recipient);
-            let legacy_signature = private_key.sign(VALIDATOR_NS_ADD, legacy_message.as_slice());
-
-            let legacy_result = vc.add_validator(
-                owner,
-                make_add_call(
-                    validator,
-                    pubkey,
-                    ingress,
-                    egress,
-                    fee_recipient,
-                    legacy_signature.encode().to_vec(),
-                ),
-            );
-            assert!(legacy_result.is_err());
-
-            let message = ValidatorConfigV2::add_signature_message(
-                1,
-                validator,
-                ingress,
-                egress,
-                fee_recipient,
-            );
-            let signature = private_key.sign(VALIDATOR_NS_ADD, message.as_slice());
-
-            vc.add_validator(
-                owner,
-                make_add_call(
-                    validator,
-                    pubkey,
-                    ingress,
-                    egress,
-                    fee_recipient,
-                    signature.encode().to_vec(),
-                ),
-            )?;
 
             Ok(())
         })
