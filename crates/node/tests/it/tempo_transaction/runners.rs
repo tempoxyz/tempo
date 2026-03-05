@@ -170,101 +170,255 @@ pub(super) async fn run_send_matrix<E: TestEnv>(env: &mut E) -> eyre::Result<()>
     Ok(())
 }
 
-/// Run the eth_estimateGas matrix over a `TestEnv`.
-pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
-    let signer = PrivateKeySigner::random();
-    let signer_addr = signer.address();
-    let recipient = Address::random();
+/// Single source of truth for all gas estimation cases.
+///
+/// Generates the full auth × payload matrix.
+/// test naming: `{auth}::{payload}`, except the anchor case which is `baseline`.
+fn gas_estimation_cases() -> Vec<GasCase> {
+    struct AuthDef {
+        name: &'static str,
+        auth: AuthKind,
+        // Assertion for the `::noop` case (diff from baseline).
+        noop_expected: ExpectedGasDiff,
+    }
 
-    let base_tx_request = || TempoTransactionRequest {
-        inner: TransactionRequest {
-            from: Some(signer_addr),
-            ..Default::default()
+    let auths = [
+        AuthDef {
+            name: "secp256k1",
+            auth: AuthKind::Baseline,
+            noop_expected: ExpectedGasDiff::Range(0..=0),
         },
-        calls: vec![Call {
-            to: TxKind::Call(recipient),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
-        ..Default::default()
-    };
-
-    let matrix = [
-        GasCase {
+        AuthDef {
+            name: "secp256k1",
+            auth: AuthKind::KeyType {
+                key_type: SignatureType::Secp256k1,
+                key_data: None,
+            },
+            noop_expected: ExpectedGasDiff::Range(0..=0),
+        },
+        AuthDef {
             name: "p256",
-            kind: GasCaseKind::KeyType {
+            auth: AuthKind::KeyType {
                 key_type: SignatureType::P256,
                 key_data: None,
             },
-            expected: ExpectedGasDiff::Range(3_000..=8_000),
+            noop_expected: ExpectedGasDiff::Range(3_000..=8_000),
         },
-        GasCase {
+        AuthDef {
             name: "webauthn",
-            kind: GasCaseKind::KeyType {
+            auth: AuthKind::KeyType {
                 key_type: SignatureType::WebAuthn,
                 key_data: Some(Bytes::from(116u16.to_be_bytes().to_vec())),
             },
-            expected: ExpectedGasDiff::GreaterThan("p256"),
+            noop_expected: ExpectedGasDiff::GreaterThan("p256::noop".into()),
         },
-        GasCase {
+        AuthDef {
             name: "keychain_secp256k1",
-            kind: GasCaseKind::Keychain {
+            auth: AuthKind::Keychain {
                 key_type: None,
                 num_limits: 0,
             },
-            expected: ExpectedGasDiff::Range(250_000..=310_000),
+            noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
-        GasCase {
+        AuthDef {
             name: "keychain_p256",
-            kind: GasCaseKind::Keychain {
+            auth: AuthKind::Keychain {
                 key_type: Some(SignatureType::P256),
                 num_limits: 0,
             },
-            expected: ExpectedGasDiff::GreaterThan("keychain_secp256k1"),
+            noop_expected: ExpectedGasDiff::GreaterThan("keychain_secp256k1::noop".into()),
         },
-        GasCase {
-            name: "key_auth_secp256k1",
-            kind: GasCaseKind::KeyAuth {
+        AuthDef {
+            name: "key_auth_secp256k1_0_limits",
+            auth: AuthKind::KeyAuth {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 0,
             },
-            expected: ExpectedGasDiff::Range(250_000..=310_000),
+            noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
         },
-        GasCase {
-            name: "key_auth_p256",
-            kind: GasCaseKind::KeyAuth {
-                key_type: SignatureType::P256,
-                num_limits: 0,
+        AuthDef {
+            name: "key_auth_secp256k1_1_limit",
+            auth: AuthKind::KeyAuth {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 1,
             },
-            expected: ExpectedGasDiff::Range(250_000..=310_000),
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
         },
-        GasCase {
+        AuthDef {
             name: "key_auth_secp256k1_3_limits",
-            kind: GasCaseKind::KeyAuth {
+            auth: AuthKind::KeyAuth {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 3,
             },
-            expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1"),
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
+        },
+        AuthDef {
+            name: "key_auth_webauthn_0_limits",
+            auth: AuthKind::KeyAuth {
+                key_type: SignatureType::WebAuthn,
+                num_limits: 0,
+            },
+            noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
+        },
+        AuthDef {
+            name: "key_auth_webauthn_1_limit",
+            auth: AuthKind::KeyAuth {
+                key_type: SignatureType::WebAuthn,
+                num_limits: 1,
+            },
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_webauthn_0_limits::noop".into()),
+        },
+        AuthDef {
+            name: "key_auth_webauthn_3_limits",
+            auth: AuthKind::KeyAuth {
+                key_type: SignatureType::WebAuthn,
+                num_limits: 3,
+            },
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_webauthn_0_limits::noop".into()),
+        },
+        AuthDef {
+            name: "key_auth_p256_0_limits",
+            auth: AuthKind::KeyAuth {
+                key_type: SignatureType::P256,
+                num_limits: 0,
+            },
+            noop_expected: ExpectedGasDiff::Range(250_000..=310_000),
+        },
+        AuthDef {
+            name: "key_auth_p256_1_limit",
+            auth: AuthKind::KeyAuth {
+                key_type: SignatureType::P256,
+                num_limits: 1,
+            },
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_p256_0_limits::noop".into()),
+        },
+        AuthDef {
+            name: "key_auth_p256_3_limits",
+            auth: AuthKind::KeyAuth {
+                key_type: SignatureType::P256,
+                num_limits: 3,
+            },
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_p256_0_limits::noop".into()),
         },
     ];
+
+    let payloads: &[(&str, GasPayload)] = &[
+        ("noop", GasPayload::NoOp),
+        ("transfer", GasPayload::Transfer),
+        ("contract_creation", GasPayload::ContractCreation),
+        ("batch_2_transfers", GasPayload::Batch(2)),
+        ("batch_5_transfers", GasPayload::Batch(5)),
+        ("batch_10_transfers", GasPayload::Batch(10)),
+    ];
+
+    let mut cases = Vec::new();
+
+    for auth_def in &auths {
+        for &(payload_name, ref payload) in payloads {
+            let expected = if payload_name == "noop" {
+                // Auth-specific assertion against baseline.
+                auth_def.noop_expected.clone()
+            } else {
+                // Non-noop payload: gas must exceed the same auth's noop case.
+                let noop_ref = if auth_def.name == "secp256k1" {
+                    "baseline".to_string()
+                } else {
+                    format!("{}::noop", auth_def.name)
+                };
+                ExpectedGasDiff::GreaterThan(noop_ref)
+            };
+
+            // secp256k1 + noop case is the anchor named "baseline".
+            if auth_def.name == "secp256k1" && payload_name == "noop" {
+                cases.push(GasCase {
+                    name: "baseline".into(),
+                    auth: auth_def.auth.clone(),
+                    payload: payload.clone(),
+                    expected: expected.clone(),
+                });
+            }
+
+            cases.push(GasCase {
+                name: format!("{}::{payload_name}", auth_def.name),
+                auth: auth_def.auth.clone(),
+                payload: payload.clone(),
+                expected,
+            });
+        }
+    }
+
+    cases
+}
+
+/// Run the eth_estimateGas matrix over a `TestEnv`.
+///
+/// Returns a `BTreeMap<String, u64>` of case name → gas estimate for snapshot consumption.
+pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
+    env: &mut E,
+) -> eyre::Result<std::collections::BTreeMap<String, u64>> {
+    // Fixed signer and recipient so calldata/storage costs are deterministic.
+    let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
+    let signer_addr = signer.address();
+    let recipient = Address::with_last_byte(0xff);
+
+    // Fund the signer so transfer cases can move a non-zero amount.
+    let _ = env.fund_account(signer_addr).await?;
+
+    let noop_call = || Call {
+        to: TxKind::Call(recipient),
+        value: U256::ZERO,
+        input: Bytes::new(),
+    };
+
+    let cases = gas_estimation_cases();
     let provider = env.provider();
 
-    let baseline_gas = estimate_gas(provider, &base_tx_request()).await?;
-    println!("Baseline gas (secp256k1): {baseline_gas}");
+    println!("\n=== eth_estimateGas matrix ===\n");
+    println!("Running {} gas estimation cases...\n", cases.len());
 
-    let mut results: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
-    results.insert("baseline", baseline_gas);
+    let mut results = std::collections::BTreeMap::<String, u64>::new();
 
-    for (i, test_case) in matrix.iter().enumerate() {
-        println!("\n[{}/{}] {}", i + 1, matrix.len(), test_case.name);
+    for (i, test_case) in cases.iter().enumerate() {
+        println!("[{}/{}] {}", i + 1, cases.len(), test_case.name);
 
-        let mut request = base_tx_request();
-        match &test_case.kind {
-            GasCaseKind::KeyType { key_type, key_data } => {
+        // Build calls from payload
+        let calls = match &test_case.payload {
+            GasPayload::NoOp => vec![noop_call()],
+            GasPayload::Transfer => vec![create_transfer_call(
+                DEFAULT_FEE_TOKEN,
+                recipient,
+                U256::from(10e6), // 10 tokens (6 decimals)
+            )],
+            GasPayload::ContractCreation => vec![Call {
+                to: TxKind::Create,
+                value: U256::ZERO,
+                // PUSH1 0x01, PUSH1 0x00, MSTORE, PUSH1 0x01, PUSH1 0x00, RETURN
+                input: Bytes::from_static(&[
+                    0x60, 0x01, 0x60, 0x00, 0x52, 0x60, 0x01, 0x60, 0x00, 0xf3,
+                ]),
+            }],
+            GasPayload::Batch(n) => (0..*n)
+                .map(|_| create_transfer_call(DEFAULT_FEE_TOKEN, recipient, U256::from(10e6)))
+                .collect(),
+        };
+
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(signer_addr),
+                ..Default::default()
+            },
+            calls,
+            ..Default::default()
+        };
+
+        // Apply auth kind
+        match &test_case.auth {
+            AuthKind::Baseline => {}
+            AuthKind::KeyType { key_type, key_data } => {
                 request.key_type = Some(*key_type);
                 request.key_data = key_data.clone();
             }
-            GasCaseKind::Keychain {
+            AuthKind::Keychain {
                 key_type,
                 num_limits,
             } => {
@@ -280,7 +434,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
                     request.key_type = Some(*kt);
                 }
             }
-            GasCaseKind::KeyAuth {
+            AuthKind::KeyAuth {
                 key_type,
                 num_limits,
             } => {
@@ -297,11 +451,14 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
         let gas = estimate_gas(provider, &request).await?;
         println!("  gas: {gas}");
 
+        // Run range/relational assertions
+        let baseline_gas = results.get("baseline").copied().unwrap_or(gas); // first case IS the baseline
+
         match &test_case.expected {
             ExpectedGasDiff::Range(range) => {
                 assert!(
                     gas >= baseline_gas,
-                    "[{}] gas {gas} < baseline {baseline_gas} — regression: estimate should never be below baseline",
+                    "[{}] gas {gas} < baseline {baseline_gas} — regression",
                     test_case.name,
                 );
                 let diff = gas - baseline_gas;
@@ -315,7 +472,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
             }
             ExpectedGasDiff::GreaterThan(ref_name) => {
                 let ref_gas = *results
-                    .get(ref_name)
+                    .get(ref_name.as_str())
                     .unwrap_or_else(|| panic!("missing reference gas case '{ref_name}'"));
                 assert!(
                     gas > ref_gas,
@@ -326,11 +483,11 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(env: &mut E) -> eyre::Re
             }
         }
 
-        results.insert(test_case.name, gas);
+        results.insert(test_case.name.to_string(), gas);
     }
 
-    println!("\n✓ All gas estimation cases passed");
-    Ok(())
+    println!("\n✓ All {} gas estimation cases passed", cases.len());
+    Ok(results)
 }
 
 /// Run the eth_fillTransaction matrix over a `TestEnv`.

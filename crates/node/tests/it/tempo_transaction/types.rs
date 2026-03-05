@@ -114,7 +114,9 @@ pub(crate) trait TestEnv: Sized {
         super::runners::run_fill_sign_send_matrix(self).await
     }
 
-    async fn run_estimate_gas_matrix(&mut self) -> eyre::Result<()> {
+    async fn run_estimate_gas_matrix(
+        &mut self,
+    ) -> eyre::Result<std::collections::BTreeMap<String, u64>> {
         super::runners::run_estimate_gas_matrix(self).await
     }
 
@@ -710,28 +712,47 @@ pub(crate) fn key_type_to_signature_type(key_type: KeyType) -> SignatureType {
 // ===========================================================================
 
 #[derive(Clone)]
-pub(crate) enum GasCaseKind {
+pub(crate) enum AuthKind {
+    /// Implicit secp256k1 — no key_type/key_id/key_authorization set.
+    Baseline,
+    /// Explicit key_type (and optional key_data for WebAuthn).
     KeyType {
         key_type: SignatureType,
         key_data: Option<alloy::primitives::Bytes>,
     },
+    /// Access key via keychain: sets key_id + key_authorization + optional key_type.
     Keychain {
         key_type: Option<SignatureType>,
         num_limits: usize,
     },
+    /// Inline key authorization: sets key_authorization only.
     KeyAuth {
         key_type: SignatureType,
         num_limits: usize,
     },
 }
 
+#[derive(Clone)]
+pub(crate) enum GasPayload {
+    /// Single no-op call to a random address (default).
+    NoOp,
+    /// TIP-20 transfer call.
+    Transfer,
+    /// Contract creation with fixed initcode.
+    ContractCreation,
+    /// N transfer calls.
+    Batch(usize),
+}
+
+#[derive(Clone)]
 pub(crate) enum ExpectedGasDiff {
     Range(std::ops::RangeInclusive<u64>),
-    GreaterThan(&'static str),
+    GreaterThan(String),
 }
 
 pub(crate) struct GasCase {
-    pub name: &'static str,
-    pub kind: GasCaseKind,
+    pub name: String,
+    pub auth: AuthKind,
+    pub payload: GasPayload,
     pub expected: ExpectedGasDiff,
 }
