@@ -423,11 +423,6 @@ where
         let mut pool_transactions_considered = 0u64;
         let mut pool_transactions_executed = 0u64;
         let mut pool_transactions_skipped = 0u64;
-        let mut skipped_exceeds_non_shared_gas_limit = 0u64;
-        let mut skipped_exceeds_non_payment_gas_limit = 0u64;
-        let mut skipped_oversized_block = 0u64;
-        let mut skipped_nonce_too_low = 0u64;
-        let mut skipped_invalid_tx = 0u64;
         let record_pool_selection_metrics =
             |metrics: &TempoPayloadBuilderMetrics, considered: u64, executed: u64, skipped: u64| {
                 metrics
@@ -440,39 +435,6 @@ where
                 metrics.pool_transactions_executed_last.set(executed as f64);
                 metrics.pool_transactions_skipped.record(skipped as f64);
                 metrics.pool_transactions_skipped_last.set(skipped as f64);
-            };
-        let flush_skip_reason_counters =
-            |metrics: &TempoPayloadBuilderMetrics,
-             exceeds_non_shared: u64,
-             exceeds_non_payment: u64,
-             oversized: u64,
-             nonce_too_low: u64,
-             invalid_tx: u64| {
-                if exceeds_non_shared > 0 {
-                    metrics
-                        .pool_transactions_skipped_exceeds_non_shared_gas_limit
-                        .increment(exceeds_non_shared);
-                }
-                if exceeds_non_payment > 0 {
-                    metrics
-                        .pool_transactions_skipped_exceeds_non_payment_gas_limit
-                        .increment(exceeds_non_payment);
-                }
-                if oversized > 0 {
-                    metrics
-                        .pool_transactions_skipped_oversized_block
-                        .increment(oversized);
-                }
-                if nonce_too_low > 0 {
-                    metrics
-                        .pool_transactions_skipped_nonce_too_low
-                        .increment(nonce_too_low);
-                }
-                if invalid_tx > 0 {
-                    metrics
-                        .pool_transactions_skipped_invalid_tx
-                        .increment(invalid_tx);
-                }
             };
 
         let _pool_tx_span = debug_span!(target: "payload_builder", "execute_pool_txs").entered();
@@ -502,7 +464,9 @@ where
                     ),
                 );
                 pool_transactions_skipped += 1;
-                skipped_exceeds_non_shared_gas_limit += 1;
+                self.metrics
+                    .pool_transactions_skipped_exceeds_non_shared_gas_limit
+                    .increment(1);
                 continue;
             }
 
@@ -518,7 +482,9 @@ where
                     )),
                 );
                 pool_transactions_skipped += 1;
-                skipped_exceeds_non_payment_gas_limit += 1;
+                self.metrics
+                    .pool_transactions_skipped_exceeds_non_payment_gas_limit
+                    .increment(1);
                 continue;
             }
 
@@ -534,14 +500,6 @@ where
                     pool_transactions_considered,
                     pool_transactions_executed,
                     pool_transactions_skipped,
-                );
-                flush_skip_reason_counters(
-                    &self.metrics,
-                    skipped_exceeds_non_shared_gas_limit,
-                    skipped_exceeds_non_payment_gas_limit,
-                    skipped_oversized_block,
-                    skipped_nonce_too_low,
-                    skipped_invalid_tx,
                 );
                 return_with_build_duration!(Ok(BuildOutcome::Cancelled));
             }
@@ -563,7 +521,9 @@ where
                     },
                 );
                 pool_transactions_skipped += 1;
-                skipped_oversized_block += 1;
+                self.metrics
+                    .pool_transactions_skipped_oversized_block
+                    .increment(1);
                 continue;
             }
 
@@ -584,7 +544,9 @@ where
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                        skipped_nonce_too_low += 1;
+                        self.metrics
+                            .pool_transactions_skipped_nonce_too_low
+                            .increment(1);
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
@@ -595,7 +557,9 @@ where
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
-                        skipped_invalid_tx += 1;
+                        self.metrics
+                            .pool_transactions_skipped_invalid_tx
+                            .increment(1);
                     }
                     pool_transactions_skipped += 1;
                     continue;
@@ -607,14 +571,6 @@ where
                         pool_transactions_considered,
                         pool_transactions_executed,
                         pool_transactions_skipped,
-                    );
-                    flush_skip_reason_counters(
-                        &self.metrics,
-                        skipped_exceeds_non_shared_gas_limit,
-                        skipped_exceeds_non_payment_gas_limit,
-                        skipped_oversized_block,
-                        skipped_nonce_too_low,
-                        skipped_invalid_tx,
                     );
                     return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
                 }
@@ -640,14 +596,6 @@ where
             pool_transactions_considered,
             pool_transactions_executed,
             pool_transactions_skipped,
-        );
-        flush_skip_reason_counters(
-            &self.metrics,
-            skipped_exceeds_non_shared_gas_limit,
-            skipped_exceeds_non_payment_gas_limit,
-            skipped_oversized_block,
-            skipped_nonce_too_low,
-            skipped_invalid_tx,
         );
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
         self.metrics
