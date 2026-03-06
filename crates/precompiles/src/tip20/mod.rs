@@ -489,13 +489,33 @@ impl TIP20Token {
 
     // Standard token functions
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
-        // Check and update spending limits for access keys
-        AccountKeychain::new().authorize_approve(
-            msg_sender,
-            self.address,
-            self.get_allowance(msg_sender, call.spender)?,
-            call.amount,
-        )?;
+        let mut keychain = AccountKeychain::new();
+
+        if self.storage.spec().is_t2() {
+            // T2+: avoid loading old allowance unless spending limits apply.
+            if let Some(tx_key) = keychain.spending_limit_tx_key(msg_sender)? {
+                let old_approval = self.get_allowance(msg_sender, call.spender)?;
+                keychain.authorize_approve(
+                    msg_sender,
+                    self.address,
+                    old_approval,
+                    call.amount,
+                    tx_key,
+                )?;
+            }
+        } else {
+            // Pre-T2: preserve gas behavior by always loading the allowance.
+            let old_approval = self.get_allowance(msg_sender, call.spender)?;
+            if let Some(tx_key) = keychain.spending_limit_tx_key(msg_sender)? {
+                keychain.authorize_approve(
+                    msg_sender,
+                    self.address,
+                    old_approval,
+                    call.amount,
+                    tx_key,
+                )?;
+            }
+        }
 
         // Set the new allowance
         self.set_allowance(msg_sender, call.spender, call.amount)?;
@@ -850,7 +870,6 @@ impl TIP20Token {
             let new_to_balance = to_balance
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-
             self.set_balance(to, new_to_balance)?;
         }
 
