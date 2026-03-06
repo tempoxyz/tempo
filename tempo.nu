@@ -14,6 +14,7 @@ const BLOAT_MNEMONIC = "test test test test test test test test test test test j
 const METRICS_PROXY_SCRIPT = "contrib/bench/bench-metrics-proxy.py"
 const METRICS_LABELS_FILE = "/tmp/bench-metrics-labels.json"
 const MINIO_BUCKET = "minio/tempo-binaries"
+const BENCH_META_SUBDIR = ".bench-meta"
 
 # Preset weight configurations: [tip20, erc20, swap, order]
 const PRESETS = {
@@ -165,15 +166,47 @@ def bench-promote [datadir: string] {
 # Mount schelk scratch volume (no-op without schelk)
 def bench-mount [] {
     if (has-schelk) {
+        # If volume is already mounted, recover first (unmounts + resets scratch)
         if (mountpoint -q /reth-bench | complete).exit_code == 0 {
-            print "Schelk volume already mounted, unmounting first..."
+            print "Schelk volume already mounted, recovering first..."
             sudo umount -l /reth-bench | ignore
             try { sudo schelk recover -y } catch { }
         }
         print "Mounting schelk scratch volume..."
-        sudo schelk mount
+        try { sudo schelk mount } catch { |e|
+            # If mount fails because schelk still thinks it's mounted, force recover
+            print $"Mount failed, forcing recover..."
+            try { sudo schelk recover -y } catch { }
+            sudo schelk mount
+        }
         sudo chown -R (whoami | str trim) /reth-bench
     }
+}
+
+# ============================================================================
+# Bench metadata marker (persists across workspace wipes)
+# ============================================================================
+
+# Read bench metadata marker from $HOME. Returns record or null.
+def read-bench-marker [] {
+    let path = $"($env.HOME)/.tempo-bench-meta.json"
+    if ($path | path exists) {
+        open $path
+    } else {
+        null
+    }
+}
+
+# Write bench metadata marker to $HOME.
+def write-bench-marker [bloat: int, accounts: int, datadir: string] {
+    let path = $"($env.HOME)/.tempo-bench-meta.json"
+    {
+        bloat_mib: $bloat
+        accounts: $accounts
+        bench_datadir: $datadir
+        initialized_at: (date now | format date "%Y-%m-%dT%H:%M:%SZ")
+    } | to json | save -f $path
+    print $"Bench marker written to ($path)"
 }
 
 # ============================================================================
@@ -1090,6 +1123,103 @@ def restore-system-tuning [tuning_state: record] {
 }
 
 # ============================================================================
+# Bench init command
+# ============================================================================
+
+# Initialize the schelk virgin snapshot with genesis + state bloat.
+# Run once (or when changing bloat size). Subsequent `bench` calls skip init
+# if the marker at $HOME/.tempo-bench-meta.json matches the requested config.
+def "main bench-init" [
+    --bloat: int = 1024                                 # State bloat size in MiB
+    --accounts: int = 1000                              # Number of genesis accounts
+    --profile: string = $DEFAULT_PROFILE                # Cargo build profile
+    --features: string = $DEFAULT_FEATURES              # Cargo features
+    --bench-datadir: string = ""                        # Node database directory (default: /reth-bench for schelk)
+    --force                                             # Re-initialize even if marker matches
+] {
+    let datadir = if $bench_datadir != "" {
+        $bench_datadir
+    } else if (has-schelk) {
+        "/reth-bench"
+    } else {
+        $"($LOCALNET_DIR | path expand)/reth"
+    }
+    let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
+    let genesis_accounts = ([$accounts 3] | math max) + 1
+
+    # Check marker (unless --force)
+    if not $force {
+        let marker = (read-bench-marker)
+        if $marker != null {
+            if ($marker.bloat_mib | into int) == $bloat and ($marker.accounts | into int) == $genesis_accounts {
+                bench-mount
+                if ($"($datadir)/db" | path exists) and ($"($meta_dir)/genesis.json" | path exists) {
+                    print $"Virgin snapshot already initialized \(bloat=($bloat) MiB, accounts=($genesis_accounts)\). Use --force to re-initialize."
+                    return
+                }
+            }
+        }
+    }
+
+    # Build tempo + xtask
+    build-tempo ["tempo"] $profile $features
+    let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
+
+    # Generate genesis
+    let abs_localnet = ($LOCALNET_DIR | path expand)
+    if not ($abs_localnet | path exists) { mkdir $abs_localnet }
+    let genesis_path = $"($abs_localnet)/genesis.json"
+    print $"Generating genesis with ($genesis_accounts) accounts..."
+    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
+
+    # Generate bloat file
+    let bloat_file = $"($abs_localnet)/state_bloat.bin"
+    if $bloat > 0 {
+        print $"Generating state bloat \(($bloat) MiB\)..."
+        let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+    }
+
+    # Mount schelk
+    bench-mount
+
+    # Clean database files
+    for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
+        let path = $"($datadir)/($subdir)"
+        if ($path | path exists) { rm -rf $path }
+    }
+    for file in [reth.toml jwt.hex] {
+        let path = $"($datadir)/($file)"
+        if ($path | path exists) { rm $path }
+    }
+
+    # Init database
+    print $"Initializing database at ($datadir)..."
+    run-external $tempo_bin "init" "--chain" $genesis_path "--datadir" $datadir
+
+    if $bloat > 0 {
+        print $"Loading state bloat into ($datadir)..."
+        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
+    }
+
+    # Save genesis + bloat to volume meta dir (survives schelk recover)
+    mkdir $meta_dir
+    cp $genesis_path $"($meta_dir)/genesis.json"
+    if $bloat > 0 and ($bloat_file | path exists) {
+        cp $bloat_file $"($meta_dir)/state_bloat.bin"
+    }
+
+    # Promote and remount
+    bench-promote $datadir
+    bench-mount
+
+    # Write marker
+    write-bench-marker $bloat $genesis_accounts $datadir
+
+    print $"Virgin snapshot initialized and promoted."
+}
+
+# ============================================================================
 # Bench command
 # ============================================================================
 
@@ -1105,7 +1235,6 @@ def "main bench" [
     --genesis: string = ""                          # Custom genesis file path (skips generation)
     --samply                                        # Profile nodes with samply
     --samply-args: string = ""                      # Additional samply arguments (space-separated)
-    --reset                                         # Reset localnet before starting
     --loud                                          # Show node logs (silent by default)
     --profile: string = $DEFAULT_PROFILE            # Cargo build profile
     --features: string = $DEFAULT_FEATURES          # Cargo features
@@ -1115,7 +1244,7 @@ def "main bench" [
     --no-infra                                      # Skip starting observability stack (Grafana + Prometheus)
     --baseline: string = ""                         # Git ref for baseline (comparison mode)
     --feature: string = ""                          # Git ref for feature (comparison mode)
-    --force-bloat                                   # Force re-generate bloat file
+    --force                                         # Force re-initialize snapshot (regenerate genesis, bloat, db)
     --bench-datadir: string = ""                    # Node database directory (default: LOCALNET_DIR/reth, /reth-bench for schelk)
     --tune                                          # Apply system tuning for dedicated benchmark runners (Linux only)
     --no-cache                                      # Skip binary cache (force build from source)
@@ -1143,12 +1272,11 @@ def "main bench" [
 
     let weights = if $preset != "" { $PRESETS | get $preset } else { [0.0, 0.0, 0.0, 0.0] }
 
-    # Handle --force-bloat: delete existing bloat file before any mode
-    if $force_bloat {
-        let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
-        if ($bloat_file | path exists) {
-            print "Removing existing state bloat file (--force-bloat)..."
-            rm $bloat_file
+    # Handle --force: delete existing localnet data to force full re-init
+    if $force {
+        if ($LOCALNET_DIR | path exists) {
+            print "Removing existing localnet data (--force)..."
+            rm -rf $LOCALNET_DIR
         }
     }
 
@@ -1253,48 +1381,59 @@ def "main bench" [
         } else {
             $"($abs_localnet)/reth"
         }
-
+        let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
         let genesis_accounts = ([$accounts 3] | math max) + 1
-
-        # Generate genesis from baseline (if needed)
-        if $reset or not ($genesis_path | path exists) {
-            if $reset and ($abs_localnet | path exists) {
-                print "Resetting localnet data..."
-                rm -rf $abs_localnet
-            }
-            mkdir $abs_localnet
-            print $"Generating genesis with ($genesis_accounts) accounts from baseline..."
-            if $baseline == "local" {
-                cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
-            } else {
-                do {
-                    cd $baseline_wt
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
-                }
-            }
-        }
-
-        # Generate bloat file from baseline (if needed)
-        if $bloat > 0 and not ($bloat_file | path exists) {
-            print $"Generating state bloat \(($bloat) MiB\) from baseline..."
-            let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            if $baseline == "local" {
-                cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-            } else {
-                do {
-                    cd $baseline_wt
-                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                }
-            }
-        }
 
         # Mount schelk (or prepare for cp fallback)
         bench-mount
 
-        # Check if we need to (re-)initialize the database
-        let needs_init = $force_bloat or not ($"($datadir)/db" | path exists)
+        # Check if virgin snapshot matches requested config (skip expensive init)
+        let marker = (read-bench-marker)
+        let snapshot_ready = (
+            not $force
+            and $marker != null
+            and ($marker.bloat_mib | into int) == $bloat
+            and ($marker.accounts | into int) == $genesis_accounts
+            and ($"($datadir)/db" | path exists)
+            and ($"($meta_dir)/genesis.json" | path exists)
+        )
 
-        if $needs_init {
+        if $snapshot_ready {
+            # Copy genesis from volume to workspace (node needs --chain arg)
+            if not ($abs_localnet | path exists) { mkdir $abs_localnet }
+            cp $"($meta_dir)/genesis.json" $genesis_path
+            print $"Using cached virgin snapshot \(initialized ($marker.initialized_at)\)"
+        } else {
+            # Full init: generate genesis + bloat, init db, promote
+
+            # Generate genesis from baseline (if needed)
+            if not ($genesis_path | path exists) {
+                if not ($abs_localnet | path exists) { mkdir $abs_localnet }
+                print $"Generating genesis with ($genesis_accounts) accounts from baseline..."
+                if $baseline == "local" {
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
+                } else {
+                    do {
+                        cd $baseline_wt
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
+                    }
+                }
+            }
+
+            # Generate bloat file from baseline (if needed)
+            if $bloat > 0 and not ($bloat_file | path exists) {
+                print $"Generating state bloat \(($bloat) MiB\) from baseline..."
+                let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+                if $baseline == "local" {
+                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                } else {
+                    do {
+                        cd $baseline_wt
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                    }
+                }
+            }
+
             # Clean database files (preserves mount point for schelk)
             for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
                 let path = $"($datadir)/($subdir)"
@@ -1313,14 +1452,21 @@ def "main bench" [
                 run-external $baseline_tempo "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
             }
 
+            # Save genesis + bloat to volume meta dir (survives schelk recover)
+            mkdir $meta_dir
+            cp $genesis_path $"($meta_dir)/genesis.json"
+            if $bloat > 0 and ($bloat_file | path exists) {
+                cp $bloat_file $"($meta_dir)/state_bloat.bin"
+            }
+
             # Promote to virgin baseline
             bench-promote $datadir
-            # Remount after promote (promote leaves volume unmounted, but
-            # bench-recover expects it mounted so it can unmount → recover → remount)
             bench-mount
+
+            # Write marker
+            write-bench-marker $bloat $genesis_accounts $datadir
+
             print "Database initialized and promoted to virgin baseline."
-        } else {
-            print "Using existing virgin snapshot (pass --force-bloat to re-initialize)"
         }
 
         # Start observability stack
@@ -1395,7 +1541,7 @@ def "main bench" [
     ]
     | append (if $mode == "consensus" { ["--nodes" $"($nodes)"] } else { [] })
     | append (if $genesis != "" { ["--genesis" $genesis] } else { [] })
-    | append (if $reset { ["--reset"] } else { [] })
+    | append (if $force { ["--reset"] } else { [] })
     | append (if $samply { ["--samply"] } else { [] })
     | append (if $samply_args != "" { [$"--samply-args=\"($samply_args)\""] } else { [] })
     | append (if $loud { ["--loud"] } else { [] })

@@ -470,7 +470,7 @@ jobs:
               if (refEpoch && benchId) {
                 const fromMs = refEpoch * 1000;
                 const toMs = Date.now();
-                const grafanaUrl = `https://tempoxyz.grafana.net/d/tempo-bench/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}`;
+                const grafanaUrl = `https://tempoxyz.grafana.net/d/tikv2tn/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}`;
                 grafanaSection = `\n\n### Grafana Dashboard\n\n[View real-time metrics](${grafanaUrl})\n`;
               }
             } catch (e) {}
