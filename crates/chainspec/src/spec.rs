@@ -89,6 +89,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T2 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t2_time: Option<u64>,
+    /// Activation timestamp for T3 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t3_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -127,6 +130,10 @@ impl TempoGenesisInfo {
 
     pub fn t2_time(&self) -> Option<u64> {
         self.t2_time
+    }
+
+    pub fn t3_time(&self) -> Option<u64> {
+        self.t3_time
     }
 }
 
@@ -222,6 +229,7 @@ impl TempoChainSpec {
             t1b_time,
             t1c_time,
             t2_time,
+            t3_time,
             ..
         } = TempoGenesisInfo::extract_from(&genesis);
 
@@ -236,6 +244,7 @@ impl TempoChainSpec {
             (TempoHardfork::T1B, t1b_time),
             (TempoHardfork::T1C, t1c_time),
             (TempoHardfork::T2, t2_time),
+            (TempoHardfork::T3, t3_time),
         ]
         .into_iter()
         .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
@@ -501,6 +510,8 @@ mod tests {
         assert!(mainnet_chainspec.is_t1c_active_at_timestamp(u64::MAX));
         // T2 not yet scheduled on mainnet
         assert!(!mainnet_chainspec.is_t2_active_at_timestamp(u64::MAX));
+        // T3 not yet scheduled on mainnet
+        assert!(!mainnet_chainspec.is_t3_active_at_timestamp(u64::MAX));
         assert_eq!(
             mainnet_chainspec.tempo_hardfork_at(u64::MAX),
             TempoHardfork::T1C
@@ -561,6 +572,8 @@ mod tests {
         assert!(moderato_genesis.is_t1c_active_at_timestamp(u64::MAX));
         // T2 not yet scheduled on moderato
         assert!(!moderato_genesis.is_t2_active_at_timestamp(u64::MAX));
+        // T3 not yet scheduled on moderato
+        assert!(!moderato_genesis.is_t3_active_at_timestamp(u64::MAX));
         assert_eq!(
             moderato_genesis.tempo_hardfork_at(u64::MAX),
             TempoHardfork::T1C
@@ -583,7 +596,7 @@ mod tests {
             TempoHardfork::Genesis
         );
 
-        // Dev chainspec should return T2 (all hardforks active at 0)
+        // Dev chainspec should return T2 (T3 not yet active)
         let dev_chainspec = super::TempoChainSpecParser::parse("dev")
             .expect("the dev chainspec must always be well formed");
         assert_eq!(dev_chainspec.tempo_hardfork_at(0), TempoHardfork::T2);
@@ -603,7 +616,8 @@ mod tests {
                     "t1aTime": 0,
                     "t1bTime": 0,
                     "t1cTime": 0,
-                    "t2Time": 0
+                    "t2Time": 0,
+                    "t3Time": 0
                 },
                 "alloc": {}
             }"#,
@@ -624,9 +638,11 @@ mod tests {
         assert!(chainspec.is_t1c_active_at_timestamp(1000));
         assert!(chainspec.is_t2_active_at_timestamp(0));
         assert!(chainspec.is_t2_active_at_timestamp(1000));
+        assert!(chainspec.is_t3_active_at_timestamp(0));
+        assert!(chainspec.is_t3_active_at_timestamp(1000));
 
-        assert_eq!(chainspec.tempo_hardfork_at(0), TempoHardfork::T2);
-        assert_eq!(chainspec.tempo_hardfork_at(1000), TempoHardfork::T2);
-        assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
+        assert_eq!(chainspec.tempo_hardfork_at(0), TempoHardfork::T3);
+        assert_eq!(chainspec.tempo_hardfork_at(1000), TempoHardfork::T3);
+        assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
     }
 }

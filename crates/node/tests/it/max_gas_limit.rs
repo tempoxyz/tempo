@@ -167,6 +167,7 @@ async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     genesis["config"].as_object_mut().unwrap().remove("t1bTime");
     genesis["config"].as_object_mut().unwrap().remove("t1cTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
+    genesis["config"].as_object_mut().unwrap().remove("t3Time");
     let pre_t1a_genesis = serde_json::to_string(&genesis)?;
 
     let mut setup = TestNodeBuilder::new()
@@ -207,6 +208,7 @@ async fn test_pre_t1a_tx_above_osaka_limit() -> eyre::Result<()> {
     genesis["config"].as_object_mut().unwrap().remove("t1bTime");
     genesis["config"].as_object_mut().unwrap().remove("t1cTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
+    genesis["config"].as_object_mut().unwrap().remove("t3Time");
     let pre_t1a_genesis = serde_json::to_string(&genesis)?;
 
     let setup = TestNodeBuilder::new()
