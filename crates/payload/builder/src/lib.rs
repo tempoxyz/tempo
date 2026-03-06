@@ -239,6 +239,8 @@ where
                 .payload_build_duration_seconds
                 .record(start.elapsed())
         };
+        // Early-return helper: records `payload_build_duration_seconds` before exiting,
+        // so the metric is emitted on every code path (error, cancel, abort, success).
         macro_rules! return_with_build_duration {
             ($value:expr) => {{
                 record_build_attempt_duration();
@@ -440,14 +442,29 @@ where
         let _pool_tx_span = debug_span!(target: "payload_builder", "execute_pool_txs").entered();
         let execution_start = Instant::now();
         loop {
+            // check if the job was interrupted, if so we can skip remaining transactions
+            if attributes.is_interrupted() {
+                break;
+            }
+
+            // check if the job was cancelled, if so we can exit early
+            if cancel.is_cancelled() {
+                record_pool_selection_metrics(
+                    &self.metrics,
+                    pool_transactions_considered,
+                    pool_transactions_executed,
+                    pool_transactions_skipped,
+                );
+                return_with_build_duration!(Ok(BuildOutcome::Cancelled));
+            }
+
             let selection_start = Instant::now();
-            let maybe_pool_tx = best_txs.next();
+            let Some(pool_tx) = best_txs.next() else {
+                break;
+            };
             self.metrics
                 .transaction_selection_duration_seconds
                 .record(selection_start.elapsed());
-            let Some(pool_tx) = maybe_pool_tx else {
-                break;
-            };
             pool_transactions_considered += 1;
 
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
@@ -486,22 +503,6 @@ where
                     .pool_transactions_skipped_exceeds_non_payment_gas_limit
                     .increment(1);
                 continue;
-            }
-
-            // check if the job was interrupted, if so we can skip remaining transactions
-            if attributes.is_interrupted() {
-                break;
-            }
-
-            // check if the job was cancelled, if so we can exit early
-            if cancel.is_cancelled() {
-                record_pool_selection_metrics(
-                    &self.metrics,
-                    pool_transactions_considered,
-                    pool_transactions_executed,
-                    pool_transactions_skipped,
-                );
-                return_with_build_duration!(Ok(BuildOutcome::Cancelled));
             }
 
             let is_payment = pool_tx.transaction.is_payment();
@@ -627,6 +628,19 @@ where
         let subblocks_start = Instant::now();
         let subblocks_count = subblocks.len() as f64;
         let mut subblock_transactions = 0f64;
+        let record_subblock_metrics =
+            |metrics: &TempoPayloadBuilderMetrics,
+             elapsed: std::time::Duration,
+             count: f64,
+             txs: f64| {
+                metrics
+                    .total_subblock_transaction_execution_duration_seconds
+                    .record(elapsed);
+                metrics.subblocks.record(count);
+                metrics.subblocks_last.set(count);
+                metrics.subblock_transactions.record(txs);
+                metrics.subblock_transactions_last.set(txs);
+            };
         // Apply subblock transactions
         for subblock in &subblocks {
             for tx in subblock.transactions_recovered() {
@@ -642,18 +656,12 @@ where
                         self.highest_invalid_subblock
                             .store(builder.evm().block().number.to(), Ordering::Relaxed);
                     }
-                    let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
-                    self.metrics
-                        .total_subblock_transaction_execution_duration_seconds
-                        .record(total_subblock_transaction_execution_elapsed);
-                    self.metrics.subblocks.record(subblocks_count);
-                    self.metrics.subblocks_last.set(subblocks_count);
-                    self.metrics
-                        .subblock_transactions
-                        .record(subblock_transactions);
-                    self.metrics
-                        .subblock_transactions_last
-                        .set(subblock_transactions);
+                    record_subblock_metrics(
+                        &self.metrics,
+                        subblocks_start.elapsed(),
+                        subblocks_count,
+                        subblock_transactions,
+                    );
                     return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
                 }
 
@@ -662,17 +670,12 @@ where
         }
         let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
         drop(_subblock_span);
-        self.metrics
-            .total_subblock_transaction_execution_duration_seconds
-            .record(total_subblock_transaction_execution_elapsed);
-        self.metrics.subblocks.record(subblocks_count);
-        self.metrics.subblocks_last.set(subblocks_count);
-        self.metrics
-            .subblock_transactions
-            .record(subblock_transactions);
-        self.metrics
-            .subblock_transactions_last
-            .set(subblock_transactions);
+        record_subblock_metrics(
+            &self.metrics,
+            total_subblock_transaction_execution_elapsed,
+            subblocks_count,
+            subblock_transactions,
+        );
 
         // Apply system transactions
         let system_txs_execution_elapsed = {
@@ -754,9 +757,12 @@ where
 
         let elapsed = start.elapsed();
         self.metrics.payload_build_duration_seconds.record(elapsed);
-        let gas_per_second = sealed_block.gas_used() as f64 / elapsed.as_secs_f64();
-        self.metrics.gas_per_second.record(gas_per_second);
-        self.metrics.gas_per_second_last.set(gas_per_second);
+        let secs = elapsed.as_secs_f64();
+        if secs > 0.0 {
+            let gas_per_second = sealed_block.gas_used() as f64 / secs;
+            self.metrics.gas_per_second.record(gas_per_second);
+            self.metrics.gas_per_second_last.set(gas_per_second);
+        }
         self.metrics.rlp_block_size_bytes.record(rlp_length as f64);
         self.metrics
             .rlp_block_size_bytes_last
