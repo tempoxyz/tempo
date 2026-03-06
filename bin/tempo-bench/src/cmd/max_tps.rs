@@ -416,6 +416,8 @@ impl MaxTpsArgs {
 
         info!(total_txs, "Generating and sending transactions");
 
+        let start_block_number = provider.get_block_number().await?;
+
         let counters = TransactionCounters::default();
         let target_count = total_txs as usize;
         let cancel_token = CancellationToken::new();
@@ -884,6 +886,7 @@ pub async fn generate_report(
     info!(start_block, end_block, "Generating report");
 
     let mut last_block_timestamp: Option<u64> = None;
+    let mut saw_first_tx = false;
 
     let mut benchmarked_blocks = Vec::new();
 
@@ -896,6 +899,15 @@ pub async fn generate_report(
             .get_block_receipts(number.into())
             .await?
             .ok_or_eyre("Receipts for block {number} not found")?;
+
+        // Skip leading empty blocks (ramp-up before txs start landing)
+        if !saw_first_tx {
+            if receipts.is_empty() {
+                continue;
+            }
+            saw_first_tx = true;
+        }
+
         let timestamp = block.header.timestamp_millis();
 
         let latency_ms = last_block_timestamp.map(|last| timestamp - last);
