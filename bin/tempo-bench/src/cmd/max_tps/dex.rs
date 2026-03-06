@@ -58,7 +58,7 @@ pub(super) async fn setup(
                 let exchange = exchange.clone();
                 Box::pin(async move {
                     let tx = exchange.createPair(token);
-                    tx.send().await
+                    tx.send_sync().await
                 }) as BoxFuture<'static, _>
             })
             .progress(),
@@ -80,7 +80,7 @@ pub(super) async fn setup(
                     let token = token.clone();
                     Box::pin(async move {
                         let tx = token.mint(signer, mint_amount);
-                        tx.send().await
+                        tx.send_sync().await
                     }) as BoxFuture<'static, _>
                 })
             })
@@ -101,7 +101,7 @@ pub(super) async fn setup(
                     let token = ITIP20Instance::new(token, provider.clone());
                     Box::pin(async move {
                         let tx = token.approve(STABLECOIN_DEX_ADDRESS, U256::MAX);
-                        tx.send().await
+                        tx.send_sync().await
                     }) as BoxFuture<'static, _>
                 })
             })
@@ -127,7 +127,7 @@ pub(super) async fn setup(
                     Box::pin(async move {
                         let tx =
                             exchange.placeFlip(token, order_amount, true, tick_under, tick_over);
-                        tx.send().await
+                        tx.send_sync().await
                     }) as BoxFuture<'static, _>
                 })
             })
@@ -160,27 +160,20 @@ where
             admin,
             salt,
         )
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+        .send_sync()
+        .await
+        .context("Failed to create TIP-20 token")?;
     let event = receipt
         .decoded_log::<ITIP20Factory::TokenCreated>()
         .ok_or_eyre("Token creation event not found")?;
-    assert_receipt(receipt)
-        .await
-        .context("Failed to create TIP-20 token")?;
+    assert_receipt(receipt).await?;
 
     let token_addr = event.token;
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
-    let grant_role_receipt = roles
+    roles
         .grantRole(*ISSUER_ROLE, admin)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert_receipt(grant_role_receipt)
+        .send_sync()
         .await
         .context("Failed to grant issuer role")?;
 
