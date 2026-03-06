@@ -1183,10 +1183,6 @@ fn seed_dex_liquidity(
             // Place flip order (bid at tick -10, flips to ask at tick 10)
             dex.place_flip(admin, beta_token, amount, true, -10, 10, false)?;
 
-            // Execute swaps
-            dex.swap_exact_amount_in(admin, PATH_USD_ADDRESS, beta_token, amount, 9_000_000)?;
-            dex.swap_exact_amount_out(admin, beta_token, PATH_USD_ADDRESS, 9_000_000, amount)?;
-
             Ok(())
         },
     )
