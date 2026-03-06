@@ -78,6 +78,9 @@ async fn test_bids() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     let num_orders = account_data.len() as u128;
+    // Query starting order ID (genesis may have seeded orders)
+    let start_order_id = exchange.nextOrderId().call().await?;
+
     // Place bid orders for each account
     let mut pending_orders = vec![];
     let tick = 10;
@@ -94,7 +97,8 @@ async fn test_bids() -> eyre::Result<()> {
     }
     await_receipts(&mut pending_orders).await?;
 
-    for order_id in 1..=num_orders {
+    for i in 0..num_orders {
+        let order_id = start_order_id + i;
         let order = exchange.getOrder(order_id).call().await?;
         assert!(!order.maker.is_zero());
         assert!(order.isBid);
@@ -102,7 +106,10 @@ async fn test_bids() -> eyre::Result<()> {
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
-    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
+    assert_eq!(
+        exchange.nextOrderId().call().await?,
+        start_order_id + num_orders
+    );
 
     // Calculate fill amount to fill all `n-1` orders, partial fill last order
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
@@ -123,7 +130,8 @@ async fn test_bids() -> eyre::Result<()> {
         .await?;
     tx.get_receipt().await?;
 
-    for order_id in 1..num_orders {
+    for i in 0..num_orders - 1 {
+        let order_id = start_order_id + i;
         let err = exchange
             .getOrder(order_id)
             .call()
@@ -135,16 +143,17 @@ async fn test_bids() -> eyre::Result<()> {
     }
 
     // Assert the last order is partially filled
+    let last_order_id = start_order_id + num_orders - 1;
     let level = exchange
         .getTickLevel(*base.address(), tick, true)
         .call()
         .await?;
 
-    assert_eq!(level.head, num_orders);
-    assert_eq!(level.tail, num_orders);
+    assert_eq!(level.head, last_order_id);
+    assert_eq!(level.tail, last_order_id);
     assert!(level.totalLiquidity < order_amount);
 
-    let order = exchange.getOrder(num_orders).call().await?;
+    let order = exchange.getOrder(last_order_id).call().await?;
     assert_eq!(order.next, 0);
     assert_eq!(level.totalLiquidity, order.remaining);
 
@@ -223,6 +232,9 @@ async fn test_asks() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     let num_orders = account_data.len() as u128;
+    // Query starting order ID (genesis may have seeded orders)
+    let start_order_id = exchange.nextOrderId().call().await?;
+
     // Place ask orders for each account
     let mut pending_orders = vec![];
     let tick = 10;
@@ -239,7 +251,8 @@ async fn test_asks() -> eyre::Result<()> {
     }
     await_receipts(&mut pending_orders).await?;
 
-    for order_id in 1..=num_orders {
+    for i in 0..num_orders {
+        let order_id = start_order_id + i;
         let order = exchange.getOrder(order_id).call().await?;
         assert!(!order.maker.is_zero());
         assert!(!order.isBid);
@@ -247,7 +260,10 @@ async fn test_asks() -> eyre::Result<()> {
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
-    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
+    assert_eq!(
+        exchange.nextOrderId().call().await?,
+        start_order_id + num_orders
+    );
 
     // Calculate fill amount to fill all `n-1` orders, partial fill last order
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
@@ -275,7 +291,8 @@ async fn test_asks() -> eyre::Result<()> {
         .await?;
     tx.get_receipt().await?;
 
-    for order_id in 1..num_orders {
+    for i in 0..num_orders - 1 {
+        let order_id = start_order_id + i;
         let err = exchange
             .getOrder(order_id)
             .call()
@@ -287,16 +304,17 @@ async fn test_asks() -> eyre::Result<()> {
     }
 
     // Assert the last order is partially filled
+    let last_order_id = start_order_id + num_orders - 1;
     let level = exchange
         .getTickLevel(*base.address(), tick, false)
         .call()
         .await?;
 
-    assert_eq!(level.head, num_orders);
-    assert_eq!(level.tail, num_orders);
+    assert_eq!(level.head, last_order_id);
+    assert_eq!(level.tail, last_order_id);
     assert!(level.totalLiquidity < order_amount);
 
-    let order = exchange.getOrder(num_orders).call().await?;
+    let order = exchange.getOrder(last_order_id).call().await?;
     assert_eq!(order.next, 0);
     assert_eq!(level.totalLiquidity, order.remaining);
 
@@ -384,6 +402,9 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     let num_orders = account_data.len() as u128;
+    // Query starting order ID (genesis may have seeded orders)
+    let start_order_id = exchange.nextOrderId().call().await?;
+
     // Place bid orders for each account
     let mut pending_orders = vec![];
     let tick = 10;
@@ -400,7 +421,8 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     await_receipts(&mut pending_orders).await?;
 
     // Verify orders were created correctly
-    for order_id in 1..=num_orders {
+    for i in 0..num_orders {
+        let order_id = start_order_id + i;
         let order = exchange.getOrder(order_id).call().await?;
         assert!(!order.maker.is_zero());
         assert!(order.isBid);
@@ -408,10 +430,14 @@ async fn test_cancel_orders() -> eyre::Result<()> {
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
-    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
+    assert_eq!(
+        exchange.nextOrderId().call().await?,
+        start_order_id + num_orders
+    );
 
     // Cancel all orders
-    for (order_id, (_, signer)) in (1..=num_orders).zip(&account_data) {
+    for (i, (_, signer)) in account_data.iter().enumerate() {
+        let order_id = start_order_id + i as u128;
         let account_provider = ProviderBuilder::new()
             .wallet(signer.clone())
             .connect_http(http_url.clone());
@@ -422,7 +448,8 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     }
 
     // Assert that orders have been canceled
-    for order_id in 1..=num_orders {
+    for i in 0..num_orders {
+        let order_id = start_order_id + i;
         let err = exchange
             .getOrder(order_id)
             .call()
