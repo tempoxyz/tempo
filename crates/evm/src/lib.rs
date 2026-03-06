@@ -21,7 +21,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
     self, Database, EvmEnv,
-    block::{BlockExecutorFactory, BlockExecutorFor},
+    block::{BlockExecutorFactory, BlockExecutorFor, StateDB},
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::{Inspector, database::State},
 };
@@ -93,12 +93,12 @@ impl BlockExecutorFactory for TempoEvmConfig {
 
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: TempoEvm<&'a mut State<DB>, I>,
+        evm: TempoEvm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
     ) -> impl BlockExecutorFor<'a, Self, DB, I>
     where
-        DB: Database + 'a,
-        I: Inspector<TempoContext<&'a mut State<DB>>> + 'a,
+        DB: StateDB + 'a,
+        I: Inspector<TempoContext<DB>> + 'a,
     {
         TempoBlockExecutor::new(evm, ctx, self.chain_spec())
     }
@@ -208,7 +208,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_beacon_block_root: block.header().parent_beacon_block_root(),
                 // no ommers in tempo
                 ommers: &[],
-                withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+                withdrawals: block.body().withdrawals.as_ref().map(|w| Cow::Borrowed(w.as_slice())),
                 extra_data: block.extra_data().clone(),
                 tx_count_hint: Some(block.body().transactions.len()),
             },
@@ -231,7 +231,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 ommers: &[],
-                withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
+                withdrawals: attributes.inner.withdrawals.map(|w| Cow::Owned(w.into_inner())),
                 extra_data: attributes.inner.extra_data,
                 tx_count_hint: None,
             },

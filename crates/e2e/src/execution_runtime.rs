@@ -33,7 +33,7 @@ use reth_ethereum::{
             events::{NetworkEvent, PeerEvent},
         },
     },
-    tasks::TaskManager,
+    tasks::Runtime as TaskRuntime,
 };
 use reth_network_peers::{NodeRecord, TrustedPeer};
 use reth_node_builder::{NodeBuilder, NodeConfig};
@@ -335,7 +335,7 @@ impl ExecutionRuntime {
             rt.block_on(async move {
                 while let Some(msg) = from_handle.recv().await {
                     // create a new task manager for the new node instance
-                    let task_manager = TaskManager::current();
+                    let task_runtime = TaskRuntime::test();
                     match msg {
                         Message::AddValidator(add_validator) => {
                             let AddValidator {
@@ -416,7 +416,7 @@ impl ExecutionRuntime {
                             response,
                         } => {
                             let node = launch_execution_node(
-                                task_manager,
+                                task_runtime,
                                 chain_spec.clone(),
                                 datadir.join(name),
                                 config,
@@ -598,7 +598,7 @@ impl ExecutionRuntimeHandle {
         &self,
         name: &str,
         config: ExecutionNodeConfig,
-        database: Arc<DatabaseEnv>,
+        database: DatabaseEnv,
     ) -> eyre::Result<ExecutionNode> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
@@ -622,8 +622,8 @@ impl ExecutionRuntimeHandle {
 pub struct ExecutionNode {
     /// All handles to interact with the launched node instances and services.
     pub node: TempoFullNode,
-    /// The [`TaskManager`] that drives the node's services.
-    pub task_manager: TaskManager,
+    /// The [`TaskRuntime`] that drives the node's services.
+    pub task_runtime: TaskRuntime,
     /// The exist future that resolves when the node's engine future resolves.
     pub exit_fut: NodeExitFuture,
 }
@@ -659,7 +659,7 @@ impl ExecutionNode {
     /// Shuts down the node and awaits until the node is terminated.
     pub async fn shutdown(self) {
         let _ = self.node.rpc_server_handle().clone().stop();
-        self.task_manager
+        self.task_runtime
             .graceful_shutdown_with_timeout(Duration::from_secs(10));
         let _ = self.exit_fut.await;
     }
@@ -700,11 +700,11 @@ pub fn genesis() -> Genesis {
 ///    are not passed to it).
 /// 3. consensus config is not necessary
 pub async fn launch_execution_node<P: AsRef<Path>>(
-    task_manager: TaskManager,
+    task_runtime: TaskRuntime,
     chain_spec: TempoChainSpec,
     datadir: P,
     config: ExecutionNodeConfig,
-    database: Arc<DatabaseEnv>,
+    database: DatabaseEnv,
 ) -> eyre::Result<ExecutionNode> {
     println!("launching node at {}", datadir.as_ref().display());
     let node_config = NodeConfig::new(Arc::new(chain_spec))
@@ -743,7 +743,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     let feed_state = config.feed_state;
     let node_handle = NodeBuilder::new(node_config)
         .with_database(database)
-        .with_launch_context(task_manager.executor())
+        .with_launch_context(task_runtime.clone())
         .node(tempo_node)
         .extend_rpc_modules(move |ctx| {
             if let Some(feed_state) = feed_state {
@@ -763,7 +763,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
 
     Ok(ExecutionNode {
         node: node_handle.node,
-        task_manager,
+        task_runtime,
         exit_fut: node_handle.node_exit_future,
     })
 }
@@ -775,7 +775,7 @@ enum Message {
     SpawnNode {
         name: String,
         config: ExecutionNodeConfig,
-        database: Arc<DatabaseEnv>,
+        database: DatabaseEnv,
         response: tokio::sync::oneshot::Sender<ExecutionNode>,
     },
     RunAsync(BoxFuture<'static, ()>),

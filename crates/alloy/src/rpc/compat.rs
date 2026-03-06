@@ -91,10 +91,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     }
 }
 
-impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
+impl<Spec> TryIntoTxEnv<TempoTxEnv, Spec, TempoBlockEnv> for TempoTransactionRequest {
     type Err = EthApiError;
 
-    fn try_into_tx_env<Spec>(
+    fn try_into_tx_env(
         self,
         evm_env: &EvmEnv<Spec, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {

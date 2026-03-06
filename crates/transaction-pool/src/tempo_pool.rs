@@ -84,7 +84,7 @@ where
     }
 
     /// Updates the 2d nonce pool with the given state changes.
-    pub(crate) fn notify_aa_pool_on_state_updates(&self, state: &HashMap<Address, BundleAccount>) {
+    pub(crate) fn notify_aa_pool_on_state_updates(&self, state: &HashMap<Address, BundleAccount, impl std::hash::BuildHasher>) {
         let (promoted, _mined) = self.aa_2d_pool.write().on_state_updates(state);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
@@ -622,6 +622,14 @@ where
         self.add_validated_transactions(origin, validated)
     }
 
+    fn add_transactions_with_origins(
+        &self,
+        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
+    ) -> impl Future<Output = Vec<PoolResult<AddedTransactionOutcome>>> + Send {
+        self.protocol_pool
+            .add_transactions_with_origins(transactions)
+    }
+
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
         self.protocol_pool.transaction_event_listener(tx_hash)
     }
@@ -862,6 +870,13 @@ where
         txs
     }
 
+    fn prune_transactions(
+        &self,
+        hashes: Vec<TxHash>,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        self.protocol_pool.prune_transactions(hashes)
+    }
+
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
         self.protocol_pool.retain_unknown(announcement);
         if announcement.is_empty() {
@@ -1001,7 +1016,7 @@ where
         txs
     }
 
-    fn unique_senders(&self) -> std::collections::HashSet<Address> {
+    fn unique_senders(&self) -> alloy_primitives::map::AddressSet {
         let mut senders = self.protocol_pool.unique_senders();
         senders.extend(self.aa_2d_pool.read().senders_iter().copied());
         senders

@@ -289,6 +289,12 @@ impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
 #[cfg(feature = "reth")]
 impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {}
 
+impl alloy_consensus::InMemorySize for TempoTxType {
+    fn size(&self) -> usize {
+        size_of::<Self>()
+    }
+}
+
 #[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for TempoTxType {
     fn size(&self) -> usize {
