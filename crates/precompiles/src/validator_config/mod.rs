@@ -1,4 +1,5 @@
 //! Validator Config (V1) precompile – manages the on-chain [consensus] validator set.
+//! Will be migrated to Validator Config V2 post T2 hardfork
 //!
 //! [consensus]: <https://docs.tempo.xyz/protocol/blockspace/consensus>
 
