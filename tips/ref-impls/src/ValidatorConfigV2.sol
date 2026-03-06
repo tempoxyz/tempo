@@ -44,6 +44,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     /// @dev Tracks active ingress IPs by their keccak256 hash
     mapping(bytes32 => bool) internal activeIngressIpHashes;
 
+    uint64 internal migrationSkippedCount;
+
     // =========================================================================
     // Modifiers
     // =========================================================================
@@ -329,13 +331,13 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         if (_initialized) {
             revert AlreadyInitialized();
         }
-        if (idx != validatorsArray.length) {
-            revert InvalidMigrationIndex();
-        }
 
         IValidatorConfig.Validator[] memory v1Validators = v1.getValidators();
-        if (idx >= v1Validators.length) {
-            revert ValidatorNotFound();
+        uint64 v1Count = uint64(v1Validators.length);
+        uint64 totalProcessed = uint64(validatorsArray.length) + migrationSkippedCount;
+
+        if (idx >= v1Count || idx + totalProcessed + 1 != v1Count) {
+            revert InvalidMigrationIndex();
         }
 
         if (validatorsArray.length == 0 && _owner == address(0)) {
@@ -348,16 +350,37 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         IValidatorConfig.Validator memory v1Val = v1Validators[idx];
 
+        if (v1Val.publicKey == bytes32(0) || v1Val.validatorAddress == address(0)) {
+            migrationSkippedCount++;
+            return;
+        }
+
         string memory egress = _extractIpFromSocket(v1Val.outboundAddress);
 
-        _requireUniqueIngressIp(v1Val.inboundAddress);
+        if (pubkeyToIndex[v1Val.publicKey] != 0) {
+            migrationSkippedCount++;
+            return;
+        }
+
+        uint64 addrIdx = addressToIndex[v1Val.validatorAddress];
+        if (addrIdx != 0 && validatorsArray[addrIdx - 1].deactivatedAtHeight == 0) {
+            revert AddressAlreadyHasValidator();
+        }
+
+        bool nowActive = v1Val.active;
+        bytes32 ingressHash = _getIngressIpHash(v1Val.inboundAddress);
+
+        if (nowActive && activeIngressIpHashes[ingressHash]) {
+            migrationSkippedCount++;
+            return;
+        }
 
         _addValidator(
             v1Val.validatorAddress,
             v1Val.publicKey,
             v1Val.inboundAddress,
             egress,
-            v1Val.active ? 0 : uint64(block.number)
+            nowActive ? 0 : uint64(block.number)
         );
     }
 
@@ -368,7 +391,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
 
         IValidatorConfig.Validator[] memory v1Validators = v1.getValidators();
-        if (validatorsArray.length < v1Validators.length) {
+        if (validatorsArray.length + migrationSkippedCount < v1Validators.length) {
             revert MigrationNotComplete();
         }
 
