@@ -44,6 +44,7 @@ use std::{
     },
     time::Instant,
 };
+use tracing::debug_span;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
@@ -240,21 +241,33 @@ where
         self.metrics.block_time_millis.record(block_time_millis);
         self.metrics.block_time_millis_last.set(block_time_millis);
 
-        let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let state_provider = {
+            let start = Instant::now();
+            let _span = debug_span!(target: "payload_builder", "state_provider").entered();
+            let res = self.provider.state_by_block_hash(parent_header.hash());
+            self.metrics.state_provider_duration_seconds.record(start.elapsed());
+            res?
+        };
         let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
             Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
         } else {
             state_provider
         };
-        let state = StateProviderDatabase::new(&state_provider);
-        let mut db = State::builder()
-            .with_database(if self.disable_state_cache {
-                Box::new(state) as Box<dyn Database<Error = ProviderError>>
-            } else {
-                Box::new(cached_reads.as_db_mut(state))
-            })
-            .with_bundle_update()
-            .build();
+        let mut db = {
+            let start = Instant::now();
+            let _span = debug_span!(target: "payload_builder", "build_state_db").entered();
+            let state = StateProviderDatabase::new(&state_provider);
+            let db = State::builder()
+                .with_database(if self.disable_state_cache {
+                    Box::new(state) as Box<dyn Database<Error = ProviderError>>
+                } else {
+                    Box::new(cached_reads.as_db_mut(state))
+                })
+                .with_bundle_update()
+                .build();
+            self.metrics.build_state_db_duration_seconds.record(start.elapsed());
+            db
+        };
 
         let chain_spec = self.provider.chain_spec();
         let is_osaka = self
@@ -318,33 +331,44 @@ where
             })
             .collect();
 
-        let mut builder = self
-            .evm_config
-            .builder_for_next_block(
-                &mut db,
-                &parent_header,
-                TempoNextBlockEnvAttributes {
-                    inner: NextBlockEnvAttributes {
-                        timestamp: attributes.timestamp(),
-                        suggested_fee_recipient: attributes.suggested_fee_recipient(),
-                        prev_randao: attributes.prev_randao(),
-                        gas_limit: block_gas_limit,
-                        parent_beacon_block_root: attributes.parent_beacon_block_root(),
-                        withdrawals: Some(attributes.withdrawals().clone()),
-                        extra_data: attributes.extra_data().clone(),
+        let mut builder = {
+            let start = Instant::now();
+            let _span = debug_span!(target: "payload_builder", "create_evm").entered();
+            let res = self
+                .evm_config
+                .builder_for_next_block(
+                    &mut db,
+                    &parent_header,
+                    TempoNextBlockEnvAttributes {
+                        inner: NextBlockEnvAttributes {
+                            timestamp: attributes.timestamp(),
+                            suggested_fee_recipient: attributes.suggested_fee_recipient(),
+                            prev_randao: attributes.prev_randao(),
+                            gas_limit: block_gas_limit,
+                            parent_beacon_block_root: attributes.parent_beacon_block_root(),
+                            withdrawals: Some(attributes.withdrawals().clone()),
+                            extra_data: attributes.extra_data().clone(),
+                        },
+                        general_gas_limit,
+                        shared_gas_limit,
+                        timestamp_millis_part: attributes.timestamp_millis_part(),
+                        subblock_fee_recipients,
                     },
-                    general_gas_limit,
-                    shared_gas_limit,
-                    timestamp_millis_part: attributes.timestamp_millis_part(),
-                    subblock_fee_recipients,
-                },
-            )
-            .map_err(PayloadBuilderError::other)?;
+                )
+                .map_err(PayloadBuilderError::other);
+            self.metrics.create_evm_duration_seconds.record(start.elapsed());
+            res?
+        };
 
-        builder.apply_pre_execution_changes().map_err(|err| {
-            warn!(%err, "failed to apply pre-execution changes");
-            PayloadBuilderError::Internal(err.into())
-        })?;
+        {
+            let start = Instant::now();
+            let _span = debug_span!(target: "payload_builder", "pre_execution").entered();
+            builder.apply_pre_execution_changes().map_err(|err| {
+                warn!(%err, "failed to apply pre-execution changes");
+                PayloadBuilderError::Internal(err.into())
+            })?;
+            self.metrics.pre_execution_duration_seconds.record(start.elapsed());
+        }
 
         debug!("building new payload");
 
