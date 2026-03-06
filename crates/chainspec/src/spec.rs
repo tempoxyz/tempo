@@ -2,6 +2,9 @@ use crate::{
     bootnodes::{andantino_nodes, moderato_nodes, presto_nodes},
     hardfork::{TempoHardfork, TempoHardforks},
 };
+#[cfg(feature = "std")]
+use alloc::sync::Arc;
+use alloc::{boxed::Box, vec, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
 use alloy_evm::{
     eth::spec::EthExecutorSpec,
@@ -18,7 +21,8 @@ use reth_chainspec::{
     Head,
 };
 use reth_network_peers::NodeRecord;
-use std::sync::{Arc, LazyLock};
+#[cfg(feature = "std")]
+use std::sync::LazyLock;
 use tempo_primitives::TempoHeader;
 
 /// T0 base fee: 10 billion attodollars (1×10^10)
@@ -163,6 +167,7 @@ impl reth_cli::chainspec::ChainSpecParser for TempoChainSpecParser {
     }
 }
 
+#[cfg(feature = "std")]
 pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/andantino.json"))
         .expect("`./genesis/andantino.json` must be present and deserializable");
@@ -171,6 +176,7 @@ pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .into()
 });
 
+#[cfg(feature = "std")]
 pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/moderato.json"))
         .expect("`./genesis/moderato.json` must be present and deserializable");
@@ -179,6 +185,7 @@ pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .into()
 });
 
+#[cfg(feature = "std")]
 pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/presto.json"))
         .expect("`./genesis/presto.json` must be present and deserializable");
@@ -190,6 +197,7 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 /// Development chainspec with funded dev accounts and activated tempo hardforks
 ///
 /// `cargo x generate-genesis -o dev.json --accounts 10 --no-dkg-in-genesis`
+#[cfg(feature = "std")]
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/dev.json"))
         .expect("`./genesis/dev.json` must be present and deserializable");
@@ -228,7 +236,7 @@ impl TempoChainSpec {
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
 
-        let tempo_forks = vec![
+        let tempo_forks: Vec<_> = vec![
             (TempoHardfork::Genesis, Some(0)),
             (TempoHardfork::T0, t0_time),
             (TempoHardfork::T1, t1_time),
@@ -238,7 +246,10 @@ impl TempoChainSpec {
             (TempoHardfork::T2, t2_time),
         ]
         .into_iter()
-        .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
+        .filter_map(|(fork, time): (TempoHardfork, Option<u64>)| {
+            time.map(|time| (fork, ForkCondition::Timestamp(time)))
+        })
+        .collect();
         base_spec.hardforks.extend(tempo_forks);
 
         Self {
@@ -260,6 +271,7 @@ impl TempoChainSpec {
     }
 
     /// Returns the mainnet chainspec.
+    #[cfg(feature = "std")]
     pub fn mainnet() -> Self {
         PRESTO.as_ref().clone()
     }
@@ -331,7 +343,7 @@ impl EthChainSpec for TempoChainSpec {
         self.inner.prune_delete_limit()
     }
 
-    fn display_hardforks(&self) -> Box<dyn std::fmt::Display> {
+    fn display_hardforks(&self) -> Box<dyn core::fmt::Display> {
         // filter only tempo hardforks
         let tempo_forks = self.inner.hardforks.forks_iter().filter(|(fork, _)| {
             !EthereumHardfork::VARIANTS
@@ -386,7 +398,7 @@ impl TempoHardforks for TempoChainSpec {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cli"))]
 mod tests {
     use crate::hardfork::{TempoHardfork, TempoHardforks};
     use reth_chainspec::{ForkCondition, Hardforks};

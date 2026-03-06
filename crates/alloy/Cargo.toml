@@ -11,32 +11,32 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-contracts = { workspace = true, features = ["rpc"] }
+tempo-contracts = { workspace = true, features = ["rpc"], optional = true }
 tempo-primitives = { workspace = true, features = ["serde", "reth"] }
 tempo-chainspec = { workspace = true, optional = true }
 tempo-evm = { workspace = true, optional = true }
 tempo-revm = { workspace = true, optional = true }
 
 alloy-consensus.workspace = true
-alloy-contract.workspace = true
+alloy-contract = { workspace = true, optional = true }
 alloy-eips.workspace = true
-alloy-network.workspace = true
-alloy-primitives = { workspace = true, features = ["rand"] }
-alloy-provider.workspace = true
-alloy-rpc-types-eth.workspace = true
-alloy-serde.workspace = true
-alloy-signer.workspace = true
-alloy-signer-local.workspace = true
-alloy-transport.workspace = true
+alloy-network = { workspace = true, optional = true }
+alloy-primitives.workspace = true
+alloy-provider = { workspace = true, optional = true }
+alloy-rpc-types-eth = { workspace = true, optional = true }
+alloy-serde = { workspace = true, optional = true }
+alloy-signer = { workspace = true, optional = true }
+alloy-signer-local = { workspace = true, optional = true }
+alloy-transport = { workspace = true, optional = true }
 
 reth-evm = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 reth-rpc-eth-types = { workspace = true, optional = true }
 
-derive_more.workspace = true
-serde.workspace = true
-tracing.workspace = true
+derive_more = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types"] }
@@ -46,12 +46,40 @@ test-case.workspace = true
 tokio.workspace = true
 
 [features]
-default = []
+default = ["std"]
+std = [
+	"dep:tempo-contracts",
+	"dep:alloy-contract",
+	"dep:alloy-network",
+	"dep:alloy-provider",
+	"dep:alloy-rpc-types-eth",
+	"dep:alloy-serde",
+	"dep:alloy-signer",
+	"dep:alloy-signer-local",
+	"dep:alloy-transport",
+	"dep:derive_more",
+	"dep:serde",
+	"dep:tracing",
+	"alloy-consensus/std",
+	"alloy-eips/std",
+	"alloy-primitives/std",
+	"alloy-primitives/rand",
+	"derive_more?/std",
+	"serde?/std",
+	"tempo-primitives/std",
+	"alloy/std",
+	"alloy-serde?/std",
+	"reth-primitives-traits?/std",
+	"tempo-chainspec?/std",
+	"tempo-contracts?/std",
+	"tempo-evm?/std"
+]
 asm-keccak = [
     "alloy-primitives/asm-keccak",
     "alloy/asm-keccak",
 ]
 tempo-compat = [
+    "std",
     "dep:reth-evm",
     "dep:reth-rpc-convert",
     "dep:reth-primitives-traits",

@@ -1,5 +1,8 @@
 //! Error types for Tempo EVM operations.
 
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+
 use reth_consensus::ConsensusError;
 
 /// Errors that can occur during EVM configuration and execution.
