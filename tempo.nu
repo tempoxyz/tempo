@@ -480,8 +480,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         let total_ok = ($blocks | get ok_count | math sum)
         let total_err = ($blocks | get err_count | math sum)
         let total_gas = ($blocks | get gas_used | math sum)
-        let latencies = ($blocks | where latency_ms != null | get latency_ms)
-        let avg_latency = if ($latencies | length) > 0 { ($latencies | math avg) | math round --precision 1 } else { 0 }
+        let latencies = ($blocks | where latency_ms != null | get latency_ms | sort)
+        let p50_latency = (percentile $latencies 50 | math round --precision 1)
         let num_blocks = ($blocks | length)
 
         # Compute TPS from block timestamps (timestamps are in milliseconds)
@@ -508,7 +508,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             ok: $total_ok
             err: $total_err
             total_gas: $total_gas
-            avg_latency: $avg_latency
+            p50_latency: $p50_latency
             tps: $actual_tps
             mgas_s: $mgas_per_sec
             success_rate: $success_rate
@@ -526,6 +526,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         {
             n: ($blocks | length)
             mean: (if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0 })
+            stddev: (if ($latencies | length) > 1 { $latencies | math stddev | math round --precision 1 } else { 0 })
             p50: (percentile $latencies 50 | math round --precision 1)
             p90: (percentile $latencies 90 | math round --precision 1)
             p99: (percentile $latencies 99 | math round --precision 1)
@@ -565,6 +566,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
         $"| Latency Mean [ms] | ($b_lat.mean) | ($f_lat.mean) | (do $delta $b_lat.mean $f_lat.mean)% |"
+        $"| Latency Std Dev [ms] | ($b_lat.stddev) | ($f_lat.stddev) | (do $delta $b_lat.stddev $f_lat.stddev)% |"
         $"| Latency P50 [ms] | ($b_lat.p50) | ($f_lat.p50) | (do $delta $b_lat.p50 $f_lat.p50)% |"
         $"| Latency P90 [ms] | ($b_lat.p90) | ($f_lat.p90) | (do $delta $b_lat.p90 $f_lat.p90)% |"
         $"| Latency P99 [ms] | ($b_lat.p99) | ($f_lat.p99) | (do $delta $b_lat.p99 $f_lat.p99)% |"
@@ -573,13 +575,13 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "## Per-Run Details"
         ""
-        "| Run | Blocks | Total Tx | Success | Failed | Avg Latency | TPS | Mgas/s |"
+        "| Run | Blocks | Total Tx | Success | Failed | P50 Latency | TPS | Mgas/s |"
         "|-----|--------|----------|---------|--------|-------------|-----|--------|"
     ] | str join "\n")
 
     mut per_run_rows = ""
     for row in $run_data {
-        $per_run_rows = $"($per_run_rows)| ($row.label) | ($row.blocks) | ($row.total_tx) | ($row.ok) | ($row.err) | ($row.avg_latency) | ($row.tps) | ($row.mgas_s) |\n"
+        $per_run_rows = $"($per_run_rows)| ($row.label) | ($row.blocks) | ($row.total_tx) | ($row.ok) | ($row.err) | ($row.p50_latency) | ($row.tps) | ($row.mgas_s) |\n"
     }
 
     let full_summary = $"($summary)\n($per_run_rows)"
@@ -602,6 +604,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         results: {
             baseline: {
                 latency_mean: $b_lat.mean
+                latency_stddev: $b_lat.stddev
                 latency_p50: $b_lat.p50
                 latency_p90: $b_lat.p90
                 latency_p99: $b_lat.p99
@@ -611,6 +614,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             }
             feature: {
                 latency_mean: $f_lat.mean
+                latency_stddev: $f_lat.stddev
                 latency_p50: $f_lat.p50
                 latency_p90: $f_lat.p90
                 latency_p99: $f_lat.p99
@@ -620,6 +624,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             }
             deltas: {
                 latency_mean: (do $delta $b_lat.mean $f_lat.mean)
+                latency_stddev: (do $delta $b_lat.stddev $f_lat.stddev)
                 latency_p50: (do $delta $b_lat.p50 $f_lat.p50)
                 latency_p90: (do $delta $b_lat.p90 $f_lat.p90)
                 latency_p99: (do $delta $b_lat.p99 $f_lat.p99)
