@@ -2,7 +2,7 @@
 //!
 //! Provides ERC-20-like balances, allowances, and transfers with Tempo extensions:
 //! role-based access control, pausability, supply caps, transfer policies ([TIP-403]),
-//! opt-in staking rewards, EIP-2612 permits, and quote-token graphs.
+//! opt-in staking rewards,EIP-2612 permits (post-T2) and quote-token graphs.
 //!
 //! [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
 //! [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
