@@ -135,7 +135,7 @@ where
     /// Uses `last_finalized_height` from the consensus layer (marshal) rather
     /// than the execution layer's best block, because the execution layer may
     /// be behind and missing boundary blocks.
-    #[instrument(skip_all, err)]
+    #[instrument(skip_all, fields(attempt), err)]
     async fn bootstrap_peers(&mut self, attempt: u32) -> eyre::Result<()> {
         let epoch_info = self
             .epoch_strategy
