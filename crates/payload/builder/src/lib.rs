@@ -480,12 +480,12 @@ where
         loop {
             let selection_start = Instant::now();
             let maybe_pool_tx = best_txs.next();
-            let Some(pool_tx) = maybe_pool_tx else {
-                break;
-            };
             self.metrics
                 .transaction_selection_duration_seconds
                 .record(selection_start.elapsed());
+            let Some(pool_tx) = maybe_pool_tx else {
+                break;
+            };
             pool_transactions_considered += 1;
 
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
