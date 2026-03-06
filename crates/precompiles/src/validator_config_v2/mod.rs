@@ -82,13 +82,13 @@ impl Config {
 ///
 /// ## Lifecycle
 ///
-/// A record is **created** in one of three ways:
+/// A record is created in one of three ways:
 /// - `add_validator`: active entry (`deactivated_at_height = 0`, `active_idx != 0`)
 /// - `migrate_validator`: active or born-deactivated, depending on V1 state
-/// - `rotate_validator`: appends a born-deactivated **snapshot** of the old identity
+/// - `rotate_validator`: appends a born-deactivated snapshot of the old identity
 ///   and overwrites the original slot in-place with the new identity
 ///
-/// A record is **deactivated** via `deactivate_validator`, which sets
+/// A record is deactivated via `deactivate_validator`, which sets
 /// `deactivated_at_height` to the current block height and clears `active_idx` to 0.
 /// This transition is one-way — a deactivated record never becomes active again.
 #[derive(Debug, Storable)]
@@ -122,7 +122,7 @@ struct ValidatorRecord {
 ///
 /// ## Storage design
 ///
-/// The `validators` vec is the **source of truth** (append-only). Two auxiliary mappings
+/// The `validators` vec is the source of truth (append-only). Two auxiliary mappings
 /// provide O(1) lookups:
 /// - `address_to_index`: validator address -> 1-indexed position (0 = not found)
 /// - `pubkey_to_index`: public key -> 1-indexed position (0 = not found)
@@ -151,7 +151,7 @@ pub struct ValidatorConfigV2 {
     /// Prevents two active validators from sharing the same ingress IP address.
     active_ingress_ips: Mapping<B256, bool>,
     /// Compact list of 1-indexed global positions of currently active validators.
-    /// Order is **not stable** (swap-and-pop on deactivation).
+    /// Order is NOT stable (swap-and-pop on deactivation).
     active_indices: Vec<u64>,
 }
 
@@ -431,7 +431,7 @@ impl ValidatorConfigV2 {
     /// Constructs the message according to the validator config v2 specification
     /// and verifies the Ed25519 signature using the appropriate namespace.
     ///
-    /// **FORMAT**:
+    /// FORMAT:
     /// - Namespace: [`VALIDATOR_NS_ADD`] or [`VALIDATOR_NS_ROTATE`]
     /// - Message: `keccak256(abi.encodePacked(chainId, contractAddr, validatorAddr, ingress, egress))`
     fn verify_validator_signature(
@@ -524,7 +524,7 @@ impl ValidatorConfigV2 {
     /// The validator's entry remains in storage for historical queries and its
     /// public key stays reserved forever. The ingress IP is freed for reuse.
     ///
-    /// Does **not** require initialization — can be called during the migration window.
+    /// Does NOT require initialization — can be called during the migration window.
     ///
     /// Uses swap-and-pop on `active_indices` for O(1) removal.
     ///
@@ -594,9 +594,8 @@ impl ValidatorConfigV2 {
     /// Rotates a validator to a new identity (owner or the validator itself).
     ///
     /// Atomically:
-    /// 1. Appends a **deactivated snapshot** of the old identity to the tail of `validators`
-    /// 2. Overwrites the **original slot in-place** with the new pubkey, endpoints, and
-    ///    `addedAtHeight = now`
+    /// 1. Appends a deactivated snapshot of the old identity to the tail of `validators`
+    /// 2. Overwrites the slot in-place with new pubkey, endpoints, and `addedAtHeight = now`
     ///
     /// The validator's global index, `active_idx`, `address_to_index` pointer, and
     /// position in `active_indices` are all preserved — only `pubkey_to_index` is
@@ -670,7 +669,7 @@ impl ValidatorConfigV2 {
     /// Updates a validator's ingress and egress addresses (owner or the validator itself).
     ///
     /// Allows validators to update their network addresses without requiring a full
-    /// rotation. Does **not** require initialization — can be called during migration.
+    /// rotation. Does NOT require initialization — can be called during migration.
     ///
     /// # Errors
     /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
