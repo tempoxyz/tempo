@@ -13,6 +13,7 @@ use std::{
 use alloy_primitives::{B256, U256, map::HashSet};
 use clap::Parser;
 use eyre::{Context as _, ensure};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use reth_chainspec::EthereumHardforks;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
 use reth_db_api::{
@@ -72,12 +73,17 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         info!(target: "tempo::cli", path = %self.state.display(), "Loading binary state dump");
 
+        let file_size = std::fs::metadata(&self.state)
+            .wrap_err_with(|| format!("failed to stat {}", self.state.display()))?
+            .len();
+
         let file = File::open(&self.state)
             .wrap_err_with(|| format!("failed to open {}", self.state.display()))?;
         let mut reader = BufReader::with_capacity(64 * 1024 * 1024, file);
 
         let mut total_entries = 0u64;
         let mut total_tokens = 0u64;
+        let mut bytes_read = 0u64;
 
         // Collect storage entries per address for hashing
         let mut storage_for_hashing: HashMap<alloy_primitives::Address, Vec<StorageEntry>> =
@@ -85,6 +91,16 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         // Track addresses for account hashing (we need to create empty accounts)
         let mut addresses_seen: HashSet<alloy_primitives::Address> = HashSet::default();
+
+        let pb = ProgressBar::with_draw_target(
+            Some(file_size),
+            ProgressDrawTarget::stderr(),
+        );
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}) ({eta})")
+                .expect("valid template"),
+        );
 
         // Process blocks from binary file
         loop {
@@ -95,6 +111,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e).wrap_err("failed to read block header"),
             }
+            bytes_read += header_buf.len() as u64;
 
             // Validate magic
             ensure!(
@@ -119,12 +136,14 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             // Read pair count (8 bytes at offset 32)
             let pair_count = u64::from_be_bytes(header_buf[32..40].try_into().unwrap());
 
-            info!(
-                target: "tempo::cli",
-                %address,
-                pair_count,
-                "Processing token storage"
-            );
+            pb.suspend(|| {
+                info!(
+                    target: "tempo::cli",
+                    %address,
+                    pair_count,
+                    "Processing token storage"
+                );
+            });
 
             addresses_seen.insert(address);
 
@@ -144,10 +163,11 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
             // Read and insert entries
             let mut entry_buf = [0u8; 64];
-            for _ in 0..pair_count {
+            for i in 0..pair_count {
                 reader
                     .read_exact(&mut entry_buf)
                     .wrap_err("failed to read storage entry")?;
+                bytes_read += entry_buf.len() as u64;
 
                 let slot = B256::from_slice(&entry_buf[..32]);
                 let value = U256::from_be_bytes::<32>(entry_buf[32..64].try_into().unwrap());
@@ -166,10 +186,17 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 storage_entries.push(entry);
 
                 total_entries += 1;
+
+                if i % 65536 == 0 {
+                    pb.set_position(bytes_read);
+                }
             }
 
+            pb.set_position(bytes_read);
             total_tokens += 1;
         }
+
+        pb.finish_with_message("done");
 
         info!(
             target: "tempo::cli",

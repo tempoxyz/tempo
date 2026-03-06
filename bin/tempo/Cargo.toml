@@ -61,6 +61,7 @@ reth-rpc-server-types.workspace = true
 reth-storage-api.workspace = true
 clap.workspace = true
 eyre.workspace = true
+indicatif.workspace = true
 jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
