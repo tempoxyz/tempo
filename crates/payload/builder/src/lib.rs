@@ -60,8 +60,7 @@ use tempo_transaction_pool::{
     TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
-use tracing::debug_span;
-use tracing::{Level, debug, error, info, instrument, trace, warn};
+use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
