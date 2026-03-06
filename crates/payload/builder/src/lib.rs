@@ -698,6 +698,14 @@ where
                     self.metrics
                         .total_subblock_transaction_execution_duration_seconds
                         .record(total_subblock_transaction_execution_elapsed);
+                    self.metrics.subblocks.record(subblocks_count);
+                    self.metrics.subblocks_last.set(subblocks_count);
+                    self.metrics
+                        .subblock_transactions
+                        .record(subblock_transactions);
+                    self.metrics
+                        .subblock_transactions_last
+                        .set(subblock_transactions);
                     return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
                 }
 
