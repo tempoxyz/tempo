@@ -56,6 +56,34 @@ impl Config {
     fn is_owner(&self, addr: Address) -> bool {
         self.owner == addr
     }
+
+    fn require_init(self) -> Result<Self> {
+        if self.is_init {
+            return Ok(self);
+        }
+        Err(ValidatorConfigV2Error::not_initialized())?
+    }
+
+    fn require_not_init(self) -> Result<Self> {
+        if self.is_init {
+            Err(ValidatorConfigV2Error::already_initialized())?
+        }
+        Ok(self)
+    }
+
+    fn require_owner(self, caller: Address) -> Result<Self> {
+        if !self.is_owner(caller) {
+            Err(ValidatorConfigV2Error::unauthorized())?
+        }
+        Ok(self)
+    }
+
+    fn require_owner_or_validator(self, caller: Address, validator: Address) -> Result<Self> {
+        if caller != validator && !self.is_owner(caller) {
+            Err(ValidatorConfigV2Error::unauthorized())?
+        }
+        Ok(self)
+    }
 }
 
 /// Validator Config V2 precompile.
@@ -111,34 +139,6 @@ impl ValidatorConfigV2 {
 
     pub fn is_initialized(&self) -> Result<bool> {
         self.config.is_init.read()
-    }
-
-    fn require_initialized(&self) -> Result<Config> {
-        let config = self.config.read()?;
-        if !config.is_init {
-            Err(ValidatorConfigV2Error::not_initialized())?
-        }
-        Ok(config)
-    }
-
-    fn require_initialized_owner(&self, caller: Address) -> Result<Config> {
-        let config = self.require_initialized()?;
-        if !config.is_owner(caller) {
-            Err(ValidatorConfigV2Error::unauthorized())?
-        }
-        Ok(config)
-    }
-
-    fn require_initialized_owner_or_validator(
-        &self,
-        caller: Address,
-        validator: Address,
-    ) -> Result<Config> {
-        let config = self.require_initialized()?;
-        if caller != validator && !config.is_owner(caller) {
-            Err(ValidatorConfigV2Error::unauthorized())?
-        }
-        Ok(config)
     }
 
     pub fn validator_count(&self) -> Result<u64> {
@@ -391,7 +391,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::addValidatorCall,
     ) -> Result<u64> {
-        self.require_initialized_owner(sender)?;
+        self.config.read()?.require_init()?.require_owner(sender)?;
         self.require_new_pubkey(call.publicKey)?;
         self.require_new_address(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
@@ -425,21 +425,14 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::deactivateValidatorCall,
     ) -> Result<()> {
-        if call.idx >= self.validators.len()? as u64 {
-            Err(ValidatorConfigV2Error::validator_not_found())?
-        }
-        let v = self.validators[call.idx as usize].read()?;
-        if v.deactivated_at_height != 0 {
-            Err(ValidatorConfigV2Error::validator_already_deleted())?
-        }
-        let config = self.config.read()?;
-        if sender != v.validator_address && !config.is_owner(sender) {
-            Err(ValidatorConfigV2Error::unauthorized())?
-        }
-        let block_height = self.storage.block_number();
+        let v = self.get_active_validator(call.idx)?;
+        self.config
+            .read()?
+            .require_owner_or_validator(sender, v.validator_address)?;
 
         self.active_ingress_ips[Self::ingress_ip_key(&v.ingress)?].delete()?;
 
+        let block_height = self.storage.block_number();
         self.validators[call.idx as usize]
             .deactivated_at_height
             .write(block_height)?;
@@ -464,7 +457,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::transferOwnershipCall,
     ) -> Result<()> {
-        let mut config = self.require_initialized_owner(sender)?;
+        let mut config = self.config.read()?.require_init()?.require_owner(sender)?;
         config.owner = call.newOwner;
         self.config.write(config)
     }
@@ -474,7 +467,7 @@ impl ValidatorConfigV2 {
         sender: Address,
         call: IValidatorConfigV2::setNextFullDkgCeremonyCall,
     ) -> Result<()> {
-        self.require_initialized_owner(sender)?;
+        self.config.read()?.require_init()?.require_owner(sender)?;
         self.next_dkg_ceremony.write(call.epoch)
     }
 
@@ -488,7 +481,10 @@ impl ValidatorConfigV2 {
         call: IValidatorConfigV2::rotateValidatorCall,
     ) -> Result<()> {
         let v = self.get_active_validator(call.idx)?;
-        self.require_initialized_owner_or_validator(sender, v.validator_address)?;
+        self.config
+            .read()?
+            .require_init()?
+            .require_owner_or_validator(sender, v.validator_address)?;
         self.require_new_pubkey(call.publicKey)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
@@ -542,9 +538,9 @@ impl ValidatorConfigV2 {
         call: IValidatorConfigV2::setIpAddressesCall,
     ) -> Result<()> {
         let mut v = self.get_active_validator(call.idx)?;
-        if sender != v.validator_address && !self.config.read()?.is_owner(sender) {
-            Err(ValidatorConfigV2Error::unauthorized())?
-        }
+        self.config
+            .read()?
+            .require_owner_or_validator(sender, v.validator_address)?;
 
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
@@ -563,7 +559,10 @@ impl ValidatorConfigV2 {
         call: IValidatorConfigV2::transferValidatorOwnershipCall,
     ) -> Result<()> {
         let mut v = self.get_active_validator(call.idx)?;
-        self.require_initialized_owner_or_validator(sender, v.validator_address)?;
+        self.config
+            .read()?
+            .require_init()?
+            .require_owner_or_validator(sender, v.validator_address)?;
         self.require_new_address(call.newAddress)?;
 
         let old_address = v.validator_address;
@@ -584,10 +583,7 @@ impl ValidatorConfigV2 {
     /// it from V1 before checking authorization.  Returns the (possibly updated)
     /// config for reuse.
     fn require_migration_owner(&mut self, caller: Address) -> Result<Config> {
-        let mut config = self.config.read()?;
-        if config.is_init {
-            Err(ValidatorConfigV2Error::already_initialized())?
-        }
+        let mut config = self.config.read()?.require_not_init()?;
 
         if config.owner.is_zero() {
             config.owner = v1().owner()?;
@@ -598,10 +594,7 @@ impl ValidatorConfigV2 {
             })?;
         }
 
-        if !config.is_owner(caller) {
-            Err(ValidatorConfigV2Error::unauthorized())?
-        }
-        Ok(config)
+        config.require_owner(caller)
     }
 
     pub fn migrate_validator(
