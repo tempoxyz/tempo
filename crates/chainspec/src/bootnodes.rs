@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use reth_network_peers::{NodeRecord, parse_nodes};
 
 pub(crate) static ANDANTINO_BOOTNODES: [&str; 4] = [

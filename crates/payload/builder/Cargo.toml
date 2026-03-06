@@ -19,7 +19,7 @@ tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
 
 reth-basic-payload-builder.workspace = true
-reth-chainspec.workspace = true
+reth-chainspec = { workspace = true, features = ["std"] }
 reth-consensus-common.workspace = true
 reth-engine-tree.workspace = true
 reth-errors.workspace = true

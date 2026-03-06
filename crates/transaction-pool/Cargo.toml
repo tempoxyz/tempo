@@ -21,7 +21,7 @@ tempo-precompiles.workspace = true
 
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
-reth-chainspec.workspace = true
+reth-chainspec = { workspace = true, features = ["std"] }
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
 reth-provider.workspace = true
@@ -34,7 +34,7 @@ revm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
-alloy-evm.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
 alloy-sol-types.workspace = true
 
 futures.workspace = true
