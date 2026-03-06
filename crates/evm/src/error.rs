@@ -1,8 +1,5 @@
 //! Error types for Tempo EVM operations.
 
-#[cfg(not(feature = "std"))]
-use alloc::string::String;
-
 use reth_consensus::ConsensusError;
 
 /// Errors that can occur during EVM configuration and execution.
@@ -14,7 +11,7 @@ pub enum TempoEvmError {
 
     /// Invalid EVM configuration.
     #[error("invalid EVM configuration: {0}")]
-    InvalidEvmConfig(String),
+    InvalidEvmConfig(alloc::string::String),
 
     /// No subblock metadata system transaction is found in the block.
     #[error("couldn't find subblock metadata transaction in block")]
