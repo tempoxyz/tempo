@@ -450,7 +450,7 @@ where
                 "the finalized tip is a boundary block; requesting the \
                 block to set the scheme for its epoch"
             );
-            let block: crate::consensus::block::Block = self
+            let block = self
                 .config
                 .marshal
                 .subscribe_by_digest(None, digest)
