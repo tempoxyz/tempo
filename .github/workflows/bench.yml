@@ -271,6 +271,12 @@ jobs:
         uses: actions/github-script@v8
         with:
           script: |
+            // workflow_dispatch: always use the branch ref directly
+            if (context.eventName === 'workflow_dispatch') {
+              core.setOutput('ref', '${{ github.ref }}');
+              return;
+            }
+            // issue_comment: use PR merge ref (with head SHA fallback)
             if (!process.env.BENCH_PR) {
               core.setOutput('ref', '${{ github.ref }}');
               return;
@@ -280,8 +286,8 @@ jobs:
               repo: context.repo.repo,
               pull_number: parseInt(process.env.BENCH_PR),
             });
-            if (pr.state !== 'open') {
-              core.info(`PR #${process.env.BENCH_PR} is ${pr.state}, using head SHA ${pr.head.sha}`);
+            if (pr.state !== 'open' || !pr.mergeable) {
+              core.info(`PR #${process.env.BENCH_PR}: state=${pr.state}, mergeable=${pr.mergeable}, using head SHA ${pr.head.sha}`);
               core.setOutput('ref', pr.head.sha);
             } else {
               core.setOutput('ref', `refs/pull/${process.env.BENCH_PR}/merge`);
