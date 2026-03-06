@@ -1,50 +1,66 @@
 //! Tempo EVM implementation.
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+extern crate alloc;
+
+#[cfg(feature = "std")]
 mod assemble;
-use alloy_consensus::{BlockHeader as _, Transaction};
-use alloy_primitives::Address;
-use alloy_rlp::Decodable;
+#[cfg(feature = "std")]
 pub use assemble::TempoBlockAssembler;
+#[cfg(feature = "std")]
 mod block;
+#[cfg(feature = "std")]
 pub use block::TempoReceiptBuilder;
+#[cfg(feature = "std")]
 mod context;
+#[cfg(feature = "std")]
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]
 mod engine;
 mod error;
 pub use error::TempoEvmError;
+#[cfg(feature = "std")]
 pub mod evm;
-use std::{borrow::Cow, sync::Arc};
-
-use alloy_evm::{
-    self, Database, EvmEnv,
-    block::{BlockExecutorFactory, BlockExecutorFor},
-    eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
-    revm::{Inspector, database::State},
-};
+#[cfg(feature = "std")]
 pub use evm::TempoEvmFactory;
-use reth_chainspec::EthChainSpec;
-use reth_evm::{self, ConfigureEvm, EvmEnvFor};
-use reth_primitives_traits::{SealedBlock, SealedHeader};
-use tempo_primitives::{
-    Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
-    subblock::PartialValidatorKey,
-};
 
-use crate::{block::TempoBlockExecutor, evm::TempoEvm};
-use reth_evm_ethereum::EthEvmConfig;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params};
-
+#[cfg(feature = "std")]
 pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
 
 #[cfg(test)]
 mod test_utils;
 
+#[cfg(feature = "std")]
+use {
+    crate::{block::TempoBlockExecutor, evm::TempoEvm},
+    alloc::sync::Arc,
+    alloy_consensus::{BlockHeader as _, Transaction},
+    alloy_evm::{
+        self, Database, EvmEnv,
+        block::{BlockExecutorFactory, BlockExecutorFor},
+        eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
+        revm::{Inspector, database::State},
+    },
+    alloy_primitives::Address,
+    alloy_rlp::Decodable,
+    reth_chainspec::EthChainSpec,
+    reth_evm::{self, ConfigureEvm, EvmEnvFor},
+    reth_evm_ethereum::EthEvmConfig,
+    reth_primitives_traits::{SealedBlock, SealedHeader},
+    std::borrow::Cow,
+    tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks},
+    tempo_primitives::{
+        Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+        subblock::PartialValidatorKey,
+    },
+    tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params},
+};
+
 /// Tempo-related EVM configuration.
+#[cfg(feature = "std")]
 #[derive(Debug, Clone)]
 pub struct TempoEvmConfig {
     /// Inner evm config
@@ -54,6 +70,7 @@ pub struct TempoEvmConfig {
     pub block_assembler: TempoBlockAssembler,
 }
 
+#[cfg(feature = "std")]
 impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
@@ -81,6 +98,7 @@ impl TempoEvmConfig {
     }
 }
 
+#[cfg(feature = "std")]
 impl BlockExecutorFactory for TempoEvmConfig {
     type EvmFactory = TempoEvmFactory;
     type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;
@@ -104,6 +122,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
     }
 }
 
+#[cfg(feature = "std")]
 impl ConfigureEvm for TempoEvmConfig {
     type Primitives = TempoPrimitives;
     type Error = TempoEvmError;
@@ -245,7 +264,7 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
