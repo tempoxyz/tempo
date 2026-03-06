@@ -104,8 +104,8 @@ struct ValidatorRecord {
     /// Position in the `validators` array. Stable across rotations for the in-place slot;
     /// snapshots get the tail position at the time they were appended.
     index: u64,
-    /// 1-indexed position in `active_indices` (0 = not active). Used as a backpointer
-    /// for O(1) swap-and-pop removal on deactivation.
+    /// 1-indexed position in `active_indices` (0 = not active).
+    /// Used as a backpointer for O(1) swap-and-pop removal on deactivation.
     active_idx: u64,
     /// Block height at which this record was created (or overwritten during rotation).
     added_at_height: u64,
@@ -131,17 +131,17 @@ struct ValidatorRecord {
 /// enabling O(active_count) enumeration without scanning deactivated entries. Each validator
 /// stores an `active_idx` backpointer into this vec for O(1) swap-and-pop removal.
 ///
-/// The `#[contract]` macro generates the storage handlers which provide an ergonomic way
-/// to interact with the EVM state.
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = VALIDATOR_CONFIG_V2_ADDRESS)]
 pub struct ValidatorConfigV2 {
-    /// Contract-level config: owner address, initialization flag, and init height.
+    /// Contract-level config: ownership, initialization state, and migration bookkeeping.
     config: Config,
     /// Append-only array of all validators ever registered (including deactivated snapshots).
     validators: Vec<ValidatorRecord>,
     /// Validator address → 1-indexed position in `validators` (0 = not found).
     /// After deactivation the mapping still points to the old (now-deactivated) entry.
-    /// Overwritten when the address is reused by a new validator, or when ownership is transfered.
+    /// Overwritten when the address is reused by a new validator, or when ownership is transferred.
     address_to_index: Mapping<Address, u64>,
     /// Ed25519 public key -> 1-indexed position in `validators` (0 = not found).
     /// Public keys are reserved forever — even deactivated entries keep their mapping.
@@ -233,7 +233,7 @@ impl ValidatorConfigV2 {
     /// Returns the validator registry at the given global index in the `validators` array.
     ///
     /// # Errors
-    /// - [`ValidatorNotFound`] if `index` is out of bounds
+    /// - `ValidatorNotFound` — `index` is out of bounds
     pub fn validator_by_index(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
         if index >= self.validator_count()? {
             Err(ValidatorConfigV2Error::validator_not_found())?
@@ -246,7 +246,7 @@ impl ValidatorConfigV2 {
     /// Returns the current entry for the address (after any rotations or transfers).
     ///
     /// # Errors
-    /// - [`ValidatorNotFound`] if the address has never been registered
+    /// - `ValidatorNotFound` — the address has never been registered
     pub fn validator_by_address(&self, addr: Address) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.address_to_index[addr].read()?;
         if idx1 == 0 {
@@ -261,7 +261,7 @@ impl ValidatorConfigV2 {
     /// new key resolves to the in-place active entry.
     ///
     /// # Errors
-    /// - [`ValidatorNotFound`] if the public key has never been registered
+    /// - `ValidatorNotFound` — the public key has never been registered
     pub fn validator_by_public_key(&self, pubkey: B256) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.pubkey_to_index[pubkey].read()?;
         if idx1 == 0 {
@@ -475,15 +475,15 @@ impl ValidatorConfigV2 {
     /// private key corresponding to `publicKey`.
     ///
     /// # Errors
-    /// - [`NotInitialized`] if the contract has not been initialized
-    /// - [`Unauthorized`] if `sender` is not the owner
-    /// - [`InvalidPublicKey`] if `publicKey` is zero or not a valid Ed25519 key
-    /// - [`PublicKeyAlreadyExists`] if the public key is already registered
-    /// - [`InvalidValidatorAddress`] if `validatorAddress` is zero
-    /// - [`AddressAlreadyHasValidator`] if the address belongs to an active validator
-    /// - [`NotIpPort`] / [`NotIp`] if endpoints fail validation
-    /// - [`IngressAlreadyExists`] if the ingress IP is already in use
-    /// - [`InvalidSignature`] if signature verification fails
+    /// - `NotInitialized` — the contract has not been initialized
+    /// - `Unauthorized` — `sender` is not the owner
+    /// - `InvalidPublicKey` — `publicKey` is zero or not a valid Ed25519 key
+    /// - `PublicKeyAlreadyExists` — the public key is already registered
+    /// - `InvalidValidatorAddress` — `validatorAddress` is zero
+    /// - `AddressAlreadyHasValidator` — the address belongs to an active validator
+    /// - `NotIpPort` / `NotIp` — endpoints fail validation
+    /// - `IngressAlreadyExists` — the ingress IP is already in use
+    /// - `InvalidSignature` — signature verification fails
     pub fn add_validator(
         &mut self,
         sender: Address,
@@ -529,9 +529,9 @@ impl ValidatorConfigV2 {
     /// Uses swap-and-pop on `active_indices` for O(1) removal.
     ///
     /// # Errors
-    /// - [`ValidatorNotFound`] if `idx` is out of bounds
-    /// - [`ValidatorAlreadyDeleted`] if the validator is already deactivated
-    /// - [`Unauthorized`] if `sender` is neither the owner nor the validator
+    /// - `ValidatorNotFound` — `idx` is out of bounds
+    /// - `ValidatorAlreadyDeleted` — the validator is already deactivated
+    /// - `Unauthorized` — `sender` is neither the owner nor the validator
     pub fn deactivate_validator(
         &mut self,
         sender: Address,
@@ -605,11 +605,11 @@ impl ValidatorConfigV2 {
     /// Requires a valid Ed25519 signature using the [`VALIDATOR_NS_ROTATE`] namespace.
     ///
     /// # Errors
-    /// - [`ValidatorNotFound`] / [`ValidatorAlreadyDeleted`] if `idx` is invalid
-    /// - [`NotInitialized`] / [`Unauthorized`] on auth failure
-    /// - [`InvalidPublicKey`] / [`PublicKeyAlreadyExists`] if the new key is invalid
-    /// - [`NotIpPort`] / [`NotIp`] / [`IngressAlreadyExists`] on endpoint validation failure
-    /// - [`InvalidSignature`] if signature verification fails
+    /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
+    /// - `NotInitialized` / `Unauthorized` — auth failure
+    /// - `InvalidPublicKey` / `PublicKeyAlreadyExists` — the new key is invalid
+    /// - `NotIpPort` / `NotIp` / `IngressAlreadyExists` — endpoint validation failure
+    /// - `InvalidSignature` — signature verification fails
     pub fn rotate_validator(
         &mut self,
         sender: Address,
@@ -673,10 +673,10 @@ impl ValidatorConfigV2 {
     /// rotation. Does **not** require initialization — can be called during migration.
     ///
     /// # Errors
-    /// - [`ValidatorNotFound`] / [`ValidatorAlreadyDeleted`] if `idx` is invalid
-    /// - [`Unauthorized`] if `sender` is neither the owner nor the validator
-    /// - [`NotIpPort`] / [`NotIp`] if the new endpoints fail validation
-    /// - [`IngressAlreadyExists`] if the new ingress IP is already in use
+    /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
+    /// - `Unauthorized` — `sender` is neither the owner nor the validator
+    /// - `NotIpPort` / `NotIp` — the new endpoints fail validation
+    /// - `IngressAlreadyExists` — the new ingress IP is already in use
     pub fn set_ip_addresses(
         &mut self,
         sender: Address,
@@ -704,10 +704,10 @@ impl ValidatorConfigV2 {
     /// entry and creates a new one pointing to the same slot.
     ///
     /// # Errors
-    /// - [`ValidatorNotFound`] / [`ValidatorAlreadyDeleted`] if `idx` is invalid
-    /// - [`NotInitialized`] / [`Unauthorized`] on auth failure
-    /// - [`InvalidValidatorAddress`] if `newAddress` is zero
-    /// - [`AddressAlreadyHasValidator`] if `newAddress` belongs to an active validator
+    /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
+    /// - `NotInitialized` / `Unauthorized` — auth failure
+    /// - `InvalidValidatorAddress` — `newAddress` is zero
+    /// - `AddressAlreadyHasValidator` — `newAddress` belongs to an active validator
     pub fn transfer_validator_ownership(
         &mut self,
         sender: Address,
@@ -736,8 +736,8 @@ impl ValidatorConfigV2 {
     /// before checking authorization. Returns the (potentially updated) config for reuse.
     ///
     /// # Errors
-    /// - [`AlreadyInitialized`] if V2 is already initialized
-    /// - [`Unauthorized`] if `caller` is not the owner (after copying from V1 if needed)
+    /// - `AlreadyInitialized` — V2 is already initialized
+    /// - `Unauthorized` — `caller` is not the owner (after copying from V1 if needed)
     fn require_migration_owner(&mut self, caller: Address) -> Result<Config> {
         let mut config = self.config.read()?.require_not_init()?;
 
@@ -768,9 +768,9 @@ impl ValidatorConfigV2 {
     /// `deactivatedAtHeight = block.number`.
     ///
     /// # Errors
-    /// - [`Unauthorized`] if `sender` is not the owner
-    /// - [`AlreadyInitialized`] if V2 is already initialized
-    /// - [`InvalidMigrationIndex`] if `idx` is out of order
+    /// - `Unauthorized` — `sender` is not the owner
+    /// - `AlreadyInitialized` — V2 is already initialized
+    /// - `InvalidMigrationIndex` — `idx` is out of order
     pub fn migrate_validator(
         &mut self,
         sender: Address,
@@ -857,9 +857,9 @@ impl ValidatorConfigV2 {
     /// mutating functions are unlocked.
     ///
     /// # Errors
-    /// - [`Unauthorized`] if `sender` is not the owner
-    /// - [`AlreadyInitialized`] if V2 is already initialized
-    /// - [`MigrationNotComplete`] if `validator_count + skipped < v1.validator_count`
+    /// - `Unauthorized` — `sender` is not the owner
+    /// - `AlreadyInitialized` — V2 is already initialized
+    /// - `MigrationNotComplete` — `validator_count + skipped < v1.validator_count`
     pub fn initialize_if_migrated(&mut self, sender: Address) -> Result<()> {
         let mut config = self.require_migration_owner(sender)?;
         let v1 = v1();
