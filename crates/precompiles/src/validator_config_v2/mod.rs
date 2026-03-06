@@ -2439,6 +2439,170 @@ mod tests {
     }
 
     #[test]
+    fn test_add_validator_rejects_wrong_key_signature() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            // Generate a valid keypair for a different key
+            let (pubkey, _) = make_test_keypair_and_signature(
+                validator,
+                "192.168.1.1:8000",
+                "192.168.1.1",
+                VALIDATOR_NS_ADD,
+            );
+
+            // Generate signature from a completely different key
+            let (_, wrong_sig) = make_test_keypair_and_signature(
+                validator,
+                "192.168.1.1:8000",
+                "192.168.1.1",
+                VALIDATOR_NS_ADD,
+            );
+
+            vc.storage.set_block_number(200);
+            let result = vc.add_validator(
+                owner,
+                make_add_call(
+                    validator,
+                    pubkey,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    wrong_sig,
+                ),
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::invalid_signature().into())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_add_validator_rejects_wrong_namespace_signature() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            // Sign with ROTATE namespace, but try to ADD
+            let (pubkey, sig) = make_test_keypair_and_signature(
+                validator,
+                "192.168.1.1:8000",
+                "192.168.1.1",
+                VALIDATOR_NS_ROTATE,
+            );
+
+            vc.storage.set_block_number(200);
+            let result = vc.add_validator(
+                owner,
+                make_add_call(validator, pubkey, "192.168.1.1:8000", "192.168.1.1", sig),
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::invalid_signature().into())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_rotate_validator_rejects_wrong_key_signature() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            // Add a valid validator first
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+            )?;
+
+            // Generate a new pubkey for rotation
+            let (new_pubkey, _) = make_test_keypair_and_signature(
+                validator,
+                "10.0.0.1:8000",
+                "10.0.0.1",
+                VALIDATOR_NS_ROTATE,
+            );
+
+            // Sign with a different key
+            let (_, wrong_sig) = make_test_keypair_and_signature(
+                validator,
+                "10.0.0.1:8000",
+                "10.0.0.1",
+                VALIDATOR_NS_ROTATE,
+            );
+
+            vc.storage.set_block_number(300);
+            let result = vc.rotate_validator(
+                owner,
+                IValidatorConfigV2::rotateValidatorCall {
+                    validatorAddress: validator,
+                    publicKey: new_pubkey,
+                    ingress: "10.0.0.1:8000".to_string(),
+                    egress: "10.0.0.1".to_string(),
+                    signature: wrong_sig.into(),
+                },
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::invalid_signature().into())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_add_validator_rejects_malformed_signature() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            let (pubkey, _) = make_test_keypair_and_signature(
+                validator,
+                "192.168.1.1:8000",
+                "192.168.1.1",
+                VALIDATOR_NS_ADD,
+            );
+
+            vc.storage.set_block_number(200);
+            let result = vc.add_validator(
+                owner,
+                make_add_call(
+                    validator,
+                    pubkey,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    vec![0xde, 0xad],
+                ),
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::invalid_signature_format().into())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_ipv4_ipv6_different_ips() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
