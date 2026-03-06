@@ -628,19 +628,18 @@ where
         let subblocks_start = Instant::now();
         let subblocks_count = subblocks.len() as f64;
         let mut subblock_transactions = 0f64;
-        let record_subblock_metrics =
-            |metrics: &TempoPayloadBuilderMetrics,
-             elapsed: std::time::Duration,
-             count: f64,
-             txs: f64| {
-                metrics
-                    .total_subblock_transaction_execution_duration_seconds
-                    .record(elapsed);
-                metrics.subblocks.record(count);
-                metrics.subblocks_last.set(count);
-                metrics.subblock_transactions.record(txs);
-                metrics.subblock_transactions_last.set(txs);
-            };
+        let record_subblock_metrics = |metrics: &TempoPayloadBuilderMetrics,
+                                       elapsed: std::time::Duration,
+                                       count: f64,
+                                       txs: f64| {
+            metrics
+                .total_subblock_transaction_execution_duration_seconds
+                .record(elapsed);
+            metrics.subblocks.record(count);
+            metrics.subblocks_last.set(count);
+            metrics.subblock_transactions.record(txs);
+            metrics.subblock_transactions_last.set(txs);
+        };
         // Apply subblock transactions
         for subblock in &subblocks {
             for tx in subblock.transactions_recovered() {
