@@ -4,10 +4,11 @@ use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{DefaultPayloadBuilderValues, DefaultTxPoolValues};
 use std::{borrow::Cow, str::FromStr, time::Duration};
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::chain_value_parser};
 use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
+const SNAPSHOTS_BASE_URL: &str = "https://snapshots.tempoxyz.dev";
 
 /// Default OTLP logs filter level for telemetry.
 const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
@@ -121,19 +122,57 @@ pub(crate) struct TelemetryConfig {
 }
 
 fn init_download_urls() {
+    let default_download_url = default_download_url(std::env::args());
+
     let download_defaults = DownloadDefaults {
         available_snapshots: vec![
             Cow::Owned(format!("{DEFAULT_DOWNLOAD_URL} (mainnet)")),
             Cow::Borrowed("https://snapshots.tempoxyz.dev/42431 (moderato)"),
-            Cow::Borrowed("https://snapshots.tempoxyz.dev/42429 (andantino)"),
+            Cow::Borrowed("https://snapshots.tempoxyz.dev/42429 (testnet)"),
         ],
-        default_base_url: Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
+        default_base_url: Cow::Owned(default_download_url),
         long_help: None,
     };
 
     download_defaults
         .try_init()
         .expect("failed to initialize download URLs");
+}
+
+fn default_download_url<I, S>(args: I) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let chain = extract_chain_arg(args).unwrap_or_else(|| "mainnet".to_string());
+    let chain_id = chain_value_parser(&chain)
+        .map(|spec| spec.inner.chain_id())
+        .unwrap_or(4217);
+    format!("{SNAPSHOTS_BASE_URL}/{chain_id}")
+}
+
+fn extract_chain_arg<I, S>(args: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut chain = None;
+    let mut it = args.into_iter().map(|arg| arg.as_ref().to_string());
+
+    while let Some(arg) = it.next() {
+        if arg == "--chain" {
+            if let Some(val) = it.next() {
+                chain = Some(val);
+            }
+            continue;
+        }
+
+        if let Some(value) = arg.strip_prefix("--chain=") {
+            chain = Some(value.to_string());
+        }
+    }
+
+    chain
 }
 
 fn init_payload_builder_defaults() {
@@ -172,4 +211,43 @@ pub(crate) fn init_defaults() {
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SNAPSHOTS_BASE_URL, default_download_url, extract_chain_arg};
+
+    #[test]
+    fn default_download_url_is_chain_aware() {
+        let cases = [
+            (
+                vec!["tempo", "download", "--chain", "moderato"],
+                format!("{SNAPSHOTS_BASE_URL}/42431"),
+            ),
+            (
+                vec!["tempo", "download", "--chain", "testnet"],
+                format!("{SNAPSHOTS_BASE_URL}/42429"),
+            ),
+            (
+                vec!["tempo", "download", "--chain", "mainnet"],
+                format!("{SNAPSHOTS_BASE_URL}/4217"),
+            ),
+        ];
+
+        for (args, expected) in cases {
+            assert_eq!(default_download_url(args), expected);
+        }
+    }
+
+    #[test]
+    fn extract_chain_arg_supports_both_forms() {
+        assert_eq!(
+            extract_chain_arg(["tempo", "download", "--chain", "moderato"]).as_deref(),
+            Some("moderato"),
+        );
+        assert_eq!(
+            extract_chain_arg(["tempo", "download", "--chain=testnet"]).as_deref(),
+            Some("testnet"),
+        );
+    }
 }
