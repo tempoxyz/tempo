@@ -1310,6 +1310,9 @@ def "main bench" [
 
             # Promote to virgin baseline
             bench-promote $datadir
+            # Remount after promote (promote leaves volume unmounted, but
+            # bench-recover expects it mounted so it can unmount → recover → remount)
+            bench-mount
             print "Database initialized and promoted to virgin baseline."
         } else {
             print "Using existing virgin snapshot (pass --force-bloat to re-initialize)"
