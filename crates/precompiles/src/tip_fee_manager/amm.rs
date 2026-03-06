@@ -10,8 +10,8 @@ use alloy::{
 };
 use tempo_precompiles_macros::Storable;
 
-/// Constants from the Solidity reference implementation
-pub const M: U256 = uint!(9970_U256); // m = 0.9970 (scaled by 10000)
+/// Fee multiplier for fee swaps: 0.9970 scaled by 10000 (30 bps fee).
+pub const M: U256 = uint!(9970_U256);
 /// Fee multiplier for rebalance swaps: 0.9985 scaled by 10000.
 pub const N: U256 = uint!(9985_U256);
 /// Scale factor for fixed-point AMM arithmetic (10000).
@@ -19,7 +19,10 @@ pub const SCALE: U256 = uint!(10000_U256);
 /// Minimum liquidity locked permanently when initializing a pool.
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 
-/// Compute amount out for a fee swap
+/// Computes the output amount for a fee swap: `amount_in * M / SCALE`.
+///
+/// # Errors
+/// - `UnderOverflow` — multiplication of `amount_in * M` overflows
 #[inline]
 pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
     amount_in
@@ -28,10 +31,12 @@ pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
         .ok_or(TempoPrecompileError::under_overflow())
 }
 
-/// Pool structure matching the Solidity implementation
+/// AMM pool reserves for a user-token / validator-token pair.
 #[derive(Debug, Clone, Default, Storable)]
 pub struct Pool {
+    /// Reserve of the user's fee token.
     pub reserve_user_token: u128,
+    /// Reserve of the validator's fee token.
     pub reserve_validator_token: u128,
 }
 
@@ -47,12 +52,15 @@ impl From<Pool> for ITIPFeeAMM::Pool {
 /// Identifies a directional token pair in the fee AMM.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Storable)]
 pub struct PoolKey {
+    /// The fee token chosen by the user (transaction sender).
     pub user_token: Address,
+    /// The fee token chosen by the validator (block producer).
     pub validator_token: Address,
 }
 
 // TODO(rusowsky): remove this and create a read-only wrapper that is callable from read-only ctx with db access
 impl Pool {
+    /// Decodes a [`Pool`] directly from a raw EVM storage slot value.
     pub fn decode_from_slot(slot_value: U256) -> Self {
         use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
 
@@ -80,21 +88,24 @@ impl PoolKey {
 }
 
 impl TipFeeManager {
-    /// Gets the pool id for a given set of tokens. Note that the pool id is dependent on the
-    /// ordering of the tokens ie. (token_a, token_b) results in a different pool id
-    /// than (token_b, token_a)
+    /// Returns the deterministic pool ID for a directional token pair. Note that the pool id is
+    /// order-dependent: `(A, B)` produces a different ID than `(B, A)`.
     pub fn pool_id(&self, user_token: Address, validator_token: Address) -> B256 {
         PoolKey::new(user_token, validator_token).get_id()
     }
 
-    /// Retrieves a pool for a given `pool_id` from storage
+    /// Returns the [`Pool`] reserves for the given user/validator token pair.
     pub fn get_pool(&self, call: ITIPFeeAMM::getPoolCall) -> Result<Pool> {
         let pool_id = self.pool_id(call.userToken, call.validatorToken);
         self.pools[pool_id].read()
     }
 
-    /// Ensures that pool has enough liquidity for a fee swap and reserves funds.
-    /// Returns the amount out needed for the swap
+    /// Checks that the pool identified by `pool_id` has enough validator-token reserves for the
+    /// fee swap of `max_amount` and returns the required output amount as `u128`.
+    ///
+    /// # Errors
+    /// - `InsufficientLiquidity` — pool validator-token reserve is below the required output
+    /// - `UnderOverflow` — output amount exceeds `u128`
     pub fn check_sufficient_liquidity(&mut self, pool_id: B256, max_amount: U256) -> Result<u128> {
         let amount_out_needed = compute_amount_out(max_amount)?;
         let pool = self.pools[pool_id].read()?;
@@ -114,7 +125,14 @@ impl TipFeeManager {
         self.pending_fee_swap_reservation[pool_id].t_write(amount)
     }
 
-    /// Swap to rebalance a fee token pool
+    /// Executes a rebalance swap: sells `amount_out` of user-token from the pool in exchange for
+    /// validator-token at the rebalance rate (`N / SCALE`). Used by arbitrageurs to rebalance reserves.
+    ///
+    /// # Errors
+    /// - `InvalidAmount` — `amount_out` is zero or exceeds `u128`
+    /// - `InsufficientReserves` — adding `amount_in` overflows the validator reserve
+    /// - `InsufficientLiquidity` — remaining reserve would violate the pending reservation (T1C+)
+    /// - `UnderOverflow` — arithmetic overflow computing `amount_in`
     pub fn rebalance_swap(
         &mut self,
         msg_sender: Address,
@@ -191,7 +209,19 @@ impl TipFeeManager {
         Ok(amount_in)
     }
 
-    /// Mint LP tokens
+    /// Mints LP tokens by depositing validator-token into a pool.
+    ///
+    /// On first deposit the pool is initialized with equal reserves and [`MIN_LIQUIDITY`] is
+    /// permanently locked. Subsequent deposits mint pro-rata to existing supply. Both tokens
+    /// must be distinct, USD-denominated TIP-20s.
+    ///
+    /// # Errors
+    /// - `IdenticalAddresses` — `user_token` equals `validator_token`
+    /// - `InvalidAmount` — `amount_validator_token` is zero or exceeds `u128`
+    /// - `InvalidCurrency` — either token is not USD-denominated
+    /// - `InsufficientLiquidity` — initial deposit ≤ `MIN_LIQUIDITY`, or zero liquidity minted
+    /// - `InvalidSwapCalculation` — pro-rata arithmetic fails
+    /// - `UnderOverflow` — supply or balance overflow
     pub fn mint(
         &mut self,
         msg_sender: Address,
@@ -308,7 +338,19 @@ impl TipFeeManager {
         Ok(liquidity)
     }
 
-    /// Burn LP tokens for a given pool
+    /// Burns LP tokens and returns the pro-rata share of both pool tokens to `to`.
+    ///
+    /// On T1C+ the burn is rejected if the remaining validator-token reserve would fall below
+    /// the pending fee-swap reservation set by [`TipFeeManager::reserve_pool_liquidity`].
+    ///
+    /// # Errors
+    /// - `IdenticalAddresses` — `user_token` equals `validator_token`
+    /// - `InvalidAmount` — `liquidity` is zero or amounts exceed `u128`
+    /// - `InvalidCurrency` — either token is not USD-denominated
+    /// - `InsufficientLiquidity` — caller's balance < `liquidity`, or remaining reserve would
+    ///   violate the pending reservation (T1C+)
+    /// - `InsufficientReserves` — pool reserves underflow after withdrawal
+    /// - `UnderOverflow` — supply or balance arithmetic overflows
     pub fn burn(
         &mut self,
         msg_sender: Address,
@@ -442,8 +484,12 @@ impl TipFeeManager {
         Ok((amount_user_token, amount_validator_token))
     }
 
-    /// Executes a fee swap immediately, converting userToken to validatorToken at the fixed rate m = 0.9970.
-    /// Called by FeeManager.collectFeePostTx during post-transaction fee collection.
+    /// Executes a fee swap, converting `user_token` to `validator_token` at a fixed rate m = 0.997
+    /// Called internally by [`TipFeeManager::collect_fee_post_tx`] during post-tx fee collection.
+    ///
+    /// # Errors
+    /// - `InsufficientLiquidity` — pool validator-token reserve is below the required output
+    /// - `UnderOverflow` — reserve arithmetic overflows or amounts exceed `u128`
     pub fn execute_fee_swap(
         &mut self,
         user_token: Address,
@@ -483,7 +529,7 @@ impl TipFeeManager {
         Ok(amount_out)
     }
 
-    /// Get total supply of LP tokens for a pool
+    /// Returns the total supply of LP tokens for the given pool.
     pub fn get_total_supply(&self, pool_id: B256) -> Result<U256> {
         self.total_supply[pool_id].read()
     }
@@ -493,7 +539,7 @@ impl TipFeeManager {
         self.total_supply[pool_id].write(total_supply)
     }
 
-    /// Get user's LP token balance
+    /// Returns the LP token balance for `user` in the given pool.
     pub fn get_liquidity_balances(&self, pool_id: B256, user: Address) -> Result<U256> {
         self.liquidity_balances[pool_id][user].read()
     }
