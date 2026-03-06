@@ -354,7 +354,7 @@ impl AccountKeychain {
         self.spending_limits[limit_key][call.token].read()
     }
 
-    /// Returns the session key used to authorize the current transaction (`Address::ZERO` = main key).
+    /// Returns the access key used to authorize the current transaction (`Address::ZERO` = root key).
     pub fn get_transaction_key(
         &self,
         _call: getTransactionKeyCall,
