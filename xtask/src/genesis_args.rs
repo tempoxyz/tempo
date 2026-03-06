@@ -424,10 +424,27 @@ impl GenesisArgs {
                 (alpha_token_address, beta_token_address, theta_token_address)
             {
                 println!("Minting pairwise FeeAMM liquidity");
+                let liquidity_amount = U256::from(10u64.pow(10));
                 mint_pairwise_liquidity(
                     alpha,
                     vec![PATH_USD_ADDRESS, beta, theta],
-                    U256::from(10u64.pow(10)),
+                    liquidity_amount,
+                    pathusd_admin,
+                    &mut evm,
+                );
+                // Also mint Beta→PathUSD and Theta→PathUSD pools
+                // (mirrors add-fee-token-liquidity in workflows/setup-liquidity)
+                mint_pairwise_liquidity(
+                    beta,
+                    vec![PATH_USD_ADDRESS],
+                    liquidity_amount,
+                    pathusd_admin,
+                    &mut evm,
+                );
+                mint_pairwise_liquidity(
+                    theta,
+                    vec![PATH_USD_ADDRESS],
+                    liquidity_amount,
                     pathusd_admin,
                     &mut evm,
                 );
@@ -1182,6 +1199,10 @@ fn seed_dex_liquidity(
 
             // Place flip order (bid at tick -10, flips to ask at tick 10)
             dex.place_flip(admin, beta_token, amount, true, -10, 10, false)?;
+
+            // Execute swaps to seed trading history in state
+            dex.swap_exact_amount_in(admin, PATH_USD_ADDRESS, beta_token, amount, 9_000_000)?;
+            dex.swap_exact_amount_out(admin, beta_token, PATH_USD_ADDRESS, 9_000_000, amount)?;
 
             Ok(())
         },
