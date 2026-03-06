@@ -44,7 +44,8 @@ use tempo_contracts::{
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
-        ITIP20Factory, IValidatorConfig, IValidatorConfigV2, VALIDATOR_CONFIG_V2_ADDRESS,
+        ITIP20Factory, IValidatorConfig, IValidatorConfigV2, STABLECOIN_DEX_ADDRESS,
+        VALIDATOR_CONFIG_V2_ADDRESS,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -146,6 +147,10 @@ pub(crate) struct GenesisArgs {
     /// Disable minting pairwise FeeAMM liquidity.
     #[arg(long)]
     no_pairwise_liquidity: bool,
+
+    /// Disable seeding StablecoinDEX with initial orders and swaps.
+    #[arg(long)]
+    no_dex_orders: bool,
 
     /// Timestamp for T0 hardfork activation (0 = genesis).
     #[arg(long, default_value = "0")]
@@ -419,10 +424,27 @@ impl GenesisArgs {
                 (alpha_token_address, beta_token_address, theta_token_address)
             {
                 println!("Minting pairwise FeeAMM liquidity");
+                let liquidity_amount = U256::from(10u64.pow(10));
                 mint_pairwise_liquidity(
                     alpha,
                     vec![PATH_USD_ADDRESS, beta, theta],
-                    U256::from(10u64.pow(10)),
+                    liquidity_amount,
+                    pathusd_admin,
+                    &mut evm,
+                );
+                // Also mint Beta→PathUSD and Theta→PathUSD pools
+                // (mirrors add-fee-token-liquidity in workflows/setup-liquidity)
+                mint_pairwise_liquidity(
+                    beta,
+                    vec![PATH_USD_ADDRESS],
+                    liquidity_amount,
+                    pathusd_admin,
+                    &mut evm,
+                );
+                mint_pairwise_liquidity(
+                    theta,
+                    vec![PATH_USD_ADDRESS],
+                    liquidity_amount,
                     pathusd_admin,
                     &mut evm,
                 );
@@ -431,6 +453,19 @@ impl GenesisArgs {
             }
         } else {
             println!("Skipping pairwise liquidity (--no-pairwise-liquidity)");
+        }
+
+        if !self.no_dex_orders {
+            if let (Some(_alpha), Some(beta), Some(_theta)) =
+                (alpha_token_address, beta_token_address, theta_token_address)
+            {
+                println!("Seeding StablecoinDEX with initial orders and swaps");
+                seed_dex_liquidity(pathusd_admin, beta, &mut evm)?;
+            } else {
+                println!("Skipping DEX seeding (extra tokens not created)");
+            }
+        } else {
+            println!("Skipping DEX seeding (--no-dex-orders)");
         }
 
         evm.ctx_mut()
@@ -1123,4 +1158,53 @@ fn mint_pairwise_liquidity(
             }
         },
     );
+}
+
+/// Seeds the StablecoinDEX with initial orders and swaps so devnets start
+/// with a functioning orderbook. Mirrors the `setup-liquidity` step from
+/// `tempoxyz/workflows`.
+fn seed_dex_liquidity(
+    admin: Address,
+    beta_token: Address,
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || -> eyre::Result<()> {
+            let dex_addr = STABLECOIN_DEX_ADDRESS;
+
+            // Approve DEX to spend BetaUSD and PathUSD on behalf of admin
+            for token in [beta_token, PATH_USD_ADDRESS] {
+                TIP20Token::from_address(token)?.approve(
+                    admin,
+                    ITIP20::approveCall {
+                        spender: dex_addr,
+                        amount: U256::MAX,
+                    },
+                )?;
+            }
+
+            let mut dex = StablecoinDEX::new();
+            let amount: u128 = 100_000_000;
+
+            // Place bid order
+            dex.place(admin, beta_token, amount, true, 10)?;
+
+            // Place ask order
+            dex.place(admin, beta_token, amount, false, 10)?;
+
+            // Place flip order (bid at tick -10, flips to ask at tick 10)
+            dex.place_flip(admin, beta_token, amount, true, -10, 10, false)?;
+
+            // Execute swaps to seed trading history in state
+            dex.swap_exact_amount_in(admin, PATH_USD_ADDRESS, beta_token, amount, 9_000_000)?;
+            dex.swap_exact_amount_out(admin, beta_token, PATH_USD_ADDRESS, 9_000_000, amount)?;
+
+            Ok(())
+        },
+    )
 }
