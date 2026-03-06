@@ -1,6 +1,6 @@
 //! On-chain CLOB (Central Limit Order Book) for [stablecoin trading].
 //!
-//! Supports limit orders, market swaps, and flip orders across USD-denominated
+//! Supports limit orders, market swaps, and flip orders across
 //! TIP-20 token pairs with tick-based pricing and price-time priority.
 //!
 //! [stablecoin trading]: <https://docs.tempo.xyz/protocol/exchange>
