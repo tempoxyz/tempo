@@ -42,6 +42,14 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) system_transactions_execution_duration_seconds: Histogram,
     /// The time it took to finalize the payload in seconds. Includes merging transitions and calculating the state root.
     pub(crate) payload_finalization_duration_seconds: Histogram,
+    /// The time it took to get state provider in seconds.
+    pub(crate) state_provider_duration_seconds: Histogram,
+    /// The time it took to build state DB in seconds.
+    pub(crate) build_state_db_duration_seconds: Histogram,
+    /// The time it took to create the EVM in seconds.
+    pub(crate) create_evm_duration_seconds: Histogram,
+    /// The time it took to apply pre-execution changes in seconds.
+    pub(crate) pre_execution_duration_seconds: Histogram,
     /// Total time it took to build the payload in seconds.
     pub(crate) payload_build_duration_seconds: Histogram,
     /// Gas per second calculated as gas_used / payload_build_duration.
