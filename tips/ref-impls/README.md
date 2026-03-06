@@ -26,7 +26,7 @@ Using tempo-foundry, will run tests against the rust precompiles.
 Run tests against the Solidity reference implementations:
 
 ```bash
-cd docs/specs
+cd tips/ref-impls
 forge test
 ```
 
@@ -47,7 +47,7 @@ forge test --match-test test_mint
 Run tests against the actual Rust precompile implementations:
 
 ```bash
-cd docs/specs
+cd tips/ref-impls
 ./tempo-forge test
 ```
 
