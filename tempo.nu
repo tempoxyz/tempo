@@ -1191,6 +1191,9 @@ def "main bench" [
             | append (if $feature != "local" { [$feature_wt] } else { [] })
         )
 
+        # Prune worktree registrations where the directory no longer exists
+        git worktree prune
+
         for wt in [$baseline_wt $feature_wt] {
             if ($wt | path exists) {
                 print $"Removing stale worktree: ($wt)"
