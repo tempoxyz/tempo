@@ -133,12 +133,14 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             // Read pair count (8 bytes at offset 32)
             let pair_count = u64::from_be_bytes(header_buf[32..40].try_into().unwrap());
 
-            info!(
-                target: "tempo::cli",
-                %address,
-                pair_count,
-                "Processing token storage"
-            );
+            pb.suspend(|| {
+                info!(
+                    target: "tempo::cli",
+                    %address,
+                    pair_count,
+                    "Processing token storage"
+                );
+            });
 
             addresses_seen.insert(address);
 
@@ -158,7 +160,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
             // Read and insert entries
             let mut entry_buf = [0u8; 64];
-            for _ in 0..pair_count {
+            for i in 0..pair_count {
                 reader
                     .read_exact(&mut entry_buf)
                     .wrap_err("failed to read storage entry")?;
@@ -181,6 +183,10 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 storage_entries.push(entry);
 
                 total_entries += 1;
+
+                if i % 65536 == 0 {
+                    pb.set_position(bytes_read);
+                }
             }
 
             pb.set_position(bytes_read);
