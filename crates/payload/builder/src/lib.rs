@@ -234,6 +234,17 @@ where
         } = config;
 
         let start = Instant::now();
+        let record_build_attempt_duration = || {
+            self.metrics
+                .payload_build_duration_seconds
+                .record(start.elapsed())
+        };
+        macro_rules! return_with_build_duration {
+            ($value:expr) => {{
+                record_build_attempt_duration();
+                return $value;
+            }};
+        }
 
         let block_time_millis =
             (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
@@ -247,7 +258,10 @@ where
             self.metrics
                 .state_provider_duration_seconds
                 .record(start.elapsed());
-            res?
+            match res {
+                Ok(provider) => provider,
+                Err(err) => return_with_build_duration!(Err(err.into())),
+            }
         };
         let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
             Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
@@ -362,7 +376,10 @@ where
             self.metrics
                 .create_evm_duration_seconds
                 .record(start.elapsed());
-            res?
+            match res {
+                Ok(builder) => builder,
+                Err(err) => return_with_build_duration!(Err(err)),
+            }
         };
 
         {
@@ -375,7 +392,9 @@ where
             self.metrics
                 .pre_execution_duration_seconds
                 .record(start.elapsed());
-            res?;
+            if let Err(err) = res {
+                return_with_build_duration!(Err(err));
+            }
         }
 
         debug!("building new payload");
@@ -524,7 +543,7 @@ where
                     skipped_nonce_too_low,
                     skipped_invalid_tx,
                 );
-                return Ok(BuildOutcome::Cancelled);
+                return_with_build_duration!(Ok(BuildOutcome::Cancelled));
             }
 
             let is_payment = pool_tx.transaction.is_payment();
@@ -597,7 +616,7 @@ where
                         skipped_nonce_too_low,
                         skipped_invalid_tx,
                     );
-                    return Err(PayloadBuilderError::evm(err));
+                    return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
                 }
             };
             pool_transactions_executed += 1;
@@ -649,10 +668,10 @@ where
             drop(builder);
             drop(db);
             // can skip building the block
-            return Ok(BuildOutcome::Aborted {
+            return_with_build_duration!(Ok(BuildOutcome::Aborted {
                 fees: total_fees,
                 cached_reads,
-            });
+            }));
         }
 
         let _subblock_span =
@@ -674,11 +693,12 @@ where
                         );
                         self.highest_invalid_subblock
                             .store(builder.evm().block().number.to(), Ordering::Relaxed);
-
-                        return Err(PayloadBuilderError::evm(err));
-                    } else {
-                        return Err(PayloadBuilderError::evm(err));
                     }
+                    let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
+                    self.metrics
+                        .total_subblock_transaction_execution_duration_seconds
+                        .record(total_subblock_transaction_execution_elapsed);
+                    return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
                 }
 
                 subblock_transactions += 1.0;
@@ -703,9 +723,13 @@ where
             let _span = debug_span!(target: "payload_builder", "execute_system_txs").entered();
             let system_txs_execution_start = Instant::now();
             for system_tx in system_txs {
-                builder
-                    .execute_transaction(system_tx)
-                    .map_err(PayloadBuilderError::evm)?;
+                if let Err(err) = builder.execute_transaction(system_tx) {
+                    let elapsed = system_txs_execution_start.elapsed();
+                    self.metrics
+                        .system_transactions_execution_duration_seconds
+                        .record(elapsed);
+                    return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
+                }
             }
             system_txs_execution_start.elapsed()
         };
@@ -721,23 +745,28 @@ where
         let (builder_finish_elapsed, execution_result, block, hashed_state, trie_updates) = {
             let _span = debug_span!(target: "payload_builder", "finish_block").entered();
             let builder_finish_start = Instant::now();
+            let res = builder.finish(&state_provider);
+            let builder_finish_elapsed = builder_finish_start.elapsed();
+            self.metrics
+                .payload_finalization_duration_seconds
+                .record(builder_finish_elapsed);
             let BlockBuilderOutcome {
                 execution_result,
                 block,
                 hashed_state,
                 trie_updates,
-            } = builder.finish(&state_provider)?;
+            } = match res {
+                Ok(outcome) => outcome,
+                Err(err) => return_with_build_duration!(Err(err.into())),
+            };
             (
-                builder_finish_start.elapsed(),
+                builder_finish_elapsed,
                 execution_result,
                 block,
                 hashed_state,
                 trie_updates,
             )
         };
-        self.metrics
-            .payload_finalization_duration_seconds
-            .record(builder_finish_elapsed);
 
         let total_transactions = block.transaction_count();
         self.metrics
@@ -759,10 +788,12 @@ where
         let rlp_length = sealed_block.rlp_length();
 
         if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
-            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-                rlp_length,
-                max_rlp_length: MAX_RLP_BLOCK_SIZE,
-            }));
+            return_with_build_duration!(Err(PayloadBuilderError::other(
+                ConsensusError::BlockTooLarge {
+                    rlp_length,
+                    max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                }
+            )));
         }
 
         let elapsed = start.elapsed();
