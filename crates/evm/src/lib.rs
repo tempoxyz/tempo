@@ -14,6 +14,8 @@ mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]
 mod engine;
+#[cfg(feature = "engine")]
+use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
