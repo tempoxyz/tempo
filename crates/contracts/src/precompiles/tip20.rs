@@ -145,6 +145,19 @@ crate::sol! {
     }
 }
 
+#[cfg(feature = "rpc")]
+impl<P: alloy_contract::private::Provider<N>, N: alloy_contract::private::Network>
+    ITIP20::ITIP20Instance<P, N>
+{
+    /// Queries the transfer policy ID at a specific block.
+    pub async fn transfer_policy_id_at(
+        &self,
+        block: alloy_eips::BlockId,
+    ) -> alloy_contract::Result<u64> {
+        self.transferPolicyId().block(block).call().await
+    }
+}
+
 impl RolesAuthError {
     /// Creates an error for unauthorized access.
     pub const fn unauthorized() -> Self {

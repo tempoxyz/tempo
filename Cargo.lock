@@ -12017,6 +12017,7 @@ name = "tempo-contracts"
 version = "1.4.0"
 dependencies = [
  "alloy-contract",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-provider",
  "alloy-sol-types",

@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 alloy-contract = { workspace = true, optional = true }
+alloy-eips = { workspace = true, optional = true }
 alloy-primitives.workspace = true
 alloy-sol-types = { workspace = true, features = ["json"] }
 
@@ -22,4 +23,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [features]
 default = ["rpc"]
-rpc = ["dep:alloy-contract"]
+rpc = ["dep:alloy-contract", "dep:alloy-eips"]
