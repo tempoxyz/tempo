@@ -31,6 +31,14 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) gas_used: Histogram,
     /// Amount of gas used in the payload.
     pub(crate) gas_used_last: Gauge,
+    /// Time spent fetching the parent state provider.
+    pub(crate) state_provider_duration_seconds: Histogram,
+    /// Time spent constructing the state DB wrapper.
+    pub(crate) build_state_db_duration_seconds: Histogram,
+    /// Time spent creating the EVM/block builder.
+    pub(crate) create_evm_duration_seconds: Histogram,
+    /// Time spent applying pre-execution changes.
+    pub(crate) pre_execution_duration_seconds: Histogram,
     /// The time it took to prepare system transactions in seconds.
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
     /// The time it took to execute one transaction in seconds.
