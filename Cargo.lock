@@ -11921,6 +11921,7 @@ dependencies = [
  "alloy-hardforks",
  "alloy-primitives",
  "eyre",
+ "once_cell",
  "reth-chainspec",
  "reth-cli",
  "reth-network-peers",

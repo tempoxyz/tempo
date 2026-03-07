@@ -16,8 +16,8 @@ alloy = { workspace = true, features = [
   "rlp",
   "providers",
 ] }
-alloy-evm.workspace = true
-alloy-genesis.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
+alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 
 commonware-codec.workspace = true
@@ -39,7 +39,7 @@ reth-ethereum = { workspace = true, features = [
   "test-utils",
   "pool",
 ] }
-reth-network-peers.workspace = true
+reth-network-peers = { workspace = true, features = ["std"] }
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-node-metrics.workspace = true

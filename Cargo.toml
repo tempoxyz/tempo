@@ -117,7 +117,7 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2", default-features = false }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
@@ -141,7 +141,7 @@ reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "
 reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
-reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2", default-features = false }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
@@ -171,9 +171,9 @@ alloy = { version = "1.6.1", default-features = false }
 alloy-consensus = { version = "1.6.1", default-features = false }
 alloy-contract = { version = "1.6.1", default-features = false }
 alloy-eips = { version = "1.6.1", default-features = false }
-alloy-evm = "0.27.3"
+alloy-evm = { version = "0.27.3", default-features = false }
 revm-inspectors = "0.34.2"
-alloy-genesis = "1.6.1"
+alloy-genesis = { version = "1.6.1", default-features = false }
 alloy-hardforks = "0.4.7"
 alloy-network = { version = "1.6.1", default-features = false }
 alloy-primitives = { version = "1.5.4", default-features = false }
@@ -220,6 +220,7 @@ itertools = "0.14.0"
 jiff = { version = "0.2.18", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.3"
+once_cell = { version = "1.19", default-features = false, features = ["critical-section"] }
 p256 = { version = "0.13", default-features = false }
 parking_lot = "0.12.5"
 prometheus-client = "0.24.0"
