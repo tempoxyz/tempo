@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, FixedBytes, U256};
+use alloy_primitives::{Address, FixedBytes, U256};
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use tempo_precompiles::{

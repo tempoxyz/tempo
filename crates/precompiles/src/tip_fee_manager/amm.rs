@@ -4,10 +4,8 @@ use crate::{
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
-use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
-    sol_types::SolValue,
-};
+use alloy_primitives::{Address, B256, U256, keccak256, uint};
+use alloy_sol_types::SolValue;
 use tempo_precompiles_macros::Storable;
 
 /// Constants from the Solidity reference implementation
@@ -511,7 +509,7 @@ impl TipFeeManager {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::Address;
+    use alloy_primitives::Address;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 

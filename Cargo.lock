@@ -12252,16 +12252,19 @@ dependencies = [
 name = "tempo-precompiles"
 version = "1.4.0"
 dependencies = [
- "alloy",
+ "alloy-consensus",
  "alloy-evm",
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "alloy-sol-types",
  "commonware-codec",
  "commonware-cryptography",
  "criterion 0.8.2",
  "derive_more",
  "eyre",
+ "hashbrown 0.15.5",
+ "once_cell",
  "proptest",
  "rand 0.8.5",
  "revm",

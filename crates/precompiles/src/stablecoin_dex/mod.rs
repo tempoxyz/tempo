@@ -21,7 +21,8 @@ use crate::{
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, TIP403Registry},
 };
-use alloy::primitives::{Address, B256, U256};
+use alloc::vec::Vec;
+use alloy_primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
 
 /// Minimum order size of $100 USD
@@ -1256,7 +1257,7 @@ impl StablecoinDEX {
 
         // Find the lowest common ancestor (LCA) using O(n+m) algorithm:
         // Build a HashSet from path_out for O(1) lookups, then iterate path_in
-        let path_out_set: std::collections::HashSet<Address> = path_out.iter().copied().collect();
+        let path_out_set: hashbrown::HashSet<Address> = path_out.iter().copied().collect();
         let mut lca = None;
         for token_a in &path_in {
             if path_out_set.contains(token_a) {
@@ -1421,7 +1422,8 @@ impl StablecoinDEX {
 
 #[cfg(test)]
 mod tests {
-    use alloy::{primitives::IntoLogData, sol_types::SolEvent};
+    use alloy_primitives::IntoLogData;
+    use alloy_sol_types::SolEvent;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 

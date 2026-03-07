@@ -11,7 +11,7 @@ pub mod packing;
 pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
-use alloy::primitives::{Address, LogData, U256};
+use alloy_primitives::{Address, LogData, U256};
 use revm::{
     context::journaled_state::JournalCheckpoint,
     state::{AccountInfo, Bytecode},

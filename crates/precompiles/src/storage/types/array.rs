@@ -11,8 +11,8 @@
 //! - **Packed**: When `T::BYTES <= 16`, multiple elements fit in one slot
 //! - **Unpacked**: When `T::BYTES > 16` or doesn't divide 32, each element uses full slot(s)
 
-use alloy::primitives::{Address, U256};
-use std::ops::{Index, IndexMut};
+use alloy_primitives::{Address, U256};
+use core::ops::{Index, IndexMut};
 use tempo_precompiles_macros;
 
 use crate::{
@@ -84,7 +84,7 @@ impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
     /// Single-slot arrays pack all fields into this slot.
     /// Multi-slot arrays use consecutive slots starting from this base.
     #[inline]
-    pub fn base_slot(&self) -> ::alloy::primitives::U256 {
+    pub fn base_slot(&self) -> ::alloy_primitives::U256 {
         self.base_slot
     }
 

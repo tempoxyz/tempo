@@ -137,8 +137,8 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
         let consts = PackingConstants::new(field.name);
         let (loc_const, (slot_const, offset_const)) = (consts.location(), consts.into_tuple());
         let slots_to_end = quote! {
-            ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
-                .saturating_sub(::alloy::primitives::U256::ONE)
+            ::alloy_primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
+                .saturating_sub(::alloy_primitives::U256::ONE)
         };
 
         // Generate byte count constants for each field
@@ -153,7 +153,7 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
                 // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
                 // by computing the slot as: `SLOT = SLOT + (TYPE_LEN - 1)  - (TYPE_LEN - 1)`
                 let slot_expr = quote! {
-                    ::alloy::primitives::uint!(#slot_lit)
+                    ::alloy_primitives::uint!(#slot_lit)
                         .checked_add(#slots_to_end).expect("slot overflow")
                         .saturating_sub(#slots_to_end)
                 };
@@ -180,7 +180,7 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
                     // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
                     // by computing the slot as: `SLOT = SLOT + (TYPE_LEN - 1)  - (TYPE_LEN - 1)`
                     let slot_expr = quote! {
-                        ::alloy::primitives::U256::from_limbs([#(#limbs),*])
+                        ::alloy_primitives::U256::from_limbs([#(#limbs),*])
                             .checked_add(#slots_to_end).expect("slot overflow")
                             .saturating_sub(#slots_to_end)
                     };
@@ -194,7 +194,7 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
 
         // Generate slot constant without suffix (U256) and offset constant (usize)
         constants.extend(quote! {
-            pub const #slot_const: ::alloy::primitives::U256 = #slot_expr;
+            pub const #slot_const: ::alloy_primitives::U256 = #slot_expr;
             pub const #offset_const: usize = #offset_expr;
         });
 
@@ -298,11 +298,11 @@ pub(crate) fn gen_slot_packing_logic(
 ) -> (TokenStream, TokenStream) {
     // Helper for converting SLOTS to U256
     let prev_layout_slots = quote! {
-        ::alloy::primitives::U256::from_limbs([<#prev_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
+        ::alloy_primitives::U256::from_limbs([<#prev_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
     };
     let curr_slots_to_end = quote! {
-        ::alloy::primitives::U256::from_limbs([<#curr_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
-            .saturating_sub(::alloy::primitives::U256::ONE)
+        ::alloy_primitives::U256::from_limbs([<#curr_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
+            .saturating_sub(::alloy_primitives::U256::ONE)
     };
 
     // Compute packing decision at compile-time
@@ -383,7 +383,7 @@ pub(crate) fn gen_collision_check_fn(
     all_fields: &[LayoutField<'_>],
 ) -> (Ident, TokenStream) {
     fn gen_slot_count_expr(ty: &Type) -> TokenStream {
-        quote! { ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) }
+        quote! { ::alloy_primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) }
     }
 
     let check_fn_name = format_ident!("__check_collision_{}", field.name);

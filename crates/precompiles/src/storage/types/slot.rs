@@ -1,5 +1,5 @@
-use alloy::primitives::{Address, U256};
-use std::marker::PhantomData;
+use alloy_primitives::{Address, U256};
+use core::marker::PhantomData;
 
 use crate::{
     error::Result,
@@ -235,7 +235,7 @@ mod tests {
         storage::{Handler, PrecompileStorageProvider, StorageKey},
         test_util::setup_storage,
     };
-    use alloy::primitives::{Address, B256};
+    use alloy_primitives::{Address, B256};
     use proptest::prelude::*;
 
     // Property test strategies

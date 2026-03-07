@@ -17,7 +17,7 @@ use crate::{
     error::Result,
     storage::{Handler, Mapping, packing::insert_into_word},
 };
-use alloy::primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, U256};
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Key information stored in the precompile
@@ -119,7 +119,7 @@ impl AccountKeychain {
     /// This is used to access `spending_limits[key][token]` where `key` is the result
     /// of this function. The hash combines account and key_id to avoid triple nesting.
     pub fn spending_limit_key(account: Address, key_id: Address) -> B256 {
-        use alloy::primitives::keccak256;
+        use alloy_primitives::keccak256;
         let mut data = [0u8; 40];
         data[..20].copy_from_slice(account.as_slice());
         data[20..].copy_from_slice(key_id.as_slice());
@@ -594,7 +594,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };
-    use alloy::primitives::{Address, U256};
+    use alloy_primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IAccountKeychain::SignatureType;
 

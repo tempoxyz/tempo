@@ -6,10 +6,8 @@ use crate::{
     tip20::{ITIP20, TIP20Token},
     unknown_selector, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy_primitives::Address;
+use alloy_sol_types::{SolCall, SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
@@ -20,7 +18,7 @@ enum TIP20Call {
 }
 
 impl TIP20Call {
-    fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
+    fn decode(calldata: &[u8]) -> Result<Self, alloy_sol_types::Error> {
         // safe to expect as `dispatch_call` pre-validates calldata len
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
@@ -221,10 +219,8 @@ mod tests {
         tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
-    use alloy::{
-        primitives::{Bytes, U256, address},
-        sol_types::{SolCall, SolError, SolInterface, SolValue},
-    };
+    use alloy_primitives::{Bytes, U256, address};
+    use alloy_sol_types::{SolCall, SolError, SolInterface, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
@@ -645,7 +641,7 @@ mod tests {
                 .with_mint(sender, initial_balance)
                 .apply()?;
 
-            let memo = alloy::primitives::B256::from([1u8; 32]);
+            let memo = alloy_primitives::B256::from([1u8; 32]);
             let transfer_call = ITIP20::transferWithMemoCall {
                 to: recipient,
                 amount: transfer_amount,
@@ -787,8 +783,8 @@ mod tests {
                 value: U256::ZERO,
                 deadline: U256::MAX,
                 v: 27,
-                r: alloy::primitives::B256::ZERO,
-                s: alloy::primitives::B256::ZERO,
+                r: alloy_primitives::B256::ZERO,
+                s: alloy_primitives::B256::ZERO,
             }
             .abi_encode();
             let result = token.call(&permit_calldata, admin)?;

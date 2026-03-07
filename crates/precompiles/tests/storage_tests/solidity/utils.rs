@@ -1,4 +1,4 @@
-use alloy::primitives::U256;
+use alloy_primitives::U256;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path, process::Command};
 
