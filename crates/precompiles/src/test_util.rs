@@ -8,10 +8,8 @@ use crate::{
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
 };
-use alloy::{
-    primitives::{Address, B256, U256},
-    sol_types::SolError,
-};
+use alloy_primitives::{Address, B256, U256};
+use alloy_sol_types::SolError;
 use revm::precompile::PrecompileError;
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
@@ -381,7 +379,8 @@ fn is_initialized(address: Address) -> Result<bool> {
 
 #[cfg(any(test, feature = "test-utils"))]
 fn get_tip20_admin(token: Address) -> Option<Address> {
-    use alloy::{primitives::Log, sol_types::SolEvent};
+    use alloy_primitives::Log;
+    use alloy_sol_types::SolEvent;
     use tempo_contracts::precompiles::ITIP20Factory;
 
     let events = StorageCtx.get_events(TIP20_FACTORY_ADDRESS);

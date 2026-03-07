@@ -51,7 +51,7 @@ pub(crate) fn gen_handler_field_init(
     let slot_expr = if is_contract {
         quote! { #const_mod::#slot_const }
     } else {
-        quote! { base_slot.saturating_add(::alloy::primitives::U256::from_limbs([#const_mod::#loc_const.offset_slots as u64, 0, 0, 0])) }
+        quote! { base_slot.saturating_add(::alloy_primitives::U256::from_limbs([#const_mod::#loc_const.offset_slots as u64, 0, 0, 0])) }
     };
 
     match &field.kind {
@@ -114,7 +114,7 @@ pub(crate) fn gen_struct(
     quote! {
         #vis struct #name {
             #(#handler_fields,)*
-            address: ::alloy::primitives::Address,
+            address: ::alloy_primitives::Address,
             storage: crate::storage::StorageCtx,
         }
     }
@@ -149,7 +149,7 @@ pub(crate) fn gen_constructor(
             #new_fn
 
             #[inline(always)]
-            fn __new(address: ::alloy::primitives::Address) -> Self {
+            fn __new(address: ::alloy_primitives::Address) -> Self {
                 // Run collision detection checks in debug builds
                 #[cfg(debug_assertions)]
                 {
@@ -165,19 +165,19 @@ pub(crate) fn gen_constructor(
 
             #[inline(always)]
             fn __initialize(&mut self) -> crate::error::Result<()> {
-                let bytecode = ::revm::state::Bytecode::new_legacy(::alloy::primitives::Bytes::from_static(&[0xef]));
+                let bytecode = ::revm::state::Bytecode::new_legacy(::alloy_primitives::Bytes::from_static(&[0xef]));
                 self.storage.set_code(self.address, bytecode)?;
 
                 Ok(())
             }
 
             #[inline(always)]
-            fn emit_event(&mut self, event: impl ::alloy::primitives::IntoLogData) -> crate::error::Result<()> {
+            fn emit_event(&mut self, event: impl ::alloy_primitives::IntoLogData) -> crate::error::Result<()> {
                 self.storage.emit_event(self.address, event.into_log_data())
             }
 
             #[cfg(any(test, feature = "test-utils"))]
-            pub fn emitted_events(&self) -> &Vec<::alloy::primitives::LogData> {
+            pub fn emitted_events(&self) -> &Vec<::alloy_primitives::LogData> {
                 self.storage.get_events(self.address)
             }
 
@@ -187,7 +187,7 @@ pub(crate) fn gen_constructor(
             }
 
             #[cfg(any(test, feature = "test-utils"))]
-            pub fn assert_emitted_events(&self, expected: Vec<impl ::alloy::primitives::IntoLogData>) {
+            pub fn assert_emitted_events(&self, expected: Vec<impl ::alloy_primitives::IntoLogData>) {
                 let emitted = self.storage.get_events(self.address);
                 assert_eq!(emitted.len(), expected.len());
 
@@ -204,7 +204,7 @@ pub(crate) fn gen_contract_storage_impl(name: &Ident) -> proc_macro2::TokenStrea
     quote! {
         impl crate::storage::ContractStorage for #name {
             #[inline(always)]
-            fn address(&self) -> ::alloy::primitives::Address {
+            fn address(&self) -> ::alloy_primitives::Address {
                 self.address
             }
 

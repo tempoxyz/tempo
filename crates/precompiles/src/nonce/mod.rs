@@ -9,7 +9,7 @@ use crate::{
     error::Result,
     storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, U256};
 
 /// Capacity of the expiring nonce seen set (supports 10k TPS for 30 seconds).
 pub const EXPIRING_NONCE_SET_CAPACITY: u32 = 300_000;
@@ -181,7 +181,7 @@ mod tests {
     };
 
     use super::*;
-    use alloy::primitives::address;
+    use alloy_primitives::address;
 
     #[test]
     fn test_get_nonce_returns_zero_for_new_key() -> eyre::Result<()> {

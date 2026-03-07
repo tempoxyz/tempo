@@ -1,6 +1,6 @@
 //! Single-word primitives (up-to 32 bytes) implementation for the storage traits.
 
-use alloy::primitives::{Address, U256};
+use alloy_primitives::{Address, U256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use tempo_precompiles_macros;
 

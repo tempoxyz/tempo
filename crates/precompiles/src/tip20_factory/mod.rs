@@ -9,10 +9,8 @@ use crate::{
     error::{Result, TempoPrecompileError},
     tip20::{TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
 };
-use alloy::{
-    primitives::{Address, B256, keccak256},
-    sol_types::SolValue,
-};
+use alloy_primitives::{Address, B256, keccak256};
+use alloy_sol_types::SolValue;
 use tracing::trace;
 
 /// Number of reserved addresses (0 to RESERVED_SIZE-1) that cannot be deployed via factory
@@ -225,7 +223,7 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Address, address};
+    use alloy_primitives::{Address, address};
 
     #[test]
     fn test_is_initialized() -> eyre::Result<()> {
@@ -258,7 +256,9 @@ mod tests {
             assert!(is_tip20_prefix(PATH_USD_ADDRESS));
 
             // Address with TIP20 prefix (0x20C0...)
-            let tip20_addr = Address::from(alloy::hex!("20C0000000000000000000000000000000001234"));
+            let tip20_addr = Address::from(alloy_primitives::hex!(
+                "20C0000000000000000000000000000000001234"
+            ));
             assert!(is_tip20_prefix(tip20_addr));
 
             // Random address does not have TIP20 prefix
@@ -485,8 +485,9 @@ mod tests {
             TIP20Setup::path_usd(sender).apply()?;
 
             // Create an address with TIP20 prefix but no code
-            let non_existent_tip20 =
-                Address::from(alloy::hex!("20C0000000000000000000000000000000009999"));
+            let non_existent_tip20 = Address::from(alloy_primitives::hex!(
+                "20C0000000000000000000000000000000009999"
+            ));
             let invalid_call = ITIP20Factory::createTokenCall {
                 name: "Test Token".to_string(),
                 symbol: "TEST".to_string(),

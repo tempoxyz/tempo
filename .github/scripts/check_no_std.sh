@@ -7,6 +7,7 @@ set -eo pipefail
 no_std_crates=(
     tempo-chainspec
     tempo-contracts
+    tempo-precompiles
     tempo-primitives
 )
 

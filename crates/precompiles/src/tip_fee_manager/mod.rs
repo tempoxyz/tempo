@@ -8,13 +8,13 @@ use crate::{
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::B256;
+use alloy_primitives::B256;
 pub use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM,
     TIP_FEE_MANAGER_ADDRESS, TIPFeeAMMError, TIPFeeAMMEvent,
 };
 // Re-export PoolKey for backward compatibility with tests
-use alloy::primitives::{Address, U256, uint};
+use alloy_primitives::{Address, U256, uint};
 use tempo_precompiles_macros::contract;
 
 /// Fee manager precompile that handles transaction fee collection and distribution.

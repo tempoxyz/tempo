@@ -5,7 +5,7 @@ use crate::{
     stablecoin_dex::{IStablecoinDEX, TICK_SPACING},
     storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy_primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinDEXError;
 use tempo_precompiles_macros::Storable;
 
@@ -451,7 +451,7 @@ mod tests {
     use crate::error::TempoPrecompileError;
     use rand_08::Rng;
 
-    use alloy::primitives::address;
+    use alloy_primitives::address;
 
     #[test]
     fn test_tick_level_creation() {

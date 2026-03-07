@@ -1,5 +1,6 @@
-use alloy::primitives::{Address, Log, LogData, U256};
+use alloc::string::ToString;
 use alloy_evm::{EvmInternals, EvmInternalsError};
+use alloy_primitives::{Address, Log, LogData, U256};
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
@@ -274,8 +275,8 @@ pub fn deduct_gas(gas: &mut u64, additional_cost: u64) -> Result<(), TempoPrecom
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, b256, bytes};
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
+    use alloy_primitives::{address, b256, bytes};
     use revm::{
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,

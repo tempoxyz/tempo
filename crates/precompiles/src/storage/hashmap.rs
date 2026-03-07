@@ -1,9 +1,10 @@
-use alloy::primitives::{Address, LogData, U256};
+use alloc::vec::Vec;
+use alloy_primitives::{Address, LogData, U256};
+use hashbrown::HashMap;
 use revm::{
     context::journaled_state::JournalCheckpoint,
     state::{AccountInfo, Bytecode},
 };
-use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
@@ -46,6 +47,7 @@ impl HashMapStorageProvider {
             events: HashMap::new(),
             snapshots: Vec::new(),
             chain_id,
+            #[cfg(feature = "std")]
             #[expect(clippy::disallowed_methods)]
             timestamp: U256::from(
                 std::time::SystemTime::now()
@@ -53,6 +55,8 @@ impl HashMapStorageProvider {
                     .unwrap()
                     .as_secs(),
             ),
+            #[cfg(not(feature = "std"))]
+            timestamp: U256::ZERO,
             beneficiary: Address::ZERO,
             block_number: 0,
             spec,

@@ -45,7 +45,7 @@ fn gen_storable_layout_impl(type_path: &TokenStream, byte_count: usize) -> Token
             const LAYOUT: Layout = Layout::Bytes(#byte_count);
             type Handler = crate::storage::Slot<Self>;
 
-            fn handle(slot: U256, ctx: LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
+            fn handle(slot: U256, ctx: LayoutCtx, address: ::alloy_primitives::Address) -> Self::Handler {
                 crate::storage::Slot::new_with_ctx(slot, ctx, address)
             }
         }
@@ -78,8 +78,8 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
             quote! {
                 impl FromWord for #type_path {
                     #[inline]
-                    fn to_word(&self) -> ::alloy::primitives::U256 {
-                        ::alloy::primitives::U256::from(*self)
+                    fn to_word(&self) -> ::alloy_primitives::U256 {
+                        ::alloy_primitives::U256::from(*self)
                     }
 
                     #[inline]
@@ -93,14 +93,14 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
             quote! {
                 impl FromWord for #type_path {
                     #[inline]
-                    fn to_word(&self) -> ::alloy::primitives::U256 {
-                        ::alloy::primitives::U256::from(*self)
+                    fn to_word(&self) -> ::alloy_primitives::U256 {
+                        ::alloy_primitives::U256::from(*self)
                     }
 
                     #[inline]
-                    fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
+                    fn from_word(word: ::alloy_primitives::U256) -> crate::error::Result<Self> {
                         // Check if value fits in target type
-                        if word > ::alloy::primitives::U256::from(::alloy::primitives::#ty::MAX) {
+                        if word > ::alloy_primitives::U256::from(::alloy_primitives::#ty::MAX) {
                             return Err(crate::error::TempoPrecompileError::under_overflow());
                         }
                         Ok(word.to::<Self>())
@@ -114,7 +114,7 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
                     #[inline]
                     fn to_word(&self) -> U256 {
                         // Store as right-aligned unsigned representation
-                        ::alloy::primitives::U256::from(*self as #unsigned_type)
+                        ::alloy_primitives::U256::from(*self as #unsigned_type)
                     }
 
                     #[inline]
@@ -131,19 +131,19 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
             quote! {
                 impl FromWord for #type_path {
                     #[inline]
-                    fn to_word(&self) -> ::alloy::primitives::U256 {
+                    fn to_word(&self) -> ::alloy_primitives::U256 {
                         // Store as right-aligned unsigned representation
-                        ::alloy::primitives::U256::from(self.into_raw())
+                        ::alloy_primitives::U256::from(self.into_raw())
                     }
 
                     #[inline]
-                    fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
+                    fn from_word(word: ::alloy_primitives::U256) -> crate::error::Result<Self> {
                         // Check if value fits in the unsigned backing type
-                        if word > ::alloy::primitives::U256::from(::alloy::primitives::#unsigned_type::MAX) {
+                        if word > ::alloy_primitives::U256::from(::alloy_primitives::#unsigned_type::MAX) {
                             return Err(crate::error::TempoPrecompileError::under_overflow());
                         }
                         // Extract low bytes as unsigned, then interpret as signed
-                        let unsigned_val = word.to::<::alloy::primitives::#unsigned_type>();
+                        let unsigned_val = word.to::<::alloy_primitives::#unsigned_type>();
                         Ok(Self::from_raw(unsigned_val))
                     }
                 }
@@ -153,14 +153,14 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
             quote! {
                 impl FromWord for #type_path {
                     #[inline]
-                    fn to_word(&self) -> ::alloy::primitives::U256 {
+                    fn to_word(&self) -> ::alloy_primitives::U256 {
                         let mut bytes = [0u8; 32];
                         bytes[32 - #size..].copy_from_slice(&self[..]);
-                        ::alloy::primitives::U256::from_be_bytes(bytes)
+                        ::alloy_primitives::U256::from_be_bytes(bytes)
                     }
 
                     #[inline]
-                    fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
+                    fn from_word(word: ::alloy_primitives::U256) -> crate::error::Result<Self> {
                         let bytes = word.to_be_bytes::<32>();
                         let mut fixed_bytes = [0u8; #size];
                         fixed_bytes.copy_from_slice(&bytes[32 - #size..]);
@@ -193,7 +193,7 @@ fn gen_complete_impl_set(config: &TypeConfig) -> TokenStream {
                 #[inline]
                 fn load<S: crate::storage::StorageOps>(
                     storage: &S,
-                    slot: ::alloy::primitives::U256,
+                    slot: ::alloy_primitives::U256,
                     _ctx: crate::storage::LayoutCtx
                 ) -> crate::error::Result<Self> {
                     storage.load(slot).and_then(<Self as crate::storage::types::FromWord>::from_word)
@@ -203,7 +203,7 @@ fn gen_complete_impl_set(config: &TypeConfig) -> TokenStream {
                 fn store<S: crate::storage::StorageOps>(
                     &self,
                     storage: &mut S,
-                    slot: ::alloy::primitives::U256,
+                    slot: ::alloy_primitives::U256,
                     _ctx: crate::storage::LayoutCtx
                 ) -> crate::error::Result<()> {
                     storage.store(slot, <Self as crate::storage::types::FromWord>::to_word(self))
@@ -264,7 +264,7 @@ fn gen_alloy_integers() -> Vec<TokenStream> {
 
         // Generate unsigned integer configuration and implementation
         let unsigned_config = TypeConfig {
-            type_path: quote! { ::alloy::primitives::#unsigned_type },
+            type_path: quote! { ::alloy_primitives::#unsigned_type },
             byte_count,
             storable_strategy: StorableConversionStrategy::UnsignedAlloy(unsigned_type.clone()),
             storage_key_strategy: StorageKeyStrategy::WithSize(byte_count),
@@ -273,7 +273,7 @@ fn gen_alloy_integers() -> Vec<TokenStream> {
 
         // Generate signed integer configuration and implementation
         let signed_config = TypeConfig {
-            type_path: quote! { ::alloy::primitives::#signed_type },
+            type_path: quote! { ::alloy_primitives::#signed_type },
             byte_count,
             storable_strategy: StorableConversionStrategy::SignedAlloy(unsigned_type.clone()),
             storage_key_strategy: StorageKeyStrategy::SignedRaw(byte_count),
@@ -291,7 +291,7 @@ fn gen_fixed_bytes(sizes: &[usize]) -> Vec<TokenStream> {
     for &size in sizes {
         // Generate FixedBytes configuration and implementation
         let config = TypeConfig {
-            type_path: quote! { ::alloy::primitives::FixedBytes<#size> },
+            type_path: quote! { ::alloy_primitives::FixedBytes<#size> },
             byte_count: size,
             storable_strategy: StorableConversionStrategy::FixedBytes(size),
             storage_key_strategy: StorageKeyStrategy::AsSlice,
@@ -375,7 +375,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
 
             type Handler = crate::storage::types::array::ArrayHandler<#elem_type, #array_size>;
 
-            fn handle(slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
+            fn handle(slot: ::alloy_primitives::U256, ctx: crate::storage::LayoutCtx, address: ::alloy_primitives::Address) -> Self::Handler {
                 debug_assert_eq!(ctx, crate::storage::LayoutCtx::FULL, "Arrays cannot be packed");
                 Self::Handler::new(slot, address)
             }
@@ -384,7 +384,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
         // Implement Storable with full I/O logic
         impl crate::storage::Storable for [#elem_type; #array_size] {
             #[inline]
-            fn load<S: crate::storage::StorageOps>(storage: &S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
+            fn load<S: crate::storage::StorageOps>(storage: &S, slot: ::alloy_primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
                 debug_assert_eq!(
                     ctx, crate::storage::LayoutCtx::FULL,
                     "Arrays can only be loaded with LayoutCtx::FULL"
@@ -396,7 +396,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
             }
 
             #[inline]
-            fn store<S: crate::storage::StorageOps>(&self, storage: &mut S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<()> {
+            fn store<S: crate::storage::StorageOps>(&self, storage: &mut S, slot: ::alloy_primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<()> {
                 debug_assert_eq!(
                     ctx, crate::storage::LayoutCtx::FULL,
                     "Arrays can only be stored with LayoutCtx::FULL"
@@ -459,7 +459,7 @@ fn gen_unpacked_array_load(array_size: &usize) -> TokenStream {
     quote! {
         let mut result = [Default::default(); #array_size];
         for i in 0..#array_size {
-            let elem_slot = base_slot + ::alloy::primitives::U256::from(i);
+            let elem_slot = base_slot + ::alloy_primitives::U256::from(i);
             result[i] = crate::storage::Storable::load(storage, elem_slot, crate::storage::LayoutCtx::FULL)?;
         }
         Ok(result)
@@ -470,7 +470,7 @@ fn gen_unpacked_array_load(array_size: &usize) -> TokenStream {
 fn gen_unpacked_array_store() -> TokenStream {
     quote! {
         for (i, elem) in self.iter().enumerate() {
-            let elem_slot = base_slot + ::alloy::primitives::U256::from(i);
+            let elem_slot = base_slot + ::alloy_primitives::U256::from(i);
             crate::storage::Storable::store(elem, storage, elem_slot, crate::storage::LayoutCtx::FULL)?;
         }
         Ok(())
@@ -531,7 +531,7 @@ pub(crate) fn gen_storable_arrays() -> TokenStream {
         let type_ident = quote::format_ident!("U{}", bit_size);
         let byte_count = bit_size / 8;
         all_impls.extend(gen_arrays_for_type(
-            quote! { ::alloy::primitives::#type_ident },
+            quote! { ::alloy_primitives::#type_ident },
             byte_count,
             &sizes,
         ));
@@ -542,7 +542,7 @@ pub(crate) fn gen_storable_arrays() -> TokenStream {
         let type_ident = quote::format_ident!("I{}", bit_size);
         let byte_count = bit_size / 8;
         all_impls.extend(gen_arrays_for_type(
-            quote! { ::alloy::primitives::#type_ident },
+            quote! { ::alloy_primitives::#type_ident },
             byte_count,
             &sizes,
         ));
@@ -550,7 +550,7 @@ pub(crate) fn gen_storable_arrays() -> TokenStream {
 
     // Address (20 bytes, not packable since 32 % 20 != 0)
     all_impls.extend(gen_arrays_for_type(
-        quote! { ::alloy::primitives::Address },
+        quote! { ::alloy_primitives::Address },
         20,
         &sizes,
     ));
@@ -558,7 +558,7 @@ pub(crate) fn gen_storable_arrays() -> TokenStream {
     // Common FixedBytes types
     for &byte_size in &[20, 32] {
         all_impls.extend(gen_arrays_for_type(
-            quote! { ::alloy::primitives::FixedBytes<#byte_size> },
+            quote! { ::alloy_primitives::FixedBytes<#byte_size> },
             byte_size,
             &sizes,
         ));
@@ -663,7 +663,7 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
 
             type Handler = crate::storage::Slot<Self>;
 
-            fn handle(slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
+            fn handle(slot: ::alloy_primitives::U256, ctx: crate::storage::LayoutCtx, address: ::alloy_primitives::Address) -> Self::Handler {
                 crate::storage::Slot::new_with_ctx(slot, ctx, address)
             }
         }
@@ -671,7 +671,7 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
         // Implement Storable with full I/O logic
         impl crate::storage::Storable for [#struct_type; #array_size] {
             #[inline]
-            fn load<S: crate::storage::StorageOps>(storage: &S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
+            fn load<S: crate::storage::StorageOps>(storage: &S, slot: ::alloy_primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
                 debug_assert_eq!(
                     ctx, crate::storage::LayoutCtx::FULL,
                     "Struct arrays can only be loaded with LayoutCtx::FULL"
@@ -681,7 +681,7 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
             }
 
             #[inline]
-            fn store<S: crate::storage::StorageOps>(&self, storage: &mut S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<()> {
+            fn store<S: crate::storage::StorageOps>(&self, storage: &mut S, slot: ::alloy_primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<()> {
                 debug_assert_eq!(
                     ctx, crate::storage::LayoutCtx::FULL,
                     "Struct arrays can only be stored with LayoutCtx::FULL"
@@ -705,8 +705,8 @@ fn gen_struct_array_load(struct_type: &TokenStream, array_size: usize) -> TokenS
         for i in 0..#array_size {
             // Calculate slot for this element: base_slot + (i * element_slot_count)
             let elem_slot = base_slot.checked_add(
-                ::alloy::primitives::U256::from(i).checked_mul(
-                    ::alloy::primitives::U256::from(<#struct_type as crate::storage::StorableType>::SLOTS)
+                ::alloy_primitives::U256::from(i).checked_mul(
+                    ::alloy_primitives::U256::from(<#struct_type as crate::storage::StorableType>::SLOTS)
                 ).ok_or(crate::error::TempoError::SlotOverflow)?
             ).ok_or(crate::error::TempoError::SlotOverflow)?;
 
@@ -722,8 +722,8 @@ fn gen_struct_array_store(struct_type: &TokenStream) -> TokenStream {
         for (i, elem) in self.iter().enumerate() {
             // Calculate slot for this element: base_slot + (i * element_slot_count)
             let elem_slot = base_slot.checked_add(
-                ::alloy::primitives::U256::from(i).checked_mul(
-                    ::alloy::primitives::U256::from(<#struct_type as crate::storage::StorableType>::SLOTS)
+                ::alloy_primitives::U256::from(i).checked_mul(
+                    ::alloy_primitives::U256::from(<#struct_type as crate::storage::StorableType>::SLOTS)
                 ).ok_or(crate::error::TempoError::SlotOverflow)?
             ).ok_or(crate::error::TempoError::SlotOverflow)?;
 

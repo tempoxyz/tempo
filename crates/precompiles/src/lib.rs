@@ -1,6 +1,10 @@
 //! Tempo precompile implementations.
+#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+
+#[macro_use]
+extern crate alloc;
 
 pub mod error;
 pub use error::{IntoPrecompileResult, Result};
@@ -36,14 +40,11 @@ use crate::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
-#[cfg(test)]
-use alloy::sol_types::SolInterface;
-use alloy::{
-    primitives::{Address, Bytes},
-    sol,
-    sol_types::{SolCall, SolError},
-};
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
+use alloy_primitives::{Address, Bytes};
+#[cfg(test)]
+use alloy_sol_types::SolInterface;
+use alloy_sol_types::{SolCall, SolError, sol};
 use revm::{
     context::CfgEnv,
     handler::EthPrecompiles,
@@ -294,7 +295,7 @@ pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
 #[inline]
 fn dispatch_call<T>(
     calldata: &[u8],
-    decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
+    decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy_sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
     let storage = StorageCtx::default();
@@ -315,7 +316,7 @@ fn dispatch_call<T>(
 
     match result {
         Ok(call) => f(call).map(|res| fill_precompile_output(res, &storage)),
-        Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
+        Err(alloy_sol_types::Error::UnknownSelector { selector, .. }) => {
             unknown_selector(*selector, storage.gas_used())
                 .map(|res| fill_precompile_output(res, &storage))
         }
@@ -329,7 +330,7 @@ fn dispatch_call<T>(
 #[cfg(test)]
 pub fn expect_precompile_revert<E>(result: &PrecompileResult, expected_error: E)
 where
-    E: SolInterface + PartialEq + std::fmt::Debug,
+    E: SolInterface + PartialEq + core::fmt::Debug,
 {
     match result {
         Ok(result) => {
@@ -347,11 +348,11 @@ where
 mod tests {
     use super::*;
     use crate::tip20::TIP20Token;
-    use alloy::primitives::{Address, Bytes, U256, bytes};
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
     };
+    use alloy_primitives::{Address, Bytes, U256, bytes};
     use revm::{
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},

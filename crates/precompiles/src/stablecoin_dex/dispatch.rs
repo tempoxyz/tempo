@@ -1,7 +1,8 @@
 //! Stablecoin DEX precompile
 //!
 //! This module provides the precompile interface for the Stablecoin DEX.
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy_primitives::Address;
+use alloy_sol_types::SolInterface;
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
@@ -113,10 +114,8 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
     };
-    use alloy::{
-        primitives::{Address, U256},
-        sol_types::{SolCall, SolValue},
-    };
+    use alloy_primitives::{Address, U256};
+    use alloy_sol_types::{SolCall, SolValue};
     use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests

@@ -12,7 +12,7 @@
 //! - Values are right-aligned within their byte range
 //! - Types smaller than 32 bytes can pack multiple per slot when dimensions align
 
-use alloy::primitives::U256;
+use alloy_primitives::U256;
 
 use crate::{
     error::Result,
@@ -263,7 +263,7 @@ mod tests {
         },
         test_util::{gen_word_from, setup_storage},
     };
-    use alloy::primitives::Address;
+    use alloy_primitives::Address;
 
     // -- HELPER FUNCTION TESTS ----------------------------------------------------
 

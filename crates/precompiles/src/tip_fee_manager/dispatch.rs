@@ -7,10 +7,8 @@ use crate::{
     },
     unknown_selector, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy_primitives::Address;
+use alloy_sol_types::{SolCall, SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{
     IFeeManager::{self, IFeeManagerCalls},
@@ -24,7 +22,7 @@ enum TipFeeManagerCall {
 }
 
 impl TipFeeManagerCall {
-    fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
+    fn decode(calldata: &[u8]) -> Result<Self, alloy_sol_types::Error> {
         // safe to expect as `dispatch_call` pre-validates calldata len
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
@@ -161,10 +159,8 @@ mod tests {
             amm::{M, MIN_LIQUIDITY, N, PoolKey, SCALE},
         },
     };
-    use alloy::{
-        primitives::{Address, B256, U256},
-        sol_types::{SolCall, SolError, SolValue},
-    };
+    use alloy_primitives::{Address, B256, U256};
+    use alloy_sol_types::{SolCall, SolError, SolValue};
     use tempo_contracts::precompiles::{
         IFeeManager, IFeeManager::IFeeManagerCalls, ITIPFeeAMM, ITIPFeeAMM::ITIPFeeAMMCalls,
     };

@@ -111,7 +111,7 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
 
             type Handler = #handler_name;
 
-            fn handle(slot: ::alloy::primitives::U256, _ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
+            fn handle(slot: ::alloy_primitives::U256, _ctx: crate::storage::LayoutCtx, address: ::alloy_primitives::Address) -> Self::Handler {
                 #handler_name::new(slot, address)
             }
         }
@@ -120,7 +120,7 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         impl #impl_generics crate::storage::Storable for #strukt #ty_generics #where_clause {
             fn load<S: crate::storage::StorageOps>(
                 storage: &S,
-                base_slot: ::alloy::primitives::U256,
+                base_slot: ::alloy_primitives::U256,
                 ctx: crate::storage::LayoutCtx
             ) -> crate::error::Result<Self> {
                 use crate::storage::Storable;
@@ -137,7 +137,7 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
             fn store<S: crate::storage::StorageOps>(
                 &self,
                 storage: &mut S,
-                base_slot: ::alloy::primitives::U256,
+                base_slot: ::alloy_primitives::U256,
                 ctx: crate::storage::LayoutCtx
             ) -> crate::error::Result<()> {
                 use crate::storage::Storable;
@@ -150,7 +150,7 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
 
             fn delete<S: crate::storage::StorageOps>(
                 storage: &mut S,
-                base_slot: ::alloy::primitives::U256,
+                base_slot: ::alloy_primitives::U256,
                 ctx: crate::storage::LayoutCtx
             ) -> crate::error::Result<()> {
                 use crate::storage::Storable;
@@ -195,7 +195,7 @@ fn gen_packing_module_from_ir(fields: &[LayoutField<'_>], mod_ident: &Ident) -> 
 
             #packing_constants
             pub const SLOT_COUNT: usize = (#last_slot_const.saturating_add(
-                ::alloy::primitives::U256::from_limbs([<#last_type as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
+                ::alloy_primitives::U256::from_limbs([<#last_type as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
             )).as_limbs()[0] as usize;
         }
     }
@@ -226,15 +226,15 @@ fn gen_handler_struct(
         /// Provides individual field access via public fields and whole-struct operations.
         #[derive(Debug, Clone)]
         pub struct #handler_name {
-            address: ::alloy::primitives::Address,
-            base_slot: ::alloy::primitives::U256,
+            address: ::alloy_primitives::Address,
+            base_slot: ::alloy_primitives::U256,
             #(#handler_fields,)*
         }
 
         impl #handler_name {
             /// Creates a new handler for the struct at the given base slot.
             #[inline]
-            pub fn new(base_slot: ::alloy::primitives::U256, address: ::alloy::primitives::Address) -> Self {
+            pub fn new(base_slot: ::alloy_primitives::U256, address: ::alloy_primitives::Address) -> Self {
                 Self {
                     base_slot,
                     #(#field_inits,)*
@@ -247,7 +247,7 @@ fn gen_handler_struct(
             /// Single-slot structs pack all fields into this slot.
             /// Multi-slot structs use consecutive slots starting from this base.
             #[inline]
-            pub fn base_slot(&self) -> ::alloy::primitives::U256 {
+            pub fn base_slot(&self) -> ::alloy_primitives::U256 {
                 self.base_slot
             }
 
@@ -313,7 +313,7 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
         let (prev_slot_ref, _) =
             packing::get_neighbor_slot_refs(idx, fields, packing, |(name, _)| name, false);
 
-        let slot_addr = quote! { base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots) };
+        let slot_addr = quote! { base_slot + ::alloy_primitives::U256::from(#packing::#loc_const.offset_slots) };
         let packed_ctx = quote! { crate::storage::LayoutCtx::packed(#packing::#loc_const.offset_bytes) };
 
         if let Some(prev_slot_ref) = prev_slot_ref {
@@ -325,12 +325,12 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                     if <#ty as crate::storage::StorableType>::IS_PACKABLE && curr_offset == prev_offset {
                         // Same slot as previous packable field - reuse cached value
                         let packed = crate::storage::packing::PackedSlot(cached_slot);
-                        <#ty as crate::storage::Storable>::load(&packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?
+                        <#ty as crate::storage::Storable>::load(&packed, ::alloy_primitives::U256::ZERO, #packed_ctx)?
                     } else if <#ty as crate::storage::StorableType>::IS_PACKABLE {
                         // New slot, but packable - load and cache for potential reuse
                         cached_slot = storage.load(#slot_addr)?;
                         let packed = crate::storage::packing::PackedSlot(cached_slot);
-                        <#ty as crate::storage::Storable>::load(&packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?
+                        <#ty as crate::storage::Storable>::load(&packed, ::alloy_primitives::U256::ZERO, #packed_ctx)?
                     } else {
                         // Non-packable - direct load
                         <#ty as crate::storage::Storable>::load(storage, #slot_addr, crate::storage::LayoutCtx::FULL)?
@@ -343,7 +343,7 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                 let #name = if <#ty as crate::storage::StorableType>::IS_PACKABLE {
                     cached_slot = storage.load(#slot_addr)?;
                     let packed = crate::storage::packing::PackedSlot(cached_slot);
-                    <#ty as crate::storage::Storable>::load(&packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?
+                    <#ty as crate::storage::Storable>::load(&packed, ::alloy_primitives::U256::ZERO, #packed_ctx)?
                 } else {
                     <#ty as crate::storage::Storable>::load(storage, #slot_addr, crate::storage::LayoutCtx::FULL)?
                 };
@@ -352,7 +352,7 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
     });
 
     quote! {
-        let mut cached_slot = ::alloy::primitives::U256::ZERO;
+        let mut cached_slot = ::alloy_primitives::U256::ZERO;
         #(#field_loads)*
     }
 }
@@ -373,7 +373,7 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
         let (prev_slot_ref, next_slot_ref) =
             packing::get_neighbor_slot_refs(idx, fields, packing, |(name, _)| name, false);
 
-        let slot_addr = quote! { base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots) };
+        let slot_addr = quote! { base_slot + ::alloy_primitives::U256::from(#packing::#loc_const.offset_slots) };
         let packed_ctx = quote! { crate::storage::LayoutCtx::packed(#packing::#loc_const.offset_bytes) };
 
         // Determine if we need to store after this field
@@ -396,22 +396,22 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                 if <#ty as crate::storage::StorableType>::IS_PACKABLE && curr_offset == prev_offset {
                     // Same slot as previous packable field - accumulate in pending slot
                     let mut packed = crate::storage::packing::PackedSlot(pending_val);
-                    <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?;
+                    <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy_primitives::U256::ZERO, #packed_ctx)?;
                     pending_val = packed.0;
                 } else if <#ty as crate::storage::StorableType>::IS_PACKABLE {
                     // New slot, but packable - commit previous and start new batch
                     if let Some(offset) = pending_offset {
-                        storage.store(base_slot + ::alloy::primitives::U256::from(offset), pending_val)?;
+                        storage.store(base_slot + ::alloy_primitives::U256::from(offset), pending_val)?;
                     }
                     pending_val = storage.load(#slot_addr)?;
                     pending_offset = Some(curr_offset);
                     let mut packed = crate::storage::packing::PackedSlot(pending_val);
-                    <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?;
+                    <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy_primitives::U256::ZERO, #packed_ctx)?;
                     pending_val = packed.0;
                 } else {
                     // Non-packable - commit pending and do direct store
                     if let Some(offset) = pending_offset {
-                        storage.store(base_slot + ::alloy::primitives::U256::from(offset), pending_val)?;
+                        storage.store(base_slot + ::alloy_primitives::U256::from(offset), pending_val)?;
                         pending_offset = None;
                     }
                     <#ty as crate::storage::Storable>::store(&self.#name, storage, #slot_addr, crate::storage::LayoutCtx::FULL)?;
@@ -419,7 +419,7 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
 
                 // Store if this is the last field in the current slot group
                 if let Some(offset) = pending_offset && (#should_store) {
-                    storage.store(base_slot + ::alloy::primitives::U256::from(offset), pending_val)?;
+                    storage.store(base_slot + ::alloy_primitives::U256::from(offset), pending_val)?;
                     pending_offset = None;
                 }
             }}
@@ -430,7 +430,7 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                     pending_val = storage.load(#slot_addr)?;
                     pending_offset = Some(#packing::#loc_const.offset_slots);
                     let mut packed = crate::storage::packing::PackedSlot(pending_val);
-                    <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?;
+                    <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy_primitives::U256::ZERO, #packed_ctx)?;
                     pending_val = packed.0;
 
                     // Store if this is the last field in the current slot group
@@ -446,7 +446,7 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
     });
 
     quote! {
-        let mut pending_val = ::alloy::primitives::U256::ZERO;
+        let mut pending_val = ::alloy_primitives::U256::ZERO;
         let mut pending_offset: Option<usize> = None;
         #(#field_stores)*
     }
@@ -461,7 +461,7 @@ fn gen_delete_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
             if <#ty as crate::storage::StorableType>::IS_DYNAMIC {
                 <#ty as crate::storage::Storable>::delete(
                     storage,
-                    base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots),
+                    base_slot + ::alloy_primitives::U256::from(#packing::#loc_const.offset_slots),
                     crate::storage::LayoutCtx::FULL
                 )?;
             }
@@ -485,8 +485,8 @@ fn gen_delete_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
             // Only zero this slot if a static field occupies it
             if #(#is_static_slot)||* {
                 storage.store(
-                    base_slot + ::alloy::primitives::U256::from(slot_offset),
-                    ::alloy::primitives::U256::ZERO
+                    base_slot + ::alloy_primitives::U256::from(slot_offset),
+                    ::alloy_primitives::U256::ZERO
                 )?;
             }
         }

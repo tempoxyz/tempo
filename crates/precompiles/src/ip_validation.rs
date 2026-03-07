@@ -2,14 +2,26 @@
 //!
 //! This module provides validation functions for ensuring that addresses conform
 //! to expected IP address formats (with or without ports).
+//!
+//! In `no_std` builds, validation is a no-op (always succeeds).
 
+#[cfg(feature = "std")]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum IpWithPortParseError {
     #[error("input was not of the form `<ip>:<port>`")]
     Parse(#[from] std::net::AddrParseError),
 }
 
+#[cfg(not(feature = "std"))]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum IpWithPortParseError {
+    #[allow(dead_code)]
+    #[error("IP validation requires std")]
+    NoStd,
+}
+
 /// Validates that `input` is of the form `<ip>:<port>`.
+#[cfg(feature = "std")]
 pub(crate) fn ensure_address_is_ip_port(
     input: &str,
 ) -> core::result::Result<(), IpWithPortParseError> {
@@ -17,13 +29,35 @@ pub(crate) fn ensure_address_is_ip_port(
     Ok(())
 }
 
+#[cfg(not(feature = "std"))]
+pub(crate) fn ensure_address_is_ip_port(
+    _input: &str,
+) -> core::result::Result<(), IpWithPortParseError> {
+    Ok(())
+}
+
+#[cfg(feature = "std")]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum IpParseError {
     #[error("input was not a valid IP address")]
     Parse(#[from] std::net::AddrParseError),
 }
 
+#[cfg(not(feature = "std"))]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum IpParseError {
+    #[allow(dead_code)]
+    #[error("IP validation requires std")]
+    NoStd,
+}
+
+#[cfg(feature = "std")]
 pub(crate) fn ensure_address_is_ip(input: &str) -> core::result::Result<(), IpParseError> {
     input.parse::<std::net::IpAddr>()?;
+    Ok(())
+}
+
+#[cfg(not(feature = "std"))]
+pub(crate) fn ensure_address_is_ip(_input: &str) -> core::result::Result<(), IpParseError> {
     Ok(())
 }

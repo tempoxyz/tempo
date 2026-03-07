@@ -4,7 +4,7 @@
 //! https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/test/utils/structs/EnumerableSet.behavior.js
 
 use super::*;
-use alloy::primitives::B256;
+use alloy_primitives::B256;
 use tempo_precompiles::storage::{Mapping, Set, StorageCtx};
 
 fn expect_members_match<T>(

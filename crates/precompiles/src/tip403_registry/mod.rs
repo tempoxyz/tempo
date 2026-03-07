@@ -12,7 +12,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, U256};
+use alloy_primitives::{Address, U256};
 
 /// Registry for [TIP-403] transfer policies. TIP20 tokens reference an ID from this registry
 /// to police transfers between sender and receiver addresses.
@@ -637,10 +637,8 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
-    use alloy::{
-        primitives::{Address, Log},
-        sol_types::SolEvent,
-    };
+    use alloy_primitives::{Address, Log};
+    use alloy_sol_types::SolEvent;
     use rand_08::Rng;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
