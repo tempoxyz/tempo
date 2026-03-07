@@ -16,14 +16,14 @@ use alloy_primitives::{Address, B256, U256};
 use once_cell as _;
 #[cfg(not(feature = "std"))]
 use once_cell::sync::Lazy as LazyLock;
-#[cfg(feature = "std")]
-use std::sync::LazyLock;
 use reth_chainspec::{
     BaseFeeParams, Chain, ChainSpec, DepositContract, DisplayHardforks, EthChainSpec,
     EthereumHardfork, EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks,
     Head,
 };
 use reth_network_peers::NodeRecord;
+#[cfg(feature = "std")]
+use std::sync::LazyLock;
 use tempo_primitives::TempoHeader;
 
 /// T0 base fee: 10 billion attodollars (1×10^10)
