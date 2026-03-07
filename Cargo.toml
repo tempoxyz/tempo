@@ -329,27 +329,27 @@ vergen-git2 = "9.1.0"
 
 [patch.crates-io]
 ## alloy
-alloy = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-consensus = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-contract = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-eips = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-genesis = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-network = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-network-primitives = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-provider = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-rpc-client = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-rpc-types = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-rpc-types-engine = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-rpc-types-eth = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-serde = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-signer = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-signer-local = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-transport = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-transport-http = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
-alloy-json-rpc = { git = "https://github.com/alloy-rs/alloy", rev = "5cc71c46" }
+alloy = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-consensus = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-contract = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-eips = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-genesis = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-network = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-network-primitives = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-provider = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-rpc-client = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-rpc-types = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-rpc-types-engine = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-rpc-types-eth = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-serde = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-signer = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-signer-local = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-transport = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-transport-http = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
+alloy-json-rpc = { git = "https://github.com/alloy-rs/alloy", rev = "100a3325ac4d624f3eb0bd404125750e76edf8ca" }
 
 ## alloy-evm
-alloy-evm = { git = "https://github.com/stevencartavia/evm.git", branch = "alloy-2.0" }
+alloy-evm = { git = "https://github.com/mablr/evm.git", branch = "chore/bump_alloy2.0_rc" }
 
 # Commonware right after after PR #3127 was merged
 commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "540b008ebeb2c94518d9d32adcb0c2a027bee66a" }
