@@ -34,6 +34,8 @@ pub struct TempoBuiltPayload {
     inner: EthBuiltPayload<TempoPrimitives>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+    /// The number of subblocks included in this payload, cached to avoid RLP decoding.
+    subblocks_count: usize,
 }
 
 impl TempoBuiltPayload {
@@ -41,11 +43,18 @@ impl TempoBuiltPayload {
     pub fn new(
         inner: EthBuiltPayload<TempoPrimitives>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+        subblocks_count: usize,
     ) -> Self {
         Self {
             inner,
             executed_block,
+            subblocks_count,
         }
+    }
+
+    /// Returns the number of subblocks included in this payload.
+    pub fn subblocks_count(&self) -> usize {
+        self.subblocks_count
     }
 }
 
