@@ -11866,6 +11866,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "alloy-transport",
+ "dashmap 6.1.0",
  "derive_more",
  "eyre",
  "futures",
