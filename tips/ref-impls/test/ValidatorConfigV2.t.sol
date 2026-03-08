@@ -469,7 +469,7 @@ contract ValidatorConfigV2Test is BaseTest {
                 validator3,
                 _signAdd(PRIV_KEY_2, validator3, ingress3, egress3, validator3)
             );
-            try validatorConfigV2.rotateValidator(4, PUB_KEY_3, ingress2, egress2, hex"0000") {
+            try validatorConfigV2.rotateValidator(4, PUB_KEY_3, ingress3, egress3, hex"0000") {
                 revert CallShouldHaveReverted();
             } catch (bytes memory err) {
                 assertEq(err, abi.encodeWithSelector(InvalidSignatureFormat.selector));
