@@ -1011,12 +1011,18 @@ fn initialize_validator_config_v2(
                 let ingress = addr.to_string();
                 let egress = addr.ip().to_string();
 
-                // message: keccak256(chainId || contractAddr || validatorAddr || ingress || egress || feeRecipient)
+                // message: keccak256(chainId || contractAddr || validatorAddr || uint8(ingress.len)
+                //                    || ingress || uint8(egress.len) || egress || feeRecipient)
                 let mut hasher = Keccak256::new();
                 hasher.update(chain_id.to_be_bytes());
                 hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
                 hasher.update(validator_address.as_slice());
+                hasher.update([u8::try_from(ingress.len())
+                    .expect("validator ingress length must fit in uint8")]);
                 hasher.update(ingress.as_bytes());
+                hasher
+                    .update([u8::try_from(egress.len())
+                        .expect("validator egress length must fit in uint8")]);
                 hasher.update(egress.as_bytes());
                 hasher.update(validator_address.as_slice());
                 let message = hasher.finalize();

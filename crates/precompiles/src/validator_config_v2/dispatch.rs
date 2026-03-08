@@ -196,7 +196,9 @@ mod tests {
                 tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS.as_slice(),
             );
             msg_data.extend_from_slice(validator_addr.as_slice());
+            msg_data.push(u8::try_from("192.168.1.1:8000".len()).unwrap());
             msg_data.extend_from_slice(b"192.168.1.1:8000");
+            msg_data.push(u8::try_from("192.168.1.1".len()).unwrap());
             msg_data.extend_from_slice(b"192.168.1.1");
             msg_data.extend_from_slice(validator_addr.as_slice());
             let message = alloy::primitives::keccak256(&msg_data);
