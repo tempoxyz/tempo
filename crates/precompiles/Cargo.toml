@@ -59,6 +59,9 @@ std = [
     "once_cell/std",
     "tracing/std",
     "thiserror/std",
+    "derive_more/std",
+    "serde/std",
+    "serde_json/std",
 ]
 test-utils = ["std", "alloy-primitives/rand"]
 rpc = ["std", "tempo-contracts/rpc"]
