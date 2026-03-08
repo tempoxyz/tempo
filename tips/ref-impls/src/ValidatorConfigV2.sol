@@ -80,6 +80,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         bytes32 publicKey,
         string calldata ingress,
         string calldata egress,
+        address feeRecipient,
         bytes calldata signature
     )
         external
@@ -90,14 +91,16 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validateAddParams(validatorAddress, publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress)
+            abi.encodePacked(
+                block.chainid, address(this), validatorAddress, ingress, egress, feeRecipient
+            )
         );
         _verifyEd25519Signature(
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"), publicKey, message, signature
         );
 
-        index = _addValidator(validatorAddress, publicKey, ingress, egress, 0);
-        emit ValidatorAdded(index, validatorAddress, publicKey, ingress, egress);
+        index = _addValidator(validatorAddress, publicKey, ingress, egress, feeRecipient, 0);
+        emit ValidatorAdded(index, validatorAddress, publicKey, ingress, egress, feeRecipient);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -108,7 +111,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage v = validatorsArray[idx];
         if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         _checkOnlyOwnerOrValidator(v.validatorAddress);
@@ -166,7 +169,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage oldValidator = validatorsArray[idx];
         if (oldValidator.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         address validatorAddress = oldValidator.validatorAddress;
@@ -191,6 +194,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
                 validatorAddress: validatorAddress,
                 ingress: oldValidator.ingress,
                 egress: oldValidator.egress,
+                feeRecipient: oldValidator.feeRecipient,
                 index: appendedIdx,
                 activeIdx: 0,
                 addedAtHeight: oldValidator.addedAtHeight,
@@ -224,7 +228,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage v = validatorsArray[idx];
         if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         _checkOnlyOwnerOrValidator(v.validatorAddress);
@@ -236,6 +240,24 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         v.ingress = ingress;
         v.egress = egress;
         emit IpAddressesUpdated(idx, ingress, egress, msg.sender);
+    }
+
+    /// @inheritdoc IValidatorConfigV2
+    function setFeeRecipient(uint64 idx, address feeRecipient) external {
+        if (idx >= validatorsArray.length) {
+            revert ValidatorNotFound();
+        }
+
+        ValidatorStorage storage v = validatorsArray[idx];
+        if (v.deactivatedAtHeight != 0) {
+            revert ValidatorAlreadyDeactivated();
+        }
+
+        _checkOnlyOwnerOrValidator(v.validatorAddress);
+
+        v.feeRecipient = feeRecipient;
+
+        emit FeeRecipientUpdated(idx, feeRecipient, msg.sender);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -257,7 +279,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage v = validatorsArray[idx];
         if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         address currentAddress = v.validatorAddress;
@@ -392,6 +414,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             v1Val.publicKey,
             v1Val.inboundAddress,
             egress,
+            address(0),
             nowActive ? 0 : uint64(block.number)
         );
         emit ValidatorMigrated(migratedIdx, v1Val.validatorAddress, v1Val.publicKey);
@@ -425,6 +448,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             validatorAddress: v.validatorAddress,
             ingress: v.ingress,
             egress: v.egress,
+            feeRecipient: v.feeRecipient,
             index: v.index,
             addedAtHeight: v.addedAtHeight,
             deactivatedAtHeight: v.deactivatedAtHeight
@@ -475,6 +499,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         bytes32 publicKey,
         string memory ingress,
         string memory egress,
+        address feeRecipient,
         uint64 deactivatedAtHeight
     )
         internal
@@ -495,6 +520,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             validatorAddress: validatorAddress,
             ingress: ingress,
             egress: egress,
+            feeRecipient: feeRecipient,
             index: idx,
             activeIdx: activeIdx,
             addedAtHeight: uint64(block.number),
