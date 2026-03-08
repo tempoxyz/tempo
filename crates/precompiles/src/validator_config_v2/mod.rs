@@ -73,7 +73,7 @@ pub struct ValidatorConfigV2 {
     address_to_index: Mapping<Address, u64>,
     pubkey_to_index: Mapping<B256, u64>,
     next_dkg_ceremony: u64,
-    migration_skipped_count: u64,
+    migration_skipped_count: u16,
     active_ingresses: Mapping<B256, bool>,
     active_indices: Vec<u64>,
 }
