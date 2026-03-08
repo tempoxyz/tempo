@@ -72,6 +72,7 @@ pub struct ValidatorConfigV2 {
     address_to_index: Mapping<Address, u64>,
     pubkey_to_index: Mapping<B256, u64>,
     next_dkg_ceremony: u64,
+    migration_skipped_count: u16,
     active_ingress_ips: Mapping<B256, bool>,
     active_indices: Vec<u64>,
 }
@@ -611,29 +612,55 @@ impl ValidatorConfigV2 {
         self.require_migration_owner(sender)?;
         let block_height = self.storage.block_number();
 
-        let current_count = self.validator_count()?;
-        if call.idx != current_count {
+        let v1 = v1();
+        let v1_count = v1.validator_count()?;
+        let migrated = self.validator_count()?;
+        let skipped = self.migration_skipped_count.read()?;
+
+        let total_processed = migrated + u64::from(skipped);
+        if call.idx + total_processed + 1 != v1_count {
             Err(ValidatorConfigV2Error::invalid_migration_index())?
         }
 
-        let v1 = v1();
-        if call.idx >= v1.validator_count()? {
-            Err(ValidatorConfigV2Error::validator_not_found())?
-        }
         let v1_val = v1.validators(v1.validators_array(call.idx)?)?;
 
-        self.require_new_address(v1_val.validatorAddress)?;
-        self.require_new_pubkey(v1_val.publicKey)?;
+        // Closure to skipping a validator when one of the checks fails
+        let skip = |s: &mut Self| s.migration_skipped_count.write(skipped.saturating_add(1));
 
-        let egress = v1_val
-            .outboundAddress
-            .parse::<std::net::SocketAddr>()
-            .map(|sa| sa.ip().to_string())
-            .unwrap_or(v1_val.outboundAddress);
+        // Skip if public key decoding fails
+        if PublicKey::decode(v1_val.publicKey.as_slice()).is_err() {
+            return skip(self);
+        }
 
-        let ingress_hash = self.require_unique_ingress_ip(&v1_val.inboundAddress)?;
+        // Skip if egress decoding fails
+        let egress = match v1_val.outboundAddress.parse::<std::net::SocketAddr>() {
+            Ok(sa) => sa.ip().to_string(),
+            Err(_) => return skip(self),
+        };
 
-        let deactivated_at_height = if v1_val.active { 0 } else { block_height };
+        // Skip if public key is a duplicate of an existing entry
+        if self.pubkey_to_index[v1_val.publicKey].read()? != 0 {
+            return skip(self);
+        }
+
+        // Skip if address is a duplicate of an existing entry
+        let addr_idx = self.address_to_index[v1_val.validatorAddress].read()?;
+        if addr_idx != 0
+            && self.validators[(addr_idx - 1) as usize]
+                .deactivated_at_height
+                .read()?
+                == 0
+        {
+            Err(ValidatorConfigV2Error::address_already_has_validator())?
+        }
+
+        let now_active = v1_val.active;
+        let ingress_hash = Self::ingress_ip_key(&v1_val.inboundAddress)?;
+
+        // Skip if ingress ip hash is a duplicate of an existing entry
+        if now_active && self.active_ingress_ips[ingress_hash].read()? {
+            return skip(self);
+        }
 
         self.append_validator(
             v1_val.validatorAddress,
@@ -641,10 +668,10 @@ impl ValidatorConfigV2 {
             v1_val.inboundAddress,
             egress,
             block_height,
-            deactivated_at_height,
+            if now_active { 0 } else { block_height },
         )?;
 
-        if deactivated_at_height == 0 {
+        if now_active {
             self.active_ingress_ips[ingress_hash].write(true)?;
         }
 
@@ -657,7 +684,9 @@ impl ValidatorConfigV2 {
 
         // NOTE: this count comparison is sufficient because `add_validator` and
         // `rotate_validator` are blocked until the contract is initialized.
-        if self.validator_count()? < v1.validator_count()? {
+        if self.validator_count()? + u64::from(self.migration_skipped_count.read()?)
+            < v1.validator_count()?
+        {
             Err(ValidatorConfigV2Error::migration_not_complete())?
         }
 
@@ -1403,23 +1432,20 @@ mod tests {
             // Now migrate to V2 (not initialized — migration mode)
             let mut v2 = ValidatorConfigV2::new();
 
-            // Migrate first validator
+            // Migrate second validator first (reverse order)
             v2.storage.set_block_number(100);
-            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 })?;
 
             assert_eq!(v2.validator_count()?, 1);
             let migrated = v2.validator_by_index(0)?;
-            assert_eq!(migrated.validatorAddress, v1_addr);
-            assert_eq!(migrated.publicKey, FixedBytes::<32>::from([0x11; 32]));
-            assert_eq!(migrated.deactivatedAtHeight, 0);
+            assert_eq!(migrated.validatorAddress, v2_addr);
+            assert_eq!(migrated.publicKey, FixedBytes::<32>::from([0x22; 32]));
+            assert_eq!(migrated.deactivatedAtHeight, 100);
 
-            // Migrate second validator
-            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 })?;
+            // Migrate first validator
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
 
             assert_eq!(v2.validator_count()?, 2);
-
-            // Try to initialize before migration complete should fail
-            // (This would fail if we had more V1 validators, but we've migrated all)
 
             // Initialize V2
             v2.storage.set_block_number(400);
@@ -1430,7 +1456,7 @@ mod tests {
             // Migration should be blocked after initialization
             v2.storage.set_block_number(100);
             let result =
-                v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 2 });
+                v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 });
             assert_eq!(
                 result,
                 Err(ValidatorConfigV2Error::already_initialized().into())
@@ -1527,11 +1553,11 @@ mod tests {
                 },
             )?;
 
-            // Try to migrate out of order (skip idx 0, try idx 1)
+            // Try to migrate out of order (should start at idx 1, not idx 0)
             let mut v2 = ValidatorConfigV2::new();
             v2.storage.set_block_number(100);
             let result =
-                v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 });
+                v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 });
 
             assert_eq!(
                 result,
@@ -1574,10 +1600,10 @@ mod tests {
                 },
             )?;
 
-            // Only migrate first validator
+            // Only migrate second validator (reverse order starts at idx 1)
             let mut v2 = ValidatorConfigV2::new();
             v2.storage.set_block_number(100);
-            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 })?;
 
             // Try to initialize with incomplete migration
             v2.storage.set_block_number(400);
@@ -1866,12 +1892,11 @@ mod tests {
     }
 
     #[test]
-    fn test_migrate_rejects_duplicate_ips() -> eyre::Result<()> {
+    fn test_migrate_skips_duplicate_ingress_ip() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            // V1 with duplicate ingress
             let mut v1 = v1();
             v1.initialize(owner)?;
             v1.add_validator(
@@ -1895,15 +1920,118 @@ mod tests {
                 },
             )?;
 
-            // Migrate first validator succeeds
             let mut v2 = ValidatorConfigV2::new();
             v2.storage.set_block_number(100);
-            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 })?;
 
-            // Second migration should fail due to duplicate ingress
-            let result =
-                v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 });
-            assert!(result.is_err());
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+            assert_eq!(v2.validator_count()?, 1);
+            assert_eq!(v2.migration_skipped_count.read()?, 1);
+
+            v2.storage.set_block_number(400);
+            v2.initialize_if_migrated(owner)?;
+            assert!(v2.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_migrate_skips_invalid_ed25519_pubkey() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut v1 = v1();
+            v1.initialize(owner)?;
+            v1.add_validator(
+                owner,
+                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: Address::random(),
+                    publicKey: FixedBytes::<32>::from([0xDD; 32]),
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+            v1.add_validator(
+                owner,
+                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: Address::random(),
+                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    active: true,
+                    inboundAddress: "192.168.1.2:8000".to_string(),
+                    outboundAddress: "192.168.1.2:9000".to_string(),
+                },
+            )?;
+
+            let mut v2 = ValidatorConfigV2::new();
+            v2.storage.set_block_number(100);
+
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 })?;
+            assert_eq!(v2.validator_count()?, 1);
+
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+            assert_eq!(v2.validator_count()?, 1);
+            assert_eq!(v2.migration_skipped_count.read()?, 1);
+
+            v2.storage.set_block_number(400);
+            v2.initialize_if_migrated(owner)?;
+            assert!(v2.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_migrate_overwrites_duplicate_pubkey() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let addr1 = Address::random();
+        let addr2 = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut v1 = v1();
+            v1.initialize(owner)?;
+            v1.add_validator(
+                owner,
+                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: addr1,
+                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+            v1.add_validator(
+                owner,
+                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: addr2,
+                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    active: true,
+                    inboundAddress: "192.168.1.2:8000".to_string(),
+                    outboundAddress: "192.168.1.2:9000".to_string(),
+                },
+            )?;
+
+            let mut v2 = ValidatorConfigV2::new();
+            v2.storage.set_block_number(100);
+
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 1 })?;
+            assert_eq!(v2.validator_count()?, 1);
+
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+            assert_eq!(v2.validator_count()?, 1);
+            assert_eq!(v2.migration_skipped_count.read()?, 1);
+
+            let migrated = v2.validator_by_index(0)?;
+            assert_eq!(migrated.validatorAddress, addr2);
+            assert_eq!(migrated.ingress, "192.168.1.2:8000");
+            assert_eq!(migrated.egress, "192.168.1.2");
+
+            v2.storage.set_block_number(400);
+            v2.initialize_if_migrated(owner)?;
+            assert!(v2.is_initialized()?);
 
             Ok(())
         })

@@ -49,11 +49,14 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @dev Ghost tracking for initialization height
     uint64 private _ghostInitializedAtHeight;
 
-    /// @dev Ghost tracking for sequential migration index
+    /// @dev Ghost tracking for reverse-order migration index (counts down from V1_SETUP_COUNT-1)
     uint64 private _ghostNextMigrationIndex;
 
     /// @dev Ghost tracking for total validator count (append-only, never decreases)
     uint256 private _ghostTotalCount;
+
+    /// @dev Ghost mapping from V2 array index to V1 index (for migration identity checks)
+    mapping(uint64 => uint64) private _ghostV2ToV1Index;
 
     /// @dev Ghost tracking for active ingress IP hashes (to match contract's IP uniqueness enforcement)
     mapping(bytes32 => bool) private _ghostActiveIngressIpHashes;
@@ -77,7 +80,8 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         // Add V1 validators — migration and initialization driven by the fuzzer
         for (uint256 i = 0; i < V1_SETUP_COUNT; i++) {
             address addr = address(uint160(0xA000 + i));
-            bytes32 pubKey = keccak256(abi.encode("v1_setup_pubkey", i));
+            // Seed V1 with valid Ed25519 pubkeys so migration does not skip fixtures.
+            (bytes32 pubKey,) = vm.createEd25519Key(keccak256(abi.encode("v1_setup_pubkey", i)));
             string memory ingress =
                 string(abi.encodePacked("10.0.0.", _uint8ToString(uint8(100 + i)), ":8000"));
             string memory egress =
@@ -87,6 +91,8 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
         // V2 owner starts as address(0) — auto-set from V1 on first migrateValidator call
         _ghostOwner = address(0);
+        // Reverse-order migration: start from highest V1 index
+        _ghostNextMigrationIndex = uint64(V1_SETUP_COUNT - 1);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -864,23 +870,31 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
                 _ghostOwner = validatorConfig.owner();
             }
 
-            IValidatorConfigV2.Validator memory v2 = validatorConfigV2.validatorByIndex(idx);
+            // V2 array index is the current total count (append-only)
+            // forge-lint: disable-next-line(unsafe-typecast)
+            uint64 v2Idx = uint64(_ghostTotalCount);
+            IValidatorConfigV2.Validator memory v2 = validatorConfigV2.validatorByIndex(v2Idx);
 
-            _ghostAddress[idx] = v1Vals[idx].validatorAddress;
-            _ghostPubKey[idx] = v1Vals[idx].publicKey;
-            _ghostAddedAtHeight[idx] = uint64(block.number);
-            _ghostDeactivatedAtHeight[idx] = v1Vals[idx].active ? 0 : uint64(block.number);
-            _ghostIngress[idx] = v2.ingress;
-            _ghostEgress[idx] = v2.egress;
-            _ghostActiveIndex[v1Vals[idx].validatorAddress] = idx;
+            _ghostAddress[v2Idx] = v1Vals[idx].validatorAddress;
+            _ghostPubKey[v2Idx] = v1Vals[idx].publicKey;
+            _ghostAddedAtHeight[v2Idx] = uint64(block.number);
+            _ghostDeactivatedAtHeight[v2Idx] = v1Vals[idx].active ? 0 : uint64(block.number);
+            _ghostIngress[v2Idx] = v2.ingress;
+            _ghostEgress[v2Idx] = v2.egress;
+            _ghostActiveIndex[v1Vals[idx].validatorAddress] = v2Idx;
             _ghostAddressInUse[v1Vals[idx].validatorAddress] = true;
             _ghostPubKeyUsed[v1Vals[idx].publicKey] = true;
+            _ghostV2ToV1Index[v2Idx] = idx;
             if (v1Vals[idx].active) {
                 _ghostActiveIngressIpHashes[_extractIngressIpHash(v2.ingress)] = true;
             }
 
             _ghostTotalCount++;
-            _ghostNextMigrationIndex++;
+            if (_ghostNextMigrationIndex == 0) {
+                _ghostNextMigrationIndex = type(uint64).max;
+            } else {
+                _ghostNextMigrationIndex--;
+            }
 
             // TEMPO-VALV2-25: Migration preserves activity — checked per-handler at migration time,
             // not globally, because migrated validators can be deactivated after migration
@@ -1280,14 +1294,14 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         uint256 migratedCount = v1Vals.length < _ghostTotalCount ? v1Vals.length : _ghostTotalCount;
 
         for (uint256 i = 0; i < migratedCount; i++) {
+            // forge-lint: disable-next-line(unsafe-typecast)
+            uint64 v2Idx = uint64(i);
+            uint64 v1Idx = _ghostV2ToV1Index[v2Idx];
             assertEq(
-                // forge-lint: disable-next-line(unsafe-typecast)
-                _ghostPubKey[uint64(i)],
-                v1Vals[i].publicKey,
+                _ghostPubKey[v2Idx],
+                v1Vals[v1Idx].publicKey,
                 "TEMPO-VALV2-24: Migrated validator public key must match V1"
             );
-            // Note: We don't check address equality because transferValidatorOwnership
-            // can legitimately change addresses post-migration
         }
     }
 

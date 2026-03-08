@@ -109,8 +109,8 @@ contract ValidatorConfigV2Test is BaseTest {
     /// @dev Migrates all V1 validators to V2, then calls initializeIfMigrated().
     function _initializeV2() internal {
         IValidatorConfig.Validator[] memory v1Vals = validatorConfig.getValidators();
-        for (uint64 i = 0; i < v1Vals.length; i++) {
-            validatorConfigV2.migrateValidator(i);
+        for (uint64 i = uint64(v1Vals.length); i > 0; i--) {
+            validatorConfigV2.migrateValidator(i - 1);
         }
         validatorConfigV2.initializeIfMigrated();
     }
@@ -147,9 +147,9 @@ contract ValidatorConfigV2Test is BaseTest {
         IValidatorConfigV2.Validator[] memory vals = validatorConfigV2.getActiveValidators();
         assertEq(vals.length, 5); // 2 setup + 3 added
 
-        // First two are migrated setup validators
-        assertEq(vals[0].validatorAddress, setupVal1);
-        assertEq(vals[1].validatorAddress, setupVal2);
+        // First two are migrated setup validators (reverse-order migration)
+        assertEq(vals[0].validatorAddress, setupVal2);
+        assertEq(vals[1].validatorAddress, setupVal1);
 
         // Newly added validators start at index 2
         assertEq(vals[2].validatorAddress, validator1);
@@ -743,7 +743,7 @@ contract ValidatorConfigV2Test is BaseTest {
         _initializeV2();
 
         IValidatorConfigV2.Validator memory v0 = validatorConfigV2.validatorByIndex(0);
-        assertEq(v0.validatorAddress, setupVal1);
+        assertEq(v0.validatorAddress, setupVal2);
 
         validatorConfigV2.addValidator(
             validator1,
@@ -833,57 +833,59 @@ contract ValidatorConfigV2Test is BaseTest {
         // Add one more inactive V1 validator to test both active/inactive migration.
         validatorConfig.addValidator(validator1, PUB_KEY_0, false, ingress1, "192.168.1.1:9000");
 
-        // First call copies owner from V1
-        validatorConfigV2.migrateValidator(0);
+        // Reverse-order migration: first call (highest index) copies owner from V1
+        validatorConfigV2.migrateValidator(2);
         assertEq(validatorConfigV2.owner(), validatorConfig.owner());
 
         validatorConfigV2.migrateValidator(1);
-        validatorConfigV2.migrateValidator(2);
+        validatorConfigV2.migrateValidator(0);
         assertEq(validatorConfigV2.validatorCount(), 3);
 
-        // Active validator (setUp): addedAtHeight=block.number, deactivatedAtHeight=0
+        // Inactive validator (migrated first from V1 index 2)
         IValidatorConfigV2.Validator memory v0 = validatorConfigV2.validatorByIndex(0);
-        assertEq(v0.validatorAddress, setupVal1);
+        assertEq(v0.validatorAddress, validator1);
         assertEq(v0.addedAtHeight, block.number);
-        assertEq(v0.deactivatedAtHeight, 0);
+        assertEq(v0.deactivatedAtHeight, uint64(block.number));
 
+        // Active validator (setUp, migrated from V1 index 1)
         IValidatorConfigV2.Validator memory v1 = validatorConfigV2.validatorByIndex(1);
         assertEq(v1.validatorAddress, setupVal2);
         assertEq(v1.addedAtHeight, block.number);
         assertEq(v1.deactivatedAtHeight, 0);
 
-        // Inactive validator: addedAtHeight=block.number, deactivatedAtHeight=block.number
+        // Active validator (setUp, migrated from V1 index 0)
         IValidatorConfigV2.Validator memory v2 = validatorConfigV2.validatorByIndex(2);
-        assertEq(v2.validatorAddress, validator1);
+        assertEq(v2.validatorAddress, setupVal1);
         assertEq(v2.addedAtHeight, block.number);
-        assertEq(v2.deactivatedAtHeight, uint64(block.number));
+        assertEq(v2.deactivatedAtHeight, 0);
     }
 
     function test_migrateValidator_fail() public {
         // setUp added 2 V1 validators (setupVal1, setupVal2). V1 has 2 total.
+        // Reverse-order migration: must start at idx 1, then idx 0.
 
-        // 1. InvalidMigrationIndex (skip idx 0, try idx 1 when V2 array is empty)
-        try validatorConfigV2.migrateValidator(1) {
+        // 1. InvalidMigrationIndex (try idx 0 first — must start at idx 1)
+        try validatorConfigV2.migrateValidator(0) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidMigrationIndex.selector));
         }
 
-        // 2. Unauthorized (migrate idx 0 sets owner, then nonOwner tries idx 1)
-        validatorConfigV2.migrateValidator(0);
+        // 2. Unauthorized (migrate idx 1 sets owner, then nonOwner tries idx 0)
+        validatorConfigV2.migrateValidator(1);
         vm.prank(nonOwner);
-        try validatorConfigV2.migrateValidator(1) {
+        try validatorConfigV2.migrateValidator(0) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.Unauthorized.selector));
         }
 
-        // 3. ValidatorNotFound (migrate idx 1, then try idx 2 beyond V1 length)
-        validatorConfigV2.migrateValidator(1);
+        // 3. InvalidMigrationIndex (migrate idx 0 completes, then try idx 2)
+        validatorConfigV2.migrateValidator(0);
         try validatorConfigV2.migrateValidator(2) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.ValidatorNotFound.selector));
+            assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.InvalidMigrationIndex.selector));
         }
 
         // 4. AlreadyInitialized (finalize, then try migrating again)
@@ -903,8 +905,8 @@ contract ValidatorConfigV2Test is BaseTest {
         // setUp added 2 active V1 validators. Set a DKG ceremony to verify it copies.
         validatorConfig.setNextFullDkgCeremony(99);
 
-        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.initializeIfMigrated();
 
         assertTrue(validatorConfigV2.isInitialized());
@@ -915,7 +917,7 @@ contract ValidatorConfigV2Test is BaseTest {
         // setUp added 2 V1 validators (setupVal1, setupVal2).
 
         // 1. MigrationNotComplete (only 1 of 2 migrated)
-        validatorConfigV2.migrateValidator(0);
+        validatorConfigV2.migrateValidator(1);
         try validatorConfigV2.initializeIfMigrated() {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
@@ -923,7 +925,7 @@ contract ValidatorConfigV2Test is BaseTest {
         }
 
         // 2. Unauthorized (all migrated, but nonOwner calls)
-        validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
         vm.prank(nonOwner);
         try validatorConfigV2.initializeIfMigrated() {
             revert CallShouldHaveReverted();
@@ -945,8 +947,8 @@ contract ValidatorConfigV2Test is BaseTest {
     // =========================================================================
 
     function test_addValidator_rejectsDuplicateIngressIp() public {
-        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.initializeIfMigrated();
 
         address newAddr = address(0xDEAD);
@@ -970,12 +972,12 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     function test_ingressIpReuse_afterDeactivation() public {
-        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.initializeIfMigrated();
 
-        // Deactivate setupVal1
-        validatorConfigV2.deactivateValidator(0);
+        // Deactivate setupVal1 (index 1 after reverse migration)
+        validatorConfigV2.deactivateValidator(1);
 
         // Should now allow reusing setupVal1's ingress IP
         address newAddr = address(0xDEAD);
@@ -993,12 +995,13 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     function test_ingressIpCollision_rejected() public {
-        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.initializeIfMigrated();
 
         // setIpAddresses: Try to set setupVal1's ingress IP to setupVal2's ingress IP
-        try validatorConfigV2.setIpAddresses(0, "10.0.0.101:9999", "10.0.0.200") {
+        // setupVal1 is at index 1 after reverse migration
+        try validatorConfigV2.setIpAddresses(1, "10.0.0.101:9999", "10.0.0.200") {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(bytes4(err), IValidatorConfigV2.IngressAlreadyExists.selector);
@@ -1006,7 +1009,7 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // rotateValidator: Try to rotate setupVal1 to setupVal2's ingress IP
         try validatorConfigV2.rotateValidator(
-            0,
+            1,
             PUB_KEY_0,
             "10.0.0.101:9999",
             "10.0.0.200",
@@ -1019,12 +1022,13 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     function test_setIpAddresses_allowsSameIngressPort() public {
-        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.initializeIfMigrated();
 
         // Should allow changing port on same validator's IP
-        validatorConfigV2.setIpAddresses(0, "10.0.0.100:9999", "10.0.0.100");
+        // setupVal1 is at index 1 after reverse migration
+        validatorConfigV2.setIpAddresses(1, "10.0.0.100:9999", "10.0.0.100");
 
         IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
         assertEq(v.ingress, "10.0.0.100:9999", "Should allow port change on same IP");
@@ -1036,13 +1040,14 @@ contract ValidatorConfigV2Test is BaseTest {
 
     function test_migration_stripsPortFromV1Egress() public {
         // V1 stores egress as ip:port, V2 should strip the port
-        validatorConfigV2.migrateValidator(0);
+        // Reverse-order: must start with highest index
+        validatorConfigV2.migrateValidator(1);
 
         IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByIndex(0);
-        // V1 had "10.0.0.100:9000", V2 should have just "10.0.0.100"
-        assertEq(v.egress, "10.0.0.100", "Port should be stripped from V1 egress");
+        // V1 index 1 (setupVal2) had "10.0.0.101:9000", V2 should have just "10.0.0.101"
+        assertEq(v.egress, "10.0.0.101", "Port should be stripped from V1 egress");
         // Ingress should remain unchanged
-        assertEq(v.ingress, "10.0.0.100:8000", "Ingress should remain as ip:port");
+        assertEq(v.ingress, "10.0.0.101:8000", "Ingress should remain as ip:port");
     }
 
     // =========================================================================
@@ -1050,12 +1055,12 @@ contract ValidatorConfigV2Test is BaseTest {
     // =========================================================================
 
     function test_addValidator_allowsReusingDeactivatedAddress() public {
-        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.initializeIfMigrated();
 
-        // Deactivate setupVal1 (index 0)
-        validatorConfigV2.deactivateValidator(0);
+        // Deactivate setupVal1 (index 1 after reverse migration)
+        validatorConfigV2.deactivateValidator(1);
 
         // Should allow reusing setupVal1's address with different IPs
         validatorConfigV2.addValidator(
@@ -1076,8 +1081,8 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     function test_addValidator_rejectsActiveAddress() public {
-        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.initializeIfMigrated();
 
         // Try to add with setupVal1's address (still active)
@@ -1103,8 +1108,8 @@ contract ValidatorConfigV2Test is BaseTest {
     // =========================================================================
 
     function test_deactivateValidator_worksBeforeInit() public {
-        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
 
         // Should work before initialization
         assertFalse(validatorConfigV2.isInitialized());
@@ -1115,12 +1120,13 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     function test_setIpAddresses_worksBeforeInit() public {
-        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
 
         // Should work before initialization
+        // setupVal1 is at index 1 after reverse migration
         assertFalse(validatorConfigV2.isInitialized());
-        validatorConfigV2.setIpAddresses(0, "10.0.0.150:8000", "10.0.0.150");
+        validatorConfigV2.setIpAddresses(1, "10.0.0.150:8000", "10.0.0.150");
 
         IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
         assertEq(v.ingress, "10.0.0.150:8000");
@@ -1128,26 +1134,28 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     function test_deactivateValidator_byValidator_worksBeforeInit() public {
-        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
 
         // Validator can deactivate themselves before initialization
+        // setupVal1 is at index 1 after reverse migration
         assertFalse(validatorConfigV2.isInitialized());
         vm.prank(setupVal1);
-        validatorConfigV2.deactivateValidator(0);
+        validatorConfigV2.deactivateValidator(1);
 
-        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByIndex(0);
+        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByIndex(1);
         assertGt(v.deactivatedAtHeight, 0, "Should be deactivated");
     }
 
     function test_setIpAddresses_byValidator_worksBeforeInit() public {
-        validatorConfigV2.migrateValidator(0);
         validatorConfigV2.migrateValidator(1);
+        validatorConfigV2.migrateValidator(0);
 
         // Validator can update their own IPs before initialization
+        // setupVal1 is at index 1 after reverse migration
         assertFalse(validatorConfigV2.isInitialized());
         vm.prank(setupVal1);
-        validatorConfigV2.setIpAddresses(0, "10.0.0.150:8000", "10.0.0.150");
+        validatorConfigV2.setIpAddresses(1, "10.0.0.150:8000", "10.0.0.150");
 
         IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
         assertEq(v.ingress, "10.0.0.150:8000");
