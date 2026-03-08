@@ -341,16 +341,24 @@ impl MaxTpsArgs {
         .await
         .context("Failed to set default fee token")?;
 
-        // Setup DEX
-        let user_tokens = 2;
-        info!(user_tokens, "Setting up DEX");
-        let (quote_token, user_tokens) = dex::setup(
-            signer_providers,
-            user_tokens,
-            self.max_concurrent_requests,
-            self.max_concurrent_transactions,
-        )
-        .await?;
+        // Setup DEX tokens, pairs, and liquidity only if any DEX transaction type has non-zero
+        // weight. Otherwise, use the fee token for TIP-20 transfers directly.
+        let (quote_token, user_tokens) = if self.place_order_weight > 0.0 || self.swap_weight > 0.0
+        {
+            let user_tokens = 2;
+            info!(user_tokens, "Setting up DEX");
+            let (quote_token, user_tokens) = dex::setup(
+                signer_providers,
+                user_tokens,
+                self.max_concurrent_requests,
+                self.max_concurrent_transactions,
+            )
+            .await?;
+            (Some(quote_token), user_tokens)
+        } else {
+            info!(fee_token = %self.fee_token, "Using fee token for TIP-20 transfers");
+            (None, vec![self.fee_token])
+        };
 
         let erc20_tokens = if self.erc20_weight > 0.0 {
             let num_erc20_tokens = 1;
@@ -421,6 +429,7 @@ impl MaxTpsArgs {
 
         let rate_limiter =
             RateLimiter::direct(Quota::per_second(NonZeroU32::new(self.tps as u32).unwrap()));
+        let start_block_number = provider.get_block_number().await?;
 
         let mut pending_txs =
             generate_transactions(signer_provider_manager.clone(), gen_input, counters.clone())
@@ -491,25 +500,6 @@ impl MaxTpsArgs {
         );
 
         let end_block_number = provider.get_block_number().await?;
-
-        info!("Retrieving first block number from sent transactions");
-        let start_block_number = loop {
-            if let Some(first_tx) = pending_txs.pop_front() {
-                debug!(hash = %first_tx.tx_hash(), "Retrieving transaction receipt for first block number");
-                if let Ok(first_tx_receipt) = first_tx
-                    .with_timeout(Some(Duration::from_secs(5)))
-                    .get_receipt()
-                    .await
-                {
-                    break first_tx_receipt.block_number;
-                }
-            } else {
-                break None;
-            }
-        };
-        let Some(start_block_number) = start_block_number else {
-            eyre::bail!("Failed to retrieve start block number")
-        };
 
         // Collect a sample of receipts and print the stats
         let sample_size = pending_txs.len().min(self.sample_size);
@@ -604,7 +594,7 @@ struct GenerateTransactionsInput {
     place_order_weight: u64,
     swap_weight: u64,
     erc20_weight: u64,
-    quote_token: Address,
+    quote_token: Option<Address>,
     user_tokens: Vec<Address>,
     erc20_tokens: Vec<Address>,
     /// When set, transfers go to these existing addresses instead of `Address::random()`.
@@ -684,6 +674,8 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
 
                     // Swap minimum possible amount
+                    let quote_token =
+                        quote_token.expect("quote_token must be set when swap_weight > 0");
                     exchange
                         .quoteSwapExactAmountIn(token, quote_token, 1)
                         .into_transaction_request()

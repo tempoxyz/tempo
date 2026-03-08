@@ -751,34 +751,29 @@ impl ValidatorConfigV2 {
         let skipped = self.migration_skipped_count.read()?;
 
         let total_processed = migrated + u64::from(skipped);
-        if call.idx >= v1_count || call.idx + total_processed + 1 != v1_count {
+        if call.idx + total_processed + 1 != v1_count {
             Err(ValidatorConfigV2Error::invalid_migration_index())?
         }
 
         let v1_val = v1.validators(v1.validators_array(call.idx)?)?;
 
+        // Closure to skipping a validator when one of the checks fails
+        let skip = |s: &mut Self| s.migration_skipped_count.write(skipped.saturating_add(1));
+
         // Skip if public key decoding fails
         if PublicKey::decode(v1_val.publicKey.as_slice()).is_err() {
-            self.migration_skipped_count
-                .write(skipped.saturating_add(1))?;
-            return Ok(());
+            return skip(self);
         }
 
         // Skip if egress decoding fails
         let egress = match v1_val.outboundAddress.parse::<std::net::SocketAddr>() {
             Ok(sa) => sa.ip().to_string(),
-            Err(_) => {
-                self.migration_skipped_count
-                    .write(skipped.saturating_add(1))?;
-                return Ok(());
-            }
+            Err(_) => return skip(self),
         };
 
         // Skip if public key is a duplicate of an existing entry
         if self.pubkey_to_index[v1_val.publicKey].read()? != 0 {
-            self.migration_skipped_count
-                .write(skipped.saturating_add(1))?;
-            return Ok(());
+            return skip(self);
         }
 
         // Skip if address is a duplicate of an existing entry
