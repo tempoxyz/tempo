@@ -477,7 +477,8 @@ contract ValidatorConfigV2Test is BaseTest {
                 validator3,
                 _signAdd(PRIV_KEY_2, validator3, ingress3, egress3, validator3)
             );
-            try validatorConfigV2.rotateValidator(4, PUB_KEY_3, ingress2, egress2, hex"0000") {
+            string memory uniqueIngress = "10.0.0.3:8000";
+            try validatorConfigV2.rotateValidator(4, PUB_KEY_3, uniqueIngress, egress3, hex"0000") {
                 revert CallShouldHaveReverted();
             } catch (bytes memory err) {
                 assertEq(err, abi.encodeWithSelector(InvalidSignatureFormat.selector));
@@ -1059,36 +1060,36 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     // =========================================================================
-    // IP Uniqueness Tests
+    // Ingress Uniqueness Tests
     // =========================================================================
 
-    function test_addValidator_rejectsDuplicateIngressIp() public {
+    function test_addValidator_rejectsDuplicateIngress() public {
         validatorConfigV2.migrateValidator(1);
         validatorConfigV2.migrateValidator(0);
         validatorConfigV2.initializeIfMigrated();
 
         address newAddr = address(0xDEAD);
 
-        // Try to add validator with same ingress IP as setupVal1 (even with different port)
+        // Try to add validator with same ingress as setupVal1
         try validatorConfigV2.addValidator(
             newAddr,
             PUB_KEY_0,
-            "10.0.0.100:9000",
+            "10.0.0.100:8000",
             "10.0.0.200",
             newAddr,
-            _signAdd(PRIV_KEY_0, newAddr, "10.0.0.100:9000", "10.0.0.200", newAddr)
+            _signAdd(PRIV_KEY_0, newAddr, "10.0.0.100:8000", "10.0.0.200", newAddr)
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(
                 bytes4(err),
                 IValidatorConfigV2.IngressAlreadyExists.selector,
-                "Should revert with IngressAlreadyExists even with different port"
+                "Should revert with IngressAlreadyExists"
             );
         }
     }
 
-    function test_ingressIpReuse_afterDeactivation() public {
+    function test_ingressReuse_afterDeactivation() public {
         validatorConfigV2.migrateValidator(1);
         validatorConfigV2.migrateValidator(0);
         validatorConfigV2.initializeIfMigrated();
@@ -1096,20 +1097,39 @@ contract ValidatorConfigV2Test is BaseTest {
         // Deactivate setupVal1 (index 1 after reverse migration)
         validatorConfigV2.deactivateValidator(1);
 
-        // Should now allow reusing setupVal1's ingress IP
+        // Should now allow reusing setupVal1's ingress
         address newAddr = address(0xDEAD);
-        validatorConfigV2.addValidator(
+        uint64 newVal = validatorConfigV2.addValidator(
             newAddr,
             PUB_KEY_0,
-            "10.0.0.100:9999",
+            "10.0.0.100:8000",
             "10.0.0.200",
             newAddr,
-            _signAdd(PRIV_KEY_0, newAddr, "10.0.0.100:9999", "10.0.0.200", newAddr)
+            _signAdd(PRIV_KEY_0, newAddr, "10.0.0.100:8000", "10.0.0.200", newAddr)
         );
 
-        // Verify new validator has the reused ingress IP (different port is ok)
+        // Verify new validator has the reused ingress
         IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(newAddr);
-        assertEq(v.ingress, "10.0.0.100:9999");
+        assertEq(v.ingress, "10.0.0.100:8000");
+
+        // Rotate in a validator with a different ingress.
+        validatorConfigV2.rotateValidator(
+            newVal,
+            PUB_KEY_1,
+            "10.0.0.100:8001",
+            "10.0.0.200",
+            _signRotate(PRIV_KEY_1, newAddr, "10.0.0.100:8001", "10.0.0.200")
+        );
+        // Verify new validator has a different ingress.
+        v = validatorConfigV2.validatorByAddress(newAddr);
+        assertEq(v.ingress, "10.0.0.100:8001");
+
+        // Set ingress to rotated-out validator.
+        validatorConfigV2.setIpAddresses(newVal, "10.0.0.100:8000", "10.0.0.200");
+
+        // Verify new validator now has the original reused address.
+        v = validatorConfigV2.validatorByAddress(newAddr);
+        assertEq(v.ingress, "10.0.0.100:8000");
     }
 
     function test_ingressIpCollision_rejected() public {
@@ -1117,9 +1137,22 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.migrateValidator(0);
         validatorConfigV2.initializeIfMigrated();
 
-        // setIpAddresses: Try to set setupVal1's ingress IP to setupVal2's ingress IP
+        // setIpAddresses: Try to set setupVal1's ingress IP to setupVal2's ingress
         // setupVal1 is at index 1 after reverse migration
-        try validatorConfigV2.setIpAddresses(1, "10.0.0.101:9999", "10.0.0.200") {
+        try validatorConfigV2.setIpAddresses(1, "10.0.0.101:8000", "10.0.0.200") {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), IValidatorConfigV2.IngressAlreadyExists.selector);
+        }
+
+        // rotateValidator: Try to rotate setupVal1 to own ingress IP
+        try validatorConfigV2.rotateValidator(
+            1,
+            PUB_KEY_0,
+            "10.0.0.100:8000",
+            "10.0.0.200",
+            _signRotate(PRIV_KEY_0, setupVal1, "10.0.0.100:8000", "10.0.0.200")
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(bytes4(err), IValidatorConfigV2.IngressAlreadyExists.selector);
@@ -1129,9 +1162,9 @@ contract ValidatorConfigV2Test is BaseTest {
         try validatorConfigV2.rotateValidator(
             1,
             PUB_KEY_0,
-            "10.0.0.101:9999",
+            "10.0.0.101:8000",
             "10.0.0.200",
-            _signRotate(PRIV_KEY_0, setupVal1, "10.0.0.101:9999", "10.0.0.200")
+            _signRotate(PRIV_KEY_0, setupVal1, "10.0.0.101:8000", "10.0.0.200")
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
