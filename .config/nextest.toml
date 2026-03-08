@@ -4,7 +4,8 @@ retries = 2
 test-threads = "num-cpus"
 
 # Heavy e2e tests that flake under resource contention — run exclusively.
-# threads-required = "num-test-threads" means "use all slots", so no other test runs concurrently.
+# threads-required = "num-test-threads" reserves all slots, so no other test runs concurrently.
+# Scheduled last to avoid blocking the rest of the suite.
 [[profile.ci.overrides]]
 filter = """
   package(tempo-e2e) & (
@@ -15,6 +16,7 @@ filter = """
 """
 failure-output = "immediate"
 threads-required = "num-test-threads"
+priority = -100
 
 # tempo-e2e tests spawn multiple execution nodes, each creating 4 rayon thread
 # pools (cpu, rpc, trie, storage) via reth's Runtime. Even with test_with_handle()
@@ -42,6 +44,7 @@ filter = """
   )
 """
 threads-required = "num-test-threads"
+priority = -100
 
 [[profile.default.overrides]]
 filter = "package(tempo-e2e)"
