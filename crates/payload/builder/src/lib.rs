@@ -112,6 +112,16 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
     })
 }
 
+/// Snapshot of block-level limits and accumulators used by admission checks.
+struct BlockLimits {
+    cumulative_gas_used: u64,
+    non_shared_gas_limit: u64,
+    non_payment_gas_used: u64,
+    general_gas_limit: u64,
+    block_size_used: usize,
+    is_osaka: bool,
+}
+
 /// Returns `Some(reason)` if the transaction should be skipped, `None` if it can execute.
 ///
 /// Pre-computed `is_payment` and `tx_rlp_len` are passed in to avoid duplicate work on the
@@ -120,27 +130,22 @@ fn check_pool_tx_admission(
     tx_gas: u64,
     is_payment: bool,
     tx_rlp_len: usize,
-    cumulative_gas_used: u64,
-    non_shared_gas_limit: u64,
-    non_payment_gas_used: u64,
-    general_gas_limit: u64,
-    block_size_used: usize,
-    is_osaka: bool,
+    limits: &BlockLimits,
 ) -> Option<PoolSkipReason> {
     // Ensure we still have capacity for this transaction within the non-shared gas limit.
     // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
     // be consumed by proposer's pool transactions.
-    let remaining = non_shared_gas_limit.saturating_sub(cumulative_gas_used);
+    let remaining = limits.non_shared_gas_limit.saturating_sub(limits.cumulative_gas_used);
     if tx_gas > remaining {
         return Some(PoolSkipReason::ExceedsNonSharedGasLimit { remaining });
     }
 
-    if !is_payment && non_payment_gas_used + tx_gas > general_gas_limit {
+    if !is_payment && limits.non_payment_gas_used + tx_gas > limits.general_gas_limit {
         return Some(PoolSkipReason::ExceedsNonPaymentGasLimit);
     }
 
-    if is_osaka {
-        let projected = block_size_used + tx_rlp_len;
+    if limits.is_osaka {
+        let projected = limits.block_size_used + tx_rlp_len;
         if projected > MAX_RLP_BLOCK_SIZE {
             return Some(PoolSkipReason::OversizedBlock {
                 projected_size: projected,
@@ -553,16 +558,19 @@ where
             let tx_rlp_len = pool_tx.transaction.inner().length();
 
             // Admission check — skip or execute
-            if let Some(reason) = check_pool_tx_admission(
-                tx_gas,
-                is_payment,
-                tx_rlp_len,
+            let limits = BlockLimits {
                 cumulative_gas_used,
                 non_shared_gas_limit,
                 non_payment_gas_used,
                 general_gas_limit,
                 block_size_used,
                 is_osaka,
+            };
+            if let Some(reason) = check_pool_tx_admission(
+                tx_gas,
+                is_payment,
+                tx_rlp_len,
+                &limits,
             ) {
                 let error = reason.into_error_and_record(tx_gas, &self.metrics);
                 best_txs.mark_invalid(&pool_tx, &error);
@@ -1043,21 +1051,35 @@ mod tests {
         assert!(!has_expired_transactions(&subblock_no_expiry, 1000));
     }
 
+    fn block_limits(
+        cumulative_gas_used: u64,
+        non_shared_gas_limit: u64,
+        non_payment_gas_used: u64,
+        general_gas_limit: u64,
+        block_size_used: usize,
+        is_osaka: bool,
+    ) -> BlockLimits {
+        BlockLimits {
+            cumulative_gas_used,
+            non_shared_gas_limit,
+            non_payment_gas_used,
+            general_gas_limit,
+            block_size_used,
+            is_osaka,
+        }
+    }
+
     #[test]
     fn admission_passes_when_within_all_limits() {
-        // tx_gas=100k, is_payment=false, rlp_len=0, cumulative=0, non_shared=1M,
-        // non_payment=0, general=500k, block_size=0, osaka=false
-        assert!(
-            check_pool_tx_admission(100_000, false, 0, 0, 1_000_000, 0, 500_000, 0, false)
-                .is_none()
-        );
+        let limits = block_limits(0, 1_000_000, 0, 500_000, 0, false);
+        assert!(check_pool_tx_admission(100_000, false, 0, &limits).is_none());
     }
 
     #[test]
     fn admission_rejects_exceeding_non_shared_gas() {
         // only 50k remaining (1M - 950k)
-        let result =
-            check_pool_tx_admission(100_000, false, 0, 950_000, 1_000_000, 0, 500_000, 0, false);
+        let limits = block_limits(950_000, 1_000_000, 0, 500_000, 0, false);
+        let result = check_pool_tx_admission(100_000, false, 0, &limits);
         assert!(matches!(
             result,
             Some(PoolSkipReason::ExceedsNonSharedGasLimit { .. })
@@ -1066,8 +1088,8 @@ mod tests {
 
     #[test]
     fn admission_rejects_non_payment_exceeding_general_gas() {
-        let result =
-            check_pool_tx_admission(100_000, false, 0, 0, 1_000_000, 450_000, 500_000, 0, false);
+        let limits = block_limits(0, 1_000_000, 450_000, 500_000, 0, false);
+        let result = check_pool_tx_admission(100_000, false, 0, &limits);
         assert!(matches!(
             result,
             Some(PoolSkipReason::ExceedsNonPaymentGasLimit)
@@ -1077,24 +1099,14 @@ mod tests {
     #[test]
     fn admission_allows_payment_tx_past_general_gas_limit() {
         // non_payment_gas already at limit — but payment txs (is_payment=true) bypass this check
-        let result =
-            check_pool_tx_admission(100_000, true, 0, 0, 1_000_000, 500_000, 500_000, 0, false);
-        assert!(result.is_none());
+        let limits = block_limits(0, 1_000_000, 500_000, 500_000, 0, false);
+        assert!(check_pool_tx_admission(100_000, true, 0, &limits).is_none());
     }
 
     #[test]
     fn admission_rejects_oversized_block_osaka() {
-        let result = check_pool_tx_admission(
-            21_000,
-            false,
-            100,
-            0,
-            30_000_000,
-            0,
-            15_000_000,
-            MAX_RLP_BLOCK_SIZE,
-            true,
-        );
+        let limits = block_limits(0, 30_000_000, 0, 15_000_000, MAX_RLP_BLOCK_SIZE, true);
+        let result = check_pool_tx_admission(21_000, false, 100, &limits);
         assert!(matches!(
             result,
             Some(PoolSkipReason::OversizedBlock { .. })
@@ -1103,25 +1115,14 @@ mod tests {
 
     #[test]
     fn admission_ignores_block_size_pre_osaka() {
-        let result = check_pool_tx_admission(
-            21_000,
-            false,
-            100,
-            0,
-            30_000_000,
-            0,
-            15_000_000,
-            MAX_RLP_BLOCK_SIZE,
-            false,
-        );
-        assert!(result.is_none());
+        let limits = block_limits(0, 30_000_000, 0, 15_000_000, MAX_RLP_BLOCK_SIZE, false);
+        assert!(check_pool_tx_admission(21_000, false, 100, &limits).is_none());
     }
 
     #[test]
     fn admission_boundary_exact_gas_limit_passes() {
         // tx gas == remaining gas → should pass (check is `>`, not `>=`)
-        let result =
-            check_pool_tx_admission(100_000, false, 0, 900_000, 1_000_000, 0, 500_000, 0, false);
-        assert!(result.is_none());
+        let limits = block_limits(900_000, 1_000_000, 0, 500_000, 0, false);
+        assert!(check_pool_tx_admission(100_000, false, 0, &limits).is_none());
     }
 }
