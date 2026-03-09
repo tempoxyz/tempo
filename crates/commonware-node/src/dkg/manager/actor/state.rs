@@ -14,7 +14,11 @@ use commonware_cryptography::{
     Signer as _,
     bls12381::{
         dkg::{self, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog},
-        primitives::{group::Share, sharing::Mode, variant::MinSig},
+        primitives::{
+            group::Share,
+            sharing::{Mode, ModeVersion},
+            variant::MinSig,
+        },
     },
     ed25519::{PrivateKey, PublicKey},
     transcript::{Summary, Transcript},
@@ -771,7 +775,7 @@ impl Read for State {
         Ok(Self {
             epoch: ReadExt::read(buf)?,
             seed: ReadExt::read(buf)?,
-            output: Read::read_cfg(buf, cfg)?,
+            output: Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?,
             share: ReadExt::read(buf)?,
             players: Read::read_cfg(buf, &(range_cfg, ()))?,
             syncers: Read::read_cfg(buf, &(range_cfg, ()))?,
@@ -833,7 +837,7 @@ impl Read for LegacyState {
         Ok(Self {
             epoch: ReadExt::read(buf)?,
             seed: ReadExt::read(buf)?,
-            output: Read::read_cfg(buf, cfg)?,
+            output: Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?,
             share: ReadExt::read(buf)?,
             dealers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
             players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,

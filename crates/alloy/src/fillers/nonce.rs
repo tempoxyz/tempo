@@ -1,12 +1,17 @@
 use crate::rpc::TempoTransactionRequest;
 use alloy_network::{Network, TransactionBuilder};
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use alloy_provider::{
-    SendableTx,
+    Provider, SendableTx,
     fillers::{FillerControlFlow, TxFiller},
 };
-use alloy_transport::TransportResult;
-use std::time::{SystemTime, UNIX_EPOCH};
+use alloy_transport::{TransportErrorKind, TransportResult};
+use dashmap::DashMap;
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tempo_contracts::precompiles::{INonce, NONCE_PRECOMPILE_ADDRESS};
 use tempo_primitives::{
     subblock::has_sub_block_nonce_key_prefix, transaction::TEMPO_EXPIRING_NONCE_KEY,
 };
@@ -166,6 +171,102 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for E
         _fillable: Self::Fillable,
         tx: SendableTx<N>,
     ) -> TransportResult<SendableTx<N>> {
+        Ok(tx)
+    }
+}
+
+/// A [`TxFiller`] that fills the nonce for transactions with a pre-set `nonce_key`.
+///
+/// This filler requires `nonce_key` to already be set on the transaction request and fills
+/// the correct next nonce by querying the chain. Nonces are cached per `(address, nonce_key)`
+/// pair so that batched sends get sequential nonces without extra RPC calls.
+///
+/// Nonce resolution depends on the key:
+/// - `U256::ZERO` (protocol nonce): uses `get_transaction_count`
+/// - `TEMPO_EXPIRING_NONCE_KEY` (U256::MAX): always 0, no caching (use [`ExpiringNonceFiller`]
+///   instead for full expiring nonce support including `valid_before`)
+/// - Any other key: queries the `NonceManager` precompile via `eth_call`
+#[derive(Clone, Debug, Default)]
+pub struct NonceKeyFiller {
+    #[allow(clippy::type_complexity)]
+    nonces: Arc<DashMap<(Address, U256), Arc<futures::lock::Mutex<u64>>>>,
+}
+
+/// Sentinel value indicating the nonce has not been fetched yet.
+const NONCE_NOT_FETCHED: u64 = u64::MAX;
+
+impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for NonceKeyFiller {
+    type Fillable = u64;
+
+    fn status(&self, tx: &N::TransactionRequest) -> FillerControlFlow {
+        if tx.nonce().is_some() {
+            return FillerControlFlow::Finished;
+        }
+        if tx.nonce_key.is_none() {
+            return FillerControlFlow::missing("NonceKeyFiller", vec!["nonce_key"]);
+        }
+        if TransactionBuilder::from(tx).is_none() {
+            return FillerControlFlow::missing("NonceKeyFiller", vec!["from"]);
+        }
+        FillerControlFlow::Ready
+    }
+
+    fn fill_sync(&self, _tx: &mut SendableTx<N>) {}
+
+    async fn prepare<P>(
+        &self,
+        provider: &P,
+        tx: &N::TransactionRequest,
+    ) -> TransportResult<Self::Fillable>
+    where
+        P: Provider<N>,
+    {
+        let from = TransactionBuilder::from(tx)
+            .ok_or_else(|| TransportErrorKind::custom_str("missing `from` address"))?;
+        let nonce_key = tx
+            .nonce_key
+            .ok_or_else(|| TransportErrorKind::custom_str("missing `nonce_key`"))?;
+
+        // Expiring nonces always use nonce 0
+        if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+            return Ok(0);
+        }
+
+        let key = (from, nonce_key);
+        let mutex = self
+            .nonces
+            .entry(key)
+            .or_insert_with(|| Arc::new(futures::lock::Mutex::new(NONCE_NOT_FETCHED)))
+            .clone();
+
+        let mut nonce = mutex.lock().await;
+
+        if *nonce == NONCE_NOT_FETCHED {
+            *nonce = if nonce_key.is_zero() {
+                provider.get_transaction_count(from).await?
+            } else {
+                let contract = INonce::new(NONCE_PRECOMPILE_ADDRESS, provider);
+                contract
+                    .getNonce(from, nonce_key)
+                    .call()
+                    .await
+                    .map_err(|e| TransportErrorKind::custom_str(&e.to_string()))?
+            };
+        } else {
+            *nonce += 1;
+        }
+
+        Ok(*nonce)
+    }
+
+    async fn fill(
+        &self,
+        fillable: Self::Fillable,
+        mut tx: SendableTx<N>,
+    ) -> TransportResult<SendableTx<N>> {
+        if let Some(builder) = tx.as_mut_builder() {
+            builder.set_nonce(fillable);
+        }
         Ok(tx)
     }
 }

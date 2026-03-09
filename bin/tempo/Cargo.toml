@@ -109,6 +109,12 @@ jemalloc-prof = [
 	"tempo-node/jemalloc-prof",
 	"reth-ethereum/jemalloc-prof",
 ]
+jemalloc-symbols = [
+	"jemalloc-prof",
+	"reth-ethereum-cli/jemalloc-symbols",
+	"tempo-node/jemalloc-symbols",
+	"reth-ethereum/jemalloc-symbols",
+]
 
 tracy = [
 	"reth-ethereum-cli/tracy",

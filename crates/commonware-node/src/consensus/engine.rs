@@ -2,7 +2,10 @@
 //!
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
-use std::time::{Duration, Instant};
+use std::{
+    num::NonZeroUsize,
+    time::{Duration, Instant},
+};
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{
@@ -20,7 +23,7 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::NZU64;
+use commonware_utils::{NZU16, NZU64, NZUsize};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_08::{CryptoRng, Rng};
@@ -42,6 +45,9 @@ use super::block::Block;
 /// To better support peers near tip during network instability, we multiply
 /// the consensus activity timeout by this factor.
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
+
+// Ensure the marshal delivers blocks sequentially.
+const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 
 /// Settings for [`Engine`].
 ///
@@ -121,17 +127,6 @@ where
             "using public ed25519 verifying key derived from provided private ed25519 signing key",
         );
 
-        let (broadcast, broadcast_mailbox) = buffered::Engine::new(
-            context.with_label("broadcast"),
-            buffered::Config {
-                public_key: self.signer.public_key(),
-                mailbox_size: self.mailbox_size,
-                deque_size: self.deque_size,
-                priority: true,
-                codec_config: (),
-            },
-        );
-
         let page_cache_ref = CacheRef::from_pooler(
             &context,
             storage::BUFFER_POOL_PAGE_SIZE,
@@ -165,7 +160,7 @@ where
 
         // TODO(janis): forward `last_finalized_height` to application so it can
         // forward missing blocks to EL.
-        let (marshal, marshal_mailbox, last_finalized_height) = marshal::Actor::init(
+        let (marshal, marshal_mailbox, last_finalized_height) = marshal::core::Actor::init(
             context.with_label("marshal"),
             finalizations_by_height,
             finalized_blocks,
@@ -186,6 +181,7 @@ where
                 key_write_buffer: storage::WRITE_BUFFER,
                 value_write_buffer: storage::WRITE_BUFFER,
                 max_repair: storage::MAX_REPAIR,
+                max_pending_acks: MAX_PENDING_ACKS,
                 block_codec_config: (),
 
                 strategy: Sequential,
@@ -203,12 +199,24 @@ where
             },
         );
 
+        let (broadcast, broadcast_mailbox) = buffered::Engine::new(
+            context.with_label("broadcast"),
+            buffered::Config {
+                public_key: self.signer.public_key(),
+                mailbox_size: self.mailbox_size,
+                deque_size: self.deque_size,
+                peer_provider: peer_manager_mailbox.clone(),
+                priority: true,
+                codec_config: (),
+            },
+        );
+
         // XXX: All hard-coded values here are the same as prior to commonware
         // making the resolver configurable in
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
-            provider: peer_manager_mailbox.clone(),
+            peer_provider: peer_manager_mailbox.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
             initial: Duration::from_secs(1),
@@ -233,6 +241,7 @@ where
             context.with_label("feed"),
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
+            execution_node.clone(),
             self.feed_state,
         );
 
@@ -350,7 +359,7 @@ where
 
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block>,
+    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
     dkg_manager: dkg::manager::Actor<TContext>,
