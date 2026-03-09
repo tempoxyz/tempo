@@ -23,6 +23,7 @@ use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::Pu
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, Handle, Spawner, spawn_cell};
 use commonware_utils::channel::oneshot;
+use eyre::eyre;
 use futures::{FutureExt, StreamExt};
 use std::{
     collections::BTreeMap,
@@ -35,7 +36,7 @@ use tempo_node::{
     TempoFullNode,
     rpc::consensus::{CertifiedBlock, Event},
 };
-use tracing::{info, info_span, instrument, warn, warn_span};
+use tracing::{error, info_span, instrument, warn, warn_span};
 
 use super::state::FeedStateHandle;
 use crate::{
@@ -133,7 +134,7 @@ impl<TContext: Spawner> Actor<TContext> {
     /// The loop races the oldest pending block subscription
     /// against incoming activity so events are emitted in order.
     async fn run(&mut self) {
-        loop {
+        let reason = loop {
             // We need a mutable reference to poll pending subscription. Thus if a new activity arrives,
             // we also need to re-insert this popped subscription.
             let mut oldest = OptionFuture::from(self.pending.pop_first().map(|(_, p)| p));
@@ -142,15 +143,15 @@ impl<TContext: Spawner> Actor<TContext> {
                 result = &mut oldest => {
                     match result {
                         Ok((_, activity, block)) => self.handle_activity(activity, block),
-                        Err(err) => warn_span!("feed_actor").in_scope(||
-                            warn!(%err, "pending block subscription cancelled")
+                        Err(error) => warn_span!("feed_actor").in_scope(||
+                            warn!(%error, "did not get pending block")
                         ),
                     }
                 },
 
                 activity = self.receiver.next() => {
                     let Some(activity) = activity else {
-                        break;
+                        break eyre!("mailbox closed");
                     };
 
                     if let Some(p) = oldest.take() {
@@ -159,9 +160,9 @@ impl<TContext: Spawner> Actor<TContext> {
                     self.subscribe(activity).await;
                 },
             );
-        }
+        };
 
-        info_span!("feed_actor").in_scope(|| info!("shutting down"));
+        info_span!("feed_actor").in_scope(|| error!(%reason, "shutting down"));
     }
 
     async fn subscribe(&mut self, activity: FeedActivity) {
