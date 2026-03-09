@@ -34,7 +34,7 @@ revm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
-alloy-evm.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
 alloy-sol-types.workspace = true
 
 futures.workspace = true
