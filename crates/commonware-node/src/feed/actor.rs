@@ -5,7 +5,7 @@
 //! - Updates shared state (accessible by RPC handlers)
 //! - Broadcasts events to subscribers
 //!
-//! Block resolution uses [`marshal::Mailbox::subscribe`] to wait for the block
+//! Block resolution uses [`marshal::Mailbox::subscribe_by_digest`] to wait for the block
 //! to become available, avoiding a race where the block hasn't been stored yet
 //! when the activity arrives.
 //!
@@ -31,7 +31,10 @@ use std::{
     task::{Context, Poll},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tempo_node::rpc::consensus::{CertifiedBlock, Event};
+use tempo_node::{
+    TempoFullNode,
+    rpc::consensus::{CertifiedBlock, Event},
+};
 use tracing::{info, info_span, instrument, warn, warn_span};
 
 use super::state::FeedStateHandle;
@@ -103,11 +106,13 @@ impl<TContext: Spawner> Actor<TContext> {
         context: TContext,
         marshal: marshal::Mailbox,
         epocher: FixedEpocher,
+        execution_node: TempoFullNode,
         receiver: Receiver,
         state: FeedStateHandle,
     ) -> Self {
         state.set_marshal(marshal.clone());
         state.set_epocher(epocher);
+        state.set_execution_node(execution_node);
 
         Self {
             context: ContextCell::new(context),
@@ -159,7 +164,6 @@ impl<TContext: Spawner> Actor<TContext> {
         info_span!("feed_actor").in_scope(|| info!("shutting down"));
     }
 
-    /// Subscribe to the block for an activity
     async fn subscribe(&mut self, activity: FeedActivity) {
         let (round, payload) = match &activity {
             Activity::Notarization(n) => (n.proposal.round, n.proposal.payload),
@@ -186,7 +190,7 @@ impl<TContext: Spawner> Actor<TContext> {
             _ => return,
         }
 
-        let block_rx = self.marshal.subscribe(Some(round), payload).await;
+        let block_rx = self.marshal.subscribe_by_digest(Some(round), payload).await;
         let pending = PendingSubscription::new(round, activity, block_rx);
         self.pending.insert(round, pending);
     }
