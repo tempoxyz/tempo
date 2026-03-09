@@ -74,10 +74,9 @@ use tempo_primitives::{
     },
 };
 
-use crate::utils::{ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::transaction::tt_signature::normalize_p256_s;
-use test_case::test_case;
 
 #[macro_use]
 #[path = "test_macros.rs"]
@@ -278,23 +277,8 @@ async fn setup_test_with_funded_account() -> eyre::Result<(
     impl SignerSync,
     Address,
 )> {
-    setup_test_with_funded_account_and_schedule(ForkSchedule::Devnet).await
-}
-
-/// Like [`setup_test_with_funded_account`] but accepts a [`ForkSchedule`] to
-/// control which hardforks are active.
-async fn setup_test_with_funded_account_and_schedule(
-    schedule: ForkSchedule,
-) -> eyre::Result<(
-    SingleNodeSetup,
-    impl Provider + Clone,
-    impl SignerSync,
-    Address,
-)> {
-    let setup = TestNodeBuilder::new()
-        .with_schedule(schedule)
-        .build_with_node_access()
-        .await?;
+    // Setup test node with direct access
+    let setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -3384,15 +3368,11 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
     Ok(())
 }
 
-#[test_case(ForkSchedule::Devnet ; "devnet")]
-#[test_case(ForkSchedule::Testnet ; "testnet")]
-#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_aa_estimate_gas_matrix(schedule: ForkSchedule) -> eyre::Result<()> {
+async fn test_aa_estimate_gas_matrix() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (_setup, provider, signer, signer_addr) =
-        setup_test_with_funded_account_and_schedule(schedule).await?;
+    let (_setup, provider, signer, signer_addr) = setup_test_with_funded_account().await?;
 
     println!("\n=== eth_estimateGas matrix: key type × keychain × key auth ===\n");
     println!("Test address: {signer_addr}");

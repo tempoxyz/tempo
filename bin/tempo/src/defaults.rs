@@ -129,6 +129,7 @@ fn init_download_urls() {
         ],
         default_base_url: Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
         long_help: None,
+        default_chain_aware_base_url: None,
     };
 
     download_defaults

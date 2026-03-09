@@ -13,7 +13,7 @@ use revm::{
     context::{
         Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
-        result::{EVMError, ExecutionResult, InvalidTransaction},
+        result::{EVMError, ExecutionResult, InvalidTransaction, ResultGas},
         transaction::{AccessListItem, AccessListItemTr},
     },
     context_interface::cfg::{GasId, GasParams},
@@ -605,6 +605,7 @@ where
         &mut self,
         evm: &mut Self::Evm,
         result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        result_gas: ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.logs.clear();
         // reset initial gas to 0 to avoid gas limit check errors
@@ -614,7 +615,7 @@ where
         }
 
         MainnetHandler::default()
-            .execution_result(evm, result)
+            .execution_result(evm, result, result_gas)
             .map(|result| result.map_haltreason(Into::into))
     }
 
@@ -647,6 +648,7 @@ where
 
             apply_auth_list::<_, Self::Error>(
                 chain_id,
+                0, // refund_per_auth - Tempo sets to 0 since TIP-1000 eliminates refunds
                 tempo_tx_env
                     .tempo_authorization_list
                     .iter()
@@ -1277,14 +1279,21 @@ where
             .map_err(TempoInvalidTransaction::from)?;
 
             // Validate keychain signature version (outer + authorization list).
-            aa_env
-                .signature
-                .validate_version(cfg.spec().is_t1c())
-                .map_err(TempoInvalidTransaction::from)?;
-            for auth in &aa_env.tempo_authorization_list {
-                auth.signature()
+            // Skipped during gas estimation (balance check disabled) because the RPC layer
+            // fabricates mock signatures via `create_mock_tempo_signature` which always
+            // produces V2. Pre-T1C that would be rejected here, but the version has no
+            // effect on gas cost so skipping is safe.
+            // TODO(tanishk): Pre-T1C V2 rejection can be removed after T1C activation.
+            if !cfg.is_balance_check_disabled() {
+                aa_env
+                    .signature
                     .validate_version(cfg.spec().is_t1c())
                     .map_err(TempoInvalidTransaction::from)?;
+                for auth in &aa_env.tempo_authorization_list {
+                    auth.signature()
+                        .validate_version(cfg.spec().is_t1c())
+                        .map_err(TempoInvalidTransaction::from)?;
+                }
             }
 
             let has_keychain_fields =
@@ -1430,7 +1439,8 @@ where
 
             Ok(ExecutionResult::Halt {
                 reason: TempoHaltReason::SubblockTxFeePayment,
-                gas_used: 0,
+                gas: ResultGas::new(0, 0, 0, 0, 0),
+                logs: vec![],
             })
         } else {
             MainnetHandler::default()

@@ -57,7 +57,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
     {
         info!(target: "tempo::cli", "Tempo init-from-binary-dump starting");
 
-        let environment = self.env.init::<N>(AccessRights::RW)?;
+        let environment = self.env.init::<N>(AccessRights::RW, reth_ethereum::tasks::Runtime::test())?;
         let provider_factory = environment.provider_factory;
 
         let provider_rw = provider_factory.database_provider_rw()?;
