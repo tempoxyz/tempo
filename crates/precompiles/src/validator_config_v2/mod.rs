@@ -647,9 +647,9 @@ impl ValidatorConfigV2 {
         ))
     }
 
-    /// Sets the epoch at which a fresh DKG ceremony will be triggered (owner only).
+    /// Sets the epoch at which a rotation of the network identity will be triggered.
     ///
-    /// Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
+    /// The network will perform a Distribute Key Generation ceremony to rotate its network identity at the epoch `E` set by this function, if `E` is ahead of the network's current epoch. If the DKG ceremony is successful, then epoch `E+1` will run with a new network identity. If `E` is not ahead of the network epoch this value is ignored.
     pub fn set_next_full_dkg_ceremony(
         &mut self,
         sender: Address,
