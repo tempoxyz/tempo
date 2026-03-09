@@ -1014,16 +1014,14 @@ impl AA2dPool {
     }
 
     /// Evicts one pending transaction, considering both regular 2D and expiring nonce txs.
-    /// Evicts the transaction with lowest priority (worst transaction).
+    /// Evicts the transaction with lowest priority; ties broken by submission order (newer first).
     fn evict_one_pending(&mut self) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        // Find worst regular 2D pending tx from eviction order
         let worst_2d = self
             .by_eviction_order
             .iter()
             .find(|key| key.is_pending())
             .map(|key| (key.tx_id, key.priority().clone(), key.submission_id()));
 
-        // Find worst expiring nonce tx (lowest priority, then highest submission_id)
         let worst_expiring = self
             .expiring_nonce_txs
             .iter()
@@ -1034,14 +1032,13 @@ impl AA2dPool {
             })
             .map(|(hash, tx)| (*hash, tx.priority.clone(), tx.submission_id));
 
-        // Choose which one to evict using the same policy as EvictionKey::Ord:
-        // lower priority first, then higher submission_id (newer) first.
         match (worst_2d, worst_expiring) {
-            (Some((id, priority_2d, sid_2d)), Some((hash, priority_exp, sid_exp))) => {
-                let evict_expiring = priority_exp
-                    .cmp(&priority_2d)
+            (Some((id, pri_2d, sid_2d)), Some((hash, pri_exp, sid_exp))) => {
+                // Same ordering as EvictionKey::Ord: lower priority first, newer first.
+                let evict_expiring = pri_exp
+                    .cmp(&pri_2d)
                     .then_with(|| sid_2d.cmp(&sid_exp))
-                    == std::cmp::Ordering::Less;
+                    .is_le();
                 if evict_expiring {
                     self.evict_expiring_nonce_tx(&hash)
                 } else {
