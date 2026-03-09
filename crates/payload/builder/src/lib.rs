@@ -135,7 +135,9 @@ fn check_pool_tx_admission(
     // Ensure we still have capacity for this transaction within the non-shared gas limit.
     // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
     // be consumed by proposer's pool transactions.
-    let remaining = limits.non_shared_gas_limit.saturating_sub(limits.cumulative_gas_used);
+    let remaining = limits
+        .non_shared_gas_limit
+        .saturating_sub(limits.cumulative_gas_used);
     if tx_gas > remaining {
         return Some(PoolSkipReason::ExceedsNonSharedGasLimit { remaining });
     }
@@ -566,12 +568,7 @@ where
                 block_size_used,
                 is_osaka,
             };
-            if let Some(reason) = check_pool_tx_admission(
-                tx_gas,
-                is_payment,
-                tx_rlp_len,
-                &limits,
-            ) {
+            if let Some(reason) = check_pool_tx_admission(tx_gas, is_payment, tx_rlp_len, &limits) {
                 let error = reason.into_error_and_record(tx_gas, &self.metrics);
                 best_txs.mark_invalid(&pool_tx, &error);
                 pool_transactions_skipped += 1;
