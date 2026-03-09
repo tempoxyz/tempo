@@ -41,8 +41,8 @@ impl Precompile for ValidatorConfigV2 {
                 IValidatorConfigV2Calls::validatorByPublicKey(call) => {
                     view(call, |c| self.validator_by_public_key(c.publicKey))
                 }
-                IValidatorConfigV2Calls::getNextNetworkIdentityRotation(call) => {
-                    view(call, |_| self.get_next_network_identity_rotation())
+                IValidatorConfigV2Calls::getNextNetworkIdentityRotationEpoch(call) => {
+                    view(call, |_| self.get_next_network_identity_rotation_epoch())
                 }
                 IValidatorConfigV2Calls::isInitialized(call) => {
                     view(call, |_| self.is_initialized())

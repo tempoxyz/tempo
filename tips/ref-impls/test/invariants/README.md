@@ -415,7 +415,7 @@ These are checked after every fuzz run:
 - **TEMPO-VALV2-18**: Address lookup correctness - for every validator, `validatorByAddress(validator.validatorAddress)` returns that exact validator; `addressToIndex` mapping is accurate.
 - **TEMPO-VALV2-19**: Public key lookup correctness - for every validator, `validatorByPublicKey(validator.publicKey)` returns that exact validator; `pubkeyToIndex` mapping is accurate.
 - **TEMPO-VALV2-20**: Owner consistency - `owner()` always equals the ghost-tracked owner; ownership transfers are correctly reflected.
-- **TEMPO-VALV2-21**: Network identity rotation (DKG ceremony) consistency - `getNextNetworkIdentityRotation()` always equals the ghost-tracked epoch; updates via `setNetworkIdentityRotationEpoch` are correctly stored.
+- **TEMPO-VALV2-21**: Network identity rotation (DKG ceremony) consistency - `getNextNetworkIdentityRotationEpoch()` always equals the ghost-tracked epoch; updates via `setNetworkIdentityRotationEpoch` are correctly stored.
 - **TEMPO-VALV2-22**: Initialization one-way - once `isInitialized() == true`, it remains true forever; `isInitialized()` only transitions from false to true, never back.
 - **TEMPO-VALV2-23**: Migration completeness - if `isInitialized() == false`, then `validatorCount <= V1.getAllValidators().length`; migration cannot exceed V1 validator count.
 - **TEMPO-VALV2-24**: Migration preserves identity - for each validator at index `i < V1.getAllValidators().length`: `V2.validator[i].publicKey == V1.validator[i].publicKey` and `V2.validator[i].validatorAddress == V1.validator[i].validatorAddress`.

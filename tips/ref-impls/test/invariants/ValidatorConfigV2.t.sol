@@ -594,7 +594,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             _ghostNextNetworkIdentityRotation = epoch;
 
             assertEq(
-                validatorConfigV2.getNextNetworkIdentityRotation(),
+                validatorConfigV2.getNextNetworkIdentityRotationEpoch(),
                 epoch,
                 "TEMPO-VALV2-21: DKG epoch should be set"
             );
@@ -1094,7 +1094,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @notice TEMPO-VALV2-21: DKG epoch matches ghost state
     function _invariantDkgCeremonyConsistency() internal view {
         assertEq(
-            validatorConfigV2.getNextNetworkIdentityRotation(),
+            validatorConfigV2.getNextNetworkIdentityRotationEpoch(),
             _ghostNextNetworkIdentityRotation,
             "TEMPO-VALV2-21: DKG epoch should match ghost state"
         );

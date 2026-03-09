@@ -39,7 +39,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     /// @dev 1-indexed: 0 means not found. Stored value is arrayIndex + 1.
     mapping(bytes32 => uint64) internal pubkeyToIndex;
 
-    uint64 internal nextNetworkIdentityRotation;
+    uint64 internal nextNetworkIdentityRotationEpochEpoch;
 
     /// @dev Tracks active ingress socket addresses by their keccak256 hash
     mapping(bytes32 => bool) internal activeIngressHashes;
@@ -151,8 +151,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     /// @inheritdoc IValidatorConfigV2
     function setNetworkIdentityRotationEpoch(uint64 epoch) external onlyInitialized onlyOwner {
-        uint64 previousEpoch = nextNetworkIdentityRotation;
-        nextNetworkIdentityRotation = epoch;
+        uint64 previousEpoch = nextNetworkIdentityRotationEpoch;
+        nextNetworkIdentityRotationEpoch = epoch;
         emit NetworkIdentityRotationEpochSet(previousEpoch, epoch);
     }
 
@@ -365,8 +365,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function getNextNetworkIdentityRotation() external view returns (uint64) {
-        return nextNetworkIdentityRotation;
+    function getNextNetworkIdentityRotationEpoch() external view returns (uint64) {
+        return nextNetworkIdentityRotationEpochEpoch;
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -454,7 +454,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert MigrationNotComplete();
         }
 
-        nextNetworkIdentityRotation = v1.getNextFullDkgCeremony();
+        nextNetworkIdentityRotationEpoch = v1.getNextFullDkgCeremony();
 
         _initialized = true;
         _initializedAtHeight = uint64(block.number);

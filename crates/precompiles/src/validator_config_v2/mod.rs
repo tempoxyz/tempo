@@ -154,7 +154,7 @@ pub struct ValidatorConfigV2 {
     /// Public keys are reserved forever — even deactivated entries keep their mapping.
     pubkey_to_index: Mapping<B256, u64>,
     /// Epoch at which a DKG ceremony will run that rotates the network identity.
-    next_network_identity_rotation: u64,
+    next_network_identity_rotation_epoch: u64,
     /// Prevents two active validators from sharing the same ingress IP address.
     active_ingress_ips: Mapping<B256, bool>,
     /// Compact list of 1-indexed global positions of currently active validators.
@@ -305,8 +305,8 @@ impl ValidatorConfigV2 {
     /// Returns the epoch at which a network identity rotation will be triggered.
     ///
     /// See [`set_network_identity_rotation_epoch`](Self::set_network_identity_rotation_epoch).
-    pub fn get_next_network_identity_rotation(&self) -> Result<u64> {
-        self.next_network_identity_rotation.read()
+    pub fn get_next_network_identity_rotation_epoch(&self) -> Result<u64> {
+        self.next_network_identity_rotation_epoch.read()
     }
 
     fn validate_endpoints(ingress: &str, egress: &str) -> Result<()> {
@@ -659,8 +659,9 @@ impl ValidatorConfigV2 {
         call: IValidatorConfigV2::setNetworkIdentityRotationEpochCall,
     ) -> Result<()> {
         self.config.read()?.require_init()?.require_owner(sender)?;
-        let previous_epoch = self.next_network_identity_rotation.read()?;
-        self.next_network_identity_rotation.write(call.epoch)?;
+        let previous_epoch = self.next_network_identity_rotation_epoch.read()?;
+        self.next_network_identity_rotation_epoch
+            .write(call.epoch)?;
         self.emit_event(ValidatorConfigV2Event::NetworkIdentityRotationEpochSet(
             IValidatorConfigV2::NetworkIdentityRotationEpochSet {
                 previousEpoch: previous_epoch,
@@ -1021,7 +1022,8 @@ impl ValidatorConfigV2 {
         }
 
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;
-        self.next_network_identity_rotation.write(v1_next_dkg)?;
+        self.next_network_identity_rotation_epoch
+            .write(v1_next_dkg)?;
 
         trace!(address=%self.address, "Initializing validator config v2 precompile after migration");
 
@@ -1793,13 +1795,13 @@ mod tests {
             let mut vc = ValidatorConfigV2::new();
             vc.initialize(owner)?;
 
-            assert_eq!(vc.get_next_network_identity_rotation()?, 0);
+            assert_eq!(vc.get_next_network_identity_rotation_epoch()?, 0);
 
             vc.set_network_identity_rotation_epoch(
                 owner,
                 IValidatorConfigV2::setNetworkIdentityRotationEpochCall { epoch: 42 },
             )?;
-            assert_eq!(vc.get_next_network_identity_rotation()?, 42);
+            assert_eq!(vc.get_next_network_identity_rotation_epoch()?, 42);
 
             let non_owner = Address::random();
             let result = vc.set_network_identity_rotation_epoch(

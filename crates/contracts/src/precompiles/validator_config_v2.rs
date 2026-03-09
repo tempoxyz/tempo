@@ -58,7 +58,7 @@ crate::sol! {
         function validatorByPublicKey(bytes32 publicKey) external view returns (Validator memory);
 
         /// Get the epoch for next network identity rotation (full DKG ceremony)
-        function getNextNetworkIdentityRotation() external view returns (uint64);
+        function getNextNetworkIdentityRotationEpoch() external view returns (uint64);
 
         /// Check if V2 has been initialized
         function isInitialized() external view returns (bool);

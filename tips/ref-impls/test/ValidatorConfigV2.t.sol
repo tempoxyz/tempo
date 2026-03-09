@@ -775,7 +775,7 @@ contract ValidatorConfigV2Test is BaseTest {
     function test_setNetworkIdentityRotationEpoch_pass() public {
         _initializeV2();
         validatorConfigV2.setNetworkIdentityRotationEpoch(42);
-        assertEq(validatorConfigV2.getNextNetworkIdentityRotation(), 42);
+        assertEq(validatorConfigV2.getNextNetworkIdentityRotationEpoch(), 42);
     }
 
     function test_setNetworkIdentityRotationEpoch_fail() public {
@@ -1027,7 +1027,7 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.initializeIfMigrated();
 
         assertTrue(validatorConfigV2.isInitialized());
-        assertEq(validatorConfigV2.getNextNetworkIdentityRotation(), 99);
+        assertEq(validatorConfigV2.getNextNetworkIdentityRotationEpoch(), 99);
     }
 
     function test_initializeIfMigrated_fail() public {

@@ -268,7 +268,7 @@ interface IValidatorConfigV2 {
 
     /// @notice Get the epoch at which a network identity rotation will be triggered (via full DKG ceremony)
     /// @return The epoch number
-    function getNextNetworkIdentityRotation() external view returns (uint64);
+    function getNextNetworkIdentityRotationEpoch() external view returns (uint64);
 
     /// @notice Check if V2 has been initialized from V1
     /// @return True if initialized, false otherwise
