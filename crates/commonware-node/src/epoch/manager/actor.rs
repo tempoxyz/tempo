@@ -336,16 +336,10 @@ where
                 blocker: self.config.blocker.clone(),
                 automaton: self.config.application.clone(),
                 relay: self.config.application.clone(),
-                reporter: match self.config.subblocks.clone() {
-                    Some(subblocks) => Reporters::from((
-                        subblocks,
-                        Reporters::from((self.config.marshal.clone(), self.config.feed.clone())),
-                    )),
-                    None => Reporters::from((
-                        None::<crate::subblocks::Mailbox>,
-                        Reporters::from((self.config.marshal.clone(), self.config.feed.clone())),
-                    )),
-                },
+                reporter: <Reporters<_, crate::subblocks::Mailbox, _>>::from((
+                    self.config.subblocks.clone(),
+                    Reporters::from((self.config.marshal.clone(), self.config.feed.clone())),
+                )),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix

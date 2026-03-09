@@ -98,6 +98,7 @@ pub(crate) struct Actor<TContext> {
     subblock_broadcast_interval: Duration,
     /// The epoch strategy used by tempo.
     epoch_strategy: FixedEpocher,
+
     /// Current consensus tip. Includes highest observed round, digest and certificate.
     consensus_tip: Option<(Round, BlockHash, Certificate<MinSig>)>,
 

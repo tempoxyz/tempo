@@ -94,7 +94,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
     pub fcu_heartbeat_interval: Duration,
-    pub no_subblocks: bool,
+    pub with_subblocks: bool,
 
     pub feed_state: crate::feed::FeedStateHandle,
 }
@@ -312,7 +312,7 @@ where
             priority_responses: false,
         };
 
-        let subblocks = (!self.no_subblocks).then(|| {
+        let subblocks = self.with_subblocks.then(|| {
             subblocks::Actor::new(subblocks::Config {
                 context: context.clone(),
                 signer: self.signer.clone(),
