@@ -80,7 +80,11 @@ pub async fn run_consensus_stack(
     );
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota, message_backlog);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
-    let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
+    let subblocks = if config.no_subblocks {
+        None
+    } else {
+        Some(network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog))
+    };
 
     let fee_recipient = config
         .fee_recipient
@@ -112,7 +116,7 @@ pub async fn run_consensus_stack(
         time_to_build_subblock: config.time_to_build_subblock.into_duration(),
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
-        enable_subblocks: !config.no_subblocks,
+        no_subblocks: config.no_subblocks,
 
         feed_state,
     }
