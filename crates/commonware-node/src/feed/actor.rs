@@ -23,9 +23,12 @@ use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::Pu
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, Handle, Spawner, spawn_cell};
 use commonware_utils::channel::oneshot;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use std::{
     collections::BTreeMap,
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
@@ -35,6 +38,7 @@ use super::state::FeedStateHandle;
 use crate::{
     alias::marshal,
     consensus::{Digest, block::Block},
+    utils::OptionFuture,
 };
 
 /// Type alias for the activity type used by the feed actor.
@@ -44,9 +48,37 @@ pub(super) type FeedActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 pub(super) type Receiver = futures::channel::mpsc::UnboundedReceiver<FeedActivity>;
 
 /// A pending block subscription paired with its originating activity.
+///
+/// Resolves to `(Round, FeedActivity, Block)` when the block becomes available.
 struct PendingSubscription {
-    activity: FeedActivity,
+    round: Round,
+    activity: Option<FeedActivity>,
     block_rx: oneshot::Receiver<Block>,
+}
+
+impl PendingSubscription {
+    fn new(round: Round, activity: FeedActivity, block_rx: oneshot::Receiver<Block>) -> Self {
+        Self {
+            round,
+            activity: Some(activity),
+            block_rx,
+        }
+    }
+}
+
+impl Future for PendingSubscription {
+    type Output = eyre::Result<(Round, FeedActivity, Block)>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.block_rx.poll_unpin(cx) {
+            Poll::Ready(Ok(block)) => {
+                let activity = self.activity.take().expect("polled after completion");
+                Poll::Ready(Ok((self.round, activity, block)))
+            }
+            Poll::Ready(Err(_)) => Poll::Ready(Err(eyre::eyre!("block subscription cancelled"))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 pub(crate) struct Actor<TContext> {
@@ -93,38 +125,35 @@ impl<TContext: Spawner> Actor<TContext> {
 
     /// Run the actor's main loop.
     ///
-    /// The loop races the oldest (lowest-round) pending block subscription
-    /// against incoming activity so events are emitted in order
+    /// The loop races the oldest pending block subscription
+    /// against incoming activity so events are emitted in order.
     async fn run(&mut self) {
         loop {
-            if let Some((round, mut pending)) = self.pending.pop_first() {
-                select!(
-                    result = &mut pending.block_rx => {
-                        match result {
-                            Ok(block) => self.handle_activity(pending.activity, block),
-                            Err(err) => warn_span!("feed_actor").in_scope(||
-                                warn!(?round, ?err, "pending block subscription cancelled")
-                            ),
-                        }
-                    },
+            // We need a mutable reference to poll pending subscription. Thus if a new activity arrives,
+            // we also need to re-insert this popped subscription.
+            let mut oldest = OptionFuture::from(self.pending.pop_first().map(|(_, p)| p));
 
-                    // If a newer activity arrives, reinsert the pending subscription and subscribe to the new activity.
-                    activity = self.receiver.next() => {
-                        let Some(activity) = activity else {
-                            break; // exit
-                        };
+            select!(
+                result = &mut oldest => {
+                    match result {
+                        Ok((_, activity, block)) => self.handle_activity(activity, block),
+                        Err(err) => warn_span!("feed_actor").in_scope(||
+                            warn!(%err, "pending block subscription cancelled")
+                        ),
+                    }
+                },
 
-                        self.pending.insert(round, pending);
-                        self.subscribe(activity).await;
-                    },
-                );
-            } else {
-                let Some(activity) = self.receiver.next().await else {
-                    break; // exit
-                };
+                activity = self.receiver.next() => {
+                    let Some(activity) = activity else {
+                        break;
+                    };
 
-                self.subscribe(activity).await;
-            }
+                    if let Some(p) = oldest.take() {
+                        self.pending.insert(p.round, p);
+                    }
+                    self.subscribe(activity).await;
+                },
+            );
         }
 
         info_span!("feed_actor").in_scope(|| info!("shutting down"));
@@ -138,13 +167,13 @@ impl<TContext: Spawner> Actor<TContext> {
             _ => return,
         };
 
+        // Prune & Gate Incoming activity.
+        // - Incoming Finalization. Prune older subscriptions as we only care about latest information
+        // - Incoming Notarization. Only accept if ahead of the latest Finalization.
         match &activity {
-            // Prune stale state on incoming finalizations (notarizations)
-            Activity::Finalization(_) => self
-                .pending
-                .retain(|&r, p| matches!(&p.activity, Activity::Finalization(_)) || r > round),
-
-            // Only accept notarizations if they are ahead of the latest finalized round.
+            Activity::Finalization(_) => self.pending.retain(|&r, p| {
+                matches!(&p.activity, Some(Activity::Finalization(_))) || r > round
+            }),
             Activity::Notarization(_)
                 if self
                     .state
@@ -158,7 +187,7 @@ impl<TContext: Spawner> Actor<TContext> {
         }
 
         let block_rx = self.marshal.subscribe(Some(round), payload).await;
-        let pending = PendingSubscription { activity, block_rx };
+        let pending = PendingSubscription::new(round, activity, block_rx);
         self.pending.insert(round, pending);
     }
 
