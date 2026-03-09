@@ -13,7 +13,7 @@ use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
 use std::time::Instant;
 use tempo_chainspec::{TempoChainSpec, spec::DEV};
 use tempo_primitives::{
-    TempoTxEnvelope,
+    PaymentRules, TempoTxEnvelope,
     transaction::{
         TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
@@ -211,7 +211,7 @@ impl TxBuilder {
         let envelope: TempoTxEnvelope = aa_signed.into();
 
         let recovered = Recovered::new_unchecked(envelope, self.sender);
-        TempoPooledTransaction::new(recovered)
+        TempoPooledTransaction::new(recovered, PaymentRules::LATEST)
     }
 
     /// Build an AA transaction with a V2 keychain signature.
@@ -304,7 +304,7 @@ impl TxBuilder {
             use reth_primitives_traits::SignerRecoverable;
             envelope.try_into_recovered().unwrap()
         };
-        TempoPooledTransaction::new(recovered)
+        TempoPooledTransaction::new(recovered, PaymentRules::LATEST)
     }
 
     /// Build an EIP-1559 transaction.
@@ -326,7 +326,7 @@ impl TxBuilder {
         ));
 
         let recovered = Recovered::new_unchecked(envelope, self.sender);
-        TempoPooledTransaction::new(recovered)
+        TempoPooledTransaction::new(recovered, PaymentRules::LATEST)
     }
 }
 

@@ -27,6 +27,7 @@ use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
 use reth_chainspec::{EthereumHardforks, ForkCondition};
+use tempo_primitives::PaymentRules;
 
 /// Single-source hardfork definition macro. Append a new variant and everything else is generated:
 ///
@@ -245,6 +246,16 @@ impl TempoHardfork {
                 crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS
             }
             Self::T2 => crate::spec::TEMPO_T2_NEW_NONCE_KEY_GAS,
+        }
+    }
+
+    /// Returns the payment classification rules for this hardfork.
+    pub const fn payment_rules(&self) -> PaymentRules {
+        match self {
+            Self::Genesis | Self::T0 | Self::T1 | Self::T1A | Self::T1B | Self::T1C => {
+                PaymentRules::Genesis
+            }
+            Self::T2 => PaymentRules::T2,
         }
     }
 }

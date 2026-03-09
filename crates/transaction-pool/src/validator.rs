@@ -1095,7 +1095,7 @@ mod tests {
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
     use tempo_primitives::{
-        Block, TempoHeader, TempoPrimitives, TempoTxEnvelope,
+        Block, PaymentRules, TempoHeader, TempoPrimitives, TempoTxEnvelope,
         transaction::{
             TempoTransaction,
             envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -1249,6 +1249,7 @@ mod tests {
         let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
         let transaction = TempoPooledTransaction::new(
             reth_primitives_traits::Recovered::new_unchecked(envelope, Address::ZERO),
+            PaymentRules::LATEST,
         );
         let validator = setup_validator(&transaction, 0);
 
@@ -1296,6 +1297,7 @@ mod tests {
         );
         let transaction = TempoPooledTransaction::new(
             TempoTxEnvelope::from(signed).try_into_recovered().unwrap(),
+            PaymentRules::LATEST,
         );
         let validator = setup_validator(&transaction, 0);
 
@@ -1560,7 +1562,10 @@ mod tests {
                     Signature::test_signature(),
                 )),
             );
-            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+            TempoPooledTransaction::new(
+                TempoTxEnvelope::from(signed).try_into_recovered().unwrap(),
+                PaymentRules::LATEST,
+            )
         };
 
         // Intrinsic gas for 10 calls: 21k base + 10*2600 cold access + 10*100*4 calldata = ~51k
@@ -1663,7 +1668,10 @@ mod tests {
                     Signature::test_signature(),
                 )),
             );
-            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+            TempoPooledTransaction::new(
+                TempoTxEnvelope::from(signed).try_into_recovered().unwrap(),
+                PaymentRules::LATEST,
+            )
         };
 
         // Test 1: Verify 1D nonce (nonce_key=0) with low gas fails intrinsic gas check
@@ -1786,7 +1794,10 @@ mod tests {
                     Signature::test_signature(),
                 )),
             );
-            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+            TempoPooledTransaction::new(
+                TempoTxEnvelope::from(signed).try_into_recovered().unwrap(),
+                PaymentRules::LATEST,
+            )
         };
 
         // Expiring nonce tx should only need ~35k gas (base + EXPIRING_NONCE_GAS of 13k)
@@ -1860,7 +1871,10 @@ mod tests {
                     Signature::test_signature(),
                 )),
             );
-            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+            TempoPooledTransaction::new(
+                TempoTxEnvelope::from(signed).try_into_recovered().unwrap(),
+                PaymentRules::LATEST,
+            )
         };
 
         // Test 1: 1D nonce (nonce_key=0) with nonce > 0 has no extra 2D nonce charge.
@@ -2324,7 +2338,7 @@ mod tests {
             let signed_tx = AASigned::new_unhashed(tx_aa, keychain_sig);
             let envelope: TempoTxEnvelope = signed_tx.into();
             let recovered = envelope.try_into_recovered().unwrap();
-            TempoPooledTransaction::new(recovered)
+            TempoPooledTransaction::new(recovered, PaymentRules::LATEST)
         }
 
         /// Setup validator with keychain storage for a specific user and key_id.
@@ -2975,7 +2989,7 @@ mod tests {
             let signed_tx = AASigned::new_unhashed(tx_aa, keychain_sig);
             let envelope: TempoTxEnvelope = signed_tx.into();
             let recovered = envelope.try_into_recovered().unwrap();
-            let transaction = TempoPooledTransaction::new(recovered);
+            let transaction = TempoPooledTransaction::new(recovered, PaymentRules::LATEST);
 
             // The transaction.sender() == real_user (from keychain sig's user_address)
             // So this validation path checks sig.user_address == transaction.sender()
@@ -3931,7 +3945,7 @@ mod tests {
         );
         let envelope: TempoTxEnvelope = signed_tx.into();
         let recovered = envelope.try_into_recovered().unwrap();
-        TempoPooledTransaction::new(recovered)
+        TempoPooledTransaction::new(recovered, PaymentRules::LATEST)
     }
 
     #[tokio::test]
