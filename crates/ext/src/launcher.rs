@@ -3,7 +3,8 @@
 //! add/update/remove).
 
 use crate::installer::{
-    InstallSource, Installer, InstallerError, binary_candidates, debug_log, fetch_manifest_version,
+    InstallSource, Installer, InstallerError, binary_candidates, fallback_bin_dir,
+    fetch_manifest_version, resolve_from_path,
 };
 use crate::state::State;
 use std::env;
@@ -32,38 +33,26 @@ struct ManagementArgs {
     dry_run: bool,
 }
 
-pub struct Launcher {
-    version: String,
+pub fn run(args: Vec<String>) -> Result<i32, LauncherError> {
+    let exe_dir = env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    let launcher = Launcher { exe_dir };
+
+    let first = args.get(1).map(String::as_str).unwrap_or_default();
+
+    match first {
+        "add" | "update" | "remove" => launcher.handle_management(first, &args[2..]),
+        extension => launcher.handle_extension(extension, &args[2..]),
+    }
+}
+
+struct Launcher {
     exe_dir: Option<PathBuf>,
 }
 
 impl Launcher {
-    pub fn new(version: String) -> Self {
-        let exe_dir = env::current_exe()
-            .ok()
-            .as_deref()
-            .and_then(|path| path.parent().map(Path::to_path_buf));
-        Self { version, exe_dir }
-    }
-
-    pub fn run(&self, args: Vec<String>) -> Result<i32, LauncherError> {
-        let Some(first) = args.get(1).map(String::as_str) else {
-            return self.handle_no_args();
-        };
-
-        match first {
-            "-h" | "--help" | "help" => {
-                self.print_help();
-                Ok(0)
-            }
-            "-V" | "--version" | "version" => {
-                println!("tempo {}", self.version);
-                Ok(0)
-            }
-            "add" | "update" | "remove" => self.handle_management(first, &args[2..]),
-            extension => self.handle_extension(extension, &args[2..]),
-        }
-    }
 
     fn handle_management(&self, action: &str, args: &[String]) -> Result<i32, LauncherError> {
         let parsed = parse_management_args(args)?;
@@ -89,11 +78,6 @@ impl Launcher {
         Ok(0)
     }
 
-    fn handle_no_args(&self) -> Result<i32, LauncherError> {
-        self.print_help();
-        Ok(0)
-    }
-
     fn handle_extension(
         &self,
         extension: &str,
@@ -103,24 +87,24 @@ impl Launcher {
             print_missing_install_hint(extension);
             return Ok(1);
         }
-        debug_log(&format!("extension={extension}"));
+        tracing::debug!("extension={extension}");
         let binary_name = format!("tempo-{extension}");
         let display_name = format!("tempo {extension}");
         if let Some(binary) = self.find_binary(&binary_name) {
-            debug_log(&format!("extension found locally: {}", binary.display()));
+            tracing::debug!("extension found locally: {}", binary.display());
             self.maybe_auto_update(extension);
             return run_child(binary, extension_args, &display_name);
         }
 
         // Try to auto-install as an extension.
-        debug_log("attempting extension auto-install");
+        tracing::debug!("attempting extension auto-install");
         match self.try_auto_install_extension(extension) {
             Ok(Some(binary)) => {
                 return run_child(binary, extension_args, &display_name);
             }
             Ok(None) => {}
             Err(err) => {
-                debug_log(&format!("extension auto-install failed: {err}"));
+                tracing::debug!("extension auto-install failed: {err}");
             }
         }
 
@@ -128,24 +112,12 @@ impl Launcher {
         Ok(1)
     }
 
-    fn print_help(&self) {
-        println!("Tempo CLI {}\n", self.version);
-        println!("Usage: tempo <command> [args...]\n");
-        println!("Management:");
-        println!("  add <name>      Install an extension");
-        println!("  update <name>   Update an extension");
-        println!("  remove <name>   Remove an extension\n");
-        println!("Run any installed extension as: tempo <name> [args...]");
-        println!("Extensions are auto-installed on first use when available.");
-        println!("Run 'tempo node --help' for node commands.");
-    }
-
     fn try_auto_install_extension(
         &self,
         extension: &str,
     ) -> Result<Option<PathBuf>, LauncherError> {
         let manifest = manifest_url(extension, None);
-        debug_log(&format!("auto-install manifest={manifest}"));
+        tracing::debug!("auto-install manifest={manifest}");
 
         let binary_name = format!("tempo-{extension}");
 
@@ -191,9 +163,7 @@ impl Launcher {
         let latest_version = match fetch_manifest_version(&url) {
             Ok(v) => v,
             Err(_) => {
-                debug_log(&format!(
-                    "auto-update: manifest fetch failed for {extension}"
-                ));
+                tracing::debug!("auto-update: manifest fetch failed for {extension}");
                 state.touch_check(extension);
                 state.save();
                 return;
@@ -211,10 +181,10 @@ impl Launcher {
             return;
         }
 
-        debug_log(&format!(
+        tracing::debug!(
             "auto-update: {extension} {old} -> {latest_version}",
             old = installed_version.unwrap_or("(untracked)")
-        ));
+        );
 
         let updated = if let Ok(installer) = Installer::from_env(self.exe_dir.as_deref()) {
             let source = InstallSource {
@@ -232,7 +202,7 @@ impl Launcher {
             }
             state.record_check(extension, &latest_version);
         } else {
-            debug_log(&format!("auto-update: install failed for {extension}"));
+            tracing::debug!("auto-update: install failed for {extension}");
             state.touch_check(extension);
         }
         state.save();
@@ -254,12 +224,7 @@ impl Launcher {
         // 2. Check the fallback install directory (~/.local/bin or
         //    TEMPO_HOME/bin) in case exe_dir wasn't writable when the
         //    extension was installed.
-        let fallback = if let Some(home) = env::var_os("TEMPO_HOME") {
-            Some(PathBuf::from(home).join("bin"))
-        } else {
-            crate::installer::default_local_bin().ok()
-        };
-        if let Some(dir) = &fallback
+        if let Some(dir) = &fallback_bin_dir()
             && self.exe_dir.as_deref() != Some(dir.as_path())
         {
             for name in &candidates {
@@ -271,7 +236,7 @@ impl Launcher {
         }
 
         // 3. Search PATH.
-        crate::installer::resolve_from_path(binary)
+        resolve_from_path(binary)
     }
 }
 
@@ -362,7 +327,7 @@ fn manifest_url(extension: &str, version: Option<&str>) -> String {
 }
 
 fn run_child(binary: PathBuf, args: &[String], display_name: &str) -> Result<i32, LauncherError> {
-    debug_log(&format!("exec {} args={args:?}", binary.display()));
+    tracing::debug!("exec {} args={args:?}", binary.display());
 
     let mut cmd = Command::new(&binary);
 

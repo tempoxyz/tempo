@@ -9,12 +9,11 @@ mod verify;
 pub use error::InstallerError;
 pub(crate) use manifest::{fetch_manifest_version, is_secure_or_local_manifest_location};
 pub(crate) use platform::{
-    binary_candidates, check_dir_writable, default_local_bin, executable_name, resolve_from_path,
-    set_executable_permissions,
+    binary_candidates, default_local_bin, home_dir, resolve_from_path,
 };
 
 use manifest::{ReleaseBinary, load_manifest};
-use platform::platform_binary_name;
+use platform::{check_dir_writable, executable_name, platform_binary_name, set_executable_permissions};
 use skill::{install_skill, remove_skill};
 use verify::{decode_verifying_key, sha256_of_bytes, verify_signature};
 
@@ -23,12 +22,15 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tempfile::TempDir;
 
-pub(crate) fn debug_log(message: &str) {
-    if env::var_os("TEMPO_DEBUG").is_some() {
-        eprintln!("debug: {message}");
-    }
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub(super) fn http_client() -> Result<reqwest::blocking::Client, InstallerError> {
+    Ok(reqwest::blocking::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()?)
 }
 
 /// Parse a `file://` URL into a local path using the `url` crate.
@@ -65,10 +67,19 @@ struct ResolvedInstall {
     _download_dir: TempDir,
 }
 
+/// The fallback install directory: `TEMPO_HOME/bin` if set, else `~/.local/bin`.
+pub(crate) fn fallback_bin_dir() -> Option<PathBuf> {
+    if let Some(home) = env::var_os("TEMPO_HOME") {
+        Some(PathBuf::from(home).join("bin"))
+    } else {
+        default_local_bin().ok()
+    }
+}
+
 impl Installer {
     pub(crate) fn from_env(exe_dir: Option<&Path>) -> Result<Self, InstallerError> {
-        let bin_dir = if let Some(home) = env::var_os("TEMPO_HOME") {
-            PathBuf::from(home).join("bin")
+        let bin_dir = if env::var_os("TEMPO_HOME").is_some() {
+            fallback_bin_dir().expect("TEMPO_HOME is set")
         } else if let Some(dir) = exe_dir.filter(|d| d.is_dir() && check_dir_writable(d).is_ok()) {
             dir.to_path_buf()
         } else {
@@ -134,14 +145,14 @@ impl Installer {
             .ok_or(InstallerError::MissingReleasePublicKey)?;
 
         let verifying_key = decode_verifying_key(&public_key)?;
-        debug_log(&format!("fetching manifest from {manifest_loc}"));
+        tracing::debug!("fetching manifest from {manifest_loc}");
         let manifest = load_manifest(&manifest_loc)?;
         if !quiet {
             println!("installing {binary} {}", manifest.version);
         }
 
         let platform_key = platform_binary_name(extension);
-        debug_log(&format!("platform key: {platform_key}"));
+        tracing::debug!("platform key: {platform_key}");
         let metadata = manifest
             .binaries
             .get(&platform_key)
@@ -242,7 +253,7 @@ fn download_extension(
     }
 
     if metadata.url.starts_with("https://") {
-        let mut response = reqwest::blocking::get(&metadata.url)?.error_for_status()?;
+        let mut response = http_client()?.get(&metadata.url).send()?.error_for_status()?;
         let mut file = fs::File::create(&dst)?;
         io::copy(&mut response, &mut file)?;
     } else if let Some(path) = file_url_to_path(&metadata.url) {
@@ -255,7 +266,7 @@ fn download_extension(
 
     let bytes = fs::read(&dst)?;
 
-    debug_log(&format!("verifying checksum for {binary}"));
+    tracing::debug!("verifying checksum for {binary}");
     let actual = sha256_of_bytes(&bytes);
     let expected = metadata.sha256.to_lowercase();
     if actual != expected {
@@ -267,19 +278,52 @@ fn download_extension(
         });
     }
 
-    debug_log(&format!("checksum ok for {binary}"));
+    tracing::debug!("checksum ok for {binary}");
 
     let encoded_signature = metadata
         .signature
         .as_deref()
         .ok_or_else(|| InstallerError::SignatureMissing(binary.to_string()))?;
-    debug_log(&format!("verifying signature for {binary}"));
+    tracing::debug!("verifying signature for {binary}");
     if let Err(err) = verify_signature(binary, &bytes, encoded_signature, verifying_key) {
         let _ = fs::remove_file(&dst);
         return Err(err);
     }
 
-    debug_log(&format!("signature ok for {binary}"));
+    tracing::debug!("signature ok for {binary}");
 
     Ok(Some(dst))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_url_to_path;
+    use std::path::Path;
+
+    #[test]
+    fn file_url_unix_absolute() {
+        let path = file_url_to_path("file:///tmp/manifest.json").unwrap();
+        assert_eq!(path, Path::new("/tmp/manifest.json"));
+    }
+
+    #[test]
+    fn file_url_with_spaces() {
+        let path = file_url_to_path("file:///tmp/my%20dir/manifest.json").unwrap();
+        assert_eq!(path, Path::new("/tmp/my dir/manifest.json"));
+    }
+
+    #[test]
+    fn https_url_returns_none() {
+        assert!(file_url_to_path("https://example.com/manifest.json").is_none());
+    }
+
+    #[test]
+    fn bare_path_returns_none() {
+        assert!(file_url_to_path("/tmp/manifest.json").is_none());
+    }
+
+    #[test]
+    fn relative_path_returns_none() {
+        assert!(file_url_to_path("./manifest.json").is_none());
+    }
 }

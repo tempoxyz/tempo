@@ -161,9 +161,7 @@ fn main() -> eyre::Result<()> {
                 err.exit();
             }
             let args: Vec<String> = std::env::args().collect();
-            let version = env!("CARGO_PKG_VERSION").to_string();
-            let launcher = tempo_ext::Launcher::new(version);
-            let code = match launcher.run(args) {
+            let code = match tempo_ext::run(args) {
                 Ok(code) => code,
                 Err(launcher_err) => {
                     eprintln!("{launcher_err}");

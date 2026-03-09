@@ -1,6 +1,6 @@
 //! Persistent state for the tempo CLI (update check timestamps, installed versions).
 
-use crate::installer::debug_log;
+use crate::installer::home_dir;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -45,17 +45,17 @@ impl State {
         let json = match serde_json::to_string_pretty(self) {
             Ok(j) => j,
             Err(err) => {
-                debug_log(&format!("state serialize failed: {err}"));
+                tracing::warn!("state serialize failed: {err}");
                 return;
             }
         };
         let tmp = path.with_extension("tmp");
         if let Err(err) = fs::write(&tmp, format!("{json}\n")) {
-            debug_log(&format!("state write failed: {}: {err}", tmp.display()));
+            tracing::warn!("state write failed: {}: {err}", tmp.display());
             return;
         }
         if let Err(err) = fs::rename(&tmp, &path) {
-            debug_log(&format!("state rename failed: {}: {err}", path.display()));
+            tracing::warn!("state rename failed: {}: {err}", path.display());
         }
     }
 
@@ -107,19 +107,17 @@ fn state_path() -> Option<PathBuf> {
     if let Some(home) = env::var_os("TEMPO_HOME") {
         Some(PathBuf::from(home).join("state.json"))
     } else {
-        env::var_os("HOME")
-            .or_else(|| env::var_os("USERPROFILE"))
-            .map(|home| {
-                let base = if cfg!(target_os = "macos") {
-                    PathBuf::from(&home).join("Library/Application Support")
-                } else {
-                    // XDG_STATE_HOME, defaulting to ~/.local/state
-                    env::var_os("XDG_STATE_HOME")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| PathBuf::from(&home).join(".local/state"))
-                };
-                base.join("tempo").join("state.json")
-            })
+        home_dir().map(|home| {
+            let base = if cfg!(target_os = "macos") {
+                home.join("Library/Application Support")
+            } else {
+                // XDG_STATE_HOME, defaulting to ~/.local/state
+                env::var_os("XDG_STATE_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join(".local/state"))
+            };
+            base.join("tempo").join("state.json")
+        })
     }
 }
 

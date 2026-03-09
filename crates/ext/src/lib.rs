@@ -8,4 +8,4 @@ mod launcher;
 mod state;
 
 pub use installer::InstallerError;
-pub use launcher::{Launcher, LauncherError};
+pub use launcher::{LauncherError, run};

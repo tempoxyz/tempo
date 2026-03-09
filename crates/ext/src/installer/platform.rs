@@ -5,14 +5,14 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::error::InstallerError;
+use crate::installer::error::InstallerError;
 
 pub(super) fn platform_binary_name(extension: &str) -> String {
     let (os, arch) = platform_tuple();
     format!("tempo-{extension}-{os}-{arch}")
 }
 
-pub(crate) fn platform_tuple() -> (&'static str, &'static str) {
+fn platform_tuple() -> (&'static str, &'static str) {
     let os = if cfg!(target_os = "macos") {
         "darwin"
     } else if cfg!(target_os = "linux") {
@@ -50,14 +50,18 @@ pub(crate) fn resolve_from_path(binary: &str) -> Option<PathBuf> {
     None
 }
 
-pub(crate) fn default_local_bin() -> Result<PathBuf, InstallerError> {
-    let home = env::var_os("HOME")
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
-        .ok_or(InstallerError::HomeDirMissing)?;
-    Ok(PathBuf::from(home).join(".local").join("bin"))
+        .map(PathBuf::from)
 }
 
-pub(crate) fn executable_name(binary: &str) -> String {
+pub(crate) fn default_local_bin() -> Result<PathBuf, InstallerError> {
+    let home = home_dir().ok_or(InstallerError::HomeDirMissing)?;
+    Ok(home.join(".local").join("bin"))
+}
+
+pub(super) fn executable_name(binary: &str) -> String {
     #[cfg(windows)]
     {
         format!("{binary}.exe")
@@ -79,7 +83,7 @@ pub(crate) fn binary_candidates(base: &str) -> Vec<String> {
     }
 }
 
-pub(crate) fn check_dir_writable(dir: &Path) -> Result<(), InstallerError> {
+pub(super) fn check_dir_writable(dir: &Path) -> Result<(), InstallerError> {
     tempfile::NamedTempFile::new_in(dir).map_err(|err| {
         InstallerError::Io(std::io::Error::new(
             err.kind(),
@@ -89,7 +93,7 @@ pub(crate) fn check_dir_writable(dir: &Path) -> Result<(), InstallerError> {
     Ok(())
 }
 
-pub(crate) fn set_executable_permissions(path: &Path) -> io::Result<()> {
+pub(super) fn set_executable_permissions(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

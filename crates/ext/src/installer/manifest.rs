@@ -1,7 +1,7 @@
 //! Release manifest fetching and validation.
 
 use crate::installer::error::InstallerError;
-use crate::installer::file_url_to_path;
+use crate::installer::{file_url_to_path, http_client};
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -31,7 +31,9 @@ pub(crate) fn fetch_manifest_version(manifest_url: &str) -> Result<String, Insta
 
 pub(super) fn load_manifest(location: &str) -> Result<ReleaseManifest, InstallerError> {
     let body = if location.starts_with("https://") {
-        reqwest::blocking::get(location)?
+        http_client()?
+            .get(location)
+            .send()?
             .error_for_status()?
             .text()?
     } else if let Some(path) = file_url_to_path(location) {
