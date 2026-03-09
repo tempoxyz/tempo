@@ -249,10 +249,7 @@ where
             self.metrics
                 .state_provider_duration_seconds
                 .record(start.elapsed());
-            match res {
-                Ok(provider) => provider,
-                Err(err) => return Err(err.into()),
-            }
+            res?
         };
         let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
             Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
@@ -367,10 +364,7 @@ where
             self.metrics
                 .create_evm_duration_seconds
                 .record(start.elapsed());
-            match res {
-                Ok(builder) => builder,
-                Err(err) => return Err(err),
-            }
+            res?
         };
 
         {
@@ -383,9 +377,7 @@ where
             self.metrics
                 .pre_execution_duration_seconds
                 .record(start.elapsed());
-            if let Err(err) = res {
-                return Err(err);
-            }
+            res?;
         }
 
         debug!("building new payload");
@@ -702,10 +694,7 @@ where
                 block,
                 hashed_state,
                 trie_updates,
-            } = match res {
-                Ok(outcome) => outcome,
-                Err(err) => return Err(err.into()),
-            };
+            } = res?;
             (
                 builder_finish_elapsed,
                 execution_result,
