@@ -220,6 +220,16 @@ impl<TContext: Spawner> Actor<TContext> {
             certificate: hex::encode(certificate),
         };
 
+        let mut state = self.state.write();
+        let latest_finalized_round = state
+            .latest_finalized
+            .as_ref()
+            .map(|b| Round::new(Epoch::new(b.epoch), View::new(b.view)));
+        let latest_notarized_round = state
+            .latest_notarized
+            .as_ref()
+            .map(|b| Round::new(Epoch::new(b.epoch), View::new(b.view)));
+
         // Update state and broadcast events
         match activity {
             Activity::Notarization(_) => {
@@ -228,17 +238,8 @@ impl<TContext: Spawner> Actor<TContext> {
                     seen: now_millis(),
                 });
 
-                let mut state = self.state.write();
-                if state
-                    .latest_finalized
-                    .as_ref()
-                    .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)))
-                    .is_none_or(|r| r < round)
-                    && state
-                        .latest_notarized
-                        .as_ref()
-                        .map(|n| Round::new(Epoch::new(n.epoch), View::new(n.view)))
-                        .is_none_or(|n| n < round)
+                if latest_finalized_round.is_none_or(|r| r < round)
+                    && latest_notarized_round.is_none_or(|r| r < round)
                 {
                     state.latest_notarized = Some(certified);
                 }
@@ -250,21 +251,11 @@ impl<TContext: Spawner> Actor<TContext> {
                     seen: now_millis(),
                 });
 
-                let mut state = self.state.write();
-                if state
-                    .latest_finalized
-                    .as_ref()
-                    .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)))
-                    .is_none_or(|r| r < round)
-                {
-                    if state
-                        .latest_notarized
-                        .as_ref()
-                        .map(|n| Round::new(Epoch::new(n.epoch), View::new(n.view)))
-                        .is_none_or(|r| r < round)
-                    {
+                if latest_finalized_round.is_none_or(|r| r < round) {
+                    if latest_notarized_round.is_none_or(|r| r < round) {
                         state.latest_notarized = None;
                     }
+
                     state.latest_finalized = Some(certified);
                 }
             }
