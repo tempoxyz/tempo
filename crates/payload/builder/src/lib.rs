@@ -70,6 +70,13 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
     })
 }
 
+/// Pool transaction selection statistics.
+struct PoolSelectionStats {
+    considered: u64,
+    executed: u64,
+    skipped: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -204,6 +211,37 @@ impl<Provider> TempoPayloadBuilder<Provider>
 where
     Provider: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec>,
 {
+    fn record_pool_selection_metrics(&self, stats: &PoolSelectionStats) {
+        self.metrics
+            .pool_transactions_considered
+            .record(stats.considered as f64);
+        self.metrics
+            .pool_transactions_considered_last
+            .set(stats.considered as f64);
+        self.metrics
+            .pool_transactions_executed
+            .record(stats.executed as f64);
+        self.metrics
+            .pool_transactions_executed_last
+            .set(stats.executed as f64);
+        self.metrics
+            .pool_transactions_skipped
+            .record(stats.skipped as f64);
+        self.metrics
+            .pool_transactions_skipped_last
+            .set(stats.skipped as f64);
+    }
+
+    fn record_subblock_metrics(&self, elapsed: std::time::Duration, count: f64, txs: f64) {
+        self.metrics
+            .total_subblock_transaction_execution_duration_seconds
+            .record(elapsed);
+        self.metrics.subblocks.record(count);
+        self.metrics.subblocks_last.set(count);
+        self.metrics.subblock_transactions.record(txs);
+        self.metrics.subblock_transactions_last.set(txs);
+    }
+
     #[instrument(
         target = "payload_builder",
         skip_all,
@@ -422,22 +460,11 @@ where
                 .map(|gasprice| gasprice as u64),
         ));
 
-        let mut pool_transactions_considered = 0u64;
-        let mut pool_transactions_executed = 0u64;
-        let mut pool_transactions_skipped = 0u64;
-        let record_pool_selection_metrics =
-            |metrics: &TempoPayloadBuilderMetrics, considered: u64, executed: u64, skipped: u64| {
-                metrics
-                    .pool_transactions_considered
-                    .record(considered as f64);
-                metrics
-                    .pool_transactions_considered_last
-                    .set(considered as f64);
-                metrics.pool_transactions_executed.record(executed as f64);
-                metrics.pool_transactions_executed_last.set(executed as f64);
-                metrics.pool_transactions_skipped.record(skipped as f64);
-                metrics.pool_transactions_skipped_last.set(skipped as f64);
-            };
+        let mut pool_stats = PoolSelectionStats {
+            considered: 0,
+            executed: 0,
+            skipped: 0,
+        };
 
         let _pool_tx_span = debug_span!(target: "payload_builder", "execute_pool_txs").entered();
         let execution_start = Instant::now();
@@ -449,12 +476,7 @@ where
 
             // check if the job was cancelled, if so we can exit early
             if cancel.is_cancelled() {
-                record_pool_selection_metrics(
-                    &self.metrics,
-                    pool_transactions_considered,
-                    pool_transactions_executed,
-                    pool_transactions_skipped,
-                );
+                self.record_pool_selection_metrics(&pool_stats);
                 return_with_build_duration!(Ok(BuildOutcome::Cancelled));
             }
 
@@ -465,7 +487,7 @@ where
             self.metrics
                 .transaction_selection_duration_seconds
                 .record(selection_start.elapsed());
-            pool_transactions_considered += 1;
+            pool_stats.considered += 1;
 
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
@@ -480,7 +502,7 @@ where
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
-                pool_transactions_skipped += 1;
+                pool_stats.skipped += 1;
                 self.metrics
                     .pool_transactions_skipped_exceeds_non_shared_gas_limit
                     .increment(1);
@@ -498,7 +520,7 @@ where
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
-                pool_transactions_skipped += 1;
+                pool_stats.skipped += 1;
                 self.metrics
                     .pool_transactions_skipped_exceeds_non_payment_gas_limit
                     .increment(1);
@@ -521,7 +543,7 @@ where
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
                 );
-                pool_transactions_skipped += 1;
+                pool_stats.skipped += 1;
                 self.metrics
                     .pool_transactions_skipped_oversized_block
                     .increment(1);
@@ -562,21 +584,16 @@ where
                             .pool_transactions_skipped_invalid_tx
                             .increment(1);
                     }
-                    pool_transactions_skipped += 1;
+                    pool_stats.skipped += 1;
                     continue;
                 }
                 // this is an error that we should treat as fatal for this attempt
                 Err(err) => {
-                    record_pool_selection_metrics(
-                        &self.metrics,
-                        pool_transactions_considered,
-                        pool_transactions_executed,
-                        pool_transactions_skipped,
-                    );
+                    self.record_pool_selection_metrics(&pool_stats);
                     return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
                 }
             };
-            pool_transactions_executed += 1;
+            pool_stats.executed += 1;
             let elapsed = execution_start.elapsed();
             self.metrics
                 .transaction_execution_duration_seconds
@@ -592,12 +609,7 @@ where
             block_size_used += tx_rlp_length;
         }
         drop(_pool_tx_span);
-        record_pool_selection_metrics(
-            &self.metrics,
-            pool_transactions_considered,
-            pool_transactions_executed,
-            pool_transactions_skipped,
-        );
+        self.record_pool_selection_metrics(&pool_stats);
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
         self.metrics
             .total_normal_transaction_execution_duration_seconds
@@ -628,18 +640,6 @@ where
         let subblocks_start = Instant::now();
         let subblocks_count = subblocks.len() as f64;
         let mut subblock_transactions = 0f64;
-        let record_subblock_metrics = |metrics: &TempoPayloadBuilderMetrics,
-                                       elapsed: std::time::Duration,
-                                       count: f64,
-                                       txs: f64| {
-            metrics
-                .total_subblock_transaction_execution_duration_seconds
-                .record(elapsed);
-            metrics.subblocks.record(count);
-            metrics.subblocks_last.set(count);
-            metrics.subblock_transactions.record(txs);
-            metrics.subblock_transactions_last.set(txs);
-        };
         // Apply subblock transactions
         for subblock in &subblocks {
             for tx in subblock.transactions_recovered() {
@@ -655,8 +655,7 @@ where
                         self.highest_invalid_subblock
                             .store(builder.evm().block().number.to(), Ordering::Relaxed);
                     }
-                    record_subblock_metrics(
-                        &self.metrics,
+                    self.record_subblock_metrics(
                         subblocks_start.elapsed(),
                         subblocks_count,
                         subblock_transactions,
@@ -669,8 +668,7 @@ where
         }
         let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
         drop(_subblock_span);
-        record_subblock_metrics(
-            &self.metrics,
+        self.record_subblock_metrics(
             total_subblock_transaction_execution_elapsed,
             subblocks_count,
             subblock_transactions,
@@ -787,8 +785,12 @@ where
             "Built payload"
         );
 
-        let eth_payload =
-            EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
+        let eth_payload = EthBuiltPayload::new(
+            attributes.payload_id(),
+            sealed_block,
+            total_fees,
+            requests,
+        );
 
         let execution_outcome = ExecutionOutcome::new(
             db.take_bundle(),
@@ -997,4 +999,5 @@ mod tests {
         let subblock_no_expiry = RecoveredSubBlock::with_valid_before(None);
         assert!(!has_expired_transactions(&subblock_no_expiry, 1000));
     }
+
 }
