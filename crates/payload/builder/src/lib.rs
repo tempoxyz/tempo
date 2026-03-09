@@ -581,50 +581,8 @@ where
                 trie_updates,
             } = res?;
 
-            // Compute state-size stats from hashed post-state and trie updates.
-            // These correlate with payload_finalization_duration_seconds to diagnose
-            // slow state root computation.
-            let state_stats = FinalizationStateStats {
-                accounts_modified: hashed_state.accounts.len(),
-                storage_slots_modified: hashed_state
-                    .storages
-                    .values()
-                    .map(|s| s.storage.len())
-                    .sum(),
-                storage_tries_wiped: hashed_state.storages.values().filter(|s| s.wiped).count(),
-                trie_nodes_updated: trie_updates.account_nodes.len()
-                    + trie_updates.removed_nodes.len()
-                    + trie_updates
-                        .storage_tries
-                        .values()
-                        .map(|s| s.storage_nodes.len() + s.removed_nodes.len())
-                        .sum::<usize>(),
-            };
-
-            self.metrics
-                .accounts_modified
-                .record(state_stats.accounts_modified as f64);
-            self.metrics
-                .accounts_modified_last
-                .set(state_stats.accounts_modified as f64);
-            self.metrics
-                .storage_slots_modified
-                .record(state_stats.storage_slots_modified as f64);
-            self.metrics
-                .storage_slots_modified_last
-                .set(state_stats.storage_slots_modified as f64);
-            self.metrics
-                .storage_tries_wiped
-                .record(state_stats.storage_tries_wiped as f64);
-            self.metrics
-                .storage_tries_wiped_last
-                .set(state_stats.storage_tries_wiped as f64);
-            self.metrics
-                .trie_nodes_updated
-                .record(state_stats.trie_nodes_updated as f64);
-            self.metrics
-                .trie_nodes_updated_last
-                .set(state_stats.trie_nodes_updated as f64);
+            let state_stats = FinalizationStateStats::new(&hashed_state, &trie_updates);
+            self.metrics.record_finalization_state_stats(&state_stats);
 
             (
                 builder_finish_elapsed,
@@ -687,7 +645,7 @@ where
             accounts_modified = state_stats.accounts_modified,
             storage_slots_modified = state_stats.storage_slots_modified,
             storage_tries_wiped = state_stats.storage_tries_wiped,
-            trie_nodes_updated = state_stats.trie_nodes_updated,
+            trie_nodes_changed = state_stats.trie_nodes_changed,
             ?elapsed,
             ?total_normal_transaction_execution_elapsed,
             ?total_subblock_transaction_execution_elapsed,
