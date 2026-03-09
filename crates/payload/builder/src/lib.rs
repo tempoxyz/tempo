@@ -113,6 +113,7 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
 }
 
 /// Returns `Some(reason)` if the transaction should be skipped, `None` if it can execute.
+#[allow(clippy::too_many_arguments)]
 fn check_pool_tx_admission(
     tx_gas: u64,
     is_payment: bool,
