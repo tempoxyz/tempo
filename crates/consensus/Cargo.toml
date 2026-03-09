@@ -14,7 +14,7 @@ workspace = true
 tempo-chainspec.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 
-reth-chainspec = { workspace = true, features = ["std"] }
+reth-chainspec.workspace = true
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-ethereum-consensus.workspace = true
