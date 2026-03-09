@@ -3,6 +3,34 @@ use reth_metrics::{
     Metrics,
     metrics::{Counter, Histogram},
 };
+use std::time::{Duration, Instant};
+
+/// RAII guard that records `payload_build_duration_seconds` on drop.
+pub(crate) struct BuildGuard<'a> {
+    started_at: Instant,
+    metrics: &'a TempoPayloadBuilderMetrics,
+}
+
+impl<'a> BuildGuard<'a> {
+    pub(crate) fn new(metrics: &'a TempoPayloadBuilderMetrics) -> Self {
+        Self {
+            started_at: Instant::now(),
+            metrics,
+        }
+    }
+
+    pub(crate) fn elapsed(&self) -> Duration {
+        self.started_at.elapsed()
+    }
+}
+
+impl Drop for BuildGuard<'_> {
+    fn drop(&mut self) {
+        self.metrics
+            .payload_build_duration_seconds
+            .record(self.started_at.elapsed());
+    }
+}
 
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_payload_builder")]

@@ -5,7 +5,7 @@
 
 mod metrics;
 
-use crate::metrics::TempoPayloadBuilderMetrics;
+use crate::metrics::{BuildGuard, TempoPayloadBuilderMetrics};
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
@@ -233,20 +233,7 @@ where
             attributes,
         } = config;
 
-        let start = Instant::now();
-        let record_build_attempt_duration = || {
-            self.metrics
-                .payload_build_duration_seconds
-                .record(start.elapsed())
-        };
-        // Early-return helper: records `payload_build_duration_seconds` before exiting,
-        // so the metric is emitted on every code path (error, cancel, abort, success).
-        macro_rules! return_with_build_duration {
-            ($value:expr) => {{
-                record_build_attempt_duration();
-                return $value;
-            }};
-        }
+        let guard = BuildGuard::new(&self.metrics);
 
         let block_time_millis =
             (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
@@ -260,10 +247,7 @@ where
             self.metrics
                 .state_provider_duration_seconds
                 .record(start.elapsed());
-            match res {
-                Ok(provider) => provider,
-                Err(err) => return_with_build_duration!(Err(err.into())),
-            }
+            res?
         };
         let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
             Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
@@ -378,10 +362,7 @@ where
             self.metrics
                 .create_evm_duration_seconds
                 .record(start.elapsed());
-            match res {
-                Ok(builder) => builder,
-                Err(err) => return_with_build_duration!(Err(err)),
-            }
+            res?
         };
 
         {
@@ -394,9 +375,7 @@ where
             self.metrics
                 .pre_execution_duration_seconds
                 .record(start.elapsed());
-            if let Err(err) = res {
-                return_with_build_duration!(Err(err));
-            }
+            res?;
         }
 
         debug!("building new payload");
@@ -455,7 +434,7 @@ where
                     pool_transactions_executed,
                     pool_transactions_skipped,
                 );
-                return_with_build_duration!(Ok(BuildOutcome::Cancelled));
+                return Ok(BuildOutcome::Cancelled);
             }
 
             let selection_start = Instant::now();
@@ -573,7 +552,7 @@ where
                         pool_transactions_executed,
                         pool_transactions_skipped,
                     );
-                    return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
+                    return Err(PayloadBuilderError::evm(err));
                 }
             };
             pool_transactions_executed += 1;
@@ -617,10 +596,10 @@ where
             drop(builder);
             drop(db);
             // can skip building the block
-            return_with_build_duration!(Ok(BuildOutcome::Aborted {
+            return Ok(BuildOutcome::Aborted {
                 fees: total_fees,
                 cached_reads,
-            }));
+            });
         }
 
         let _subblock_span =
@@ -661,7 +640,7 @@ where
                         subblocks_count,
                         subblock_transactions,
                     );
-                    return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
+                    return Err(PayloadBuilderError::evm(err));
                 }
 
                 subblock_transactions += 1.0;
@@ -686,7 +665,7 @@ where
                     self.metrics
                         .system_transactions_execution_duration_seconds
                         .record(elapsed);
-                    return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
+                    return Err(PayloadBuilderError::evm(err));
                 }
             }
             system_txs_execution_start.elapsed()
@@ -713,10 +692,7 @@ where
                 block,
                 hashed_state,
                 trie_updates,
-            } = match res {
-                Ok(outcome) => outcome,
-                Err(err) => return_with_build_duration!(Err(err.into())),
-            };
+            } = res?;
             (
                 builder_finish_elapsed,
                 execution_result,
@@ -746,16 +722,13 @@ where
         let rlp_length = sealed_block.rlp_length();
 
         if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
-            return_with_build_duration!(Err(PayloadBuilderError::other(
-                ConsensusError::BlockTooLarge {
-                    rlp_length,
-                    max_rlp_length: MAX_RLP_BLOCK_SIZE,
-                }
-            )));
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
         }
 
-        let elapsed = start.elapsed();
-        self.metrics.payload_build_duration_seconds.record(elapsed);
+        let elapsed = guard.elapsed();
         let secs = elapsed.as_secs_f64();
         if secs > 0.0 {
             let gas_per_second = sealed_block.gas_used() as f64 / secs;
