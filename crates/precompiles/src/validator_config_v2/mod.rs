@@ -1,7 +1,7 @@
 pub mod dispatch;
 
-use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 pub use tempo_contracts::precompiles::{IValidatorConfigV2, ValidatorConfigV2Error};
+use tempo_contracts::precompiles::{VALIDATOR_CONFIG_V2_ADDRESS, ValidatorConfigV2Event};
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
@@ -101,6 +101,8 @@ struct ValidatorRecord {
     ingress: String,
     /// Outbound IP for firewall whitelisting (`<ip>`).
     egress: String,
+    /// Address that receives execution-layer fees for this validator.
+    fee_recipient: Address,
     /// Position in the `validators` array. Stable across rotations for the in-place slot;
     /// snapshots get the tail position at the time they were appended.
     index: u64,
@@ -210,7 +212,7 @@ impl ValidatorConfigV2 {
         }
         let v = self.validators[idx as usize].read()?;
         if v.deactivated_at_height != 0 {
-            Err(ValidatorConfigV2Error::validator_already_deleted())?
+            Err(ValidatorConfigV2Error::validator_already_deactivated())?
         }
         Ok(v)
     }
@@ -224,6 +226,7 @@ impl ValidatorConfigV2 {
             validatorAddress: v.validator_address,
             ingress: v.ingress,
             egress: v.egress,
+            feeRecipient: v.fee_recipient,
             index: v.index,
             addedAtHeight: v.added_at_height,
             deactivatedAtHeight: v.deactivated_at_height,
@@ -318,8 +321,12 @@ impl ValidatorConfigV2 {
     }
 
     /// Parses `ingress` as an `<ip>:<port>` pair and returns the hash of the
-    /// binary representation of its IP address.
-    fn ingress_ip_key(ingress: &str) -> Result<B256> {
+    /// ingress' binary representation.
+    ///
+    /// For V4 addresses, that's `keccak256(octets(ip) || big_endian(port))`.
+    ///
+    /// For V6 addresses, that's `keccak256(octets(ip) || big_endian(scope_id) || big_endian(port))`.
+    fn ingress_key(ingress: &str) -> Result<B256> {
         let ingress = ingress
             .parse::<std::net::SocketAddr>()
             .map_err(IpWithPortParseError::from)
@@ -329,14 +336,23 @@ impl ValidatorConfigV2 {
                     err.to_string(),
                 ))
             })?;
-        Ok(match ingress.ip() {
-            std::net::IpAddr::V4(v4) => keccak256(v4.octets()),
-            std::net::IpAddr::V6(v6) => keccak256(v6.octets()),
-        })
+        let mut hasher = Keccak256::new();
+        match ingress {
+            std::net::SocketAddr::V4(v4) => {
+                hasher.update(v4.ip().octets());
+                hasher.update(v4.port().to_be_bytes());
+            }
+            std::net::SocketAddr::V6(v6) => {
+                hasher.update(v6.ip().octets());
+                hasher.update(v6.scope_id().to_be_bytes());
+                hasher.update(v6.port().to_be_bytes());
+            }
+        }
+        Ok(hasher.finalize())
     }
 
-    fn require_unique_ingress_ip(&self, ingress: &str) -> Result<B256> {
-        let ingress_hash = Self::ingress_ip_key(ingress)?;
+    fn require_unique_ingress(&self, ingress: &str) -> Result<B256> {
+        let ingress_hash = Self::ingress_key(ingress)?;
         if self.active_ingress_ips[ingress_hash].read()? {
             Err(ValidatorConfigV2Error::ingress_already_exists(
                 ingress.to_string(),
@@ -346,8 +362,8 @@ impl ValidatorConfigV2 {
     }
 
     fn update_ingress_ip_tracking(&mut self, old_ingress: &str, new_ingress: &str) -> Result<()> {
-        let old_ingress_hash = Self::ingress_ip_key(old_ingress)?;
-        let new_ingress_hash = Self::ingress_ip_key(new_ingress)?;
+        let old_ingress_hash = Self::ingress_key(old_ingress)?;
+        let new_ingress_hash = Self::ingress_key(new_ingress)?;
 
         if old_ingress_hash != new_ingress_hash {
             if self.active_ingress_ips[new_ingress_hash].read()? {
@@ -362,12 +378,14 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_validator(
         &mut self,
         addr: Address,
         pubkey: B256,
         ingress: String,
         egress: String,
+        fee_recipient: Address,
         added_at_height: u64,
         deactivated_at_height: u64,
     ) -> Result<u64> {
@@ -384,6 +402,7 @@ impl ValidatorConfigV2 {
             validator_address: addr,
             ingress,
             egress,
+            fee_recipient,
             index: count,
             active_idx,
             added_at_height,
@@ -426,37 +445,74 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
-    /// Verify validator signature for add or rotate operations
+    /// Verify validator signature for add operations.
     ///
     /// Constructs the message according to the validator config v2 specification
     /// and verifies the Ed25519 signature using the appropriate namespace.
-    ///
-    /// FORMAT:
-    /// - Namespace: [`VALIDATOR_NS_ADD`] or [`VALIDATOR_NS_ROTATE`]
-    /// - Message: `keccak256(abi.encodePacked(chainId, contractAddr, validatorAddr, ingress, egress))`
-    fn verify_validator_signature(
+    fn verify_validator_add_signature(
         &self,
-        namespace: &[u8],
         pubkey: &B256,
         signature: &[u8],
         validator_address: Address,
         ingress: &str,
         egress: &str,
+        fee_recipient: Address,
     ) -> Result<()> {
-        let mut hasher = Keccak256::new();
-        hasher.update(self.storage.chain_id().to_be_bytes());
-        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        hasher.update(validator_address.as_slice());
-        hasher.update(ingress.as_bytes());
-        hasher.update(egress.as_bytes());
-        let message = hasher.finalize();
+        let mut message_data = Vec::new();
+        message_data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
+        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        message_data.extend_from_slice(validator_address.as_slice());
+        message_data
+            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
+        message_data.extend_from_slice(ingress.as_bytes());
+        message_data
+            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
+        message_data.extend_from_slice(egress.as_bytes());
+        message_data.extend_from_slice(fee_recipient.as_slice());
+        let message = keccak256(message_data);
 
         let public_key = PublicKey::decode(pubkey.as_slice())
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
         let sig = Signature::decode(signature)
             .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
 
-        if !public_key.verify(namespace, message.as_slice(), &sig) {
+        if !public_key.verify(VALIDATOR_NS_ADD, message.as_slice(), &sig) {
+            Err(ValidatorConfigV2Error::invalid_signature())?
+        }
+
+        Ok(())
+    }
+
+    /// Verify validator signature for rotate operations.
+    ///
+    /// Constructs the message according to the validator config v2 specification
+    /// and verifies the Ed25519 signature using the appropriate namespace.
+    fn verify_validator_rotate_signature(
+        &self,
+        pubkey: &B256,
+        signature: &[u8],
+        validator_address: Address,
+        ingress: &str,
+        egress: &str,
+    ) -> Result<()> {
+        let mut message_data = Vec::new();
+        message_data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
+        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        message_data.extend_from_slice(validator_address.as_slice());
+        message_data
+            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
+        message_data.extend_from_slice(ingress.as_bytes());
+        message_data
+            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
+        message_data.extend_from_slice(egress.as_bytes());
+        let message = keccak256(message_data);
+
+        let public_key = PublicKey::decode(pubkey.as_slice())
+            .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
+        let sig = Signature::decode(signature)
+            .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
+
+        if !public_key.verify(VALIDATOR_NS_ROTATE, message.as_slice(), &sig) {
             Err(ValidatorConfigV2Error::invalid_signature())?
         }
 
@@ -469,10 +525,9 @@ impl ValidatorConfigV2 {
 
     /// Adds a new validator to the set (owner only).
     ///
-    /// Requires a valid Ed25519 signature over
-    /// `keccak256(chainId ++ contractAddress ++ validatorAddress ++ ingress ++ egress)`
-    /// using the [`VALIDATOR_NS_ADD`] namespace, proving the caller controls the
-    /// private key corresponding to `publicKey`.
+    /// Requires a valid Ed25519 signature, using the [`VALIDATOR_NS_ADD`] namespace, over
+    /// `keccak256(chainId || contractAddr || validatorAddr || len(ingress) || ingress || len(egress) || egress || feeRecipient)`
+    /// which proves that the caller controls the private key corresponding to `publicKey`.
     ///
     /// # Errors
     /// - `NotInitialized` — the contract has not been initialized
@@ -493,29 +548,43 @@ impl ValidatorConfigV2 {
         self.require_new_pubkey(call.publicKey)?;
         self.require_new_address(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
-        let ingress_hash = self.require_unique_ingress_ip(&call.ingress)?;
+        let ingress_hash = self.require_unique_ingress(&call.ingress)?;
 
-        self.verify_validator_signature(
-            VALIDATOR_NS_ADD,
+        self.verify_validator_add_signature(
             &call.publicKey,
             &call.signature,
             call.validatorAddress,
             &call.ingress,
             &call.egress,
+            call.feeRecipient,
         )?;
 
         let block_height = self.storage.block_number();
 
         self.active_ingress_ips[ingress_hash].write(true)?;
 
-        self.append_validator(
+        let index = self.append_validator(
             call.validatorAddress,
             call.publicKey,
-            call.ingress,
-            call.egress,
+            call.ingress.clone(),
+            call.egress.clone(),
+            call.feeRecipient,
             block_height,
             0,
-        )
+        )?;
+
+        self.emit_event(ValidatorConfigV2Event::ValidatorAdded(
+            IValidatorConfigV2::ValidatorAdded {
+                index,
+                validatorAddress: call.validatorAddress,
+                publicKey: call.publicKey,
+                ingress: call.ingress,
+                egress: call.egress,
+                feeRecipient: call.feeRecipient,
+            },
+        ))?;
+
+        Ok(index)
     }
 
     /// Deactivates a validator by setting its `deactivatedAtHeight` to the current
@@ -542,7 +611,7 @@ impl ValidatorConfigV2 {
             .read()?
             .require_owner_or_validator(sender, v.validator_address)?;
 
-        self.active_ingress_ips[Self::ingress_ip_key(&v.ingress)?].delete()?;
+        self.active_ingress_ips[Self::ingress_key(&v.ingress)?].delete()?;
 
         let block_height = self.storage.block_number();
         self.validators[call.idx as usize]
@@ -561,7 +630,14 @@ impl ValidatorConfigV2 {
                 .write((active_index + 1) as u64)?;
         }
         self.active_indices.pop()?;
-        self.validators[call.idx as usize].active_idx.write(0)
+        self.validators[call.idx as usize].active_idx.write(0)?;
+
+        self.emit_event(ValidatorConfigV2Event::ValidatorDeactivated(
+            IValidatorConfigV2::ValidatorDeactivated {
+                index: call.idx,
+                validatorAddress: v.validator_address,
+            },
+        ))
     }
 
     /// Transfers ownership of the contract to a new address (owner only).
@@ -579,8 +655,16 @@ impl ValidatorConfigV2 {
             Err(ValidatorConfigV2Error::invalid_owner())?
         }
         let mut config = self.config.read()?.require_init()?.require_owner(sender)?;
+        let old_owner = config.owner;
         config.owner = call.newOwner;
-        self.config.write(config)
+        self.config.write(config)?;
+
+        self.emit_event(ValidatorConfigV2Event::OwnershipTransferred(
+            IValidatorConfigV2::OwnershipTransferred {
+                oldOwner: old_owner,
+                newOwner: call.newOwner,
+            },
+        ))
     }
 
     /// Sets the epoch at which a fresh DKG ceremony will be triggered (owner only).
@@ -592,7 +676,14 @@ impl ValidatorConfigV2 {
         call: IValidatorConfigV2::setNextFullDkgCeremonyCall,
     ) -> Result<()> {
         self.config.read()?.require_init()?.require_owner(sender)?;
-        self.next_dkg_ceremony.write(call.epoch)
+        let previous_epoch = self.next_dkg_ceremony.read()?;
+        self.next_dkg_ceremony.write(call.epoch)?;
+        self.emit_event(ValidatorConfigV2Event::NextFullDkgCeremonySet(
+            IValidatorConfigV2::NextFullDkgCeremonySet {
+                previousEpoch: previous_epoch,
+                nextEpoch: call.epoch,
+            },
+        ))
     }
 
     // =========================================================================
@@ -609,7 +700,9 @@ impl ValidatorConfigV2 {
     /// position in `active_indices` are all preserved — only `pubkey_to_index` is
     /// updated (old key -> snapshot, new key -> original slot).
     ///
-    /// Requires a valid Ed25519 signature using the [`VALIDATOR_NS_ROTATE`] namespace.
+    /// Requires a valid Ed25519 signature, using the [`VALIDATOR_NS_ROTATE`] namespace, over
+    /// `keccak256(chainId || contractAddr || validatorAddr || len(ingress) || ingress || len(egress) || egress)`
+    /// which proves that the caller controls the private key corresponding to `publicKey`.
     ///
     /// # Errors
     /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
@@ -630,8 +723,8 @@ impl ValidatorConfigV2 {
         self.require_new_pubkey(call.publicKey)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
-        self.verify_validator_signature(
-            VALIDATOR_NS_ROTATE,
+        self.require_unique_ingress(&call.ingress)?;
+        self.verify_validator_rotate_signature(
             &call.publicKey,
             &call.signature,
             v.validator_address,
@@ -650,6 +743,7 @@ impl ValidatorConfigV2 {
             validator_address: v.validator_address,
             ingress: v.ingress,
             egress: v.egress,
+            fee_recipient: v.fee_recipient,
             index: appended_idx,
             active_idx: 0,
             added_at_height: v.added_at_height,
@@ -663,15 +757,55 @@ impl ValidatorConfigV2 {
         // Modify in-place at the original index
         let mut updated = self.validators[call.idx as usize].read()?;
         updated.public_key = call.publicKey;
-        updated.ingress = call.ingress;
-        updated.egress = call.egress;
+        updated.ingress = call.ingress.clone();
+        updated.egress = call.egress.clone();
         updated.added_at_height = block_height;
         self.validators[call.idx as usize].write(updated)?;
 
         // Set pubkey_to_index for new pubkey
         self.pubkey_to_index[call.publicKey].write(call.idx + 1)?;
 
-        Ok(())
+        self.emit_event(ValidatorConfigV2Event::ValidatorRotated(
+            IValidatorConfigV2::ValidatorRotated {
+                index: call.idx,
+                deactivatedIndex: appended_idx,
+                validatorAddress: v.validator_address,
+                oldPublicKey: v.public_key,
+                newPublicKey: call.publicKey,
+                ingress: call.ingress,
+                egress: call.egress,
+                caller: sender,
+            },
+        ))
+    }
+
+    /// Updates the fee recipient address for a validator (owner or the validator itself).
+    ///
+    /// # Errors
+    /// - `NotInitialized` — the contract has not been initialized
+    /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
+    /// - `Unauthorized` — `sender` is neither the owner nor the validator
+    pub fn set_fee_recipient(
+        &mut self,
+        sender: Address,
+        call: IValidatorConfigV2::setFeeRecipientCall,
+    ) -> Result<()> {
+        let mut v = self.get_active_validator(call.idx)?;
+        self.config
+            .read()?
+            .require_init()?
+            .require_owner_or_validator(sender, v.validator_address)?;
+
+        v.fee_recipient = call.feeRecipient;
+        self.validators[call.idx as usize].write(v)?;
+
+        self.emit_event(ValidatorConfigV2Event::FeeRecipientUpdated(
+            IValidatorConfigV2::FeeRecipientUpdated {
+                index: call.idx,
+                feeRecipient: call.feeRecipient,
+                caller: sender,
+            },
+        ))
     }
 
     /// Updates a validator's ingress and egress addresses (owner or the validator itself).
@@ -697,11 +831,18 @@ impl ValidatorConfigV2 {
 
         self.update_ingress_ip_tracking(&v.ingress, &call.ingress)?;
 
-        v.ingress = call.ingress;
-        v.egress = call.egress;
+        v.ingress = call.ingress.clone();
+        v.egress = call.egress.clone();
         self.validators[call.idx as usize].write(v)?;
 
-        Ok(())
+        self.emit_event(ValidatorConfigV2Event::IpAddressesUpdated(
+            IValidatorConfigV2::IpAddressesUpdated {
+                index: call.idx,
+                ingress: call.ingress,
+                egress: call.egress,
+                caller: sender,
+            },
+        ))
     }
 
     /// Transfers a validator entry to a new address (owner or the validator itself).
@@ -731,7 +872,16 @@ impl ValidatorConfigV2 {
         self.validators[call.idx as usize].write(v)?;
 
         self.address_to_index[old_address].delete()?;
-        self.address_to_index[call.newAddress].write(call.idx + 1)
+        self.address_to_index[call.newAddress].write(call.idx + 1)?;
+
+        self.emit_event(ValidatorConfigV2Event::ValidatorOwnershipTransferred(
+            IValidatorConfigV2::ValidatorOwnershipTransferred {
+                index: call.idx,
+                oldAddress: old_address,
+                newAddress: call.newAddress,
+                caller: sender,
+            },
+        ))
     }
 
     // =========================================================================
@@ -791,7 +941,7 @@ impl ValidatorConfigV2 {
         let skipped = config.migration_skipped_count;
 
         let total_processed = migrated + u64::from(skipped);
-        if call.idx >= v1_count || call.idx + total_processed + 1 != v1_count {
+        if total_processed >= v1_count || call.idx != v1_count - total_processed - 1 {
             Err(ValidatorConfigV2Error::invalid_migration_index())?
         }
 
@@ -832,18 +982,19 @@ impl ValidatorConfigV2 {
         }
 
         let now_active = v1_val.active;
-        let ingress_hash = Self::ingress_ip_key(&v1_val.inboundAddress)?;
+        let ingress_hash = Self::ingress_key(&v1_val.inboundAddress)?;
 
         // Skip if ingress ip hash is a duplicate of an existing entry
         if now_active && self.active_ingress_ips[ingress_hash].read()? {
             return skip(self);
         }
 
-        self.append_validator(
+        let migrated_idx = self.append_validator(
             v1_val.validatorAddress,
             v1_val.publicKey,
             v1_val.inboundAddress,
             egress,
+            Address::ZERO,
             block_height,
             if now_active { 0 } else { block_height },
         )?;
@@ -852,7 +1003,13 @@ impl ValidatorConfigV2 {
             self.active_ingress_ips[ingress_hash].write(true)?;
         }
 
-        Ok(())
+        self.emit_event(ValidatorConfigV2Event::ValidatorMigrated(
+            IValidatorConfigV2::ValidatorMigrated {
+                index: migrated_idx,
+                validatorAddress: v1_val.validatorAddress,
+                publicKey: v1_val.publicKey,
+            },
+        ))
     }
 
     /// Finalizes V1 -> V2 migration by setting `is_init = true`.
@@ -884,9 +1041,14 @@ impl ValidatorConfigV2 {
         trace!(address=%self.address, "Initializing validator config v2 precompile after migration");
 
         // Initialize the precompile config
-        config.init_at_height = self.storage.block_number();
+        let height = self.storage.block_number();
+        config.init_at_height = height;
         config.is_init = true;
-        self.config.write(config)
+        self.config.write(config)?;
+
+        self.emit_event(ValidatorConfigV2Event::Initialized(
+            IValidatorConfigV2::Initialized { height },
+        ))
     }
 }
 
@@ -899,7 +1061,7 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
-    use alloy_primitives::FixedBytes;
+    use alloy_primitives::{FixedBytes, keccak256};
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
 
@@ -908,6 +1070,7 @@ mod tests {
         validator_address: Address,
         ingress: &str,
         egress: &str,
+        fee_recipient: Address,
         namespace: &[u8],
     ) -> (FixedBytes<32>, Vec<u8>) {
         // Generate a random private key for testing
@@ -915,14 +1078,20 @@ mod tests {
         let private_key = PrivateKey::from_seed(seed);
         let public_key = private_key.public_key();
 
-        // Build message WITHOUT "TEMPO" prefix
-        let mut data = Vec::new();
-        data.extend_from_slice(&1u64.to_be_bytes());
-        data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        data.extend_from_slice(validator_address.as_slice());
-        data.extend_from_slice(ingress.as_bytes());
-        data.extend_from_slice(egress.as_bytes());
-        let message = keccak256(&data);
+        let mut message_data = Vec::new();
+        message_data.extend_from_slice(&1u64.to_be_bytes());
+        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        message_data.extend_from_slice(validator_address.as_slice());
+        message_data
+            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
+        message_data.extend_from_slice(ingress.as_bytes());
+        message_data
+            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
+        message_data.extend_from_slice(egress.as_bytes());
+        if namespace == VALIDATOR_NS_ADD {
+            message_data.extend_from_slice(fee_recipient.as_slice());
+        }
+        let message = keccak256(message_data);
 
         // Sign with namespace
         let signature = private_key.sign(namespace, message.as_slice());
@@ -943,6 +1112,7 @@ mod tests {
         pubkey: FixedBytes<32>,
         ingress: &str,
         egress: &str,
+        fee_recipient: Address,
         signature: Vec<u8>,
     ) -> IValidatorConfigV2::addValidatorCall {
         IValidatorConfigV2::addValidatorCall {
@@ -950,6 +1120,7 @@ mod tests {
             publicKey: pubkey,
             ingress: ingress.to_string(),
             egress: egress.to_string(),
+            feeRecipient: fee_recipient,
             signature: signature.into(),
         }
     }
@@ -959,10 +1130,11 @@ mod tests {
         addr: Address,
         ingress: &str,
         egress: &str,
+        fee_recipient: Address,
     ) -> IValidatorConfigV2::addValidatorCall {
         let (pubkey, signature) =
-            make_test_keypair_and_signature(addr, ingress, egress, VALIDATOR_NS_ADD);
-        make_add_call(addr, pubkey, ingress, egress, signature)
+            make_test_keypair_and_signature(addr, ingress, egress, fee_recipient, VALIDATOR_NS_ADD);
+        make_add_call(addr, pubkey, ingress, egress, fee_recipient, signature)
     }
 
     #[test]
@@ -995,6 +1167,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
+                validator,
                 VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
@@ -1005,6 +1178,7 @@ mod tests {
                     pubkey,
                     "192.168.1.1:8000",
                     "192.168.1.1",
+                    validator,
                     signature,
                 ),
             )?;
@@ -1039,7 +1213,12 @@ mod tests {
 
             let result = vc.add_validator(
                 non_owner,
-                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(
+                    Address::random(),
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    Address::random(),
+                ),
             );
             assert_eq!(result, Err(ValidatorConfigV2Error::unauthorized().into()));
 
@@ -1062,6 +1241,7 @@ mod tests {
                     FixedBytes::<32>::ZERO,
                     "192.168.1.1:8000",
                     "192.168.1.1",
+                    Address::random(),
                     vec![0u8; 64],
                 ),
             );
@@ -1086,13 +1266,13 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             vc.storage.set_block_number(201);
             let result = vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.2:8000", "192.168.1.2"),
+                make_valid_add_call(validator, "192.168.1.2:8000", "192.168.1.2", validator),
             );
             assert_eq!(
                 result,
@@ -1117,12 +1297,20 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1",
+                addr1,
                 VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_add_call(addr1, pubkey, "192.168.1.1:8000", "192.168.1.1", sig1),
+                make_add_call(
+                    addr1,
+                    pubkey,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    addr1,
+                    sig1,
+                ),
             )?;
 
             // Try to add second validator with same public key (but different signature for different address)
@@ -1131,12 +1319,20 @@ mod tests {
                 addr2,
                 "192.168.1.2:8000",
                 "192.168.1.2",
+                addr2,
                 VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(201);
             let result = vc.add_validator(
                 owner,
-                make_add_call(addr2, pubkey, "192.168.1.2:8000", "192.168.1.2", sig2),
+                make_add_call(
+                    addr2,
+                    pubkey,
+                    "192.168.1.2:8000",
+                    "192.168.1.2",
+                    addr2,
+                    sig2,
+                ),
             );
             assert_eq!(
                 result,
@@ -1159,7 +1355,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             vc.storage.set_block_number(300);
@@ -1179,7 +1375,7 @@ mod tests {
             );
             assert_eq!(
                 result,
-                Err(ValidatorConfigV2Error::validator_already_deleted().into())
+                Err(ValidatorConfigV2Error::validator_already_deactivated().into())
             );
 
             Ok(())
@@ -1200,11 +1396,11 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1", v1),
             )?;
             vc.add_validator(
                 owner,
-                make_valid_add_call(v2, "192.168.1.2:8000", "192.168.1.2"),
+                make_valid_add_call(v2, "192.168.1.2:8000", "192.168.1.2", v2),
             )?;
 
             // Third party cannot deactivate
@@ -1245,6 +1441,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
+                validator,
                 VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
@@ -1255,6 +1452,7 @@ mod tests {
                     old_pubkey,
                     "192.168.1.1:8000",
                     "192.168.1.1",
+                    validator,
                     old_sig,
                 ),
             )?;
@@ -1264,6 +1462,7 @@ mod tests {
                 validator,
                 "10.0.0.1:8000",
                 "10.0.0.1",
+                validator,
                 VALIDATOR_NS_ROTATE,
             );
             vc.storage.set_block_number(300);
@@ -1318,12 +1517,12 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1", v1),
             )?;
             vc.storage.set_block_number(201);
             vc.add_validator(
                 owner,
-                make_valid_add_call(v2, "192.168.1.2:8000", "192.168.1.2"),
+                make_valid_add_call(v2, "192.168.1.2:8000", "192.168.1.2", v2),
             )?;
 
             assert_eq!(vc.get_active_validators()?.len(), 2);
@@ -1345,6 +1544,50 @@ mod tests {
     }
 
     #[test]
+    fn test_set_fee_recipient() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
+            )?;
+
+            let fee_recipient_1 = Address::random();
+            vc.set_fee_recipient(
+                owner,
+                IValidatorConfigV2::setFeeRecipientCall {
+                    idx: 0,
+                    feeRecipient: fee_recipient_1,
+                },
+            )?;
+
+            let v = vc.validator_by_address(validator)?;
+            assert_eq!(v.feeRecipient, fee_recipient_1);
+
+            // Validator can update its own
+            let fee_recipient_2 = Address::random();
+            vc.set_fee_recipient(
+                validator,
+                IValidatorConfigV2::setFeeRecipientCall {
+                    idx: 0,
+                    feeRecipient: fee_recipient_2,
+                },
+            )?;
+
+            let v = vc.validator_by_address(validator)?;
+            assert_eq!(v.feeRecipient, fee_recipient_2);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_set_ip_addresses() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
@@ -1356,7 +1599,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             vc.set_ip_addresses(
@@ -1467,12 +1710,20 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
+                validator,
                 VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_add_call(validator, pubkey, "192.168.1.1:8000", "192.168.1.1", sig),
+                make_add_call(
+                    validator,
+                    pubkey,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    validator,
+                    sig,
+                ),
             )?;
 
             vc.transfer_validator_ownership(
@@ -1511,7 +1762,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             vc.storage.set_block_number(300);
@@ -1529,7 +1780,7 @@ mod tests {
             );
             assert_eq!(
                 result,
-                Err(ValidatorConfigV2Error::validator_already_deleted().into())
+                Err(ValidatorConfigV2Error::validator_already_deactivated().into())
             );
 
             Ok(())
@@ -1572,7 +1823,12 @@ mod tests {
 
             let result = vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(
+                    Address::random(),
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    Address::random(),
+                ),
             );
             assert_eq!(
                 result,
@@ -1596,13 +1852,21 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1:9000",
+                addr1,
                 VALIDATOR_NS_ADD,
             );
 
             // IP:port for egress should fail (egress validation happens before signature)
             let result = vc.add_validator(
                 owner,
-                make_add_call(addr1, pubkey1, "192.168.1.1:8000", "192.168.1.1:9000", sig1),
+                make_add_call(
+                    addr1,
+                    pubkey1,
+                    "192.168.1.1:8000",
+                    "192.168.1.1:9000",
+                    addr1,
+                    sig1,
+                ),
             );
             assert!(result.is_err(), "egress with port should be rejected");
 
@@ -1610,7 +1874,12 @@ mod tests {
             vc.storage.set_block_number(200);
             let result = vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(
+                    Address::random(),
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    Address::random(),
+                ),
             );
             assert!(result.is_ok(), "egress with plain IP should succeed");
 
@@ -1855,6 +2124,7 @@ mod tests {
                 validator_addr,
                 "192.168.1.1:8000",
                 "192.168.1.1",
+                validator_addr,
                 VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
@@ -1865,6 +2135,7 @@ mod tests {
                     pubkey1,
                     "192.168.1.1:8000",
                     "192.168.1.1",
+                    validator_addr,
                     sig1,
                 ),
             )?;
@@ -1881,6 +2152,7 @@ mod tests {
                 validator_addr,
                 "192.168.1.2:8000",
                 "192.168.1.2",
+                validator_addr,
                 VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(400);
@@ -1891,6 +2163,7 @@ mod tests {
                     pubkey2,
                     "192.168.1.2:8000",
                     "192.168.1.2",
+                    validator_addr,
                     sig2,
                 ),
             )?;
@@ -1928,7 +2201,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_validator_rejects_duplicate_ingress_ip() -> eyre::Result<()> {
+    fn test_add_validator_rejects_duplicate_ingress() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -1938,13 +2211,23 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(
+                    Address::random(),
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    Address::random(),
+                ),
             )?;
 
             vc.storage.set_block_number(201);
             let result = vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "192.168.1.1:9000", "192.168.2.1"),
+                make_valid_add_call(
+                    Address::random(),
+                    "192.168.1.1:8000",
+                    "192.168.2.1",
+                    Address::random(),
+                ),
             );
 
             assert!(result.is_err());
@@ -1953,7 +2236,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ip_reuse_after_deactivation() -> eyre::Result<()> {
+    fn test_ingress_reuse_after_deactivation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let v1 = Address::random();
@@ -1964,7 +2247,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1", v1),
             )?;
 
             vc.storage.set_block_number(300);
@@ -1977,8 +2260,68 @@ mod tests {
             vc.storage.set_block_number(400);
             vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(
+                    Address::random(),
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    Address::random(),
+                ),
             )?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ingress_reuse_after_rotation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let v1 = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(v1, "[2001:db8::1]:8000", "2001:db8::1", Address::random()),
+            )?;
+
+            vc.storage.set_block_number(300);
+
+            // Rotate to different ingress
+            let (new_pubkey, new_sig) = make_test_keypair_and_signature(
+                v1,
+                "[2001:db8::1]:8001",
+                "2001:db8::1",
+                Address::random(),
+                VALIDATOR_NS_ROTATE,
+            );
+            vc.rotate_validator(
+                owner,
+                IValidatorConfigV2::rotateValidatorCall {
+                    idx: 0,
+                    publicKey: new_pubkey,
+                    ingress: "[2001:db8::1]:8001".to_string(),
+                    egress: "2001:db8::1".to_string(),
+                    signature: new_sig.into(),
+                },
+            )?;
+            let v = vc.validator_by_address(v1)?;
+            assert_eq!(v.ingress, "[2001:db8::1]:8001");
+
+            // Should allow ingress reuse after rotation.
+            vc.storage.set_block_number(400);
+            vc.set_ip_addresses(
+                owner,
+                IValidatorConfigV2::setIpAddressesCall {
+                    idx: 0,
+                    ingress: "[2001:db8::1]:8000".to_string(),
+                    egress: "2001:db8::1".to_string(),
+                },
+            )?;
+            let v = vc.validator_by_address(v1)?;
+            assert_eq!(v.ingress, "[2001:db8::1]:8000");
 
             Ok(())
         })
@@ -2041,11 +2384,11 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1", v1),
             )?;
             vc.add_validator(
                 owner,
-                make_valid_add_call(v2, "192.168.2.1:8000", "192.168.2.1"),
+                make_valid_add_call(v2, "192.168.2.1:8000", "192.168.2.1", v2),
             )?;
 
             // Rotate v1 to v2's IPs should fail
@@ -2053,6 +2396,7 @@ mod tests {
                 v1,
                 "192.168.2.1:8000",
                 "192.168.2.1",
+                v1,
                 VALIDATOR_NS_ROTATE,
             );
 
@@ -2074,7 +2418,7 @@ mod tests {
     }
 
     #[test]
-    fn test_migrate_skips_duplicate_ingress_ip() -> eyre::Result<()> {
+    fn test_migrate_skips_duplicate_ingress() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
 
@@ -2232,7 +2576,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             // Third party is neither owner nor validator_owner — should be rejected
@@ -2260,7 +2604,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rotate_validator_same_ips() -> eyre::Result<()> {
+    fn test_rotate_validator_to_different_ingress() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let validator = Address::random();
@@ -2271,55 +2615,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
-            )?;
-
-            // Rotate keeping the same ingress/egress — should succeed
-            let (new_pubkey, new_sig) = make_test_keypair_and_signature(
-                validator,
-                "192.168.1.1:8000",
-                "192.168.1.1",
-                VALIDATOR_NS_ROTATE,
-            );
-            vc.storage.set_block_number(300);
-            vc.rotate_validator(
-                owner,
-                IValidatorConfigV2::rotateValidatorCall {
-                    idx: 0,
-                    publicKey: new_pubkey,
-                    ingress: "192.168.1.1:8000".to_string(),
-                    egress: "192.168.1.1".to_string(),
-                    signature: new_sig.into(),
-                },
-            )?;
-
-            assert_eq!(vc.validator_count()?, 2);
-            assert_eq!(vc.validator_by_index(0)?.deactivatedAtHeight, 0);
-            assert_eq!(vc.validator_by_index(1)?.deactivatedAtHeight, 300);
-            assert_eq!(vc.validator_by_address(validator)?.publicKey, new_pubkey);
-            assert_eq!(
-                vc.validator_by_address(validator)?.ingress,
-                "192.168.1.1:8000"
-            );
-            assert_eq!(vc.validator_by_address(validator)?.egress, "192.168.1.1");
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_rotate_validator_to_different_ingress_port() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        let validator = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            vc.storage.set_block_number(200);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             // Rotate keeping the same ingress/egress — should succeed
@@ -2327,6 +2623,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8001",
                 "192.168.1.1",
+                validator,
                 VALIDATOR_NS_ROTATE,
             );
             vc.storage.set_block_number(300);
@@ -2356,6 +2653,52 @@ mod tests {
     }
 
     #[test]
+    fn test_rotate_validator_rejects_same_ingress() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(
+                    validator,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    Address::random(),
+                ),
+            )?;
+
+            // Rotate keeping the same ingress/egress — should succeed
+            let (new_pubkey, new_sig) = make_test_keypair_and_signature(
+                validator,
+                "192.168.1.1:8000",
+                "192.168.1.1",
+                Address::random(),
+                VALIDATOR_NS_ROTATE,
+            );
+            vc.storage.set_block_number(300);
+            assert!(
+                vc.rotate_validator(
+                    owner,
+                    IValidatorConfigV2::rotateValidatorCall {
+                        idx: 0,
+                        publicKey: new_pubkey,
+                        ingress: "192.168.1.1:8000".to_string(),
+                        egress: "192.168.1.1".to_string(),
+                        signature: new_sig.into(),
+                    },
+                )
+                .is_err()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_set_ip_addresses_ingress_only() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
@@ -2367,7 +2710,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             // Change ingress only, keep egress the same
@@ -2400,7 +2743,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             // Change ingress only, keep egress the same
@@ -2433,7 +2776,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             // Change egress only, keep ingress the same
@@ -2455,7 +2798,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_ip_addresses_rejects_ip_collision() -> eyre::Result<()> {
+    fn test_set_ip_addresses_rejects_duplicate_ingress() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let v1 = Address::random();
@@ -2467,18 +2810,18 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1", v1),
             )?;
             vc.add_validator(
                 owner,
-                make_valid_add_call(v2, "192.168.2.1:8000", "192.168.2.1"),
+                make_valid_add_call(v2, "192.168.2.1:8000", "192.168.2.1", v2),
             )?;
 
             let result = vc.set_ip_addresses(
                 owner,
                 IValidatorConfigV2::setIpAddressesCall {
                     idx: 1,
-                    ingress: "192.168.1.1:9000".to_string(),
+                    ingress: "192.168.1.1:8000".to_string(),
                     egress: "192.168.2.1".to_string(),
                 },
             );
@@ -2500,7 +2843,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             vc.set_ip_addresses(
@@ -2532,7 +2875,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             // Validator transfers its own ownership (not owner)
@@ -2570,12 +2913,13 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1",
+                addr1,
                 VALIDATOR_NS_ADD,
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_add_call(addr1, pubkey, "192.168.1.1:8000", "192.168.1.1", sig),
+                make_add_call(addr1, pubkey, "192.168.1.1:8000", "192.168.1.1", addr1, sig),
             )?;
 
             // Deactivate
@@ -2594,6 +2938,7 @@ mod tests {
                     pubkey,
                     "192.168.2.1:8000",
                     "192.168.2.1",
+                    addr2,
                     vec![0u8; 64],
                 ),
             );
@@ -2617,7 +2962,10 @@ mod tests {
 
             // Add validator with IPv6 ingress
             vc.storage.set_block_number(200);
-            vc.add_validator(owner, make_valid_add_call(validator, "[::1]:8000", "::1"))?;
+            vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "[::1]:8000", "::1", validator),
+            )?;
 
             assert_eq!(vc.validator_count()?, 1);
             let v = vc.validator_by_index(0)?;
@@ -2630,7 +2978,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_validator_rejects_duplicate_ipv6() -> eyre::Result<()> {
+    fn test_add_validator_rejects_duplicate_ingress_ipv6() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -2640,14 +2988,24 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "[2001:db8::1]:8000", "2001:db8::1"),
+                make_valid_add_call(
+                    Address::random(),
+                    "[2001:db8::1]:8000",
+                    "2001:db8::1",
+                    Address::random(),
+                ),
             )?;
 
             // Try to add another validator with same IPv6 IP (different port)
             vc.storage.set_block_number(201);
             let result = vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "[2001:db8::1]:9000", "2001:db8::2"),
+                make_valid_add_call(
+                    Address::random(),
+                    "[2001:db8::1]:8000",
+                    "2001:db8::2",
+                    Address::random(),
+                ),
             );
 
             assert!(result.is_err());
@@ -2667,7 +3025,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(v1, "[2001:db8::1]:8000", "2001:db8::1"),
+                make_valid_add_call(v1, "[2001:db8::1]:8000", "2001:db8::1", v1),
             )?;
 
             vc.storage.set_block_number(300);
@@ -2680,7 +3038,12 @@ mod tests {
             vc.storage.set_block_number(400);
             vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "[2001:db8::1]:8000", "2001:db8::1"),
+                make_valid_add_call(
+                    Address::random(),
+                    "[2001:db8::1]:8000",
+                    "2001:db8::1",
+                    Address::random(),
+                ),
             )?;
 
             Ok(())
@@ -2700,7 +3063,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
             )?;
 
             // Rotate to IPv6
@@ -2708,6 +3071,7 @@ mod tests {
                 validator,
                 "[2001:db8::1]:8000",
                 "2001:db8::1",
+                validator,
                 VALIDATOR_NS_ROTATE,
             );
             vc.storage.set_block_number(300);
@@ -2747,7 +3111,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "[::1]:8000", "::1"),
+                make_valid_add_call(Address::random(), "[::1]:8000", "::1", Address::random()),
             )?;
 
             // Try to add another validator with expanded IPv6 notation of same IP
@@ -2755,13 +3119,39 @@ mod tests {
             vc.storage.set_block_number(201);
             let result = vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "[0:0:0:0:0:0:0:1]:9000", "::1"),
+                make_valid_add_call(
+                    Address::random(),
+                    "[0:0:0:0:0:0:0:1]:8000",
+                    "::1",
+                    Address::random(),
+                ),
             );
 
             assert!(
                 result.is_err(),
                 "Different IPv6 notations of same IP should be rejected"
             );
+
+            // No scope and %0 are the same - should fail.
+            vc.storage.set_block_number(202);
+            let result = vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "[::1%0]:8000", "::1", Address::random()),
+            );
+
+            assert!(
+                result.is_err(),
+                "Different IPv6 notations of same IP should be rejected"
+            );
+
+            // Same IP/Port but different port should succeed.
+            vc.storage.set_block_number(203);
+            let result = vc.add_validator(
+                owner,
+                make_valid_add_call(Address::random(), "[::1%1]:8000", "::1", Address::random()),
+            );
+            assert!(result.is_ok());
+
             Ok(())
         })
     }
@@ -2778,17 +3168,257 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(
+                    Address::random(),
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    Address::random(),
+                ),
             )?;
 
             // Add IPv6 validator - should succeed (different IP)
             vc.storage.set_block_number(201);
             vc.add_validator(
                 owner,
-                make_valid_add_call(Address::random(), "[2001:db8::1]:8000", "2001:db8::1"),
+                make_valid_add_call(
+                    Address::random(),
+                    "[2001:db8::1]:8000",
+                    "2001:db8::1",
+                    Address::random(),
+                ),
             )?;
 
             assert_eq!(vc.validator_count()?, 2);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_event_emission_owner_and_validator_actions() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        let new_validator_address = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            let (pubkey, signature) = make_test_keypair_and_signature(
+                validator,
+                "192.168.1.1:8000",
+                "192.168.1.1",
+                validator,
+                VALIDATOR_NS_ADD,
+            );
+
+            vc.storage.set_block_number(100);
+            vc.add_validator(
+                owner,
+                make_add_call(
+                    validator,
+                    pubkey,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    validator,
+                    signature,
+                ),
+            )?;
+            vc.assert_emitted_events(vec![ValidatorConfigV2Event::ValidatorAdded(
+                IValidatorConfigV2::ValidatorAdded {
+                    index: 0,
+                    validatorAddress: validator,
+                    publicKey: pubkey,
+                    ingress: "192.168.1.1:8000".to_string(),
+                    egress: "192.168.1.1".to_string(),
+                    feeRecipient: validator,
+                },
+            )]);
+
+            vc.clear_emitted_events();
+            vc.set_ip_addresses(
+                validator,
+                IValidatorConfigV2::setIpAddressesCall {
+                    idx: 0,
+                    ingress: "10.0.0.1:8000".to_string(),
+                    egress: "10.0.0.1".to_string(),
+                },
+            )?;
+            vc.assert_emitted_events(vec![ValidatorConfigV2Event::IpAddressesUpdated(
+                IValidatorConfigV2::IpAddressesUpdated {
+                    index: 0,
+                    ingress: "10.0.0.1:8000".to_string(),
+                    egress: "10.0.0.1".to_string(),
+                    caller: validator,
+                },
+            )]);
+
+            vc.clear_emitted_events();
+            vc.transfer_validator_ownership(
+                owner,
+                IValidatorConfigV2::transferValidatorOwnershipCall {
+                    idx: 0,
+                    newAddress: new_validator_address,
+                },
+            )?;
+            vc.assert_emitted_events(vec![ValidatorConfigV2Event::ValidatorOwnershipTransferred(
+                IValidatorConfigV2::ValidatorOwnershipTransferred {
+                    index: 0,
+                    oldAddress: validator,
+                    newAddress: new_validator_address,
+                    caller: owner,
+                },
+            )]);
+
+            vc.clear_emitted_events();
+            vc.deactivate_validator(
+                new_validator_address,
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
+            )?;
+            vc.assert_emitted_events(vec![ValidatorConfigV2Event::ValidatorDeactivated(
+                IValidatorConfigV2::ValidatorDeactivated {
+                    index: 0,
+                    validatorAddress: new_validator_address,
+                },
+            )]);
+
+            vc.clear_emitted_events();
+            let new_owner = Address::random();
+            vc.transfer_ownership(
+                owner,
+                IValidatorConfigV2::transferOwnershipCall {
+                    newOwner: new_owner,
+                },
+            )?;
+            vc.assert_emitted_events(vec![ValidatorConfigV2Event::OwnershipTransferred(
+                IValidatorConfigV2::OwnershipTransferred {
+                    oldOwner: owner,
+                    newOwner: new_owner,
+                },
+            )]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_event_emission_rotate_and_next_dkg() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            let (old_pubkey, old_sig) = make_test_keypair_and_signature(
+                validator,
+                "192.168.1.1:8000",
+                "192.168.1.1",
+                validator,
+                VALIDATOR_NS_ADD,
+            );
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_add_call(
+                    validator,
+                    old_pubkey,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    validator,
+                    old_sig,
+                ),
+            )?;
+
+            vc.clear_emitted_events();
+            let (new_pubkey, new_sig) = make_test_keypair_and_signature(
+                validator,
+                "10.0.0.2:8000",
+                "10.0.0.2",
+                validator,
+                VALIDATOR_NS_ROTATE,
+            );
+            vc.storage.set_block_number(300);
+            vc.rotate_validator(
+                owner,
+                IValidatorConfigV2::rotateValidatorCall {
+                    idx: 0,
+                    publicKey: new_pubkey,
+                    ingress: "10.0.0.2:8000".to_string(),
+                    egress: "10.0.0.2".to_string(),
+                    signature: new_sig.into(),
+                },
+            )?;
+            vc.assert_emitted_events(vec![ValidatorConfigV2Event::ValidatorRotated(
+                IValidatorConfigV2::ValidatorRotated {
+                    index: 0,
+                    deactivatedIndex: 1,
+                    validatorAddress: validator,
+                    oldPublicKey: old_pubkey,
+                    newPublicKey: new_pubkey,
+                    ingress: "10.0.0.2:8000".to_string(),
+                    egress: "10.0.0.2".to_string(),
+                    caller: owner,
+                },
+            )]);
+
+            vc.clear_emitted_events();
+            vc.set_next_full_dkg_ceremony(
+                owner,
+                IValidatorConfigV2::setNextFullDkgCeremonyCall { epoch: 42 },
+            )?;
+            vc.assert_emitted_events(vec![ValidatorConfigV2Event::NextFullDkgCeremonySet(
+                IValidatorConfigV2::NextFullDkgCeremonySet {
+                    previousEpoch: 0,
+                    nextEpoch: 42,
+                },
+            )]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_event_emission_migration_and_initialize() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let v1_addr = Address::random();
+        let v1_pk = FixedBytes::<32>::from([0x11; 32]);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut v1 = v1();
+            v1.initialize(owner)?;
+            v1.add_validator(
+                owner,
+                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: v1_addr,
+                    publicKey: v1_pk,
+                    active: true,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            let mut v2 = ValidatorConfigV2::new();
+            v2.storage.set_block_number(500);
+            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
+            v2.assert_emitted_events(vec![ValidatorConfigV2Event::ValidatorMigrated(
+                IValidatorConfigV2::ValidatorMigrated {
+                    index: 0,
+                    validatorAddress: v1_addr,
+                    publicKey: v1_pk,
+                },
+            )]);
+
+            v2.clear_emitted_events();
+            v2.storage.set_block_number(700);
+            v2.initialize_if_migrated(owner)?;
+            v2.assert_emitted_events(vec![ValidatorConfigV2Event::Initialized(
+                IValidatorConfigV2::Initialized { height: 700 },
+            )]);
+
             Ok(())
         })
     }

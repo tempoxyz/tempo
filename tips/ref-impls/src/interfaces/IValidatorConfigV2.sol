@@ -15,6 +15,41 @@ pragma solidity >=0.8.13 <0.9.0;
 interface IValidatorConfigV2 {
 
     // =========================================================================
+    // Events
+    // =========================================================================
+
+    event ValidatorAdded(
+        uint64 indexed index,
+        address indexed validatorAddress,
+        bytes32 publicKey,
+        string ingress,
+        string egress,
+        address feeRecipient
+    );
+    event ValidatorDeactivated(uint64 indexed index, address indexed validatorAddress);
+    event ValidatorRotated(
+        uint64 indexed index,
+        uint64 indexed deactivatedIndex,
+        address indexed validatorAddress,
+        bytes32 oldPublicKey,
+        bytes32 newPublicKey,
+        string ingress,
+        string egress,
+        address caller
+    );
+    event FeeRecipientUpdated(uint64 indexed index, address feeRecipient, address caller);
+    event IpAddressesUpdated(uint64 indexed index, string ingress, string egress, address caller);
+    event ValidatorOwnershipTransferred(
+        uint64 indexed index, address indexed oldAddress, address indexed newAddress, address caller
+    );
+    event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
+    event ValidatorMigrated(
+        uint64 indexed index, address indexed validatorAddress, bytes32 publicKey
+    );
+    event NextFullDkgCeremonySet(uint64 indexed previousEpoch, uint64 indexed nextEpoch);
+    event Initialized(uint64 height);
+
+    // =========================================================================
     // Errors
     // =========================================================================
 
@@ -31,7 +66,7 @@ interface IValidatorConfigV2 {
     error ValidatorNotFound();
 
     /// @notice Thrown when trying to deactivate an already-deactivated validator
-    error ValidatorAlreadyDeleted();
+    error ValidatorAlreadyDeactivated();
 
     /// @notice Thrown when public key is invalid (zero)
     error InvalidPublicKey();
@@ -58,16 +93,14 @@ interface IValidatorConfigV2 {
     error InvalidOwner();
 
     /// @notice Thrown when address is not in valid ip:port format
-    /// @param field The field name that failed validation
     /// @param input The invalid input that was provided
     /// @param backtrace Additional error context
-    error NotIpPort(string field, string input, string backtrace);
+    error NotIpPort(string input, string backtrace);
 
     /// @notice Thrown when address is not a valid IP (for egress field)
-    /// @param field The field name that failed validation
     /// @param input The invalid input that was provided
     /// @param backtrace Additional error context
-    error NotIp(string field, string input, string backtrace);
+    error NotIp(string input, string backtrace);
 
     /// @notice Thrown when ingress IP is already in use by another active validator
     /// @param ingress The ingress address that is already in use
@@ -83,6 +116,7 @@ interface IValidatorConfigV2 {
         address validatorAddress;
         string ingress;
         string egress;
+        address feeRecipient;
         uint64 index;
         uint64 activeIdx;
         uint64 addedAtHeight;
@@ -97,11 +131,13 @@ interface IValidatorConfigV2 {
     /// @param index Position in validators array (stable across rotations for the same slot)
     /// @param addedAtHeight Block height when validator was added
     /// @param deactivatedAtHeight Block height when validator was deleted (0 = active)
+    /// @param feeRecipient The fee recipient the node will set when proposing blocks as a leader.
     struct Validator {
         bytes32 publicKey;
         address validatorAddress;
         string ingress;
         string egress;
+        address feeRecipient;
         uint64 index;
         uint64 addedAtHeight;
         uint64 deactivatedAtHeight;
@@ -120,12 +156,14 @@ interface IValidatorConfigV2 {
     /// @param publicKey The validator's Ed25519 communication public key
     /// @param ingress The validator's inbound address `<ip>:<port>` for incoming connections
     /// @param egress The validator's outbound IP address `<ip>` for firewall whitelisting
+    /// @param feeRecipient The fee recipient the validator sets when proposing.
     /// @param signature Ed25519 signature (64 bytes) proving ownership of the public key
     function addValidator(
         address validatorAddress,
         bytes32 publicKey,
         string calldata ingress,
         string calldata egress,
+        address feeRecipient,
         bytes calldata signature
     )
         external
@@ -144,7 +182,7 @@ interface IValidatorConfigV2 {
     ///      is preserved across rotations.
     ///      The same validation rules as addValidator apply:
     ///      - The new public key must not already exist
-    ///      - Ingress parseable as <ip>:<port>
+    ///      - Ingress parseable as <ip>:<port>. Must be different from rotated-out validator (changing port is enough).
     ///      - Egress must be parseable as <ip>
     ///      - The signature must prove ownership of the new public key
     ///      The signature must be an Ed25519 signature over:
@@ -171,6 +209,12 @@ interface IValidatorConfigV2 {
     /// @param ingress The new inbound address `<ip>:<port>` for incoming connections
     /// @param egress The new outbound IP address `<ip>` for firewall whitelisting
     function setIpAddresses(uint64 idx, string calldata ingress, string calldata egress) external;
+
+    /// @notice Update validator fee recipient (owner or validator only).
+    /// @dev Can be called by the contract owner or by the validator's own address.
+    /// @param idx Validator index.
+    /// @param feeRecipient New fee recipient.
+    function setFeeRecipient(uint64 idx, address feeRecipient) external;
 
     /// @notice Transfer a validator entry to a new address (owner or validator only)
     /// @dev Can be called by the contract owner or by the validator's own address.

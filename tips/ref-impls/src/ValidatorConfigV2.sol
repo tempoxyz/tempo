@@ -41,8 +41,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     uint64 internal nextDkgCeremony;
 
-    /// @dev Tracks active ingress IPs by their keccak256 hash
-    mapping(bytes32 => bool) internal activeIngressIpHashes;
+    /// @dev Tracks active ingress socket addresses by their keccak256 hash
+    mapping(bytes32 => bool) internal activeIngressHashes;
 
     uint64 internal migrationSkippedCount;
 
@@ -80,6 +80,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         bytes32 publicKey,
         string calldata ingress,
         string calldata egress,
+        address feeRecipient,
         bytes calldata signature
     )
         external
@@ -90,13 +91,23 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validateAddParams(validatorAddress, publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress)
+            abi.encodePacked(
+                block.chainid,
+                address(this),
+                validatorAddress,
+                uint8(bytes(ingress).length),
+                ingress,
+                uint8(bytes(egress).length),
+                egress,
+                feeRecipient
+            )
         );
         _verifyEd25519Signature(
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR"), publicKey, message, signature
         );
 
-        return _addValidator(validatorAddress, publicKey, ingress, egress, 0);
+        index = _addValidator(validatorAddress, publicKey, ingress, egress, feeRecipient, 0);
+        emit ValidatorAdded(index, validatorAddress, publicKey, ingress, egress, feeRecipient);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -107,15 +118,16 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage v = validatorsArray[idx];
         if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         _checkOnlyOwnerOrValidator(v.validatorAddress);
 
-        bytes32 ingressIpHash = _getIngressIpHash(v.ingress);
-        delete activeIngressIpHashes[ingressIpHash];
+        bytes32 ingressHash = _getIngressHash(v.ingress);
+        delete activeIngressHashes[ingressHash];
 
         v.deactivatedAtHeight = uint64(block.number);
+        emit ValidatorDeactivated(idx, v.validatorAddress);
 
         // do a pop-and-swap for validatorsArray
         uint64 toDeactivateIndex = v.activeIdx - 1;
@@ -133,12 +145,15 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     /// @inheritdoc IValidatorConfigV2
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert InvalidOwner();
+        emit OwnershipTransferred(_owner, newOwner);
         _owner = newOwner;
     }
 
     /// @inheritdoc IValidatorConfigV2
     function setNextFullDkgCeremony(uint64 epoch) external onlyInitialized onlyOwner {
+        uint64 previousEpoch = nextDkgCeremony;
         nextDkgCeremony = epoch;
+        emit NextFullDkgCeremonySet(previousEpoch, epoch);
     }
 
     // =========================================================================
@@ -162,7 +177,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage oldValidator = validatorsArray[idx];
         if (oldValidator.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         address validatorAddress = oldValidator.validatorAddress;
@@ -171,13 +186,21 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         _validateRotateParams(publicKey, ingress, egress);
 
         bytes32 message = keccak256(
-            abi.encodePacked(block.chainid, address(this), validatorAddress, ingress, egress)
+            abi.encodePacked(
+                block.chainid,
+                address(this),
+                validatorAddress,
+                uint8(bytes(ingress).length),
+                ingress,
+                uint8(bytes(egress).length),
+                egress
+            )
         );
         _verifyEd25519Signature(
             bytes("TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"), publicKey, message, signature
         );
 
-        _updateIngressIp(oldValidator.ingress, ingress);
+        _updateIngress(oldValidator.ingress, ingress);
 
         // Append deactivated snapshot of current values
         uint64 appendedIdx = uint64(validatorsArray.length);
@@ -187,6 +210,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
                 validatorAddress: validatorAddress,
                 ingress: oldValidator.ingress,
                 egress: oldValidator.egress,
+                feeRecipient: oldValidator.feeRecipient,
                 index: appendedIdx,
                 activeIdx: 0,
                 addedAtHeight: oldValidator.addedAtHeight,
@@ -196,6 +220,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         // Update pubkeyToIndex: old pubkey → deactivated copy
         pubkeyToIndex[oldValidator.publicKey] = appendedIdx + 1;
+        bytes32 oldPublicKey = oldValidator.publicKey;
 
         // Modify slot in-place with new identity
         oldValidator.publicKey = publicKey;
@@ -205,6 +230,10 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         // Point new pubkey to original slot
         pubkeyToIndex[publicKey] = idx + 1;
+
+        emit ValidatorRotated(
+            idx, appendedIdx, validatorAddress, oldPublicKey, publicKey, ingress, egress, msg.sender
+        );
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -215,17 +244,36 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage v = validatorsArray[idx];
         if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         _checkOnlyOwnerOrValidator(v.validatorAddress);
 
-        _validateIpPort(ingress, "ingress");
-        _validateIp(egress, "egress");
-        _updateIngressIp(v.ingress, ingress);
+        _validateIpPort(ingress);
+        _validateIp(egress);
+        _updateIngress(v.ingress, ingress);
 
         v.ingress = ingress;
         v.egress = egress;
+        emit IpAddressesUpdated(idx, ingress, egress, msg.sender);
+    }
+
+    /// @inheritdoc IValidatorConfigV2
+    function setFeeRecipient(uint64 idx, address feeRecipient) external {
+        if (idx >= validatorsArray.length) {
+            revert ValidatorNotFound();
+        }
+
+        ValidatorStorage storage v = validatorsArray[idx];
+        if (v.deactivatedAtHeight != 0) {
+            revert ValidatorAlreadyDeactivated();
+        }
+
+        _checkOnlyOwnerOrValidator(v.validatorAddress);
+
+        v.feeRecipient = feeRecipient;
+
+        emit FeeRecipientUpdated(idx, feeRecipient, msg.sender);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -247,7 +295,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         ValidatorStorage storage v = validatorsArray[idx];
         if (v.deactivatedAtHeight != 0) {
-            revert ValidatorAlreadyDeleted();
+            revert ValidatorAlreadyDeactivated();
         }
 
         address currentAddress = v.validatorAddress;
@@ -256,6 +304,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         v.validatorAddress = newAddress;
         delete addressToIndex[currentAddress];
         addressToIndex[newAddress] = idx + 1;
+        emit ValidatorOwnershipTransferred(idx, currentAddress, newAddress, msg.sender);
     }
 
     // =========================================================================
@@ -369,20 +418,22 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
 
         bool nowActive = v1Val.active;
-        bytes32 ingressHash = _getIngressIpHash(v1Val.inboundAddress);
+        bytes32 ingressHash = _getIngressHash(v1Val.inboundAddress);
 
-        if (nowActive && activeIngressIpHashes[ingressHash]) {
+        if (nowActive && activeIngressHashes[ingressHash]) {
             migrationSkippedCount++;
             return;
         }
 
-        _addValidator(
+        uint64 migratedIdx = _addValidator(
             v1Val.validatorAddress,
             v1Val.publicKey,
             v1Val.inboundAddress,
             egress,
+            address(0),
             nowActive ? 0 : uint64(block.number)
         );
+        emit ValidatorMigrated(migratedIdx, v1Val.validatorAddress, v1Val.publicKey);
     }
 
     /// @inheritdoc IValidatorConfigV2
@@ -400,6 +451,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         _initialized = true;
         _initializedAtHeight = uint64(block.number);
+        emit Initialized(uint64(block.number));
     }
 
     // =========================================================================
@@ -412,6 +464,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             validatorAddress: v.validatorAddress,
             ingress: v.ingress,
             egress: v.egress,
+            feeRecipient: v.feeRecipient,
             index: v.index,
             addedAtHeight: v.addedAtHeight,
             deactivatedAtHeight: v.deactivatedAtHeight
@@ -436,7 +489,6 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             revert AddressAlreadyHasValidator();
         }
         _validateRotateParams(publicKey, ingress, egress);
-        _requireUniqueIngressIp(ingress);
     }
 
     function _validateRotateParams(
@@ -453,8 +505,9 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         if (pubkeyToIndex[publicKey] != 0) {
             revert PublicKeyAlreadyExists();
         }
-        _validateIpPort(ingress, "ingress");
-        _validateIp(egress, "egress");
+        _validateIpPort(ingress);
+        _validateIp(egress);
+        _requireUniqueIngress(ingress);
     }
 
     function _addValidator(
@@ -462,6 +515,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         bytes32 publicKey,
         string memory ingress,
         string memory egress,
+        address feeRecipient,
         uint64 deactivatedAtHeight
     )
         internal
@@ -473,8 +527,8 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         if (deactivatedAtHeight == 0) {
             activeIndices.push(idx + 1); // 1-indexed
             activeIdx = uint64(activeIndices.length); // 1-indexed
-            bytes32 ingressIpHash = _getIngressIpHash(ingress);
-            activeIngressIpHashes[ingressIpHash] = true;
+            bytes32 ingressHash = _getIngressHash(ingress);
+            activeIngressHashes[ingressHash] = true;
         }
 
         ValidatorStorage memory newVal = ValidatorStorage({
@@ -482,6 +536,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             validatorAddress: validatorAddress,
             ingress: ingress,
             egress: egress,
+            feeRecipient: feeRecipient,
             index: idx,
             activeIdx: activeIdx,
             addedAtHeight: uint64(block.number),
@@ -505,33 +560,26 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         internal
         pure { }
 
-    /// @dev Check that ingress IP is not already in use by active validators
-    function _requireUniqueIngressIp(string memory ingress) internal view {
-        bytes32 ingressIpHash = _getIngressIpHash(ingress);
-        if (activeIngressIpHashes[ingressIpHash]) {
+    /// @dev Check that ingress is not already in use by active validators
+    function _requireUniqueIngress(string memory ingress) internal view {
+        bytes32 ingressHash = _getIngressHash(ingress);
+        if (activeIngressHashes[ingressHash]) {
             revert IngressAlreadyExists(ingress);
         }
     }
 
-    /// @dev Update ingress IP tracking when ingress changes
-    function _updateIngressIp(string memory oldIngress, string memory newIngress) internal {
-        bytes32 oldIngressIpHash = _getIngressIpHash(oldIngress);
-        bytes32 newIngressIpHash = _getIngressIpHash(newIngress);
+    /// @dev Update ingress tracking when ingress changes
+    function _updateIngress(string memory oldIngress, string memory newIngress) internal {
+        bytes32 oldIngressHash = _getIngressHash(oldIngress);
+        bytes32 newIngressHash = _getIngressHash(newIngress);
 
-        if (oldIngressIpHash != newIngressIpHash) {
-            if (activeIngressIpHashes[newIngressIpHash]) {
+        if (oldIngressHash != newIngressHash) {
+            if (activeIngressHashes[newIngressHash]) {
                 revert IngressAlreadyExists(newIngress);
             }
-            delete activeIngressIpHashes[oldIngressIpHash];
-            activeIngressIpHashes[newIngressIpHash] = true;
+            delete activeIngressHashes[oldIngressHash];
+            activeIngressHashes[newIngressHash] = true;
         }
-    }
-
-    /// @dev Extract and hash IP from ingress (ip:port -> keccak256(ip))
-    /// Handles both IPv4 (192.168.1.1:8000) and IPv6 ([::1]:8000)
-    function _getIngressIpHash(string memory ingress) internal pure returns (bytes32) {
-        string memory ip = _extractIpFromSocket(ingress);
-        return keccak256(bytes(ip));
     }
 
     /// @dev Extract IP from socket address format (ip:port -> ip)
@@ -571,44 +619,43 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         return socketAddr;
     }
 
-    function _validateIpPort(string calldata input, string memory field) internal pure {
+    /// @dev Hash ingress socket address
+    /// Handles both IPv4 (192.168.1.1:8000) and IPv6 ([::1]:8000)
+    function _getIngressHash(string memory ingress) internal pure returns (bytes32) {
+        return keccak256(bytes(ingress));
+    }
+
+    function _validateIpPort(string calldata input) internal pure {
         bytes memory b = bytes(input);
 
         if (b.length == 0) {
-            revert NotIpPort(field, input, "Empty address");
+            revert NotIpPort(input, "Empty address");
         }
 
         if (b[0] == "[") {
-            _validateIpv6Port(b, field, input);
+            _validateIpv6Port(b, input);
         } else {
-            _validateIpv4Port(b, field, input);
+            _validateIpv4Port(b, input);
         }
     }
 
-    function _validateIp(string calldata input, string memory field) internal pure {
+    function _validateIp(string calldata input) internal pure {
         bytes memory b = bytes(input);
 
         if (b.length == 0) {
-            revert NotIpPort(field, input, "Empty address");
+            revert NotIp(input, "Empty address");
         }
 
         if (b[0] == "[") {
-            _validateIpv6Address(b, 1, b.length - 1, field, input);
+            _validateIpv6Address(b, 1, b.length - 1, input);
         } else {
-            _validateIpv4(b, field, input);
+            _validateIpv4(b, input);
         }
     }
 
-    function _validateIpv4Port(
-        bytes memory b,
-        string memory field,
-        string calldata input
-    )
-        internal
-        pure
-    {
+    function _validateIpv4Port(bytes memory b, string calldata input) internal pure {
         if (b.length < 9) {
-            revert NotIpPort(field, input, "Address too short");
+            revert NotIpPort(input, "Address too short");
         }
 
         uint256 i = 0;
@@ -620,7 +667,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             while (i < b.length && b[i] != "." && b[i] != ":") {
                 bytes1 c = b[i];
                 if (c < "0" || c > "9") {
-                    revert NotIpPort(field, input, "Invalid character in octet");
+                    revert NotIpPort(input, "Invalid character in octet");
                 }
                 value = value * 10 + uint8(c) - 48;
                 digitCount++;
@@ -628,41 +675,34 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             }
 
             if (digitCount == 0 || digitCount > 3) {
-                revert NotIpPort(field, input, "Invalid octet length");
+                revert NotIpPort(input, "Invalid octet length");
             }
             if (value > 255) {
-                revert NotIpPort(field, input, "Octet out of range");
+                revert NotIpPort(input, "Octet out of range");
             }
             if (digitCount > 1 && b[i - digitCount] == "0") {
-                revert NotIpPort(field, input, "Leading zeros not allowed");
+                revert NotIpPort(input, "Leading zeros not allowed");
             }
 
             if (octet < 3) {
                 if (i >= b.length || b[i] != ".") {
-                    revert NotIpPort(field, input, "Expected dot separator");
+                    revert NotIpPort(input, "Expected dot separator");
                 }
                 i++;
             }
         }
 
         if (i >= b.length || b[i] != ":") {
-            revert NotIpPort(field, input, "Missing port separator");
+            revert NotIpPort(input, "Missing port separator");
         }
         i++;
 
-        _validatePort(b, i, field, input);
+        _validatePort(b, i, input);
     }
 
-    function _validateIpv4(
-        bytes memory b,
-        string memory field,
-        string calldata input
-    )
-        internal
-        pure
-    {
+    function _validateIpv4(bytes memory b, string calldata input) internal pure {
         if (b.length < 7) {
-            revert NotIpPort(field, input, "Address too short");
+            revert NotIp(input, "Address too short");
         }
 
         uint256 i = 0;
@@ -674,7 +714,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             while (i < b.length && b[i] != ".") {
                 bytes1 c = b[i];
                 if (c < "0" || c > "9") {
-                    revert NotIpPort(field, input, "Invalid character in octet");
+                    revert NotIp(input, "Invalid character in octet");
                 }
                 value = value * 10 + uint8(c) - 48;
                 digitCount++;
@@ -682,38 +722,31 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
             }
 
             if (digitCount == 0 || digitCount > 3) {
-                revert NotIpPort(field, input, "Invalid octet length");
+                revert NotIp(input, "Invalid octet length");
             }
             if (value > 255) {
-                revert NotIpPort(field, input, "Octet out of range");
+                revert NotIp(input, "Octet out of range");
             }
             if (digitCount > 1 && b[i - digitCount] == "0") {
-                revert NotIpPort(field, input, "Leading zeros not allowed");
+                revert NotIp(input, "Leading zeros not allowed");
             }
 
             if (octet < 3) {
                 if (i >= b.length || b[i] != ".") {
-                    revert NotIpPort(field, input, "Expected dot separator");
+                    revert NotIp(input, "Expected dot separator");
                 }
                 i++;
             }
         }
 
         if (i != b.length) {
-            revert NotIpPort(field, input, "Unexpected trailing characters");
+            revert NotIp(input, "Unexpected trailing characters");
         }
     }
 
-    function _validateIpv6Port(
-        bytes memory b,
-        string memory field,
-        string calldata input
-    )
-        internal
-        pure
-    {
+    function _validateIpv6Port(bytes memory b, string calldata input) internal pure {
         if (b.length < 6) {
-            revert NotIpPort(field, input, "Address too short");
+            revert NotIpPort(input, "Address too short");
         }
 
         uint256 closeBracket = 0;
@@ -725,30 +758,29 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         }
 
         if (closeBracket == 0) {
-            revert NotIpPort(field, input, "Missing closing bracket");
+            revert NotIpPort(input, "Missing closing bracket");
         }
 
-        _validateIpv6Address(b, 1, closeBracket, field, input);
+        _validateIpv6Address(b, 1, closeBracket, input);
 
         if (closeBracket + 1 >= b.length || b[closeBracket + 1] != ":") {
-            revert NotIpPort(field, input, "Missing port separator after bracket");
+            revert NotIpPort(input, "Missing port separator after bracket");
         }
 
-        _validatePort(b, closeBracket + 2, field, input);
+        _validatePort(b, closeBracket + 2, input);
     }
 
     function _validateIpv6Address(
         bytes memory b,
         uint256 start,
         uint256 end,
-        string memory field,
         string calldata input
     )
         internal
         pure
     {
         if (start >= end) {
-            revert NotIpPort(field, input, "Empty IPv6 address");
+            revert NotIpPort(input, "Empty IPv6 address");
         }
 
         uint256 groupCount = 0;
@@ -771,7 +803,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
                 bool isHex =
                     (c >= "0" && c <= "9") || (c >= "a" && c <= "f") || (c >= "A" && c <= "F");
                 if (!isHex) {
-                    revert NotIpPort(field, input, "Invalid hex character");
+                    revert NotIpPort(input, "Invalid hex character");
                 }
                 digitCount++;
                 i++;
@@ -779,11 +811,11 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
             if (digitCount == 0) {
                 if (doubleColonPos == type(uint256).max) {
-                    revert NotIpPort(field, input, "Empty group without ::");
+                    revert NotIpPort(input, "Empty group without ::");
                 }
             } else {
                 if (digitCount > 4) {
-                    revert NotIpPort(field, input, "Group exceeds 4 hex digits");
+                    revert NotIpPort(input, "Group exceeds 4 hex digits");
                 }
                 groupCount++;
             }
@@ -792,7 +824,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
                 if (b[i] == ":") {
                     if (i + 1 < end && b[i + 1] == ":") {
                         if (doubleColonPos != type(uint256).max) {
-                            revert NotIpPort(field, input, "Multiple :: not allowed");
+                            revert NotIpPort(input, "Multiple :: not allowed");
                         }
                         doubleColonPos = groupCount;
                         i += 2;
@@ -808,26 +840,18 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         if (doubleColonPos == type(uint256).max) {
             if (groupCount != 8) {
-                revert NotIpPort(field, input, "Must have 8 groups without ::");
+                revert NotIpPort(input, "Must have 8 groups without ::");
             }
         } else {
             if (groupCount >= 8) {
-                revert NotIpPort(field, input, "Too many groups with ::");
+                revert NotIpPort(input, "Too many groups with ::");
             }
         }
     }
 
-    function _validatePort(
-        bytes memory b,
-        uint256 start,
-        string memory field,
-        string calldata input
-    )
-        internal
-        pure
-    {
+    function _validatePort(bytes memory b, uint256 start, string calldata input) internal pure {
         if (start >= b.length) {
-            revert NotIpPort(field, input, "Missing port number");
+            revert NotIpPort(input, "Missing port number");
         }
 
         uint256 port = 0;
@@ -836,23 +860,23 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
         for (uint256 i = start; i < b.length; i++) {
             bytes1 c = b[i];
             if (c < "0" || c > "9") {
-                revert NotIpPort(field, input, "Invalid port character");
+                revert NotIpPort(input, "Invalid port character");
             }
             port = port * 10 + uint8(c) - 48;
             digitCount++;
         }
 
         if (digitCount == 0) {
-            revert NotIpPort(field, input, "Empty port number");
+            revert NotIpPort(input, "Empty port number");
         }
         if (digitCount > 5) {
-            revert NotIpPort(field, input, "Port too long");
+            revert NotIpPort(input, "Port too long");
         }
         if (port > 65_535) {
-            revert NotIpPort(field, input, "Port out of range");
+            revert NotIpPort(input, "Port out of range");
         }
         if (digitCount > 1 && b[start] == "0") {
-            revert NotIpPort(field, input, "Leading zeros in port");
+            revert NotIpPort(input, "Leading zeros in port");
         }
     }
 
