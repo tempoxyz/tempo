@@ -11821,6 +11821,7 @@ dependencies = [
  "rand 0.8.5",
  "reth-chainspec",
  "reth-cli",
+ "reth-cli-commands",
  "reth-cli-runner",
  "reth-cli-util",
  "reth-db-api",

@@ -42,6 +42,7 @@ futures = { workspace = true, features = ["executor"] }
 rand_08.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true
+reth-cli-commands.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempo-alloy.workspace = true
