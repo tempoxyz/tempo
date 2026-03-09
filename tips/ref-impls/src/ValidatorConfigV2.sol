@@ -39,7 +39,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     /// @dev 1-indexed: 0 means not found. Stored value is arrayIndex + 1.
     mapping(bytes32 => uint64) internal pubkeyToIndex;
 
-    uint64 internal nextNetworkIdentityRotationEpochEpoch;
+    uint64 internal nextNetworkIdentityRotationEpoch;
 
     /// @dev Tracks active ingress socket addresses by their keccak256 hash
     mapping(bytes32 => bool) internal activeIngressHashes;
@@ -366,7 +366,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
     /// @inheritdoc IValidatorConfigV2
     function getNextNetworkIdentityRotationEpoch() external view returns (uint64) {
-        return nextNetworkIdentityRotationEpochEpoch;
+        return nextNetworkIdentityRotationEpoch;
     }
 
     /// @inheritdoc IValidatorConfigV2
