@@ -70,33 +70,6 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
     })
 }
 
-/// RAII guard that records `payload_build_duration_seconds` on drop.
-struct BuildGuard<'a> {
-    started_at: Instant,
-    metrics: &'a TempoPayloadBuilderMetrics,
-}
-
-impl<'a> BuildGuard<'a> {
-    fn new(metrics: &'a TempoPayloadBuilderMetrics) -> Self {
-        Self {
-            started_at: Instant::now(),
-            metrics,
-        }
-    }
-
-    fn elapsed(&self) -> Duration {
-        self.started_at.elapsed()
-    }
-}
-
-impl Drop for BuildGuard<'_> {
-    fn drop(&mut self) {
-        self.metrics
-            .payload_build_duration_seconds
-            .record(self.started_at.elapsed());
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -824,6 +797,33 @@ where
             payload,
             cached_reads,
         })
+    }
+}
+
+/// RAII guard that records `payload_build_duration_seconds` on drop.
+struct BuildGuard<'a> {
+    started_at: Instant,
+    metrics: &'a TempoPayloadBuilderMetrics,
+}
+
+impl<'a> BuildGuard<'a> {
+    fn new(metrics: &'a TempoPayloadBuilderMetrics) -> Self {
+        Self {
+            started_at: Instant::now(),
+            metrics,
+        }
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.started_at.elapsed()
+    }
+}
+
+impl Drop for BuildGuard<'_> {
+    fn drop(&mut self) {
+        self.metrics
+            .payload_build_duration_seconds
+            .record(self.started_at.elapsed());
     }
 }
 
