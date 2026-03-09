@@ -3,48 +3,27 @@
 //! add/update/remove).
 
 use crate::installer::{
-    binary_candidates, debug_log, fetch_manifest_version, InstallSource, Installer, InstallerError,
+    InstallSource, Installer, InstallerError, binary_candidates, debug_log, fetch_manifest_version,
 };
 use crate::state::State;
 use std::env;
-use std::error::Error;
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BASE_URL: &str = "https://cli.tempo.xyz";
 const PUBLIC_KEY: &str = "bDpt6MpqpvjiIPBB2NroGZQ/2HrfV+roj2qUa2b+vjI=";
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 #[allow(unnameable_types, private_interfaces)]
 pub enum LauncherError {
-    Io(std::io::Error),
-    Installer(InstallerError),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("installer error: {0}")]
+    Installer(#[from] InstallerError),
+
+    #[error("invalid arguments: {0}")]
     InvalidArgs(String),
-}
-
-impl fmt::Display for LauncherError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(err) => write!(f, "io error: {err}"),
-            Self::Installer(err) => write!(f, "installer error: {err}"),
-            Self::InvalidArgs(err) => write!(f, "invalid arguments: {err}"),
-        }
-    }
-}
-
-impl Error for LauncherError {}
-
-impl From<std::io::Error> for LauncherError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<InstallerError> for LauncherError {
-    fn from(value: InstallerError) -> Self {
-        Self::Installer(value)
-    }
 }
 
 struct ManagementArgs {
@@ -266,13 +245,13 @@ impl Launcher {
         } else {
             crate::installer::default_local_bin().ok()
         };
-        if let Some(dir) = &fallback {
-            if self.exe_dir.as_deref() != Some(dir.as_path()) {
-                for name in &candidates {
-                    let path = dir.join(name);
-                    if path.is_file() {
-                        return Some(path);
-                    }
+        if let Some(dir) = &fallback
+            && self.exe_dir.as_deref() != Some(dir.as_path())
+        {
+            for name in &candidates {
+                let path = dir.join(name);
+                if path.is_file() {
+                    return Some(path);
                 }
             }
         }

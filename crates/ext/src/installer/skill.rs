@@ -5,9 +5,11 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use super::error::InstallerError;
-use super::debug_log;
-use super::verify::{sha256_of_bytes, verify_signature};
+use crate::installer::{
+    debug_log,
+    error::InstallerError,
+    verify::{sha256_of_bytes, verify_signature},
+};
 
 pub(super) const AGENT_SKILL_DIRS: &[(&str, &str, &str)] = &[
     (".agents", ".agents/skills", "universal"),

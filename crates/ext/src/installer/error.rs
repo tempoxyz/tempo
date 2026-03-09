@@ -1,102 +1,55 @@
 //! Error types for the extension installer.
 
-use std::fmt;
 use std::io;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum InstallerError {
-    Io(io::Error),
-    Json(serde_json::Error),
-    Network(reqwest::Error),
+    #[error("io error: {0}")]
+    Io(#[from] io::Error),
+
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("network error: {0}")]
+    Network(#[from] reqwest::Error),
+
+    #[error("home directory not found")]
     HomeDirMissing,
+
+    #[error("missing release manifest: pass --release-manifest")]
     MissingReleaseManifest,
+
+    #[error("missing release public key: pass --release-public-key")]
     MissingReleasePublicKey,
+
+    #[error("insecure release manifest URL: {0} (requires https://, file://, or local path)")]
     InsecureManifestUrl(String),
+
+    #[error("release manifest not found: {0}")]
     ReleaseManifestNotFound(String),
+
+    #[error("extension metadata missing in release manifest: {0}")]
     ExtensionNotInManifest(String),
+
+    #[error("signature missing in release manifest for {0}")]
     SignatureMissing(String),
+
+    #[error("invalid signature format for {field}: {details}")]
     SignatureFormat {
         field: &'static str,
         details: String,
     },
+
+    #[error("signature verification failed for {0}")]
     SignatureVerificationFailed(String),
+
+    #[error("insecure download URL: {0} (requires https://, file://, or local path)")]
     InsecureDownloadUrl(String),
+
+    #[error("checksum mismatch for {binary}: expected {expected}, got {actual}")]
     ChecksumMismatch {
         binary: String,
         expected: String,
         actual: String,
     },
-
-}
-
-impl fmt::Display for InstallerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(err) => write!(f, "io error: {err}"),
-            Self::Json(err) => write!(f, "json error: {err}"),
-            Self::Network(err) => write!(f, "network error: {err}"),
-            Self::HomeDirMissing => write!(f, "home directory not found"),
-            Self::MissingReleaseManifest => {
-                write!(f, "missing release manifest: pass --release-manifest")
-            }
-            Self::MissingReleasePublicKey => {
-                write!(f, "missing release public key: pass --release-public-key")
-            }
-            Self::InsecureManifestUrl(value) => {
-                write!(
-                    f,
-                    "insecure release manifest URL: {value} (requires https://, file://, or local path)"
-                )
-            }
-            Self::ReleaseManifestNotFound(value) => {
-                write!(f, "release manifest not found: {value}")
-            }
-            Self::ExtensionNotInManifest(value) => {
-                write!(f, "extension metadata missing in release manifest: {value}")
-            }
-            Self::SignatureMissing(binary) => {
-                write!(f, "signature missing in release manifest for {binary}")
-            }
-            Self::SignatureFormat { field, details } => {
-                write!(f, "invalid signature format for {field}: {details}")
-            }
-            Self::SignatureVerificationFailed(binary) => {
-                write!(f, "signature verification failed for {binary}")
-            }
-            Self::InsecureDownloadUrl(value) => {
-                write!(
-                    f,
-                    "insecure download URL: {value} (requires https://, file://, or local path)"
-                )
-            }
-            Self::ChecksumMismatch {
-                binary,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "checksum mismatch for {binary}: expected {expected}, got {actual}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for InstallerError {}
-
-impl From<io::Error> for InstallerError {
-    fn from(value: io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<serde_json::Error> for InstallerError {
-    fn from(value: serde_json::Error) -> Self {
-        Self::Json(value)
-    }
-}
-
-impl From<reqwest::Error> for InstallerError {
-    fn from(value: reqwest::Error) -> Self {
-        Self::Network(value)
-    }
 }

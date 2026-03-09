@@ -4,6 +4,7 @@ description = "Extension dispatch and management for the Tempo CLI"
 
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
@@ -12,9 +13,10 @@ workspace = true
 
 [dependencies]
 base64.workspace = true
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 sha2.workspace = true
 tempfile.workspace = true
+thiserror.workspace = true

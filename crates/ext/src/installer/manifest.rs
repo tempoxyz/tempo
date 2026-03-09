@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 
-use super::error::InstallerError;
+use crate::installer::error::InstallerError;
 
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct ReleaseManifest {

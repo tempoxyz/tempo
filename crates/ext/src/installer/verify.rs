@@ -1,11 +1,11 @@
 //! Ed25519 signature verification and SHA-256 checksums for release artifacts.
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 
-use super::error::InstallerError;
+use crate::installer::error::InstallerError;
 
 pub(super) fn decode_verifying_key(encoded_key: &str) -> Result<VerifyingKey, InstallerError> {
     let key_bytes =

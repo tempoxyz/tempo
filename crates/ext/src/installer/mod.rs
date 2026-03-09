@@ -13,17 +13,17 @@ pub(crate) use platform::{
     set_executable_permissions,
 };
 
+use manifest::{ReleaseBinary, load_manifest};
+use platform::platform_binary_name;
+use skill::{install_skill, remove_skill};
+use verify::{decode_verifying_key, sha256_of_bytes, verify_signature};
+
 use ed25519_dalek::VerifyingKey;
 use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-
-use manifest::{load_manifest, ReleaseBinary};
-use platform::platform_binary_name;
-use skill::{install_skill, remove_skill};
-use verify::{decode_verifying_key, sha256_of_bytes, verify_signature};
 
 pub(crate) fn debug_log(message: &str) {
     if env::var_os("TEMPO_DEBUG").is_some() {
@@ -57,8 +57,7 @@ impl Installer {
     pub(crate) fn from_env(exe_dir: Option<&Path>) -> Result<Self, InstallerError> {
         let bin_dir = if let Some(home) = env::var_os("TEMPO_HOME") {
             PathBuf::from(home).join("bin")
-        } else if let Some(dir) = exe_dir.filter(|d| d.is_dir() && check_dir_writable(d).is_ok())
-        {
+        } else if let Some(dir) = exe_dir.filter(|d| d.is_dir() && check_dir_writable(d).is_ok()) {
             dir.to_path_buf()
         } else {
             default_local_bin()?
