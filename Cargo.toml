@@ -209,6 +209,7 @@ base64 = { version = "0.22", features = ["alloc"], default-features = false }
 bytes = "1.11.1"
 clap = { version = "4.5.57", features = ["derive", "env"] }
 const-hex = { version = "1.17.0" }
+dashmap = "6"
 derive_more = { version = "2.1.1", default-features = false }
 either = "1"
 eyre = "0.6.12"

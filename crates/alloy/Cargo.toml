@@ -34,14 +34,15 @@ reth-primitives-traits = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 reth-rpc-eth-types = { workspace = true, optional = true }
 
+dashmap.workspace = true
 derive_more.workspace = true
+futures.workspace = true
 serde.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types"] }
 eyre.workspace = true
-futures.workspace = true
 test-case.workspace = true
 tokio.workspace = true
 
