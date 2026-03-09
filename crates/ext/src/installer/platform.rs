@@ -113,7 +113,10 @@ mod tests {
     #[test]
     fn platform_binary_name_format() {
         let name = platform_binary_name("wallet");
-        assert!(name.starts_with("tempo-wallet-"), "expected prefix 'tempo-wallet-', got: {name}");
+        assert!(
+            name.starts_with("tempo-wallet-"),
+            "expected prefix 'tempo-wallet-', got: {name}"
+        );
 
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         assert_eq!(name, "tempo-wallet-darwin-arm64");
@@ -137,6 +140,9 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn binary_candidates_unix() {
-        assert_eq!(binary_candidates("tempo-wallet"), vec!["tempo-wallet".to_string()]);
+        assert_eq!(
+            binary_candidates("tempo-wallet"),
+            vec!["tempo-wallet".to_string()]
+        );
     }
 }

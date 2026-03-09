@@ -12188,6 +12188,7 @@ dependencies = [
 name = "tempo-ext"
 version = "1.4.0"
 dependencies = [
+ "clap",
  "minisign",
  "minisign-verify",
  "reqwest 0.13.2",

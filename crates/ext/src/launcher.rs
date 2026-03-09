@@ -6,12 +6,14 @@ use crate::installer::{
     InstallSource, Installer, InstallerError, binary_candidates, fallback_bin_dir, find_in_path,
 };
 use crate::state::State;
+use clap::{Parser, Subcommand};
 use std::env;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BASE_URL: &str = "https://cli.tempo.xyz";
-const PUBLIC_KEY: &str = "bDpt6MpqpvjiIPBB2NroGZQ/2HrfV+roj2qUa2b+vjI=";
+const PUBLIC_KEY: &str = "RWTtoEUPuapAfh06rC7BZLjm1hG40/lsVAA/2afN88FZ8/Fdk97LzJDf";
 
 #[derive(Debug, thiserror::Error)]
 pub enum LauncherError {
@@ -25,10 +27,53 @@ pub enum LauncherError {
     InvalidArgs(String),
 }
 
+/// Extension manager for the Tempo CLI.
+#[derive(Parser, Debug)]
+#[command(
+    name = "tempo",
+    disable_help_flag = true,
+    disable_version_flag = true,
+    disable_help_subcommand = true
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Install an extension.
+    Add(ManagementArgs),
+
+    /// Update an extension.
+    Update(ManagementArgs),
+
+    /// Remove an extension.
+    Remove(ManagementArgs),
+
+    /// External extension subcommand.
+    #[command(external_subcommand)]
+    Extension(Vec<OsString>),
+}
+
+#[derive(Parser, Debug)]
 struct ManagementArgs {
+    /// Extension name (e.g., wallet, mpp).
     extension: String,
+
+    /// Version to install (e.g., 0.2.0).
     version: Option<String>,
-    source: InstallSource,
+
+    /// URL of the signed release manifest.
+    #[arg(long = "release-manifest")]
+    manifest: Option<String>,
+
+    /// Base64-encoded public key for manifest verification.
+    #[arg(long = "release-public-key")]
+    public_key: Option<String>,
+
+    /// Show what would be done without making changes.
+    #[arg(long)]
     dry_run: bool,
 }
 
@@ -39,11 +84,22 @@ pub fn run(args: Vec<String>) -> Result<i32, LauncherError> {
         .and_then(|path| path.parent().map(Path::to_path_buf));
     let launcher = Launcher { exe_dir };
 
-    let first = args.get(1).map(String::as_str).unwrap_or_default();
+    let cli = Cli::try_parse_from(&args).map_err(|err| {
+        // Clap parse errors (unknown flags, missing values) become InvalidArgs.
+        LauncherError::InvalidArgs(err.to_string())
+    })?;
 
-    match first {
-        "add" | "update" | "remove" => launcher.handle_management(first, &args[2..]),
-        extension => launcher.handle_extension(extension, &args[2..]),
+    match cli.command {
+        Commands::Add(args) | Commands::Update(args) => launcher.handle_install(args),
+        Commands::Remove(args) => launcher.handle_remove(args),
+        Commands::Extension(ext_args) => {
+            let extension = ext_args[0].to_string_lossy();
+            let rest: Vec<String> = ext_args[1..]
+                .iter()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect();
+            launcher.handle_extension(&extension, &rest)
+        }
     }
 }
 
@@ -52,27 +108,40 @@ struct Launcher {
 }
 
 impl Launcher {
-    fn handle_management(&self, action: &str, args: &[String]) -> Result<i32, LauncherError> {
-        let parsed = parse_management_args(args)?;
+    fn handle_install(&self, args: ManagementArgs) -> Result<i32, LauncherError> {
+        if !is_valid_extension_name(&args.extension) {
+            return Err(LauncherError::InvalidArgs(format!(
+                "invalid extension name: {} (only alphanumeric, hyphens, and underscores)",
+                args.extension
+            )));
+        }
 
         let installer = Installer::from_env(self.exe_dir.as_deref())?;
-
-        match action {
-            "add" | "update" => {
-                let source = if parsed.source.manifest.is_none() {
-                    InstallSource {
-                        manifest: Some(manifest_url(&parsed.extension, parsed.version.as_deref())),
-                        public_key: Some(release_public_key()),
-                    }
-                } else {
-                    parsed.source
-                };
-                installer.install(&parsed.extension, &source, parsed.dry_run, false)?
+        let source = if args.manifest.is_none() {
+            InstallSource {
+                manifest: Some(manifest_url(&args.extension, args.version.as_deref())),
+                public_key: Some(release_public_key()),
             }
-            "remove" => installer.remove(&parsed.extension, parsed.dry_run)?,
-            _ => unreachable!(),
+        } else {
+            InstallSource {
+                manifest: args.manifest,
+                public_key: args.public_key,
+            }
         };
+        installer.install(&args.extension, &source, args.dry_run, false)?;
+        Ok(0)
+    }
 
+    fn handle_remove(&self, args: ManagementArgs) -> Result<i32, LauncherError> {
+        if !is_valid_extension_name(&args.extension) {
+            return Err(LauncherError::InvalidArgs(format!(
+                "invalid extension name: {} (only alphanumeric, hyphens, and underscores)",
+                args.extension
+            )));
+        }
+
+        let installer = Installer::from_env(self.exe_dir.as_deref())?;
+        installer.remove(&args.extension, args.dry_run)?;
         Ok(0)
     }
 
@@ -226,72 +295,6 @@ impl Launcher {
     }
 }
 
-fn parse_management_args(args: &[String]) -> Result<ManagementArgs, LauncherError> {
-    let mut extension = None;
-    let mut version = None;
-    let mut manifest = None;
-    let mut public_key = None;
-    let mut dry_run = false;
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--release-manifest" => {
-                i += 1;
-                let value = args.get(i).ok_or_else(|| {
-                    LauncherError::InvalidArgs("--release-manifest requires a value".to_string())
-                })?;
-                manifest = Some(value.clone());
-            }
-            "--release-public-key" => {
-                i += 1;
-                let value = args.get(i).ok_or_else(|| {
-                    LauncherError::InvalidArgs("--release-public-key requires a value".to_string())
-                })?;
-                public_key = Some(value.clone());
-            }
-            "--dry-run" => {
-                dry_run = true;
-            }
-            value if value.starts_with("--") => {
-                return Err(LauncherError::InvalidArgs(format!("unknown flag: {value}")));
-            }
-            name => {
-                if extension.is_none() {
-                    extension = Some(name.to_string());
-                } else if version.is_none() {
-                    version = Some(name.to_string());
-                } else {
-                    return Err(LauncherError::InvalidArgs(
-                        "unexpected positional argument".to_string(),
-                    ));
-                }
-            }
-        }
-        i += 1;
-    }
-
-    let extension = extension.ok_or_else(|| {
-        LauncherError::InvalidArgs("extension name required (e.g., core, wallet)".to_string())
-    })?;
-
-    if !is_valid_extension_name(&extension) {
-        return Err(LauncherError::InvalidArgs(format!(
-            "invalid extension name: {extension} (only alphanumeric, hyphens, and underscores)"
-        )));
-    }
-
-    Ok(ManagementArgs {
-        extension,
-        version,
-        source: InstallSource {
-            manifest,
-            public_key,
-        },
-        dry_run,
-    })
-}
-
 fn base_url() -> String {
     env::var("TEMPO_BASE_URL").unwrap_or_else(|_| BASE_URL.to_string())
 }
@@ -306,9 +309,9 @@ fn manifest_url(extension: &str, version: Option<&str>) -> String {
     match version {
         Some(v) => {
             let v = v.strip_prefix('v').unwrap_or(v);
-            format!("{base}/tempo-{extension}/v{v}/manifest.json")
+            format!("{base}/extensions/tempo-{extension}/v{v}/manifest.json")
         }
-        None => format!("{base}/tempo-{extension}/manifest.json"),
+        None => format!("{base}/extensions/tempo-{extension}/manifest.json"),
     }
 }
 
@@ -342,12 +345,9 @@ fn print_missing_install_hint(extension: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_extension_name, manifest_url, parse_management_args, LauncherError};
+    use super::{Cli, is_valid_extension_name, manifest_url};
     use crate::installer::is_allowed_manifest_url;
-
-    fn args(strs: &[&str]) -> Vec<String> {
-        strs.iter().map(|s| s.to_string()).collect()
-    }
+    use clap::Parser;
 
     #[test]
     fn runtime_manifest_url_policy_enforces_https_or_local() {
@@ -367,17 +367,17 @@ mod tests {
     fn manifest_url_uses_expected_format() {
         assert_eq!(
             manifest_url("wallet", None),
-            "https://cli.tempo.xyz/tempo-wallet/manifest.json"
+            "https://cli.tempo.xyz/extensions/tempo-wallet/manifest.json"
         );
 
         assert_eq!(
             manifest_url("wallet", Some("0.2.0")),
-            "https://cli.tempo.xyz/tempo-wallet/v0.2.0/manifest.json"
+            "https://cli.tempo.xyz/extensions/tempo-wallet/v0.2.0/manifest.json"
         );
 
         assert_eq!(
             manifest_url("wallet", Some("v0.2.0")),
-            "https://cli.tempo.xyz/tempo-wallet/v0.2.0/manifest.json",
+            "https://cli.tempo.xyz/extensions/tempo-wallet/v0.2.0/manifest.json",
             "v-prefix should not be doubled"
         );
     }
@@ -399,76 +399,116 @@ mod tests {
         assert!(!is_valid_extension_name(".hidden"));
     }
 
-    #[test]
-    fn parse_args_extension_only() {
-        let result = parse_management_args(&args(&["wallet"])).unwrap();
-        assert_eq!(result.extension, "wallet");
-        assert_eq!(result.version, None);
-        assert!(!result.dry_run);
-        assert!(result.source.manifest.is_none());
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).unwrap()
+    }
+
+    fn parse_err(args: &[&str]) -> clap::Error {
+        Cli::try_parse_from(args).unwrap_err()
     }
 
     #[test]
-    fn parse_args_extension_and_version() {
-        let result = parse_management_args(&args(&["wallet", "1.0.0"])).unwrap();
-        assert_eq!(result.extension, "wallet");
-        assert_eq!(result.version, Some("1.0.0".to_string()));
+    fn parse_add_extension_only() {
+        let cli = parse(&["tempo", "add", "wallet"]);
+        match cli.command {
+            super::Commands::Add(ref args) => {
+                assert_eq!(args.extension, "wallet");
+                assert_eq!(args.version, None);
+                assert!(!args.dry_run);
+                assert!(args.manifest.is_none());
+            }
+            _ => panic!("expected Add"),
+        }
     }
 
     #[test]
-    fn parse_args_with_dry_run() {
-        let result = parse_management_args(&args(&["wallet", "--dry-run"])).unwrap();
-        assert!(result.dry_run);
+    fn parse_add_extension_and_version() {
+        let cli = parse(&["tempo", "add", "wallet", "1.0.0"]);
+        match cli.command {
+            super::Commands::Add(ref args) => {
+                assert_eq!(args.extension, "wallet");
+                assert_eq!(args.version, Some("1.0.0".to_string()));
+            }
+            _ => panic!("expected Add"),
+        }
     }
 
     #[test]
-    fn parse_args_with_manifest() {
-        let result = parse_management_args(&args(&[
+    fn parse_add_with_dry_run() {
+        let cli = parse(&["tempo", "add", "wallet", "--dry-run"]);
+        match cli.command {
+            super::Commands::Add(ref args) => assert!(args.dry_run),
+            _ => panic!("expected Add"),
+        }
+    }
+
+    #[test]
+    fn parse_add_with_manifest() {
+        let cli = parse(&[
+            "tempo",
+            "add",
             "wallet",
             "--release-manifest",
             "https://example.com/m.json",
-        ]))
-        .unwrap();
-        assert_eq!(
-            result.source.manifest,
-            Some("https://example.com/m.json".to_string())
-        );
+        ]);
+        match cli.command {
+            super::Commands::Add(ref args) => {
+                assert_eq!(
+                    args.manifest,
+                    Some("https://example.com/m.json".to_string())
+                );
+            }
+            _ => panic!("expected Add"),
+        }
     }
 
     #[test]
-    fn parse_args_with_public_key() {
-        let result =
-            parse_management_args(&args(&["wallet", "--release-public-key", "abc123"])).unwrap();
-        assert_eq!(result.source.public_key, Some("abc123".to_string()));
+    fn parse_add_with_public_key() {
+        let cli = parse(&["tempo", "add", "wallet", "--release-public-key", "abc123"]);
+        match cli.command {
+            super::Commands::Add(ref args) => {
+                assert_eq!(args.public_key, Some("abc123".to_string()));
+            }
+            _ => panic!("expected Add"),
+        }
     }
 
     #[test]
-    fn parse_args_missing_extension() {
-        let result = parse_management_args(&args(&[]));
-        assert!(matches!(result, Err(LauncherError::InvalidArgs(_))));
+    fn parse_remove() {
+        let cli = parse(&["tempo", "remove", "wallet"]);
+        assert!(matches!(cli.command, super::Commands::Remove(_)));
     }
 
     #[test]
-    fn parse_args_invalid_extension_name() {
-        let result = parse_management_args(&args(&["../evil"]));
-        assert!(matches!(result, Err(LauncherError::InvalidArgs(_))));
+    fn parse_update() {
+        let cli = parse(&["tempo", "update", "wallet"]);
+        assert!(matches!(cli.command, super::Commands::Update(_)));
     }
 
     #[test]
-    fn parse_args_unknown_flag() {
-        let result = parse_management_args(&args(&["wallet", "--unknown"]));
-        assert!(matches!(result, Err(LauncherError::InvalidArgs(_))));
+    fn parse_add_missing_extension() {
+        let _ = parse_err(&["tempo", "add"]);
     }
 
     #[test]
-    fn parse_args_manifest_missing_value() {
-        let result = parse_management_args(&args(&["wallet", "--release-manifest"]));
-        assert!(matches!(result, Err(LauncherError::InvalidArgs(_))));
+    fn parse_add_unknown_flag() {
+        let _ = parse_err(&["tempo", "add", "wallet", "--unknown"]);
     }
 
     #[test]
-    fn parse_args_too_many_positional() {
-        let result = parse_management_args(&args(&["wallet", "1.0.0", "extra"]));
-        assert!(matches!(result, Err(LauncherError::InvalidArgs(_))));
+    fn parse_add_manifest_missing_value() {
+        let _ = parse_err(&["tempo", "add", "wallet", "--release-manifest"]);
+    }
+
+    #[test]
+    fn parse_external_subcommand() {
+        let cli = parse(&["tempo", "wallet", "--help"]);
+        match cli.command {
+            super::Commands::Extension(ref args) => {
+                assert_eq!(args[0], "wallet");
+                assert_eq!(args[1], "--help");
+            }
+            _ => panic!("expected Extension"),
+        }
     }
 }

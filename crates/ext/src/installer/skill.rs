@@ -55,8 +55,7 @@ pub(super) fn install_skill(
     let skill_name = format!("tempo-{extension} skill");
     match encoded_signature {
         Some(sig) => {
-            if let Err(err) = verify_signature(&skill_name, content.as_bytes(), sig, public_key)
-            {
+            if let Err(err) = verify_signature(&skill_name, content.as_bytes(), sig, public_key) {
                 tracing::warn!("{err}, skipping skill install");
                 return;
             }

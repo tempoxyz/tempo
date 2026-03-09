@@ -70,7 +70,10 @@ mod tests {
         }"#;
         let manifest: ReleaseManifest = serde_json::from_str(json).unwrap();
         assert_eq!(manifest.version, "1.0.0");
-        assert_eq!(manifest.binaries["wallet"].url, "https://example.com/wallet");
+        assert_eq!(
+            manifest.binaries["wallet"].url,
+            "https://example.com/wallet"
+        );
         assert!(manifest.binaries["wallet"].signature.is_none());
         assert!(manifest.skill.is_none());
         assert!(manifest.skill_sha256.is_none());
@@ -95,8 +98,14 @@ mod tests {
         let manifest: ReleaseManifest = serde_json::from_str(json).unwrap();
         assert_eq!(manifest.version, "2.0.0");
         assert_eq!(manifest.binaries["wallet"].sha256, "abc123");
-        assert_eq!(manifest.binaries["wallet"].signature.as_deref(), Some("sig456"));
-        assert_eq!(manifest.skill.as_deref(), Some("https://example.com/skill.wasm"));
+        assert_eq!(
+            manifest.binaries["wallet"].signature.as_deref(),
+            Some("sig456")
+        );
+        assert_eq!(
+            manifest.skill.as_deref(),
+            Some("https://example.com/skill.wasm")
+        );
         assert_eq!(manifest.skill_sha256.as_deref(), Some("skillhash"));
         assert_eq!(manifest.skill_signature.as_deref(), Some("skillsig"));
     }

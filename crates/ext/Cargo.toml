@@ -12,6 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+clap.workspace = true
 minisign-verify.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 serde = { workspace = true, features = ["std"] }
