@@ -10,7 +10,7 @@ use crate::{
     storage::{Handler, Mapping},
     validator_config::ValidatorConfig,
 };
-use alloy::primitives::{Address, B256, Keccak256, keccak256};
+use alloy::primitives::{Address, B256, Keccak256};
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
     Verifier,
@@ -22,6 +22,12 @@ use tracing::trace;
 pub const VALIDATOR_NS_ADD: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
 /// Signature namespace for `rotateValidator` operations.
 pub const VALIDATOR_NS_ROTATE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR";
+
+/// Distinguishes `addValidator` from `rotateValidator` signatures at the type level.
+enum SignatureKind {
+    Add { fee_recipient: Address },
+    Rotate,
+}
 
 /// Contract-level configuration: ownership, initialization state, and migration bookkeeping.
 #[derive(Debug, Storable)]
@@ -445,74 +451,47 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
-    /// Verify validator signature for add operations.
+    /// Verifies a validator signature for add or rotate operations.
     ///
-    /// Constructs the message according to the validator config v2 specification
-    /// and verifies the Ed25519 signature using the appropriate namespace.
-    fn verify_validator_add_signature(
+    /// Constructs the message according to the validator config v2 specification and verifies
+    /// the Ed25519 signature using the appropriate namespace.
+    fn verify_validator_signature(
         &self,
-        pubkey: &B256,
-        signature: &[u8],
-        validator_address: Address,
-        ingress: &str,
-        egress: &str,
-        fee_recipient: Address,
-    ) -> Result<()> {
-        let mut message_data = Vec::new();
-        message_data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
-        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        message_data.extend_from_slice(validator_address.as_slice());
-        message_data
-            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
-        message_data.extend_from_slice(ingress.as_bytes());
-        message_data
-            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
-        message_data.extend_from_slice(egress.as_bytes());
-        message_data.extend_from_slice(fee_recipient.as_slice());
-        let message = keccak256(message_data);
-
-        let public_key = PublicKey::decode(pubkey.as_slice())
-            .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
-        let sig = Signature::decode(signature)
-            .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
-
-        if !public_key.verify(VALIDATOR_NS_ADD, message.as_slice(), &sig) {
-            Err(ValidatorConfigV2Error::invalid_signature())?
-        }
-
-        Ok(())
-    }
-
-    /// Verify validator signature for rotate operations.
-    ///
-    /// Constructs the message according to the validator config v2 specification
-    /// and verifies the Ed25519 signature using the appropriate namespace.
-    fn verify_validator_rotate_signature(
-        &self,
+        kind: SignatureKind,
         pubkey: &B256,
         signature: &[u8],
         validator_address: Address,
         ingress: &str,
         egress: &str,
     ) -> Result<()> {
-        let mut message_data = Vec::new();
-        message_data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
-        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        message_data.extend_from_slice(validator_address.as_slice());
-        message_data
-            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
-        message_data.extend_from_slice(ingress.as_bytes());
-        message_data
-            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
-        message_data.extend_from_slice(egress.as_bytes());
-        let message = keccak256(message_data);
-
-        let public_key = PublicKey::decode(pubkey.as_slice())
-            .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
         let sig = Signature::decode(signature)
             .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
 
-        if !public_key.verify(VALIDATOR_NS_ROTATE, message.as_slice(), &sig) {
+        let mut hasher = Keccak256::new();
+        hasher.update(self.storage.chain_id().to_be_bytes());
+        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        hasher.update(validator_address.as_slice());
+        hasher.update([
+            u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8")
+        ]);
+        hasher.update(ingress.as_bytes());
+        hasher.update([
+            u8::try_from(egress.len()).expect("validator egress length must fit in uint8")
+        ]);
+        hasher.update(egress.as_bytes());
+
+        let namespace = match kind {
+            SignatureKind::Add { fee_recipient } => {
+                hasher.update(fee_recipient.as_slice());
+                VALIDATOR_NS_ADD
+            }
+            SignatureKind::Rotate => VALIDATOR_NS_ROTATE,
+        };
+        let message = hasher.finalize();
+
+        let public_key = PublicKey::decode(pubkey.as_slice())
+            .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
+        if !public_key.verify(namespace, message.as_slice(), &sig) {
             Err(ValidatorConfigV2Error::invalid_signature())?
         }
 
@@ -550,13 +529,15 @@ impl ValidatorConfigV2 {
         Self::validate_endpoints(&call.ingress, &call.egress)?;
         let ingress_hash = self.require_unique_ingress(&call.ingress)?;
 
-        self.verify_validator_add_signature(
+        self.verify_validator_signature(
+            SignatureKind::Add {
+                fee_recipient: call.feeRecipient,
+            },
             &call.publicKey,
             &call.signature,
             call.validatorAddress,
             &call.ingress,
             &call.egress,
-            call.feeRecipient,
         )?;
 
         let block_height = self.storage.block_number();
@@ -724,7 +705,8 @@ impl ValidatorConfigV2 {
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
         self.require_unique_ingress(&call.ingress)?;
-        self.verify_validator_rotate_signature(
+        self.verify_validator_signature(
+            SignatureKind::Rotate,
             &call.publicKey,
             &call.signature,
             v.validator_address,
@@ -1061,7 +1043,7 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
-    use alloy_primitives::{FixedBytes, keccak256};
+    use alloy_primitives::FixedBytes;
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
 
@@ -1070,28 +1052,33 @@ mod tests {
         validator_address: Address,
         ingress: &str,
         egress: &str,
-        fee_recipient: Address,
-        namespace: &[u8],
+        kind: SignatureKind,
     ) -> (FixedBytes<32>, Vec<u8>) {
         // Generate a random private key for testing
         let seed = rand_08::random::<u64>();
         let private_key = PrivateKey::from_seed(seed);
         let public_key = private_key.public_key();
 
-        let mut message_data = Vec::new();
-        message_data.extend_from_slice(&1u64.to_be_bytes());
-        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        message_data.extend_from_slice(validator_address.as_slice());
-        message_data
-            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
-        message_data.extend_from_slice(ingress.as_bytes());
-        message_data
-            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
-        message_data.extend_from_slice(egress.as_bytes());
-        if namespace == VALIDATOR_NS_ADD {
-            message_data.extend_from_slice(fee_recipient.as_slice());
-        }
-        let message = keccak256(message_data);
+        let mut hasher = Keccak256::new();
+        hasher.update(1u64.to_be_bytes());
+        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        hasher.update(validator_address.as_slice());
+        hasher.update([
+            u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8")
+        ]);
+        hasher.update(ingress.as_bytes());
+        hasher.update([
+            u8::try_from(egress.len()).expect("validator egress length must fit in uint8")
+        ]);
+        hasher.update(egress.as_bytes());
+        let namespace = match kind {
+            SignatureKind::Add { fee_recipient } => {
+                hasher.update(fee_recipient.as_slice());
+                VALIDATOR_NS_ADD
+            }
+            SignatureKind::Rotate => VALIDATOR_NS_ROTATE,
+        };
+        let message = hasher.finalize();
 
         // Sign with namespace
         let signature = private_key.sign(namespace, message.as_slice());
@@ -1132,8 +1119,12 @@ mod tests {
         egress: &str,
         fee_recipient: Address,
     ) -> IValidatorConfigV2::addValidatorCall {
-        let (pubkey, signature) =
-            make_test_keypair_and_signature(addr, ingress, egress, fee_recipient, VALIDATOR_NS_ADD);
+        let (pubkey, signature) = make_test_keypair_and_signature(
+            addr,
+            ingress,
+            egress,
+            SignatureKind::Add { fee_recipient },
+        );
         make_add_call(addr, pubkey, ingress, egress, fee_recipient, signature)
     }
 
@@ -1167,8 +1158,9 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1297,8 +1289,9 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                addr1,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: addr1,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1319,8 +1312,9 @@ mod tests {
                 addr2,
                 "192.168.1.2:8000",
                 "192.168.1.2",
-                addr2,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: addr2,
+                },
             );
             vc.storage.set_block_number(201);
             let result = vc.add_validator(
@@ -1441,8 +1435,9 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1462,8 +1457,7 @@ mod tests {
                 validator,
                 "10.0.0.1:8000",
                 "10.0.0.1",
-                validator,
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.storage.set_block_number(300);
             vc.rotate_validator(
@@ -1710,8 +1704,9 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1852,8 +1847,9 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1:9000",
-                addr1,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: addr1,
+                },
             );
 
             // IP:port for egress should fail (egress validation happens before signature)
@@ -2124,8 +2120,9 @@ mod tests {
                 validator_addr,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator_addr,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator_addr,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -2152,8 +2149,9 @@ mod tests {
                 validator_addr,
                 "192.168.1.2:8000",
                 "192.168.1.2",
-                validator_addr,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator_addr,
+                },
             );
             vc.storage.set_block_number(400);
             vc.add_validator(
@@ -2294,8 +2292,7 @@ mod tests {
                 v1,
                 "[2001:db8::1]:8001",
                 "2001:db8::1",
-                Address::random(),
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.rotate_validator(
                 owner,
@@ -2396,8 +2393,7 @@ mod tests {
                 v1,
                 "192.168.2.1:8000",
                 "192.168.2.1",
-                v1,
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
 
             vc.storage.set_block_number(300);
@@ -2623,8 +2619,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8001",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.storage.set_block_number(300);
             vc.rotate_validator(
@@ -2677,8 +2672,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                Address::random(),
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.storage.set_block_number(300);
             assert!(
@@ -2913,8 +2907,9 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                addr1,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: addr1,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -3071,8 +3066,7 @@ mod tests {
                 validator,
                 "[2001:db8::1]:8000",
                 "2001:db8::1",
-                validator,
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.storage.set_block_number(300);
             vc.rotate_validator(
@@ -3208,8 +3202,9 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator,
+                },
             );
 
             vc.storage.set_block_number(100);
@@ -3315,8 +3310,9 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator,
+                },
             );
 
             vc.storage.set_block_number(200);
@@ -3337,8 +3333,7 @@ mod tests {
                 validator,
                 "10.0.0.2:8000",
                 "10.0.0.2",
-                validator,
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.storage.set_block_number(300);
             vc.rotate_validator(
