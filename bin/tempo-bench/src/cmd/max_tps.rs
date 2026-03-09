@@ -416,8 +416,6 @@ impl MaxTpsArgs {
 
         info!(total_txs, "Generating and sending transactions");
 
-        let start_block_number = provider.get_block_number().await?;
-
         let counters = TransactionCounters::default();
         let target_count = total_txs as usize;
         let cancel_token = CancellationToken::new();
