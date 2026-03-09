@@ -42,7 +42,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
@@ -68,6 +68,33 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
         tx.as_aa()
             .is_some_and(|tx| tx.tx().valid_before.is_some_and(|valid| valid <= timestamp))
     })
+}
+
+/// RAII guard that records `payload_build_duration_seconds` on drop.
+struct BuildGuard<'a> {
+    started_at: Instant,
+    metrics: &'a TempoPayloadBuilderMetrics,
+}
+
+impl<'a> BuildGuard<'a> {
+    fn new(metrics: &'a TempoPayloadBuilderMetrics) -> Self {
+        Self {
+            started_at: Instant::now(),
+            metrics,
+        }
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.started_at.elapsed()
+    }
+}
+
+impl Drop for BuildGuard<'_> {
+    fn drop(&mut self) {
+        self.metrics
+            .payload_build_duration_seconds
+            .record(self.started_at.elapsed());
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -233,20 +260,9 @@ where
             attributes,
         } = config;
 
-        let start = Instant::now();
-        let record_build_attempt_duration = || {
-            self.metrics
-                .payload_build_duration_seconds
-                .record(start.elapsed())
-        };
-        // Early-return helper: records `payload_build_duration_seconds` before exiting,
-        // so the metric is emitted on every code path (error, cancel, abort, success).
-        macro_rules! return_with_build_duration {
-            ($value:expr) => {{
-                record_build_attempt_duration();
-                return $value;
-            }};
-        }
+        // BuildGuard records `payload_build_duration_seconds` on drop — every
+        // exit path (success, cancel, abort, error) gets the metric for free.
+        let guard = BuildGuard::new(&self.metrics);
 
         let block_time_millis =
             (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
@@ -262,7 +278,7 @@ where
                 .record(start.elapsed());
             match res {
                 Ok(provider) => provider,
-                Err(err) => return_with_build_duration!(Err(err.into())),
+                Err(err) => return Err(err.into()),
             }
         };
         let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
@@ -380,7 +396,7 @@ where
                 .record(start.elapsed());
             match res {
                 Ok(builder) => builder,
-                Err(err) => return_with_build_duration!(Err(err)),
+                Err(err) => return Err(err),
             }
         };
 
@@ -395,7 +411,7 @@ where
                 .pre_execution_duration_seconds
                 .record(start.elapsed());
             if let Err(err) = res {
-                return_with_build_duration!(Err(err));
+                return Err(err);
             }
         }
 
@@ -455,7 +471,7 @@ where
                     pool_transactions_executed,
                     pool_transactions_skipped,
                 );
-                return_with_build_duration!(Ok(BuildOutcome::Cancelled));
+                return Ok(BuildOutcome::Cancelled);
             }
 
             let selection_start = Instant::now();
@@ -573,7 +589,7 @@ where
                         pool_transactions_executed,
                         pool_transactions_skipped,
                     );
-                    return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
+                    return Err(PayloadBuilderError::evm(err));
                 }
             };
             pool_transactions_executed += 1;
@@ -617,10 +633,10 @@ where
             drop(builder);
             drop(db);
             // can skip building the block
-            return_with_build_duration!(Ok(BuildOutcome::Aborted {
+            return Ok(BuildOutcome::Aborted {
                 fees: total_fees,
                 cached_reads,
-            }));
+            });
         }
 
         let _subblock_span =
@@ -661,7 +677,7 @@ where
                         subblocks_count,
                         subblock_transactions,
                     );
-                    return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
+                    return Err(PayloadBuilderError::evm(err));
                 }
 
                 subblock_transactions += 1.0;
@@ -686,7 +702,7 @@ where
                     self.metrics
                         .system_transactions_execution_duration_seconds
                         .record(elapsed);
-                    return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
+                    return Err(PayloadBuilderError::evm(err));
                 }
             }
             system_txs_execution_start.elapsed()
@@ -715,7 +731,7 @@ where
                 trie_updates,
             } = match res {
                 Ok(outcome) => outcome,
-                Err(err) => return_with_build_duration!(Err(err.into())),
+                Err(err) => return Err(err.into()),
             };
             (
                 builder_finish_elapsed,
@@ -746,16 +762,13 @@ where
         let rlp_length = sealed_block.rlp_length();
 
         if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
-            return_with_build_duration!(Err(PayloadBuilderError::other(
-                ConsensusError::BlockTooLarge {
-                    rlp_length,
-                    max_rlp_length: MAX_RLP_BLOCK_SIZE,
-                }
-            )));
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
         }
 
-        let elapsed = start.elapsed();
-        self.metrics.payload_build_duration_seconds.record(elapsed);
+        let elapsed = guard.elapsed();
         let secs = elapsed.as_secs_f64();
         if secs > 0.0 {
             let gas_per_second = sealed_block.gas_used() as f64 / secs;
