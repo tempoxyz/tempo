@@ -553,14 +553,13 @@ impl Inner<Init> {
             self.fee_recipient,
             context.current().epoch_millis(),
             extra_data,
+            Some(self.new_payload_wait_time),
             move || {
                 self.subblocks
                     .get_subblocks(parent.block_hash())
                     .unwrap_or_default()
             },
         );
-
-        let interrupt_handle = attrs.interrupt_handle().clone();
 
         let payload_id = self
             .execution_node
@@ -571,14 +570,6 @@ impl Inner<Init> {
             .map_err(|_| eyre!("channel was closed before a response was returned"))
             .and_then(|ret| ret.wrap_err("execution layer rejected request"))
             .wrap_err("failed requesting new payload from the execution layer")?;
-
-        debug!(
-            timeout_ms = self.new_payload_wait_time.as_millis(),
-            "sleeping for payload builder timeout"
-        );
-        context.sleep(self.new_payload_wait_time).await;
-
-        interrupt_handle.interrupt();
 
         let payload = self
             .execution_node
