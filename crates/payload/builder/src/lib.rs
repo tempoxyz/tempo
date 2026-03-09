@@ -62,11 +62,96 @@ use tempo_transaction_pool::{
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
+/// Pre-execution policy decision for a pool transaction.
+///
+/// Separates admission policy from EVM execution: `decide_pool_tx` returns one of these
+/// based on gas budget, block size, and cancellation state, so the main loop reads as
+/// pure domain logic.
+enum PoolDecision {
+    /// Transaction passes all admission checks — execute it.
+    Execute(PoolCandidate),
+    /// Transaction should be skipped for the given reason.
+    Skip(PoolSkipReason),
+    /// Building should stop (interrupted or cancelled).
+    Stop,
+}
+
+/// A pool transaction that passed admission checks and is ready for EVM execution.
+struct PoolCandidate {
+    /// Whether this is a TIP-20 payment transaction.
+    is_payment: bool,
+    /// RLP-encoded byte length of the transaction.
+    rlp_len: usize,
+    /// Effective gas price given the current base fee.
+    effective_gas_price: u128,
+    /// The pool transaction handle (needed for `mark_invalid` on execution failure).
+    pool_tx: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+}
+
+/// Reason a pool transaction was skipped during pre-execution admission.
+enum PoolSkipReason {
+    /// Transaction exceeds the non-shared gas limit reserved for proposer txs.
+    ExceedsNonSharedGasLimit,
+    /// Non-payment transaction exceeds the general gas limit.
+    ExceedsNonPaymentGasLimit,
+    /// Including this transaction would exceed the max RLP block size (Osaka).
+    OversizedBlock,
+}
+
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
         tx.as_aa()
             .is_some_and(|tx| tx.tx().valid_before.is_some_and(|valid| valid <= timestamp))
+    })
+}
+
+/// Evaluates a pool transaction against admission policy and returns a [`PoolDecision`].
+///
+/// Checks (in order):
+/// 1. Interrupt — payload builder was asked to stop
+/// 2. Non-shared gas limit — proposer's pool txs must not exceed the non-shared portion
+/// 3. General gas limit — non-payment txs have a tighter cap
+/// 4. Block size (Osaka) — RLP-encoded block must not exceed `MAX_RLP_BLOCK_SIZE`
+///
+/// If all checks pass, returns `Execute` with pre-computed facts so the caller doesn't
+/// need to re-derive them.
+fn decide_pool_tx(
+    pool_tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    attributes: &TempoPayloadBuilderAttributes,
+    cumulative_gas_used: u64,
+    non_shared_gas_limit: u64,
+    non_payment_gas_used: u64,
+    general_gas_limit: u64,
+    block_size_used: usize,
+    is_osaka: bool,
+    base_fee: u64,
+) -> PoolDecision {
+    if attributes.is_interrupted() {
+        return PoolDecision::Stop;
+    }
+
+    if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
+        return PoolDecision::Skip(PoolSkipReason::ExceedsNonSharedGasLimit);
+    }
+
+    let is_payment = pool_tx.transaction.is_payment();
+
+    if !is_payment && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit {
+        return PoolDecision::Skip(PoolSkipReason::ExceedsNonPaymentGasLimit);
+    }
+
+    let rlp_len = pool_tx.transaction.inner().length();
+
+    if is_osaka && block_size_used + rlp_len > MAX_RLP_BLOCK_SIZE {
+        return PoolDecision::Skip(PoolSkipReason::OversizedBlock);
+    }
+
+    PoolDecision::Execute(PoolCandidate {
+        is_payment,
+        rlp_len,
+        effective_gas_price: pool_tx.transaction.effective_gas_price(Some(base_fee)),
+        pool_tx: Arc::clone(pool_tx),
     })
 }
 
@@ -442,11 +527,6 @@ where
         let _pool_tx_span = debug_span!(target: "payload_builder", "execute_pool_txs").entered();
         let execution_start = Instant::now();
         loop {
-            // check if the job was interrupted, if so we can skip remaining transactions
-            if attributes.is_interrupted() {
-                break;
-            }
-
             // check if the job was cancelled, if so we can exit early
             if cancel.is_cancelled() {
                 record_pool_selection_metrics(
@@ -467,129 +547,125 @@ where
                 .record(selection_start.elapsed());
             pool_transactions_considered += 1;
 
-            // Ensure we still have capacity for this transaction within the non-shared gas limit.
-            // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
-            // be consumed by proposer's pool transactions.
-            if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
-                // Mark this transaction as invalid since it doesn't fit
-                // The iterator will handle lane switching internally when appropriate
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    &InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
-                        non_shared_gas_limit - cumulative_gas_used,
-                    ),
-                );
-                pool_transactions_skipped += 1;
-                self.metrics
-                    .pool_transactions_skipped_exceeds_non_shared_gas_limit
-                    .increment(1);
-                continue;
-            }
+            let decision = decide_pool_tx(
+                &pool_tx,
+                &attributes,
+                cumulative_gas_used,
+                non_shared_gas_limit,
+                non_payment_gas_used,
+                general_gas_limit,
+                block_size_used,
+                is_osaka,
+                base_fee,
+            );
 
-            // If the tx is not a payment and will exceed the general gas limit
-            // mark the tx as invalid and continue
-            if !pool_tx.transaction.is_payment()
-                && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
-            {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    &InvalidPoolTransactionError::Other(Box::new(
-                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                    )),
-                );
-                pool_transactions_skipped += 1;
-                self.metrics
-                    .pool_transactions_skipped_exceeds_non_payment_gas_limit
-                    .increment(1);
-                continue;
-            }
+            match decision {
+                PoolDecision::Execute(candidate) => {
+                    if candidate.is_payment {
+                        payment_transactions += 1;
+                    }
 
-            let is_payment = pool_tx.transaction.is_payment();
-            if is_payment {
-                payment_transactions += 1;
-            }
+                    let tx_debug_repr = tracing::enabled!(Level::TRACE)
+                        .then(|| format!("{:?}", candidate.pool_tx.transaction))
+                        .unwrap_or_default();
 
-            let tx_rlp_length = pool_tx.transaction.inner().length();
-            let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
+                    let tx_with_env =
+                        candidate.pool_tx.transaction.clone().into_with_tx_env();
+                    let tx_execution_start = Instant::now();
+                    let gas_used = match builder.execute_transaction(tx_with_env) {
+                        Ok(gas_used) => gas_used,
+                        Err(BlockExecutionError::Validation(
+                            BlockValidationError::InvalidTx { error, .. },
+                        )) => {
+                            if error.is_nonce_too_low() {
+                                trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                                self.metrics
+                                    .pool_transactions_skipped_nonce_too_low
+                                    .increment(1);
+                            } else {
+                                trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                                best_txs.mark_invalid(
+                                    &candidate.pool_tx,
+                                    &InvalidPoolTransactionError::Consensus(
+                                        InvalidTransactionError::TxTypeNotSupported,
+                                    ),
+                                );
+                                self.metrics
+                                    .pool_transactions_skipped_invalid_tx
+                                    .increment(1);
+                            }
+                            pool_transactions_skipped += 1;
+                            continue;
+                        }
+                        // this is an error that we should treat as fatal for this attempt
+                        Err(err) => {
+                            record_pool_selection_metrics(
+                                &self.metrics,
+                                pool_transactions_considered,
+                                pool_transactions_executed,
+                                pool_transactions_skipped,
+                            );
+                            return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
+                        }
+                    };
+                    pool_transactions_executed += 1;
+                    let elapsed = tx_execution_start.elapsed();
+                    self.metrics
+                        .transaction_execution_duration_seconds
+                        .record(elapsed);
+                    trace!(?elapsed, "Transaction executed");
 
-            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    &InvalidPoolTransactionError::OversizedData {
-                        size: estimated_block_size_with_tx,
-                        limit: MAX_RLP_BLOCK_SIZE,
-                    },
-                );
-                pool_transactions_skipped += 1;
-                self.metrics
-                    .pool_transactions_skipped_oversized_block
-                    .increment(1);
-                continue;
-            }
-
-            let effective_gas_price = pool_tx.transaction.effective_gas_price(Some(base_fee));
-
-            let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", pool_tx.transaction))
-                .unwrap_or_default();
-
-            let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
-            let execution_start = Instant::now();
-            let gas_used = match builder.execute_transaction(tx_with_env) {
-                Ok(gas_used) => gas_used,
-                Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                    error,
-                    ..
-                })) => {
-                    if error.is_nonce_too_low() {
-                        // if the nonce is too low, we can skip this transaction
-                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                        self.metrics
-                            .pool_transactions_skipped_nonce_too_low
-                            .increment(1);
-                    } else {
-                        // if the transaction is invalid, we can skip it and all of its
-                        // descendants
-                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            &InvalidPoolTransactionError::Consensus(
-                                InvalidTransactionError::TxTypeNotSupported,
-                            ),
-                        );
-                        self.metrics
-                            .pool_transactions_skipped_invalid_tx
-                            .increment(1);
+                    total_fees +=
+                        calc_gas_balance_spending(gas_used, candidate.effective_gas_price);
+                    cumulative_gas_used += gas_used;
+                    if !candidate.is_payment {
+                        non_payment_gas_used += gas_used;
+                    }
+                    block_size_used += candidate.rlp_len;
+                }
+                PoolDecision::Skip(reason) => {
+                    match reason {
+                        PoolSkipReason::ExceedsNonSharedGasLimit => {
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                &InvalidPoolTransactionError::ExceedsGasLimit(
+                                    pool_tx.gas_limit(),
+                                    non_shared_gas_limit - cumulative_gas_used,
+                                ),
+                            );
+                            self.metrics
+                                .pool_transactions_skipped_exceeds_non_shared_gas_limit
+                                .increment(1);
+                        }
+                        PoolSkipReason::ExceedsNonPaymentGasLimit => {
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                &InvalidPoolTransactionError::Other(Box::new(
+                                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                                )),
+                            );
+                            self.metrics
+                                .pool_transactions_skipped_exceeds_non_payment_gas_limit
+                                .increment(1);
+                        }
+                        PoolSkipReason::OversizedBlock => {
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                &InvalidPoolTransactionError::OversizedData {
+                                    size: block_size_used
+                                        + pool_tx.transaction.inner().length(),
+                                    limit: MAX_RLP_BLOCK_SIZE,
+                                },
+                            );
+                            self.metrics
+                                .pool_transactions_skipped_oversized_block
+                                .increment(1);
+                        }
                     }
                     pool_transactions_skipped += 1;
-                    continue;
                 }
-                // this is an error that we should treat as fatal for this attempt
-                Err(err) => {
-                    record_pool_selection_metrics(
-                        &self.metrics,
-                        pool_transactions_considered,
-                        pool_transactions_executed,
-                        pool_transactions_skipped,
-                    );
-                    return_with_build_duration!(Err(PayloadBuilderError::evm(err)));
-                }
-            };
-            pool_transactions_executed += 1;
-            let elapsed = execution_start.elapsed();
-            self.metrics
-                .transaction_execution_duration_seconds
-                .record(elapsed);
-            trace!(?elapsed, "Transaction executed");
-
-            // update and add to total fees
-            total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
-            cumulative_gas_used += gas_used;
-            if !is_payment {
-                non_payment_gas_used += gas_used;
+                PoolDecision::Stop => break,
             }
-            block_size_used += tx_rlp_length;
         }
         drop(_pool_tx_span);
         record_pool_selection_metrics(
