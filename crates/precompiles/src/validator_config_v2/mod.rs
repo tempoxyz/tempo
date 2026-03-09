@@ -153,7 +153,7 @@ pub struct ValidatorConfigV2 {
     /// Ed25519 public key -> 1-indexed position in `validators` (0 = not found).
     /// Public keys are reserved forever — even deactivated entries keep their mapping.
     pubkey_to_index: Mapping<B256, u64>,
-    /// Epoch at which a fresh DKG ceremony will be triggered (0 = none scheduled).
+    /// Epoch at which a DKG ceremony will run that rotates the network identity.
     next_dkg_ceremony: u64,
     /// Prevents two active validators from sharing the same ingress IP address.
     active_ingress_ips: Mapping<B256, bool>,
