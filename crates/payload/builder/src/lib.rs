@@ -575,9 +575,12 @@ where
                     BlockValidationError::InvalidTx { error, .. },
                 )) => {
                     if error.is_nonce_too_low() {
+                        // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
                         self.metrics.pool_transactions_skipped_nonce_too_low.increment(1);
                     } else {
+                        // if the transaction is invalid, we can skip it and all of its
+                        // descendants
                         trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
@@ -590,6 +593,7 @@ where
                     pool_transactions_skipped += 1;
                     continue;
                 }
+                // this is an error that we should treat as fatal for this attempt
                 Err(err) => {
                     record_pool_selection_metrics(
                         &self.metrics,
