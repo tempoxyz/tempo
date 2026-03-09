@@ -5341,7 +5341,10 @@ mod tests {
         }
 
         // The original 2D tx should still be in the pool
-        assert!(pool.contains(&tx_2d_hash), "older 2D tx should be preserved");
+        assert!(
+            pool.contains(&tx_2d_hash),
+            "older 2D tx should be preserved"
+        );
         pool.assert_invariants();
     }
 
