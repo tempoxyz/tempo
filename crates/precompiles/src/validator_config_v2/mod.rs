@@ -796,7 +796,7 @@ impl ValidatorConfigV2 {
     /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
     /// - `Unauthorized` — `sender` is neither the owner nor the validator
     /// - `NotIpPort` / `NotIp` — the new endpoints fail validation
-    /// - `IngressAlreadyExists` — the new ingress IP is already in use
+    /// - `IngressAlreadyExists` — the new ingress is already in use.
     pub fn set_ip_addresses(
         &mut self,
         sender: Address,
