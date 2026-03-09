@@ -4,40 +4,17 @@ use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum_engine_primitives::{EthPayloadAttributes, EthPayloadBuilderAttributes};
 use reth_node_api::{PayloadAttributes, PayloadBuilderAttributes};
 use serde::{Deserialize, Serialize};
-use std::{
-    convert::Infallible,
-    sync::{Arc, atomic, atomic::Ordering},
-};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 use tempo_primitives::RecoveredSubBlock;
 
-/// A handle for a payload interrupt flag.
-///
-/// Can be fired using [`InterruptHandle::interrupt`].
-#[derive(Debug, Clone, Default)]
-pub struct InterruptHandle(Arc<atomic::AtomicBool>);
-
-impl InterruptHandle {
-    /// Turns on the interrupt flag on the associated payload.
-    pub fn interrupt(&self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-
-    /// Returns whether the interrupt flag is set.
-    pub fn is_interrupted(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
-    }
-}
-
 /// Container type for all components required to build a payload.
-///
-/// The `TempoPayloadBuilderAttributes` has an additional feature of interrupting payload.
 ///
 /// It also carries DKG data to be included in the block's extra_data field.
 #[derive(derive_more::Debug, Clone)]
 pub struct TempoPayloadBuilderAttributes {
     inner: EthPayloadBuilderAttributes,
-    interrupt: InterruptHandle,
     timestamp_millis_part: u64,
+    pool_fill_budget: Option<Duration>,
     /// DKG ceremony data to include in the block's extra_data header field.
     ///
     /// This is empty when no DKG data is available (e.g., when the DKG manager
@@ -55,6 +32,7 @@ impl TempoPayloadBuilderAttributes {
         suggested_fee_recipient: Address,
         timestamp_millis: u64,
         extra_data: Bytes,
+        pool_fill_budget: Option<Duration>,
         subblocks: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
     ) -> Self {
         let (seconds, millis) = (timestamp_millis / 1000, timestamp_millis % 1000);
@@ -68,8 +46,8 @@ impl TempoPayloadBuilderAttributes {
                 withdrawals: Withdrawals::default(),
                 parent_beacon_block_root: Some(B256::ZERO),
             },
-            interrupt: InterruptHandle::default(),
             timestamp_millis_part: millis,
+            pool_fill_budget,
             extra_data,
             subblocks: Arc::new(subblocks),
         }
@@ -80,15 +58,9 @@ impl TempoPayloadBuilderAttributes {
         &self.extra_data
     }
 
-    /// Returns the `interrupt` flag. If true, it marks that a payload is requested to stop
-    /// processing any more transactions.
-    pub fn is_interrupted(&self) -> bool {
-        self.interrupt.0.load(Ordering::Relaxed)
-    }
-
-    /// Returns a cloneable [`InterruptHandle`] for turning on the `interrupt` flag.
-    pub fn interrupt_handle(&self) -> &InterruptHandle {
-        &self.interrupt
+    /// Returns the pool-fill budget for this payload, if one is set.
+    pub const fn pool_fill_budget(&self) -> Option<Duration> {
+        self.pool_fill_budget
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -117,8 +89,8 @@ impl From<EthPayloadBuilderAttributes> for TempoPayloadBuilderAttributes {
     fn from(inner: EthPayloadBuilderAttributes) -> Self {
         Self {
             inner,
-            interrupt: InterruptHandle::default(),
             timestamp_millis_part: 0,
+            pool_fill_budget: None,
             extra_data: Bytes::default(),
             subblocks: Arc::new(Vec::new),
         }
@@ -143,8 +115,8 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
         } = rpc_payload_attributes;
         Ok(Self {
             inner: EthPayloadBuilderAttributes::try_new(parent, inner, version)?,
-            interrupt: InterruptHandle::default(),
             timestamp_millis_part,
+            pool_fill_budget: None,
             extra_data: Bytes::default(),
             subblocks: Arc::new(Vec::new),
         })
@@ -212,10 +184,12 @@ impl PayloadAttributes for TempoPayloadAttributes {
 mod tests {
     use super::*;
     use alloy_rpc_types_eth::Withdrawal;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     trait TestExt: Sized {
         fn random() -> Self;
         fn with_timestamp(self, millis: u64) -> Self;
+        fn with_pool_fill_budget(self, pool_fill_budget: Option<Duration>) -> Self;
         fn with_subblocks(
             self,
             f: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
@@ -230,6 +204,7 @@ mod tests {
                 Address::random(),
                 1000,
                 Bytes::default(),
+                None,
                 Vec::new,
             )
         }
@@ -237,6 +212,11 @@ mod tests {
         fn with_timestamp(mut self, millis: u64) -> Self {
             self.inner.timestamp = millis / 1000;
             self.timestamp_millis_part = millis % 1000;
+            self
+        }
+
+        fn with_pool_fill_budget(mut self, pool_fill_budget: Option<Duration>) -> Self {
+            self.pool_fill_budget = pool_fill_budget;
             self
         }
 
@@ -250,30 +230,13 @@ mod tests {
     }
 
     #[test]
-    fn test_interrupt_handle() {
-        // Default state
-        let handle = InterruptHandle::default();
-        assert!(!handle.is_interrupted());
+    fn test_pool_fill_budget_accessors() {
+        let attrs = TempoPayloadBuilderAttributes::random();
+        assert_eq!(attrs.pool_fill_budget(), None);
 
-        // Interrupt sets flag
-        handle.interrupt();
-        assert!(handle.is_interrupted());
-
-        // Clone shares state
-        let handle2 = handle.clone();
-        assert!(handle2.is_interrupted());
-
-        // New handle via clone before interrupt
-        let fresh = InterruptHandle::default();
-        let cloned = fresh.clone();
-        assert!(!cloned.is_interrupted());
-        fresh.interrupt();
-        assert!(cloned.is_interrupted()); // shared atomic
-
-        // Multiple interrupts are idempotent
-        handle.interrupt();
-        handle.interrupt();
-        assert!(handle.is_interrupted());
+        let budget = Some(Duration::from_millis(250));
+        let attrs = attrs.with_pool_fill_budget(budget);
+        assert_eq!(attrs.pool_fill_budget(), budget);
     }
 
     #[test]
@@ -291,6 +254,7 @@ mod tests {
             recipient,
             timestamp_millis,
             extra_data.clone(),
+            Some(Duration::from_millis(250)),
             Vec::new,
         );
         assert_eq!(attrs.extra_data(), &extra_data);
@@ -299,6 +263,7 @@ mod tests {
         assert_eq!(attrs.payload_id(), id);
         assert_eq!(attrs.timestamp(), 1);
         assert_eq!(attrs.timestamp_millis_part(), 500);
+        assert_eq!(attrs.pool_fill_budget(), Some(Duration::from_millis(250)));
 
         // Hardcoded in ::new()
         assert_eq!(attrs.prev_randao(), B256::ZERO);
@@ -312,31 +277,20 @@ mod tests {
             recipient,
             timestamp_millis + 500, // 1.5 seconds + 500ms
             Bytes::default(),
+            None,
             Vec::new,
         );
         assert_eq!(attrs2.extra_data(), &Bytes::default());
         assert_eq!(attrs2.timestamp(), 2);
         assert_eq!(attrs2.timestamp_millis_part(), 0);
+        assert_eq!(attrs2.pool_fill_budget(), None);
     }
 
     #[test]
-    fn test_builder_attributes_interrupt_integration() {
-        let attrs = TempoPayloadBuilderAttributes::random();
-
-        // Initially not interrupted
-        assert!(!attrs.is_interrupted());
-
-        // Get handle and interrupt
-        let handle = attrs.interrupt_handle().clone();
-        handle.interrupt();
-
-        // Both see interrupted state
-        assert!(attrs.is_interrupted());
-        assert!(handle.is_interrupted());
-
-        // Multiple handle accesses return same underlying state
-        let handle2 = attrs.interrupt_handle();
-        assert!(handle2.is_interrupted());
+    fn test_builder_attributes_pool_fill_budget_integration() {
+        let attrs = TempoPayloadBuilderAttributes::random()
+            .with_pool_fill_budget(Some(Duration::from_millis(500)));
+        assert_eq!(attrs.pool_fill_budget(), Some(Duration::from_millis(500)));
     }
 
     #[test]
@@ -368,8 +322,6 @@ mod tests {
 
     #[test]
     fn test_builder_attributes_subblocks() {
-        use std::sync::atomic::AtomicUsize;
-
         let call_count = Arc::new(AtomicUsize::new(0));
         let count_clone = call_count.clone();
 
@@ -423,7 +375,7 @@ mod tests {
         // Tempo-specific defaults
         assert_eq!(tempo_attrs.timestamp_millis_part(), 0);
         assert_eq!(tempo_attrs.extra_data(), &Bytes::default());
-        assert!(!tempo_attrs.is_interrupted());
+        assert_eq!(tempo_attrs.pool_fill_budget(), None);
         assert!(tempo_attrs.subblocks().is_empty());
     }
 
@@ -450,7 +402,7 @@ mod tests {
         assert_eq!(attrs.timestamp_millis_part(), 750);
         assert_eq!(attrs.timestamp_millis(), 100_750);
         assert_eq!(attrs.extra_data(), &Bytes::default());
-        assert!(!attrs.is_interrupted());
+        assert_eq!(attrs.pool_fill_budget(), None);
     }
 
     #[test]
