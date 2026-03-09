@@ -159,14 +159,16 @@ mod tests {
         let sig_str = sig_box.into_string();
 
         let verify_pk = decode_public_key(&pk.to_base64()).unwrap();
-        assert!(verify_signature(
-            "tempo-wallet",
-            data,
-            &sig_str,
-            &verify_pk,
-            Some("file:tempo-wallet-darwin-arm64"),
-        )
-        .is_ok());
+        assert!(
+            verify_signature(
+                "tempo-wallet",
+                data,
+                &sig_str,
+                &verify_pk,
+                Some("file:tempo-wallet-darwin-arm64"),
+            )
+            .is_ok()
+        );
     }
 
     #[test]

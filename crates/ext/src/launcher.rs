@@ -48,8 +48,9 @@ enum Commands {
     /// Install an extension.
     Add(ManagementArgs),
 
-    /// Update an extension.
-    Update(ManagementArgs),
+    /// Update tempo and/or extensions. Without arguments, updates tempo
+    /// itself via tempoup and then updates all installed extensions.
+    Update(UpdateArgs),
 
     /// Remove an extension.
     Remove(RemoveArgs),
@@ -65,6 +66,27 @@ struct ManagementArgs {
     extension: String,
 
     /// Version to install (e.g., 0.2.0).
+    version: Option<String>,
+
+    /// URL of the signed release manifest.
+    #[arg(long = "release-manifest")]
+    manifest: Option<String>,
+
+    /// Base64-encoded public key for manifest verification.
+    #[arg(long = "release-public-key")]
+    public_key: Option<String>,
+
+    /// Show what would be done without making changes.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Parser, Debug)]
+struct UpdateArgs {
+    /// Extension name. If omitted, updates tempo itself and all installed extensions.
+    extension: Option<String>,
+
+    /// Version to install (e.g., 0.2.0). Only valid with an extension name.
     version: Option<String>,
 
     /// URL of the signed release manifest.
@@ -112,6 +134,36 @@ where
     }
 }
 
+/// Run `tempoup` to update the tempo binary itself.
+///
+/// Passes `TEMPO_BIN_DIR` so tempoup installs into the same directory as the
+/// running binary. If tempoup is not found on `PATH`, it is installed first
+/// via `https://tempo.xyz/install`.
+fn run_tempoup(bin_dir: &Path) -> Result<bool, LauncherError> {
+    let status = match Command::new("tempoup")
+        .env("TEMPO_BIN_DIR", bin_dir)
+        .status()
+    {
+        Ok(s) => s,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            println!("tempoup not found, installing...");
+            let install_status = Command::new("sh")
+                .arg("-c")
+                .arg("curl -fsSL https://tempo.xyz/install | bash")
+                .status()?;
+            if !install_status.success() {
+                eprintln!("failed to install tempoup");
+                return Ok(false);
+            }
+            Command::new("tempoup")
+                .env("TEMPO_BIN_DIR", bin_dir)
+                .status()?
+        }
+        Err(err) => return Err(LauncherError::Io(err)),
+    };
+    Ok(status.success())
+}
+
 struct Launcher {
     exe_dir: Option<PathBuf>,
 }
@@ -147,27 +199,38 @@ impl Launcher {
         Ok(0)
     }
 
-    /// Handle `tempo update <extension>`. When no version is specified, only
-    /// installs if the manifest version is strictly newer than the currently
-    /// installed version (prevents downgrades). With an explicit version,
-    /// behaves like `add`.
-    fn handle_update(&self, args: ManagementArgs) -> Result<i32, LauncherError> {
-        if !is_valid_extension_name(&args.extension) {
+    /// Handle `tempo update [extension]`.
+    ///
+    /// Without an extension name, updates tempo itself via `tempoup` and then
+    /// updates all installed extensions. With an extension name, only updates
+    /// that extension (and unpins it). With an explicit version, behaves like
+    /// `add`.
+    fn handle_update(&self, args: UpdateArgs) -> Result<i32, LauncherError> {
+        let Some(extension) = args.extension else {
+            return self.handle_update_all(args.dry_run);
+        };
+
+        if !is_valid_extension_name(&extension) {
             return Err(LauncherError::InvalidArgs(format!(
-                "invalid extension name: {} (only alphanumeric, hyphens, and underscores)",
-                args.extension
+                "invalid extension name: {extension} (only alphanumeric, hyphens, and underscores)",
             )));
         }
 
         // Explicit version: user knows what they want, treat like `add`.
         if args.version.is_some() {
-            return self.handle_install(args);
+            return self.handle_install(ManagementArgs {
+                extension,
+                version: args.version,
+                manifest: args.manifest,
+                public_key: args.public_key,
+                dry_run: args.dry_run,
+            });
         }
 
         let installer = Installer::from_env(self.exe_dir.as_deref())?;
         let source = if args.manifest.is_none() {
             InstallSource {
-                manifest: Some(manifest_url(&args.extension, None)),
+                manifest: Some(manifest_url(&extension, None)),
                 public_key: Some(release_public_key()),
             }
         } else {
@@ -180,39 +243,100 @@ impl Launcher {
         let registry = Registry::load();
         let installed_version = registry
             .extensions
-            .get(&args.extension)
+            .get(&extension)
             .map(|e| e.installed_version.as_str());
 
         if args.dry_run {
             println!(
-                "dry-run: update {} (installed: {})",
-                args.extension,
+                "dry-run: update {extension} (installed: {})",
                 installed_version.unwrap_or("none")
             );
             return Ok(0);
         }
 
-        match installer.install_if_changed(&args.extension, &source, installed_version)? {
+        match installer.install_if_changed(&extension, &source, installed_version)? {
             Some(new_version) => {
                 if installed_version.is_some_and(|v| !v.is_empty()) {
-                    println!("Updated tempo-{} to {new_version}", args.extension);
+                    println!("Updated tempo-{extension} to {new_version}");
                 } else {
-                    println!("Installed tempo-{} {new_version}", args.extension);
+                    println!("Installed tempo-{extension} {new_version}");
                 }
                 let mut registry = registry;
-                registry.record_check(&args.extension, &new_version, false);
+                registry.record_check(&extension, &new_version, false);
                 registry.save();
             }
             None => {
                 println!(
-                    "tempo-{} is already at the latest version ({})",
-                    args.extension,
+                    "tempo-{extension} is already at the latest version ({})",
                     installed_version.unwrap_or("unknown")
                 );
                 let mut registry = registry;
-                registry.touch_check(&args.extension);
+                registry.touch_check(&extension);
                 registry.save();
             }
+        }
+
+        Ok(0)
+    }
+
+    /// Update tempo itself via `tempoup`, then update all installed extensions.
+    fn handle_update_all(&self, dry_run: bool) -> Result<i32, LauncherError> {
+        let installer = Installer::from_env(self.exe_dir.as_deref())?;
+
+        // 1. Update tempo itself via tempoup.
+        if dry_run {
+            println!("dry-run: update tempo via tempoup");
+        } else {
+            println!("Updating tempo...");
+            if !run_tempoup(&installer.bin_dir)? {
+                eprintln!("tempo update failed");
+            }
+        }
+
+        // 2. Update all installed extensions.
+        let registry = Registry::load();
+        let extensions: Vec<(String, String)> = registry
+            .extensions
+            .iter()
+            .filter(|(_, state)| !state.installed_version.is_empty())
+            .map(|(name, state)| (name.clone(), state.installed_version.clone()))
+            .collect();
+
+        if extensions.is_empty() {
+            return Ok(0);
+        }
+
+        println!("Updating extensions...");
+        let mut updated_registry = registry;
+
+        for (name, installed_version) in &extensions {
+            let source = InstallSource {
+                manifest: Some(manifest_url(name, None)),
+                public_key: Some(release_public_key()),
+            };
+
+            if dry_run {
+                println!("dry-run: update {name} (installed: {installed_version})");
+                continue;
+            }
+
+            match installer.install_if_changed(name, &source, Some(installed_version)) {
+                Ok(Some(new_version)) => {
+                    println!("Updated tempo-{name} to {new_version}");
+                    updated_registry.record_check(name, &new_version, false);
+                }
+                Ok(None) => {
+                    updated_registry.touch_check(name);
+                }
+                Err(err) => {
+                    eprintln!("failed to update tempo-{name}: {err}");
+                    updated_registry.touch_check(name);
+                }
+            }
+        }
+
+        if !dry_run {
+            updated_registry.save();
         }
 
         Ok(0)
@@ -342,7 +466,9 @@ impl Launcher {
         if registry.is_pinned(extension) {
             // Pinned to a specific version — check for updates but don't
             // install. Only fetch the manifest to compare versions.
-            if let Ok(Some(new_version)) = Installer::check_latest_version(&source, installed_version) {
+            if let Ok(Some(new_version)) =
+                Installer::check_latest_version(&source, installed_version)
+            {
                 eprintln!(
                     "tempo-{extension} {new_version} available (pinned to {}; run `tempo update {extension}` to upgrade)",
                     installed_version.unwrap_or("unknown")
@@ -462,8 +588,7 @@ mod tests {
         BASE_URL, Cli, Commands, PUBLIC_KEY, base_url, is_valid_extension_name, manifest_url,
         release_public_key,
     };
-    use crate::installer::is_allowed_manifest_url;
-    use crate::test_util::ENV_MUTEX;
+    use crate::{installer::is_allowed_manifest_url, test_util::ENV_MUTEX};
     use clap::Parser;
 
     #[test]
@@ -599,9 +724,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_update() {
+    fn parse_update_with_extension() {
         let cli = parse(&["tempo", "update", "wallet"]);
-        assert!(matches!(cli.command, Commands::Update(_)));
+        match cli.command {
+            Commands::Update(ref args) => {
+                assert_eq!(args.extension.as_deref(), Some("wallet"));
+                assert_eq!(args.version, None);
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn parse_update_no_args() {
+        let cli = parse(&["tempo", "update"]);
+        match cli.command {
+            Commands::Update(ref args) => {
+                assert!(args.extension.is_none());
+            }
+            _ => panic!("expected Update"),
+        }
     }
 
     #[test]

@@ -394,6 +394,29 @@ fn download_extension(
     Ok(Some(dst))
 }
 
+/// Returns `true` if `manifest_version` is strictly newer than
+/// `installed_version`. Uses semver comparison when both parse as
+/// semver (with optional `v` prefix). For non-semver strings, returns
+/// `true` unless they are identical.
+fn is_newer(manifest_version: &str, installed_version: Option<&str>) -> bool {
+    let Some(installed) = installed_version else {
+        return true;
+    };
+    if let (Ok(installed_v), Ok(manifest_v)) = (
+        semver::Version::parse(installed.strip_prefix('v').unwrap_or(installed)),
+        semver::Version::parse(
+            manifest_version
+                .strip_prefix('v')
+                .unwrap_or(manifest_version),
+        ),
+    ) {
+        manifest_v > installed_v
+    } else {
+        // Non-semver fallback: only skip if identical.
+        installed != manifest_version
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::file_url_to_path;
@@ -459,34 +482,17 @@ mod tests {
 
     #[test]
     fn is_newer_non_semver_same() {
-        assert!(!super::is_newer("nightly-2025-01-01", Some("nightly-2025-01-01")));
+        assert!(!super::is_newer(
+            "nightly-2025-01-01",
+            Some("nightly-2025-01-01")
+        ));
     }
 
     #[test]
     fn is_newer_non_semver_different() {
-        assert!(super::is_newer("nightly-2025-03-09", Some("nightly-2025-01-01")));
-    }
-}
-
-/// Returns `true` if `manifest_version` is strictly newer than
-/// `installed_version`. Uses semver comparison when both parse as
-/// semver (with optional `v` prefix). For non-semver strings, returns
-/// `true` unless they are identical.
-fn is_newer(manifest_version: &str, installed_version: Option<&str>) -> bool {
-    let Some(installed) = installed_version else {
-        return true;
-    };
-    if let (Ok(installed_v), Ok(manifest_v)) = (
-        semver::Version::parse(installed.strip_prefix('v').unwrap_or(installed)),
-        semver::Version::parse(
-            manifest_version
-                .strip_prefix('v')
-                .unwrap_or(manifest_version),
-        ),
-    ) {
-        manifest_v > installed_v
-    } else {
-        // Non-semver fallback: only skip if identical.
-        installed != manifest_version
+        assert!(super::is_newer(
+            "nightly-2025-03-09",
+            Some("nightly-2025-01-01")
+        ));
     }
 }

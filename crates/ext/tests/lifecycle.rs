@@ -7,13 +7,7 @@
 
 use minisign::{KeyPair, PublicKey};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::HashMap,
-    env, fs,
-    io::Cursor,
-    path::PathBuf,
-    sync::Mutex,
-};
+use std::{collections::HashMap, env, fs, io::Cursor, path::PathBuf, sync::Mutex};
 
 /// Serialize integration tests — they mutate process-wide env vars.
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
@@ -154,12 +148,7 @@ impl Fixture {
 
     /// Publish a manifest that references a binary from a different extension
     /// (cross-extension substitution attack).
-    fn publish_cross_substitution(
-        &self,
-        target_ext: &str,
-        version: &str,
-        source_ext: &str,
-    ) {
+    fn publish_cross_substitution(&self, target_ext: &str, version: &str, source_ext: &str) {
         let target_platform = platform_binary_name(target_ext);
         let source_platform = platform_binary_name(source_ext);
         let target_dir = self
@@ -282,11 +271,6 @@ impl Fixture {
     /// Record an installed version in extensions.json (simulating a prior install).
     fn record_installed_version(&self, extension: &str, version: &str) {
         self.record_installed_version_inner(extension, version, false);
-    }
-
-    /// Record a pinned installed version in extensions.json.
-    fn record_pinned_version(&self, extension: &str, version: &str) {
-        self.record_installed_version_inner(extension, version, true);
     }
 
     fn record_installed_version_inner(&self, extension: &str, version: &str, pinned: bool) {
@@ -451,9 +435,7 @@ fn add_with_explicit_manifest() {
     let fix = Fixture::new();
     fix.publish_extension("testpkg", "1.0.0");
 
-    let manifest_path = fix
-        .base_dir
-        .join("extensions/tempo-testpkg/manifest.json");
+    let manifest_path = fix.base_dir.join("extensions/tempo-testpkg/manifest.json");
     let manifest_url = format!("file://{}", manifest_path.display());
 
     let code = fix
@@ -548,7 +530,10 @@ fn update_normalizes_v_prefix() {
     fix.run(&["tempo", "update", "testpkg"]).unwrap();
 
     let content = fs::read_to_string(fix.binary_path("testpkg")).unwrap();
-    assert!(content.contains("v2.0.0"), "should not reinstall same version");
+    assert!(
+        content.contains("v2.0.0"),
+        "should not reinstall same version"
+    );
 }
 
 #[test]
@@ -665,10 +650,7 @@ fn wrong_trusted_comment_rejected() {
     fix.publish_extension_with_comment("testpkg", "1.0.0", "file:wrong-name");
 
     let result = fix.run(&["tempo", "add", "testpkg"]);
-    assert!(
-        result.is_err(),
-        "wrong trusted comment should be rejected"
-    );
+    assert!(result.is_err(), "wrong trusted comment should be rejected");
     assert!(!fix.binary_path("testpkg").exists());
 }
 
@@ -796,7 +778,8 @@ fn failed_install_does_not_pollute_state() {
         let state: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
         assert!(
-            state.get("extensions")
+            state
+                .get("extensions")
                 .and_then(|e| e.get("statepkg"))
                 .is_none(),
             "extensions.json should not record a failed install"
@@ -825,7 +808,9 @@ fn remove_dry_run_preserves_binary() {
     fix.run(&["tempo", "add", "drytest"]).unwrap();
     assert!(fix.binary_path("drytest").exists());
 
-    let code = fix.run(&["tempo", "remove", "drytest", "--dry-run"]).unwrap();
+    let code = fix
+        .run(&["tempo", "remove", "drytest", "--dry-run"])
+        .unwrap();
     assert_eq!(code, 0);
     assert!(
         fix.binary_path("drytest").exists(),
@@ -845,9 +830,7 @@ fn update_with_explicit_manifest() {
     fix.record_installed_version("testpkg", "1.0.0");
 
     fix.publish_extension("testpkg", "2.0.0");
-    let manifest_path = fix
-        .base_dir
-        .join("extensions/tempo-testpkg/manifest.json");
+    let manifest_path = fix.base_dir.join("extensions/tempo-testpkg/manifest.json");
     let manifest_url = format!("file://{}", manifest_path.display());
 
     let code = fix
@@ -878,7 +861,10 @@ fn update_rejects_invalid_extension_name() {
     let fix = Fixture::new();
 
     let result = fix.run(&["tempo", "update", "../evil"]);
-    assert!(result.is_err(), "update should reject invalid extension names");
+    assert!(
+        result.is_err(),
+        "update should reject invalid extension names"
+    );
 }
 
 // ── Pinned versions ────────────────────────────────────────────────
