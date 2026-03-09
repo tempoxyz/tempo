@@ -5,7 +5,7 @@ use crate::{
     installer::{
         InstallSource, Installer, InstallerError, binary_candidates, fallback_bin_dir, find_in_path,
     },
-    state::State,
+    registry::Registry,
 };
 use clap::{Parser, Subcommand};
 use std::{
@@ -137,7 +137,13 @@ impl Launcher {
                 public_key: args.public_key,
             }
         };
-        installer.install(&args.extension, &source, args.dry_run, false)?;
+        let pinned = args.version.is_some();
+        let version = installer.install(&args.extension, &source, args.dry_run, false)?;
+        if !args.dry_run {
+            let mut registry = Registry::load();
+            registry.record_check(&args.extension, &version, pinned);
+            registry.save();
+        }
         Ok(0)
     }
 
@@ -171,8 +177,8 @@ impl Launcher {
             }
         };
 
-        let state = State::load();
-        let installed_version = state
+        let registry = Registry::load();
+        let installed_version = registry
             .extensions
             .get(&args.extension)
             .map(|e| e.installed_version.as_str());
@@ -193,9 +199,9 @@ impl Launcher {
                 } else {
                     println!("Installed tempo-{} {new_version}", args.extension);
                 }
-                let mut state = state;
-                state.record_check(&args.extension, &new_version);
-                state.save();
+                let mut registry = registry;
+                registry.record_check(&args.extension, &new_version, false);
+                registry.save();
             }
             None => {
                 println!(
@@ -203,9 +209,9 @@ impl Launcher {
                     args.extension,
                     installed_version.unwrap_or("unknown")
                 );
-                let mut state = state;
-                state.touch_check(&args.extension);
-                state.save();
+                let mut registry = registry;
+                registry.touch_check(&args.extension);
+                registry.save();
             }
         }
 
@@ -281,7 +287,12 @@ impl Launcher {
             false,
             false,
         ) {
-            Ok(()) => Ok(self.find_binary(&binary_name)),
+            Ok(version) => {
+                let mut registry = Registry::load();
+                registry.record_check(extension, &version, false);
+                registry.save();
+                Ok(self.find_binary(&binary_name))
+            }
             Err(InstallerError::ReleaseManifestNotFound(_))
             | Err(InstallerError::ExtensionNotInManifest(_)) => Ok(None),
             Err(InstallerError::Network(err))
@@ -304,12 +315,12 @@ impl Launcher {
             return;
         }
 
-        let mut state = State::load();
-        if !state.needs_update_check(extension) {
+        let mut registry = Registry::load();
+        if !registry.needs_update_check(extension) {
             return;
         }
 
-        let installed_version = state
+        let installed_version = registry
             .extensions
             .get(extension)
             .map(|e| e.installed_version.as_str());
@@ -317,8 +328,8 @@ impl Launcher {
         let installer = match Installer::from_env(self.exe_dir.as_deref()) {
             Ok(i) => i,
             Err(_) => {
-                state.touch_check(extension);
-                state.save();
+                registry.touch_check(extension);
+                registry.save();
                 return;
             }
         };
@@ -328,22 +339,34 @@ impl Launcher {
             public_key: Some(release_public_key()),
         };
 
-        match installer.install_if_changed(extension, &source, installed_version) {
-            Ok(Some(new_version)) => {
-                if installed_version.is_some_and(|v| !v.is_empty()) {
-                    eprintln!("Updated tempo-{extension} to {new_version}");
+        if registry.is_pinned(extension) {
+            // Pinned to a specific version — check for updates but don't
+            // install. Only fetch the manifest to compare versions.
+            if let Ok(Some(new_version)) = Installer::check_latest_version(&source, installed_version) {
+                eprintln!(
+                    "tempo-{extension} {new_version} available (pinned to {}; run `tempo update {extension}` to upgrade)",
+                    installed_version.unwrap_or("unknown")
+                );
+            }
+            registry.touch_check(extension);
+        } else {
+            match installer.install_if_changed(extension, &source, installed_version) {
+                Ok(Some(new_version)) => {
+                    if installed_version.is_some_and(|v| !v.is_empty()) {
+                        eprintln!("Updated tempo-{extension} to {new_version}");
+                    }
+                    registry.record_check(extension, &new_version, false);
                 }
-                state.record_check(extension, &new_version);
-            }
-            Ok(None) => {
-                state.touch_check(extension);
-            }
-            Err(err) => {
-                tracing::debug!("auto-update: failed for {extension}: {err}");
-                state.touch_check(extension);
+                Ok(None) => {
+                    registry.touch_check(extension);
+                }
+                Err(err) => {
+                    tracing::debug!("auto-update: failed for {extension}: {err}");
+                    registry.touch_check(extension);
+                }
             }
         }
-        state.save();
+        registry.save();
     }
 
     fn find_binary(&self, binary: &str) -> Option<PathBuf> {
@@ -379,7 +402,7 @@ impl Launcher {
 }
 
 fn base_url() -> String {
-    env::var("TEMPO_BASE_URL").unwrap_or_else(|_| BASE_URL.to_string())
+    env::var("TEMPO_EXT_BASE_URL").unwrap_or_else(|_| BASE_URL.to_string())
 }
 
 fn release_public_key() -> String {
@@ -387,7 +410,7 @@ fn release_public_key() -> String {
     // In release builds the key is always the compiled-in constant to
     // prevent environment-based signature bypass attacks.
     #[cfg(debug_assertions)]
-    if let Ok(key) = env::var("TEMPO_RELEASE_PUBLIC_KEY") {
+    if let Ok(key) = env::var("TEMPO_EXT_PUBLIC_KEY") {
         return key;
     }
     PUBLIC_KEY.to_string()
@@ -460,7 +483,7 @@ mod tests {
     #[test]
     fn manifest_url_uses_expected_format() {
         let _lock = ENV_MUTEX.lock().unwrap();
-        let _guard = EnvGuard::new("TEMPO_BASE_URL");
+        let _guard = EnvGuard::new("TEMPO_EXT_BASE_URL");
         assert_eq!(
             manifest_url("wallet", None),
             "https://cli.tempo.xyz/extensions/tempo-wallet/manifest.json"
@@ -663,35 +686,35 @@ mod tests {
     fn base_url_defaults_to_constant() {
         let _lock = ENV_MUTEX.lock().unwrap();
         // Clear any env override to test the default.
-        let _guard = EnvGuard::new("TEMPO_BASE_URL");
+        let _guard = EnvGuard::new("TEMPO_EXT_BASE_URL");
         assert_eq!(base_url(), BASE_URL);
     }
 
     #[test]
     fn base_url_respects_env_override() {
         let _lock = ENV_MUTEX.lock().unwrap();
-        let _guard = EnvGuard::set("TEMPO_BASE_URL", "https://custom.example.com");
+        let _guard = EnvGuard::set("TEMPO_EXT_BASE_URL", "https://custom.example.com");
         assert_eq!(base_url(), "https://custom.example.com");
     }
 
     #[test]
     fn release_public_key_defaults_to_constant() {
         let _lock = ENV_MUTEX.lock().unwrap();
-        let _guard = EnvGuard::new("TEMPO_RELEASE_PUBLIC_KEY");
+        let _guard = EnvGuard::new("TEMPO_EXT_PUBLIC_KEY");
         assert_eq!(release_public_key(), PUBLIC_KEY);
     }
 
     #[test]
     fn release_public_key_respects_env_override() {
         let _lock = ENV_MUTEX.lock().unwrap();
-        let _guard = EnvGuard::set("TEMPO_RELEASE_PUBLIC_KEY", "custom-key");
+        let _guard = EnvGuard::set("TEMPO_EXT_PUBLIC_KEY", "custom-key");
         assert_eq!(release_public_key(), "custom-key");
     }
 
     #[test]
     fn manifest_url_with_custom_base_url() {
         let _lock = ENV_MUTEX.lock().unwrap();
-        let _guard = EnvGuard::set("TEMPO_BASE_URL", "https://custom.example.com/");
+        let _guard = EnvGuard::set("TEMPO_EXT_BASE_URL", "https://custom.example.com/");
         assert_eq!(
             manifest_url("wallet", None),
             "https://custom.example.com/extensions/tempo-wallet/manifest.json"
@@ -701,7 +724,7 @@ mod tests {
     #[test]
     fn manifest_url_trims_trailing_slashes() {
         let _lock = ENV_MUTEX.lock().unwrap();
-        let _guard = EnvGuard::set("TEMPO_BASE_URL", "https://example.com///");
+        let _guard = EnvGuard::set("TEMPO_EXT_BASE_URL", "https://example.com///");
         assert_eq!(
             manifest_url("wallet", None),
             "https://example.com/extensions/tempo-wallet/manifest.json"

@@ -93,15 +93,18 @@ pub(super) fn check_dir_writable(dir: &Path) -> Result<(), InstallerError> {
     Ok(())
 }
 
-pub(super) fn set_executable_permissions(path: &Path) -> io::Result<()> {
+pub(super) fn set_executable_permissions(file: &fs::File) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
-        let mut perms = fs::metadata(path)?.permissions();
+        let mut perms = file.metadata()?.permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(path, perms)?;
+        file.set_permissions(perms)?;
     }
+
+    #[cfg(not(unix))]
+    let _ = file;
 
     Ok(())
 }
@@ -189,8 +192,8 @@ mod tests {
     fn set_executable_permissions_sets_mode() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        set_executable_permissions(tmp.path()).unwrap();
-        let perms = fs::metadata(tmp.path()).unwrap().permissions();
+        set_executable_permissions(tmp.as_file()).unwrap();
+        let perms = tmp.as_file().metadata().unwrap().permissions();
         assert_eq!(perms.mode() & 0o755, 0o755);
     }
 

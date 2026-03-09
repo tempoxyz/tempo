@@ -46,20 +46,20 @@ impl Fixture {
 
         let prev_env = vec![
             ("TEMPO_HOME", env::var("TEMPO_HOME").ok()),
-            ("TEMPO_BASE_URL", env::var("TEMPO_BASE_URL").ok()),
+            ("TEMPO_EXT_BASE_URL", env::var("TEMPO_EXT_BASE_URL").ok()),
             (
-                "TEMPO_RELEASE_PUBLIC_KEY",
-                env::var("TEMPO_RELEASE_PUBLIC_KEY").ok(),
+                "TEMPO_EXT_PUBLIC_KEY",
+                env::var("TEMPO_EXT_PUBLIC_KEY").ok(),
             ),
         ];
 
         unsafe {
             env::set_var("TEMPO_HOME", &home);
             env::set_var(
-                "TEMPO_BASE_URL",
+                "TEMPO_EXT_BASE_URL",
                 format!("file://{}", base_dir.display()),
             );
-            env::set_var("TEMPO_RELEASE_PUBLIC_KEY", &pk_base64);
+            env::set_var("TEMPO_EXT_PUBLIC_KEY", &pk_base64);
         }
 
         Self {
@@ -145,6 +145,11 @@ impl Fixture {
 
         let manifest_json = serde_json::to_string_pretty(&manifest).unwrap();
         fs::write(ext_dir.join("manifest.json"), &manifest_json).unwrap();
+        // Also write a versioned manifest so `tempo add <ext> <version>` works.
+        let v = version.strip_prefix('v').unwrap_or(version);
+        let versioned_dir = ext_dir.join(format!("v{v}"));
+        fs::create_dir_all(&versioned_dir).unwrap();
+        fs::write(versioned_dir.join("manifest.json"), &manifest_json).unwrap();
     }
 
     /// Publish a manifest that references a binary from a different extension
@@ -274,19 +279,55 @@ impl Fixture {
         .unwrap();
     }
 
-    /// Record an installed version in state.json (simulating a prior install).
+    /// Record an installed version in extensions.json (simulating a prior install).
     fn record_installed_version(&self, extension: &str, version: &str) {
-        let state_path = self.home.join("state.json");
-        let mut state: serde_json::Value = if state_path.exists() {
-            serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap()
+        self.record_installed_version_inner(extension, version, false);
+    }
+
+    /// Record a pinned installed version in extensions.json.
+    fn record_pinned_version(&self, extension: &str, version: &str) {
+        self.record_installed_version_inner(extension, version, true);
+    }
+
+    fn record_installed_version_inner(&self, extension: &str, version: &str, pinned: bool) {
+        let reg_path = self.home.join("extensions.json");
+        let mut reg: serde_json::Value = if reg_path.exists() {
+            serde_json::from_str(&fs::read_to_string(&reg_path).unwrap()).unwrap()
         } else {
             serde_json::json!({"extensions": {}})
         };
-        state["extensions"][extension] = serde_json::json!({
+        reg["extensions"][extension] = serde_json::json!({
             "checked_at": 0,
             "installed_version": version,
+            "pinned": pinned,
         });
-        fs::write(&state_path, serde_json::to_string_pretty(&state).unwrap()).unwrap();
+        fs::write(&reg_path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
+    }
+
+    /// Read the registry and check if an extension is pinned.
+    fn is_pinned(&self, extension: &str) -> bool {
+        let reg_path = self.home.join("extensions.json");
+        if !reg_path.exists() {
+            return false;
+        }
+        let reg: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&reg_path).unwrap()).unwrap();
+        reg["extensions"][extension]["pinned"]
+            .as_bool()
+            .unwrap_or(false)
+    }
+
+    /// Read the installed version from the registry.
+    fn installed_version(&self, extension: &str) -> Option<String> {
+        let reg_path = self.home.join("extensions.json");
+        if !reg_path.exists() {
+            return None;
+        }
+        let reg: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&reg_path).unwrap()).unwrap();
+        reg["extensions"][extension]["installed_version"]
+            .as_str()
+            .map(|s| s.to_string())
     }
 
     fn run(&self, args: &[&str]) -> Result<i32, tempo_ext::LauncherError> {
@@ -574,7 +615,7 @@ fn wrong_key_rejected() {
 
     // Override with a different public key.
     let other_kp = KeyPair::generate_unencrypted_keypair().unwrap();
-    unsafe { env::set_var("TEMPO_RELEASE_PUBLIC_KEY", other_kp.pk.to_base64()) };
+    unsafe { env::set_var("TEMPO_EXT_PUBLIC_KEY", other_kp.pk.to_base64()) };
 
     let result = fix.run(&["tempo", "add", "testpkg"]);
     assert!(result.is_err(), "wrong key should be rejected");
@@ -749,8 +790,8 @@ fn failed_install_does_not_pollute_state() {
 
     let _ = fix.run(&["tempo", "add", "statepkg"]);
 
-    // state.json should either not exist or not contain statepkg.
-    let state_path = fix.home.join("state.json");
+    // extensions.json should either not exist or not contain statepkg.
+    let state_path = fix.home.join("extensions.json");
     if state_path.exists() {
         let state: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
@@ -758,7 +799,7 @@ fn failed_install_does_not_pollute_state() {
             state.get("extensions")
                 .and_then(|e| e.get("statepkg"))
                 .is_none(),
-            "state.json should not record a failed install"
+            "extensions.json should not record a failed install"
         );
     }
 }
@@ -838,4 +879,58 @@ fn update_rejects_invalid_extension_name() {
 
     let result = fix.run(&["tempo", "update", "../evil"]);
     assert!(result.is_err(), "update should reject invalid extension names");
+}
+
+// ── Pinned versions ────────────────────────────────────────────────
+
+#[test]
+fn add_with_version_pins_extension() {
+    let _lock = lock();
+    let fix = Fixture::new();
+    fix.publish_extension("testpkg", "1.0.0");
+
+    let code = fix.run(&["tempo", "add", "testpkg", "1.0.0"]).unwrap();
+    assert_eq!(code, 0);
+    assert!(fix.is_pinned("testpkg"), "explicit version should pin");
+}
+
+#[test]
+fn add_without_version_does_not_pin() {
+    let _lock = lock();
+    let fix = Fixture::new();
+    fix.publish_extension("testpkg", "1.0.0");
+
+    let code = fix.run(&["tempo", "add", "testpkg"]).unwrap();
+    assert_eq!(code, 0);
+    assert!(!fix.is_pinned("testpkg"), "no version should not pin");
+}
+
+#[test]
+fn update_unpins_extension() {
+    let _lock = lock();
+    let fix = Fixture::new();
+
+    // Install pinned v1.
+    fix.publish_extension("testpkg", "1.0.0");
+    fix.run(&["tempo", "add", "testpkg", "1.0.0"]).unwrap();
+    assert!(fix.is_pinned("testpkg"));
+
+    // Update to latest — should unpin.
+    fix.publish_extension("testpkg", "2.0.0");
+    fix.run(&["tempo", "update", "testpkg"]).unwrap();
+    assert!(!fix.is_pinned("testpkg"), "update should unpin");
+}
+
+#[test]
+fn add_records_version_in_registry() {
+    let _lock = lock();
+    let fix = Fixture::new();
+    fix.publish_extension("testpkg", "1.0.0");
+
+    fix.run(&["tempo", "add", "testpkg"]).unwrap();
+    assert_eq!(
+        fix.installed_version("testpkg").as_deref(),
+        Some("1.0.0"),
+        "add should record installed version in registry"
+    );
 }

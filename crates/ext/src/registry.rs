@@ -1,4 +1,4 @@
-//! Persistent state for the tempo CLI (update check timestamps, installed versions).
+//! Persistent registry of installed extensions (versions, update check timestamps).
 //!
 //! NOTE: load/save is not file-locked. Concurrent `tempo` invocations may
 //! lose a write (last-writer-wins). This is acceptable today because the
@@ -18,7 +18,7 @@ use std::{
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 6 * 60 * 60; // 6 hours
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub(crate) struct State {
+pub(crate) struct Registry {
     #[serde(default)]
     pub(crate) extensions: HashMap<String, ExtensionState>,
 }
@@ -27,9 +27,14 @@ pub(crate) struct State {
 pub(crate) struct ExtensionState {
     pub(crate) checked_at: u64,
     pub(crate) installed_version: String,
+    /// When true, auto-update will not install newer versions — only
+    /// log that an update is available. Set when the user installs a
+    /// specific version via `tempo add <ext> <version>`.
+    #[serde(default)]
+    pub(crate) pinned: bool,
 }
 
-impl State {
+impl Registry {
     pub(crate) fn load() -> Self {
         let path = match state_path() {
             Some(p) => p,
@@ -52,17 +57,17 @@ impl State {
         let json = match serde_json::to_string_pretty(self) {
             Ok(j) => j,
             Err(err) => {
-                tracing::warn!("state serialize failed: {err}");
+                tracing::warn!("registry serialize failed: {err}");
                 return;
             }
         };
         let tmp = path.with_extension("tmp");
         if let Err(err) = fs::write(&tmp, format!("{json}\n")) {
-            tracing::warn!("state write failed: {}: {err}", tmp.display());
+            tracing::warn!("registry write failed: {}: {err}", tmp.display());
             return;
         }
         if let Err(err) = fs::rename(&tmp, &path) {
-            tracing::warn!("state rename failed: {}: {err}", path.display());
+            tracing::warn!("registry rename failed: {}: {err}", path.display());
         }
     }
 
@@ -74,14 +79,21 @@ impl State {
         }
     }
 
-    pub(crate) fn record_check(&mut self, extension: &str, version: &str) {
+    pub(crate) fn record_check(&mut self, extension: &str, version: &str, pinned: bool) {
         self.extensions.insert(
             extension.to_string(),
             ExtensionState {
                 checked_at: now_secs(),
                 installed_version: version.to_string(),
+                pinned,
             },
         );
+    }
+
+    pub(crate) fn is_pinned(&self, extension: &str) -> bool {
+        self.extensions
+            .get(extension)
+            .is_some_and(|e| e.pinned)
     }
 
     /// Bump the check timestamp without changing the recorded version.
@@ -97,6 +109,7 @@ impl State {
                 ExtensionState {
                     checked_at: now_secs(),
                     installed_version: String::new(),
+                    pinned: false,
                 },
             );
         }
@@ -112,7 +125,7 @@ fn now_secs() -> u64 {
 
 fn state_path() -> Option<PathBuf> {
     if let Some(home) = env::var_os("TEMPO_HOME") {
-        Some(PathBuf::from(home).join("state.json"))
+        Some(PathBuf::from(home).join("extensions.json"))
     } else {
         home_dir().map(|home| {
             let base = if cfg!(target_os = "macos") {
@@ -123,7 +136,7 @@ fn state_path() -> Option<PathBuf> {
                     .map(PathBuf::from)
                     .unwrap_or_else(|| home.join(".local/state"))
             };
-            base.join("tempo").join("state.json")
+            base.join("tempo").join("extensions.json")
         })
     }
 }
@@ -134,54 +147,100 @@ mod tests {
 
     #[test]
     fn needs_check_when_no_record() {
-        let state = State::default();
-        assert!(state.needs_update_check("wallet"));
+        let reg = Registry::default();
+        assert!(reg.needs_update_check("wallet"));
     }
 
     #[test]
     fn no_check_needed_after_recent_record() {
-        let mut state = State::default();
-        state.record_check("wallet", "v1.0.0");
-        assert!(!state.needs_update_check("wallet"));
+        let mut reg = Registry::default();
+        reg.record_check("wallet", "v1.0.0", false);
+        assert!(!reg.needs_update_check("wallet"));
     }
 
     #[test]
     fn check_needed_after_stale_record() {
-        let mut state = State::default();
-        state.extensions.insert(
+        let mut reg = Registry::default();
+        reg.extensions.insert(
             "wallet".to_string(),
             ExtensionState {
                 checked_at: now_secs() - UPDATE_CHECK_INTERVAL_SECS - 1,
                 installed_version: "v1.0.0".to_string(),
+                pinned: false,
             },
         );
-        assert!(state.needs_update_check("wallet"));
+        assert!(reg.needs_update_check("wallet"));
     }
 
     #[test]
     fn touch_preserves_version() {
-        let mut state = State::default();
-        state.record_check("wallet", "v1.0.0");
-        state.extensions.get_mut("wallet").unwrap().checked_at = 0;
-        state.touch_check("wallet");
-        assert_eq!(state.extensions["wallet"].installed_version, "v1.0.0");
-        assert!(!state.needs_update_check("wallet"));
+        let mut reg = Registry::default();
+        reg.record_check("wallet", "v1.0.0", false);
+        reg.extensions.get_mut("wallet").unwrap().checked_at = 0;
+        reg.touch_check("wallet");
+        assert_eq!(reg.extensions["wallet"].installed_version, "v1.0.0");
+        assert!(!reg.needs_update_check("wallet"));
     }
 
     #[test]
     fn touch_creates_record_if_missing() {
-        let mut state = State::default();
-        state.touch_check("wallet");
-        assert!(!state.needs_update_check("wallet"));
-        assert_eq!(state.extensions["wallet"].installed_version, "");
+        let mut reg = Registry::default();
+        reg.touch_check("wallet");
+        assert!(!reg.needs_update_check("wallet"));
+        assert_eq!(reg.extensions["wallet"].installed_version, "");
     }
 
     #[test]
     fn roundtrip_serialize() {
-        let mut state = State::default();
-        state.record_check("wallet", "v1.0.0");
-        let json = serde_json::to_string(&state).unwrap();
-        let loaded: State = serde_json::from_str(&json).unwrap();
+        let mut reg = Registry::default();
+        reg.record_check("wallet", "v1.0.0", false);
+        let json = serde_json::to_string(&reg).unwrap();
+        let loaded: Registry = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.extensions["wallet"].installed_version, "v1.0.0");
+    }
+
+    #[test]
+    fn pinned_flag_recorded() {
+        let mut reg = Registry::default();
+        reg.record_check("wallet", "1.0.0", true);
+        assert!(reg.is_pinned("wallet"));
+    }
+
+    #[test]
+    fn not_pinned_by_default() {
+        let mut reg = Registry::default();
+        reg.record_check("wallet", "1.0.0", false);
+        assert!(!reg.is_pinned("wallet"));
+    }
+
+    #[test]
+    fn is_pinned_returns_false_for_unknown() {
+        let reg = Registry::default();
+        assert!(!reg.is_pinned("unknown"));
+    }
+
+    #[test]
+    fn update_unpins() {
+        let mut reg = Registry::default();
+        reg.record_check("wallet", "1.0.0", true);
+        assert!(reg.is_pinned("wallet"));
+        reg.record_check("wallet", "2.0.0", false);
+        assert!(!reg.is_pinned("wallet"));
+    }
+
+    #[test]
+    fn roundtrip_serialize_pinned() {
+        let mut reg = Registry::default();
+        reg.record_check("wallet", "1.0.0", true);
+        let json = serde_json::to_string(&reg).unwrap();
+        let loaded: Registry = serde_json::from_str(&json).unwrap();
+        assert!(loaded.is_pinned("wallet"));
+    }
+
+    #[test]
+    fn deserialize_without_pinned_defaults_false() {
+        let json = r#"{"extensions":{"wallet":{"checked_at":0,"installed_version":"1.0.0"}}}"#;
+        let reg: Registry = serde_json::from_str(json).unwrap();
+        assert!(!reg.is_pinned("wallet"));
     }
 }

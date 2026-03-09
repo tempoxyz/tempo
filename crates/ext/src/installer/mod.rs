@@ -57,6 +57,7 @@ pub(crate) struct Installer {
 
 #[derive(Debug)]
 struct ResolvedInstall {
+    version: String,
     /// Path to the downloaded binary. `None` in dry-run mode.
     src: Option<PathBuf>,
     dst: PathBuf,
@@ -89,14 +90,38 @@ impl Installer {
         Ok(Self { bin_dir })
     }
 
+    /// Install an extension and return the installed version string.
     pub(crate) fn install(
         &self,
         extension: &str,
         source: &InstallSource,
         dry_run: bool,
         quiet: bool,
-    ) -> Result<(), InstallerError> {
+    ) -> Result<String, InstallerError> {
         self.install_inner(extension, source, None, dry_run, quiet)
+    }
+
+    /// Check if a newer version is available without installing.
+    /// Returns `Some(latest_version)` if the manifest version is strictly
+    /// newer, `None` if already up to date.
+    pub(crate) fn check_latest_version(
+        source: &InstallSource,
+        installed_version: Option<&str>,
+    ) -> Result<Option<String>, InstallerError> {
+        let manifest_loc = source
+            .manifest
+            .as_ref()
+            .ok_or(InstallerError::MissingReleaseManifest)?;
+        if !is_allowed_manifest_url(manifest_loc) {
+            return Err(InstallerError::InsecureManifestUrl(manifest_loc.clone()));
+        }
+
+        let manifest = load_manifest(manifest_loc)?;
+        if is_newer(&manifest.version, installed_version) {
+            Ok(Some(manifest.version))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Install an extension only if the manifest version is newer than
@@ -117,27 +142,8 @@ impl Installer {
         }
 
         let manifest = load_manifest(manifest_loc)?;
-
-        // Only update if the manifest version is strictly newer. This
-        // prevents downgrade attacks where a stale manifest could force
-        // installation of an older version with known vulnerabilities.
-        if let Some(installed) = installed_version {
-            if let (Ok(installed_v), Ok(manifest_v)) = (
-                semver::Version::parse(installed.strip_prefix('v').unwrap_or(installed)),
-                semver::Version::parse(
-                    manifest
-                        .version
-                        .strip_prefix('v')
-                        .unwrap_or(&manifest.version),
-                ),
-            ) {
-                if manifest_v <= installed_v {
-                    return Ok(None);
-                }
-            } else if installed == manifest.version {
-                // Fallback for non-semver versions: only skip if identical.
-                return Ok(None);
-            }
+        if !is_newer(&manifest.version, installed_version) {
+            return Ok(None);
         }
 
         let version = manifest.version.clone();
@@ -152,10 +158,11 @@ impl Installer {
         manifest: Option<ReleaseManifest>,
         dry_run: bool,
         quiet: bool,
-    ) -> Result<(), InstallerError> {
+    ) -> Result<String, InstallerError> {
         self.ensure_dirs(dry_run)?;
 
         let resolved = self.resolve_install(extension, source, manifest, dry_run, quiet)?;
+        let version = resolved.version.clone();
         self.copy_binary(&resolved, dry_run, quiet)?;
 
         if let Some(skill_url) = &resolved.skill_url {
@@ -170,7 +177,7 @@ impl Installer {
             );
         }
 
-        Ok(())
+        Ok(version)
     }
 
     pub(crate) fn remove(&self, extension: &str, dry_run: bool) -> Result<(), InstallerError> {
@@ -233,6 +240,7 @@ impl Installer {
         let dst = self.bin_dir.join(executable_name(&binary));
 
         Ok(ResolvedInstall {
+            version: manifest.version.clone(),
             src,
             dst,
             skill_url: manifest.skill.clone(),
@@ -258,16 +266,28 @@ impl Installer {
             .src
             .as_ref()
             .expect("src must exist after download");
-        let tmp = resolved.dst.with_extension("tmp");
-        fs::copy(src, &tmp)?;
-        if let Err(err) = set_executable_permissions(&tmp) {
-            let _ = fs::remove_file(&tmp);
-            return Err(err.into());
-        }
-        if let Err(err) = fs::rename(&tmp, &resolved.dst) {
-            let _ = fs::remove_file(&tmp);
-            return Err(err.into());
-        }
+        let dst_dir = resolved
+            .dst
+            .parent()
+            .expect("dst must have a parent directory");
+        let mut tmp = tempfile::Builder::new()
+            .prefix(".tempo-install-")
+            .tempfile_in(dst_dir)?;
+        // Write through the open handle to avoid sharing violations on
+        // Windows (fs::copy would try to re-open the file for writing).
+        let mut src_file = fs::File::open(src)?;
+        io::copy(&mut src_file, &mut tmp)?;
+        drop(src_file);
+        // Set permissions via the open handle before closing to avoid
+        // TOCTOU between close and chmod-by-path.
+        set_executable_permissions(tmp.as_file())?;
+        // Close the file handle; TempPath auto-cleans on drop if
+        // persist() is never reached.
+        let tmp_path = tmp.into_temp_path();
+        // persist() uses atomic rename on Unix and MoveFileEx with
+        // MOVEFILE_REPLACE_EXISTING on Windows — handles overwrite on
+        // all platforms.
+        tmp_path.persist(&resolved.dst).map_err(|e| e.error)?;
         if !quiet {
             println!("installed {} -> {}", src.display(), resolved.dst.display());
         }
@@ -409,4 +429,64 @@ mod tests {
     // NOTE: download_extension's URL scheme enforcement (rejecting http:// and
     // unknown schemes) requires a PublicKey and real file I/O, so it is
     // covered by integration tests rather than unit tests here.
+
+    #[test]
+    fn is_newer_no_installed_version() {
+        assert!(super::is_newer("1.0.0", None));
+    }
+
+    #[test]
+    fn is_newer_semver_upgrade() {
+        assert!(super::is_newer("2.0.0", Some("1.0.0")));
+    }
+
+    #[test]
+    fn is_newer_semver_same() {
+        assert!(!super::is_newer("1.0.0", Some("1.0.0")));
+    }
+
+    #[test]
+    fn is_newer_semver_downgrade() {
+        assert!(!super::is_newer("1.0.0", Some("2.0.0")));
+    }
+
+    #[test]
+    fn is_newer_strips_v_prefix() {
+        assert!(!super::is_newer("1.0.0", Some("v1.0.0")));
+        assert!(!super::is_newer("v1.0.0", Some("1.0.0")));
+        assert!(super::is_newer("v2.0.0", Some("v1.0.0")));
+    }
+
+    #[test]
+    fn is_newer_non_semver_same() {
+        assert!(!super::is_newer("nightly-2025-01-01", Some("nightly-2025-01-01")));
+    }
+
+    #[test]
+    fn is_newer_non_semver_different() {
+        assert!(super::is_newer("nightly-2025-03-09", Some("nightly-2025-01-01")));
+    }
+}
+
+/// Returns `true` if `manifest_version` is strictly newer than
+/// `installed_version`. Uses semver comparison when both parse as
+/// semver (with optional `v` prefix). For non-semver strings, returns
+/// `true` unless they are identical.
+fn is_newer(manifest_version: &str, installed_version: Option<&str>) -> bool {
+    let Some(installed) = installed_version else {
+        return true;
+    };
+    if let (Ok(installed_v), Ok(manifest_v)) = (
+        semver::Version::parse(installed.strip_prefix('v').unwrap_or(installed)),
+        semver::Version::parse(
+            manifest_version
+                .strip_prefix('v')
+                .unwrap_or(manifest_version),
+        ),
+    ) {
+        manifest_v > installed_v
+    } else {
+        // Non-semver fallback: only skip if identical.
+        installed != manifest_version
+    }
 }

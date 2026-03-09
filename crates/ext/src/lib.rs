@@ -5,7 +5,7 @@
 
 mod installer;
 mod launcher;
-mod state;
+mod registry;
 
 pub use installer::InstallerError;
 pub use launcher::{LauncherError, run};
