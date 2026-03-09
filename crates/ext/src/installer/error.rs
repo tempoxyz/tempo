@@ -52,4 +52,11 @@ pub enum InstallerError {
         expected: String,
         actual: String,
     },
+
+    #[error("trusted comment mismatch for {artifact}: expected \"{expected}\", got \"{actual}\"")]
+    TrustedCommentMismatch {
+        artifact: String,
+        expected: String,
+        actual: String,
+    },
 }

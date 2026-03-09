@@ -99,7 +99,7 @@ impl Installer {
         self.install_inner(extension, source, None, dry_run, quiet)
     }
 
-    /// Install an extension only if the manifest version differs from
+    /// Install an extension only if the manifest version is newer than
     /// `installed_version`. Returns `Some(new_version)` if an update was
     /// performed, `None` if already at the latest version.
     pub(crate) fn install_if_changed(
@@ -117,8 +117,27 @@ impl Installer {
         }
 
         let manifest = load_manifest(manifest_loc)?;
-        if installed_version == Some(manifest.version.as_str()) {
-            return Ok(None);
+
+        // Only update if the manifest version is strictly newer. This
+        // prevents downgrade attacks where a stale manifest could force
+        // installation of an older version with known vulnerabilities.
+        if let Some(installed) = installed_version {
+            if let (Ok(installed_v), Ok(manifest_v)) = (
+                semver::Version::parse(installed.strip_prefix('v').unwrap_or(installed)),
+                semver::Version::parse(
+                    manifest
+                        .version
+                        .strip_prefix('v')
+                        .unwrap_or(&manifest.version),
+                ),
+            ) {
+                if manifest_v <= installed_v {
+                    return Ok(None);
+                }
+            } else if installed == manifest.version {
+                // Fallback for non-semver versions: only skip if identical.
+                return Ok(None);
+            }
         }
 
         let version = manifest.version.clone();
@@ -205,6 +224,7 @@ impl Installer {
         let download_dir = TempDir::new()?;
         let src = download_extension(
             &binary,
+            &platform_key,
             metadata,
             &public_key_parsed,
             download_dir.path(),
@@ -276,6 +296,7 @@ impl Installer {
 
 fn download_extension(
     binary: &str,
+    platform_key: &str,
     metadata: &ReleaseBinary,
     public_key: &PublicKey,
     download_dir: &Path,
@@ -332,7 +353,14 @@ fn download_extension(
         .as_deref()
         .ok_or_else(|| InstallerError::SignatureMissing(binary.to_string()))?;
     tracing::debug!("verifying signature for {binary}");
-    if let Err(err) = verify_signature(binary, &bytes, encoded_signature, public_key) {
+    let expected_comment = format!("file:{platform_key}");
+    if let Err(err) = verify_signature(
+        binary,
+        &bytes,
+        encoded_signature,
+        public_key,
+        Some(&expected_comment),
+    ) {
         let _ = fs::remove_file(&dst);
         return Err(err);
     }

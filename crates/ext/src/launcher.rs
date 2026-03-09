@@ -311,7 +311,14 @@ fn base_url() -> String {
 }
 
 fn release_public_key() -> String {
-    env::var("TEMPO_RELEASE_PUBLIC_KEY").unwrap_or_else(|_| PUBLIC_KEY.to_string())
+    // Allow overriding the release public key only in debug/test builds.
+    // In release builds the key is always the compiled-in constant to
+    // prevent environment-based signature bypass attacks.
+    #[cfg(debug_assertions)]
+    if let Ok(key) = env::var("TEMPO_RELEASE_PUBLIC_KEY") {
+        return key;
+    }
+    PUBLIC_KEY.to_string()
 }
 
 fn manifest_url(extension: &str, version: Option<&str>) -> String {
@@ -362,6 +369,10 @@ mod tests {
     };
     use crate::installer::is_allowed_manifest_url;
     use clap::Parser;
+    use std::sync::Mutex;
+
+    /// Serialize tests that mutate process-wide environment variables.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn runtime_manifest_url_policy_enforces_https_or_local() {
@@ -379,6 +390,7 @@ mod tests {
 
     #[test]
     fn manifest_url_uses_expected_format() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let _guard = EnvGuard::new("TEMPO_BASE_URL");
         assert_eq!(
             manifest_url("wallet", None),
@@ -580,6 +592,7 @@ mod tests {
 
     #[test]
     fn base_url_defaults_to_constant() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         // Clear any env override to test the default.
         let _guard = EnvGuard::new("TEMPO_BASE_URL");
         assert_eq!(base_url(), BASE_URL);
@@ -587,24 +600,28 @@ mod tests {
 
     #[test]
     fn base_url_respects_env_override() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let _guard = EnvGuard::set("TEMPO_BASE_URL", "https://custom.example.com");
         assert_eq!(base_url(), "https://custom.example.com");
     }
 
     #[test]
     fn release_public_key_defaults_to_constant() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let _guard = EnvGuard::new("TEMPO_RELEASE_PUBLIC_KEY");
         assert_eq!(release_public_key(), PUBLIC_KEY);
     }
 
     #[test]
     fn release_public_key_respects_env_override() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let _guard = EnvGuard::set("TEMPO_RELEASE_PUBLIC_KEY", "custom-key");
         assert_eq!(release_public_key(), "custom-key");
     }
 
     #[test]
     fn manifest_url_with_custom_base_url() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let _guard = EnvGuard::set("TEMPO_BASE_URL", "https://custom.example.com/");
         assert_eq!(
             manifest_url("wallet", None),
@@ -614,6 +631,7 @@ mod tests {
 
     #[test]
     fn manifest_url_trims_trailing_slashes() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let _guard = EnvGuard::set("TEMPO_BASE_URL", "https://example.com///");
         assert_eq!(
             manifest_url("wallet", None),

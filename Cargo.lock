@@ -12192,6 +12192,7 @@ dependencies = [
  "minisign",
  "minisign-verify",
  "reqwest 0.13.2",
+ "semver 1.0.27",
  "serde",
  "serde_json",
  "sha2 0.10.9",
