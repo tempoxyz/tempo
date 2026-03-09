@@ -572,7 +572,7 @@ where
                 payment_transactions += 1;
             }
 
-            let tx_rlp_len = pool_tx.transaction.inner().length();
+            let tx_rlp_length = pool_tx.transaction.inner().length();
             let effective_gas_price = pool_tx.transaction.effective_gas_price(Some(base_fee));
 
             let tx_debug_repr = tracing::enabled!(Level::TRACE)
@@ -634,7 +634,7 @@ where
             if !is_payment {
                 non_payment_gas_used += gas_used;
             }
-            block_size_used += tx_rlp_len;
+            block_size_used += tx_rlp_length;
         }
         drop(_pool_tx_span);
         record_pool_selection_metrics(
