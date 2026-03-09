@@ -447,6 +447,7 @@ where
         let execution_start = Instant::now();
         if !stop_pool_fill {
             loop {
+                // check if the pool-fill budget was reached, if so we can skip remaining transactions
                 if pool_fill_budget_reached_at("pool_tx_selection") {
                     break;
                 }
