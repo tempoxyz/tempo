@@ -186,7 +186,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
 
         bytes32 message = keccak256(
             abi.encodePacked(
-                block.chainid,
+                uint64(block.chainid),
                 address(this),
                 validatorAddress,
                 uint8(bytes(ingress).length),
