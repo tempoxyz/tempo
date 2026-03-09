@@ -581,7 +581,22 @@ where
                 trie_updates,
             } = res?;
 
-            let state_stats = FinalizationStateStats::new(&hashed_state, &trie_updates);
+            let state_stats = FinalizationStateStats {
+                accounts_modified: hashed_state.accounts.len(),
+                storage_slots_modified: hashed_state
+                    .storages
+                    .values()
+                    .map(|s| s.storage.len())
+                    .sum(),
+                storage_tries_wiped: hashed_state.storages.values().filter(|s| s.wiped).count(),
+                trie_nodes_changed: trie_updates.account_nodes.len()
+                    + trie_updates.removed_nodes.len()
+                    + trie_updates
+                        .storage_tries
+                        .values()
+                        .map(|s| s.storage_nodes.len() + s.removed_nodes.len())
+                        .sum::<usize>(),
+            };
             self.metrics.record_finalization_state_stats(&state_stats);
 
             (

@@ -2,7 +2,6 @@ use reth_metrics::{
     Metrics,
     metrics::{Counter, Gauge, Histogram},
 };
-use reth_trie_common::{HashedPostState, updates::TrieUpdates};
 use std::time::{Duration, Instant};
 
 /// RAII guard that records `payload_build_duration_seconds` on drop.
@@ -47,27 +46,6 @@ pub(crate) struct FinalizationStateStats {
     pub storage_tries_wiped: usize,
     /// Intermediate trie nodes changed (updated or removed) across account and storage tries.
     pub trie_nodes_changed: usize,
-}
-
-impl FinalizationStateStats {
-    pub(crate) fn new(hashed_state: &HashedPostState, trie_updates: &TrieUpdates) -> Self {
-        Self {
-            accounts_modified: hashed_state.accounts.len(),
-            storage_slots_modified: hashed_state
-                .storages
-                .values()
-                .map(|s| s.storage.len())
-                .sum(),
-            storage_tries_wiped: hashed_state.storages.values().filter(|s| s.wiped).count(),
-            trie_nodes_changed: trie_updates.account_nodes.len()
-                + trie_updates.removed_nodes.len()
-                + trie_updates
-                    .storage_tries
-                    .values()
-                    .map(|s| s.storage_nodes.len() + s.removed_nodes.len())
-                    .sum::<usize>(),
-        }
-    }
 }
 
 #[derive(Metrics, Clone)]
