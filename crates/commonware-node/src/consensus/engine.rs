@@ -26,7 +26,7 @@ use commonware_runtime::{
     buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_storage::archive::immutable;
-use commonware_utils::NZU64;
+use commonware_utils::{NZU16, NZU64, NZUsize};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_08::{CryptoRng, Rng};
@@ -48,18 +48,20 @@ use super::block::Block;
 /// To better support peers near tip during network instability, we multiply
 /// the consensus activity timeout by this factor.
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
-const PRUNABLE_ITEMS_PER_SECTION: NonZeroU64 = NonZeroU64::new(4_096).expect("value is not zero");
-const IMMUTABLE_ITEMS_PER_SECTION: NonZeroU64 =
-    NonZeroU64::new(262_144).expect("value is not zero");
+const PRUNABLE_ITEMS_PER_SECTION: NonZeroU64 = NZU64!(4_096);
+const IMMUTABLE_ITEMS_PER_SECTION: NonZeroU64 = NZU64!(262_144);
 const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
 const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 3MB
 const FREEZER_VALUE_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
 const FREEZER_VALUE_COMPRESSION: Option<u8> = Some(3);
-const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
-const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
-const BUFFER_POOL_PAGE_SIZE: NonZeroU16 = NonZeroU16::new(4_096).expect("value is not zero"); // 4KB
-const BUFFER_POOL_CAPACITY: NonZeroUsize = NonZeroUsize::new(8_192).expect("value is not zero"); // 32MB
-const MAX_REPAIR: NonZeroUsize = NonZeroUsize::new(20).expect("value is not zero");
+const REPLAY_BUFFER: NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
+const WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
+const BUFFER_POOL_PAGE_SIZE: NonZeroU16 = NZU16!(4_096); // 4KB
+const BUFFER_POOL_CAPACITY: NonZeroUsize = NZUsize!(8_192); // 32MB
+const MAX_REPAIR: NonZeroUsize = NZUsize!(20);
+
+// Ensure the marshal delivers blocks sequentially.
+const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 
 /// Settings for [`Engine`].
 ///
@@ -137,17 +139,6 @@ where
         info!(
             identity = %self.signer.public_key(),
             "using public ed25519 verifying key derived from provided private ed25519 signing key",
-        );
-
-        let (broadcast, broadcast_mailbox) = buffered::Engine::new(
-            context.with_label("broadcast"),
-            buffered::Config {
-                public_key: self.signer.public_key(),
-                mailbox_size: self.mailbox_size,
-                deque_size: self.deque_size,
-                priority: true,
-                codec_config: (),
-            },
         );
 
         let page_cache_ref =
@@ -253,7 +244,7 @@ where
 
         // TODO(janis): forward `last_finalized_height` to application so it can
         // forward missing blocks to EL.
-        let (marshal, marshal_mailbox, last_finalized_height) = marshal::Actor::init(
+        let (marshal, marshal_mailbox, last_finalized_height) = marshal::core::Actor::init(
             context.with_label("marshal"),
             finalizations_by_height,
             finalized_blocks,
@@ -274,6 +265,7 @@ where
                 key_write_buffer: WRITE_BUFFER,
                 value_write_buffer: WRITE_BUFFER,
                 max_repair: MAX_REPAIR,
+                max_pending_acks: MAX_PENDING_ACKS,
                 block_codec_config: (),
 
                 strategy: Sequential,
@@ -291,12 +283,24 @@ where
             },
         );
 
+        let (broadcast, broadcast_mailbox) = buffered::Engine::new(
+            context.with_label("broadcast"),
+            buffered::Config {
+                public_key: self.signer.public_key(),
+                mailbox_size: self.mailbox_size,
+                deque_size: self.deque_size,
+                peer_provider: peer_manager_mailbox.clone(),
+                priority: true,
+                codec_config: (),
+            },
+        );
+
         // XXX: All hard-coded values here are the same as prior to commonware
         // making the resolver configurable in
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
-            provider: peer_manager_mailbox.clone(),
+            peer_provider: peer_manager_mailbox.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
             initial: Duration::from_secs(1),
@@ -439,7 +443,7 @@ where
 
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block>,
+    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
     dkg_manager: dkg::manager::Actor<TContext>,

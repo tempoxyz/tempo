@@ -6,7 +6,7 @@ use alloy_primitives::hex;
 use commonware_codec::{Encode, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
-    marshal::ingress::mailbox::Identifier,
+    marshal::Identifier,
     types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
@@ -134,7 +134,7 @@ impl FeedStateHandle {
     /// Fill in the height for a block if it's missing by querying the marshal.
     async fn maybe_fill_height(&self, block: &mut CertifiedBlock) {
         if block.height.is_none()
-            && let Some(mut marshal) = self.marshal()
+            && let Some(marshal) = self.marshal()
         {
             block.height = marshal
                 .get_block(&Digest(block.digest))
@@ -331,8 +331,10 @@ impl ConsensusFeed for FeedStateHandle {
                 Some(block)
             }
             Query::Height(height) => {
-                let mut marshal = self.marshal()?;
-                let finalization = marshal.get_finalization(Height::new(height)).await?;
+                let finalization = self
+                    .marshal()?
+                    .get_finalization(Height::new(height))
+                    .await?;
 
                 Some(CertifiedBlock {
                     epoch: finalization.proposal.round.epoch().get(),

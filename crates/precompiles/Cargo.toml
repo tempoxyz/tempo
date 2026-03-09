@@ -1,6 +1,6 @@
 [package]
 name = "tempo-precompiles"
-description = "TODO:"
+description = "Tempo EVM precompile implementations for TIP-20 tokens, stablecoin DEX, fee manager, validator config, account keychain, and nonce management"
 
 version.workspace = true
 edition.workspace = true

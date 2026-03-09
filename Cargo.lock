@@ -1418,17 +1418,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-lock"
-version = "3.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "290f7f2596bd5b78a9fec8088ccd89180d7f9f55b94b0576823bbbdc72ee8311"
-dependencies = [
- "event-listener",
- "event-listener-strategy",
- "pin-project-lite",
-]
-
-[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2446,7 +2435,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -2462,7 +2451,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2474,14 +2463,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "commonware-coding"
+version = "2026.2.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
+dependencies = [
+ "bytes",
+ "commonware-codec",
+ "commonware-cryptography",
+ "commonware-macros",
+ "commonware-math",
+ "commonware-parallel",
+ "commonware-storage",
+ "commonware-utils",
+ "num-rational",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "rayon",
+ "reed-solomon-simd",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "commonware-consensus"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "bytes",
  "cfg-if",
  "commonware-broadcast",
  "commonware-codec",
+ "commonware-coding",
  "commonware-cryptography",
  "commonware-macros",
  "commonware-math",
@@ -2497,6 +2508,7 @@ dependencies = [
  "rand 0.8.5",
  "rand_core 0.6.4",
  "rand_distr 0.4.3",
+ "rayon",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -2504,7 +2516,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -2538,7 +2550,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "commonware-macros-impl",
  "tokio",
@@ -2547,7 +2559,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros-impl"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2559,7 +2571,7 @@ dependencies = [
 [[package]]
 name = "commonware-math"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2572,11 +2584,12 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
  "commonware-macros",
+ "commonware-parallel",
  "commonware-runtime",
  "commonware-stream",
  "commonware-utils",
@@ -2597,7 +2610,7 @@ dependencies = [
 [[package]]
 name = "commonware-parallel"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -2607,7 +2620,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2627,9 +2640,8 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
- "async-lock",
  "axum",
  "bytes",
  "cfg-if",
@@ -2664,8 +2676,9 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
+ "ahash",
  "anyhow",
  "bytes",
  "cfg-if",
@@ -2687,7 +2700,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "chacha20poly1305",
  "commonware-codec",
@@ -2706,7 +2719,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "2026.2.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=540b008ebeb2c94518d9d32adcb0c2a027bee66a#540b008ebeb2c94518d9d32adcb0c2a027bee66a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=240e0207ee10c3c37a42867ce4de97b581c06b32#240e0207ee10c3c37a42867ce4de97b581c06b32"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2719,6 +2732,7 @@ dependencies = [
  "num-integer",
  "num-rational",
  "num-traits",
+ "parking_lot",
  "pin-project",
  "rand 0.8.5",
  "thiserror 2.0.18",
@@ -2767,15 +2781,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d72c1252426a83be2092dd5884a5f6e3b8e7180f6891b6263d2c21b92ec8816"
 dependencies = [
  "digest 0.10.7",
-]
-
-[[package]]
-name = "concurrent-queue"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
-dependencies = [
- "crossbeam-utils",
 ]
 
 [[package]]
@@ -3889,27 +3894,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "event-listener"
-version = "5.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
-dependencies = [
- "concurrent-queue",
- "parking",
- "pin-project-lite",
-]
-
-[[package]]
-name = "event-listener-strategy"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
-dependencies = [
- "event-listener",
- "pin-project-lite",
 ]
 
 [[package]]
@@ -7539,6 +7523,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "readme-rustdocifier"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08ad765b21a08b1a8e5cdce052719188a23772bcbefb3c439f0baaf62c56ceac"
+
+[[package]]
 name = "recvmsg"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7582,6 +7572,18 @@ dependencies = [
  "getrandom 0.2.17",
  "libredox",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "reed-solomon-simd"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffef0520d30fbd4151fb20e262947ae47fb0ab276a744a19b6398438105a072"
+dependencies = [
+ "cpufeatures",
+ "fixedbitset",
+ "once_cell",
+ "readme-rustdocifier",
 ]
 
 [[package]]
