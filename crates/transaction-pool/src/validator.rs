@@ -652,20 +652,6 @@ where
             );
         }
 
-        // Validate transactions that involve keychain keys
-        match self.validate_against_keychain(&transaction, &state_provider) {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(err),
-                );
-            }
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        }
-
         // Balance transfer is not allowed as there is no balances in accounts yet.
         // Check added in https://github.com/tempoxyz/tempo/pull/759
         // AATx will aggregate all call values, so we dont need additional check for AA transactions.
@@ -828,6 +814,20 @@ where
                     InvalidPoolTransactionError::other(
                         TempoPoolTransactionError::InsufficientLiquidity(fee_token),
                     ),
+                );
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        }
+
+        // Validate transactions that involve keychain keys.
+        match self.validate_against_keychain(&transaction, &state_provider) {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(err),
                 );
             }
             Err(err) => {
