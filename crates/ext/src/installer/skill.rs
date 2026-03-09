@@ -52,6 +52,15 @@ pub(super) fn install_skill(
         }
     };
 
+    if let Some(expected) = expected_sha256 {
+        let actual = sha256_hex(content.as_bytes());
+        if actual != expected.to_lowercase() {
+            tracing::warn!("skill checksum mismatch for tempo-{extension}, skipping");
+            return;
+        }
+        tracing::debug!("skill checksum ok for tempo-{extension}");
+    }
+
     let skill_name = format!("tempo-{extension} skill");
     let expected_comment = format!("skill:tempo-{extension}");
     match encoded_signature {
@@ -72,15 +81,6 @@ pub(super) fn install_skill(
             tracing::warn!("skill signature missing for tempo-{extension}, skipping skill install");
             return;
         }
-    }
-
-    if let Some(expected) = expected_sha256 {
-        let actual = sha256_hex(content.as_bytes());
-        if actual != expected.to_lowercase() {
-            tracing::warn!("skill checksum mismatch for tempo-{extension}, skipping");
-            return;
-        }
-        tracing::debug!("skill checksum ok for tempo-{extension}");
     }
 
     let home = match home_dir() {
