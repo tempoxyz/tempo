@@ -386,7 +386,7 @@ The ValidatorConfigV2 precompile replaces V1 with append-only, delete-once seman
 ### Per-Handler Assertions
 
 - **TEMPO-VALV2-1**: Dual-auth enforcement - functions callable by owner or validator (`deactivateValidator`, `setIpAddresses`, `rotateValidator`, `transferValidatorOwnership`) succeed when called by owner or the validator itself; fail when called by third parties.
-- **TEMPO-VALV2-2**: Owner-only enforcement - functions callable only by owner (`addValidator`, `transferOwnership`, `setNextFullDkgCeremony`, `migrateValidator`, `initializeIfMigrated`) succeed when called by owner; fail when called by non-owners.
+- **TEMPO-VALV2-2**: Owner-only enforcement - functions callable only by owner (`addValidator`, `transferOwnership`, `setNetworkIdentityRotationEpoch`, `migrateValidator`, `initializeIfMigrated`) succeed when called by owner; fail when called by non-owners.
 - **TEMPO-VALV2-3**: Validator count changes - active and total validator counts change only as follows: `addValidator` (+1 active, +1 total), `rotateValidator` (+0 active, +1 total), `deactivateValidator` (-1 active, +0 total); all other operations leave counts unchanged.
 - **TEMPO-VALV2-4**: Height field updates - validator height fields are set only by specific operations and always equal `block.number` when set:
   - `addValidator`: sets new validator's `addedAtHeight = block.number`, `deactivatedAtHeight = 0`
@@ -415,7 +415,7 @@ These are checked after every fuzz run:
 - **TEMPO-VALV2-18**: Address lookup correctness - for every validator, `validatorByAddress(validator.validatorAddress)` returns that exact validator; `addressToIndex` mapping is accurate.
 - **TEMPO-VALV2-19**: Public key lookup correctness - for every validator, `validatorByPublicKey(validator.publicKey)` returns that exact validator; `pubkeyToIndex` mapping is accurate.
 - **TEMPO-VALV2-20**: Owner consistency - `owner()` always equals the ghost-tracked owner; ownership transfers are correctly reflected.
-- **TEMPO-VALV2-21**: DKG ceremony consistency - `getNextFullDkgCeremony()` always equals the ghost-tracked epoch; updates via `setNextFullDkgCeremony` are correctly stored.
+- **TEMPO-VALV2-21**: Network identity rotation (DKG ceremony) consistency - `getNextNetworkIdentityRotation()` always equals the ghost-tracked epoch; updates via `setNetworkIdentityRotationEpoch` are correctly stored.
 - **TEMPO-VALV2-22**: Initialization one-way - once `isInitialized() == true`, it remains true forever; `isInitialized()` only transitions from false to true, never back.
 - **TEMPO-VALV2-23**: Migration completeness - if `isInitialized() == false`, then `validatorCount <= V1.getAllValidators().length`; migration cannot exceed V1 validator count.
 - **TEMPO-VALV2-24**: Migration preserves identity - for each validator at index `i < V1.getAllValidators().length`: `V2.validator[i].publicKey == V1.validator[i].publicKey` and `V2.validator[i].validatorAddress == V1.validator[i].validatorAddress`.

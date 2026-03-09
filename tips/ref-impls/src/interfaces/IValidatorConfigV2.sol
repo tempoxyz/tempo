@@ -46,7 +46,7 @@ interface IValidatorConfigV2 {
     event ValidatorMigrated(
         uint64 indexed index, address indexed validatorAddress, bytes32 publicKey
     );
-    event NextFullDkgCeremonySet(uint64 indexed previousEpoch, uint64 indexed nextEpoch);
+    event NetworkIdentityRotationEpochSet(uint64 indexed previousEpoch, uint64 indexed nextEpoch);
     event Initialized(uint64 height);
 
     // =========================================================================
@@ -229,10 +229,10 @@ interface IValidatorConfigV2 {
     /// @param newOwner The new owner address
     function transferOwnership(address newOwner) external;
 
-    /// @notice Set the epoch at which a fresh DKG ceremony will be triggered (owner only)
-    /// @param epoch The epoch in which to run the fresh DKG ceremony.
-    ///        Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
-    function setNextFullDkgCeremony(uint64 epoch) external;
+    /// @notice Set the epoch at which a rotation of the network identity will be triggered (owner only)
+    /// @param epoch The epoch at which a DKG ceremony will rotate the network identity.
+    ///        If `epoch` is ahead of the current network epoch, epoch+1 will run with a new identity.
+    function setNetworkIdentityRotationEpoch(uint64 epoch) external;
 
     // =========================================================================
     // View Functions
@@ -266,10 +266,9 @@ interface IValidatorConfigV2 {
     /// @return The validator struct for the given public key
     function validatorByPublicKey(bytes32 publicKey) external view returns (Validator memory);
 
-    /// @notice Get the epoch at which a fresh DKG ceremony will be triggered
-    /// @return The epoch number, or 0 if no fresh DKG is scheduled.
-    ///         The fresh DKG ceremony runs in epoch N, and epoch N+1 uses the new DKG polynomial.
-    function getNextFullDkgCeremony() external view returns (uint64);
+    /// @notice Get the epoch at which a network identity rotation will be triggered (via full DKG ceremony)
+    /// @return The epoch number
+    function getNextNetworkIdentityRotation() external view returns (uint64);
 
     /// @notice Check if V2 has been initialized from V1
     /// @return True if initialized, false otherwise

@@ -41,7 +41,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     address private _ghostOwner;
 
     /// @dev Ghost tracking for DKG ceremony
-    uint64 private _ghostNextDkgCeremony;
+    uint64 private _ghostNextNetworkIdentityRotation;
 
     /// @dev Ghost tracking for initialization
     bool private _ghostInitialized;
@@ -583,7 +583,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         bool isOwner = (caller == _ghostOwner);
 
         vm.startPrank(caller);
-        try validatorConfigV2.setNextFullDkgCeremony(epoch) {
+        try validatorConfigV2.setNetworkIdentityRotationEpoch(epoch) {
             vm.stopPrank();
             assertTrue(
                 _ghostInitialized,
@@ -591,10 +591,10 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             );
             assertTrue(isOwner, "TEMPO-VALV2-2: Non-owner should not set DKG ceremony");
 
-            _ghostNextDkgCeremony = epoch;
+            _ghostNextNetworkIdentityRotation = epoch;
 
             assertEq(
-                validatorConfigV2.getNextFullDkgCeremony(),
+                validatorConfigV2.getNextNetworkIdentityRotation(),
                 epoch,
                 "TEMPO-VALV2-21: DKG epoch should be set"
             );
@@ -955,7 +955,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
             _ghostInitialized = true;
             _ghostInitializedAtHeight = uint64(block.number);
-            _ghostNextDkgCeremony = validatorConfig.getNextFullDkgCeremony();
+            _ghostNextNetworkIdentityRotation = validatorConfig.getNextFullDkgCeremony();
         } catch (bytes memory reason) {
             vm.stopPrank();
             if (bytes4(reason) == IValidatorConfigV2.AlreadyInitialized.selector) {
@@ -1094,8 +1094,8 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     /// @notice TEMPO-VALV2-21: DKG epoch matches ghost state
     function _invariantDkgCeremonyConsistency() internal view {
         assertEq(
-            validatorConfigV2.getNextFullDkgCeremony(),
-            _ghostNextDkgCeremony,
+            validatorConfigV2.getNextNetworkIdentityRotation(),
+            _ghostNextNetworkIdentityRotation,
             "TEMPO-VALV2-21: DKG epoch should match ghost state"
         );
     }

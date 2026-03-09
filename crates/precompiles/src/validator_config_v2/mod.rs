@@ -154,7 +154,7 @@ pub struct ValidatorConfigV2 {
     /// Public keys are reserved forever — even deactivated entries keep their mapping.
     pubkey_to_index: Mapping<B256, u64>,
     /// Epoch at which a DKG ceremony will run that rotates the network identity.
-    next_dkg_ceremony: u64,
+    next_network_identity_rotation: u64,
     /// Prevents two active validators from sharing the same ingress IP address.
     active_ingress_ips: Mapping<B256, bool>,
     /// Compact list of 1-indexed global positions of currently active validators.
@@ -302,11 +302,11 @@ impl ValidatorConfigV2 {
         Ok(out)
     }
 
-    /// Returns the epoch at which a fresh DKG ceremony will be triggered; `0` if none is scheduled.
+    /// Returns the epoch at which a network identity rotation will be triggered.
     ///
-    /// The ceremony runs in epoch N, and epoch N+1 uses the new DKG polynomial.
-    pub fn get_next_full_dkg_ceremony(&self) -> Result<u64> {
-        self.next_dkg_ceremony.read()
+    /// See [`set_network_identity_rotation_epoch`](Self::set_network_identity_rotation_epoch).
+    pub fn get_next_network_identity_rotation(&self) -> Result<u64> {
+        self.next_network_identity_rotation.read()
     }
 
     fn validate_endpoints(ingress: &str, egress: &str) -> Result<()> {
@@ -515,7 +515,7 @@ impl ValidatorConfigV2 {
     /// - `InvalidValidatorAddress` — `validatorAddress` is zero
     /// - `AddressAlreadyHasValidator` — the address belongs to an active validator
     /// - `NotIpPort` / `NotIp` — endpoints fail validation
-    /// - `IngressAlreadyExists` — the ingress IP is already in use
+    /// - `IngressAlreadyExists` — the new ingress is already in use
     /// - `InvalidSignature` — signature verification fails
     pub fn add_validator(
         &mut self,
@@ -649,17 +649,20 @@ impl ValidatorConfigV2 {
 
     /// Sets the epoch at which a rotation of the network identity will be triggered.
     ///
-    /// The network will perform a Distribute Key Generation ceremony to rotate its network identity at the epoch `E` set by this function, if `E` is ahead of the network's current epoch. If the DKG ceremony is successful, then epoch `E+1` will run with a new network identity. If `E` is not ahead of the network epoch this value is ignored.
-    pub fn set_next_full_dkg_ceremony(
+    /// If `E` is ahead of the network's current epoch, the network will perform a
+    /// Distribute-Key-Generation (DKG) ceremony to rotate its identity at the new epoch `E`.
+    /// - If the DKG ceremony is successful, then epoch `E+1` will run with a new network identity.
+    /// - If `E` is not ahead of the network epoch this value is ignored.
+    pub fn set_network_identity_rotation_epoch(
         &mut self,
         sender: Address,
-        call: IValidatorConfigV2::setNextFullDkgCeremonyCall,
+        call: IValidatorConfigV2::setNetworkIdentityRotationEpochCall,
     ) -> Result<()> {
         self.config.read()?.require_init()?.require_owner(sender)?;
-        let previous_epoch = self.next_dkg_ceremony.read()?;
-        self.next_dkg_ceremony.write(call.epoch)?;
-        self.emit_event(ValidatorConfigV2Event::NextFullDkgCeremonySet(
-            IValidatorConfigV2::NextFullDkgCeremonySet {
+        let previous_epoch = self.next_network_identity_rotation.read()?;
+        self.next_network_identity_rotation.write(call.epoch)?;
+        self.emit_event(ValidatorConfigV2Event::NetworkIdentityRotationEpochSet(
+            IValidatorConfigV2::NetworkIdentityRotationEpochSet {
                 previousEpoch: previous_epoch,
                 nextEpoch: call.epoch,
             },
@@ -1018,7 +1021,7 @@ impl ValidatorConfigV2 {
         }
 
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;
-        self.next_dkg_ceremony.write(v1_next_dkg)?;
+        self.next_network_identity_rotation.write(v1_next_dkg)?;
 
         trace!(address=%self.address, "Initializing validator config v2 precompile after migration");
 
@@ -1783,25 +1786,25 @@ mod tests {
     }
 
     #[test]
-    fn test_set_next_full_dkg_ceremony() -> eyre::Result<()> {
+    fn test_set_network_identity_rotation_epoch() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
             vc.initialize(owner)?;
 
-            assert_eq!(vc.get_next_full_dkg_ceremony()?, 0);
+            assert_eq!(vc.get_next_network_identity_rotation()?, 0);
 
-            vc.set_next_full_dkg_ceremony(
+            vc.set_network_identity_rotation_epoch(
                 owner,
-                IValidatorConfigV2::setNextFullDkgCeremonyCall { epoch: 42 },
+                IValidatorConfigV2::setNetworkIdentityRotationEpochCall { epoch: 42 },
             )?;
-            assert_eq!(vc.get_next_full_dkg_ceremony()?, 42);
+            assert_eq!(vc.get_next_network_identity_rotation()?, 42);
 
             let non_owner = Address::random();
-            let result = vc.set_next_full_dkg_ceremony(
+            let result = vc.set_network_identity_rotation_epoch(
                 non_owner,
-                IValidatorConfigV2::setNextFullDkgCeremonyCall { epoch: 100 },
+                IValidatorConfigV2::setNetworkIdentityRotationEpochCall { epoch: 100 },
             );
             assert_eq!(result, Err(ValidatorConfigV2Error::unauthorized().into()));
 
@@ -3360,16 +3363,18 @@ mod tests {
             )]);
 
             vc.clear_emitted_events();
-            vc.set_next_full_dkg_ceremony(
+            vc.set_network_identity_rotation_epoch(
                 owner,
-                IValidatorConfigV2::setNextFullDkgCeremonyCall { epoch: 42 },
+                IValidatorConfigV2::setNetworkIdentityRotationEpochCall { epoch: 42 },
             )?;
-            vc.assert_emitted_events(vec![ValidatorConfigV2Event::NextFullDkgCeremonySet(
-                IValidatorConfigV2::NextFullDkgCeremonySet {
-                    previousEpoch: 0,
-                    nextEpoch: 42,
-                },
-            )]);
+            vc.assert_emitted_events(vec![
+                ValidatorConfigV2Event::NetworkIdentityRotationEpochSet(
+                    IValidatorConfigV2::NetworkIdentityRotationEpochSet {
+                        previousEpoch: 0,
+                        nextEpoch: 42,
+                    },
+                ),
+            ]);
 
             Ok(())
         })

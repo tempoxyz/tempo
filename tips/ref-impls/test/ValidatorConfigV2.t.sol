@@ -769,18 +769,18 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-                      SET NEXT FULL DKG CEREMONY
+                  SET NETWORK IDENTITY ROTATION EPOCH
     //////////////////////////////////////////////////////////////*/
 
-    function test_setNextFullDkgCeremony_pass() public {
+    function test_setNetworkIdentityRotationEpoch_pass() public {
         _initializeV2();
-        validatorConfigV2.setNextFullDkgCeremony(42);
-        assertEq(validatorConfigV2.getNextFullDkgCeremony(), 42);
+        validatorConfigV2.setNetworkIdentityRotationEpoch(42);
+        assertEq(validatorConfigV2.getNextNetworkIdentityRotation(), 42);
     }
 
-    function test_setNextFullDkgCeremony_fail() public {
+    function test_setNetworkIdentityRotationEpoch_fail() public {
         // 1. NotInitialized
-        try validatorConfigV2.setNextFullDkgCeremony(42) {
+        try validatorConfigV2.setNetworkIdentityRotationEpoch(42) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.NotInitialized.selector));
@@ -790,7 +790,7 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // 2. Unauthorized
         vm.prank(nonOwner);
-        try validatorConfigV2.setNextFullDkgCeremony(42) {
+        try validatorConfigV2.setNetworkIdentityRotationEpoch(42) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.Unauthorized.selector));
@@ -1027,7 +1027,7 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.initializeIfMigrated();
 
         assertTrue(validatorConfigV2.isInitialized());
-        assertEq(validatorConfigV2.getNextFullDkgCeremony(), 99);
+        assertEq(validatorConfigV2.getNextNetworkIdentityRotation(), 99);
     }
 
     function test_initializeIfMigrated_fail() public {

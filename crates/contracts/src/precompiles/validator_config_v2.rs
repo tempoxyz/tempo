@@ -57,8 +57,8 @@ crate::sol! {
         /// Get validator by public key
         function validatorByPublicKey(bytes32 publicKey) external view returns (Validator memory);
 
-        /// Get the epoch for next full DKG ceremony
-        function getNextFullDkgCeremony() external view returns (uint64);
+        /// Get the epoch for next network identity rotation (full DKG ceremony)
+        function getNextNetworkIdentityRotation() external view returns (uint64);
 
         /// Check if V2 has been initialized
         function isInitialized() external view returns (bool);
@@ -111,8 +111,8 @@ crate::sol! {
         /// Transfer contract ownership (owner only)
         function transferOwnership(address newOwner) external;
 
-        /// Set the epoch for next full DKG ceremony (owner only)
-        function setNextFullDkgCeremony(uint64 epoch) external;
+        /// Set the epoch for next network identity rotation via full DKG ceremony (owner only)
+        function setNetworkIdentityRotationEpoch(uint64 epoch) external;
 
         /// Migrate a single validator from V1 (owner only)
         function migrateValidator(uint64 idx) external;
@@ -141,7 +141,7 @@ crate::sol! {
         event ValidatorOwnershipTransferred(uint64 indexed index, address indexed oldAddress, address indexed newAddress, address caller);
         event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
         event ValidatorMigrated(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey);
-        event NextFullDkgCeremonySet(uint64 indexed previousEpoch, uint64 indexed nextEpoch);
+        event NetworkIdentityRotationEpochSet(uint64 indexed previousEpoch, uint64 indexed nextEpoch);
         event Initialized(uint64 height);
 
         // =====================================================================

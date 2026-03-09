@@ -41,8 +41,8 @@ impl Precompile for ValidatorConfigV2 {
                 IValidatorConfigV2Calls::validatorByPublicKey(call) => {
                     view(call, |c| self.validator_by_public_key(c.publicKey))
                 }
-                IValidatorConfigV2Calls::getNextFullDkgCeremony(call) => {
-                    view(call, |_| self.get_next_full_dkg_ceremony())
+                IValidatorConfigV2Calls::getNextNetworkIdentityRotation(call) => {
+                    view(call, |_| self.get_next_network_identity_rotation())
                 }
                 IValidatorConfigV2Calls::isInitialized(call) => {
                     view(call, |_| self.is_initialized())
@@ -71,9 +71,9 @@ impl Precompile for ValidatorConfigV2 {
                 IValidatorConfigV2Calls::transferOwnership(call) => {
                     mutate_void(call, msg_sender, |s, c| self.transfer_ownership(s, c))
                 }
-                IValidatorConfigV2Calls::setNextFullDkgCeremony(call) => {
+                IValidatorConfigV2Calls::setNetworkIdentityRotationEpoch(call) => {
                     mutate_void(call, msg_sender, |s, c| {
-                        self.set_next_full_dkg_ceremony(s, c)
+                        self.set_network_identity_rotation_epoch(s, c)
                     })
                 }
                 IValidatorConfigV2Calls::migrateValidator(call) => {
