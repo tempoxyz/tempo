@@ -6,7 +6,7 @@ mod platform;
 mod skill;
 mod verify;
 
-pub(crate) use error::InstallerError;
+pub use error::InstallerError;
 pub(crate) use manifest::{fetch_manifest_version, is_secure_or_local_manifest_location};
 pub(crate) use platform::{
     binary_candidates, check_dir_writable, default_local_bin, executable_name, resolve_from_path,
@@ -31,6 +31,17 @@ pub(crate) fn debug_log(message: &str) {
     }
 }
 
+/// Parse a `file://` URL into a local path using the `url` crate.
+///
+/// Returns `None` if the URL isn't a valid `file://` URL or can't be
+/// converted to a platform path (e.g. `file://remote/share` on Windows).
+pub(super) fn file_url_to_path(url_str: &str) -> Option<PathBuf> {
+    url::Url::parse(url_str)
+        .ok()
+        .filter(|u| u.scheme() == "file")
+        .and_then(|u| u.to_file_path().ok())
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct InstallSource {
     pub(crate) manifest: Option<String>,
@@ -44,7 +55,8 @@ pub(crate) struct Installer {
 
 #[derive(Debug)]
 struct ResolvedInstall {
-    src: PathBuf,
+    /// Path to the downloaded binary. `None` in dry-run mode.
+    src: Option<PathBuf>,
     dst: PathBuf,
     skill_url: Option<String>,
     skill_sha256: Option<String>,
@@ -163,23 +175,20 @@ impl Installer {
         quiet: bool,
     ) -> Result<(), InstallerError> {
         if dry_run {
-            println!(
-                "dry-run: install {} -> {}",
-                resolved.src.display(),
-                resolved.dst.display()
-            );
-        } else {
-            let tmp = resolved.dst.with_extension("tmp");
-            fs::copy(&resolved.src, &tmp)?;
-            set_executable_permissions(&tmp)?;
-            fs::rename(&tmp, &resolved.dst)?;
-            if !quiet {
-                println!(
-                    "installed {} -> {}",
-                    resolved.src.display(),
-                    resolved.dst.display()
-                );
-            }
+            println!("dry-run: install -> {}", resolved.dst.display());
+            return Ok(());
+        }
+
+        let src = resolved
+            .src
+            .as_ref()
+            .expect("src must exist after download");
+        let tmp = resolved.dst.with_extension("tmp");
+        fs::copy(src, &tmp)?;
+        set_executable_permissions(&tmp)?;
+        fs::rename(&tmp, &resolved.dst)?;
+        if !quiet {
+            println!("installed {} -> {}", src.display(), resolved.dst.display());
         }
 
         Ok(())
@@ -216,17 +225,17 @@ fn download_extension(
     verifying_key: &VerifyingKey,
     download_dir: &Path,
     dry_run: bool,
-) -> Result<PathBuf, InstallerError> {
-    let dst = download_dir.join(executable_name(binary));
-
+) -> Result<Option<PathBuf>, InstallerError> {
     if dry_run {
         if metadata.signature.is_none() {
             return Err(InstallerError::SignatureMissing(binary.to_string()));
         }
         println!("dry-run: fetch {binary} from {}", metadata.url);
         println!("dry-run: verify signature for {binary}");
-        return Ok(dst);
+        return Ok(None);
     }
+
+    let dst = download_dir.join(executable_name(binary));
 
     if metadata.url.starts_with("http://") {
         return Err(InstallerError::InsecureDownloadUrl(metadata.url.clone()));
@@ -236,7 +245,7 @@ fn download_extension(
         let mut response = reqwest::blocking::get(&metadata.url)?.error_for_status()?;
         let mut file = fs::File::create(&dst)?;
         io::copy(&mut response, &mut file)?;
-    } else if let Some(path) = metadata.url.strip_prefix("file://") {
+    } else if let Some(path) = file_url_to_path(&metadata.url) {
         fs::copy(path, &dst)?;
     } else if metadata.url.contains("://") {
         return Err(InstallerError::InsecureDownloadUrl(metadata.url.clone()));
@@ -272,5 +281,5 @@ fn download_extension(
 
     debug_log(&format!("signature ok for {binary}"));
 
-    Ok(dst)
+    Ok(Some(dst))
 }

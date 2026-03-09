@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::installer::{
-    debug_log,
+    debug_log, file_url_to_path,
     error::InstallerError,
     verify::{sha256_of_bytes, verify_signature},
 };
@@ -120,7 +120,7 @@ fn download_skill(url: &str) -> Result<String, InstallerError> {
 
     if url.starts_with("https://") {
         Ok(reqwest::blocking::get(url)?.error_for_status()?.text()?)
-    } else if let Some(path) = url.strip_prefix("file://") {
+    } else if let Some(path) = file_url_to_path(url) {
         Ok(fs::read_to_string(path)?)
     } else if !url.contains("://") {
         Ok(fs::read_to_string(url)?)

@@ -14,7 +14,6 @@ const BASE_URL: &str = "https://cli.tempo.xyz";
 const PUBLIC_KEY: &str = "bDpt6MpqpvjiIPBB2NroGZQ/2HrfV+roj2qUa2b+vjI=";
 
 #[derive(Debug, thiserror::Error)]
-#[allow(unnameable_types, private_interfaces)]
 pub enum LauncherError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -100,6 +99,10 @@ impl Launcher {
         extension: &str,
         extension_args: &[String],
     ) -> Result<i32, LauncherError> {
+        if !is_valid_extension_name(extension) {
+            print_missing_install_hint(extension);
+            return Ok(1);
+        }
         debug_log(&format!("extension={extension}"));
         let binary_name = format!("tempo-{extension}");
         let display_name = format!("tempo {extension}");
@@ -202,25 +205,36 @@ impl Launcher {
             .get(extension)
             .map(|e| e.installed_version.as_str());
 
-        if installed_version != Some(latest_version.as_str()) {
-            debug_log(&format!(
-                "auto-update: {extension} {old} -> {latest_version}",
-                old = installed_version.unwrap_or("(untracked)")
-            ));
-            if let Ok(installer) = Installer::from_env(self.exe_dir.as_deref()) {
-                let source = InstallSource {
-                    manifest: Some(url),
-                    public_key: Some(release_public_key()),
-                };
-                if installer.install(extension, &source, false, true).is_ok()
-                    && installed_version.is_some_and(|v| !v.is_empty())
-                {
-                    eprintln!("Updated tempo-{extension} to {latest_version}");
-                }
-            }
+        if installed_version == Some(latest_version.as_str()) {
+            state.touch_check(extension);
+            state.save();
+            return;
         }
 
-        state.record_check(extension, &latest_version);
+        debug_log(&format!(
+            "auto-update: {extension} {old} -> {latest_version}",
+            old = installed_version.unwrap_or("(untracked)")
+        ));
+
+        let updated = if let Ok(installer) = Installer::from_env(self.exe_dir.as_deref()) {
+            let source = InstallSource {
+                manifest: Some(url),
+                public_key: Some(release_public_key()),
+            };
+            installer.install(extension, &source, false, true).is_ok()
+        } else {
+            false
+        };
+
+        if updated {
+            if installed_version.is_some_and(|v| !v.is_empty()) {
+                eprintln!("Updated tempo-{extension} to {latest_version}");
+            }
+            state.record_check(extension, &latest_version);
+        } else {
+            debug_log(&format!("auto-update: install failed for {extension}"));
+            state.touch_check(extension);
+        }
         state.save();
     }
 
@@ -310,6 +324,12 @@ fn parse_management_args(args: &[String]) -> Result<ManagementArgs, LauncherErro
         LauncherError::InvalidArgs("extension name required (e.g., core, wallet)".to_string())
     })?;
 
+    if !is_valid_extension_name(&extension) {
+        return Err(LauncherError::InvalidArgs(format!(
+            "invalid extension name: {extension} (only alphanumeric, hyphens, and underscores)"
+        )));
+    }
+
     Ok(ManagementArgs {
         extension,
         version,
@@ -357,6 +377,13 @@ fn run_child(binary: PathBuf, args: &[String], display_name: &str) -> Result<i32
     Ok(code)
 }
 
+fn is_valid_extension_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 fn print_missing_install_hint(extension: &str) {
     eprintln!("Unknown command '{extension}' and no compatible extension found.");
     eprintln!("Run: tempo add {extension}");
@@ -364,7 +391,7 @@ fn print_missing_install_hint(extension: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::manifest_url;
+    use super::{is_valid_extension_name, manifest_url};
     use crate::installer::is_secure_or_local_manifest_location;
 
     #[test]
@@ -376,8 +403,12 @@ mod tests {
             "file:///tmp/manifest.json"
         ));
         assert!(is_secure_or_local_manifest_location("./manifest.json"));
+        assert!(is_secure_or_local_manifest_location("/tmp/manifest.json"));
         assert!(!is_secure_or_local_manifest_location(
             "http://insecure.example.com/manifest.json"
+        ));
+        assert!(!is_secure_or_local_manifest_location(
+            "ftp://example.com/manifest.json"
         ));
     }
 
@@ -398,5 +429,22 @@ mod tests {
             "https://cli.tempo.xyz/tempo-wallet/v0.2.0/manifest.json",
             "v-prefix should not be doubled"
         );
+    }
+
+    #[test]
+    fn valid_extension_names() {
+        assert!(is_valid_extension_name("wallet"));
+        assert!(is_valid_extension_name("my-ext"));
+        assert!(is_valid_extension_name("my_ext"));
+        assert!(is_valid_extension_name("ext123"));
+    }
+
+    #[test]
+    fn invalid_extension_names() {
+        assert!(!is_valid_extension_name(""));
+        assert!(!is_valid_extension_name("../evil"));
+        assert!(!is_valid_extension_name("foo/bar"));
+        assert!(!is_valid_extension_name("foo bar"));
+        assert!(!is_valid_extension_name(".hidden"));
     }
 }

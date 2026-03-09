@@ -1,5 +1,7 @@
 //! Persistent state for the tempo CLI (update check timestamps, installed versions).
 
+use crate::installer::debug_log;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -40,8 +42,20 @@ impl State {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(&path, format!("{json}\n"));
+        let json = match serde_json::to_string_pretty(self) {
+            Ok(j) => j,
+            Err(err) => {
+                debug_log(&format!("state serialize failed: {err}"));
+                return;
+            }
+        };
+        let tmp = path.with_extension("tmp");
+        if let Err(err) = fs::write(&tmp, format!("{json}\n")) {
+            debug_log(&format!("state write failed: {}: {err}", tmp.display()));
+            return;
+        }
+        if let Err(err) = fs::rename(&tmp, &path) {
+            debug_log(&format!("state rename failed: {}: {err}", path.display()));
         }
     }
 

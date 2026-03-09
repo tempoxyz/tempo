@@ -1,10 +1,11 @@
 //! Release manifest fetching and validation.
 
+use crate::installer::error::InstallerError;
+use crate::installer::file_url_to_path;
+
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
-
-use crate::installer::error::InstallerError;
 
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct ReleaseManifest {
@@ -33,7 +34,7 @@ pub(super) fn load_manifest(location: &str) -> Result<ReleaseManifest, Installer
         reqwest::blocking::get(location)?
             .error_for_status()?
             .text()?
-    } else if let Some(path) = location.strip_prefix("file://") {
+    } else if let Some(path) = file_url_to_path(location) {
         fs::read_to_string(path)
             .map_err(|_| InstallerError::ReleaseManifestNotFound(location.to_string()))?
     } else {
@@ -44,14 +45,13 @@ pub(super) fn load_manifest(location: &str) -> Result<ReleaseManifest, Installer
     Ok(serde_json::from_str(&body)?)
 }
 
+/// Returns `true` if `location` is an HTTPS URL, a `file://` URL, or a local
+/// filesystem path (i.e. not a URL with some other scheme).
 pub(crate) fn is_secure_or_local_manifest_location(location: &str) -> bool {
-    if location.starts_with("https://") {
-        return true;
+    match url::Url::parse(location) {
+        Ok(url) => matches!(url.scheme(), "https" | "file"),
+        // Not a URL at all (e.g. `./manifest.json`) — treat as local path.
+        Err(url::ParseError::RelativeUrlWithoutBase) => true,
+        Err(_) => false,
     }
-
-    if location.starts_with("file://") {
-        return true;
-    }
-
-    !location.contains("://")
 }

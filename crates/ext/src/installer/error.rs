@@ -3,7 +3,7 @@
 use std::io;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum InstallerError {
+pub enum InstallerError {
     #[error("io error: {0}")]
     Io(#[from] io::Error),
 

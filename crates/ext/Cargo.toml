@@ -20,3 +20,4 @@ serde_json = { workspace = true, features = ["std"] }
 sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+url.workspace = true
