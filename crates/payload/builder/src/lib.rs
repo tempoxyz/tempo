@@ -97,6 +97,19 @@ impl Drop for BuildGuard<'_> {
     }
 }
 
+/// Internal control-flow for non-success exits from the build pipeline.
+enum BuildExit {
+    Cancelled,
+    Aborted { fees: U256 },
+    Fatal(PayloadBuilderError),
+}
+
+impl From<PayloadBuilderError> for BuildExit {
+    fn from(err: PayloadBuilderError) -> Self {
+        Self::Fatal(err)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -264,566 +277,572 @@ where
         // exit path (success, cancel, abort, error) gets the metric for free.
         let guard = BuildGuard::new(&self.metrics);
 
-        let block_time_millis =
-            (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
-        self.metrics.block_time_millis.record(block_time_millis);
-        self.metrics.block_time_millis_last.set(block_time_millis);
+        let pipeline = (|| -> Result<TempoBuiltPayload, BuildExit> {
+            let block_time_millis =
+                (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
+            self.metrics.block_time_millis.record(block_time_millis);
+            self.metrics.block_time_millis_last.set(block_time_millis);
 
-        let state_provider = {
-            let start = Instant::now();
-            let _span = debug_span!(target: "payload_builder", "state_provider").entered();
-            let res = self.provider.state_by_block_hash(parent_header.hash());
-            self.metrics
-                .state_provider_duration_seconds
-                .record(start.elapsed());
-            match res {
-                Ok(provider) => provider,
-                Err(err) => return Err(err.into()),
-            }
-        };
-        let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
-            Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
-        } else {
-            state_provider
-        };
-        let mut db = {
-            let start = Instant::now();
-            let _span = debug_span!(target: "payload_builder", "build_state_db").entered();
-            let state = StateProviderDatabase::new(&state_provider);
-            let db = State::builder()
-                .with_database(if self.disable_state_cache {
-                    Box::new(state) as Box<dyn Database<Error = ProviderError>>
-                } else {
-                    Box::new(cached_reads.as_db_mut(state))
-                })
-                .with_bundle_update()
-                .build();
-            self.metrics
-                .build_state_db_duration_seconds
-                .record(start.elapsed());
-            db
-        };
-
-        let chain_spec = self.provider.chain_spec();
-        let is_osaka = self
-            .provider
-            .chain_spec()
-            .is_osaka_active_at_timestamp(attributes.timestamp());
-
-        let block_gas_limit: u64 = parent_header.gas_limit();
-        let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
-        // Non-shared gas limit is the maximum gas available for proposer's pool transactions.
-        // The remaining `shared_gas_limit` is reserved for validator subblocks.
-        let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
-        let general_gas_limit = chain_spec.general_gas_limit_at(
-            attributes.timestamp(),
-            block_gas_limit,
-            shared_gas_limit,
-        );
-
-        let mut cumulative_gas_used = 0;
-        let mut non_payment_gas_used = 0;
-        // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
-        let mut block_size_used = attributes.withdrawals().length() + 1024;
-        let mut payment_transactions = 0u64;
-        let mut total_fees = U256::ZERO;
-
-        // If building an empty payload, don't include any subblocks
-        //
-        // Also don't include any subblocks if we've seen an invalid subblock
-        // at this height or above.
-        let mut subblocks = if empty
-            || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_header.number()
-        {
-            vec![]
-        } else {
-            attributes.subblocks()
-        };
-
-        subblocks.retain(|subblock| {
-            // Edge case: remove subblocks with expired transactions
-            //
-            // We pre-validate all of the subblocks on top of parent state in subblocks service
-            // which leaves the only reason for transactions to get invalidated by expiry of
-            // `valid_before` field.
-            if has_expired_transactions(subblock, attributes.timestamp()) {
-                return false;
-            }
-
-            // Account for the subblock's size
-            block_size_used += subblock.total_tx_size();
-
-            true
-        });
-
-        let subblock_fee_recipients = subblocks
-            .iter()
-            .map(|subblock| {
-                (
-                    PartialValidatorKey::from_slice(&subblock.validator()[..15]),
-                    subblock.fee_recipient,
-                )
-            })
-            .collect();
-
-        let mut builder = {
-            let start = Instant::now();
-            let _span = debug_span!(target: "payload_builder", "create_evm").entered();
-            let res = self
-                .evm_config
-                .builder_for_next_block(
-                    &mut db,
-                    &parent_header,
-                    TempoNextBlockEnvAttributes {
-                        inner: NextBlockEnvAttributes {
-                            timestamp: attributes.timestamp(),
-                            suggested_fee_recipient: attributes.suggested_fee_recipient(),
-                            prev_randao: attributes.prev_randao(),
-                            gas_limit: block_gas_limit,
-                            parent_beacon_block_root: attributes.parent_beacon_block_root(),
-                            withdrawals: Some(attributes.withdrawals().clone()),
-                            extra_data: attributes.extra_data().clone(),
-                        },
-                        general_gas_limit,
-                        shared_gas_limit,
-                        timestamp_millis_part: attributes.timestamp_millis_part(),
-                        subblock_fee_recipients,
-                    },
-                )
-                .map_err(PayloadBuilderError::other);
-            self.metrics
-                .create_evm_duration_seconds
-                .record(start.elapsed());
-            match res {
-                Ok(builder) => builder,
-                Err(err) => return Err(err),
-            }
-        };
-
-        {
-            let start = Instant::now();
-            let _span = debug_span!(target: "payload_builder", "pre_execution").entered();
-            let res = builder.apply_pre_execution_changes().map_err(|err| {
-                warn!(%err, "failed to apply pre-execution changes");
-                PayloadBuilderError::Internal(err.into())
-            });
-            self.metrics
-                .pre_execution_duration_seconds
-                .record(start.elapsed());
-            if let Err(err) = res {
-                return Err(err);
-            }
-        }
-
-        debug!("building new payload");
-
-        // Prepare system transactions before actual block building and account for their size.
-        let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
-        for tx in &system_txs {
-            block_size_used += tx.inner().length();
-        }
-        let prepare_system_txs_elapsed = prepare_system_txs_start.elapsed();
-        self.metrics
-            .prepare_system_transactions_duration_seconds
-            .record(prepare_system_txs_elapsed);
-
-        let base_fee = builder.evm_mut().block().basefee;
-        let mut best_txs = best_txs(BestTransactionsAttributes::new(
-            base_fee,
-            builder
-                .evm_mut()
-                .block()
-                .blob_gasprice()
-                .map(|gasprice| gasprice as u64),
-        ));
-
-        let mut pool_transactions_considered = 0u64;
-        let mut pool_transactions_executed = 0u64;
-        let mut pool_transactions_skipped = 0u64;
-        let record_pool_selection_metrics =
-            |metrics: &TempoPayloadBuilderMetrics, considered: u64, executed: u64, skipped: u64| {
-                metrics
-                    .pool_transactions_considered
-                    .record(considered as f64);
-                metrics
-                    .pool_transactions_considered_last
-                    .set(considered as f64);
-                metrics.pool_transactions_executed.record(executed as f64);
-                metrics.pool_transactions_executed_last.set(executed as f64);
-                metrics.pool_transactions_skipped.record(skipped as f64);
-                metrics.pool_transactions_skipped_last.set(skipped as f64);
-            };
-
-        let _pool_tx_span = debug_span!(target: "payload_builder", "execute_pool_txs").entered();
-        let execution_start = Instant::now();
-        loop {
-            // check if the job was interrupted, if so we can skip remaining transactions
-            if attributes.is_interrupted() {
-                break;
-            }
-
-            // check if the job was cancelled, if so we can exit early
-            if cancel.is_cancelled() {
-                record_pool_selection_metrics(
-                    &self.metrics,
-                    pool_transactions_considered,
-                    pool_transactions_executed,
-                    pool_transactions_skipped,
-                );
-                return Ok(BuildOutcome::Cancelled);
-            }
-
-            let selection_start = Instant::now();
-            let Some(pool_tx) = best_txs.next() else {
-                break;
-            };
-            self.metrics
-                .transaction_selection_duration_seconds
-                .record(selection_start.elapsed());
-            pool_transactions_considered += 1;
-
-            // Ensure we still have capacity for this transaction within the non-shared gas limit.
-            // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
-            // be consumed by proposer's pool transactions.
-            if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
-                // Mark this transaction as invalid since it doesn't fit
-                // The iterator will handle lane switching internally when appropriate
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    &InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
-                        non_shared_gas_limit - cumulative_gas_used,
-                    ),
-                );
-                pool_transactions_skipped += 1;
+            let state_provider = {
+                let start = Instant::now();
+                let _span = debug_span!(target: "payload_builder", "state_provider").entered();
+                let res = self.provider.state_by_block_hash(parent_header.hash());
                 self.metrics
-                    .pool_transactions_skipped_exceeds_non_shared_gas_limit
-                    .increment(1);
-                continue;
-            }
-
-            // If the tx is not a payment and will exceed the general gas limit
-            // mark the tx as invalid and continue
-            if !pool_tx.transaction.is_payment()
-                && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
-            {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    &InvalidPoolTransactionError::Other(Box::new(
-                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                    )),
-                );
-                pool_transactions_skipped += 1;
-                self.metrics
-                    .pool_transactions_skipped_exceeds_non_payment_gas_limit
-                    .increment(1);
-                continue;
-            }
-
-            let is_payment = pool_tx.transaction.is_payment();
-            if is_payment {
-                payment_transactions += 1;
-            }
-
-            let tx_rlp_length = pool_tx.transaction.inner().length();
-            let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
-
-            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    &InvalidPoolTransactionError::OversizedData {
-                        size: estimated_block_size_with_tx,
-                        limit: MAX_RLP_BLOCK_SIZE,
-                    },
-                );
-                pool_transactions_skipped += 1;
-                self.metrics
-                    .pool_transactions_skipped_oversized_block
-                    .increment(1);
-                continue;
-            }
-
-            let effective_gas_price = pool_tx.transaction.effective_gas_price(Some(base_fee));
-
-            let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", pool_tx.transaction))
-                .unwrap_or_default();
-
-            let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
-            let execution_start = Instant::now();
-            let gas_used = match builder.execute_transaction(tx_with_env) {
-                Ok(gas_used) => gas_used,
-                Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                    error,
-                    ..
-                })) => {
-                    if error.is_nonce_too_low() {
-                        // if the nonce is too low, we can skip this transaction
-                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                        self.metrics
-                            .pool_transactions_skipped_nonce_too_low
-                            .increment(1);
-                    } else {
-                        // if the transaction is invalid, we can skip it and all of its
-                        // descendants
-                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            &InvalidPoolTransactionError::Consensus(
-                                InvalidTransactionError::TxTypeNotSupported,
-                            ),
-                        );
-                        self.metrics
-                            .pool_transactions_skipped_invalid_tx
-                            .increment(1);
-                    }
-                    pool_transactions_skipped += 1;
-                    continue;
+                    .state_provider_duration_seconds
+                    .record(start.elapsed());
+                match res {
+                    Ok(provider) => provider,
+                    Err(err) => return Err(PayloadBuilderError::from(err).into()),
                 }
-                // this is an error that we should treat as fatal for this attempt
-                Err(err) => {
+            };
+            let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
+                Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
+            } else {
+                state_provider
+            };
+            let mut db = {
+                let start = Instant::now();
+                let _span = debug_span!(target: "payload_builder", "build_state_db").entered();
+                let state = StateProviderDatabase::new(&state_provider);
+                let db = State::builder()
+                    .with_database(if self.disable_state_cache {
+                        Box::new(state) as Box<dyn Database<Error = ProviderError>>
+                    } else {
+                        Box::new(cached_reads.as_db_mut(state))
+                    })
+                    .with_bundle_update()
+                    .build();
+                self.metrics
+                    .build_state_db_duration_seconds
+                    .record(start.elapsed());
+                db
+            };
+
+            let chain_spec = self.provider.chain_spec();
+            let is_osaka = self
+                .provider
+                .chain_spec()
+                .is_osaka_active_at_timestamp(attributes.timestamp());
+
+            let block_gas_limit: u64 = parent_header.gas_limit();
+            let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
+            // Non-shared gas limit is the maximum gas available for proposer's pool transactions.
+            // The remaining `shared_gas_limit` is reserved for validator subblocks.
+            let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
+            let general_gas_limit = chain_spec.general_gas_limit_at(
+                attributes.timestamp(),
+                block_gas_limit,
+                shared_gas_limit,
+            );
+
+            let mut cumulative_gas_used = 0;
+            let mut non_payment_gas_used = 0;
+            // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
+            let mut block_size_used = attributes.withdrawals().length() + 1024;
+            let mut payment_transactions = 0u64;
+            let mut total_fees = U256::ZERO;
+
+            // If building an empty payload, don't include any subblocks
+            //
+            // Also don't include any subblocks if we've seen an invalid subblock
+            // at this height or above.
+            let mut subblocks = if empty
+                || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_header.number()
+            {
+                vec![]
+            } else {
+                attributes.subblocks()
+            };
+
+            subblocks.retain(|subblock| {
+                // Edge case: remove subblocks with expired transactions
+                //
+                // We pre-validate all of the subblocks on top of parent state in subblocks service
+                // which leaves the only reason for transactions to get invalidated by expiry of
+                // `valid_before` field.
+                if has_expired_transactions(subblock, attributes.timestamp()) {
+                    return false;
+                }
+
+                // Account for the subblock's size
+                block_size_used += subblock.total_tx_size();
+
+                true
+            });
+
+            let subblock_fee_recipients = subblocks
+                .iter()
+                .map(|subblock| {
+                    (
+                        PartialValidatorKey::from_slice(&subblock.validator()[..15]),
+                        subblock.fee_recipient,
+                    )
+                })
+                .collect();
+
+            let mut builder = {
+                let start = Instant::now();
+                let _span = debug_span!(target: "payload_builder", "create_evm").entered();
+                let res = self
+                    .evm_config
+                    .builder_for_next_block(
+                        &mut db,
+                        &parent_header,
+                        TempoNextBlockEnvAttributes {
+                            inner: NextBlockEnvAttributes {
+                                timestamp: attributes.timestamp(),
+                                suggested_fee_recipient: attributes.suggested_fee_recipient(),
+                                prev_randao: attributes.prev_randao(),
+                                gas_limit: block_gas_limit,
+                                parent_beacon_block_root: attributes.parent_beacon_block_root(),
+                                withdrawals: Some(attributes.withdrawals().clone()),
+                                extra_data: attributes.extra_data().clone(),
+                            },
+                            general_gas_limit,
+                            shared_gas_limit,
+                            timestamp_millis_part: attributes.timestamp_millis_part(),
+                            subblock_fee_recipients,
+                        },
+                    )
+                    .map_err(PayloadBuilderError::other);
+                self.metrics
+                    .create_evm_duration_seconds
+                    .record(start.elapsed());
+                match res {
+                    Ok(builder) => builder,
+                    Err(err) => return Err(err.into()),
+                }
+            };
+
+            {
+                let start = Instant::now();
+                let _span = debug_span!(target: "payload_builder", "pre_execution").entered();
+                let res = builder.apply_pre_execution_changes().map_err(|err| {
+                    warn!(%err, "failed to apply pre-execution changes");
+                    PayloadBuilderError::Internal(err.into())
+                });
+                self.metrics
+                    .pre_execution_duration_seconds
+                    .record(start.elapsed());
+                if let Err(err) = res {
+                    return Err(err.into());
+                }
+            }
+
+            debug!("building new payload");
+
+            // Prepare system transactions before actual block building and account for their size.
+            let prepare_system_txs_start = Instant::now();
+            let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
+            for tx in &system_txs {
+                block_size_used += tx.inner().length();
+            }
+            let prepare_system_txs_elapsed = prepare_system_txs_start.elapsed();
+            self.metrics
+                .prepare_system_transactions_duration_seconds
+                .record(prepare_system_txs_elapsed);
+
+            let base_fee = builder.evm_mut().block().basefee;
+            let mut best_txs = best_txs(BestTransactionsAttributes::new(
+                base_fee,
+                builder
+                    .evm_mut()
+                    .block()
+                    .blob_gasprice()
+                    .map(|gasprice| gasprice as u64),
+            ));
+
+            let mut pool_transactions_considered = 0u64;
+            let mut pool_transactions_executed = 0u64;
+            let mut pool_transactions_skipped = 0u64;
+            let record_pool_selection_metrics =
+                |metrics: &TempoPayloadBuilderMetrics,
+                 considered: u64,
+                 executed: u64,
+                 skipped: u64| {
+                    metrics
+                        .pool_transactions_considered
+                        .record(considered as f64);
+                    metrics
+                        .pool_transactions_considered_last
+                        .set(considered as f64);
+                    metrics.pool_transactions_executed.record(executed as f64);
+                    metrics.pool_transactions_executed_last.set(executed as f64);
+                    metrics.pool_transactions_skipped.record(skipped as f64);
+                    metrics.pool_transactions_skipped_last.set(skipped as f64);
+                };
+
+            let _pool_tx_span =
+                debug_span!(target: "payload_builder", "execute_pool_txs").entered();
+            let execution_start = Instant::now();
+            loop {
+                // check if the job was interrupted, if so we can skip remaining transactions
+                if attributes.is_interrupted() {
+                    break;
+                }
+
+                // check if the job was cancelled, if so we can exit early
+                if cancel.is_cancelled() {
                     record_pool_selection_metrics(
                         &self.metrics,
                         pool_transactions_considered,
                         pool_transactions_executed,
                         pool_transactions_skipped,
                     );
-                    return Err(PayloadBuilderError::evm(err));
+                    return Err(BuildExit::Cancelled);
                 }
-            };
-            pool_transactions_executed += 1;
-            let elapsed = execution_start.elapsed();
-            self.metrics
-                .transaction_execution_duration_seconds
-                .record(elapsed);
-            trace!(?elapsed, "Transaction executed");
 
-            // update and add to total fees
-            total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
-            cumulative_gas_used += gas_used;
-            if !is_payment {
-                non_payment_gas_used += gas_used;
-            }
-            block_size_used += tx_rlp_length;
-        }
-        drop(_pool_tx_span);
-        record_pool_selection_metrics(
-            &self.metrics,
-            pool_transactions_considered,
-            pool_transactions_executed,
-            pool_transactions_skipped,
-        );
-        let total_normal_transaction_execution_elapsed = execution_start.elapsed();
-        self.metrics
-            .total_normal_transaction_execution_duration_seconds
-            .record(total_normal_transaction_execution_elapsed);
-        self.metrics
-            .payment_transactions
-            .record(payment_transactions as f64);
-        self.metrics
-            .payment_transactions_last
-            .set(payment_transactions as f64);
+                let selection_start = Instant::now();
+                let Some(pool_tx) = best_txs.next() else {
+                    break;
+                };
+                self.metrics
+                    .transaction_selection_duration_seconds
+                    .record(selection_start.elapsed());
+                pool_transactions_considered += 1;
 
-        // check if we have a better block or received more subblocks
-        if !is_better_payload(best_payload.as_ref(), total_fees)
-            && !is_more_subblocks(best_payload.as_ref(), &subblocks)
-        {
-            // Release db
-            drop(builder);
-            drop(db);
-            // can skip building the block
-            return Ok(BuildOutcome::Aborted {
-                fees: total_fees,
-                cached_reads,
-            });
-        }
-
-        let _subblock_span =
-            debug_span!(target: "payload_builder", "execute_subblock_txs").entered();
-        let subblocks_start = Instant::now();
-        let subblocks_count = subblocks.len() as f64;
-        let mut subblock_transactions = 0f64;
-        let record_subblock_metrics = |metrics: &TempoPayloadBuilderMetrics,
-                                       elapsed: std::time::Duration,
-                                       count: f64,
-                                       txs: f64| {
-            metrics
-                .total_subblock_transaction_execution_duration_seconds
-                .record(elapsed);
-            metrics.subblocks.record(count);
-            metrics.subblocks_last.set(count);
-            metrics.subblock_transactions.record(txs);
-            metrics.subblock_transactions_last.set(txs);
-        };
-        // Apply subblock transactions
-        for subblock in &subblocks {
-            for tx in subblock.transactions_recovered() {
-                if let Err(err) = builder.execute_transaction(tx.cloned()) {
-                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                        ..
-                    }) = &err
-                    {
-                        error!(
-                            ?err,
-                            "subblock transaction failed execution, aborting payload building"
-                        );
-                        self.highest_invalid_subblock
-                            .store(builder.evm().block().number.to(), Ordering::Relaxed);
-                    }
-                    record_subblock_metrics(
-                        &self.metrics,
-                        subblocks_start.elapsed(),
-                        subblocks_count,
-                        subblock_transactions,
+                // Ensure we still have capacity for this transaction within the non-shared gas limit.
+                // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
+                // be consumed by proposer's pool transactions.
+                if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
+                    // Mark this transaction as invalid since it doesn't fit
+                    // The iterator will handle lane switching internally when appropriate
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        &InvalidPoolTransactionError::ExceedsGasLimit(
+                            pool_tx.gas_limit(),
+                            non_shared_gas_limit - cumulative_gas_used,
+                        ),
                     );
-                    return Err(PayloadBuilderError::evm(err));
-                }
-
-                subblock_transactions += 1.0;
-            }
-        }
-        let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
-        drop(_subblock_span);
-        record_subblock_metrics(
-            &self.metrics,
-            total_subblock_transaction_execution_elapsed,
-            subblocks_count,
-            subblock_transactions,
-        );
-
-        // Apply system transactions
-        let system_txs_execution_elapsed = {
-            let _span = debug_span!(target: "payload_builder", "execute_system_txs").entered();
-            let system_txs_execution_start = Instant::now();
-            for system_tx in system_txs {
-                if let Err(err) = builder.execute_transaction(system_tx) {
-                    let elapsed = system_txs_execution_start.elapsed();
+                    pool_transactions_skipped += 1;
                     self.metrics
-                        .system_transactions_execution_duration_seconds
-                        .record(elapsed);
-                    return Err(PayloadBuilderError::evm(err));
+                        .pool_transactions_skipped_exceeds_non_shared_gas_limit
+                        .increment(1);
+                    continue;
+                }
+
+                // If the tx is not a payment and will exceed the general gas limit
+                // mark the tx as invalid and continue
+                if !pool_tx.transaction.is_payment()
+                    && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
+                {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        &InvalidPoolTransactionError::Other(Box::new(
+                            TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                        )),
+                    );
+                    pool_transactions_skipped += 1;
+                    self.metrics
+                        .pool_transactions_skipped_exceeds_non_payment_gas_limit
+                        .increment(1);
+                    continue;
+                }
+
+                let is_payment = pool_tx.transaction.is_payment();
+                if is_payment {
+                    payment_transactions += 1;
+                }
+
+                let tx_rlp_length = pool_tx.transaction.inner().length();
+                let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
+
+                if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        &InvalidPoolTransactionError::OversizedData {
+                            size: estimated_block_size_with_tx,
+                            limit: MAX_RLP_BLOCK_SIZE,
+                        },
+                    );
+                    pool_transactions_skipped += 1;
+                    self.metrics
+                        .pool_transactions_skipped_oversized_block
+                        .increment(1);
+                    continue;
+                }
+
+                let effective_gas_price = pool_tx.transaction.effective_gas_price(Some(base_fee));
+
+                let tx_debug_repr = tracing::enabled!(Level::TRACE)
+                    .then(|| format!("{:?}", pool_tx.transaction))
+                    .unwrap_or_default();
+
+                let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
+                let execution_start = Instant::now();
+                let gas_used = match builder.execute_transaction(tx_with_env) {
+                    Ok(gas_used) => gas_used,
+                    Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                        error,
+                        ..
+                    })) => {
+                        if error.is_nonce_too_low() {
+                            // if the nonce is too low, we can skip this transaction
+                            trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                            self.metrics
+                                .pool_transactions_skipped_nonce_too_low
+                                .increment(1);
+                        } else {
+                            // if the transaction is invalid, we can skip it and all of its
+                            // descendants
+                            trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                &InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::TxTypeNotSupported,
+                                ),
+                            );
+                            self.metrics
+                                .pool_transactions_skipped_invalid_tx
+                                .increment(1);
+                        }
+                        pool_transactions_skipped += 1;
+                        continue;
+                    }
+                    // this is an error that we should treat as fatal for this attempt
+                    Err(err) => {
+                        record_pool_selection_metrics(
+                            &self.metrics,
+                            pool_transactions_considered,
+                            pool_transactions_executed,
+                            pool_transactions_skipped,
+                        );
+                        return Err(BuildExit::Fatal(PayloadBuilderError::evm(err)));
+                    }
+                };
+                pool_transactions_executed += 1;
+                let elapsed = execution_start.elapsed();
+                self.metrics
+                    .transaction_execution_duration_seconds
+                    .record(elapsed);
+                trace!(?elapsed, "Transaction executed");
+
+                // update and add to total fees
+                total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
+                cumulative_gas_used += gas_used;
+                if !is_payment {
+                    non_payment_gas_used += gas_used;
+                }
+                block_size_used += tx_rlp_length;
+            }
+            drop(_pool_tx_span);
+            record_pool_selection_metrics(
+                &self.metrics,
+                pool_transactions_considered,
+                pool_transactions_executed,
+                pool_transactions_skipped,
+            );
+            let total_normal_transaction_execution_elapsed = execution_start.elapsed();
+            self.metrics
+                .total_normal_transaction_execution_duration_seconds
+                .record(total_normal_transaction_execution_elapsed);
+            self.metrics
+                .payment_transactions
+                .record(payment_transactions as f64);
+            self.metrics
+                .payment_transactions_last
+                .set(payment_transactions as f64);
+
+            // check if we have a better block or received more subblocks
+            if !is_better_payload(best_payload.as_ref(), total_fees)
+                && !is_more_subblocks(best_payload.as_ref(), &subblocks)
+            {
+                // can skip building the block
+                return Err(BuildExit::Aborted { fees: total_fees });
+            }
+
+            let _subblock_span =
+                debug_span!(target: "payload_builder", "execute_subblock_txs").entered();
+            let subblocks_start = Instant::now();
+            let subblocks_count = subblocks.len() as f64;
+            let mut subblock_transactions = 0f64;
+            let record_subblock_metrics = |metrics: &TempoPayloadBuilderMetrics,
+                                           elapsed: std::time::Duration,
+                                           count: f64,
+                                           txs: f64| {
+                metrics
+                    .total_subblock_transaction_execution_duration_seconds
+                    .record(elapsed);
+                metrics.subblocks.record(count);
+                metrics.subblocks_last.set(count);
+                metrics.subblock_transactions.record(txs);
+                metrics.subblock_transactions_last.set(txs);
+            };
+            // Apply subblock transactions
+            for subblock in &subblocks {
+                for tx in subblock.transactions_recovered() {
+                    if let Err(err) = builder.execute_transaction(tx.cloned()) {
+                        if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                            ..
+                        }) = &err
+                        {
+                            error!(
+                                ?err,
+                                "subblock transaction failed execution, aborting payload building"
+                            );
+                            self.highest_invalid_subblock
+                                .store(builder.evm().block().number.to(), Ordering::Relaxed);
+                        }
+                        record_subblock_metrics(
+                            &self.metrics,
+                            subblocks_start.elapsed(),
+                            subblocks_count,
+                            subblock_transactions,
+                        );
+                        return Err(BuildExit::Fatal(PayloadBuilderError::evm(err)));
+                    }
+
+                    subblock_transactions += 1.0;
                 }
             }
-            system_txs_execution_start.elapsed()
-        };
-        self.metrics
-            .system_transactions_execution_duration_seconds
-            .record(system_txs_execution_elapsed);
+            let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
+            drop(_subblock_span);
+            record_subblock_metrics(
+                &self.metrics,
+                total_subblock_transaction_execution_elapsed,
+                subblocks_count,
+                subblock_transactions,
+            );
 
-        let total_transaction_execution_elapsed = execution_start.elapsed();
-        self.metrics
-            .total_transaction_execution_duration_seconds
-            .record(total_transaction_execution_elapsed);
-
-        let (builder_finish_elapsed, execution_result, block, hashed_state, trie_updates) = {
-            let _span = debug_span!(target: "payload_builder", "finish_block").entered();
-            let builder_finish_start = Instant::now();
-            let res = builder.finish(&state_provider);
-            let builder_finish_elapsed = builder_finish_start.elapsed();
-            self.metrics
-                .payload_finalization_duration_seconds
-                .record(builder_finish_elapsed);
-            let BlockBuilderOutcome {
-                execution_result,
-                block,
-                hashed_state,
-                trie_updates,
-            } = match res {
-                Ok(outcome) => outcome,
-                Err(err) => return Err(err.into()),
+            // Apply system transactions
+            let system_txs_execution_elapsed = {
+                let _span = debug_span!(target: "payload_builder", "execute_system_txs").entered();
+                let system_txs_execution_start = Instant::now();
+                for system_tx in system_txs {
+                    if let Err(err) = builder.execute_transaction(system_tx) {
+                        let elapsed = system_txs_execution_start.elapsed();
+                        self.metrics
+                            .system_transactions_execution_duration_seconds
+                            .record(elapsed);
+                        return Err(BuildExit::Fatal(PayloadBuilderError::evm(err)));
+                    }
+                }
+                system_txs_execution_start.elapsed()
             };
-            (
-                builder_finish_elapsed,
-                execution_result,
-                block,
-                hashed_state,
-                trie_updates,
-            )
-        };
+            self.metrics
+                .system_transactions_execution_duration_seconds
+                .record(system_txs_execution_elapsed);
 
-        let total_transactions = block.transaction_count();
-        self.metrics
-            .total_transactions
-            .record(total_transactions as f64);
-        self.metrics
-            .total_transactions_last
-            .set(total_transactions as f64);
+            let total_transaction_execution_elapsed = execution_start.elapsed();
+            self.metrics
+                .total_transaction_execution_duration_seconds
+                .record(total_transaction_execution_elapsed);
 
-        let gas_used = block.gas_used();
-        self.metrics.gas_used.record(gas_used as f64);
-        self.metrics.gas_used_last.set(gas_used as f64);
+            let (builder_finish_elapsed, execution_result, block, hashed_state, trie_updates) = {
+                let _span = debug_span!(target: "payload_builder", "finish_block").entered();
+                let builder_finish_start = Instant::now();
+                let res = builder.finish(&state_provider);
+                let builder_finish_elapsed = builder_finish_start.elapsed();
+                self.metrics
+                    .payload_finalization_duration_seconds
+                    .record(builder_finish_elapsed);
+                let BlockBuilderOutcome {
+                    execution_result,
+                    block,
+                    hashed_state,
+                    trie_updates,
+                } = match res {
+                    Ok(outcome) => outcome,
+                    Err(err) => return Err(PayloadBuilderError::from(err).into()),
+                };
+                (
+                    builder_finish_elapsed,
+                    execution_result,
+                    block,
+                    hashed_state,
+                    trie_updates,
+                )
+            };
 
-        let requests = chain_spec
-            .is_prague_active_at_timestamp(attributes.timestamp())
-            .then(|| execution_result.requests.clone());
+            let total_transactions = block.transaction_count();
+            self.metrics
+                .total_transactions
+                .record(total_transactions as f64);
+            self.metrics
+                .total_transactions_last
+                .set(total_transactions as f64);
 
-        let sealed_block = Arc::new(block.sealed_block().clone());
-        let rlp_length = sealed_block.rlp_length();
+            let gas_used = block.gas_used();
+            self.metrics.gas_used.record(gas_used as f64);
+            self.metrics.gas_used_last.set(gas_used as f64);
 
-        if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
-            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-                rlp_length,
-                max_rlp_length: MAX_RLP_BLOCK_SIZE,
-            }));
+            let requests = chain_spec
+                .is_prague_active_at_timestamp(attributes.timestamp())
+                .then(|| execution_result.requests.clone());
+
+            let sealed_block = Arc::new(block.sealed_block().clone());
+            let rlp_length = sealed_block.rlp_length();
+
+            if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
+                return Err(BuildExit::Fatal(PayloadBuilderError::other(
+                    ConsensusError::BlockTooLarge {
+                        rlp_length,
+                        max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                    },
+                )));
+            }
+
+            let build_elapsed = guard.elapsed();
+            let secs = build_elapsed.as_secs_f64();
+            if secs > 0.0 {
+                let gas_per_second = sealed_block.gas_used() as f64 / secs;
+                self.metrics.gas_per_second.record(gas_per_second);
+                self.metrics.gas_per_second_last.set(gas_per_second);
+            }
+            self.metrics.rlp_block_size_bytes.record(rlp_length as f64);
+            self.metrics
+                .rlp_block_size_bytes_last
+                .set(rlp_length as f64);
+
+            info!(
+                parent_hash = ?sealed_block.parent_hash(),
+                number = sealed_block.number(),
+                hash = ?sealed_block.hash(),
+                timestamp = sealed_block.timestamp_millis(),
+                gas_limit = sealed_block.gas_limit(),
+                gas_used,
+                extra_data = %sealed_block.extra_data(),
+                subblocks_count,
+                payment_transactions,
+                subblock_transactions,
+                total_transactions,
+                ?build_elapsed,
+                ?total_normal_transaction_execution_elapsed,
+                ?total_subblock_transaction_execution_elapsed,
+                ?total_transaction_execution_elapsed,
+                ?builder_finish_elapsed,
+                "Built payload"
+            );
+
+            let eth_payload =
+                EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
+
+            let execution_outcome = ExecutionOutcome::new(
+                db.take_bundle(),
+                vec![execution_result.receipts],
+                block.number(),
+                Vec::new(),
+            );
+
+            let executed_block = BuiltPayloadExecutedBlock {
+                recovered_block: Arc::new(block),
+                execution_output: Arc::new(execution_outcome),
+                hashed_state: Either::Left(Arc::new(hashed_state)),
+                trie_updates: Either::Left(Arc::new(trie_updates)),
+            };
+
+            Ok(TempoBuiltPayload::new(eth_payload, Some(executed_block)))
+        })();
+
+        match pipeline {
+            Ok(payload) => Ok(BuildOutcome::Better {
+                payload,
+                cached_reads,
+            }),
+            Err(BuildExit::Cancelled) => Ok(BuildOutcome::Cancelled),
+            Err(BuildExit::Aborted { fees }) => Ok(BuildOutcome::Aborted { fees, cached_reads }),
+            Err(BuildExit::Fatal(err)) => Err(err),
         }
-
-        let elapsed = guard.elapsed();
-        let secs = elapsed.as_secs_f64();
-        if secs > 0.0 {
-            let gas_per_second = sealed_block.gas_used() as f64 / secs;
-            self.metrics.gas_per_second.record(gas_per_second);
-            self.metrics.gas_per_second_last.set(gas_per_second);
-        }
-        self.metrics.rlp_block_size_bytes.record(rlp_length as f64);
-        self.metrics
-            .rlp_block_size_bytes_last
-            .set(rlp_length as f64);
-
-        info!(
-            parent_hash = ?sealed_block.parent_hash(),
-            number = sealed_block.number(),
-            hash = ?sealed_block.hash(),
-            timestamp = sealed_block.timestamp_millis(),
-            gas_limit = sealed_block.gas_limit(),
-            gas_used,
-            extra_data = %sealed_block.extra_data(),
-            subblocks_count,
-            payment_transactions,
-            subblock_transactions,
-            total_transactions,
-            ?elapsed,
-            ?total_normal_transaction_execution_elapsed,
-            ?total_subblock_transaction_execution_elapsed,
-            ?total_transaction_execution_elapsed,
-            ?builder_finish_elapsed,
-            "Built payload"
-        );
-
-        let eth_payload =
-            EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
-
-        let execution_outcome = ExecutionOutcome::new(
-            db.take_bundle(),
-            vec![execution_result.receipts],
-            block.number(),
-            Vec::new(),
-        );
-
-        let executed_block = BuiltPayloadExecutedBlock {
-            recovered_block: Arc::new(block),
-            execution_output: Arc::new(execution_outcome),
-            hashed_state: Either::Left(Arc::new(hashed_state)),
-            trie_updates: Either::Left(Arc::new(trie_updates)),
-        };
-
-        let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
-
-        drop(db);
-        Ok(BuildOutcome::Better {
-            payload,
-            cached_reads,
-        })
     }
 }
 
