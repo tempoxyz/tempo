@@ -50,7 +50,7 @@ pub(crate) fn resolve_from_path(binary: &str) -> Option<PathBuf> {
     None
 }
 
-pub(super) fn default_local_bin() -> Result<PathBuf, InstallerError> {
+pub(crate) fn default_local_bin() -> Result<PathBuf, InstallerError> {
     let home = env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
         .ok_or(InstallerError::HomeDirMissing)?;
@@ -79,7 +79,7 @@ pub(crate) fn binary_candidates(base: &str) -> Vec<String> {
     }
 }
 
-pub(super) fn check_dir_writable(dir: &Path) -> Result<(), InstallerError> {
+pub(crate) fn check_dir_writable(dir: &Path) -> Result<(), InstallerError> {
     tempfile::NamedTempFile::new_in(dir).map_err(|err| {
         InstallerError::Io(std::io::Error::new(
             err.kind(),

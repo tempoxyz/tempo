@@ -9,7 +9,6 @@ use super::error::InstallerError;
 use super::debug_log;
 use super::verify::{sha256_of_bytes, verify_signature};
 
-// Keep in sync with cli/install AGENT_SKILL_DIRS.
 pub(super) const AGENT_SKILL_DIRS: &[(&str, &str, &str)] = &[
     (".agents", ".agents/skills", "universal"),
     (".claude", ".claude/skills", "Claude Code"),

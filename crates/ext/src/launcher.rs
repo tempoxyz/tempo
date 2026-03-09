@@ -3,14 +3,12 @@
 //! add/update/remove).
 
 use crate::installer::{
-    binary_candidates, debug_log, executable_name, fetch_manifest_version, platform_tuple,
-    set_executable_permissions, InstallSource, Installer, InstallerError,
+    binary_candidates, debug_log, fetch_manifest_version, InstallSource, Installer, InstallerError,
 };
 use crate::state::State;
 use std::env;
 use std::error::Error;
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -90,15 +88,9 @@ impl Launcher {
     }
 
     fn handle_management(&self, action: &str, args: &[String]) -> Result<i32, LauncherError> {
-        // `tempo update` with no extension: self-update the tempo binary.
-        if action == "update" && args.iter().all(|a| a.starts_with('-')) {
-            let dry_run = args.iter().any(|a| a == "--dry-run");
-            return self.self_update(dry_run);
-        }
-
         let parsed = parse_management_args(args)?;
 
-        let installer = Installer::from_env()?;
+        let installer = Installer::from_env(self.exe_dir.as_deref())?;
 
         match action {
             "add" | "update" => {
@@ -116,41 +108,6 @@ impl Launcher {
             _ => unreachable!(),
         };
 
-        Ok(0)
-    }
-
-    /// Download the latest `tempo` binary from R2 and replace the current one.
-    fn self_update(&self, dry_run: bool) -> Result<i32, LauncherError> {
-        let (os, arch) = platform_tuple();
-        let base = base_url();
-        let base = base.trim_end_matches('/');
-        let url = format!("{base}/tempo/tempo-{os}-{arch}");
-
-        if dry_run {
-            println!("dry-run: download tempo from {url}");
-            return Ok(0);
-        }
-
-        debug_log(&format!("self-update: downloading from {url}"));
-        let installer = Installer::from_env()?;
-
-        let download_dir = tempfile::TempDir::new()?;
-        let tmp_path = download_dir.path().join("tempo");
-
-        let mut response = reqwest::blocking::get(&url)
-            .map_err(InstallerError::from)?
-            .error_for_status()
-            .map_err(InstallerError::from)?;
-        let mut file = fs::File::create(&tmp_path)?;
-        std::io::copy(&mut response, &mut file)?;
-
-        let dst = installer.bin_dir.join(executable_name("tempo"));
-        let staging = dst.with_extension("tmp");
-        fs::copy(&tmp_path, &staging)?;
-        set_executable_permissions(&staging)?;
-        fs::rename(&staging, &dst)?;
-
-        println!("Updated tempo");
         Ok(0)
     }
 
@@ -193,7 +150,6 @@ impl Launcher {
         println!("Tempo CLI {}\n", self.version);
         println!("Usage: tempo <command> [args...]\n");
         println!("Management:");
-        println!("  update          Update the tempo launcher itself");
         println!("  add <name>      Install an extension");
         println!("  update <name>   Update an extension");
         println!("  remove <name>   Remove an extension\n");
@@ -211,7 +167,7 @@ impl Launcher {
 
         let binary_name = format!("tempo-{extension}");
 
-        let installer = Installer::from_env()?;
+        let installer = Installer::from_env(self.exe_dir.as_deref())?;
         match installer.install(
             extension,
             &InstallSource {
@@ -272,7 +228,7 @@ impl Launcher {
                 "auto-update: {extension} {old} -> {latest_version}",
                 old = installed_version.unwrap_or("(untracked)")
             ));
-            if let Ok(installer) = Installer::from_env() {
+            if let Ok(installer) = Installer::from_env(self.exe_dir.as_deref()) {
                 let source = InstallSource {
                     manifest: Some(url),
                     public_key: Some(release_public_key()),
@@ -290,15 +246,38 @@ impl Launcher {
     }
 
     fn find_binary(&self, binary: &str) -> Option<PathBuf> {
+        let candidates = binary_candidates(binary);
+
+        // 1. Check next to the running binary.
         if let Some(dir) = &self.exe_dir {
-            for candidate in &binary_candidates(binary) {
-                let path = dir.join(candidate);
+            for name in &candidates {
+                let path = dir.join(name);
                 if path.is_file() {
                     return Some(path);
                 }
             }
         }
 
+        // 2. Check the fallback install directory (~/.local/bin or
+        //    TEMPO_HOME/bin) in case exe_dir wasn't writable when the
+        //    extension was installed.
+        let fallback = if let Some(home) = env::var_os("TEMPO_HOME") {
+            Some(PathBuf::from(home).join("bin"))
+        } else {
+            crate::installer::default_local_bin().ok()
+        };
+        if let Some(dir) = &fallback {
+            if self.exe_dir.as_deref() != Some(dir.as_path()) {
+                for name in &candidates {
+                    let path = dir.join(name);
+                    if path.is_file() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+
+        // 3. Search PATH.
         crate::installer::resolve_from_path(binary)
     }
 }

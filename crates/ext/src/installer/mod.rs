@@ -9,7 +9,7 @@ mod verify;
 pub(crate) use error::InstallerError;
 pub(crate) use manifest::{fetch_manifest_version, is_secure_or_local_manifest_location};
 pub(crate) use platform::{
-    binary_candidates, executable_name, platform_tuple, resolve_from_path,
+    binary_candidates, check_dir_writable, default_local_bin, executable_name, resolve_from_path,
     set_executable_permissions,
 };
 
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 use manifest::{load_manifest, ReleaseBinary};
-use platform::{check_dir_writable, default_local_bin, platform_binary_name};
+use platform::platform_binary_name;
 use skill::{install_skill, remove_skill};
 use verify::{decode_verifying_key, sha256_of_bytes, verify_signature};
 
@@ -54,9 +54,12 @@ struct ResolvedInstall {
 }
 
 impl Installer {
-    pub(crate) fn from_env() -> Result<Self, InstallerError> {
+    pub(crate) fn from_env(exe_dir: Option<&Path>) -> Result<Self, InstallerError> {
         let bin_dir = if let Some(home) = env::var_os("TEMPO_HOME") {
             PathBuf::from(home).join("bin")
+        } else if let Some(dir) = exe_dir.filter(|d| d.is_dir() && check_dir_writable(d).is_ok())
+        {
+            dir.to_path_buf()
         } else {
             default_local_bin()?
         };
