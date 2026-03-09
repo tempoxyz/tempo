@@ -259,16 +259,12 @@ where
             .register(DKG_CHANNEL_IDENT, DKG_LIMIT)
             .await
             .unwrap();
-        let subblocks = if self.consensus_config.with_subblocks {
-            self.oracle
-                .control(self.public_key.clone())
-                .register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT)
-                .await
-                .unwrap()
-                .into()
-        } else {
-            None
-        };
+        let subblocks = self
+            .oracle
+            .control(self.public_key.clone())
+            .register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT)
+            .await
+            .unwrap();
 
         let consensus_handle = engine.start(
             votes,
