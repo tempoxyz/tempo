@@ -105,7 +105,8 @@ where
         Cli::try_parse_from(args).map_err(|err| LauncherError::InvalidArgs(err.to_string()))?;
 
     match cli.command {
-        Commands::Add(args) | Commands::Update(args) => launcher.handle_install(args),
+        Commands::Add(args) => launcher.handle_install(args),
+        Commands::Update(args) => launcher.handle_update(args),
         Commands::Remove(args) => launcher.handle_remove(&args.extension, args.dry_run),
         Commands::Extension(ext_args) => launcher.handle_extension(ext_args),
     }
@@ -137,6 +138,74 @@ impl Launcher {
             }
         };
         installer.install(&args.extension, &source, args.dry_run, false)?;
+        Ok(0)
+    }
+
+    /// Handle `tempo update <extension>`. When no version is specified, only
+    /// installs if the manifest version is strictly newer than the currently
+    /// installed version (prevents downgrades). With an explicit version,
+    /// behaves like `add`.
+    fn handle_update(&self, args: ManagementArgs) -> Result<i32, LauncherError> {
+        if !is_valid_extension_name(&args.extension) {
+            return Err(LauncherError::InvalidArgs(format!(
+                "invalid extension name: {} (only alphanumeric, hyphens, and underscores)",
+                args.extension
+            )));
+        }
+
+        // Explicit version: user knows what they want, treat like `add`.
+        if args.version.is_some() {
+            return self.handle_install(args);
+        }
+
+        let installer = Installer::from_env(self.exe_dir.as_deref())?;
+        let source = if args.manifest.is_none() {
+            InstallSource {
+                manifest: Some(manifest_url(&args.extension, None)),
+                public_key: Some(release_public_key()),
+            }
+        } else {
+            InstallSource {
+                manifest: args.manifest,
+                public_key: args.public_key,
+            }
+        };
+
+        let state = State::load();
+        let installed_version = state
+            .extensions
+            .get(&args.extension)
+            .map(|e| e.installed_version.as_str());
+
+        if args.dry_run {
+            println!(
+                "dry-run: update {} (installed: {})",
+                args.extension,
+                installed_version.unwrap_or("none")
+            );
+            return Ok(0);
+        }
+
+        match installer.install_if_changed(&args.extension, &source, installed_version)? {
+            Some(new_version) => {
+                if installed_version.is_some_and(|v| !v.is_empty()) {
+                    println!("Updated tempo-{} to {new_version}", args.extension);
+                } else {
+                    println!("Installed tempo-{} {new_version}", args.extension);
+                }
+                let mut state = state;
+                state.record_check(&args.extension, &new_version);
+                state.save();
+            }
+            None => {
+                println!(
+                    "tempo-{} is already at the latest version ({})",
+                    args.extension,
+                    installed_version.unwrap_or("unknown")
+                );
+            }
+        }
+
         Ok(0)
     }
 
