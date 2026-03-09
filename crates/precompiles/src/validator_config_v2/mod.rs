@@ -35,9 +35,8 @@ struct Config {
     owner: Address,
     is_init: bool,
     init_at_height: u64,
-    /// Number of V1 validators skipped during migration (bad pubkey, duplicate, etc.).
-    /// Packed here alongside `is_init` / `init_at_height` since all three are migration
-    /// lifecycle state and only read/written during migration.
+    /// Number of V1 validators skipped during migration (bad pubkey, duplicate, etc).
+    /// Packed alongside `is_init` and `init_at_height` since all are migration lifecycle state.
     migration_skipped_count: u16,
 }
 
@@ -930,6 +929,7 @@ impl ValidatorConfigV2 {
         let v1_val = v1.validators(v1.validators_array(call.idx)?)?;
 
         // Closure to skipping a validator when one of the checks fails
+        // NOTE: No real saturation concerns as the validator set << u16::MAX
         let skip = |s: &mut Self| {
             s.config
                 .migration_skipped_count
