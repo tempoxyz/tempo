@@ -7,6 +7,7 @@ set -eo pipefail
 no_std_crates=(
     tempo-contracts
     tempo-primitives
+    tempo-alloy
 )
 
 for crate in "${no_std_crates[@]}"; do
