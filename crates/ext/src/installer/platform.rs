@@ -34,7 +34,7 @@ fn platform_tuple() -> (&'static str, &'static str) {
     (os, arch)
 }
 
-pub(crate) fn resolve_from_path(binary: &str) -> Option<PathBuf> {
+pub(crate) fn find_in_path(binary: &str) -> Option<PathBuf> {
     let path_env = env::var_os("PATH")?;
     let candidates = binary_candidates(binary);
 

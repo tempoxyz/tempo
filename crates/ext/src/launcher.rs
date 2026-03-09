@@ -3,8 +3,7 @@
 //! add/update/remove).
 
 use crate::installer::{
-    InstallSource, Installer, InstallerError, binary_candidates, fallback_bin_dir,
-    fetch_manifest_version, resolve_from_path,
+    InstallSource, Installer, InstallerError, binary_candidates, fallback_bin_dir, find_in_path,
 };
 use crate::state::State;
 use std::env;
@@ -53,7 +52,6 @@ struct Launcher {
 }
 
 impl Launcher {
-
     fn handle_management(&self, action: &str, args: &[String]) -> Result<i32, LauncherError> {
         let parsed = parse_management_args(args)?;
 
@@ -159,51 +157,39 @@ impl Launcher {
             return;
         }
 
-        let url = manifest_url(extension, None);
-        let latest_version = match fetch_manifest_version(&url) {
-            Ok(v) => v,
+        let installed_version = state
+            .extensions
+            .get(extension)
+            .map(|e| e.installed_version.as_str());
+
+        let installer = match Installer::from_env(self.exe_dir.as_deref()) {
+            Ok(i) => i,
             Err(_) => {
-                tracing::debug!("auto-update: manifest fetch failed for {extension}");
                 state.touch_check(extension);
                 state.save();
                 return;
             }
         };
 
-        let installed_version = state
-            .extensions
-            .get(extension)
-            .map(|e| e.installed_version.as_str());
-
-        if installed_version == Some(latest_version.as_str()) {
-            state.touch_check(extension);
-            state.save();
-            return;
-        }
-
-        tracing::debug!(
-            "auto-update: {extension} {old} -> {latest_version}",
-            old = installed_version.unwrap_or("(untracked)")
-        );
-
-        let updated = if let Ok(installer) = Installer::from_env(self.exe_dir.as_deref()) {
-            let source = InstallSource {
-                manifest: Some(url),
-                public_key: Some(release_public_key()),
-            };
-            installer.install(extension, &source, false, true).is_ok()
-        } else {
-            false
+        let source = InstallSource {
+            manifest: Some(manifest_url(extension, None)),
+            public_key: Some(release_public_key()),
         };
 
-        if updated {
-            if installed_version.is_some_and(|v| !v.is_empty()) {
-                eprintln!("Updated tempo-{extension} to {latest_version}");
+        match installer.install_if_changed(extension, &source, installed_version) {
+            Ok(Some(new_version)) => {
+                if installed_version.is_some_and(|v| !v.is_empty()) {
+                    eprintln!("Updated tempo-{extension} to {new_version}");
+                }
+                state.record_check(extension, &new_version);
             }
-            state.record_check(extension, &latest_version);
-        } else {
-            tracing::debug!("auto-update: install failed for {extension}");
-            state.touch_check(extension);
+            Ok(None) => {
+                state.touch_check(extension);
+            }
+            Err(err) => {
+                tracing::debug!("auto-update: failed for {extension}: {err}");
+                state.touch_check(extension);
+            }
         }
         state.save();
     }
@@ -236,7 +222,7 @@ impl Launcher {
         }
 
         // 3. Search PATH.
-        resolve_from_path(binary)
+        find_in_path(binary)
     }
 }
 
@@ -357,24 +343,20 @@ fn print_missing_install_hint(extension: &str) {
 #[cfg(test)]
 mod tests {
     use super::{is_valid_extension_name, manifest_url};
-    use crate::installer::is_secure_or_local_manifest_location;
+    use crate::installer::is_allowed_manifest_url;
 
     #[test]
     fn runtime_manifest_url_policy_enforces_https_or_local() {
-        assert!(is_secure_or_local_manifest_location(
+        assert!(is_allowed_manifest_url(
             "https://cli.tempo.xyz/tempo-wallet/manifest.json"
         ));
-        assert!(is_secure_or_local_manifest_location(
-            "file:///tmp/manifest.json"
-        ));
-        assert!(is_secure_or_local_manifest_location("./manifest.json"));
-        assert!(is_secure_or_local_manifest_location("/tmp/manifest.json"));
-        assert!(!is_secure_or_local_manifest_location(
+        assert!(is_allowed_manifest_url("file:///tmp/manifest.json"));
+        assert!(is_allowed_manifest_url("./manifest.json"));
+        assert!(is_allowed_manifest_url("/tmp/manifest.json"));
+        assert!(!is_allowed_manifest_url(
             "http://insecure.example.com/manifest.json"
         ));
-        assert!(!is_secure_or_local_manifest_location(
-            "ftp://example.com/manifest.json"
-        ));
+        assert!(!is_allowed_manifest_url("ftp://example.com/manifest.json"));
     }
 
     #[test]

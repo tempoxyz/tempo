@@ -60,7 +60,7 @@ pub(super) fn verify_signature(
         .map_err(|_| InstallerError::SignatureVerificationFailed(binary.to_string()))
 }
 
-pub(super) fn sha256_of_bytes(data: &[u8]) -> String {
+pub(super) fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())

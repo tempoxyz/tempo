@@ -4,9 +4,9 @@ use ed25519_dalek::VerifyingKey;
 use std::fs;
 
 use crate::installer::{
-    file_url_to_path, home_dir, http_client,
     error::InstallerError,
-    verify::{sha256_of_bytes, verify_signature},
+    file_url_to_path, home_dir, http_client,
+    verify::{sha256_hex, verify_signature},
 };
 
 const AGENT_SKILL_DIRS: &[(&str, &str)] = &[
@@ -69,7 +69,7 @@ pub(super) fn install_skill(
     }
 
     if let Some(expected) = expected_sha256 {
-        let actual = sha256_of_bytes(content.as_bytes());
+        let actual = sha256_hex(content.as_bytes());
         if actual != expected {
             tracing::warn!("skill checksum mismatch for tempo-{extension}, skipping");
             return;

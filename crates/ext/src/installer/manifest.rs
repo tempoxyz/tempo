@@ -23,12 +23,6 @@ pub(super) struct ReleaseBinary {
     pub(super) signature: Option<String>,
 }
 
-/// Fetch a release manifest and return the version string.
-pub(crate) fn fetch_manifest_version(manifest_url: &str) -> Result<String, InstallerError> {
-    let manifest = load_manifest(manifest_url)?;
-    Ok(manifest.version)
-}
-
 pub(super) fn load_manifest(location: &str) -> Result<ReleaseManifest, InstallerError> {
     let body = if location.starts_with("https://") {
         http_client()?
@@ -49,7 +43,7 @@ pub(super) fn load_manifest(location: &str) -> Result<ReleaseManifest, Installer
 
 /// Returns `true` if `location` is an HTTPS URL, a `file://` URL, or a local
 /// filesystem path (i.e. not a URL with some other scheme).
-pub(crate) fn is_secure_or_local_manifest_location(location: &str) -> bool {
+pub(crate) fn is_allowed_manifest_url(location: &str) -> bool {
     match url::Url::parse(location) {
         Ok(url) => matches!(url.scheme(), "https" | "file"),
         // Not a URL at all (e.g. `./manifest.json`) — treat as local path.

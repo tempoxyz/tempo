@@ -7,15 +7,15 @@ mod skill;
 mod verify;
 
 pub use error::InstallerError;
-pub(crate) use manifest::{fetch_manifest_version, is_secure_or_local_manifest_location};
-pub(crate) use platform::{
-    binary_candidates, default_local_bin, home_dir, resolve_from_path,
-};
+pub(crate) use manifest::is_allowed_manifest_url;
+pub(crate) use platform::{binary_candidates, default_local_bin, find_in_path, home_dir};
 
-use manifest::{ReleaseBinary, load_manifest};
-use platform::{check_dir_writable, executable_name, platform_binary_name, set_executable_permissions};
+use manifest::{ReleaseBinary, ReleaseManifest, load_manifest};
+use platform::{
+    check_dir_writable, executable_name, platform_binary_name, set_executable_permissions,
+};
 use skill::{install_skill, remove_skill};
-use verify::{decode_verifying_key, sha256_of_bytes, verify_signature};
+use verify::{decode_verifying_key, sha256_hex, verify_signature};
 
 use ed25519_dalek::VerifyingKey;
 use std::env;
@@ -96,9 +96,47 @@ impl Installer {
         dry_run: bool,
         quiet: bool,
     ) -> Result<(), InstallerError> {
+        self.install_inner(extension, source, None, dry_run, quiet)
+    }
+
+    /// Install an extension only if the manifest version differs from
+    /// `installed_version`. Returns `Some(new_version)` if an update was
+    /// performed, `None` if already at the latest version.
+    pub(crate) fn install_if_changed(
+        &self,
+        extension: &str,
+        source: &InstallSource,
+        installed_version: Option<&str>,
+    ) -> Result<Option<String>, InstallerError> {
+        let manifest_loc = source
+            .manifest
+            .as_ref()
+            .ok_or(InstallerError::MissingReleaseManifest)?;
+        if !is_allowed_manifest_url(manifest_loc) {
+            return Err(InstallerError::InsecureManifestUrl(manifest_loc.clone()));
+        }
+
+        let manifest = load_manifest(manifest_loc)?;
+        if installed_version == Some(manifest.version.as_str()) {
+            return Ok(None);
+        }
+
+        let version = manifest.version.clone();
+        self.install_inner(extension, source, Some(manifest), false, true)?;
+        Ok(Some(version))
+    }
+
+    fn install_inner(
+        &self,
+        extension: &str,
+        source: &InstallSource,
+        manifest: Option<ReleaseManifest>,
+        dry_run: bool,
+        quiet: bool,
+    ) -> Result<(), InstallerError> {
         self.ensure_dirs(dry_run)?;
 
-        let resolved = self.resolve_install(extension, source, dry_run, quiet)?;
+        let resolved = self.resolve_install(extension, source, manifest, dry_run, quiet)?;
         self.copy_binary(&resolved, dry_run, quiet)?;
 
         if let Some(skill_url) = &resolved.skill_url {
@@ -127,6 +165,7 @@ impl Installer {
         &self,
         extension: &str,
         source: &InstallSource,
+        pre_manifest: Option<ReleaseManifest>,
         dry_run: bool,
         quiet: bool,
     ) -> Result<ResolvedInstall, InstallerError> {
@@ -136,7 +175,7 @@ impl Installer {
             .manifest
             .clone()
             .ok_or(InstallerError::MissingReleaseManifest)?;
-        if !is_secure_or_local_manifest_location(&manifest_loc) {
+        if !is_allowed_manifest_url(&manifest_loc) {
             return Err(InstallerError::InsecureManifestUrl(manifest_loc));
         }
         let public_key = source
@@ -145,8 +184,13 @@ impl Installer {
             .ok_or(InstallerError::MissingReleasePublicKey)?;
 
         let verifying_key = decode_verifying_key(&public_key)?;
-        tracing::debug!("fetching manifest from {manifest_loc}");
-        let manifest = load_manifest(&manifest_loc)?;
+        let manifest = match pre_manifest {
+            Some(m) => m,
+            None => {
+                tracing::debug!("fetching manifest from {manifest_loc}");
+                load_manifest(&manifest_loc)?
+            }
+        };
         if !quiet {
             println!("installing {binary} {}", manifest.version);
         }
@@ -253,7 +297,10 @@ fn download_extension(
     }
 
     if metadata.url.starts_with("https://") {
-        let mut response = http_client()?.get(&metadata.url).send()?.error_for_status()?;
+        let mut response = http_client()?
+            .get(&metadata.url)
+            .send()?
+            .error_for_status()?;
         let mut file = fs::File::create(&dst)?;
         io::copy(&mut response, &mut file)?;
     } else if let Some(path) = file_url_to_path(&metadata.url) {
@@ -267,7 +314,7 @@ fn download_extension(
     let bytes = fs::read(&dst)?;
 
     tracing::debug!("verifying checksum for {binary}");
-    let actual = sha256_of_bytes(&bytes);
+    let actual = sha256_hex(&bytes);
     let expected = metadata.sha256.to_lowercase();
     if actual != expected {
         let _ = fs::remove_file(&dst);
