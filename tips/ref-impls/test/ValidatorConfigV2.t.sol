@@ -1272,18 +1272,13 @@ contract ValidatorConfigV2Test is BaseTest {
         assertGt(v.deactivatedAtHeight, 0, "Should be deactivated");
     }
 
-    function test_setIpAddresses_worksBeforeInit() public {
+    function test_setIpAddresses_revertsBeforeInit() public {
         validatorConfigV2.migrateValidator(1);
         validatorConfigV2.migrateValidator(0);
 
-        // Should work before initialization
-        // setupVal1 is at index 1 after reverse migration
         assertFalse(validatorConfigV2.isInitialized());
+        vm.expectRevert(abi.encodeWithSelector(IValidatorConfigV2.NotInitialized.selector));
         validatorConfigV2.setIpAddresses(1, "10.0.0.150:8000", "10.0.0.150");
-
-        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
-        assertEq(v.ingress, "10.0.0.150:8000");
-        assertEq(v.egress, "10.0.0.150");
     }
 
     function test_deactivateValidator_byValidator_worksBeforeInit() public {
@@ -1300,19 +1295,14 @@ contract ValidatorConfigV2Test is BaseTest {
         assertGt(v.deactivatedAtHeight, 0, "Should be deactivated");
     }
 
-    function test_setIpAddresses_byValidator_worksBeforeInit() public {
+    function test_setIpAddresses_byValidator_revertsBeforeInit() public {
         validatorConfigV2.migrateValidator(1);
         validatorConfigV2.migrateValidator(0);
 
-        // Validator can update their own IPs before initialization
-        // setupVal1 is at index 1 after reverse migration
         assertFalse(validatorConfigV2.isInitialized());
         vm.prank(setupVal1);
+        vm.expectRevert(abi.encodeWithSelector(IValidatorConfigV2.NotInitialized.selector));
         validatorConfigV2.setIpAddresses(1, "10.0.0.150:8000", "10.0.0.150");
-
-        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
-        assertEq(v.ingress, "10.0.0.150:8000");
-        assertEq(v.egress, "10.0.0.150");
     }
 
 }

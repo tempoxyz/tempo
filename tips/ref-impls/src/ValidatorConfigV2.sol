@@ -237,7 +237,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function setIpAddresses(uint64 idx, string calldata ingress, string calldata egress) external {
+    function setIpAddresses(uint64 idx, string calldata ingress, string calldata egress) external onlyInitialized {
         if (idx >= validatorsArray.length) {
             revert ValidatorNotFound();
         }
