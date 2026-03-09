@@ -91,9 +91,7 @@ impl Registry {
     }
 
     pub(crate) fn is_pinned(&self, extension: &str) -> bool {
-        self.extensions
-            .get(extension)
-            .is_some_and(|e| e.pinned)
+        self.extensions.get(extension).is_some_and(|e| e.pinned)
     }
 
     /// Bump the check timestamp without changing the recorded version.
