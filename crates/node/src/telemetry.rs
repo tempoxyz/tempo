@@ -2,7 +2,7 @@
 //!
 //! This module pushes Prometheus-format metrics directly to Victoria Metrics by polling:
 //! - Commonware's runtime context (`context.encode()`)
-//! - Reth's prometheus recorder (`handle.render()`)
+//! - Reth's prometheus recorder (`collect_and_render()`)
 
 use commonware_runtime::{Metrics as _, Spawner as _, tokio::Context};
 use eyre::WrapErr as _;
@@ -52,7 +52,7 @@ pub fn install_prometheus_metrics(
 
             // Collect metrics from both sources
             let consensus_metrics = context.encode();
-            let reth_metrics = reth_recorder.handle().render();
+            let reth_metrics = reth_recorder.collect_and_render();
             let body = format!("{consensus_metrics}\n{reth_metrics}");
 
             // Push to Victoria Metrics
