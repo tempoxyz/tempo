@@ -11,8 +11,9 @@
 //! - Supports both single-slot primitives and multi-slot types (structs, arrays)
 //! - Element at index `i` starts at slot `data_start + i * T::SLOTS`
 
-use alloy::primitives::{Address, U256};
-use std::ops::{Index, IndexMut};
+use alloc::vec::Vec;
+use alloy_primitives::{Address, U256};
+use core::ops::{Index, IndexMut};
 
 use crate::{
     error::{Result, TempoPrecompileError},
@@ -220,7 +221,7 @@ where
 
     /// Returns the slot that stores the length of the dynamic array.
     #[inline]
-    pub fn len_slot(&self) -> ::alloy::primitives::U256 {
+    pub fn len_slot(&self) -> ::alloy_primitives::U256 {
         self.len_slot
     }
 
@@ -229,7 +230,7 @@ where
     /// Single-slot vectors pack all fields into this slot.
     /// Multi-slot vectors use consecutive slots starting from this base.
     #[inline]
-    pub fn data_slot(&self) -> ::alloy::primitives::U256 {
+    pub fn data_slot(&self) -> ::alloy_primitives::U256 {
         calc_data_slot(self.len_slot)
     }
 
@@ -382,7 +383,7 @@ where
 /// For Solidity compatibility, dynamic array data is stored at `keccak256(len_slot)`.
 #[inline]
 pub(crate) fn calc_data_slot(len_slot: U256) -> U256 {
-    U256::from_be_bytes(alloy::primitives::keccak256(len_slot.to_be_bytes::<32>()).0)
+    U256::from_be_bytes(alloy_primitives::keccak256(len_slot.to_be_bytes::<32>()).0)
 }
 
 /// Load packed elements from storage.
@@ -538,7 +539,7 @@ mod tests {
         storage::{Handler, StorageCtx},
         test_util::{gen_word_from, setup_storage},
     };
-    use alloy::primitives::Address;
+    use alloy_primitives::Address;
     use proptest::prelude::*;
     use tempo_precompiles_macros::Storable;
 
@@ -582,7 +583,7 @@ mod tests {
         // Verify data slot matches keccak256(len_slot)
         let data_slot = calc_data_slot(len_slot);
         let expected =
-            U256::from_be_bytes(alloy::primitives::keccak256(len_slot.to_be_bytes::<32>()).0);
+            U256::from_be_bytes(alloy_primitives::keccak256(len_slot.to_be_bytes::<32>()).0);
 
         assert_eq!(
             data_slot, expected,

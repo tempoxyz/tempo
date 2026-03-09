@@ -3,7 +3,7 @@
 //! This module tests the Storable derive macro's implementation of storage packing,
 //! verifying that fields are correctly packed into slots according to Solidity's rules.
 
-use alloy::primitives::FixedBytes;
+use alloy_primitives::FixedBytes;
 use tempo_precompiles::{
     storage::{FromWord, Layout, StorableType, StorageCtx, packing::insert_into_word},
     test_util::gen_word_from,

@@ -1,13 +1,18 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, LazyLock},
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    sync::Arc,
 };
+use hashbrown::HashMap;
+use once_cell as _;
+#[cfg(not(feature = "std"))]
+use once_cell::sync::Lazy as LazyLock;
+#[cfg(feature = "std")]
+use std::sync::LazyLock;
 
 use crate::tip20::TIP20Error;
-use alloy::{
-    primitives::{Selector, U256},
-    sol_types::{Panic, PanicKind, SolError, SolInterface},
-};
+use alloy_primitives::{Selector, U256};
+use alloy_sol_types::{Panic, PanicKind, SolError, SolInterface};
 use revm::{
     context::journaled_state::JournalLoadErasedError,
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
@@ -91,7 +96,7 @@ impl From<JournalLoadErasedError> for TempoPrecompileError {
 }
 
 /// Result type alias for Tempo precompile operations
-pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
+pub type Result<T> = core::result::Result<T, TempoPrecompileError>;
 
 impl TempoPrecompileError {
     /// Returns true if this error represents a system-level failure that must be propagated
@@ -233,7 +238,7 @@ pub trait IntoPrecompileResult<T> {
     fn into_precompile_result(
         self,
         gas: u64,
-        encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
+        encode_ok: impl FnOnce(T) -> alloy_primitives::Bytes,
     ) -> PrecompileResult;
 }
 
@@ -241,7 +246,7 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
     fn into_precompile_result(
         self,
         gas: u64,
-        encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
+        encode_ok: impl FnOnce(T) -> alloy_primitives::Bytes,
     ) -> PrecompileResult {
         match self {
             Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res))),
@@ -254,7 +259,7 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
     fn into_precompile_result(
         self,
         gas: u64,
-        _encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
+        _encode_ok: impl FnOnce(T) -> alloy_primitives::Bytes,
     ) -> PrecompileResult {
         Self::into_precompile_result(self, gas)
     }

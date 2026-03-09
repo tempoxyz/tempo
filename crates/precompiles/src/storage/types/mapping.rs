@@ -1,7 +1,7 @@
 //! Type-safe wrapper for EVM storage mappings (hash-based key-value storage).
 
-use alloy::primitives::{Address, U256};
-use std::{
+use alloy_primitives::{Address, U256};
+use core::{
     hash::Hash,
     ops::{Index, IndexMut},
 };
@@ -157,7 +157,7 @@ where
 mod tests {
     use super::*;
     use crate::storage::StorageKey;
-    use alloy::primitives::{Address, B256, keccak256};
+    use alloy_primitives::{Address, B256, keccak256};
 
     // Backward compatibility helper to verify the trait impl.
     fn old_mapping_slot<K: AsRef<[u8]>>(key: K, slot: U256) -> U256 {

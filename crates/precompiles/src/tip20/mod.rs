@@ -19,11 +19,13 @@ use crate::{
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
-use alloy::{
-    hex,
-    primitives::{Address, B256, Signature, U256, keccak256, uint},
-    sol_types::SolValue,
-};
+use alloc::string::{String, ToString};
+use alloy_primitives::{Address, B256, Signature, U256, hex, keccak256, uint};
+use alloy_sol_types::SolValue;
+use once_cell as _;
+#[cfg(not(feature = "std"))]
+use once_cell::sync::Lazy as LazyLock;
+#[cfg(feature = "std")]
 use std::sync::LazyLock;
 use tempo_precompiles_macros::contract;
 use tracing::trace;
@@ -390,7 +392,7 @@ impl TIP20Token {
 
         self.set_total_supply(new_supply)?;
         let to_balance = self.get_balance(to)?;
-        let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
+        let new_to_balance: alloy_primitives::Uint<256, 4> = to_balance
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_balance(to, new_to_balance)?;
@@ -576,7 +578,7 @@ impl TIP20Token {
         }
         let parity = call.v == 28;
         let sig = Signature::from_scalars_and_parity(call.r, call.s, parity);
-        let recovered = alloy::consensus::crypto::secp256k1::recover_signer(&sig, digest)
+        let recovered = alloy_consensus::crypto::secp256k1::recover_signer(&sig, digest)
             .map_err(|_| TIP20Error::invalid_signature())?;
         if recovered.is_zero() || recovered != call.owner {
             return Err(TIP20Error::invalid_signature().into());
@@ -965,7 +967,7 @@ impl TIP20Token {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use alloy::primitives::{Address, FixedBytes, IntoLogData, U256};
+    use alloy_primitives::{Address, FixedBytes, IntoLogData, U256};
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20Factory};
 
     use super::*;
@@ -2322,9 +2324,9 @@ pub(crate) mod tests {
 
     mod permit_tests {
         use super::*;
-        use alloy::sol_types::SolValue;
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
+        use alloy_sol_types::SolValue;
         use tempo_chainspec::hardfork::TempoHardfork;
 
         const CHAIN_ID: u64 = 42;

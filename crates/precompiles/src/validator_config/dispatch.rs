@@ -3,10 +3,8 @@ use crate::{
     Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void,
     unknown_selector, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy_primitives::Address;
+use alloy_sol_types::{SolCall, SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::IValidatorConfig::{
     IValidatorConfigCalls, changeValidatorStatusByIndexCall,
@@ -83,10 +81,8 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::{
-        primitives::{Address, FixedBytes},
-        sol_types::{SolCall, SolValue},
-    };
+    use alloy_primitives::{Address, FixedBytes};
+    use alloy_sol_types::{SolCall, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig, IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
@@ -244,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_change_validator_status_by_index_t1_gating() -> eyre::Result<()> {
-        use alloy::sol_types::SolError;
+        use alloy_sol_types::SolError;
         use tempo_contracts::precompiles::UnknownFunctionSelector;
 
         let owner = Address::random();

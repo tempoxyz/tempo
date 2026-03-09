@@ -3,10 +3,8 @@ use crate::{
     tip403_registry::{AuthRole, TIP403Registry},
     unknown_selector, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy_primitives::Address;
+use alloy_sol_types::{SolCall, SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::ITIP403Registry::{
     ITIP403RegistryCalls, compoundPolicyDataCall, createCompoundPolicyCall,
@@ -114,7 +112,7 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
         tip403_registry::ITIP403Registry,
     };
-    use alloy::sol_types::{SolCall, SolValue};
+    use alloy_sol_types::{SolCall, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 

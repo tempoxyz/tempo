@@ -216,6 +216,7 @@ futures = "0.3.31"
 governor = "0.10.4"
 indexmap = "2.13.0"
 indicatif = "0.18"
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
 itertools = "0.14.0"
 jiff = { version = "0.2.18", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
@@ -236,11 +237,11 @@ serde_json = { version = "1.0.149", features = ["alloc"], default-features = fal
 schnellru = "0.2"
 sha2 = { version = "0.10", default-features = false }
 tempfile = "3.24.0"
-thiserror = "2.0.18"
+thiserror = { version = "2.0.18", default-features = false }
 # TODO: restrict this to only the required features
 tokio = { version = "1.49.0", features = ["full"] }
 tokio-util = "0.7.18"
-tracing = "0.1.44"
+tracing = { version = "0.1.44", default-features = false }
 tracing-subscriber = "0.3.22"
 url = "2.5"
 criterion = "0.8.2"

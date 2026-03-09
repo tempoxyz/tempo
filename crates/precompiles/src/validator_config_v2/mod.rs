@@ -4,14 +4,24 @@ use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 pub use tempo_contracts::precompiles::{IValidatorConfigV2, ValidatorConfigV2Error};
 use tempo_precompiles_macros::{Storable, contract};
 
+#[cfg(feature = "std")]
+use crate::ip_validation::IpWithPortParseError;
 use crate::{
     error::{Result, TempoPrecompileError},
-    ip_validation::{IpWithPortParseError, ensure_address_is_ip, ensure_address_is_ip_port},
+    ip_validation::{ensure_address_is_ip, ensure_address_is_ip_port},
     storage::{Handler, Mapping},
     validator_config::ValidatorConfig,
 };
-use alloy::primitives::{Address, B256, Keccak256, keccak256};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+#[cfg(feature = "std")]
+use alloy_primitives::Keccak256;
+use alloy_primitives::{Address, B256, keccak256};
+#[cfg(feature = "std")]
 use commonware_codec::DecodeExt;
+#[cfg(feature = "std")]
 use commonware_cryptography::{
     Verifier,
     ed25519::{PublicKey, Signature},
@@ -240,6 +250,7 @@ impl ValidatorConfigV2 {
 
     /// Parses `ingress` as an `<ip>:<port>` pair and returns the hash of the
     /// binary representation of its IP address.
+    #[cfg(feature = "std")]
     fn ingress_ip_key(ingress: &str) -> Result<B256> {
         let ingress = ingress
             .parse::<std::net::SocketAddr>()
@@ -254,6 +265,11 @@ impl ValidatorConfigV2 {
             std::net::IpAddr::V4(v4) => keccak256(v4.octets()),
             std::net::IpAddr::V6(v6) => keccak256(v6.octets()),
         })
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn ingress_ip_key(ingress: &str) -> Result<B256> {
+        Ok(keccak256(ingress.as_bytes()))
     }
 
     fn require_unique_ingress_ip(&self, ingress: &str) -> Result<B256> {
@@ -345,6 +361,7 @@ impl ValidatorConfigV2 {
     /// **FORMAT**:
     /// - Namespace: [`VALIDATOR_NS_ADD`] or [`VALIDATOR_NS_ROTATE`]
     /// - Message: `keccak256(abi.encodePacked(chainId, contractAddr, validatorAddr, ingress, egress))`
+    #[cfg(feature = "std")]
     fn verify_validator_signature(
         &self,
         namespace: &[u8],
@@ -371,6 +388,19 @@ impl ValidatorConfigV2 {
             Err(ValidatorConfigV2Error::invalid_signature())?
         }
 
+        Ok(())
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn verify_validator_signature(
+        &self,
+        _namespace: &[u8],
+        _pubkey: &B256,
+        _signature: &[u8],
+        _validator_address: Address,
+        _ingress: &str,
+        _egress: &str,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -582,11 +612,14 @@ impl ValidatorConfigV2 {
         self.require_new_address(v1_val.validatorAddress)?;
         self.require_new_pubkey(v1_val.publicKey)?;
 
+        #[cfg(feature = "std")]
         let egress = v1_val
             .outboundAddress
             .parse::<std::net::SocketAddr>()
             .map(|sa| sa.ip().to_string())
             .unwrap_or(v1_val.outboundAddress);
+        #[cfg(not(feature = "std"))]
+        let egress = v1_val.outboundAddress;
 
         let ingress_hash = self.require_unique_ingress_ip(&v1_val.inboundAddress)?;
 
@@ -638,8 +671,7 @@ fn v1() -> ValidatorConfig {
 mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
-    use alloy::primitives::Address;
-    use alloy_primitives::FixedBytes;
+    use alloy_primitives::{Address, FixedBytes};
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
 

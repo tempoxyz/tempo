@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn test_array_storage() {
-    use alloy::primitives::address;
+    use alloy_primitives::address;
 
     #[contract]
     pub struct Layout {

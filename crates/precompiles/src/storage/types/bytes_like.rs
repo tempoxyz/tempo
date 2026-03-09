@@ -15,8 +15,9 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{StorageOps, types::*},
 };
-use alloy::primitives::{Address, Bytes, U256, keccak256};
-use std::marker::PhantomData;
+use alloc::{string::String, vec::Vec};
+use alloy_primitives::{Address, Bytes, U256, keccak256};
+use core::marker::PhantomData;
 
 impl StorableType for Bytes {
     const LAYOUT: Layout = Layout::Slots(1);

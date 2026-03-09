@@ -5,7 +5,7 @@
 //! automatically place opposite-side orders when filled.
 
 use crate::stablecoin_dex::{IStablecoinDEX, error::OrderError};
-use alloy::primitives::{Address, B256};
+use alloy_primitives::{Address, B256};
 use tempo_precompiles_macros::Storable;
 
 /// Represents an order in the stablecoin DEX orderbook.
@@ -306,7 +306,7 @@ mod tests {
     };
 
     use super::*;
-    use alloy::primitives::{address, b256};
+    use alloy_primitives::{address, b256};
 
     const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
     const TEST_BOOK_KEY: B256 =

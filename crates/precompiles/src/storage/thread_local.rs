@@ -1,20 +1,24 @@
-use alloy::primitives::{Address, LogData, U256};
 use alloy_evm::{Database, EvmInternals};
+use alloy_primitives::{Address, LogData, U256};
+#[cfg(feature = "std")]
+use core::cell::RefCell;
+use core::fmt::Debug;
 use revm::{
     context::{Block, CfgEnv, JournalTr, Transaction, journaled_state::JournalCheckpoint},
     state::{AccountInfo, Bytecode},
 };
-use scoped_tls::scoped_thread_local;
-use std::{cell::RefCell, fmt::Debug};
 use tempo_chainspec::hardfork::TempoHardfork;
 
+#[cfg(feature = "std")]
+use crate::error::TempoPrecompileError;
 use crate::{
     Precompile,
-    error::{Result, TempoPrecompileError},
+    error::Result,
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
 };
 
-scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
+#[cfg(feature = "std")]
+scoped_tls::scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
 
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
 ///
@@ -42,6 +46,7 @@ impl StorageCtx {
     /// 1. Only one `enter` call is active at a time, in the same thread.
     /// 2. If multiple storage providers are instantiated in parallel threads,
     ///    they CANNOT point to the same storage addresses.
+    #[cfg(feature = "std")]
     pub fn enter<S, R>(storage: &mut S, f: impl FnOnce() -> R) -> R
     where
         S: PrecompileStorageProvider,
@@ -49,15 +54,24 @@ impl StorageCtx {
         // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
         let storage: &mut dyn PrecompileStorageProvider = storage;
         let storage_static: &mut (dyn PrecompileStorageProvider + 'static) =
-            unsafe { std::mem::transmute(storage) };
+            unsafe { core::mem::transmute(storage) };
         let cell = RefCell::new(storage_static);
         STORAGE.set(&cell, f)
+    }
+
+    #[cfg(not(feature = "std"))]
+    pub fn enter<S, R>(_storage: &mut S, _f: impl FnOnce() -> R) -> R
+    where
+        S: PrecompileStorageProvider,
+    {
+        panic!("StorageCtx::enter requires the `std` feature")
     }
 
     /// Execute an infallible function with access to the current thread-local storage provider.
     ///
     /// # Panics
     /// Panics if no storage context is set.
+    #[cfg(feature = "std")]
     fn with_storage<F, R>(f: F) -> R
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> R,
@@ -74,7 +88,16 @@ impl StorageCtx {
         })
     }
 
+    #[cfg(not(feature = "std"))]
+    fn with_storage<F, R>(_f: F) -> R
+    where
+        F: FnOnce(&mut dyn PrecompileStorageProvider) -> R,
+    {
+        panic!("StorageCtx::with_storage requires the `std` feature")
+    }
+
     /// Execute a (fallible) function with access to the current thread-local storage provider.
+    #[cfg(feature = "std")]
     fn try_with_storage<F, R>(f: F) -> Result<R>
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
@@ -90,6 +113,14 @@ impl StorageCtx {
             let mut guard = cell.borrow_mut();
             f(&mut **guard)
         })
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn try_with_storage<F, R>(_f: F) -> Result<R>
+    where
+        F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
+    {
+        panic!("StorageCtx::try_with_storage requires the `std` feature")
     }
 
     // `PrecompileStorageProvider` methods (with modified mutability for read-only methods)

@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256};
+use alloy_primitives::{Address, B256};
 
 use crate::{
     error::Result,
@@ -152,7 +152,7 @@ impl TIP20Token {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::keccak256;
+    use alloy_primitives::keccak256;
 
     use super::*;
     use crate::{error::TempoPrecompileError, storage::StorageCtx, test_util::TIP20Setup};

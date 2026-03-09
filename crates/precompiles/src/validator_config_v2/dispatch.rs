@@ -1,6 +1,7 @@
 use super::*;
 use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy_primitives::Address;
+use alloy_sol_types::SolInterface;
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::IValidatorConfigV2::IValidatorConfigV2Calls;
 
@@ -95,10 +96,8 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::{
-        primitives::{Address, FixedBytes},
-        sol_types::{SolCall, SolValue},
-    };
+    use alloy_primitives::{Address, FixedBytes};
+    use alloy_sol_types::{SolCall, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfigV2, IValidatorConfigV2::IValidatorConfigV2Calls, ValidatorConfigV2Error,
@@ -198,7 +197,7 @@ mod tests {
             msg_data.extend_from_slice(validator_addr.as_slice());
             msg_data.extend_from_slice(b"192.168.1.1:8000");
             msg_data.extend_from_slice(b"192.168.1.1");
-            let message = alloy::primitives::keccak256(&msg_data);
+            let message = alloy_primitives::keccak256(&msg_data);
 
             // Sign with namespace
             let signature = private_key.sign(VALIDATOR_NS_ADD, message.as_slice());

@@ -9,7 +9,11 @@ use crate::{
     ip_validation::ensure_address_is_ip_port,
     storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, B256};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+use alloy_primitives::{Address, B256};
 use tracing::trace;
 
 /// Validator information
@@ -361,8 +365,7 @@ impl ValidatorConfig {
 mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
-    use alloy::primitives::Address;
-    use alloy_primitives::FixedBytes;
+    use alloy_primitives::{Address, FixedBytes};
 
     #[test]
     fn test_owner_initialization_and_change() -> eyre::Result<()> {

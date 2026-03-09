@@ -41,8 +41,9 @@
 //! handler.write(vec.into())?;  // `Set::from(vec)` deduplicates
 //! ```
 
-use alloy::primitives::{Address, U256};
-use std::{
+use alloc::vec::Vec;
+use alloy_primitives::{Address, U256};
+use core::{
     fmt,
     hash::Hash,
     ops::{Deref, Index},
@@ -120,7 +121,7 @@ impl<T: Eq + Clone> FromIterator<T> for Set<T> {
 
 impl<T> IntoIterator for Set<T> {
     type Item = T;
-    type IntoIter = std::vec::IntoIter<T>;
+    type IntoIter = alloc::vec::IntoIter<T>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -130,7 +131,7 @@ impl<T> IntoIterator for Set<T> {
 
 impl<'a, T> IntoIterator for &'a Set<T> {
     type Item = &'a T;
-    type IntoIter = std::slice::Iter<'a, T>;
+    type IntoIter = core::slice::Iter<'a, T>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -487,7 +488,7 @@ where
 mod tests {
     use super::*;
     use crate::{storage::StorageCtx, test_util::setup_storage};
-    use alloy::primitives::Address;
+    use alloy_primitives::Address;
     use proptest::prelude::*;
 
     // -- SET TYPE TESTS -------------------------------------------------------

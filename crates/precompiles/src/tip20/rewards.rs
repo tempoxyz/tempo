@@ -3,7 +3,7 @@ use crate::{
     storage::Handler,
     tip20::TIP20Token,
 };
-use alloy::primitives::{Address, U256, uint};
+use alloy_primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
 use tempo_precompiles_macros::Storable;
 
@@ -354,7 +354,7 @@ mod tests {
         test_util::TIP20Setup,
         tip403_registry::TIP403Registry,
     };
-    use alloy::primitives::{Address, U256};
+    use alloy_primitives::{Address, U256};
     use tempo_contracts::precompiles::{ITIP403Registry, TIP20Error};
 
     #[test]
