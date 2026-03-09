@@ -120,12 +120,12 @@ pub struct Args {
     )]
     pub minimum_time_before_propose: PositiveDuration,
 
-    /// Whether to enable subblock processing.
+    /// Disable subblock processing.
     ///
-    /// When disabled, the node will not build or broadcast subblocks, and will
+    /// When set, the node will not build or broadcast subblocks, and will
     /// ignore any incoming subblocks from the network.
-    #[arg(long = "consensus.enable-subblocks", default_value_t = false)]
-    pub enable_subblocks: bool,
+    #[arg(long = "consensus.no-subblocks", default_value_t = false)]
+    pub no_subblocks: bool,
 
     /// The amount of time this node will use to construct a subblock before
     /// sending it to the next proposer. This value should be well below
