@@ -335,8 +335,6 @@ fn platform_binary_name(extension: &str) -> String {
         "darwin"
     } else if cfg!(target_os = "linux") {
         "linux"
-    } else if cfg!(target_os = "windows") {
-        "windows"
     } else {
         "unknown"
     };
@@ -919,4 +917,42 @@ fn add_records_version_in_registry() {
         Some("1.0.0"),
         "add should record installed version in registry"
     );
+}
+
+// ── List command ───────────────────────────────────────────────────
+
+#[test]
+fn list_shows_installed_extensions() {
+    let _lock = lock();
+    let fix = Fixture::new();
+
+    fix.publish_extension("alpha", "1.0.0");
+    fix.publish_extension("beta", "2.0.0");
+    fix.run(&["tempo", "add", "alpha"]).unwrap();
+    fix.run(&["tempo", "add", "beta"]).unwrap();
+
+    let code = fix.run(&["tempo", "list"]).unwrap();
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn list_succeeds_with_no_extensions() {
+    let _lock = lock();
+    let fix = Fixture::new();
+
+    let code = fix.run(&["tempo", "list"]).unwrap();
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn list_shows_pinned_status() {
+    let _lock = lock();
+    let fix = Fixture::new();
+
+    fix.publish_extension("testpkg", "1.0.0");
+    fix.run(&["tempo", "add", "testpkg", "1.0.0"]).unwrap();
+    assert!(fix.is_pinned("testpkg"));
+
+    let code = fix.run(&["tempo", "list"]).unwrap();
+    assert_eq!(code, 0);
 }

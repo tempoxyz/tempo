@@ -17,8 +17,6 @@ fn platform_tuple() -> (&'static str, &'static str) {
         "darwin"
     } else if cfg!(target_os = "linux") {
         "linux"
-    } else if cfg!(target_os = "windows") {
-        "windows"
     } else {
         "unknown"
     };
@@ -51,9 +49,7 @@ pub(crate) fn find_in_path(binary: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    env::var_os("HOME").map(PathBuf::from)
 }
 
 pub(crate) fn default_local_bin() -> Result<PathBuf, InstallerError> {
@@ -62,25 +58,11 @@ pub(crate) fn default_local_bin() -> Result<PathBuf, InstallerError> {
 }
 
 pub(super) fn executable_name(binary: &str) -> String {
-    #[cfg(windows)]
-    {
-        format!("{binary}.exe")
-    }
-    #[cfg(not(windows))]
-    {
-        binary.to_string()
-    }
+    binary.to_string()
 }
 
 pub(crate) fn binary_candidates(base: &str) -> Vec<String> {
-    #[cfg(windows)]
-    {
-        vec![format!("{base}.exe"), base.to_string()]
-    }
-    #[cfg(not(windows))]
-    {
-        vec![base.to_string()]
-    }
+    vec![base.to_string()]
 }
 
 pub(super) fn check_dir_writable(dir: &Path) -> Result<(), InstallerError> {
@@ -94,18 +76,11 @@ pub(super) fn check_dir_writable(dir: &Path) -> Result<(), InstallerError> {
 }
 
 pub(super) fn set_executable_permissions(file: &fs::File) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::PermissionsExt;
 
-        let mut perms = file.metadata()?.permissions();
-        perms.set_mode(0o755);
-        file.set_permissions(perms)?;
-    }
-
-    #[cfg(not(unix))]
-    let _ = file;
-
+    let mut perms = file.metadata()?.permissions();
+    perms.set_mode(0o755);
+    file.set_permissions(perms)?;
     Ok(())
 }
 
@@ -136,14 +111,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(windows))]
-    fn executable_name_unix() {
+    fn executable_name_passthrough() {
         assert_eq!(executable_name("tempo-wallet"), "tempo-wallet");
     }
 
     #[test]
-    #[cfg(not(windows))]
-    fn binary_candidates_unix() {
+    fn binary_candidates_single() {
         assert_eq!(
             binary_candidates("tempo-wallet"),
             vec!["tempo-wallet".to_string()]
@@ -188,7 +161,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn set_executable_permissions_sets_mode() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -203,7 +175,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin_path = dir.path().join("test-tempo-binary");
         fs::write(&bin_path, "fake binary").unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755)).unwrap();

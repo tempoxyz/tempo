@@ -55,6 +55,9 @@ enum Commands {
     /// Remove an extension.
     Remove(RemoveArgs),
 
+    /// List installed extensions.
+    List,
+
     /// External extension subcommand.
     #[command(external_subcommand)]
     Extension(Vec<OsString>),
@@ -130,6 +133,7 @@ where
         Commands::Add(args) => launcher.handle_install(args),
         Commands::Update(args) => launcher.handle_update(args),
         Commands::Remove(args) => launcher.handle_remove(&args.extension, args.dry_run),
+        Commands::List => launcher.handle_list(),
         Commands::Extension(ext_args) => launcher.handle_extension(ext_args),
     }
 }
@@ -351,6 +355,28 @@ impl Launcher {
 
         let installer = Installer::from_env(self.exe_dir.as_deref())?;
         installer.remove(extension, dry_run)?;
+        Ok(0)
+    }
+
+    fn handle_list(&self) -> Result<i32, LauncherError> {
+        let registry = Registry::load();
+        let mut entries: Vec<_> = registry
+            .extensions
+            .iter()
+            .filter(|(_, state)| !state.installed_version.is_empty())
+            .collect();
+
+        if entries.is_empty() {
+            println!("No extensions installed.");
+            return Ok(0);
+        }
+
+        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        for (name, state) in &entries {
+            let pin = if state.pinned { " (pinned)" } else { "" };
+            println!("tempo-{name} {}{pin}", state.installed_version);
+        }
+
         Ok(0)
     }
 
@@ -715,6 +741,12 @@ mod tests {
             }
             _ => panic!("expected Add"),
         }
+    }
+
+    #[test]
+    fn parse_list() {
+        let cli = parse(&["tempo", "list"]);
+        assert!(matches!(cli.command, Commands::List));
     }
 
     #[test]
