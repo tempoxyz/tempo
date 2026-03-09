@@ -1,15 +1,19 @@
 //! Routes `tempo <extension>` to the right binary, handles auto-install
 //! of missing extensions, and provides built-in commands (add/update/remove).
 
-use crate::installer::{
-    InstallSource, Installer, InstallerError, binary_candidates, fallback_bin_dir, find_in_path,
+use crate::{
+    installer::{
+        InstallSource, Installer, InstallerError, binary_candidates, fallback_bin_dir, find_in_path,
+    },
+    state::State,
 };
-use crate::state::State;
 use clap::{Parser, Subcommand};
-use std::env;
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    env,
+    ffi::OsString,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 const BASE_URL: &str = "https://cli.tempo.xyz";
 const PUBLIC_KEY: &str = "RWTtoEUPuapAfh06rC7BZLjm1hG40/lsVAA/2afN88FZ8/Fdk97LzJDf";
@@ -48,7 +52,7 @@ enum Commands {
     Update(ManagementArgs),
 
     /// Remove an extension.
-    Remove(ManagementArgs),
+    Remove(RemoveArgs),
 
     /// External extension subcommand.
     #[command(external_subcommand)]
@@ -76,6 +80,16 @@ struct ManagementArgs {
     dry_run: bool,
 }
 
+#[derive(Parser, Debug)]
+struct RemoveArgs {
+    /// Extension name (e.g., wallet, mpp).
+    extension: String,
+
+    /// Show what would be done without making changes.
+    #[arg(long)]
+    dry_run: bool,
+}
+
 pub fn run<I, T>(args: I) -> Result<i32, LauncherError>
 where
     I: IntoIterator<Item = T>,
@@ -87,13 +101,12 @@ where
         .and_then(|path| path.parent().map(Path::to_path_buf));
     let launcher = Launcher { exe_dir };
 
-    let cli = Cli::try_parse_from(args).map_err(|err| {
-        LauncherError::InvalidArgs(err.to_string())
-    })?;
+    let cli =
+        Cli::try_parse_from(args).map_err(|err| LauncherError::InvalidArgs(err.to_string()))?;
 
     match cli.command {
         Commands::Add(args) | Commands::Update(args) => launcher.handle_install(args),
-        Commands::Remove(args) => launcher.handle_remove(args),
+        Commands::Remove(args) => launcher.handle_remove(&args.extension, args.dry_run),
         Commands::Extension(ext_args) => launcher.handle_extension(ext_args),
     }
 }
@@ -127,16 +140,15 @@ impl Launcher {
         Ok(0)
     }
 
-    fn handle_remove(&self, args: ManagementArgs) -> Result<i32, LauncherError> {
-        if !is_valid_extension_name(&args.extension) {
+    fn handle_remove(&self, extension: &str, dry_run: bool) -> Result<i32, LauncherError> {
+        if !is_valid_extension_name(extension) {
             return Err(LauncherError::InvalidArgs(format!(
-                "invalid extension name: {} (only alphanumeric, hyphens, and underscores)",
-                args.extension
+                "invalid extension name: {extension} (only alphanumeric, hyphens, and underscores)",
             )));
         }
 
         let installer = Installer::from_env(self.exe_dir.as_deref())?;
-        installer.remove(&args.extension, args.dry_run)?;
+        installer.remove(extension, dry_run)?;
         Ok(0)
     }
 
@@ -314,11 +326,7 @@ fn manifest_url(extension: &str, version: Option<&str>) -> String {
     }
 }
 
-fn run_child(
-    binary: PathBuf,
-    args: &[OsString],
-    display_name: &str,
-) -> Result<i32, LauncherError> {
+fn run_child(binary: PathBuf, args: &[OsString], display_name: &str) -> Result<i32, LauncherError> {
     tracing::debug!("exec {} args={args:?}", binary.display());
 
     let mut cmd = Command::new(&binary);
@@ -348,7 +356,10 @@ fn print_missing_install_hint(extension: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_extension_name, manifest_url, Cli, Commands};
+    use super::{
+        BASE_URL, Cli, Commands, PUBLIC_KEY, base_url, is_valid_extension_name, manifest_url,
+        release_public_key,
+    };
     use crate::installer::is_allowed_manifest_url;
     use clap::Parser;
 
@@ -368,6 +379,7 @@ mod tests {
 
     #[test]
     fn manifest_url_uses_expected_format() {
+        let _guard = EnvGuard::new("TEMPO_BASE_URL");
         assert_eq!(
             manifest_url("wallet", None),
             "https://cli.tempo.xyz/extensions/tempo-wallet/manifest.json"
@@ -467,13 +479,7 @@ mod tests {
 
     #[test]
     fn parse_add_with_public_key() {
-        let cli = parse(&[
-            "tempo",
-            "add",
-            "wallet",
-            "--release-public-key",
-            "abc123",
-        ]);
+        let cli = parse(&["tempo", "add", "wallet", "--release-public-key", "abc123"]);
         match cli.command {
             Commands::Add(ref args) => {
                 assert_eq!(args.public_key, Some("abc123".to_string()));
@@ -533,6 +539,129 @@ mod tests {
                 assert_eq!(args[3], "extra");
             }
             _ => panic!("expected Extension"),
+        }
+    }
+
+    #[test]
+    fn parse_add_too_many_positional() {
+        let _ = parse_err(&["tempo", "add", "wallet", "1.0.0", "extra"]);
+    }
+
+    #[test]
+    fn parse_remove_extension_only() {
+        let cli = parse(&["tempo", "remove", "wallet"]);
+        match cli.command {
+            Commands::Remove(ref args) => {
+                assert_eq!(args.extension, "wallet");
+                assert!(!args.dry_run);
+            }
+            _ => panic!("expected Remove"),
+        }
+    }
+
+    #[test]
+    fn parse_remove_with_dry_run() {
+        let cli = parse(&["tempo", "remove", "wallet", "--dry-run"]);
+        match cli.command {
+            Commands::Remove(ref args) => assert!(args.dry_run),
+            _ => panic!("expected Remove"),
+        }
+    }
+
+    #[test]
+    fn parse_remove_rejects_manifest_flag() {
+        let _ = parse_err(&["tempo", "remove", "wallet", "--release-manifest", "url"]);
+    }
+
+    #[test]
+    fn parse_remove_rejects_version() {
+        let _ = parse_err(&["tempo", "remove", "wallet", "1.0.0"]);
+    }
+
+    #[test]
+    fn base_url_defaults_to_constant() {
+        // Clear any env override to test the default.
+        let _guard = EnvGuard::new("TEMPO_BASE_URL");
+        assert_eq!(base_url(), BASE_URL);
+    }
+
+    #[test]
+    fn base_url_respects_env_override() {
+        let _guard = EnvGuard::set("TEMPO_BASE_URL", "https://custom.example.com");
+        assert_eq!(base_url(), "https://custom.example.com");
+    }
+
+    #[test]
+    fn release_public_key_defaults_to_constant() {
+        let _guard = EnvGuard::new("TEMPO_RELEASE_PUBLIC_KEY");
+        assert_eq!(release_public_key(), PUBLIC_KEY);
+    }
+
+    #[test]
+    fn release_public_key_respects_env_override() {
+        let _guard = EnvGuard::set("TEMPO_RELEASE_PUBLIC_KEY", "custom-key");
+        assert_eq!(release_public_key(), "custom-key");
+    }
+
+    #[test]
+    fn manifest_url_with_custom_base_url() {
+        let _guard = EnvGuard::set("TEMPO_BASE_URL", "https://custom.example.com/");
+        assert_eq!(
+            manifest_url("wallet", None),
+            "https://custom.example.com/extensions/tempo-wallet/manifest.json"
+        );
+    }
+
+    #[test]
+    fn manifest_url_trims_trailing_slashes() {
+        let _guard = EnvGuard::set("TEMPO_BASE_URL", "https://example.com///");
+        assert_eq!(
+            manifest_url("wallet", None),
+            "https://example.com/extensions/tempo-wallet/manifest.json"
+        );
+    }
+
+    #[test]
+    fn is_valid_extension_name_single_chars() {
+        assert!(is_valid_extension_name("a"));
+        assert!(is_valid_extension_name("-"));
+        assert!(is_valid_extension_name("_"));
+    }
+
+    #[test]
+    fn is_valid_extension_name_rejects_special() {
+        assert!(!is_valid_extension_name("foo@bar"));
+        assert!(!is_valid_extension_name("a b"));
+        assert!(!is_valid_extension_name("foo\0bar"));
+        assert!(!is_valid_extension_name("foo!bar"));
+    }
+
+    /// RAII guard that saves and restores an environment variable.
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn new(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self { key, prev }
+        }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) };
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
         }
     }
 }

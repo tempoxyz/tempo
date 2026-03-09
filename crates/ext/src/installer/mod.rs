@@ -18,11 +18,11 @@ use skill::{install_skill, remove_skill};
 use verify::{decode_public_key, sha256_hex, verify_signature};
 
 use minisign_verify::PublicKey;
-use std::env;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tempfile::TempDir;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);

@@ -1,11 +1,9 @@
 //! Release manifest fetching and validation.
 
-use crate::installer::error::InstallerError;
-use crate::installer::{file_url_to_path, http_client};
+use crate::installer::{error::InstallerError, file_url_to_path, http_client};
 
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::fs;
+use std::{collections::HashMap, fs};
 
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct ReleaseManifest {
@@ -165,5 +163,63 @@ mod tests {
             matches!(err, InstallerError::ReleaseManifestNotFound(_)),
             "expected ReleaseManifestNotFound, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn load_manifest_from_file_url() {
+        let json = r#"{
+            "version": "4.0.0",
+            "binaries": {}
+        }"#;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(json.as_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let url = format!("file://{}", tmp.path().display());
+        let manifest = load_manifest(&url).unwrap();
+        assert_eq!(manifest.version, "4.0.0");
+    }
+
+    #[test]
+    fn load_manifest_invalid_json() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(b"not json").unwrap();
+        tmp.flush().unwrap();
+
+        let result = load_manifest(tmp.path().to_str().unwrap());
+        assert!(matches!(result, Err(InstallerError::Json(_))));
+    }
+
+    #[test]
+    fn is_allowed_rejects_http() {
+        assert!(!is_allowed_manifest_url(
+            "http://insecure.example.com/manifest.json"
+        ));
+    }
+
+    #[test]
+    fn is_allowed_rejects_ftp() {
+        assert!(!is_allowed_manifest_url("ftp://example.com/manifest.json"));
+    }
+
+    #[test]
+    fn is_allowed_rejects_data_url() {
+        assert!(!is_allowed_manifest_url("data:text/plain,hello"));
+    }
+
+    #[test]
+    fn is_allowed_rejects_javascript_url() {
+        assert!(!is_allowed_manifest_url("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn is_allowed_accepts_absolute_path() {
+        assert!(is_allowed_manifest_url("/tmp/manifest.json"));
+    }
+
+    #[test]
+    fn is_allowed_accepts_relative_path() {
+        assert!(is_allowed_manifest_url("./manifest.json"));
+        assert!(is_allowed_manifest_url("../manifest.json"));
     }
 }

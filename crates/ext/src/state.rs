@@ -3,10 +3,12 @@
 use crate::installer::home_dir;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::{env, fs};
+use std::{
+    collections::HashMap,
+    env, fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 6 * 60 * 60; // 6 hours
 

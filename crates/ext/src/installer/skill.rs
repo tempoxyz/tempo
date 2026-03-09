@@ -69,7 +69,7 @@ pub(super) fn install_skill(
 
     if let Some(expected) = expected_sha256 {
         let actual = sha256_hex(content.as_bytes());
-        if actual != expected {
+        if actual != expected.to_lowercase() {
             tracing::warn!("skill checksum mismatch for tempo-{extension}, skipping");
             return;
         }
