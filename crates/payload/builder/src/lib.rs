@@ -120,6 +120,9 @@ fn check_pool_tx_admission(
     block_size_used: usize,
     is_osaka: bool,
 ) -> Option<PoolSkipReason> {
+    // Ensure we still have capacity for this transaction within the non-shared gas limit.
+    // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
+    // be consumed by proposer's pool transactions.
     let remaining = non_shared_gas_limit.saturating_sub(cumulative_gas_used);
     if pool_tx.gas_limit() > remaining {
         return Some(PoolSkipReason::ExceedsNonSharedGasLimit {
@@ -128,6 +131,7 @@ fn check_pool_tx_admission(
         });
     }
 
+    // If the tx is not a payment and will exceed the general gas limit, skip it.
     if !pool_tx.transaction.is_payment()
         && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
     {
@@ -516,9 +520,11 @@ where
         let _pool_tx_span = debug_span!(target: "payload_builder", "execute_pool_txs").entered();
         let execution_start = Instant::now();
         loop {
+            // check if the job was interrupted, if so we can skip remaining transactions
             if attributes.is_interrupted() {
                 break;
             }
+            // check if the job was cancelled, if so we can exit early
             if cancel.is_cancelled() {
                 record_pool_selection_metrics(
                     &self.metrics,
@@ -609,6 +615,7 @@ where
             self.metrics.transaction_execution_duration_seconds.record(elapsed);
             trace!(?elapsed, "Transaction executed");
 
+            // update and add to total fees
             total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
             cumulative_gas_used += gas_used;
             if !is_payment {
