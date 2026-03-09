@@ -1021,27 +1021,35 @@ impl AA2dPool {
             .by_eviction_order
             .iter()
             .find(|key| key.is_pending())
-            .map(|key| (key.tx_id, key.priority().clone()));
+            .map(|key| (key.tx_id, key.priority().clone(), key.submission_id()));
 
-        // Find worst expiring nonce tx (lowest priority)
+        // Find worst expiring nonce tx (lowest priority, then highest submission_id)
         let worst_expiring = self
             .expiring_nonce_txs
             .iter()
-            .min_by(|a, b| a.1.priority.cmp(&b.1.priority))
-            .map(|(hash, tx)| (*hash, tx.priority.clone()));
+            .min_by(|a, b| {
+                a.1.priority
+                    .cmp(&b.1.priority)
+                    .then_with(|| b.1.submission_id.cmp(&a.1.submission_id))
+            })
+            .map(|(hash, tx)| (*hash, tx.priority.clone(), tx.submission_id));
 
-        // Choose which one to evict based on priority (lower priority = evict first)
+        // Choose which one to evict using the same policy as EvictionKey::Ord:
+        // lower priority first, then higher submission_id (newer) first.
         match (worst_2d, worst_expiring) {
-            (Some((id, priority_2d)), Some((hash, priority_exp))) => {
-                // Evict the one with lower priority
-                if priority_exp < priority_2d {
+            (Some((id, priority_2d, sid_2d)), Some((hash, priority_exp, sid_exp))) => {
+                let evict_expiring = priority_exp
+                    .cmp(&priority_2d)
+                    .then_with(|| sid_2d.cmp(&sid_exp))
+                    == std::cmp::Ordering::Less;
+                if evict_expiring {
                     self.evict_expiring_nonce_tx(&hash)
                 } else {
                     self.evict_2d_pending_tx(&id)
                 }
             }
-            (Some((id, _)), None) => self.evict_2d_pending_tx(&id),
-            (None, Some((hash, _))) => self.evict_expiring_nonce_tx(&hash),
+            (Some((id, ..)), None) => self.evict_2d_pending_tx(&id),
+            (None, Some((hash, ..))) => self.evict_expiring_nonce_tx(&hash),
             (None, None) => None,
         }
     }
@@ -5249,6 +5257,91 @@ mod tests {
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(pending, 0);
         assert_eq!(queued, 0);
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn cross_pool_eviction_uses_submission_id_tiebreaker() {
+        // When a 2D tx and an expiring nonce tx have the same priority,
+        // the newer one (higher submission_id) should be evicted first,
+        // matching the EvictionKey::Ord policy.
+        let config = AA2dPoolConfig {
+            pending_limit: SubPoolLimit {
+                max_txs: 2,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 10,
+                max_size: usize::MAX,
+            },
+            ..Default::default()
+        };
+        let mut pool = AA2dPool::new(config);
+        let sender = Address::random();
+
+        // Add a regular 2D tx first (gets lower submission_id = older)
+        let tx_2d = TxBuilder::aa(sender)
+            .nonce_key(U256::from(1))
+            .nonce(0)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
+        let tx_2d_hash = *tx_2d.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_2d, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Add a second 2D tx to fill the pool to limit
+        let tx_2d_2 = TxBuilder::aa(sender)
+            .nonce_key(U256::from(2))
+            .nonce(0)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_2d_2, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Pool is now at capacity (2 pending). Add an expiring nonce tx with
+        // the same priority — it gets a higher submission_id (newer).
+        // The expiring tx should be evicted (not the older 2D tx).
+        let tx_exp = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
+        let tx_exp_hash = *tx_exp.hash();
+        let result = pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_exp, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        );
+        assert!(result.is_ok());
+
+        let added = result.unwrap();
+        if let AddedTransaction::Pending(pending) = added {
+            assert!(
+                !pending.discarded.is_empty(),
+                "Should have discarded a transaction"
+            );
+            // The newer expiring nonce tx should be evicted, NOT the older 2D tx
+            assert_eq!(
+                pending.discarded[0].hash(),
+                &tx_exp_hash,
+                "newer expiring nonce tx should be evicted over older 2D tx at same priority"
+            );
+        } else {
+            panic!("Expected Pending result");
+        }
+
+        // The original 2D tx should still be in the pool
+        assert!(pool.contains(&tx_2d_hash), "older 2D tx should be preserved");
         pool.assert_invariants();
     }
 
