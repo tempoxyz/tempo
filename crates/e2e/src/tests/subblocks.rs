@@ -42,7 +42,7 @@ fn subblocks_are_included() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(10);
+            .epoch_length(100);
 
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
@@ -148,7 +148,7 @@ fn subblocks_are_included_with_failing_txs() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(10);
+            .epoch_length(100);
 
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
@@ -328,7 +328,7 @@ fn oversized_subblock_txs_are_removed() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(10);
+            .epoch_length(100);
 
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
 

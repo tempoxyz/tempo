@@ -352,8 +352,8 @@ where
                 page_cache: self.config.page_cache.clone(),
 
                 leader_timeout: self.config.time_to_propose,
-                notarization_timeout: self.config.time_to_collect_notarizations,
-                nullify_retry: self.config.time_to_retry_nullify_broadcast,
+                certification_timeout: self.config.time_to_collect_notarizations,
+                timeout_retry: self.config.time_to_retry_nullify_broadcast,
                 fetch_timeout: self.config.time_for_peer_response,
                 activity_timeout: self.config.views_to_track,
                 skip_timeout: self.config.views_until_leader_skip,
@@ -453,7 +453,7 @@ where
             let block = self
                 .config
                 .marshal
-                .subscribe(None, digest)
+                .subscribe_by_digest(None, digest)
                 .await
                 .await
                 .map_err(|_| eyre!("marshal never returned the block"))?;
