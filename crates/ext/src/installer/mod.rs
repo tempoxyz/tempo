@@ -332,10 +332,8 @@ fn download_extension(
         io::copy(&mut response, &mut file)?;
     } else if let Some(path) = file_url_to_path(&metadata.url) {
         fs::copy(path, &dst)?;
-    } else if metadata.url.contains("://") {
-        return Err(InstallerError::InsecureDownloadUrl(metadata.url.clone()));
     } else {
-        fs::copy(&metadata.url, &dst)?;
+        return Err(InstallerError::InsecureDownloadUrl(metadata.url.clone()));
     }
 
     let bytes = fs::read(&dst)?;

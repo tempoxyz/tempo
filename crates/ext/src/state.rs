@@ -1,4 +1,9 @@
 //! Persistent state for the tempo CLI (update check timestamps, installed versions).
+//!
+//! NOTE: load/save is not file-locked. Concurrent `tempo` invocations may
+//! lose a write (last-writer-wins). This is acceptable today because the
+//! data is limited to `checked_at` timestamps and `installed_version`
+//! strings — the worst outcome is a redundant update check.
 
 use crate::installer::home_dir;
 

@@ -53,11 +53,16 @@ pub(super) fn install_skill(
     };
 
     let skill_name = format!("tempo-{extension} skill");
+    let expected_comment = format!("skill:tempo-{extension}");
     match encoded_signature {
         Some(sig) => {
-            if let Err(err) =
-                verify_signature(&skill_name, content.as_bytes(), sig, public_key, None)
-            {
+            if let Err(err) = verify_signature(
+                &skill_name,
+                content.as_bytes(),
+                sig,
+                public_key,
+                Some(&expected_comment),
+            ) {
                 tracing::warn!("{err}, skipping skill install");
                 return;
             }
@@ -117,8 +122,6 @@ fn download_skill(url: &str) -> Result<String, InstallerError> {
         Ok(http_client()?.get(url).send()?.error_for_status()?.text()?)
     } else if let Some(path) = file_url_to_path(url) {
         Ok(fs::read_to_string(path)?)
-    } else if !url.contains("://") {
-        Ok(fs::read_to_string(url)?)
     } else {
         Err(InstallerError::InsecureDownloadUrl(url.to_string()))
     }
