@@ -171,7 +171,7 @@ impl<TContext: Spawner> Actor<TContext> {
             _ => return,
         };
 
-        // Prune & Gate Incoming activity.
+        // Prune & filter incoming activity.
         // - Incoming Finalization. Prune older subscriptions as we only care about latest information
         // - Incoming Notarization. Only accept if ahead of the latest Finalization.
         match &activity {
