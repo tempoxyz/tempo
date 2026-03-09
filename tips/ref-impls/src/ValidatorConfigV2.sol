@@ -143,7 +143,7 @@ contract ValidatorConfigV2 is IValidatorConfigV2 {
     }
 
     /// @inheritdoc IValidatorConfigV2
-    function transferOwnership(address newOwner) external onlyOwner {
+    function transferOwnership(address newOwner) external onlyInitialized onlyOwner {
         if (newOwner == address(0)) revert InvalidOwner();
         emit OwnershipTransferred(_owner, newOwner);
         _owner = newOwner;

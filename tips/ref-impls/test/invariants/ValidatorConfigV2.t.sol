@@ -247,7 +247,8 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
             || selector == IValidatorConfigV2.NotIp.selector
             || selector == IValidatorConfigV2.InvalidSignature.selector
             || selector == IValidatorConfigV2.IngressAlreadyExists.selector
-            || selector == IValidatorConfigV2.ValidatorAlreadyDeactivated.selector;
+            || selector == IValidatorConfigV2.ValidatorAlreadyDeactivated.selector
+            || selector == IValidatorConfigV2.InvalidOwner.selector;
         assertTrue(isKnown, string.concat("Unknown error: ", vm.toString(selector)));
     }
 
@@ -309,8 +310,9 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         _transferValidatorOwnership(callerSeed, validatorSeed, newAddrSeed);
     }
 
-    /// @notice Both phases: transferOwnership
+    /// @notice Mostly post-init: transferOwnership (~1/256 pre-init calls verify NotInitialized guard)
     function handler_transferOwnership(uint256 callerSeed, uint256 newOwnerSeed) external {
+        if (!_ghostInitialized && callerSeed >> 248 != 0) return;
         _transferOwnership(callerSeed, newOwnerSeed);
     }
 
@@ -564,6 +566,10 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         vm.startPrank(caller);
         try validatorConfigV2.transferOwnership(newOwner) {
             vm.stopPrank();
+            assertTrue(
+                _ghostInitialized,
+                "TEMPO-VALV2-5: transferOwnership must not succeed when not initialized"
+            );
             assertTrue(isOwner, "TEMPO-VALV2-2: Non-owner should not transfer ownership");
 
             address oldOwner = _ghostOwner;
