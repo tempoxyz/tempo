@@ -1042,8 +1042,10 @@ mod tests {
 
     #[test]
     fn admission_passes_when_within_all_limits() {
-        assert!(check_pool_tx_admission(100_000, false, 0, 0, 1_000_000, 0, 500_000, 0, false)
-            .is_none());
+        assert!(
+            check_pool_tx_admission(100_000, false, 0, 0, 1_000_000, 0, 500_000, 0, false)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1097,18 +1099,20 @@ mod tests {
 
     #[test]
     fn admission_ignores_block_size_pre_osaka() {
-        assert!(check_pool_tx_admission(
-            21_000,
-            false,
-            100,
-            0,
-            30_000_000,
-            0,
-            15_000_000,
-            MAX_RLP_BLOCK_SIZE,
-            false
-        )
-        .is_none());
+        assert!(
+            check_pool_tx_admission(
+                21_000,
+                false,
+                100,
+                0,
+                30_000_000,
+                0,
+                15_000_000,
+                MAX_RLP_BLOCK_SIZE,
+                false
+            )
+            .is_none()
+        );
     }
 
     #[test]
