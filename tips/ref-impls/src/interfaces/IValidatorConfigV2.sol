@@ -54,6 +54,9 @@ interface IValidatorConfigV2 {
     /// @notice Thrown when migration index is out of order
     error InvalidMigrationIndex();
 
+    /// @notice Thrown when new owner is address(0)
+    error InvalidOwner();
+
     /// @notice Thrown when address is not in valid ip:port format
     /// @param field The field name that failed validation
     /// @param input The invalid input that was provided
@@ -178,6 +181,7 @@ interface IValidatorConfigV2 {
     function transferValidatorOwnership(uint64 idx, address newAddress) external;
 
     /// @notice Transfer owner of the contract (owner only)
+    /// @dev Reverts with InvalidOwner if newOwner is address(0).
     /// @param newOwner The new owner address
     function transferOwnership(address newOwner) external;
 

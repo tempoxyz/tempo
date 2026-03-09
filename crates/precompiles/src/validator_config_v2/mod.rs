@@ -191,7 +191,7 @@ impl ValidatorConfigV2 {
     /// Returns whether V2 has been initialized (either directly or via migration).
     ///
     /// When `false`, the CL reads from V1 and mutating operations (except
-    /// `deactivate_validator`, `set_ip_addresses`, and migration functions) are blocked.
+    /// `deactivate_validator` and migration functions) are blocked.
     pub fn is_initialized(&self) -> Result<bool> {
         self.config.is_init.read()
     }
@@ -565,11 +565,19 @@ impl ValidatorConfigV2 {
     }
 
     /// Transfers ownership of the contract to a new address (owner only).
+    ///
+    /// # Errors
+    /// - `InvalidOwner` — `newOwner` is `address(0)`
+    /// - `Unauthorized` — `sender` is not the owner
+    /// - `NotInitialized` — the contract has not been initialized
     pub fn transfer_ownership(
         &mut self,
         sender: Address,
         call: IValidatorConfigV2::transferOwnershipCall,
     ) -> Result<()> {
+        if call.newOwner.is_zero() {
+            Err(ValidatorConfigV2Error::invalid_owner())?
+        }
         let mut config = self.config.read()?.require_init()?.require_owner(sender)?;
         config.owner = call.newOwner;
         self.config.write(config)
@@ -668,10 +676,8 @@ impl ValidatorConfigV2 {
 
     /// Updates a validator's ingress and egress addresses (owner or the validator itself).
     ///
-    /// Allows validators to update their network addresses without requiring a full
-    /// rotation. Does NOT require initialization — can be called during migration.
-    ///
     /// # Errors
+    /// - `NotInitialized` — the contract has not been initialized
     /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
     /// - `Unauthorized` — `sender` is neither the owner nor the validator
     /// - `NotIpPort` / `NotIp` — the new endpoints fail validation
@@ -684,6 +690,7 @@ impl ValidatorConfigV2 {
         let mut v = self.get_active_validator(call.idx)?;
         self.config
             .read()?
+            .require_init()?
             .require_owner_or_validator(sender, v.validator_address)?;
 
         Self::validate_endpoints(&call.ingress, &call.egress)?;
@@ -1387,10 +1394,44 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let new_owner = Address::random();
+        let non_owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
+
+            // Rejects pre-init
+            let result = vc.transfer_ownership(
+                owner,
+                IValidatorConfigV2::transferOwnershipCall {
+                    newOwner: new_owner,
+                },
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::not_initialized().into())
+            );
+
             vc.initialize(owner)?;
 
+            // Rejects zero address
+            let result = vc.transfer_ownership(
+                owner,
+                IValidatorConfigV2::transferOwnershipCall {
+                    newOwner: Address::ZERO,
+                },
+            );
+            assert_eq!(result, Err(ValidatorConfigV2Error::invalid_owner().into()));
+            assert_eq!(vc.owner()?, owner);
+
+            // Rejects non-owner
+            let result = vc.transfer_ownership(
+                non_owner,
+                IValidatorConfigV2::transferOwnershipCall {
+                    newOwner: new_owner,
+                },
+            );
+            assert_eq!(result, Err(ValidatorConfigV2Error::unauthorized().into()));
+
+            // Succeeds for owner
             vc.transfer_ownership(
                 owner,
                 IValidatorConfigV2::transferOwnershipCall {
@@ -1399,6 +1440,7 @@ mod tests {
             )?;
             assert_eq!(vc.owner()?, new_owner);
 
+            // Old owner can no longer transfer
             let result = vc.transfer_ownership(
                 owner,
                 IValidatorConfigV2::transferOwnershipCall {
@@ -1943,7 +1985,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_ip_addresses_during_migration() -> eyre::Result<()> {
+    fn test_set_ip_addresses_rejects_pre_init() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let v1_addr = Address::random();
@@ -1968,52 +2010,8 @@ mod tests {
             v2.storage.set_block_number(100);
             v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
 
-            // Update IPs during migration (owner can do this pre-init)
-            v2.set_ip_addresses(
-                owner,
-                IValidatorConfigV2::setIpAddressesCall {
-                    idx: 0,
-                    ingress: "10.0.0.1:8000".to_string(),
-                    egress: "10.0.0.1".to_string(),
-                },
-            )?;
-
-            let validator = v2.validator_by_address(v1_addr)?;
-            assert_eq!(validator.ingress, "10.0.0.1:8000");
-            assert_eq!(validator.egress, "10.0.0.1");
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_ip_addresses_migration_rejects_non_owner() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        let non_owner = Address::random();
-        let v1_addr = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut v1 = v1();
-            v1.initialize(owner)?;
-            v1.add_validator(
-                owner,
-                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: v1_addr,
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
-                    active: true,
-                    inboundAddress: "192.168.1.1:8000".to_string(),
-                    outboundAddress: "192.168.1.1:9000".to_string(),
-                },
-            )?;
-
-            let mut v2 = ValidatorConfigV2::new();
-            v2.storage.set_block_number(100);
-            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
-
-            // Non-owner cannot update during migration
             let result = v2.set_ip_addresses(
-                non_owner,
+                owner,
                 IValidatorConfigV2::setIpAddressesCall {
                     idx: 0,
                     ingress: "10.0.0.1:8000".to_string(),
@@ -2021,7 +2019,10 @@ mod tests {
                 },
             );
 
-            assert_eq!(result, Err(ValidatorConfigV2Error::unauthorized().into()));
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::not_initialized().into())
+            );
             Ok(())
         })
     }

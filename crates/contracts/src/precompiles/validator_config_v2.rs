@@ -116,6 +116,7 @@ crate::sol! {
         error AlreadyInitialized();
         error IngressAlreadyExists(string ingress);
         error InvalidMigrationIndex();
+        error InvalidOwner();
         error InvalidPublicKey();
         error InvalidSignature();
         error InvalidSignatureFormat();
@@ -183,6 +184,10 @@ impl ValidatorConfigV2Error {
 
     pub const fn invalid_migration_index() -> Self {
         Self::InvalidMigrationIndex(IValidatorConfigV2::InvalidMigrationIndex {})
+    }
+
+    pub const fn invalid_owner() -> Self {
+        Self::InvalidOwner(IValidatorConfigV2::InvalidOwner {})
     }
 
     pub fn not_ip(input: String, backtrace: String) -> Self {
