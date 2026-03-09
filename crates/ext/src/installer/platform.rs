@@ -105,3 +105,38 @@ pub(super) fn set_executable_permissions(path: &Path) -> io::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_binary_name_format() {
+        let name = platform_binary_name("wallet");
+        assert!(name.starts_with("tempo-wallet-"), "expected prefix 'tempo-wallet-', got: {name}");
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert_eq!(name, "tempo-wallet-darwin-arm64");
+
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        assert_eq!(name, "tempo-wallet-darwin-amd64");
+
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        assert_eq!(name, "tempo-wallet-linux-arm64");
+
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        assert_eq!(name, "tempo-wallet-linux-amd64");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn executable_name_unix() {
+        assert_eq!(executable_name("tempo-wallet"), "tempo-wallet");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn binary_candidates_unix() {
+        assert_eq!(binary_candidates("tempo-wallet"), vec!["tempo-wallet".to_string()]);
+    }
+}

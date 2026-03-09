@@ -342,8 +342,12 @@ fn print_missing_install_hint(extension: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_extension_name, manifest_url};
+    use super::{is_valid_extension_name, manifest_url, parse_management_args, LauncherError};
     use crate::installer::is_allowed_manifest_url;
+
+    fn args(strs: &[&str]) -> Vec<String> {
+        strs.iter().map(|s| s.to_string()).collect()
+    }
 
     #[test]
     fn runtime_manifest_url_policy_enforces_https_or_local() {
@@ -393,5 +397,78 @@ mod tests {
         assert!(!is_valid_extension_name("foo/bar"));
         assert!(!is_valid_extension_name("foo bar"));
         assert!(!is_valid_extension_name(".hidden"));
+    }
+
+    #[test]
+    fn parse_args_extension_only() {
+        let result = parse_management_args(&args(&["wallet"])).unwrap();
+        assert_eq!(result.extension, "wallet");
+        assert_eq!(result.version, None);
+        assert!(!result.dry_run);
+        assert!(result.source.manifest.is_none());
+    }
+
+    #[test]
+    fn parse_args_extension_and_version() {
+        let result = parse_management_args(&args(&["wallet", "1.0.0"])).unwrap();
+        assert_eq!(result.extension, "wallet");
+        assert_eq!(result.version, Some("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn parse_args_with_dry_run() {
+        let result = parse_management_args(&args(&["wallet", "--dry-run"])).unwrap();
+        assert!(result.dry_run);
+    }
+
+    #[test]
+    fn parse_args_with_manifest() {
+        let result = parse_management_args(&args(&[
+            "wallet",
+            "--release-manifest",
+            "https://example.com/m.json",
+        ]))
+        .unwrap();
+        assert_eq!(
+            result.source.manifest,
+            Some("https://example.com/m.json".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_args_with_public_key() {
+        let result =
+            parse_management_args(&args(&["wallet", "--release-public-key", "abc123"])).unwrap();
+        assert_eq!(result.source.public_key, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn parse_args_missing_extension() {
+        let result = parse_management_args(&args(&[]));
+        assert!(matches!(result, Err(LauncherError::InvalidArgs(_))));
+    }
+
+    #[test]
+    fn parse_args_invalid_extension_name() {
+        let result = parse_management_args(&args(&["../evil"]));
+        assert!(matches!(result, Err(LauncherError::InvalidArgs(_))));
+    }
+
+    #[test]
+    fn parse_args_unknown_flag() {
+        let result = parse_management_args(&args(&["wallet", "--unknown"]));
+        assert!(matches!(result, Err(LauncherError::InvalidArgs(_))));
+    }
+
+    #[test]
+    fn parse_args_manifest_missing_value() {
+        let result = parse_management_args(&args(&["wallet", "--release-manifest"]));
+        assert!(matches!(result, Err(LauncherError::InvalidArgs(_))));
+    }
+
+    #[test]
+    fn parse_args_too_many_positional() {
+        let result = parse_management_args(&args(&["wallet", "1.0.0", "extra"]));
+        assert!(matches!(result, Err(LauncherError::InvalidArgs(_))));
     }
 }

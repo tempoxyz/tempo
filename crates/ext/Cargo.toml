@@ -12,8 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-base64.workspace = true
-ed25519-dalek.workspace = true
+minisign-verify.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
@@ -22,3 +21,6 @@ tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+minisign.workspace = true

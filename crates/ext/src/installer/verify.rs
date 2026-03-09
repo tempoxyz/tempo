@@ -1,62 +1,31 @@
-//! Ed25519 signature verification and SHA-256 checksums for release artifacts.
+//! Minisign signature verification and SHA-256 checksums for release artifacts.
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use minisign_verify::{PublicKey, Signature};
 use sha2::{Digest, Sha256};
 
 use crate::installer::error::InstallerError;
 
-pub(super) fn decode_verifying_key(encoded_key: &str) -> Result<VerifyingKey, InstallerError> {
-    let key_bytes =
-        BASE64_STANDARD
-            .decode(encoded_key)
-            .map_err(|err| InstallerError::SignatureFormat {
-                field: "release public key",
-                details: err.to_string(),
-            })?;
-    let key_bytes: [u8; 32] =
-        key_bytes
-            .try_into()
-            .map_err(|_| InstallerError::SignatureFormat {
-                field: "release public key",
-                details: "expected 32-byte Ed25519 key".to_string(),
-            })?;
-
-    VerifyingKey::from_bytes(&key_bytes).map_err(|err| InstallerError::SignatureFormat {
+pub(super) fn decode_public_key(encoded_key: &str) -> Result<PublicKey, InstallerError> {
+    PublicKey::from_base64(encoded_key).map_err(|err| InstallerError::SignatureFormat {
         field: "release public key",
         details: err.to_string(),
     })
-}
-
-pub(super) fn decode_signature(encoded_signature: &str) -> Result<Signature, InstallerError> {
-    let signature_bytes = BASE64_STANDARD.decode(encoded_signature).map_err(|err| {
-        InstallerError::SignatureFormat {
-            field: "release signature",
-            details: err.to_string(),
-        }
-    })?;
-    let signature_bytes: [u8; 64] =
-        signature_bytes
-            .try_into()
-            .map_err(|_| InstallerError::SignatureFormat {
-                field: "release signature",
-                details: "expected 64-byte Ed25519 signature".to_string(),
-            })?;
-
-    Ok(Signature::from_bytes(&signature_bytes))
 }
 
 pub(super) fn verify_signature(
     binary: &str,
     data: &[u8],
     encoded_signature: &str,
-    verifying_key: &VerifyingKey,
+    public_key: &PublicKey,
 ) -> Result<(), InstallerError> {
-    let signature = decode_signature(encoded_signature)?;
+    let signature =
+        Signature::decode(encoded_signature).map_err(|err| InstallerError::SignatureFormat {
+            field: "release signature",
+            details: err.to_string(),
+        })?;
 
-    verifying_key
-        .verify(data, &signature)
+    public_key
+        .verify(data, &signature, false)
         .map_err(|_| InstallerError::SignatureVerificationFailed(binary.to_string()))
 }
 
@@ -64,4 +33,97 @@ pub(super) fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minisign::KeyPair;
+    use std::io::Cursor;
+
+    fn test_keypair() -> (minisign::PublicKey, minisign::SecretKey) {
+        let KeyPair { pk, sk } = KeyPair::generate_unencrypted_keypair().unwrap();
+        (pk, sk)
+    }
+
+    #[test]
+    fn sha256_known_vector() {
+        assert_eq!(
+            sha256_hex(b"hello world"),
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn sha256_empty() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn decode_public_key_valid() {
+        let (pk, _) = test_keypair();
+        let encoded = pk.to_base64();
+        assert!(decode_public_key(&encoded).is_ok());
+    }
+
+    #[test]
+    fn decode_public_key_invalid() {
+        assert!(matches!(
+            decode_public_key("not-valid!!!"),
+            Err(InstallerError::SignatureFormat { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_signature_valid() {
+        let (pk, sk) = test_keypair();
+        let data = b"test data";
+        let sig_box = minisign::sign(Some(&pk), &sk, Cursor::new(data), None, None).unwrap();
+        let sig_str = sig_box.into_string();
+
+        let verify_pk = decode_public_key(&pk.to_base64()).unwrap();
+        assert!(verify_signature("test", data, &sig_str, &verify_pk).is_ok());
+    }
+
+    #[test]
+    fn verify_signature_wrong_key() {
+        let (pk, sk) = test_keypair();
+        let (other_pk, _) = test_keypair();
+        let data = b"test data";
+        let sig_box = minisign::sign(Some(&pk), &sk, Cursor::new(data), None, None).unwrap();
+        let sig_str = sig_box.into_string();
+
+        let wrong_pk = decode_public_key(&other_pk.to_base64()).unwrap();
+        assert!(matches!(
+            verify_signature("test", data, &sig_str, &wrong_pk),
+            Err(InstallerError::SignatureVerificationFailed(_))
+        ));
+    }
+
+    #[test]
+    fn verify_signature_tampered_data() {
+        let (pk, sk) = test_keypair();
+        let data = b"original data";
+        let sig_box = minisign::sign(Some(&pk), &sk, Cursor::new(data), None, None).unwrap();
+        let sig_str = sig_box.into_string();
+
+        let verify_pk = decode_public_key(&pk.to_base64()).unwrap();
+        assert!(matches!(
+            verify_signature("test", b"tampered data", &sig_str, &verify_pk),
+            Err(InstallerError::SignatureVerificationFailed(_))
+        ));
+    }
+
+    #[test]
+    fn verify_signature_invalid_format() {
+        let (pk, _) = test_keypair();
+        let verify_pk = decode_public_key(&pk.to_base64()).unwrap();
+        assert!(matches!(
+            verify_signature("test", b"data", "not a valid signature", &verify_pk),
+            Err(InstallerError::SignatureFormat { .. })
+        ));
+    }
 }

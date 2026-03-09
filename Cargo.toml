@@ -224,6 +224,8 @@ itertools = "0.14.0"
 jiff = { version = "0.2.18", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.3"
+minisign = "0.8"
+minisign-verify = "0.2"
 p256 = { version = "0.13", default-features = false }
 parking_lot = "0.12.5"
 prometheus-client = "0.24.0"

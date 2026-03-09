@@ -15,9 +15,9 @@ use platform::{
     check_dir_writable, executable_name, platform_binary_name, set_executable_permissions,
 };
 use skill::{install_skill, remove_skill};
-use verify::{decode_verifying_key, sha256_hex, verify_signature};
+use verify::{decode_public_key, sha256_hex, verify_signature};
 
-use ed25519_dalek::VerifyingKey;
+use minisign_verify::PublicKey;
 use std::env;
 use std::fs;
 use std::io;
@@ -63,7 +63,7 @@ struct ResolvedInstall {
     skill_url: Option<String>,
     skill_sha256: Option<String>,
     skill_signature: Option<String>,
-    verifying_key: VerifyingKey,
+    public_key: PublicKey,
     _download_dir: TempDir,
 }
 
@@ -145,7 +145,7 @@ impl Installer {
                 skill_url,
                 resolved.skill_sha256.as_deref(),
                 resolved.skill_signature.as_deref(),
-                &resolved.verifying_key,
+                &resolved.public_key,
                 dry_run,
                 quiet,
             );
@@ -183,7 +183,7 @@ impl Installer {
             .clone()
             .ok_or(InstallerError::MissingReleasePublicKey)?;
 
-        let verifying_key = decode_verifying_key(&public_key)?;
+        let public_key_parsed = decode_public_key(&public_key)?;
         let manifest = match pre_manifest {
             Some(m) => m,
             None => {
@@ -206,7 +206,7 @@ impl Installer {
         let src = download_extension(
             &binary,
             metadata,
-            &verifying_key,
+            &public_key_parsed,
             download_dir.path(),
             dry_run,
         )?;
@@ -218,7 +218,7 @@ impl Installer {
             skill_url: manifest.skill.clone(),
             skill_sha256: manifest.skill_sha256.clone(),
             skill_signature: manifest.skill_signature.clone(),
-            verifying_key,
+            public_key: public_key_parsed,
             _download_dir: download_dir,
         })
     }
@@ -277,7 +277,7 @@ impl Installer {
 fn download_extension(
     binary: &str,
     metadata: &ReleaseBinary,
-    verifying_key: &VerifyingKey,
+    public_key: &PublicKey,
     download_dir: &Path,
     dry_run: bool,
 ) -> Result<Option<PathBuf>, InstallerError> {
@@ -332,7 +332,7 @@ fn download_extension(
         .as_deref()
         .ok_or_else(|| InstallerError::SignatureMissing(binary.to_string()))?;
     tracing::debug!("verifying signature for {binary}");
-    if let Err(err) = verify_signature(binary, &bytes, encoded_signature, verifying_key) {
+    if let Err(err) = verify_signature(binary, &bytes, encoded_signature, public_key) {
         let _ = fs::remove_file(&dst);
         return Err(err);
     }
@@ -373,4 +373,8 @@ mod tests {
     fn relative_path_returns_none() {
         assert!(file_url_to_path("./manifest.json").is_none());
     }
+
+    // NOTE: download_extension's URL scheme enforcement (rejecting http:// and
+    // unknown schemes) requires a PublicKey and real file I/O, so it is
+    // covered by integration tests rather than unit tests here.
 }

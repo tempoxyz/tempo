@@ -1,6 +1,6 @@
 //! Agent skill installation and removal across coding assistants.
 
-use ed25519_dalek::VerifyingKey;
+use minisign_verify::PublicKey;
 use std::fs;
 
 use crate::installer::{
@@ -33,7 +33,7 @@ pub(super) fn install_skill(
     url: &str,
     expected_sha256: Option<&str>,
     encoded_signature: Option<&str>,
-    verifying_key: &VerifyingKey,
+    public_key: &PublicKey,
     dry_run: bool,
     quiet: bool,
 ) {
@@ -55,7 +55,7 @@ pub(super) fn install_skill(
     let skill_name = format!("tempo-{extension} skill");
     match encoded_signature {
         Some(sig) => {
-            if let Err(err) = verify_signature(&skill_name, content.as_bytes(), sig, verifying_key)
+            if let Err(err) = verify_signature(&skill_name, content.as_bytes(), sig, public_key)
             {
                 tracing::warn!("{err}, skipping skill install");
                 return;
