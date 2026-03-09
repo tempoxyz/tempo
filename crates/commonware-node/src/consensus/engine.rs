@@ -94,6 +94,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
     pub fcu_heartbeat_interval: Duration,
+    pub enable_subblocks: bool,
 
     pub feed_state: crate::feed::FeedStateHandle,
 }
@@ -320,6 +321,7 @@ where
             time_to_build_subblock: self.time_to_build_subblock,
             subblock_broadcast_interval: self.subblock_broadcast_interval,
             epoch_strategy: epoch_strategy.clone(),
+            enable_subblocks: self.enable_subblocks,
         });
 
         let (feed, feed_mailbox) = crate::feed::init(

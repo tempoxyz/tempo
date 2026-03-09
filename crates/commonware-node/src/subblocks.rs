@@ -43,7 +43,7 @@ use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
 use tokio::sync::broadcast;
-use tracing::{Instrument, Level, Span, debug, error, instrument, warn};
+use tracing::{Instrument, Level, Span, debug, error, info, instrument, warn};
 
 /// Maximum number of stored subblock transactions. Used to prevent DOS attacks.
 ///
@@ -60,6 +60,7 @@ pub(crate) struct Config<TContext> {
     pub(crate) time_to_build_subblock: Duration,
     pub(crate) subblock_broadcast_interval: Duration,
     pub(crate) epoch_strategy: FixedEpocher,
+    pub(crate) enable_subblocks: bool,
 }
 
 /// Task managing collected subblocks.
@@ -98,6 +99,8 @@ pub(crate) struct Actor<TContext> {
     subblock_broadcast_interval: Duration,
     /// The epoch strategy used by tempo.
     epoch_strategy: FixedEpocher,
+    /// Whether subblock processing is enabled.
+    enable_subblocks: bool,
 
     /// Current consensus tip. Includes highest observed round, digest and certificate.
     consensus_tip: Option<(Round, BlockHash, Certificate<MinSig>)>,
@@ -119,6 +122,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             time_to_build_subblock,
             subblock_broadcast_interval,
             epoch_strategy,
+            enable_subblocks,
         }: Config<TContext>,
     ) -> Self {
         let (actions_tx, actions_rx) = mpsc::unbounded();
@@ -135,6 +139,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             time_to_build_subblock,
             subblock_broadcast_interval,
             epoch_strategy,
+            enable_subblocks,
             consensus_tip: None,
             subblocks: Default::default(),
             subblock_transactions: Default::default(),
@@ -155,6 +160,34 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
+        if !self.enable_subblocks {
+            info!("subblocks are disabled");
+            // When subblocks are disabled, we still need to handle `GetSubBlocks`
+            // requests (returning empty) and drain the network/transaction channels
+            // to prevent backpressure.
+            loop {
+                tokio::select! {
+                    biased;
+
+                    Some(action) = self.actions_rx.next() => {
+                        // Only handle GetSubBlocks (return empty), ignore everything else.
+                        if let Message::GetSubBlocks { response, .. } = action {
+                            let _ = response.send(Vec::new());
+                        }
+                    },
+                    // Drain subblock transactions to prevent channel backpressure.
+                    result = self.subblock_transactions_rx.recv() => {
+                        if let Err(broadcast::error::RecvError::Closed) = result {
+                            break;
+                        }
+                    },
+                    // Drain network messages to prevent channel backpressure.
+                    _ = network_rx.recv() => {},
+                }
+            }
+            return;
+        }
+
         loop {
             let (subblock_task, broadcast_interval) = match &mut self.our_subblock {
                 PendingSubblock::None => (None, None),
