@@ -510,6 +510,41 @@ fn update_normalizes_v_prefix() {
     assert!(content.contains("v2.0.0"), "should not reinstall same version");
 }
 
+#[test]
+fn update_non_semver_different_version_reinstalls() {
+    let _lock = lock();
+    let fix = Fixture::new();
+
+    // Install with a non-semver version string.
+    fix.publish_extension("testpkg", "nightly-2025-01-01");
+    fix.run(&["tempo", "add", "testpkg"]).unwrap();
+    fix.record_installed_version("testpkg", "nightly-2025-01-01");
+
+    // Publish a different non-semver version — should reinstall.
+    fix.publish_extension("testpkg", "nightly-2025-03-09");
+    fix.run(&["tempo", "update", "testpkg"]).unwrap();
+
+    let content = fs::read_to_string(fix.binary_path("testpkg")).unwrap();
+    assert!(
+        content.contains("nightly-2025-03-09"),
+        "non-semver update with different version should reinstall: {content}"
+    );
+}
+
+#[test]
+fn update_non_semver_same_version_skips() {
+    let _lock = lock();
+    let fix = Fixture::new();
+
+    fix.publish_extension("testpkg", "nightly-2025-01-01");
+    fix.run(&["tempo", "add", "testpkg"]).unwrap();
+    fix.record_installed_version("testpkg", "nightly-2025-01-01");
+
+    // Same non-semver version — should be a no-op.
+    let code = fix.run(&["tempo", "update", "testpkg"]).unwrap();
+    assert_eq!(code, 0);
+}
+
 // ── Security: signature verification ────────────────────────────────
 
 #[test]
