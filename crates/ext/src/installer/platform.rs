@@ -109,6 +109,7 @@ pub(super) fn set_executable_permissions(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::ENV_MUTEX;
 
     #[test]
     fn platform_binary_name_format() {
@@ -148,6 +149,7 @@ mod tests {
 
     #[test]
     fn home_dir_from_env() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let original = std::env::var_os("HOME");
         unsafe { std::env::set_var("HOME", "/test/home") };
         assert_eq!(home_dir(), Some(PathBuf::from("/test/home")));
@@ -159,6 +161,7 @@ mod tests {
 
     #[test]
     fn default_local_bin_path() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let original = std::env::var_os("HOME");
         unsafe { std::env::set_var("HOME", "/test/home") };
         let result = default_local_bin().unwrap();
@@ -193,6 +196,7 @@ mod tests {
 
     #[test]
     fn find_in_path_finds_binary() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let bin_path = dir.path().join("test-tempo-binary");
         fs::write(&bin_path, "fake binary").unwrap();

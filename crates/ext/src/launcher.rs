@@ -203,6 +203,9 @@ impl Launcher {
                     args.extension,
                     installed_version.unwrap_or("unknown")
                 );
+                let mut state = state;
+                state.touch_check(&args.extension);
+                state.save();
             }
         }
 
@@ -437,11 +440,8 @@ mod tests {
         release_public_key,
     };
     use crate::installer::is_allowed_manifest_url;
+    use crate::test_util::ENV_MUTEX;
     use clap::Parser;
-    use std::sync::Mutex;
-
-    /// Serialize tests that mutate process-wide environment variables.
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn runtime_manifest_url_policy_enforces_https_or_local() {

@@ -377,12 +377,12 @@ fn update_reinstalls_extension() {
 
     fix.run(&["tempo", "add", "testpkg"]).unwrap();
     fix.record_installed_version("testpkg", "1.0.0");
-    let before = fs::read(&fix.binary_path("testpkg")).unwrap();
+    let before = fs::read(fix.binary_path("testpkg")).unwrap();
 
     fix.publish_extension("testpkg", "2.0.0");
     fix.run(&["tempo", "update", "testpkg"]).unwrap();
 
-    let after = fs::read(&fix.binary_path("testpkg")).unwrap();
+    let after = fs::read(fix.binary_path("testpkg")).unwrap();
     assert_ne!(before, after, "binary should change after update");
 }
 
@@ -655,7 +655,7 @@ fn failed_update_preserves_existing_binary() {
     fix.publish_extension("preserved", "1.0.0");
     fix.run(&["tempo", "add", "preserved"]).unwrap();
     fix.record_installed_version("preserved", "1.0.0");
-    let original = fs::read(&fix.binary_path("preserved")).unwrap();
+    let original = fs::read(fix.binary_path("preserved")).unwrap();
 
     // Publish a tampered v2.
     fix.publish_extension("preserved", "2.0.0");
@@ -671,7 +671,7 @@ fn failed_update_preserves_existing_binary() {
 
     // Original binary must survive.
     assert!(fix.binary_path("preserved").exists());
-    let after = fs::read(&fix.binary_path("preserved")).unwrap();
+    let after = fs::read(fix.binary_path("preserved")).unwrap();
     assert_eq!(original, after, "original binary must be preserved");
 }
 

@@ -260,8 +260,14 @@ impl Installer {
             .expect("src must exist after download");
         let tmp = resolved.dst.with_extension("tmp");
         fs::copy(src, &tmp)?;
-        set_executable_permissions(&tmp)?;
-        fs::rename(&tmp, &resolved.dst)?;
+        if let Err(err) = set_executable_permissions(&tmp) {
+            let _ = fs::remove_file(&tmp);
+            return Err(err.into());
+        }
+        if let Err(err) = fs::rename(&tmp, &resolved.dst) {
+            let _ = fs::remove_file(&tmp);
+            return Err(err.into());
+        }
         if !quiet {
             println!("installed {} -> {}", src.display(), resolved.dst.display());
         }
