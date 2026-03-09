@@ -168,8 +168,26 @@ fn init_txpool_defaults() {
         .expect("failed to initialize txpool defaults");
 }
 
+fn init_otlp_defaults() {
+    // Override the default OTLP batch export size (512) to reduce export frequency under load.
+    // See also reth-bench-compare which uses the same approach via env vars.
+    if std::env::var_os("OTEL_BSP_MAX_EXPORT_BATCH_SIZE").is_none() {
+        // SAFETY: Must be called at startup before any other threads are spawned
+        unsafe {
+            std::env::set_var("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", "65536");
+        }
+    }
+    if std::env::var_os("OTEL_BLRP_MAX_EXPORT_BATCH_SIZE").is_none() {
+        // SAFETY: Must be called at startup before any other threads are spawned
+        unsafe {
+            std::env::set_var("OTEL_BLRP_MAX_EXPORT_BATCH_SIZE", "65536");
+        }
+    }
+}
+
 pub(crate) fn init_defaults() {
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();
+    init_otlp_defaults();
 }
