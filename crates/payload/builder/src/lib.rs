@@ -267,7 +267,9 @@ where
             .provider
             .chain_spec()
             .is_osaka_active_at_timestamp(attributes.timestamp());
-        let is_t2 = chain_spec.is_t2_active_at_timestamp(attributes.timestamp());
+        let payment_rules = chain_spec
+            .tempo_hardfork_at(attributes.timestamp())
+            .payment_rules();
 
         let block_gas_limit: u64 = parent_header.gas_limit();
         let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
@@ -399,7 +401,7 @@ where
 
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
-            if !pool_tx.transaction.inner().is_payment(is_t2)
+            if !pool_tx.transaction.inner().is_payment(payment_rules)
                 && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
             {
                 best_txs.mark_invalid(
@@ -423,7 +425,7 @@ where
                 return Ok(BuildOutcome::Cancelled);
             }
 
-            let is_payment = pool_tx.transaction.inner().is_payment(is_t2);
+            let is_payment = pool_tx.transaction.inner().is_payment(payment_rules);
             if is_payment {
                 payment_transactions += 1;
             }

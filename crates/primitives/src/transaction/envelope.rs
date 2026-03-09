@@ -14,6 +14,24 @@ use core::fmt;
 /// Same as TIP20_TOKEN_PREFIX
 pub const TIP20_PAYMENT_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
+/// Payment classification rules that vary by hardfork.
+///
+/// Named after the hardfork that introduced each set of rules. Multiple hardforks may share the
+/// same variant when the payment rules don't change between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaymentRules {
+    /// Pre-T2: a transaction is a payment if the `to` address has the TIP-20 prefix.
+    Genesis,
+    /// T2+: additionally, requires recognized payment selector with exact ABI-encoded length,
+    /// and AA transactions must have a non-empty calls list.
+    T2,
+}
+
+impl PaymentRules {
+    /// The latest payment rules. Must be updated when a new hardfork changes payment semantics.
+    pub const LATEST: Self = Self::T2;
+}
+
 /// Valid TIP-20 payment selectors with their expected calldata lengths.
 const PAYMENT_CALLDATA: &[([u8; 4], usize)] = &[
     (hex!("a9059cbb"), 68),  // transfer(address,uint256)
@@ -184,15 +202,14 @@ impl TempoTxEnvelope {
 
     /// Classify a transaction as payment or non-payment.
     ///
-    /// Pre-T2 (strict = false): a transaction is a payment if the `to` address has the TIP20
-    /// prefix.
+    /// The classification rules depend on the active hardfork, encoded via [`PaymentRules`]:
     ///
-    /// Post-T2 (strict = true): additionally requires the calldata to have a recognized payment
-    /// selector with exact ABI-encoded length, and AA transactions must have a non-empty calls
-    /// list.
-    pub fn is_payment(&self, strict: bool) -> bool {
-        if strict {
-            match self {
+    /// - [`PaymentRules::Genesis`]: a tx is a payment if the `to` address has the TIP-20 prefix.
+    /// - [`PaymentRules::T2`]: additionally, requires the calldata to have a recognized payment
+    ///   selector with exact ABI-encoded length + AA transactions must have a non-empty calls list.
+    pub fn is_payment(&self, rules: PaymentRules) -> bool {
+        match rules {
+            PaymentRules::T2 => match self {
                 Self::Legacy(tx) => is_tip20_payment_strict(tx.tx().to.to(), &tx.tx().input),
                 Self::Eip2930(tx) => is_tip20_payment_strict(tx.tx().to.to(), &tx.tx().input),
                 Self::Eip1559(tx) => is_tip20_payment_strict(tx.tx().to.to(), &tx.tx().input),
@@ -205,9 +222,8 @@ impl TempoTxEnvelope {
                             .iter()
                             .all(|call| is_tip20_payment_strict(call.to.to(), &call.input))
                 }
-            }
-        } else {
-            match self {
+            },
+            PaymentRules::Genesis => match self {
                 Self::Legacy(tx) => has_tip20_prefix(tx.tx().to.to()),
                 Self::Eip2930(tx) => has_tip20_prefix(tx.tx().to.to()),
                 Self::Eip1559(tx) => has_tip20_prefix(tx.tx().to.to()),
@@ -217,7 +233,7 @@ impl TempoTxEnvelope {
                     .calls
                     .iter()
                     .all(|call| has_tip20_prefix(call.to.to())),
-            }
+            },
         }
     }
 
@@ -715,7 +731,8 @@ mod tests {
         };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
-        assert!(envelope.is_payment(true));
+        assert!(envelope.is_payment(PaymentRules::Genesis));
+        assert!(envelope.is_payment(PaymentRules::T2));
 
         let tx = TxLegacy {
             to: TxKind::Call(PAYMENT_TKN),
@@ -725,7 +742,8 @@ mod tests {
         };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
-        assert!(envelope.is_payment(true));
+        assert!(envelope.is_payment(PaymentRules::Genesis));
+        assert!(envelope.is_payment(PaymentRules::T2));
 
         let tx = TxLegacy {
             to: TxKind::Call(PAYMENT_TKN),
@@ -735,7 +753,8 @@ mod tests {
         };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
-        assert!(envelope.is_payment(true));
+        assert!(envelope.is_payment(PaymentRules::Genesis));
+        assert!(envelope.is_payment(PaymentRules::T2));
 
         let tx = TxLegacy {
             to: TxKind::Call(PAYMENT_TKN),
@@ -745,12 +764,13 @@ mod tests {
         };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
-        assert!(envelope.is_payment(true));
+        assert!(envelope.is_payment(PaymentRules::Genesis));
+        assert!(envelope.is_payment(PaymentRules::T2));
     }
 
     #[test]
-    fn test_payment_pre_t2_prefix_only() {
-        // Pre-T2: address prefix alone is sufficient, calldata is ignored
+    fn test_payment_rules_differ_across_forks() {
+        // TIP-20 prefix but no valid selector — payment under Genesis, not under T2
         let tx = TxLegacy {
             to: TxKind::Call(PAYMENT_TKN),
             gas_limit: 21000,
@@ -758,22 +778,18 @@ mod tests {
         };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
-        assert!(
-            envelope.is_payment(false),
-            "pre-T2: empty calldata should still be payment"
-        );
+        assert!(envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
 
-        // AA with empty calls is vacuously true pre-T2
+        // AA with empty calls — vacuously true under Genesis, rejected under T2
         let tx = TempoTransaction {
             fee_token: Some(PAYMENT_TKN),
             calls: vec![],
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
-        assert!(
-            envelope.is_payment(false),
-            "pre-T2: empty AA calls is vacuously true"
-        );
+        assert!(envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
     }
 
     #[test]
@@ -785,7 +801,8 @@ mod tests {
         };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
-        assert!(!envelope.is_payment(true));
+        assert!(envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
     }
 
     #[test]
@@ -800,7 +817,8 @@ mod tests {
         };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
-        assert!(!envelope.is_payment(true));
+        assert!(envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
     }
 
     #[test]
@@ -815,7 +833,8 @@ mod tests {
         };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
-        assert!(!envelope.is_payment(true));
+        assert!(envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
     }
 
     #[test]
@@ -828,8 +847,8 @@ mod tests {
         };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
-
-        assert!(!envelope.is_payment(true));
+        assert!(!envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
     }
 
     fn create_aa_envelope(call: Call) -> TempoTxEnvelope {
@@ -849,7 +868,8 @@ mod tests {
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
-        assert!(!envelope.is_payment(true));
+        assert!(envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
     }
 
     #[test]
@@ -863,8 +883,12 @@ mod tests {
             };
             let envelope = create_aa_envelope(call);
             assert!(
-                envelope.is_payment(true),
-                "PAYMENT_CALLDATA[{i}] should be classified as payment"
+                envelope.is_payment(PaymentRules::Genesis),
+                "Genesis: PAYMENT_CALLDATA[{i}] should be classified as payment"
+            );
+            assert!(
+                envelope.is_payment(PaymentRules::T2),
+                "T2: PAYMENT_CALLDATA[{i}] should be classified as payment"
             );
         }
     }
@@ -878,7 +902,8 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = create_aa_envelope(call);
-        assert!(!envelope.is_payment(true));
+        assert!(!envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
     }
 
     #[test]
@@ -889,7 +914,8 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = create_aa_envelope(call);
-        assert!(!envelope.is_payment(true));
+        assert!(!envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
     }
 
     #[test]
@@ -903,8 +929,12 @@ mod tests {
             };
             let envelope = create_aa_envelope(call);
             assert!(
-                envelope.is_payment(true),
-                "PAYMENT_CALLDATA[{i}] should match partial TIP20 prefix"
+                envelope.is_payment(PaymentRules::Genesis),
+                "Genesis: PAYMENT_CALLDATA[{i}] should match partial TIP20 prefix"
+            );
+            assert!(
+                envelope.is_payment(PaymentRules::T2),
+                "T2: PAYMENT_CALLDATA[{i}] should match partial TIP20 prefix"
             );
         }
     }
@@ -919,7 +949,8 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = create_aa_envelope(call);
-        assert!(!envelope.is_payment(true));
+        assert!(!envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
     }
 
     #[test]
@@ -937,7 +968,14 @@ mod tests {
             };
             let envelope =
                 TempoTxEnvelope::Eip2930(Signed::new_unhashed(tx, Signature::test_signature()));
-            assert!(envelope.is_payment(true), "Eip2930 PAYMENT_CALLDATA[{i}]");
+            assert!(
+                envelope.is_payment(PaymentRules::Genesis),
+                "Genesis: Eip2930 PAYMENT_CALLDATA[{i}]"
+            );
+            assert!(
+                envelope.is_payment(PaymentRules::T2),
+                "T2: Eip2930 PAYMENT_CALLDATA[{i}]"
+            );
 
             // Eip1559 payment
             let tx = TxEip1559 {
@@ -947,7 +985,14 @@ mod tests {
             };
             let envelope =
                 TempoTxEnvelope::Eip1559(Signed::new_unhashed(tx, Signature::test_signature()));
-            assert!(envelope.is_payment(true), "Eip1559 PAYMENT_CALLDATA[{i}]");
+            assert!(
+                envelope.is_payment(PaymentRules::Genesis),
+                "Genesis: Eip1559 PAYMENT_CALLDATA[{i}]"
+            );
+            assert!(
+                envelope.is_payment(PaymentRules::T2),
+                "T2: Eip1559 PAYMENT_CALLDATA[{i}]"
+            );
 
             // Eip7702 payment
             let tx = TxEip7702 {
@@ -957,7 +1002,14 @@ mod tests {
             };
             let envelope =
                 TempoTxEnvelope::Eip7702(Signed::new_unhashed(tx, Signature::test_signature()));
-            assert!(envelope.is_payment(true), "Eip7702 PAYMENT_CALLDATA[{i}]");
+            assert!(
+                envelope.is_payment(PaymentRules::Genesis),
+                "Genesis: Eip7702 PAYMENT_CALLDATA[{i}]"
+            );
+            assert!(
+                envelope.is_payment(PaymentRules::T2),
+                "T2: Eip7702 PAYMENT_CALLDATA[{i}]"
+            );
         }
 
         // Non-payment addresses
@@ -967,7 +1019,8 @@ mod tests {
         };
         let envelope =
             TempoTxEnvelope::Eip2930(Signed::new_unhashed(tx, Signature::test_signature()));
-        assert!(!envelope.is_payment(true));
+        assert!(!envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
 
         let tx = TxEip1559 {
             to: TxKind::Call(address!("1234567890123456789012345678901234567890")),
@@ -975,7 +1028,8 @@ mod tests {
         };
         let envelope =
             TempoTxEnvelope::Eip1559(Signed::new_unhashed(tx, Signature::test_signature()));
-        assert!(!envelope.is_payment(true));
+        assert!(!envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
 
         let tx = TxEip7702 {
             to: address!("1234567890123456789012345678901234567890"),
@@ -983,7 +1037,8 @@ mod tests {
         };
         let envelope =
             TempoTxEnvelope::Eip7702(Signed::new_unhashed(tx, Signature::test_signature()));
-        assert!(!envelope.is_payment(true));
+        assert!(!envelope.is_payment(PaymentRules::Genesis));
+        assert!(!envelope.is_payment(PaymentRules::T2));
     }
 
     #[test]

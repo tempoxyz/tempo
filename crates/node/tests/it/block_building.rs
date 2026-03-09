@@ -15,7 +15,7 @@ use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
-use tempo_primitives::TempoTxEnvelope;
+use tempo_primitives::{PaymentRules, TempoTxEnvelope};
 
 /// Helper to setup a test token by manually injecting transactions and advancing blocks
 async fn setup_token_manual<P>(
@@ -170,10 +170,13 @@ where
 
 /// Helper to count payment and non-payment transactions
 fn count_transaction_types(transactions: &[TempoTxEnvelope]) -> (usize, usize) {
-    let payment_count = transactions.iter().filter(|tx| tx.is_payment(true)).count();
+    let payment_count = transactions
+        .iter()
+        .filter(|tx| tx.is_payment(PaymentRules::T2))
+        .count();
     let non_payment_count = transactions
         .iter()
-        .filter(|tx| !tx.is_payment(true))
+        .filter(|tx| !tx.is_payment(PaymentRules::T2))
         .count();
     (payment_count, non_payment_count)
 }
@@ -323,7 +326,7 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
 
     for tx in &user_txs {
         assert!(
-            tx.is_payment(true),
+            tx.is_payment(PaymentRules::T2),
             "All transactions should be payment transactions"
         );
     }
@@ -393,7 +396,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
 
     for tx in &user_txs {
         assert!(
-            !tx.is_payment(true),
+            !tx.is_payment(PaymentRules::T2),
             "All transactions should be non-payment transactions"
         );
     }

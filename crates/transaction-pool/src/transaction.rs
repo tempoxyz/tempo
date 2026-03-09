@@ -21,7 +21,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager};
-use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{PaymentRules, TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::TempoTxEnv;
 use thiserror::Error;
 
@@ -53,8 +53,8 @@ pub struct TempoPooledTransaction {
 
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
-    pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
-        let is_payment = transaction.is_payment(true);
+    pub fn new(transaction: Recovered<TempoTxEnvelope>, payment_rules: PaymentRules) -> Self {
+        let is_payment = transaction.is_payment(payment_rules);
         let is_expiring_nonce = transaction
             .as_aa()
             .map(|tx| tx.tx().is_expiring_nonce_tx())
@@ -496,7 +496,7 @@ impl PoolTransaction for TempoPooledTransaction {
     }
 
     fn from_pooled(tx: Recovered<Self::Pooled>) -> Self {
-        Self::new(tx)
+        Self::new(tx, PaymentRules::LATEST)
     }
 
     fn hash(&self) -> &TxHash {
@@ -670,7 +670,7 @@ mod tests {
             address!("0000000000000000000000000000000000000001"),
         );
 
-        let pooled_tx = TempoPooledTransaction::new(recovered);
+        let pooled_tx = TempoPooledTransaction::new(recovered, PaymentRules::T2);
         assert!(pooled_tx.is_payment());
     }
 

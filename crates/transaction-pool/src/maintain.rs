@@ -30,7 +30,7 @@ use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     tip20::is_tip20_prefix,
 };
-use tempo_primitives::{AASigned, TempoPrimitives};
+use tempo_primitives::{AASigned, PaymentRules, TempoPrimitives};
 use tracing::{debug, error};
 
 /// Evict transactions this many seconds before they expire to reduce propagation
@@ -508,8 +508,13 @@ where
                 let new = match event {
                     CanonStateNotification::Reorg { old, new } => {
                         // Handle reorg: identify orphaned AA 2D txs and affected nonce slots
+                        let reorg_payment_rules = pool
+                            .client()
+                            .chain_spec()
+                            .tempo_hardfork_at(new.tip().header().timestamp())
+                            .payment_rules();
                         let (orphaned_txs, affected_seq_ids) =
-                            handle_reorg(old, new.clone(), |hash| pool.contains(hash));
+                            handle_reorg(old, new.clone(), |hash| pool.contains(hash), reorg_payment_rules);
 
                         // Reset nonce state for affected 2D nonce slots from the new tip's state.
                         // Necessary because state diffs only contain slots that changed in the new chain.
@@ -900,6 +905,7 @@ pub fn handle_reorg<F>(
     old_chain: Arc<Chain<TempoPrimitives>>,
     new_chain: Arc<Chain<TempoPrimitives>>,
     is_in_pool: F,
+    payment_rules: PaymentRules,
 ) -> (Vec<TempoPooledTransaction>, HashSet<AASequenceId>)
 where
     F: Fn(&TxHash) -> bool,
@@ -936,7 +942,7 @@ where
         // because tx presence in the new chain doesn't guarantee the nonce slot was modified.
         affected_seq_ids.insert(seq_id);
 
-        let pooled_tx = TempoPooledTransaction::new(tx);
+        let pooled_tx = TempoPooledTransaction::new(tx, payment_rules);
         if is_in_pool(pooled_tx.hash()) {
             continue;
         }
@@ -1313,8 +1319,12 @@ mod tests {
         let pool_hashes: HashSet<TxHash> = [hash_2d_in_pool].into_iter().collect();
 
         // Execute handle_reorg
-        let (orphaned, affected_seq_ids) =
-            handle_reorg(old_chain, new_chain, |hash| pool_hashes.contains(hash));
+        let (orphaned, affected_seq_ids) = handle_reorg(
+            old_chain,
+            new_chain,
+            |hash| pool_hashes.contains(hash),
+            PaymentRules::LATEST,
+        );
 
         // Verify: Only the orphaned AA 2D tx should be returned (not in-pool, not re-included)
         assert_eq!(

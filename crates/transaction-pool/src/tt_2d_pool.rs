@@ -1617,7 +1617,7 @@ mod tests {
     use std::collections::HashSet;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{
-        TempoTxEnvelope,
+        PaymentRules, TempoTxEnvelope,
         transaction::{
             TempoTransaction,
             tempo_transaction::Call,
@@ -5137,7 +5137,7 @@ mod tests {
             let aa_signed = AASigned::new_unhashed(tx, signature);
             let envelope: TempoTxEnvelope = aa_signed.into();
             let recovered = Recovered::new_unchecked(envelope, sender);
-            TempoPooledTransaction::new(recovered)
+            TempoPooledTransaction::new(recovered, PaymentRules::LATEST)
         };
 
         let tx1 = build_tx(Signature::new(U256::from(1), U256::from(2), false));
@@ -5222,7 +5222,7 @@ mod tests {
         let aa_signed = AASigned::new_unhashed(tx, signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
         let recovered = Recovered::new_unchecked(envelope, sender);
-        let pooled = TempoPooledTransaction::new(recovered);
+        let pooled = TempoPooledTransaction::new(recovered, PaymentRules::LATEST);
 
         let tx_hash = *pooled.hash();
         pool.add_transaction(

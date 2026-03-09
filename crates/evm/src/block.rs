@@ -331,12 +331,13 @@ where
         } else {
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
-                    let is_t2 = self
+                    let payment_rules = self
                         .inner
                         .spec
-                        .is_t2_active_at_timestamp(self.evm().block().timestamp.to::<u64>());
+                        .tempo_hardfork_at(self.evm().block().timestamp.to::<u64>())
+                        .payment_rules();
                     if gas_used > self.non_shared_gas_left
-                        || (!tx.is_payment(is_t2) && gas_used > self.non_payment_gas_left)
+                        || (!tx.is_payment(payment_rules) && gas_used > self.non_payment_gas_left)
                     {
                         // Assume that this transaction wants to make use of gas incentive section
                         //
@@ -429,14 +430,15 @@ where
         let inner = result?;
 
         let next_section = self.validate_tx(recovered.tx(), inner.result.result.gas_used())?;
-        let is_t2 = self
+        let payment_rules = self
             .inner
             .spec
-            .is_t2_active_at_timestamp(self.evm().block().timestamp.to::<u64>());
+            .tempo_hardfork_at(self.evm().block().timestamp.to::<u64>())
+            .payment_rules();
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: recovered.tx().is_payment(is_t2),
+            is_payment: recovered.tx().is_payment(payment_rules),
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
         })
