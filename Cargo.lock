@@ -7696,7 +7696,9 @@ checksum = "ab3f43e3283ab1488b624b44b0e988d0acea0b3214e694730a055cb6b2efa801"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -11843,6 +11845,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
+ "tempo-ext",
  "tempo-eyre",
  "tempo-faucet",
  "tempo-node",
@@ -12114,6 +12117,19 @@ dependencies = [
  "tempo-revm",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "tempo-ext"
+version = "1.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

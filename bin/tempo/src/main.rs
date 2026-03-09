@@ -145,12 +145,34 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let mut cli = Cli::<
+    let mut cli = match Cli::<
         TempoChainSpecParser,
         TempoArgs,
         DefaultRpcModuleValidator,
         tempo_cmd::TempoSubcommand,
-    >::parse();
+    >::try_parse()
+    {
+        Ok(cli) => cli,
+        Err(err) => {
+            // Clap errors like --help, --version, and missing subcommands
+            // belong to the node CLI. Only intercept InvalidSubcommand errors
+            // and route them to the extension launcher.
+            if err.kind() != clap::error::ErrorKind::InvalidSubcommand {
+                err.exit();
+            }
+            let args: Vec<String> = std::env::args().collect();
+            let version = env!("CARGO_PKG_VERSION").to_string();
+            let launcher = tempo_ext::Launcher::new(version);
+            let code = match launcher.run(args) {
+                Ok(code) => code,
+                Err(launcher_err) => {
+                    eprintln!("{launcher_err}");
+                    1
+                }
+            };
+            std::process::exit(code);
+        }
+    };
 
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
