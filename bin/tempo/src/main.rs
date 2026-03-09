@@ -160,8 +160,7 @@ fn main() -> eyre::Result<()> {
             if err.kind() != clap::error::ErrorKind::InvalidSubcommand {
                 err.exit();
             }
-            let args: Vec<String> = std::env::args().collect();
-            let code = match tempo_ext::run(args) {
+            let code = match tempo_ext::run(std::env::args_os()) {
                 Ok(code) => code,
                 Err(launcher_err) => {
                     eprintln!("{launcher_err}");

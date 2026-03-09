@@ -1,6 +1,5 @@
 //! Routes `tempo <extension>` to the right binary, handles auto-install
-//! of missing extensions, and provides built-in commands (help, version,
-//! add/update/remove).
+//! of missing extensions, and provides built-in commands (add/update/remove).
 
 use crate::installer::{
     InstallSource, Installer, InstallerError, binary_candidates, fallback_bin_dir, find_in_path,
@@ -77,29 +76,25 @@ struct ManagementArgs {
     dry_run: bool,
 }
 
-pub fn run(args: Vec<String>) -> Result<i32, LauncherError> {
+pub fn run<I, T>(args: I) -> Result<i32, LauncherError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
     let exe_dir = env::current_exe()
         .ok()
         .as_deref()
         .and_then(|path| path.parent().map(Path::to_path_buf));
     let launcher = Launcher { exe_dir };
 
-    let cli = Cli::try_parse_from(&args).map_err(|err| {
-        // Clap parse errors (unknown flags, missing values) become InvalidArgs.
+    let cli = Cli::try_parse_from(args).map_err(|err| {
         LauncherError::InvalidArgs(err.to_string())
     })?;
 
     match cli.command {
         Commands::Add(args) | Commands::Update(args) => launcher.handle_install(args),
         Commands::Remove(args) => launcher.handle_remove(args),
-        Commands::Extension(ext_args) => {
-            let extension = ext_args[0].to_string_lossy();
-            let rest: Vec<String> = ext_args[1..]
-                .iter()
-                .map(|s| s.to_string_lossy().into_owned())
-                .collect();
-            launcher.handle_extension(&extension, &rest)
-        }
+        Commands::Extension(ext_args) => launcher.handle_extension(ext_args),
     }
 }
 
@@ -145,29 +140,33 @@ impl Launcher {
         Ok(0)
     }
 
-    fn handle_extension(
-        &self,
-        extension: &str,
-        extension_args: &[String],
-    ) -> Result<i32, LauncherError> {
-        if !is_valid_extension_name(extension) {
-            print_missing_install_hint(extension);
+    /// Dispatch to an external extension binary.
+    ///
+    /// `ext_args` comes from clap's `external_subcommand` — the first element
+    /// is the subcommand name, the rest are arguments to forward as-is.
+    fn handle_extension(&self, ext_args: Vec<OsString>) -> Result<i32, LauncherError> {
+        let extension = ext_args[0].to_string_lossy();
+        if !is_valid_extension_name(&extension) {
+            print_missing_install_hint(&extension);
             return Ok(1);
         }
         tracing::debug!("extension={extension}");
+
         let binary_name = format!("tempo-{extension}");
         let display_name = format!("tempo {extension}");
+        let child_args = &ext_args[1..];
+
         if let Some(binary) = self.find_binary(&binary_name) {
             tracing::debug!("extension found locally: {}", binary.display());
-            self.maybe_auto_update(extension);
-            return run_child(binary, extension_args, &display_name);
+            self.maybe_auto_update(&extension);
+            return run_child(binary, child_args, &display_name);
         }
 
         // Try to auto-install as an extension.
         tracing::debug!("attempting extension auto-install");
-        match self.try_auto_install_extension(extension) {
+        match self.try_auto_install_extension(&extension) {
             Ok(Some(binary)) => {
-                return run_child(binary, extension_args, &display_name);
+                return run_child(binary, child_args, &display_name);
             }
             Ok(None) => {}
             Err(err) => {
@@ -175,7 +174,7 @@ impl Launcher {
             }
         }
 
-        print_missing_install_hint(extension);
+        print_missing_install_hint(&extension);
         Ok(1)
     }
 
@@ -315,7 +314,11 @@ fn manifest_url(extension: &str, version: Option<&str>) -> String {
     }
 }
 
-fn run_child(binary: PathBuf, args: &[String], display_name: &str) -> Result<i32, LauncherError> {
+fn run_child(
+    binary: PathBuf,
+    args: &[OsString],
+    display_name: &str,
+) -> Result<i32, LauncherError> {
     tracing::debug!("exec {} args={args:?}", binary.display());
 
     let mut cmd = Command::new(&binary);
@@ -345,7 +348,7 @@ fn print_missing_install_hint(extension: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, is_valid_extension_name, manifest_url};
+    use super::{is_valid_extension_name, manifest_url, Cli, Commands};
     use crate::installer::is_allowed_manifest_url;
     use clap::Parser;
 
@@ -411,7 +414,7 @@ mod tests {
     fn parse_add_extension_only() {
         let cli = parse(&["tempo", "add", "wallet"]);
         match cli.command {
-            super::Commands::Add(ref args) => {
+            Commands::Add(ref args) => {
                 assert_eq!(args.extension, "wallet");
                 assert_eq!(args.version, None);
                 assert!(!args.dry_run);
@@ -425,7 +428,7 @@ mod tests {
     fn parse_add_extension_and_version() {
         let cli = parse(&["tempo", "add", "wallet", "1.0.0"]);
         match cli.command {
-            super::Commands::Add(ref args) => {
+            Commands::Add(ref args) => {
                 assert_eq!(args.extension, "wallet");
                 assert_eq!(args.version, Some("1.0.0".to_string()));
             }
@@ -437,7 +440,7 @@ mod tests {
     fn parse_add_with_dry_run() {
         let cli = parse(&["tempo", "add", "wallet", "--dry-run"]);
         match cli.command {
-            super::Commands::Add(ref args) => assert!(args.dry_run),
+            Commands::Add(ref args) => assert!(args.dry_run),
             _ => panic!("expected Add"),
         }
     }
@@ -452,7 +455,7 @@ mod tests {
             "https://example.com/m.json",
         ]);
         match cli.command {
-            super::Commands::Add(ref args) => {
+            Commands::Add(ref args) => {
                 assert_eq!(
                     args.manifest,
                     Some("https://example.com/m.json".to_string())
@@ -464,9 +467,15 @@ mod tests {
 
     #[test]
     fn parse_add_with_public_key() {
-        let cli = parse(&["tempo", "add", "wallet", "--release-public-key", "abc123"]);
+        let cli = parse(&[
+            "tempo",
+            "add",
+            "wallet",
+            "--release-public-key",
+            "abc123",
+        ]);
         match cli.command {
-            super::Commands::Add(ref args) => {
+            Commands::Add(ref args) => {
                 assert_eq!(args.public_key, Some("abc123".to_string()));
             }
             _ => panic!("expected Add"),
@@ -476,13 +485,13 @@ mod tests {
     #[test]
     fn parse_remove() {
         let cli = parse(&["tempo", "remove", "wallet"]);
-        assert!(matches!(cli.command, super::Commands::Remove(_)));
+        assert!(matches!(cli.command, Commands::Remove(_)));
     }
 
     #[test]
     fn parse_update() {
         let cli = parse(&["tempo", "update", "wallet"]);
-        assert!(matches!(cli.command, super::Commands::Update(_)));
+        assert!(matches!(cli.command, Commands::Update(_)));
     }
 
     #[test]
@@ -504,9 +513,24 @@ mod tests {
     fn parse_external_subcommand() {
         let cli = parse(&["tempo", "wallet", "--help"]);
         match cli.command {
-            super::Commands::Extension(ref args) => {
+            Commands::Extension(ref args) => {
                 assert_eq!(args[0], "wallet");
                 assert_eq!(args[1], "--help");
+            }
+            _ => panic!("expected Extension"),
+        }
+    }
+
+    #[test]
+    fn parse_external_subcommand_preserves_all_args() {
+        let cli = parse(&["tempo", "wallet", "login", "--verbose", "extra"]);
+        match cli.command {
+            Commands::Extension(ref args) => {
+                assert_eq!(args.len(), 4);
+                assert_eq!(args[0], "wallet");
+                assert_eq!(args[1], "login");
+                assert_eq!(args[2], "--verbose");
+                assert_eq!(args[3], "extra");
             }
             _ => panic!("expected Extension"),
         }
