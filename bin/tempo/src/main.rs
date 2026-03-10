@@ -129,40 +129,6 @@ fn install_crypto_provider() {
         .expect("Failed to install default rustls crypto provider");
 }
 
-/// Run the extension launcher and exit with its status code.
-fn run_ext_and_exit() -> ! {
-    let code = match tempo_ext::run(std::env::args_os()) {
-        Ok(code) => code,
-        Err(err) => {
-            eprintln!("{err}");
-            1
-        }
-    };
-    std::process::exit(code);
-}
-
-/// Print installed extensions as a footer after help output.
-fn print_extensions_footer() {
-    let extensions = tempo_ext::installed_extensions();
-    if extensions.is_empty() {
-        return;
-    }
-    let use_color = std::io::IsTerminal::is_terminal(&std::io::stdout());
-    let (b, bu, r) = if use_color {
-        ("\x1b[1m", "\x1b[1m\x1b[4m", "\x1b[0m")
-    } else {
-        ("", "", "")
-    };
-    println!("\n{bu}Extensions:{r}");
-    for (name, desc) in &extensions {
-        if desc.is_empty() {
-            println!("  {b}{name}{r}");
-        } else {
-            println!("  {b}{name:<22}{r} {desc}");
-        }
-    }
-}
-
 fn main() -> eyre::Result<()> {
     install_crypto_provider();
 
@@ -186,15 +152,6 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    // Extension management commands are handled by the ext launcher directly
-    // (bypassing reth CLI parsing to avoid inheriting global logging/tracing flags).
-    if std::env::args()
-        .nth(1)
-        .is_some_and(|s| matches!(s.as_str(), "add" | "remove" | "update" | "list"))
-    {
-        run_ext_and_exit();
-    }
-
     let mut cli = match TempoCli::command()
         .about("Tempo")
         .try_get_matches_from(std::env::args_os())
@@ -202,28 +159,47 @@ fn main() -> eyre::Result<()> {
     {
         Ok(cli) => cli,
         Err(err) => {
-            if err.kind() == clap::error::ErrorKind::InvalidSubcommand {
-                // Unknown subcommand — try the extension launcher.
-                run_ext_and_exit();
-            }
-
-            if matches!(
-                err.kind(),
-                clap::error::ErrorKind::DisplayHelp
-                    | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-            ) {
-                let _ = err.print();
-                // Only show the extensions footer on root help (no subcommand present).
-                let is_root_help = !std::env::args()
-                    .skip(1)
-                    .any(|a| !a.starts_with('-') && a != "help");
-                if is_root_help {
-                    print_extensions_footer();
+            // Clap errors like --help, --version, and missing subcommands
+            // belong to the node CLI. Only intercept InvalidSubcommand errors
+            // and route them to the extension launcher.
+            if err.kind() != clap::error::ErrorKind::InvalidSubcommand {
+                // Print clap's help/error output, then append installed
+                // extensions when displaying help.
+                if matches!(
+                    err.kind(),
+                    clap::error::ErrorKind::DisplayHelp
+                        | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                ) {
+                    let _ = err.print();
+                    let extensions = tempo_ext::installed_extensions();
+                    if !extensions.is_empty() {
+                        let use_color = std::io::IsTerminal::is_terminal(&std::io::stdout());
+                        let (b, bu, r) = if use_color {
+                            ("\x1b[1m", "\x1b[1m\x1b[4m", "\x1b[0m")
+                        } else {
+                            ("", "", "")
+                        };
+                        println!("\n{bu}Extensions:{r}");
+                        for (name, desc) in &extensions {
+                            if desc.is_empty() {
+                                println!("  {b}{name}{r}");
+                            } else {
+                                println!("  {b}{name:<22}{r} {desc}");
+                            }
+                        }
+                    }
+                    std::process::exit(0);
                 }
-                std::process::exit(0);
+                err.exit();
             }
-
-            err.exit();
+            let code = match tempo_ext::run(std::env::args_os()) {
+                Ok(code) => code,
+                Err(launcher_err) => {
+                    eprintln!("{launcher_err}");
+                    1
+                }
+            };
+            std::process::exit(code);
         }
     };
 
