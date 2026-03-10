@@ -914,16 +914,12 @@ where
                 .into());
             }
 
-            // Validate KeyAuthorization chain_id (following EIP-7702 pattern)
-            // chain_id == 0 allows replay on any chain (wildcard)
-            let expected_chain_id = cfg.chain_id();
-            if key_auth.chain_id != 0 && key_auth.chain_id != expected_chain_id {
-                return Err(TempoInvalidTransaction::KeyAuthorizationChainIdMismatch {
-                    expected: expected_chain_id,
-                    got: key_auth.chain_id,
-                }
-                .into());
-            }
+            // Validate KeyAuthorization chain_id.
+            // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
+            // Pre-T1C: chain_id == 0 allows replay on any chain (wildcard).
+            key_auth
+                .validate_chain_id(cfg.chain_id(), spec.is_t1c())
+                .map_err(TempoInvalidTransaction::from)?;
 
             let keychain_checkpoint = if spec.is_t1() {
                 Some(journal.checkpoint())
@@ -1279,6 +1275,17 @@ where
                 !aa_env.tempo_authorization_list.is_empty(),
             )
             .map_err(TempoInvalidTransaction::from)?;
+
+            // Validate keychain signature version (outer + authorization list).
+            aa_env
+                .signature
+                .validate_version(cfg.spec().is_t1c())
+                .map_err(TempoInvalidTransaction::from)?;
+            for auth in &aa_env.tempo_authorization_list {
+                auth.signature()
+                    .validate_version(cfg.spec().is_t1c())
+                    .map_err(TempoInvalidTransaction::from)?;
+            }
 
             let has_keychain_fields =
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();

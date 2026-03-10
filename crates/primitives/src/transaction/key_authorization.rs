@@ -38,7 +38,8 @@ pub struct TokenLimit {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct KeyAuthorization {
-    /// Chain ID for replay protection (0 = valid on any chain)
+    /// Chain ID for replay protection.
+    /// Pre-T1C: 0 = valid on any chain (wildcard). T1C+: must match current chain.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub chain_id: u64,
 
@@ -87,6 +88,31 @@ impl KeyAuthorization {
         }
     }
 
+    /// Validates that this key authorization's `chain_id` is compatible with `expected_chain_id`.
+    ///
+    /// - Post-T1C: `chain_id` must exactly match (wildcard `0` is no longer allowed).
+    /// - Pre-T1C: `chain_id == 0` is a wildcard (valid on any chain), otherwise must match.
+    pub fn validate_chain_id(
+        &self,
+        expected_chain_id: u64,
+        is_t1c: bool,
+    ) -> Result<(), KeyAuthorizationChainIdError> {
+        if is_t1c {
+            if self.chain_id != expected_chain_id {
+                return Err(KeyAuthorizationChainIdError {
+                    expected: expected_chain_id,
+                    got: self.chain_id,
+                });
+            }
+        } else if self.chain_id != 0 && self.chain_id != expected_chain_id {
+            return Err(KeyAuthorizationChainIdError {
+                expected: expected_chain_id,
+                got: self.chain_id,
+            });
+        }
+        Ok(())
+    }
+
     /// Calculates a heuristic for the in-memory size of the key authorization
     pub fn size(&self) -> usize {
         size_of::<Self>()
@@ -95,6 +121,15 @@ impl KeyAuthorization {
                 .as_ref()
                 .map_or(0, |limits| limits.capacity() * size_of::<TokenLimit>())
     }
+}
+
+/// Error returned when a [`KeyAuthorization`]'s `chain_id` does not match the expected value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyAuthorizationChainIdError {
+    /// The expected chain ID (current chain).
+    pub expected: u64,
+    /// The chain ID from the KeyAuthorization.
+    pub got: u64,
 }
 
 /// Signed key authorization that can be attached to a transaction.
@@ -247,5 +282,67 @@ mod tests {
         assert!(make_auth(None, None).never_expires());
         assert!(!make_auth(Some(1000), None).never_expires());
         assert!(!make_auth(Some(0), None).never_expires()); // 0 is still Some
+    }
+
+    fn make_auth_with_chain_id(chain_id: u64) -> KeyAuthorization {
+        KeyAuthorization {
+            chain_id,
+            key_type: SignatureType::Secp256k1,
+            key_id: Address::random(),
+            expiry: None,
+            limits: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_chain_id_pre_t1c() {
+        let expected = 42431;
+
+        // Matching chain_id → ok
+        assert!(
+            make_auth_with_chain_id(expected)
+                .validate_chain_id(expected, false)
+                .is_ok()
+        );
+
+        // Wildcard chain_id=0 → ok pre-T1C
+        assert!(
+            make_auth_with_chain_id(0)
+                .validate_chain_id(expected, false)
+                .is_ok()
+        );
+
+        // Wrong chain_id → err
+        let err = make_auth_with_chain_id(999)
+            .validate_chain_id(expected, false)
+            .unwrap_err();
+        assert_eq!(err.expected, expected);
+        assert_eq!(err.got, 999);
+    }
+
+    #[test]
+    fn test_validate_chain_id_post_t1c() {
+        let expected = 42431;
+
+        // Matching chain_id → ok
+        assert!(
+            make_auth_with_chain_id(expected)
+                .validate_chain_id(expected, true)
+                .is_ok()
+        );
+
+        // Wildcard chain_id=0 → rejected post-T1C
+        let err = make_auth_with_chain_id(0)
+            .validate_chain_id(expected, true)
+            .unwrap_err();
+        assert_eq!(err.expected, expected);
+        assert_eq!(err.got, 0);
+
+        // Wrong chain_id → rejected
+        let err = make_auth_with_chain_id(999)
+            .validate_chain_id(expected, true)
+            .unwrap_err();
+        assert_eq!(err.expected, expected);
+        assert_eq!(err.got, 999);
     }
 }

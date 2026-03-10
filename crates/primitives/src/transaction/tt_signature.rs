@@ -46,6 +46,7 @@ pub fn normalize_p256_s(s_bytes: &[u8]) -> B256 {
 pub const SIGNATURE_TYPE_P256: u8 = 0x01;
 pub const SIGNATURE_TYPE_WEBAUTHN: u8 = 0x02;
 pub const SIGNATURE_TYPE_KEYCHAIN: u8 = 0x03;
+pub const SIGNATURE_TYPE_KEYCHAIN_V2: u8 = 0x04;
 
 // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
 const MIN_AUTH_DATA_LEN: usize = 37;
@@ -353,10 +354,45 @@ impl reth_codecs::Compact for PrimitiveSignature {
     }
 }
 
-/// Keychain signature wrapping another signature with a user address
-/// This allows an access key to sign on behalf of a root account
+/// Keychain signature version.
 ///
-/// Format: 0x03 || user_address (20 bytes) || inner_signature
+/// Determines how the signature hash is computed for the inner signature.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+pub enum KeychainVersion {
+    /// Legacy (V1): inner signature signs `sig_hash` directly.
+    /// Deprecated at T1C.
+    /// TODO(tanishk): change default to V2 after T1C
+    #[default]
+    V1,
+    /// V2: inner signature signs `keccak256(0x04 || sig_hash || user_address)`.
+    /// Binds the signature to the specific user account with a domain separator.
+    V2,
+}
+
+/// Keychain version validation error.
+///
+/// Returned by [`TempoSignature::validate_version`] when a keychain
+/// signature's version is incompatible with the current hardfork.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeychainVersionError {
+    /// Legacy V1 keychain signature used after T1C activation (permanently invalid).
+    LegacyPostT1C,
+    /// V2 keychain signature used before T1C activation (not yet valid).
+    V2BeforeActivation,
+}
+
+/// Keychain signature wrapping another signature with a user address.
+/// This allows an access key to sign on behalf of a root account.
+///
+/// No `Compact` impl — always wrapped in [`TempoSignature`] whose `Compact` delegates
+/// to `to_bytes()`/`from_bytes()` which encodes the version via the wire type byte
+/// (`0x03` = V1, `0x04` = V2).
+///
+/// Format (V1): 0x03 || user_address (20 bytes) || inner_signature
+/// Format (V2): 0x04 || user_address (20 bytes) || inner_signature
 ///
 /// The user_address is the root account this transaction is being executed for.
 /// The inner signature proves an authorized access key signed the transaction.
@@ -364,12 +400,14 @@ impl reth_codecs::Compact for PrimitiveSignature {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
 pub struct KeychainSignature {
     /// Root account address that this transaction is being executed for
     pub user_address: Address,
     /// The actual signature from the access key (can be Secp256k1, P256, or WebAuthn, but NOT another Keychain)
     pub signature: PrimitiveSignature,
+    /// Keychain signature version (V1 = legacy, V2 = includes user_address in sig hash)
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub version: KeychainVersion,
     /// Cached access key ID recovered from the inner signature.
     /// This is an implementation detail - use `key_id()` to access.
     /// Uses OnceLock for thread-safe interior mutability.
@@ -386,12 +424,39 @@ pub struct KeychainSignature {
 }
 
 impl KeychainSignature {
-    /// Create a new KeychainSignature
+    /// Create a new V2 KeychainSignature (recommended).
+    ///
+    /// V2 signatures include the user_address in the signature hash.
     pub fn new(user_address: Address, signature: PrimitiveSignature) -> Self {
         Self {
             user_address,
             signature,
+            version: KeychainVersion::V2,
             cached_key_id: OnceLock::new(),
+        }
+    }
+
+    /// Create a legacy V1 KeychainSignature.
+    ///
+    /// V1 signatures do NOT include the user_address in the signature hash
+    /// and are deprecated at the T1C hardfork.
+    pub fn new_v1(user_address: Address, signature: PrimitiveSignature) -> Self {
+        Self {
+            user_address,
+            signature,
+            version: KeychainVersion::V1,
+            cached_key_id: OnceLock::new(),
+        }
+    }
+
+    /// Compute the effective signature hash for key recovery.
+    ///
+    /// - V1: returns `sig_hash` directly (legacy, deprecated)
+    /// - V2: returns `keccak256(0x04 || sig_hash || user_address)`
+    fn effective_sig_hash(&self, sig_hash: &B256) -> B256 {
+        match self.version {
+            KeychainVersion::V1 => *sig_hash,
+            KeychainVersion::V2 => Self::signing_hash(*sig_hash, self.user_address),
         }
     }
 
@@ -412,10 +477,30 @@ impl KeychainSignature {
         }
 
         // Not cached - recover and cache
-        let key_id = self.signature.recover_signer(sig_hash)?;
+        let effective_hash = self.effective_sig_hash(sig_hash);
+        let key_id = self.signature.recover_signer(&effective_hash)?;
         #[allow(clippy::useless_conversion)]
         let _ = self.cached_key_id.set(key_id.into());
         Ok(key_id)
+    }
+
+    /// Returns true if this is a legacy V1 keychain signature.
+    pub fn is_legacy(&self) -> bool {
+        self.version == KeychainVersion::V1
+    }
+
+    /// Compute the hash that an access key should sign for a V2 keychain transaction.
+    ///
+    /// Returns `keccak256(0x04 || sig_hash || user_address)`.
+    /// The `0x04` domain separator ([`SIGNATURE_TYPE_KEYCHAIN_V2`]) prevents
+    /// cross-scheme signature confusion, following the same pattern as
+    /// EIP-7702 (`0x05`) and Tempo fee-payer signatures (`0x78`).
+    pub fn signing_hash(sig_hash: B256, user_address: Address) -> B256 {
+        let mut buf = [0u8; 53]; // 1 + 32 + 20
+        buf[0] = SIGNATURE_TYPE_KEYCHAIN_V2;
+        buf[1..33].copy_from_slice(sig_hash.as_slice());
+        buf[33..].copy_from_slice(user_address.as_slice());
+        keccak256(buf)
     }
 }
 
@@ -423,7 +508,9 @@ impl KeychainSignature {
 // since it's just a cache and doesn't affect the logical equality of signatures
 impl PartialEq for KeychainSignature {
     fn eq(&self, other: &Self) -> bool {
-        self.user_address == other.user_address && self.signature == other.signature
+        self.user_address == other.user_address
+            && self.signature == other.signature
+            && self.version == other.version
     }
 }
 
@@ -433,37 +520,7 @@ impl core::hash::Hash for KeychainSignature {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.user_address.hash(state);
         self.signature.hash(state);
-    }
-}
-
-// Manual Compact implementation that excludes cached_key_id (cache field)
-#[cfg(feature = "reth-codec")]
-impl reth_codecs::Compact for KeychainSignature {
-    fn to_compact<B>(&self, buf: &mut B) -> usize
-    where
-        B: alloy_rlp::BufMut + AsMut<[u8]>,
-    {
-        // Only encode user_address and signature, skip cached_key_id
-        let mut written = 0;
-        written += self.user_address.to_compact(buf);
-        written += self.signature.to_compact(buf);
-        written
-    }
-
-    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
-        // Decode user_address and signature, initialize cached_key_id as empty
-        let (user_address, rest) = Address::from_compact(buf, len);
-        let remaining_len = len - (buf.len() - rest.len());
-        let (signature, rest) = PrimitiveSignature::from_compact(rest, remaining_len);
-
-        (
-            Self {
-                user_address,
-                signature,
-                cached_key_id: OnceLock::new(),
-            },
-            rest,
-        )
+        self.version.hash(state);
     }
 }
 
@@ -474,6 +531,7 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
         Ok(Self {
             user_address: u.arbitrary()?,
             signature: u.arbitrary()?,
+            version: u.arbitrary()?,
             cached_key_id: OnceLock::new(), // Always start with empty cache
         })
     }
@@ -509,12 +567,17 @@ impl TempoSignature {
             return Err("Signature data is empty");
         }
 
-        // Check if this is a Keychain signature (type identifier 0x03)
+        // Check if this is a Keychain signature (type identifier 0x03 or 0x04)
         // We need to handle this specially before delegating to PrimitiveSignature
         if data.len() > 1
             && data.len() != SECP256K1_SIGNATURE_LENGTH
-            && data[0] == SIGNATURE_TYPE_KEYCHAIN
+            && (data[0] == SIGNATURE_TYPE_KEYCHAIN || data[0] == SIGNATURE_TYPE_KEYCHAIN_V2)
         {
+            let version = if data[0] == SIGNATURE_TYPE_KEYCHAIN {
+                KeychainVersion::V1
+            } else {
+                KeychainVersion::V2
+            };
             let sig_data = &data[1..];
 
             // Keychain format: user_address (20 bytes) || inner_signature
@@ -532,6 +595,7 @@ impl TempoSignature {
             return Ok(Self::Keychain(KeychainSignature {
                 user_address,
                 signature: inner_signature,
+                version,
                 cached_key_id: OnceLock::new(),
             }));
         }
@@ -550,10 +614,14 @@ impl TempoSignature {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.to_bytes(),
             Self::Keychain(keychain_sig) => {
-                // Format: 0x03 | user_address (20 bytes) | inner_signature
+                // Format: type_byte | user_address (20 bytes) | inner_signature
                 let inner_bytes = keychain_sig.signature.to_bytes();
                 let mut bytes = Vec::with_capacity(1 + 20 + inner_bytes.len());
-                bytes.push(SIGNATURE_TYPE_KEYCHAIN);
+                let type_byte = match keychain_sig.version {
+                    KeychainVersion::V1 => SIGNATURE_TYPE_KEYCHAIN,
+                    KeychainVersion::V2 => SIGNATURE_TYPE_KEYCHAIN_V2,
+                };
+                bytes.push(type_byte);
                 bytes.extend_from_slice(keychain_sig.user_address.as_slice());
                 bytes.extend_from_slice(&inner_bytes);
                 Bytes::from(bytes)
@@ -622,6 +690,36 @@ impl TempoSignature {
     /// Check if this is a Keychain signature
     pub fn is_keychain(&self) -> bool {
         matches!(self, Self::Keychain(_))
+    }
+
+    /// Check if this is a legacy V1 Keychain signature (deprecated at T1C).
+    pub fn is_legacy_keychain(&self) -> bool {
+        matches!(self, Self::Keychain(k) if k.is_legacy())
+    }
+
+    /// Check if this is a V2 Keychain signature.
+    pub fn is_v2_keychain(&self) -> bool {
+        matches!(
+            self,
+            Self::Keychain(KeychainSignature {
+                version: KeychainVersion::V2,
+                ..
+            })
+        )
+    }
+
+    /// Validates keychain signature version compatibility with the current hardfork.
+    ///
+    /// - Post-T1C: legacy V1 keychain signatures are rejected.
+    /// - Pre-T1C: V2 keychain signatures are rejected to prevent chain splits.
+    pub fn validate_version(&self, is_t1c: bool) -> Result<(), KeychainVersionError> {
+        if is_t1c && self.is_legacy_keychain() {
+            return Err(KeychainVersionError::LegacyPostT1C);
+        }
+        if !is_t1c && self.is_v2_keychain() {
+            return Err(KeychainVersionError::V2BeforeActivation);
+        }
+        Ok(())
     }
 
     /// Get the Keychain signature if this is a Keychain signature
@@ -1482,14 +1580,58 @@ mod tests {
     }
 
     #[test]
-    fn test_recover_signer_keychain() {
+    fn test_recover_signer_keychain_v1() {
         use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
 
         let (signing_key, access_key_address) = generate_secp256k1_keypair();
         let user_address = Address::repeat_byte(0xDD);
 
+        // V1: inner signature signs sig_hash directly
         let sig_hash = B256::from([0x22; 32]);
         let inner_sig = sign_hash(&signing_key, &sig_hash);
+
+        let keychain_sig = TempoSignature::Keychain(KeychainSignature::new_v1(
+            user_address,
+            match inner_sig {
+                TempoSignature::Primitive(p) => p,
+                _ => panic!("Expected primitive signature"),
+            },
+        ));
+
+        // recover_signer returns user_address
+        let recovered = keychain_sig.recover_signer(&sig_hash).unwrap();
+        assert_eq!(
+            recovered, user_address,
+            "Keychain V1 recovery should return user_address"
+        );
+
+        // key_id should be cached and return access key address
+        let keychain = keychain_sig.as_keychain().unwrap();
+        let key_id = keychain.key_id(&sig_hash).unwrap();
+        assert_eq!(
+            key_id, access_key_address,
+            "key_id should return access key address"
+        );
+
+        // V1 should be legacy
+        assert!(keychain_sig.is_legacy_keychain());
+    }
+
+    #[test]
+    fn test_recover_signer_keychain_v2() {
+        use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
+
+        let (signing_key, access_key_address) = generate_secp256k1_keypair();
+        let user_address = Address::repeat_byte(0xDD);
+
+        // V2: inner signature signs keccak256(0x04 || sig_hash || user_address)
+        let sig_hash = B256::from([0x22; 32]);
+        let mut buf = [0u8; 53]; // 1 + 32 + 20
+        buf[0] = SIGNATURE_TYPE_KEYCHAIN_V2;
+        buf[1..33].copy_from_slice(sig_hash.as_slice());
+        buf[33..].copy_from_slice(user_address.as_slice());
+        let effective_hash = keccak256(buf);
+        let inner_sig = sign_hash(&signing_key, &effective_hash);
 
         let keychain_sig = TempoSignature::Keychain(KeychainSignature::new(
             user_address,
@@ -1503,7 +1645,7 @@ mod tests {
         let recovered = keychain_sig.recover_signer(&sig_hash).unwrap();
         assert_eq!(
             recovered, user_address,
-            "Keychain recovery should return user_address"
+            "Keychain V2 recovery should return user_address"
         );
 
         // key_id should be cached and return access key address
@@ -1512,6 +1654,80 @@ mod tests {
         assert_eq!(
             key_id, access_key_address,
             "key_id should return access key address"
+        );
+
+        // V2 should NOT be legacy
+        assert!(!keychain_sig.is_legacy_keychain());
+    }
+
+    #[test]
+    fn test_keychain_v2_binds_user_address() {
+        use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
+
+        let (signing_key, _access_key_address) = generate_secp256k1_keypair();
+        let user_a = Address::repeat_byte(0xAA);
+        let user_b = Address::repeat_byte(0xBB);
+
+        // Sign for user_a with V2
+        let sig_hash = B256::from([0x22; 32]);
+        let mut buf = [0u8; 52];
+        buf[..32].copy_from_slice(sig_hash.as_slice());
+        buf[32..].copy_from_slice(user_a.as_slice());
+        let effective_hash = keccak256(buf);
+        let inner_sig = sign_hash(&signing_key, &effective_hash);
+
+        let inner_primitive = match inner_sig {
+            TempoSignature::Primitive(p) => p,
+            _ => panic!("Expected primitive signature"),
+        };
+
+        // Valid for user_a
+        let sig_a =
+            TempoSignature::Keychain(KeychainSignature::new(user_a, inner_primitive.clone()));
+        let recovered_a = sig_a.recover_signer(&sig_hash).unwrap();
+        assert_eq!(recovered_a, user_a);
+
+        // Same inner signature but for user_b — key_id will differ
+        // because user_address is part of the signed hash
+        let sig_b = TempoSignature::Keychain(KeychainSignature::new(user_b, inner_primitive));
+        let recovered_b = sig_b.recover_signer(&sig_hash).unwrap();
+        assert_eq!(
+            recovered_b, user_b,
+            "recover_signer returns the claimed user_address"
+        );
+
+        // But the key_id recovered under user_b will be a garbage address (not the real access key)
+        let key_id_a = sig_a.as_keychain().unwrap().key_id(&sig_hash).unwrap();
+        let key_id_b = sig_b.as_keychain().unwrap().key_id(&sig_hash).unwrap();
+        assert_ne!(
+            key_id_a, key_id_b,
+            "V2 should recover different key_ids for different user_addresses"
+        );
+    }
+
+    #[test]
+    fn test_signing_hash_properties() {
+        let hash_a = B256::from([0x11; 32]);
+        let hash_b = B256::from([0x22; 32]);
+        let addr_a = Address::repeat_byte(0xAA);
+        let addr_b = Address::repeat_byte(0xBB);
+
+        // Different addresses produce different signing hashes
+        assert_ne!(
+            KeychainSignature::signing_hash(hash_a, addr_a),
+            KeychainSignature::signing_hash(hash_a, addr_b),
+        );
+
+        // Different tx hashes produce different signing hashes
+        assert_ne!(
+            KeychainSignature::signing_hash(hash_a, addr_a),
+            KeychainSignature::signing_hash(hash_b, addr_a),
+        );
+
+        // Deterministic: same inputs yield same output
+        assert_eq!(
+            KeychainSignature::signing_hash(hash_a, addr_a),
+            KeychainSignature::signing_hash(hash_a, addr_a),
         );
     }
 
@@ -1626,11 +1842,13 @@ mod tests {
 
     #[test]
     fn test_tempo_signature_keychain_too_short_for_address() {
-        let mut data = vec![SIGNATURE_TYPE_KEYCHAIN];
-        data.extend_from_slice(&[0u8; 19]);
-        let result = TempoSignature::from_bytes(&data);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("too short"));
+        for type_byte in [SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_KEYCHAIN_V2] {
+            let mut data = vec![type_byte];
+            data.extend_from_slice(&[0u8; 19]);
+            let result = TempoSignature::from_bytes(&data);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("too short"));
+        }
     }
 
     #[test]
@@ -1653,5 +1871,85 @@ mod tests {
         let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
         let sig = TempoSignature::Keychain(KeychainSignature::new(Address::ZERO, inner));
         assert!(sig.is_keychain());
+    }
+
+    #[test]
+    fn test_keychain_v1_v2_bytes_roundtrip_and_wire_format() {
+        let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let user = Address::repeat_byte(0xAA);
+
+        // V1 round-trips and uses 0x03 wire byte
+        let v1 = TempoSignature::Keychain(KeychainSignature::new_v1(user, inner.clone()));
+        let v1_bytes = v1.to_bytes();
+        assert_eq!(v1_bytes[0], SIGNATURE_TYPE_KEYCHAIN);
+        let v1_decoded = TempoSignature::from_bytes(&v1_bytes).unwrap();
+        assert_eq!(v1, v1_decoded);
+        assert!(v1_decoded.is_legacy_keychain());
+
+        // V2 round-trips and uses 0x04 wire byte
+        let v2 = TempoSignature::Keychain(KeychainSignature::new(user, inner));
+        let v2_bytes = v2.to_bytes();
+        assert_eq!(v2_bytes[0], SIGNATURE_TYPE_KEYCHAIN_V2);
+        let v2_decoded = TempoSignature::from_bytes(&v2_bytes).unwrap();
+        assert_eq!(v2, v2_decoded);
+        assert!(!v2_decoded.is_legacy_keychain());
+
+        // V1 and V2 with same inner sig are NOT equal
+        assert_ne!(v1, v2);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_keychain_serde_roundtrip_and_backward_compat() {
+        let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let user = Address::repeat_byte(0xBB);
+
+        // V2 serde roundtrip preserves version
+        let v2 = TempoSignature::Keychain(KeychainSignature::new(user, inner.clone()));
+        let json = serde_json::to_string(&v2).unwrap();
+        let decoded: TempoSignature = serde_json::from_str(&json).unwrap();
+        assert_eq!(v2, decoded);
+        assert!(!decoded.is_legacy_keychain());
+
+        // V1 serde roundtrip preserves version
+        let v1 = TempoSignature::Keychain(KeychainSignature::new_v1(user, inner));
+        let json_v1 = serde_json::to_string(&v1).unwrap();
+        let decoded_v1: TempoSignature = serde_json::from_str(&json_v1).unwrap();
+        assert_eq!(v1, decoded_v1);
+        assert!(decoded_v1.is_legacy_keychain());
+
+        // Backward compat: JSON without "version" field deserializes as V1
+        let json_no_version = json_v1.replace(r#","version":"v1""#, "");
+        assert!(
+            !json_no_version.contains("version"),
+            "version field should be stripped"
+        );
+        let decoded_no_version: TempoSignature = serde_json::from_str(&json_no_version).unwrap();
+        assert!(decoded_no_version.is_legacy_keychain());
+    }
+
+    #[test]
+    fn test_keychain_rlp_roundtrip_preserves_version() {
+        use alloy_rlp::Decodable;
+
+        let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let user = Address::repeat_byte(0xCC);
+
+        for (sig, expect_legacy) in [
+            (
+                TempoSignature::Keychain(KeychainSignature::new_v1(user, inner.clone())),
+                true,
+            ),
+            (
+                TempoSignature::Keychain(KeychainSignature::new(user, inner)),
+                false,
+            ),
+        ] {
+            let mut buf = Vec::new();
+            alloy_rlp::Encodable::encode(&sig, &mut buf);
+            let decoded = TempoSignature::decode(&mut buf.as_slice()).unwrap();
+            assert_eq!(sig, decoded);
+            assert_eq!(decoded.is_legacy_keychain(), expect_legacy);
+        }
     }
 }

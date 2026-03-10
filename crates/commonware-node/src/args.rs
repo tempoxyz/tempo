@@ -97,7 +97,7 @@ pub struct Args {
     )]
     pub inactive_views_until_leader_skip: u64,
 
-    /// The amount of time to spend on executing transactions when preparing a proposal as a leader.
+    /// The maximum amount of time to spend on executing transactions when preparing a proposal as a leader.
     ///
     /// NOTE: This only limits the time the builder spends on transaction execution, and does not
     /// include the state root calculation time. For this reason, we keep it well below `consensus.time-to-build-proposal`.

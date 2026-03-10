@@ -210,7 +210,7 @@ impl Inner<Init> {
         fields(%broadcast.payload),
         err(level = Level::ERROR),
     )]
-    async fn handle_broadcast(mut self, broadcast: Broadcast) -> eyre::Result<()> {
+    async fn handle_broadcast(self, broadcast: Broadcast) -> eyre::Result<()> {
         let Some((round, latest_proposed)) = self.state.latest_proposed_block.read().await.clone()
         else {
             return Err(eyre!("there was no latest block to broadcast"));
@@ -235,7 +235,7 @@ impl Inner<Init> {
         err(level = Level::ERROR)
     )]
     async fn handle_genesis<TContext: commonware_runtime::Clock>(
-        mut self,
+        self,
         mut genesis: Genesis,
         context: TContext,
     ) -> eyre::Result<Digest> {
@@ -396,7 +396,7 @@ impl Inner<Init> {
             proposer = %verify.proposer,
         ),
     )]
-    async fn handle_verify<TContext: Pacer>(mut self, verify: Verify, context: TContext) {
+    async fn handle_verify<TContext: Pacer>(self, verify: Verify, context: TContext) {
         let Verify {
             parent,
             payload,
@@ -441,7 +441,7 @@ impl Inner<Init> {
     }
 
     async fn propose<TContext: Pacer>(
-        mut self,
+        self,
         context: TContext,
         parent_view: View,
         parent_digest: Digest,
@@ -454,7 +454,7 @@ impl Inner<Init> {
             round,
             parent_digest,
             parent_view,
-            &mut self.marshal,
+            &self.marshal,
         )
         .await?;
         debug!(height = %parent.height(), "retrieved parent block",);
@@ -583,11 +583,24 @@ impl Inner<Init> {
         let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
         let remaining_return = self.payload_return_time.saturating_sub(elapsed);
         debug!(
+            elapsed_ms = elapsed.as_millis(),
             resolve_time_ms = remaining_resolve.as_millis(),
             return_time_ms = remaining_return.as_millis(),
             "sleeping before payload builder resolving"
         );
-        let payload_return_time_fut = context.sleep(remaining_return);
+
+        // Start the timer for `self.payload_return_time`
+        //
+        // This guarantees that we will not propose the block too early, and waits for at least
+        // `remaining_return` (payload_return_time minus time already spent in propose),
+        // plus whatever time is needed to finish building the block.
+        let payload_return_time = context.current() + remaining_return;
+
+        // Give payload builder at least `remaining_resolve` until we interrupt it.
+        //
+        // The interrupt doesn't mean we'll immediately get the payload back,
+        // but only signals the builder to stop executing transactions,
+        // and start calculating the state root and sealing the block.
         context.sleep(remaining_resolve).await;
 
         interrupt_handle.interrupt();
@@ -605,13 +618,14 @@ impl Inner<Init> {
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
-        payload_return_time_fut.await;
+        // Keep waiting for the remaining return time, if there's anything left after building the block.
+        context.sleep_until(payload_return_time).await;
 
         Ok(Block::from_execution_block(payload.block().clone()))
     }
 
     async fn verify<TContext: Pacer>(
-        mut self,
+        self,
         context: TContext,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
@@ -620,7 +634,7 @@ impl Inner<Init> {
     ) -> eyre::Result<(Block, bool)> {
         let block_request = self
             .marshal
-            .subscribe(None, payload)
+            .subscribe_by_digest(None, payload)
             .await
             .map_err(|_| eyre!("syncer dropped channel before the block-to-verified was sent"));
 
@@ -631,7 +645,7 @@ impl Inner<Init> {
                 round,
                 parent_digest,
                 parent_view,
-                &mut self.marshal,
+                &self.marshal,
             ),
         )
         .await
@@ -826,13 +840,19 @@ async fn verify_block<TContext: Pacer>(
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {
-        PayloadStatusEnum::Valid | PayloadStatusEnum::Accepted => Ok(true),
+        PayloadStatusEnum::Valid => Ok(true),
         PayloadStatusEnum::Invalid { validation_error } => {
             info!(
                 validation_error,
                 "execution layer returned that the block was invalid"
             );
             Ok(false)
+        }
+        PayloadStatusEnum::Accepted => {
+            bail!(
+                "failed validating block because payload was accepted, meaning \
+                that this was not actually executed by the execution layer for some reason"
+            )
         }
         PayloadStatusEnum::Syncing => {
             bail!(
@@ -956,7 +976,7 @@ async fn get_parent(
     round: Round,
     parent_digest: Digest,
     parent_view: View,
-    marshal: &mut crate::alias::marshal::Mailbox,
+    marshal: &crate::alias::marshal::Mailbox,
 ) -> eyre::Result<Block> {
     let genesis_digest = execution_node.chain_spec().genesis_hash();
     if parent_digest == Digest(genesis_digest) {
@@ -974,7 +994,7 @@ async fn get_parent(
         Ok(genesis_block)
     } else {
         marshal
-            .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+            .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)
             .await
             .await
             .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))

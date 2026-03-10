@@ -357,13 +357,13 @@ pub enum TempoPoolTransactionError {
     #[error("Expiring nonce transactions must have nonce == 0")]
     ExpiringNonceNonceNotZero,
 
-    /// Thrown when an access key has expired.
-    #[error("Access key expired: expiry {expiry} <= current time {current_time}")]
-    AccessKeyExpired { expiry: u64, current_time: u64 },
+    /// Thrown when an access key has expired or is expiring within the propagation buffer.
+    #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
+    AccessKeyExpired { expiry: u64, min_allowed: u64 },
 
-    /// Thrown when a KeyAuthorization has expired.
-    #[error("KeyAuthorization expired: expiry {expiry} <= current time {current_time}")]
-    KeyAuthorizationExpired { expiry: u64, current_time: u64 },
+    /// Thrown when a KeyAuthorization has expired or is expiring within the propagation buffer.
+    #[error("KeyAuthorization expired: expiry {expiry} <= min allowed {min_allowed}")]
+    KeyAuthorizationExpired { expiry: u64, min_allowed: u64 },
 
     /// Thrown when a keychain transaction's fee token cost exceeds the spending limit.
     #[error(
@@ -374,6 +374,14 @@ pub enum TempoPoolTransactionError {
         cost: U256,
         remaining: U256,
     },
+
+    /// Legacy V1 keychain signature rejected post-T1C (permanently invalid).
+    #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
+    LegacyKeychainPostT1C,
+
+    /// V2 keychain signature rejected pre-T1C (not yet valid).
+    #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
+    V2KeychainPreT1C,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -388,9 +396,12 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InvalidValidAfter { .. }
             | Self::ExpiringNonceValidBeforeTooFar { .. }
             | Self::ExpiringNonceReplay
+            | Self::AccessKeyExpired { .. }
+            | Self::KeyAuthorizationExpired { .. }
             | Self::Keychain(_)
             | Self::InsufficientLiquidity(_)
-            | Self::SpendingLimitExceeded { .. } => false,
+            | Self::SpendingLimitExceeded { .. }
+            | Self::V2KeychainPreT1C => false,
             Self::NonZeroValue
             | Self::SubblockNonceKey
             | Self::InsufficientGasForAAIntrinsicCost { .. }
@@ -403,18 +414,30 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::TooManyTokenLimits { .. }
             | Self::ExpiringNonceMissingValidBefore
             | Self::ExpiringNonceNonceNotZero
-            | Self::AccessKeyExpired { .. }
-            | Self::KeyAuthorizationExpired { .. }
             | Self::InvalidFeePayerSignature
             | Self::NoCalls
             | Self::CreateCallWithAuthorizationList
             | Self::CreateCallNotFirst
-            | Self::FeeCapBelowMinBaseFee { .. } => true,
+            | Self::FeeCapBelowMinBaseFee { .. }
+            | Self::LegacyKeychainPostT1C => true,
         }
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+impl From<tempo_primitives::transaction::KeychainVersionError> for TempoPoolTransactionError {
+    fn from(err: tempo_primitives::transaction::KeychainVersionError) -> Self {
+        match err {
+            tempo_primitives::transaction::KeychainVersionError::LegacyPostT1C => {
+                Self::LegacyKeychainPostT1C
+            }
+            tempo_primitives::transaction::KeychainVersionError::V2BeforeActivation => {
+                Self::V2KeychainPreT1C
+            }
+        }
     }
 }
 
@@ -775,6 +798,8 @@ mod tests {
                 false,
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),
+            (TempoPoolTransactionError::LegacyKeychainPostT1C, true),
+            (TempoPoolTransactionError::V2KeychainPreT1C, false),
             (
                 TempoPoolTransactionError::InsufficientLiquidity(Address::ZERO),
                 false,
@@ -783,6 +808,20 @@ mod tests {
                 TempoPoolTransactionError::BlackListedFeePayer {
                     fee_token: Address::ZERO,
                     fee_payer: Address::ZERO,
+                },
+                false,
+            ),
+            (
+                TempoPoolTransactionError::AccessKeyExpired {
+                    expiry: 100,
+                    min_allowed: 200,
+                },
+                false,
+            ),
+            (
+                TempoPoolTransactionError::KeyAuthorizationExpired {
+                    expiry: 100,
+                    min_allowed: 200,
                 },
                 false,
             ),

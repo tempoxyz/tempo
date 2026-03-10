@@ -23,8 +23,16 @@ use alloy::primitives::{Address, U256};
 /// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = TIP403_REGISTRY_ADDRESS)]
 pub struct TIP403Registry {
+    /// Monotonically increasing counter for policy IDs. Starts at `2` because IDs `0`
+    /// (always-reject) and `1` (always-allow) are reserved special policies.
     policy_id_counter: u64,
+    /// Maps a policy ID to its [`PolicyRecord`], which stores the base [`PolicyData`]
+    /// (type + admin) and, for compound policies, the [`CompoundPolicyData`] sub-policy
+    /// references.
     policy_records: Mapping<u64, PolicyRecord>,
+    /// Per-policy address set used by simple (non-compound) policies. For whitelists the
+    /// value is `true` when the address is allowed; for blacklists it is `true` when the
+    /// address is restricted.
     policy_set: Mapping<u64, Mapping<Address, bool>>,
 }
 
