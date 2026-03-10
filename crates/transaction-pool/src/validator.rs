@@ -112,7 +112,8 @@ where
         self.inner.client()
     }
 
-    /// Check if a transaction requires keychain validation
+    /// Validates that keychain transactions specify the expected version
+    /// depending on the current chainspec
     fn validate_keychain_version(
         &self,
         transaction: &TempoPooledTransaction,
