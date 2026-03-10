@@ -398,7 +398,7 @@ where
     /// Panics if the execution node is not running.
     pub fn execution_provider(
         &self,
-    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, Arc<DatabaseEnv>>> {
+    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>> {
         self.execution().provider.clone()
     }
 
@@ -407,18 +407,16 @@ where
     /// This provider MUST BE DROPPED before starting the node again.
     pub fn execution_provider_offline(
         &self,
-    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, Arc<DatabaseEnv>>> {
+    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>> {
         // Open a read-only provider to the database
         // Note: MDBX allows multiple readers, so this is safe even if another process
         // has the database open for reading
-        let database = Arc::new(
-            open_db_read_only(
-                self.execution_node_datadir.join("db"),
-                DatabaseArguments::default(),
-            )
-            .expect("failed to open execution node database")
-            .with_metrics(),
-        );
+        let database = open_db_read_only(
+            self.execution_node_datadir.join("db"),
+            DatabaseArguments::default(),
+        )
+        .expect("failed to open execution node database")
+        .with_metrics();
 
         let static_file_provider =
             StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"), true)
@@ -428,11 +426,14 @@ where
             .build()
             .unwrap();
 
+        let runtime = reth_ethereum::tasks::Runtime::test();
+
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
             database,
             Arc::new(execution_runtime::chainspec()),
             static_file_provider,
             rocksdb,
+            runtime,
         )
         .expect("failed to create provider factory");
 

@@ -33,7 +33,7 @@ use reth_ethereum::{
             events::{NetworkEvent, PeerEvent},
         },
     },
-    tasks::TaskManager,
+    tasks::Runtime as RethRuntime,
 };
 use reth_network_peers::{NodeRecord, TrustedPeer};
 use reth_node_builder::{NodeBuilder, NodeConfig};
@@ -335,7 +335,7 @@ impl ExecutionRuntime {
             rt.block_on(async move {
                 while let Some(msg) = from_handle.recv().await {
                     // create a new task manager for the new node instance
-                    let task_manager = TaskManager::current();
+                    let task_manager = RethRuntime::test();
                     match msg {
                         Message::AddValidator(add_validator) => {
                             let AddValidator {
@@ -622,8 +622,8 @@ impl ExecutionRuntimeHandle {
 pub struct ExecutionNode {
     /// All handles to interact with the launched node instances and services.
     pub node: TempoFullNode,
-    /// The [`TaskManager`] that drives the node's services.
-    pub task_manager: TaskManager,
+    /// The [`RethRuntime`] that drives the node's services.
+    pub runtime: RethRuntime,
     /// The exist future that resolves when the node's engine future resolves.
     pub exit_fut: NodeExitFuture,
 }
@@ -659,7 +659,7 @@ impl ExecutionNode {
     /// Shuts down the node and awaits until the node is terminated.
     pub async fn shutdown(self) {
         let _ = self.node.rpc_server_handle().clone().stop();
-        self.task_manager
+        self.runtime
             .graceful_shutdown_with_timeout(Duration::from_secs(10));
         let _ = self.exit_fut.await;
     }
@@ -700,7 +700,7 @@ pub fn genesis() -> Genesis {
 ///    are not passed to it).
 /// 3. consensus config is not necessary
 pub async fn launch_execution_node<P: AsRef<Path>>(
-    task_manager: TaskManager,
+    runtime: RethRuntime,
     chain_spec: TempoChainSpec,
     datadir: P,
     config: ExecutionNodeConfig,
@@ -742,8 +742,8 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     let tempo_node = TempoNode::default().with_validator_key(config.validator_key);
     let feed_state = config.feed_state;
     let node_handle = NodeBuilder::new(node_config)
-        .with_database(database)
-        .with_launch_context(task_manager.executor())
+        .with_database(Arc::unwrap_or_clone(database))
+        .with_launch_context(runtime.clone())
         .node(tempo_node)
         .extend_rpc_modules(move |ctx| {
             if let Some(feed_state) = feed_state {
@@ -763,7 +763,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
 
     Ok(ExecutionNode {
         node: node_handle.node,
-        task_manager,
+        runtime,
         exit_fut: node_handle.node_exit_future,
     })
 }

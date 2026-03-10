@@ -350,7 +350,7 @@ impl EthereumHardforks for TempoChainSpec {
 
 impl EthExecutorSpec for TempoChainSpec {
     fn deposit_contract_address(&self) -> Option<Address> {
-        self.inner.deposit_contract_address()
+        Some(self.inner.deposit_contract()?.address)
     }
 }
 

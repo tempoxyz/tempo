@@ -172,16 +172,14 @@ where
 
             // system transactions should not consume any gas
             let ExecutionResult::Success {
-                gas_used,
-                gas_refunded,
+                gas,
                 ..
             } = &mut result.result
             else {
                 return Err(TempoInvalidTransaction::SystemTransactionFailed(result.result).into());
             };
 
-            *gas_used = 0;
-            *gas_refunded = 0;
+            *gas = reth_revm::context::result::ResultGas::new(gas.limit(), 0, 0, 0, 0);
 
             Ok(result)
         } else if self.inspect {

@@ -122,7 +122,7 @@ impl TestExecutorBuilder {
         self,
         db: &'a mut State<EmptyDB>,
         chainspec: &'a Arc<TempoChainSpec>,
-    ) -> TempoBlockExecutor<'a, EmptyDB, NoOpInspector> {
+    ) -> TempoBlockExecutor<'a, &'a mut State<EmptyDB>, NoOpInspector> {
         let evm = TempoEvm::new(
             db,
             EvmEnv {
