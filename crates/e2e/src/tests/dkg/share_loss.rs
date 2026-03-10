@@ -9,28 +9,23 @@ use futures::future::join_all;
 
 use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 
-/// Returns the maximum value across all metric lines matching `uid` and
-/// `metric_suffix`. Using max (rather than first-match) is important because
-/// old instance metrics persist in the registry after a node restart, and the
-/// new instance's counters appear as separate lines.
 fn metric_value(metrics: &str, uid: &str, metric_suffix: &str) -> Option<u64> {
-    metrics
-        .lines()
-        .filter(|line| line.starts_with(CONSENSUS_NODE_PREFIX))
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let metric = parts.next()?;
-            let value = parts.next()?;
-            if metric.contains(uid) && metric.ends_with(metric_suffix) {
-                value.parse::<u64>().ok()
-            } else {
-                None
-            }
-        })
-        .max()
+    metrics.lines().find_map(|line| {
+        if !line.starts_with(CONSENSUS_NODE_PREFIX) {
+            return None;
+        }
+        let mut parts = line.split_whitespace();
+        let metric = parts.next()?;
+        let value = parts.next()?;
+        if metric.contains(uid) && metric.ends_with(metric_suffix) {
+            value.parse::<u64>().ok()
+        } else {
+            None
+        }
+    })
 }
 
-#[test_traced("WARN")]
+#[test_traced]
 fn validator_lost_share_but_gets_share_in_next_epoch() {
     let _ = tempo_eyre::install();
 
@@ -100,7 +95,8 @@ fn validator_loses_consensus_state_becomes_observer() {
     let executor = Runner::from(cfg);
 
     executor.start(|mut context| async move {
-        let setup = Setup::new().seed(seed);
+        let epoch_length = 20;
+        let setup = Setup::new().seed(seed).epoch_length(epoch_length);
 
         let (mut validators, _execution_runtime) =
             setup_validators(&mut context, setup.clone()).await;
@@ -114,8 +110,9 @@ fn validator_loses_consensus_state_becomes_observer() {
             context.sleep(Duration::from_secs(1)).await;
             let metrics = context.encode();
 
-            if let Some(v) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch")
-                && v > 0
+            // Should have dealings in epoch 1.
+            if let Some(v) = metric_value(&metrics, &uid, "_marshal_processed_height")
+                && v >= 30
             {
                 break 'setup;
             }
@@ -123,19 +120,14 @@ fn validator_loses_consensus_state_becomes_observer() {
 
         validators[target_idx].stop().await;
 
-        // Snapshot the signer counter before restart so we can detect increases
-        // from actual DKG recovery (old metrics persist in the registry).
-        let metrics = context.encode();
-        let signer_before =
-            metric_value(&metrics, &uid, "_epoch_manager_how_often_signer_total").unwrap_or(0);
-
         let old_prefix = &validators[target_idx].consensus_config().partition_prefix;
         let new_prefix = format!("{old_prefix}_wiped");
-        validators[target_idx]
-            .consensus_config_mut()
-            .partition_prefix = new_prefix;
+        let cfg = validators[target_idx].consensus_config_mut();
+        cfg.partition_prefix = new_prefix;
 
         validators[target_idx].start(&context).await;
+
+        let uid = validators[target_idx].metric_prefix();
 
         // The node should finalize the current ceremony as an observer (hitting
         // MissingPlayerDealing) and then recover a share in the next epoch.
@@ -156,7 +148,7 @@ fn validator_loses_consensus_state_becomes_observer() {
 
             // Once the node becomes a signer again, it has recovered.
             if let Some(v) = metric_value(&metrics, &uid, "_epoch_manager_how_often_signer_total")
-                && v > signer_before
+                && v > 0
             {
                 assert!(detected_missing_dealings);
                 break 'recover;

@@ -122,6 +122,17 @@ where
         &self.uid
     }
 
+    /// Returns the metric prefix used by the most recently started consensus
+    /// instance. Useful to disambiguate metrics from previous instances that
+    /// persist in the registry after a restart.
+    ///
+    /// # Panics
+    /// Panics if the node has never been started.
+    pub fn metric_prefix(&self) -> String {
+        assert!(self.n_starts > 0, "node has never been started");
+        format!("{}_{}", self.uid, self.n_starts - 1)
+    }
+
     /// Get a reference to the consensus config.
     pub fn consensus_config(
         &self,
