@@ -129,6 +129,36 @@ fn install_crypto_provider() {
         .expect("Failed to install default rustls crypto provider");
 }
 
+/// Print installed extensions as a footer after root help output.
+/// Skips printing when help is for a subcommand (e.g. `tempo node --help`).
+fn print_extensions_footer() {
+    let is_subcommand_help = std::env::args()
+        .skip(1)
+        .any(|a| !a.starts_with('-') && a != "help");
+    if is_subcommand_help {
+        return;
+    }
+
+    let extensions = tempo_ext::installed_extensions();
+    if extensions.is_empty() {
+        return;
+    }
+    let use_color = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let (b, bu, r) = if use_color {
+        ("\x1b[1m", "\x1b[1m\x1b[4m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
+    println!("\n{bu}Extensions:{r}");
+    for (name, desc) in &extensions {
+        if desc.is_empty() {
+            println!("  {b}{name}{r}");
+        } else {
+            println!("  {b}{name:<22}{r} {desc}");
+        }
+    }
+}
+
 fn main() -> eyre::Result<()> {
     install_crypto_provider();
 
@@ -159,47 +189,29 @@ fn main() -> eyre::Result<()> {
     {
         Ok(cli) => cli,
         Err(err) => {
-            // Clap errors like --help, --version, and missing subcommands
-            // belong to the node CLI. Only intercept InvalidSubcommand errors
-            // and route them to the extension launcher.
-            if err.kind() != clap::error::ErrorKind::InvalidSubcommand {
-                // Print clap's help/error output, then append installed
-                // extensions when displaying help.
-                if matches!(
-                    err.kind(),
-                    clap::error::ErrorKind::DisplayHelp
-                        | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-                ) {
-                    let _ = err.print();
-                    let extensions = tempo_ext::installed_extensions();
-                    if !extensions.is_empty() {
-                        let use_color = std::io::IsTerminal::is_terminal(&std::io::stdout());
-                        let (b, bu, r) = if use_color {
-                            ("\x1b[1m", "\x1b[1m\x1b[4m", "\x1b[0m")
-                        } else {
-                            ("", "", "")
-                        };
-                        println!("\n{bu}Extensions:{r}");
-                        for (name, desc) in &extensions {
-                            if desc.is_empty() {
-                                println!("  {b}{name}{r}");
-                            } else {
-                                println!("  {b}{name:<22}{r} {desc}");
-                            }
-                        }
+            if err.kind() == clap::error::ErrorKind::InvalidSubcommand {
+                // Unknown subcommand — try the extension launcher.
+                let code = match tempo_ext::run(std::env::args_os()) {
+                    Ok(code) => code,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        1
                     }
-                    std::process::exit(0);
-                }
-                err.exit();
+                };
+                std::process::exit(code);
             }
-            let code = match tempo_ext::run(std::env::args_os()) {
-                Ok(code) => code,
-                Err(launcher_err) => {
-                    eprintln!("{launcher_err}");
-                    1
-                }
-            };
-            std::process::exit(code);
+
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp
+                    | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ) {
+                let _ = err.print();
+                print_extensions_footer();
+                std::process::exit(0);
+            }
+
+            err.exit();
         }
     };
 

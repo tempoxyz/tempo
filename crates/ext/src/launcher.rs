@@ -50,7 +50,9 @@ enum Commands {
 
     /// Update tempo and/or extensions. Without arguments, updates tempo
     /// itself via tempoup and then updates all installed extensions.
-    #[command(after_help = "Examples:\n  tempo update          # update tempo + all extensions\n  tempo update wallet   # update a single extension")]
+    #[command(
+        after_help = "Examples:\n  tempo update          # update tempo + all extensions\n  tempo update wallet   # update a single extension"
+    )]
     Update(UpdateArgs),
 
     /// Remove an extension.
