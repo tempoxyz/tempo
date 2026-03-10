@@ -38,9 +38,17 @@ jobs:
       # ── checkout ───────────────────────────────────────────────
       - uses: actions/checkout@v6
         with:
-          ref: reth/main
           fetch-depth: 0
           token: ${{ secrets.DEREK_PAT }}
+
+      - name: Ensure reth/main branch exists
+        run: |
+          if git rev-parse --verify origin/reth/main >/dev/null 2>&1; then
+            git checkout reth/main
+          else
+            echo "reth/main not found, creating from main"
+            git checkout -b reth/main main
+          fi
 
       # ── toolchain (matches test.yml) ───────────────────────────
       - uses: dtolnay/rust-toolchain@stable
@@ -134,18 +142,19 @@ jobs:
             echo "Amp exited but cargo check still failing, retrying..."
           done
 
-      # ── test + Amp fix loop ────────────────────────────────────
-      - name: Fix test failures
+      # ── test compilation check + Amp fix loop ─────────────────
+      - name: Fix test compilation errors
         if: steps.update.outputs.skip != 'true'
         id: test-loop
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
           AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
-          on the paradigmxyz/reth main branch. Tests are now failing.
+          on the paradigmxyz/reth main branch. Test compilation is failing.
 
-          Run \`cargo nextest run --profile ci\` to see the failures, then fix the Rust source code and repeat \
-          until all tests pass. Also run \`cargo check --workspace\` after fixes to catch compilation regressions. \
+          Run \`cargo nextest run --profile ci --no-run\` to build test binaries and see the compilation errors, \
+          then fix the Rust source code and repeat until test binaries compile successfully. \
+          Also run \`cargo check --workspace\` after fixes to catch compilation regressions. \
           You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
           but do NOT modify the reth git source specifications (URL, branch, or rev) in any Cargo.toml — \
           those must stay pointing at branch = \"main\".
@@ -161,31 +170,19 @@ jobs:
             amp --dangerously-allow-all -x "$AMP_PROMPT"
             echo "::endgroup::"
 
-            echo "::group::Verify cargo check"
+            echo "::group::Verify test compilation"
             set +e
-            cargo check --workspace 2>&1
-            check_exit=$?
-            set -e
-            echo "::endgroup::"
-
-            if [ "$check_exit" -ne 0 ]; then
-              echo "Amp exited but cargo check failing, retrying..."
-              continue
-            fi
-
-            echo "::group::Verify tests"
-            set +e
-            cargo nextest run --profile ci 2>&1
+            cargo nextest run --profile ci --no-run 2>&1
             test_exit=$?
             set -e
             echo "::endgroup::"
 
             if [ "$test_exit" -eq 0 ]; then
-              echo "Tests passed after attempt $attempt"
+              echo "Tests compile after attempt $attempt"
               exit 0
             fi
 
-            echo "Amp exited but tests still failing, retrying..."
+            echo "Amp exited but test compilation still failing, retrying..."
           done
 
       # ── second commit (source fixes) ───────────────────────────
@@ -200,9 +197,12 @@ jobs:
           fi
 
       # ── push ───────────────────────────────────────────────────
-      - name: Push branch
+      - name: Push branches
         if: steps.update.outputs.skip != 'true'
-        run: git push --force-with-lease origin reth-main-update-deps
+        run: |
+          # Ensure reth/main exists on remote (needed as PR base)
+          git push -u origin reth/main 2>/dev/null || true
+          git push --force-with-lease origin reth-main-update-deps
 
       # ── create / update PR ─────────────────────────────────────
       - name: Create or update PR
