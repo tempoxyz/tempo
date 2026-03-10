@@ -120,7 +120,7 @@ impl TempoPoolUpdates {
                     updates.spending_limit_changes.insert(
                         event.account,
                         event.publicKey,
-                        event.token,
+                        Some(event.token),
                     );
                 }
             }
@@ -179,13 +179,15 @@ impl TempoPoolUpdates {
             if key_id.is_zero() {
                 continue;
             }
-            let fee_token = aa_tx
-                .tx()
-                .fee_token
-                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
-            updates
-                .spending_limit_spends
-                .insert(keychain_sig.user_address, key_id, fee_token);
+            // Resolving the fee token requires state (AMM routing), which we don't have here.
+            // `None` wildcards the token in `SpendingLimitUpdates::contains`, so every pending tx
+            // for this (account, key_id) is re-checked. Safe because the main pool still gates
+            // eviction on `exceeds_spending_limit()`, which can read state.
+            updates.spending_limit_spends.insert(
+                keychain_sig.user_address,
+                key_id,
+                aa_tx.tx().fee_token,
+            );
         }
 
         updates
@@ -1409,9 +1411,9 @@ mod tests {
             assert!(updates.spending_limit_spends.is_empty());
         }
 
-        /// Uses default fee token when keychain tx has no explicit fee_token.
+        /// When a keychain tx has no explicit fee_token, it is stored as a wildcard.
         #[test]
-        fn uses_default_fee_token_when_none_set() {
+        fn uses_wildcard_fee_token_when_none_set() {
             let user_address = Address::random();
             let access_key_signer = PrivateKeySigner::random();
             let key_id = access_key_signer.address();
@@ -1426,10 +1428,11 @@ mod tests {
 
             let updates = TempoPoolUpdates::from_chain(&chain);
 
+            // Wildcard should match any token
             assert!(updates.spending_limit_spends.contains(
                 user_address,
                 key_id,
-                tempo_precompiles::DEFAULT_FEE_TOKEN,
+                Address::random(),
             ));
         }
 
@@ -1442,7 +1445,7 @@ mod tests {
             updates.spending_limit_spends.insert(
                 Address::random(),
                 Address::random(),
-                Address::random(),
+                Some(Address::random()),
             );
             assert!(updates.has_invalidation_events());
         }

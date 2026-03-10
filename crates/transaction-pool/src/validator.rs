@@ -780,6 +780,9 @@ where
             }
         };
 
+        // Cache the resolved fee token for pool maintenance.
+        transaction.set_resolved_fee_token(fee_token);
+
         // Ensure that fee token is valid.
         match state_provider.is_valid_fee_token(spec, fee_token) {
             Ok(valid) => {
