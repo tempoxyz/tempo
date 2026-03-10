@@ -171,7 +171,7 @@ fn run_tempoup(bin_dir: &Path) -> Result<bool, LauncherError> {
                 .arg("curl -fsSL https://tempo.xyz/install | bash")
                 .status()?;
             if !install_status.success() {
-                eprintln!("failed to install tempoup");
+                tracing::error!("failed to install tempoup");
                 return Ok(false);
             }
             Command::new("tempoup")
@@ -285,7 +285,7 @@ impl Launcher {
                     );
                 }
                 Err(err) => {
-                    eprintln!("dry-run: failed to check for updates: {err}");
+                    tracing::warn!("dry-run: failed to check for updates: {err}");
                 }
             }
             return Ok(0);
@@ -326,7 +326,7 @@ impl Launcher {
         } else {
             println!("Updating tempo...");
             if !run_tempoup(&installer.bin_dir)? {
-                eprintln!("tempo update failed");
+                tracing::error!("tempo update failed");
             }
         }
 
@@ -376,7 +376,7 @@ impl Launcher {
                     updated_registry.touch_check(name);
                 }
                 Err(err) => {
-                    eprintln!("failed to update tempo-{name}: {err}");
+                    tracing::error!(extension = %name, "failed to update: {err}");
                     updated_registry.touch_check(name);
                 }
             }
@@ -418,19 +418,33 @@ impl Launcher {
 
         if entries.is_empty() {
             println!("No extensions installed.");
+            println!();
+            println!("Run `tempo add <extension>` to install one.");
             return Ok(0);
         }
 
         entries.sort_by_key(|(a, _)| *a);
+
+        println!();
+        println!("  {:<22} {:<12}", "Extension", "Version");
+        println!("  {:<22} {:<12}", "─────────", "───────");
+
         for (name, state) in &entries {
-            let pin = if state.pinned { " (pinned)" } else { "" };
-            let desc = if state.description.is_empty() {
+            let mut meta = Vec::new();
+            if state.pinned {
+                meta.push("pinned".to_string());
+            }
+            if !state.description.is_empty() {
+                meta.push(state.description.clone());
+            }
+            let suffix = if meta.is_empty() {
                 String::new()
             } else {
-                format!(" - {}", state.description)
+                meta.join(" · ")
             };
-            println!("  {name:<22} {}{pin}{desc}", state.installed_version);
+            println!("  {:<22} {:<12} {}", name, state.installed_version, suffix);
         }
+        println!();
 
         Ok(0)
     }
@@ -551,7 +565,7 @@ impl Launcher {
             if let Ok(Some(new_version)) =
                 Installer::check_latest_version(&source, installed_version)
             {
-                eprintln!(
+                tracing::info!(
                     "tempo-{extension} {new_version} available (pinned to {}; run `tempo update {extension}` to upgrade)",
                     installed_version.unwrap_or("unknown")
                 );
@@ -561,7 +575,7 @@ impl Launcher {
             match installer.install_if_changed(extension, &source, installed_version) {
                 Ok(Some(result)) => {
                     if installed_version.is_some_and(|v| !v.is_empty()) {
-                        eprintln!("Updated tempo-{extension} to {}", result.version);
+                        tracing::info!("updated tempo-{extension} to {}", result.version);
                     }
                     registry.record_check(extension, &result.version, false, &result.description);
                 }
@@ -591,14 +605,15 @@ impl Launcher {
             Err(_) => return,
         };
         if binary_dir != install_dir {
-            eprintln!(
-                "warning: running {} from {} but updates install to {}",
-                binary_path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy(),
-                binary_dir.display(),
-                install_dir.display(),
+            let name = binary_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            tracing::warn!(
+                binary = %name,
+                found_in = %binary_dir.display(),
+                install_dir = %install_dir.display(),
+                "extension binary found in a different directory than the install target; updates may not take effect",
             );
         }
     }
@@ -695,8 +710,8 @@ fn is_valid_extension_name(name: &str) -> bool {
 }
 
 fn print_missing_install_hint(extension: &str) {
-    eprintln!("Unknown command '{extension}' and no compatible extension found.");
-    eprintln!("Run: tempo add {extension}");
+    println!("Unknown command '{extension}' and no compatible extension found.");
+    println!("Run: tempo add {extension}");
 }
 
 #[cfg(test)]
