@@ -147,11 +147,15 @@ jobs:
           retention-days: 1
 
   e2e:
-    name: e2e tests
+    name: e2e (${{ matrix.partition }}/2)
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -163,9 +167,9 @@ jobs:
         with:
           tool: nextest@0.9.124
       - name: Build e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --no-run
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/2 --no-run
       - name: Run e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)'
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/2
 
   cli:
     name: CLI smoke tests
