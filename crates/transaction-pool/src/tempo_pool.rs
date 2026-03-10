@@ -34,11 +34,8 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_precompiles::{
-    account_keychain::AccountKeychain,
-    error::Result as TempoPrecompileResult,
-    nonce::NonceManager,
-    storage::Handler,
-    tip20::TIP20Token,
+    account_keychain::AccountKeychain, error::Result as TempoPrecompileResult, nonce::NonceManager,
+    storage::Handler, tip20::TIP20Token,
 };
 use tempo_primitives::Block;
 use tempo_revm::TempoStateAccess;
