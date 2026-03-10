@@ -124,7 +124,7 @@ pub struct Args {
     ///
     /// When set, the node will not build or broadcast subblocks, and will
     /// ignore any incoming subblocks from the network.
-    #[arg(long = "consensus.no-subblocks", default_value_t = false)]
+    #[arg(long = "consensus.no-subblocks", default_value_t = true)]
     pub no_subblocks: bool,
 
     /// The amount of time this node will use to construct a subblock before
