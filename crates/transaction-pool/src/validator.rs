@@ -21,16 +21,15 @@ use tempo_chainspec::{
 };
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
-    account_keychain::{AccountKeychain, AuthorizedKey},
-    nonce::NonceManager,
+    NONCE_PRECOMPILE_ADDRESS, account_keychain::AccountKeychain, nonce::NonceManager,
+    storage::Handler,
 };
 use tempo_primitives::{
     Block,
     subblock::has_sub_block_nonce_key_prefix,
     transaction::{
         RecoveredTempoAuthorization, TEMPO_EXPIRING_NONCE_KEY,
-        TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TempoTransaction,
+        TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TempoTransaction, TokenLimit,
     },
 };
 use tempo_revm::{
@@ -69,6 +68,22 @@ pub const MAX_TOKEN_LIMITS: usize = 256;
 /// so that transactions with a future `valid_after` are not silently evicted before
 /// they become executable.
 pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 120;
+
+/// Keychain spending-limit info extracted from `validate_against_keychain`.
+/// Passed to `ensure_keychain_spending_limit` so it can check limits without state access.
+#[derive(Debug)]
+enum KeychainSpendingInfo {
+    /// Key already exists on-chain.
+    OnChain {
+        key_id: Address,
+        enforce_limits: bool,
+    },
+    /// Key is being authorized in the same transaction. Mirrors `KeyAuthorization.limits`:
+    /// - `None`     = unlimited spending (no limits enforced)
+    /// - `Some([])` = no spending allowed (enforce_limits=true but no tokens allowed)
+    /// - `Some(v)`  = specific limits enforced
+    TxAuth { limits: Option<Vec<TokenLimit>> },
+}
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -118,15 +133,17 @@ where
     /// - Skip: No validation needed (not a keychain signature, or same-tx auth is valid)
     /// - Reject: Transaction should be rejected with the given reason
     ///
-    /// Returns `Ok(Ok(()))` if validation passes, `Ok(Err(...))` for validation failures,
+    /// Returns `Ok(Ok(info))` if validation passes (with optional keychain info for
+    /// spending limit checks), `Ok(Err(...))` for validation failures,
     /// or `Err(...)` for provider errors.
     fn validate_against_keychain(
         &self,
         transaction: &TempoPooledTransaction,
-        state_provider: &impl StateProvider,
-    ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
+        state_provider: &mut impl StateProvider,
+    ) -> Result<Result<Option<KeychainSpendingInfo>, TempoPoolTransactionError>, ProviderError>
+    {
         let Some(tx) = transaction.inner().as_aa() else {
-            return Ok(Ok(()));
+            return Ok(Ok(None));
         };
 
         let current_time = self.inner.fork_tracker().tip_timestamp();
@@ -183,7 +200,7 @@ where
         }
 
         let Some(sig) = tx.signature().as_keychain() else {
-            return Ok(Ok(()));
+            return Ok(Ok(None));
         };
 
         // This should never fail because we set sender based on the sig.
@@ -214,20 +231,19 @@ where
                 transaction.set_key_expiry(Some(expiry));
             }
 
-            // KeyAuthorization is valid - skip keychain storage check (key will be authorized during execution)
-            return Ok(Ok(()));
+            // Key will be authorized during execution.
+            // Pass the limits from the authorization so the pool can replicate the check.
+            return Ok(Ok(Some(KeychainSpendingInfo::TxAuth {
+                limits: auth.limits.clone(),
+            })));
         }
 
-        // Compute storage slot using helper function
-        let storage_slot = AccountKeychain::new().keys[transaction.sender()][key_id].base_slot();
-
-        // Read storage slot from state provider
-        let slot_value = state_provider
-            .storage(ACCOUNT_KEYCHAIN_ADDRESS, storage_slot.into())?
-            .unwrap_or(U256::ZERO);
-
-        // Decode AuthorizedKey using helper
-        let authorized_key = AuthorizedKey::decode_from_slot(slot_value);
+        // Spec doesn't affect raw storage reads (sload), so default is safe here.
+        let authorized_key = state_provider
+            .with_read_only_storage_ctx(TempoHardfork::default(), || {
+                AccountKeychain::new().keys[transaction.sender()][key_id].read()
+            })
+            .map_err(ProviderError::other)?;
 
         // Check if key was revoked (revoked keys cannot be used)
         if authorized_key.is_revoked {
@@ -259,71 +275,70 @@ where
             transaction.set_key_expiry(Some(authorized_key.expiry));
         }
 
-        Ok(Ok(()))
+        Ok(Ok(Some(KeychainSpendingInfo::OnChain {
+            key_id,
+            enforce_limits: authorized_key.enforce_limits,
+        })))
     }
 
-    /// Checks the access key spending limit for the given fee token and payer.
-    fn check_keychain_spending_limit(
+    /// Ensures the access key spending limit is not exceeded for the given fee token.
+    fn ensure_keychain_spending_limit(
         &self,
         transaction: &TempoPooledTransaction,
-        state_provider: &impl StateProvider,
-        fee_payer: Address,
+        state_provider: &mut impl StateProvider,
         fee_token: Address,
-    ) -> Result<(), TempoPoolTransactionError> {
-        let Some(tx) = transaction.inner().as_aa() else {
-            return Ok(());
-        };
-
-        let Some(sig) = tx.signature().as_keychain() else {
-            return Ok(());
-        };
-
-        // Skip if a distinct fee payer sponsors the transaction since the sender's
-        // key isn't spending on fees in that case.
-        if fee_payer != transaction.sender() {
-            return Ok(());
-        }
-
-        let Ok(key_id) = sig.key_id(&tx.signature_hash()) else {
-            return Ok(());
-        };
-
-        // Skip if same-tx key authorization (key will be authorized during execution)
-        if tx.tx().key_authorization.is_some() {
-            return Ok(());
-        }
-
-        let storage_slot = AccountKeychain::new().keys[transaction.sender()][key_id].base_slot();
-        let slot_value = state_provider
-            .storage(ACCOUNT_KEYCHAIN_ADDRESS, storage_slot.into())
-            .ok()
-            .flatten()
-            .unwrap_or(U256::ZERO);
-        let authorized_key = AuthorizedKey::decode_from_slot(slot_value);
-
-        if !authorized_key.enforce_limits {
-            return Ok(());
-        }
-
+        info: &KeychainSpendingInfo,
+    ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
         let fee_cost = transaction.fee_token_cost();
-        let limit_key = AccountKeychain::spending_limit_key(transaction.sender(), key_id);
-        let spending_limit_slot =
-            AccountKeychain::new().spending_limits[limit_key][fee_token].slot();
-        let remaining_limit = state_provider
-            .storage(ACCOUNT_KEYCHAIN_ADDRESS, spending_limit_slot.into())
-            .ok()
-            .flatten()
-            .unwrap_or(U256::ZERO);
 
-        if fee_cost > remaining_limit {
-            return Err(TempoPoolTransactionError::SpendingLimitExceeded {
-                fee_token,
-                cost: fee_cost,
-                remaining: remaining_limit,
-            });
+        match info {
+            KeychainSpendingInfo::OnChain {
+                key_id,
+                enforce_limits,
+            } => {
+                if !enforce_limits {
+                    return Ok(Ok(()));
+                }
+
+                let limit_key = AccountKeychain::spending_limit_key(transaction.sender(), *key_id);
+                // Spec doesn't affect raw storage reads (sload), so default is safe here.
+                let remaining_limit = state_provider
+                    .with_read_only_storage_ctx(TempoHardfork::default(), || {
+                        AccountKeychain::new().spending_limits[limit_key][fee_token].read()
+                    })
+                    .map_err(ProviderError::other)?;
+
+                if fee_cost > remaining_limit {
+                    return Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded {
+                        fee_token,
+                        cost: fee_cost,
+                        remaining: remaining_limit,
+                    }));
+                }
+            }
+            KeychainSpendingInfo::TxAuth { limits, .. } => {
+                let Some(limits) = limits else {
+                    return Ok(Ok(())); // Unlimited spending
+                };
+
+                // Find the limit for this fee token
+                let remaining_limit = limits
+                    .iter()
+                    .find(|tl| tl.token == fee_token)
+                    .map(|tl| tl.limit)
+                    .unwrap_or(U256::ZERO);
+
+                if fee_cost > remaining_limit {
+                    return Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded {
+                        fee_token,
+                        cost: fee_cost,
+                        remaining: remaining_limit,
+                    }));
+                }
+            }
         }
 
-        Ok(())
+        Ok(Ok(()))
     }
 
     /// Validates that an AA transaction does not exceed the maximum authorization list size.
@@ -689,18 +704,19 @@ where
         }
 
         // Validate transactions that involve keychain keys
-        match self.validate_against_keychain(&transaction, &state_provider) {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(err),
-                );
-            }
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        }
+        let keychain_spending_info =
+            match self.validate_against_keychain(&transaction, &mut state_provider) {
+                Ok(Ok(info)) => info,
+                Ok(Err(err)) => {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(err),
+                    );
+                }
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            };
 
         // Balance transfer is not allowed as there is no balances in accounts yet.
         // Check added in https://github.com/tempoxyz/tempo/pull/759
@@ -776,6 +792,9 @@ where
             }
         };
 
+        // Cache the resolved fee token for pool maintenance.
+        transaction.set_resolved_fee_token(fee_token);
+
         // Ensure that fee token is valid.
         match state_provider.is_valid_fee_token(spec, fee_token) {
             Ok(valid) => {
@@ -830,13 +849,27 @@ where
             }
         }
 
-        if let Err(err) =
-            self.check_keychain_spending_limit(&transaction, &state_provider, fee_payer, fee_token)
+        // If applicable, check keychain spending limits
+        if fee_payer == transaction.sender()
+            && let Some(info) = &keychain_spending_info
         {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
+            match self.ensure_keychain_spending_limit(
+                &transaction,
+                &mut state_provider,
+                fee_token,
+                info,
+            ) {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(err),
+                    );
+                }
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            }
         }
 
         let balance = match state_provider.get_token_balance(fee_token, fee_payer, spec) {
@@ -2254,7 +2287,9 @@ mod tests {
         use reth_chainspec::ForkCondition;
         use reth_transaction_pool::error::PoolTransactionError;
         use tempo_chainspec::hardfork::TempoHardfork;
-        use tempo_precompiles::DEFAULT_FEE_TOKEN;
+        use tempo_precompiles::{
+            ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, account_keychain::AuthorizedKey,
+        };
         use tempo_primitives::transaction::{
             KeyAuthorization, SignatureType, SignedKeyAuthorization, TempoTransaction,
             tempo_transaction::Call,
@@ -2434,9 +2469,9 @@ mod tests {
             // Non-AA transaction should return Ok(Ok(())) immediately
             let transaction = TxBuilder::eip1559(Address::random()).build_eip1559();
             let validator = setup_validator(&transaction, 0);
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
             assert!(result.is_ok(), "Non-AA tx should skip keychain validation");
             Ok(())
         }
@@ -2447,9 +2482,9 @@ mod tests {
             // AA transaction with primitive (non-keychain) signature should skip validation
             let transaction = create_aa_transaction(None, None);
             let validator = setup_validator(&transaction, 0);
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
             assert!(
                 result.is_ok(),
                 "AA tx with primitive signature should skip keychain validation"
@@ -2480,9 +2515,9 @@ mod tests {
                 access_key_address,
                 Some(slot_value),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
             assert!(
                 result.is_ok(),
                 "Valid authorized key should pass validation, got: {result:?}"
@@ -2513,9 +2548,9 @@ mod tests {
                 access_key_address,
                 Some(slot_value),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2550,9 +2585,9 @@ mod tests {
                 access_key_address,
                 Some(slot_value),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2579,9 +2614,9 @@ mod tests {
                 Address::ZERO,
                 None,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2627,9 +2662,9 @@ mod tests {
                 access_key_address,
                 None,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
             assert!(
                 result.is_ok(),
                 "Valid KeyAuthorization should skip storage check, got: {result:?}"
@@ -2728,8 +2763,8 @@ mod tests {
                 None,
                 moderato.clone(),
             );
-            let sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &sp)?;
+            let mut sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &mut sp)?;
             assert!(
                 result.is_ok(),
                 "chain_id=0 should be accepted pre-T1C, got: {result:?}"
@@ -2751,8 +2786,8 @@ mod tests {
                 None,
                 moderato.clone(),
             );
-            let sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &sp)?;
+            let mut sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &mut sp)?;
             assert!(
                 result.is_ok(),
                 "matching chain_id should be accepted pre-T1C, got: {result:?}"
@@ -2774,8 +2809,8 @@ mod tests {
                 None,
                 moderato,
             );
-            let sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &sp);
+            let mut sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &mut sp);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2812,8 +2847,8 @@ mod tests {
                 access_key_address,
                 None,
             );
-            let sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &sp)?;
+            let mut sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &mut sp)?;
             assert!(
                 result.is_ok(),
                 "matching chain_id should be accepted post-T1C, got: {result:?}"
@@ -2833,8 +2868,8 @@ mod tests {
                 access_key_address,
                 None,
             );
-            let sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &sp);
+            let mut sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &mut sp);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2859,8 +2894,8 @@ mod tests {
                 access_key_address,
                 None,
             );
-            let sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &sp);
+            let mut sp = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&tx, &mut sp);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2909,9 +2944,9 @@ mod tests {
                 different_key_id,
                 None,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2958,9 +2993,9 @@ mod tests {
                 access_key_address,
                 None,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3042,10 +3077,10 @@ mod tests {
                 access_key_address,
                 Some(slot_value),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
             // This should pass since user_address matches sender by construction
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
             assert!(
                 result.is_ok(),
                 "Properly constructed keychain sig should pass, got: {result:?}"
@@ -3139,9 +3174,9 @@ mod tests {
                 Some(slot_value),
                 current_time,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3177,9 +3212,9 @@ mod tests {
                 Some(slot_value),
                 current_time,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3214,9 +3249,9 @@ mod tests {
                 Some(slot_value),
                 current_time,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
             assert!(
                 result.is_ok(),
                 "Access key with future expiry should be accepted, got: {result:?}"
@@ -3259,9 +3294,9 @@ mod tests {
                 None,
                 current_time,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3307,9 +3342,9 @@ mod tests {
                 None,
                 current_time,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3354,9 +3389,9 @@ mod tests {
                 None,
                 current_time,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
             assert!(
                 result.is_ok(),
                 "KeyAuthorization with future expiry should be accepted, got: {result:?}"
@@ -3400,9 +3435,9 @@ mod tests {
                 None,
                 current_time,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
             assert!(result.is_ok(), "KeyAuthorization should be accepted");
             assert_eq!(
                 transaction.key_expiry(),
@@ -3447,9 +3482,9 @@ mod tests {
                 None,
                 current_time,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
             assert!(
                 result.is_ok(),
                 "KeyAuthorization with no expiry should be accepted, got: {result:?}"
@@ -3531,16 +3566,20 @@ mod tests {
                 false,
                 None,
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.check_keychain_spending_limit(
+            let info = KeychainSpendingInfo::OnChain {
+                key_id: access_key_address,
+                enforce_limits: false,
+            };
+            let result = validator.ensure_keychain_spending_limit(
                 &transaction,
-                &state_provider,
-                user_address,
+                &mut state_provider,
                 fee_token,
+                &info,
             );
             assert!(
-                result.is_ok(),
+                matches!(result, Ok(Ok(()))),
                 "Key with enforce_limits=false should pass, got {result:?}"
             );
         }
@@ -3563,16 +3602,20 @@ mod tests {
                 true,
                 Some((fee_token, fee_cost + U256::from(100))),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.check_keychain_spending_limit(
+            let info = KeychainSpendingInfo::OnChain {
+                key_id: access_key_address,
+                enforce_limits: true,
+            };
+            let result = validator.ensure_keychain_spending_limit(
                 &transaction,
-                &state_provider,
-                user_address,
+                &mut state_provider,
                 fee_token,
+                &info,
             );
             assert!(
-                result.is_ok(),
+                matches!(result, Ok(Ok(()))),
                 "Sufficient spending limit should pass, got {result:?}"
             );
         }
@@ -3595,16 +3638,20 @@ mod tests {
                 true,
                 Some((fee_token, fee_cost)),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.check_keychain_spending_limit(
+            let info = KeychainSpendingInfo::OnChain {
+                key_id: access_key_address,
+                enforce_limits: true,
+            };
+            let result = validator.ensure_keychain_spending_limit(
                 &transaction,
-                &state_provider,
-                user_address,
+                &mut state_provider,
                 fee_token,
+                &info,
             );
             assert!(
-                result.is_ok(),
+                matches!(result, Ok(Ok(()))),
                 "Exact spending limit should pass, got {result:?}"
             );
         }
@@ -3628,18 +3675,22 @@ mod tests {
                 true,
                 Some((fee_token, insufficient_limit)),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.check_keychain_spending_limit(
+            let info = KeychainSpendingInfo::OnChain {
+                key_id: access_key_address,
+                enforce_limits: true,
+            };
+            let result = validator.ensure_keychain_spending_limit(
                 &transaction,
-                &state_provider,
-                user_address,
+                &mut state_provider,
                 fee_token,
+                &info,
             );
             assert!(
                 matches!(
                     result,
-                    Err(TempoPoolTransactionError::SpendingLimitExceeded { .. })
+                    Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded { .. }))
                 ),
                 "Insufficient spending limit should be rejected"
             );
@@ -3662,18 +3713,22 @@ mod tests {
                 true,
                 Some((fee_token, U256::ZERO)),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.check_keychain_spending_limit(
+            let info = KeychainSpendingInfo::OnChain {
+                key_id: access_key_address,
+                enforce_limits: true,
+            };
+            let result = validator.ensure_keychain_spending_limit(
                 &transaction,
-                &state_provider,
-                user_address,
+                &mut state_provider,
                 fee_token,
+                &info,
             );
             assert!(
                 matches!(
                     result,
-                    Err(TempoPoolTransactionError::SpendingLimitExceeded { .. })
+                    Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded { .. }))
                 ),
                 "Zero spending limit should be rejected"
             );
@@ -3699,18 +3754,22 @@ mod tests {
                 true,
                 Some((different_token, U256::MAX)),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.check_keychain_spending_limit(
+            let info = KeychainSpendingInfo::OnChain {
+                key_id: access_key_address,
+                enforce_limits: true,
+            };
+            let result = validator.ensure_keychain_spending_limit(
                 &transaction,
-                &state_provider,
-                user_address,
+                &mut state_provider,
                 fee_token,
+                &info,
             );
             assert!(
                 matches!(
                     result,
-                    Err(TempoPoolTransactionError::SpendingLimitExceeded { .. })
+                    Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded { .. }))
                 ),
                 "Wrong token spending limit should be rejected (fee token has 0 limit)"
             );
@@ -3772,8 +3831,12 @@ mod tests {
             TempoPooledTransaction::new(recovered)
         }
 
+        /// Sponsored tx spending limit skip is handled at the call site
+        /// (`fee_payer != sender` guard in `validate_transaction`), not inside
+        /// `ensure_keychain_spending_limit`. This test verifies the function
+        /// still enforces limits when called (the caller decides whether to call it).
         #[test]
-        fn test_spending_limit_skip_for_sponsored_tx() {
+        fn test_spending_limit_enforced_regardless_of_fee_payer() {
             let (access_key_signer, access_key_address) = generate_keypair();
             let user_address = Address::random();
 
@@ -3782,8 +3845,6 @@ mod tests {
 
             let fee_token = transaction.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN);
 
-            let fee_payer = transaction.inner().fee_payer(transaction.sender()).unwrap();
-
             let validator = setup_validator_with_spending_limit(
                 &transaction,
                 user_address,
@@ -3791,17 +3852,24 @@ mod tests {
                 true,
                 Some((fee_token, U256::ZERO)),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.check_keychain_spending_limit(
+            let info = KeychainSpendingInfo::OnChain {
+                key_id: access_key_address,
+                enforce_limits: true,
+            };
+            let result = validator.ensure_keychain_spending_limit(
                 &transaction,
-                &state_provider,
-                fee_payer,
+                &mut state_provider,
                 fee_token,
+                &info,
             );
             assert!(
-                result.is_ok(),
-                "Sponsored tx should skip spending limit check, got {result:?}"
+                matches!(
+                    result,
+                    Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded { .. }))
+                ),
+                "ensure_keychain_spending_limit enforces limits; caller skips for sponsored txs"
             );
         }
 
@@ -3822,18 +3890,22 @@ mod tests {
                 true,
                 Some((fee_token, U256::ZERO)),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.check_keychain_spending_limit(
+            let info = KeychainSpendingInfo::OnChain {
+                key_id: access_key_address,
+                enforce_limits: true,
+            };
+            let result = validator.ensure_keychain_spending_limit(
                 &transaction,
-                &state_provider,
-                user_address,
+                &mut state_provider,
                 fee_token,
+                &info,
             );
             assert!(
                 matches!(
                     result,
-                    Err(TempoPoolTransactionError::SpendingLimitExceeded { .. })
+                    Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded { .. }))
                 ),
                 "Non-sponsored tx should check spending limit"
             );
@@ -3884,10 +3956,10 @@ mod tests {
                 create_aa_with_v1_keychain_signature(user_address, &access_key_signer, None);
 
             let validator = setup_validator_with_spec(&transaction, moderato_with_t1c(), 0);
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator
-                .validate_against_keychain(&transaction, &state_provider)
+                .validate_against_keychain(&transaction, &mut state_provider)
                 .expect("should not be a provider error");
 
             assert!(
@@ -3921,9 +3993,9 @@ mod tests {
                 access_key_address,
                 Some(slot_value),
             );
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
             assert!(
                 result.is_ok(),
                 "V2 keychain should be accepted post-T1C, got: {result:?}"
@@ -3940,10 +4012,10 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             let validator = setup_validator_with_spec(&transaction, moderato_without_t1c(), 0);
-            let state_provider = validator.inner.client().latest().unwrap();
+            let mut state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator
-                .validate_against_keychain(&transaction, &state_provider)
+                .validate_against_keychain(&transaction, &mut state_provider)
                 .expect("should not be a provider error");
 
             assert!(
@@ -3996,8 +4068,8 @@ mod tests {
                 amm_cache,
             );
 
-            let state_provider = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            let mut state_provider = validator.inner.client().latest().unwrap();
+            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
             assert!(
                 result.is_ok(),
                 "V1 keychain should be accepted pre-T1C, got: {result:?}"
