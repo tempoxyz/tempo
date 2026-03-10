@@ -113,14 +113,27 @@ where
     }
 
     /// Check if a transaction requires keychain validation
-    ///
-    /// Returns the validation result indicating what action to take:
-    /// - ValidateKeychain: Need to validate the keychain authorization
-    /// - Skip: No validation needed (not a keychain signature, or same-tx auth is valid)
-    /// - Reject: Transaction should be rejected with the given reason
-    ///
-    /// Returns `Ok(Ok(()))` if validation passes, `Ok(Err(...))` for validation failures,
-    /// or `Err(...)` for provider errors.
+    fn validate_keychain_version(
+        &self,
+        transaction: &TempoPooledTransaction,
+        spec: TempoHardfork,
+    ) -> Result<(), TempoPoolTransactionError> {
+        let Some(tx) = transaction.inner().as_aa() else {
+            return Ok(());
+        };
+
+        if let Err(e) = tx.signature().validate_version(spec.is_t1c()) {
+            return Err(e.into());
+        }
+        for auth_sig in &tx.tx().tempo_authorization_list {
+            if let Err(e) = auth_sig.signature().validate_version(spec.is_t1c()) {
+                return Err(e.into());
+            }
+        }
+
+        Ok(())
+    }
+
     fn validate_against_keychain(
         &self,
         transaction: &TempoPooledTransaction,
@@ -132,16 +145,6 @@ where
 
         let current_time = self.inner.fork_tracker().tip_timestamp();
         let spec = self.inner.chain_spec().tempo_hardfork_at(current_time);
-
-        // Validate keychain signature version (outer + authorization list).
-        if let Err(e) = tx.signature().validate_version(spec.is_t1c()) {
-            return Ok(Err(e.into()));
-        }
-        for auth_sig in &tx.tx().tempo_authorization_list {
-            if let Err(e) = auth_sig.signature().validate_version(spec.is_t1c()) {
-                return Ok(Err(e.into()));
-            }
-        }
 
         let auth = tx.tx().key_authorization.as_ref();
 
@@ -645,6 +648,15 @@ where
 
         // Validate that max_fee_per_gas meets the minimum base fee for the current hardfork.
         if let Err(err) = self.ensure_min_base_fee(&transaction, spec) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
+        }
+
+        // Validate keychain signature versions early so that permanently invalid
+        // errors before cheaper economic checks that would mask them.
+        if let Err(err) = self.validate_keychain_version(&transaction, spec) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
@@ -3707,11 +3719,12 @@ mod tests {
                 create_aa_with_v1_keychain_signature(user_address, &access_key_signer, None);
 
             let validator = setup_validator_with_spec(&transaction, moderato_with_t1c(), 0);
-            let mut state_provider = validator.inner.client().latest().unwrap();
+            let spec = validator
+                .inner
+                .chain_spec()
+                .tempo_hardfork_at(validator.inner.fork_tracker().tip_timestamp());
 
-            let result = validator
-                .validate_against_keychain(&transaction, &mut state_provider)
-                .expect("should not be a provider error");
+            let result = validator.validate_keychain_version(&transaction, spec);
 
             assert!(
                 matches!(
@@ -3763,11 +3776,12 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             let validator = setup_validator_with_spec(&transaction, moderato_without_t1c(), 0);
-            let mut state_provider = validator.inner.client().latest().unwrap();
+            let spec = validator
+                .inner
+                .chain_spec()
+                .tempo_hardfork_at(validator.inner.fork_tracker().tip_timestamp());
 
-            let result = validator
-                .validate_against_keychain(&transaction, &mut state_provider)
-                .expect("should not be a provider error");
+            let result = validator.validate_keychain_version(&transaction, spec);
 
             assert!(
                 matches!(result, Err(TempoPoolTransactionError::V2KeychainPreT1C)),
