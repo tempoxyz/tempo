@@ -21,6 +21,7 @@ pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
+use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::{node::TempoNode, rpc::error::TempoEthApiError};
@@ -308,18 +309,21 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         mut request: TempoTransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
-        // if non zero nonce key is provided, fetch nonce from nonce manager's storage.
         if let Some(nonce_key) = request.nonce_key
-            && request.nonce.is_none()
             && !nonce_key.is_zero()
+            && request.nonce.is_none()
         {
-            let slot =
-                NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
-            request.nonce = Some(
+            let nonce = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                0 // expiring nonce must be 0
+            } else {
+                // 2D nonce: fetch from storage
+                let slot =
+                    NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
                 db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
                     .map_err(Into::into)?
-                    .saturating_to(),
-            );
+                    .saturating_to()
+            };
+            request.nonce = Some(nonce);
         }
 
         Ok(self.inner.create_txn_env(evm_env, request, db)?)
@@ -373,21 +377,39 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
         mut request: RpcTxReq<Self::NetworkTypes>,
     ) -> Result<FillTransaction<TxTy<Self::Primitives>>, Self::Error> {
         if let Some(nonce_key) = request.nonce_key
-            && request.nonce.is_none()
             && !nonce_key.is_zero()
         {
-            let slot =
-                NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
-            request.nonce = Some(
-                self.spawn_blocking_io(move |this| {
-                    this.latest_state()?
-                        .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())
-                        .map_err(Self::Error::from_eth_err)
-                })
-                .await?
-                .unwrap_or_default()
-                .saturating_to(),
-            );
+            if request.nonce.is_none() {
+                let nonce = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                    0 // expiring nonce must be 0
+                } else {
+                    // 2D nonce: fetch from storage
+                    let slot = NonceManager::new().nonces[request.from.unwrap_or_default()]
+                        [nonce_key]
+                        .slot();
+                    self.spawn_blocking_io(move |this| {
+                        this.latest_state()?
+                            .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())
+                            .map_err(Self::Error::from_eth_err)
+                    })
+                    .await?
+                    .unwrap_or_default()
+                    .saturating_to()
+                };
+                request.nonce = Some(nonce);
+            }
+
+            // Fill gas using self to ensure Tempo's create_txn_env handles 2D nonce correctly
+            if request.gas.is_none() {
+                let gas = EstimateCall::estimate_gas_at(
+                    self,
+                    request.clone(),
+                    alloy_eips::BlockId::pending(),
+                    None,
+                )
+                .await?;
+                request.gas = Some(gas.to());
+            }
         }
 
         Ok(self.inner.fill_transaction(request).await?)

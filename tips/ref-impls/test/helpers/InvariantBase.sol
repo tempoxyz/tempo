@@ -49,7 +49,6 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         feeToken.grantRole(_ISSUER_ROLE, admin);
         for (uint256 i = 0; i < actors.length; i++) {
             feeToken.mint(actors[i], 100_000_000e6);
-            ghost_feeTokenBalance[actors[i]] = 100_000_000e6;
         }
         vm.stopPrank();
 
@@ -61,10 +60,13 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
     }
 
     function _setupAmmLiquidity() internal {
+        // Grant ISSUER_ROLE to admin on pathUSD (requires pathUSDAdmin)
+        vm.prank(pathUSDAdmin);
+        pathUSD.grantRole(_ISSUER_ROLE, admin);
+
         vm.startPrank(admin);
         // Mint tokens to admin first, then provide liquidity
         feeToken.mint(admin, 100_000_000e6);
-        pathUSD.grantRole(_ISSUER_ROLE, admin);
         pathUSD.mint(admin, 100_000_000e6);
         // Approve the AMM to spend tokens
         feeToken.approve(address(amm), type(uint256).max);
@@ -73,7 +75,7 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         amm.mint(address(feeToken), address(pathUSD), 50_000_000e6, admin);
         vm.stopPrank();
 
-        vm.prank(validator);
+        vm.prank(validator, validator);
         amm.setValidatorToken(address(feeToken));
     }
 
@@ -86,7 +88,10 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         bytes memory signedTx,
         bool isCreate,
         uint256 createNonce
-    ) internal returns (bool success) {
+    )
+        internal
+        returns (bool success)
+    {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
@@ -116,7 +121,10 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
     /// @notice Increment 2D nonce via direct storage manipulation
     /// @dev Simulates protocol behavior for 2D nonces since vm.executeTransaction
     ///      doesn't support Tempo transactions
-    function _incrementNonceViaStorage(address account, uint256 nonceKey)
+    function _incrementNonceViaStorage(
+        address account,
+        uint256 nonceKey
+    )
         internal
         returns (uint64 newNonce)
     {
@@ -161,6 +169,28 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         // The transient storage is at the end of regular storage
         bytes32 slot = bytes32(uint256(2)); // After keys (slot 0) and spendingLimits (slot 1)
         vm.store(_ACCOUNT_KEYCHAIN, slot, bytes32(uint256(uint160(keyId))));
+    }
+
+    // ============ Revert Reason Helpers ============
+
+    /// @notice Decode an Error(string) revert reason into its message
+    /// @param reason The raw revert bytes
+    /// @return isErrorString Whether the reason is a valid Error(string)
+    /// @return errorMessage The decoded error message (empty if not Error(string))
+    function _tryDecodeErrorMessage(bytes memory reason)
+        internal
+        pure
+        returns (bool isErrorString, string memory errorMessage)
+    {
+        if (reason.length < 4) return (false, "");
+        if (bytes4(reason) != bytes4(keccak256("Error(string)"))) return (false, "");
+
+        bytes memory payload = new bytes(reason.length - 4);
+        for (uint256 i = 0; i < payload.length; i++) {
+            payload[i] = reason[i + 4];
+        }
+        errorMessage = abi.decode(payload, (string));
+        return (true, errorMessage);
     }
 
     // ============ Balance Helpers ============

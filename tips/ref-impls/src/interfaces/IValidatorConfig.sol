@@ -64,7 +64,8 @@ interface IValidatorConfig {
         bool active,
         string calldata inboundAddress,
         string calldata outboundAddress
-    ) external;
+    )
+        external;
 
     /// @notice Update validator information (only validator)
     /// @param newValidatorAddress The new address for this validator
@@ -76,7 +77,8 @@ interface IValidatorConfig {
         bytes32 publicKey,
         string calldata inboundAddress,
         string calldata outboundAddress
-    ) external;
+    )
+        external;
 
     /// @notice Change validator active status (owner only)
     /// @param validator The validator address

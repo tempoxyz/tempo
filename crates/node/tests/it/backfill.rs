@@ -9,7 +9,7 @@ use alloy_network::TxSignerSync;
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 use reth_e2e_test_utils::wallet::Wallet;
-use reth_node_api::EngineApiMessageVersion;
+use reth_node_api::{BuiltPayload, EngineApiMessageVersion};
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_primitives_traits::{AlloyBlockHeader as _, transaction::TxHashRef};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;

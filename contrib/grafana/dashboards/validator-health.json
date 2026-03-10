@@ -1,4 +1,13 @@
 {
+  "__inputs": [
+    {
+      "name": "VAR_INSTANCE_LABEL",
+      "type": "constant",
+      "label": "Instance Label",
+      "value": "job",
+      "description": "Label used to identify nodes (e.g., job, node_identifier)"
+    }
+  ],
   "annotations": {
     "list": [
       {
@@ -86,7 +95,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "consensus_engine_epoch_manager_latest_epoch{job=~\"$network_name.*\"}",
+          "expr": "consensus_engine_epoch_manager_latest_epoch{${instance_label}=~\"$instance.*\"}",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -150,7 +159,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "reth_network_connected_peers{job=~\"$network_name.*\"}",
+          "expr": "reth_network_connected_peers{${instance_label}=~\"$instance.*\"}",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -215,7 +224,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "consensus_network_spawner_connections{job=~\"$network_name.*\"}",
+          "expr": "consensus_network_spawner_connections{${instance_label}=~\"$instance.*\"}",
           "legendFormat": "{{sequencer}}",
           "range": true,
           "refId": "A"
@@ -280,7 +289,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "consensus_engine_dkg_manager_peers{job=~\"$network_name.*\"}",
+          "expr": "consensus_engine_dkg_manager_peers{${instance_label}=~\"$instance.*\"}",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -345,7 +354,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "consensus_engine_dkg_manager_ceremony_players{job=~\"$network_name.*\"}",
+          "expr": "consensus_engine_dkg_manager_ceremony_players{${instance_label}=~\"$instance.*\"}",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -410,7 +419,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "consensus_engine_dkg_manager_ceremony_dealers{job=~\"$network_name.*\"}",
+          "expr": "consensus_engine_dkg_manager_ceremony_dealers{${instance_label}=~\"$instance.*\"}",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -475,7 +484,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "consensus_engine_epoch_manager_latest_participants{job=~\"$network_name.*\"}",
+          "expr": "consensus_engine_epoch_manager_latest_participants{${instance_label}=~\"$instance.*\"}",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -540,7 +549,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "consensus_engine_dkg_manager_syncing_players{job=~\"$network_name.*\"}",
+          "expr": "consensus_engine_dkg_manager_syncing_players{${instance_label}=~\"$instance.*\"}",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -646,14 +655,14 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "consensus_engine_marshal_finalized_height{job=~\"$network_name.*\"}",
+          "expr": "consensus_engine_marshal_finalized_height{${instance_label}=~\"$instance.*\"}",
           "legendFormat": "Finalized - {{pod}}",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "consensus_engine_marshal_processed_height{job=~\"$network_name.*\"}",
+          "expr": "consensus_engine_marshal_processed_height{${instance_label}=~\"$instance.*\"}",
           "legendFormat": "Processed - {{pod}}",
           "range": true,
           "refId": "B"
@@ -722,7 +731,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "consensus_engine_marshal_finalized_height{job=~\"$network_name.*\"} - consensus_engine_marshal_processed_height{job=~\"$network_name.*\"}",
+          "expr": "consensus_engine_marshal_finalized_height{${instance_label}=~\"$instance.*\"} - consensus_engine_marshal_processed_height{${instance_label}=~\"$instance.*\"}",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -792,7 +801,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "((consensus_engine_epoch_manager_latest_epoch{job=~\"$network_name.*\"} + 1) * $epoch_length - consensus_engine_marshal_finalized_height{job=~\"$network_name.*\"}) * $block_time",
+          "expr": "((consensus_engine_epoch_manager_latest_epoch{${instance_label}=~\"$instance.*\"} + 1) * $epoch_length - consensus_engine_marshal_finalized_height{${instance_label}=~\"$instance.*\"}) * $block_time",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -853,7 +862,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max by (pod, job) (consensus_engine_epoch_manager_simplex_voter_state_current_view{job=~\"$network_name.*\"} and on(pod, job, epoch) count_values by (pod, job) (\"epoch\", consensus_engine_epoch_manager_latest_epoch{job=~\"$network_name.*\"}))",
+          "expr": "max by (pod, job) (consensus_engine_epoch_manager_simplex_voter_state_current_view{${instance_label}=~\"$instance.*\"} and on(pod, job, epoch) count_values by (pod, job) (\"epoch\", consensus_engine_epoch_manager_latest_epoch{${instance_label}=~\"$instance.*\"}))",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -922,7 +931,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max by (pod, job) (increase(consensus_engine_epoch_manager_simplex_voter_state_skipped_views_total{job=~\"$network_name.*\"}[5m]) and on(pod, job, epoch) count_values by (pod, job) (\"epoch\", consensus_engine_epoch_manager_latest_epoch{job=~\"$network_name.*\"}))",
+          "expr": "max by (pod, job) (increase(consensus_engine_epoch_manager_simplex_voter_state_skipped_views_total{${instance_label}=~\"$instance.*\"}[5m]) and on(pod, job, epoch) count_values by (pod, job) (\"epoch\", consensus_engine_epoch_manager_latest_epoch{${instance_label}=~\"$instance.*\"}))",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -1001,7 +1010,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max by (pod, job) (rate(consensus_engine_epoch_manager_simplex_voter_outbound_messages_total{job=~\"$network_name.*\", message=\"Notarization\"}[5m]) and on(pod, job, epoch) count_values by (pod, job) (\"epoch\", consensus_engine_epoch_manager_latest_epoch{job=~\"$network_name.*\"}))",
+          "expr": "max by (pod, job) (rate(consensus_engine_epoch_manager_simplex_voter_outbound_messages_total{${instance_label}=~\"$instance.*\", message=\"Notarization\"}[5m]) and on(pod, job, epoch) count_values by (pod, job) (\"epoch\", consensus_engine_epoch_manager_latest_epoch{${instance_label}=~\"$instance.*\"}))",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -1067,7 +1076,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max by (pod, job) (rate(consensus_engine_epoch_manager_simplex_voter_outbound_messages_total{job=~\"$network_name.*\", message=\"Finalization\"}[5m]) and on(pod, job, epoch) count_values by (pod, job) (\"epoch\", consensus_engine_epoch_manager_latest_epoch{job=~\"$network_name.*\"}))",
+          "expr": "max by (pod, job) (rate(consensus_engine_epoch_manager_simplex_voter_outbound_messages_total{${instance_label}=~\"$instance.*\", message=\"Finalization\"}[5m]) and on(pod, job, epoch) count_values by (pod, job) (\"epoch\", consensus_engine_epoch_manager_latest_epoch{${instance_label}=~\"$instance.*\"}))",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -1137,7 +1146,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max by (pod, job) (rate(consensus_engine_epoch_manager_simplex_voter_outbound_messages_total{job=~\"$network_name.*\", message=\"Nullification\"}[5m]) and on(pod, job, epoch) count_values by (pod, job) (\"epoch\", consensus_engine_epoch_manager_latest_epoch{job=~\"$network_name.*\"}))",
+          "expr": "max by (pod, job) (rate(consensus_engine_epoch_manager_simplex_voter_outbound_messages_total{${instance_label}=~\"$instance.*\", message=\"Nullification\"}[5m]) and on(pod, job, epoch) count_values by (pod, job) (\"epoch\", consensus_engine_epoch_manager_latest_epoch{${instance_label}=~\"$instance.*\"}))",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -1244,7 +1253,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_notarization_latency_bucket{job=~\"$network_name.*\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_notarization_latency_bucket{${instance_label}=~\"$instance.*\"}[$__rate_interval])))",
           "legendFormat": "p95",
           "range": true,
           "refId": "A"
@@ -1255,7 +1264,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_notarization_latency_bucket{job=~\"$network_name.*\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_notarization_latency_bucket{${instance_label}=~\"$instance.*\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p99",
           "range": true,
@@ -1267,7 +1276,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_notarization_latency_bucket{job=~\"$network_name.*\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_notarization_latency_bucket{${instance_label}=~\"$instance.*\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p50",
           "range": true,
@@ -1362,7 +1371,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_finalization_latency_bucket{job=~\"$network_name.*\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_finalization_latency_bucket{${instance_label}=~\"$instance.*\"}[$__rate_interval])))",
           "legendFormat": "p95",
           "range": true,
           "refId": "A"
@@ -1373,7 +1382,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_finalization_latency_bucket{job=~\"$network_name.*\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_finalization_latency_bucket{${instance_label}=~\"$instance.*\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p99",
           "range": true,
@@ -1385,7 +1394,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_finalization_latency_bucket{job=~\"$network_name.*\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by(le) (rate(consensus_engine_epoch_manager_simplex_voter_finalization_latency_bucket{${instance_label}=~\"$instance.*\"}[$__rate_interval])))",
           "instant": false,
           "legendFormat": "p50",
           "range": true,
@@ -1497,7 +1506,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(rate(reth_blockchain_tree_finalized_block_height{job=~\"$network_name.*\"}[$__rate_interval]))",
+          "expr": "avg(rate(reth_blockchain_tree_finalized_block_height{${instance_label}=~\"$instance.*\"}[$__rate_interval]))",
           "interval": "",
           "legendFormat": "average",
           "range": true,
@@ -1509,7 +1518,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "rate(reth_blockchain_tree_finalized_block_height{job=~\"$network_name.*\"}[$__rate_interval])",
+          "expr": "rate(reth_blockchain_tree_finalized_block_height{${instance_label}=~\"$instance.*\"}[$__rate_interval])",
           "instant": false,
           "legendFormat": "{{job}}",
           "range": true,
@@ -1609,7 +1618,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "rate(reth_payloads_resolved_block{job=~\"$network_name.*\"}[5m])",
+          "expr": "rate(reth_payloads_resolved_block{${instance_label}=~\"$instance.*\"}[5m])",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -1709,7 +1718,7 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "sum(rate({instance=~\"${network_name}.*\"} |= `failed creating a proposal` [$__auto]))",
+          "expr": "sum(rate({instance=~\"${instance}.*\"} |= `failed creating a proposal` [$__auto]))",
           "legendFormat": "failed proposal creations / sec",
           "queryType": "range",
           "refId": "A"
@@ -1733,14 +1742,14 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(reth_info,job)",
+        "definition": "label_values(reth_info,${instance_label})",
         "description": "",
-        "label": "Network ID",
-        "name": "network_name",
+        "label": "Instance",
+        "name": "instance",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(reth_info,job)",
+          "query": "label_values(reth_info,${instance_label})",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
@@ -1793,6 +1802,19 @@
         "hide": 2,
         "name": "block_time",
         "query": "0.5",
+        "skipUrlSync": true,
+        "type": "constant"
+      },
+      {
+        "current": {
+          "text": "job",
+          "value": "job"
+        },
+        "description": "Label used to identify nodes (e.g., job, node_identifier)",
+        "hide": 2,
+        "label": "Instance Label",
+        "name": "instance_label",
+        "query": "${VAR_INSTANCE_LABEL}",
         "skipUrlSync": true,
         "type": "constant"
       }

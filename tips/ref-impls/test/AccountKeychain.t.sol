@@ -251,6 +251,27 @@ contract AccountKeychainTest is BaseTest {
         vm.stopPrank();
     }
 
+    function test_GetRemainingLimit_ReturnsZeroForRevokedKey() public {
+        vm.startPrank(alice);
+
+        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
+        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+
+        keychain.authorizeKey(
+            aliceAccessKey,
+            IAccountKeychain.SignatureType.P256,
+            uint64(block.timestamp + 1 days),
+            true,
+            limits
+        );
+        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 1000e6);
+
+        keychain.revokeKey(aliceAccessKey);
+        assertEq(keychain.getRemainingLimit(alice, aliceAccessKey, USDC), 0);
+
+        vm.stopPrank();
+    }
+
     function test_AuthorizeKey_RevertZeroKeyId() public {
         vm.startPrank(alice);
 
@@ -754,7 +775,9 @@ contract AccountKeychainTest is BaseTest {
         uint8 sigType,
         uint64 expiry,
         bool enforceLimits
-    ) public {
+    )
+        public
+    {
         vm.assume(keyId != address(0));
         vm.assume(sigType <= 2);
         vm.assume(expiry > block.timestamp); // Ensure expiry is in future for valid key
@@ -783,7 +806,9 @@ contract AccountKeychainTest is BaseTest {
         address token2,
         uint256 amount1,
         uint256 amount2
-    ) public {
+    )
+        public
+    {
         vm.assume(keyId != address(0));
         vm.assume(token1 != token2);
 
@@ -813,7 +838,9 @@ contract AccountKeychainTest is BaseTest {
         address token,
         uint256 initialLimit,
         uint256 newLimit
-    ) public {
+    )
+        public
+    {
         vm.assume(keyId != address(0));
 
         vm.startPrank(alice);
@@ -880,13 +907,20 @@ contract AccountKeychainTest is BaseTest {
         address account,
         address keyId,
         address token
-    ) public view {
+    )
+        public
+        view
+    {
         // Getting limit for non-existent key should return 0
         uint256 limit = keychain.getRemainingLimit(account, keyId, token);
         assertEq(limit, 0);
     }
 
-    function testFuzz_KeyIsolationBetweenAccounts(address account1, address account2, address keyId)
+    function testFuzz_KeyIsolationBetweenAccounts(
+        address account1,
+        address account2,
+        address keyId
+    )
         public
     {
         vm.assume(account1 != address(0));

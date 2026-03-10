@@ -9,6 +9,7 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
+pub use block::TempoReceiptBuilder;
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]
@@ -33,10 +34,7 @@ use tempo_primitives::{
     subblock::PartialValidatorKey,
 };
 
-use crate::{
-    block::TempoBlockExecutor,
-    evm::{TIP1000_TX_GAS_LIMIT_CAP, TempoEvm},
-};
+use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params};
@@ -58,17 +56,13 @@ pub struct TempoEvmConfig {
 
 impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
-    pub fn new(chain_spec: Arc<TempoChainSpec>, evm_factory: TempoEvmFactory) -> Self {
-        let inner = EthEvmConfig::new_with_evm_factory(chain_spec.clone(), evm_factory);
+    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+        let inner =
+            EthEvmConfig::new_with_evm_factory(chain_spec.clone(), TempoEvmFactory::default());
         Self {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
         }
-    }
-
-    /// Create a new [`TempoEvmConfig`] with the given chain spec and default EVM factory.
-    pub fn new_with_default_factory(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self::new(chain_spec, TempoEvmFactory::default())
     }
 
     /// Returns the chain spec
@@ -79,6 +73,11 @@ impl TempoEvmConfig {
     /// Returns the inner EVM config
     pub const fn inner(&self) -> &EthEvmConfig<TempoChainSpec, TempoEvmFactory> {
         &self.inner
+    }
+
+    /// Returns the mainnet EVM config.
+    pub fn mainnet() -> Self {
+        Self::new(Arc::new(TempoChainSpec::mainnet()))
     }
 }
 
@@ -133,10 +132,7 @@ impl ConfigureEvm for TempoEvmConfig {
 
         // Apply TIP-1000 gas params for T1 hardfork.
         let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
-        // Set TIP-1000 Transaction gas limit cap (30M) for T1 hardfork.
-        if spec.is_t1() {
-            cfg_env.tx_gas_limit_cap = Some(TIP1000_TX_GAS_LIMIT_CAP);
-        }
+        cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
         Ok(EvmEnv {
             cfg_env,
@@ -171,11 +167,9 @@ impl ConfigureEvm for TempoEvmConfig {
 
         let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
 
+        // Apply TIP-1000 gas params for T1 hardfork.
         let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
-        // Set TIP-1000 Transactiongas limit cap (30M) for T1 hardfork.
-        if spec.is_t1() {
-            cfg_env.tx_gas_limit_cap = Some(TIP1000_TX_GAS_LIMIT_CAP);
-        }
+        cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
         Ok(EvmEnv {
             cfg_env,
@@ -268,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_evm_config_can_query_tempo_hardforks() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
         let activation = evm_config
             .chain_spec()
             .tempo_fork_activation(TempoHardfork::Genesis);
@@ -277,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_evm_env() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -311,14 +305,16 @@ mod tests {
         assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
     }
 
-    /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per TIP-1000.
+    /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per [TIP-1000].
+    ///
+    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_evm_env_t1_gas_cap() {
         use tempo_chainspec::spec::DEV;
 
         // DEV chainspec has T1 activated at timestamp 0
         let chainspec = DEV.clone();
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -341,14 +337,14 @@ mod tests {
         // Verify TIP-1000 gas limit cap is set
         assert_eq!(
             evm_env.cfg_env.tx_gas_limit_cap,
-            Some(TIP1000_TX_GAS_LIMIT_CAP),
+            Some(tempo_chainspec::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
             "TIP-1000 requires 30M gas limit cap for T1 hardfork"
         );
     }
 
     #[test]
     fn test_next_evm_env() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         let parent = TempoHeader {
             inner: alloy_consensus::Header {
@@ -401,7 +397,7 @@ mod tests {
     #[test]
     fn test_context_for_block() {
         let chainspec = test_chainspec();
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
+        let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         // Create subblock metadata
         let validator_key = B256::repeat_byte(0x01);
@@ -474,7 +470,7 @@ mod tests {
 
     #[test]
     fn test_context_for_block_no_subblock_metadata() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         // Create a block without subblock metadata system tx
         let regular_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -523,7 +519,7 @@ mod tests {
 
     #[test]
     fn test_context_for_next_block() {
-        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+        let evm_config = TempoEvmConfig::new(test_chainspec());
 
         let parent_header = TempoHeader {
             inner: alloy_consensus::Header {

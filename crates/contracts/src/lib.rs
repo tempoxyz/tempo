@@ -1,7 +1,10 @@
 //! Tempo predeployed contracts and bindings.
 
+#![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+
+extern crate alloc;
 
 use alloy_primitives::{Address, B256, address, b256};
 
@@ -91,7 +94,10 @@ mod tests {
     //!
     //! Optionally set `ETH_RPC_URL` to use a custom RPC endpoint.
 
+    extern crate std;
+
     use super::*;
+    use alloc::string::{String, ToString};
     use alloy_primitives::{B256, keccak256};
     use alloy_provider::{Provider, ProviderBuilder};
 
@@ -117,6 +123,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires mainnet RPC access - not needed after mainnet launch"]
     async fn multicall3_bytecode_matches_mainnet() {
         // Verify our hash constant matches our bytecode
         let computed_hash = keccak256(&Multicall3::DEPLOYED_BYTECODE);
@@ -140,6 +147,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires mainnet RPC access - not needed after mainnet launch"]
     async fn createx_bytecode_matches_mainnet() {
         // Verify our hash constant matches our bytecode
         let computed_hash = keccak256(&CreateX::DEPLOYED_BYTECODE);
@@ -163,6 +171,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires mainnet RPC access - not needed after mainnet launch"]
     async fn arachnid_create2_factory_bytecode_matches_mainnet() {
         let mainnet_hash = get_mainnet_code_hash(ARACHNID_CREATE2_FACTORY_ADDRESS).await;
         let our_hash = keccak256(&contracts::ARACHNID_CREATE2_FACTORY_BYTECODE);
@@ -177,6 +186,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires mainnet RPC access - not needed after mainnet launch"]
     async fn safe_deployer_bytecode_matches_mainnet() {
         let mainnet_hash = get_mainnet_code_hash(SAFE_DEPLOYER_ADDRESS).await;
         let our_hash = keccak256(&SafeDeployer::DEPLOYED_BYTECODE);

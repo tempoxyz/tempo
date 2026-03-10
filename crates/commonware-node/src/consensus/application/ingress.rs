@@ -5,10 +5,8 @@ use commonware_consensus::{
 };
 
 use commonware_cryptography::ed25519::PublicKey;
-use futures::{
-    SinkExt as _,
-    channel::{mpsc, oneshot},
-};
+use commonware_utils::channel::oneshot;
+use futures::{SinkExt as _, channel::mpsc};
 
 use crate::consensus::Digest;
 

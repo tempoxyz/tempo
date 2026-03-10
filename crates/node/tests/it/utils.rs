@@ -3,6 +3,81 @@
 //! This module provides helper functions for setting up and managing test environments,
 //! including test token creation and node setup for integration testing.
 
+/// Chain profile for integration tests.
+///
+/// Each variant uses the test dev genesis allocations (funded accounts, precompile state) but
+/// overlays hardfork timestamps from the corresponding network config.
+/// Forks whose activation timestamp is in the future (relative to the current wall-clock time)
+/// are deactivated (`u64::MAX`); forks already active are activated at t=0.
+///
+/// This lets the same test run against different fork schedules via `#[test_case]`:
+///
+/// ```ignore
+/// #[test_case(ForkSchedule::Devnet ; "devnet")]
+/// #[test_case(ForkSchedule::Testnet ; "testnet")]
+/// #[test_case(ForkSchedule::Mainnet ; "mainnet")]
+/// #[tokio::test(flavor = "multi_thread")]
+/// async fn test_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
+///     let setup = TestNodeBuilder::new()
+///         .with_schedule(schedule)
+///         .build_http_only()
+///         .await?;
+///     // ...
+/// }
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ForkSchedule {
+    /// Preserves test dev genesis hardfork schedule: typically all active at t=0.
+    Devnet,
+    /// Fork schedule matching testnet (moderato): only forks active *now* are set to t=0.
+    Testnet,
+    /// Fork schedule matching mainnet (presto): only forks active *now* are set to t=0.
+    Mainnet,
+}
+
+impl ForkSchedule {
+    /// Returns the reference genesis JSON whose fork timestamps should be used.
+    fn reference_genesis(&self) -> Option<&'static str> {
+        match self {
+            Self::Devnet => None,
+            Self::Testnet => Some(include_str!("../../../chainspec/src/genesis/moderato.json")),
+            Self::Mainnet => Some(include_str!("../../../chainspec/src/genesis/presto.json")),
+        }
+    }
+
+    /// Apply this profile's fork timestamps to a test genesis JSON value.
+    ///
+    /// Scans the test genesis config for all `*Time` keys and checks each
+    /// against the reference network genesis. Forks active *now* on the
+    /// reference network are set to `0`; forks that are still in the future
+    /// or absent from the reference are set to `u64::MAX`.
+    pub(crate) fn apply(&self, genesis: &mut serde_json::Value) {
+        let Some(reference_json) = self.reference_genesis() else {
+            return; // keep test genesis timestamps unchanged
+        };
+
+        let reference: serde_json::Value =
+            serde_json::from_str(reference_json).expect("reference genesis must parse");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let config = genesis["config"]
+            .as_object_mut()
+            .expect("genesis must have config");
+
+        for (key, value) in config.iter_mut().filter(|(k, _)| k.ends_with("Time")) {
+            let ts = match reference["config"][key].as_u64() {
+                Some(ts) if ts <= now => 0u64,
+                _ => u64::MAX,
+            };
+            *value = serde_json::json!(ts);
+        }
+    }
+}
+
 /// Standard test mnemonic phrase used across integration tests
 pub(crate) const TEST_MNEMONIC: &str =
     "test test test test test test test test test test test junk";
@@ -164,6 +239,9 @@ pub(crate) struct TestNodeBuilder {
     node_count: usize,
     is_dev: bool,
     external_rpc: Option<Url>,
+    custom_validator: Option<Address>,
+    dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
+    schedule: ForkSchedule,
 }
 
 impl TestNodeBuilder {
@@ -175,7 +253,16 @@ impl TestNodeBuilder {
             node_count: 1,
             is_dev: true,
             external_rpc: None,
+            custom_validator: None,
+            dynamic_validator: None,
+            schedule: ForkSchedule::Devnet,
         }
+    }
+
+    /// Set the fork schedule (Devnet, Testnet, or Mainnet)
+    pub(crate) fn with_schedule(mut self, schedule: ForkSchedule) -> Self {
+        self.schedule = schedule;
+        self
     }
 
     /// Use custom genesis JSON content
@@ -199,6 +286,15 @@ impl TestNodeBuilder {
     /// Use external RPC instead of local node
     pub(crate) fn with_external_rpc(mut self, url: Url) -> Self {
         self.external_rpc = Some(url);
+        self
+    }
+
+    /// Set a dynamic validator that can be changed at runtime
+    pub(crate) fn with_dynamic_validator(
+        mut self,
+        validator: Arc<std::sync::Mutex<Address>>,
+    ) -> Self {
+        self.dynamic_validator = Some(validator);
         self
     }
 
@@ -275,7 +371,10 @@ impl TestNodeBuilder {
 
         let tasks = TaskManager::current();
         let chain_spec = self.build_chain_spec()?;
-        let validator = chain_spec.inner.genesis.coinbase;
+        let static_validator = self
+            .custom_validator
+            .unwrap_or(chain_spec.inner.genesis.coinbase);
+        let dynamic_validator = self.dynamic_validator.clone();
 
         let mut node_config = NodeConfig::new(Arc::new(chain_spec))
             .with_unused_ports()
@@ -294,6 +393,10 @@ impl TestNodeBuilder {
             .node(TempoNode::default())
             .launch_with_debug_capabilities()
             .map_debug_payload_attributes(move |mut attributes| {
+                let validator = dynamic_validator
+                    .as_ref()
+                    .map(|v| *v.lock().unwrap())
+                    .unwrap_or(static_validator);
                 attributes.suggested_fee_recipient = validator;
                 attributes
             })
@@ -319,6 +422,8 @@ impl TestNodeBuilder {
         if let Some(gas_limit) = &self.custom_gas_limit {
             genesis["gasLimit"] = serde_json::json!(gas_limit);
         }
+
+        self.schedule.apply(&mut genesis);
 
         Ok(TempoChainSpec::from_genesis(serde_json::from_value(
             genesis,

@@ -9,7 +9,7 @@ use commonware_consensus::types::FixedEpocher;
 use commonware_runtime::{Metrics, Pacer, Spawner, Storage};
 
 use eyre::WrapErr as _;
-use rand::{CryptoRng, Rng};
+use rand_08::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
 mod actor;
@@ -55,8 +55,11 @@ pub(super) struct Config<TContext> {
     /// A handle to the subblocks service to get subblocks for proposals.
     pub(crate) subblocks: subblocks::Mailbox,
 
-    /// The minimum amount of time to wait before resolving a new payload from the builder
-    pub(super) new_payload_wait_time: Duration,
+    /// The minimum amount of time to wait before resolving a new payload from the builder.
+    pub(super) payload_resolve_time: Duration,
+
+    /// The minimum amount of time to wait before returning the built payload back to consensus for proposal.
+    pub(super) payload_return_time: Duration,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(super) epoch_strategy: FixedEpocher,

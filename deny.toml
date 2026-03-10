@@ -8,8 +8,6 @@ ignore = [
   "RUSTSEC-2024-0436",
   # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained
   "RUSTSEC-2025-0141",
-  # https://rustsec.org/advisories/RUSTSEC-2026-0003 cmov timing on ARM32 - we don't target ARM32
-  "RUSTSEC-2026-0003",
 ]
 
 # This section is considered when running `cargo deny check bans`.
@@ -63,11 +61,7 @@ allow = [
 
 # Allow 1 or more licenses on a per-crate basis, so that particular licenses
 # aren't accepted for every possible crate as with the normal allow list
-exceptions = [
-  { allow = [
-    "MPL-2.0",
-  ], name = "option-ext" },
-]
+exceptions = [{ allow = ["MPL-2.0"], name = "option-ext" }]
 
 [[licenses.clarify]]
 name = "rustls-webpki"

@@ -36,7 +36,7 @@ pub const TEMPO_SYSTEM_TX_SENDER: Address = Address::ZERO;
     serde_cfg(feature = "serde")
 )]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
-#[expect(clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant)]
 pub enum TempoTxEnvelope {
     /// Legacy transaction (type 0x00)
     #[envelope(ty = 0)]
@@ -604,7 +604,7 @@ mod codec {
     }
 
     impl reth_db_api::table::Compress for TempoTxEnvelope {
-        type Compressed = Vec<u8>;
+        type Compressed = alloc::vec::Vec<u8>;
 
         fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
             let _ = Compact::to_compact(self, buf);
