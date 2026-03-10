@@ -522,9 +522,10 @@ mod tests {
             tx_env.tempo_tx_env.is_some(),
             "fee_payer_signature alone must produce an AA tx env"
         );
-        assert!(
-            tx_env.fee_payer.is_some(),
-            "fee_payer must be recovered from fee_payer_signature"
+        assert_eq!(
+            tx_env.fee_payer,
+            Some(Some(sponsor.address())),
+            "fee_payer should recover sponsor address"
         );
     }
 
