@@ -342,6 +342,8 @@ def run-bench-single [
     git_ref: string
     benchmark_id: string
     reference_epoch: int
+    samply: bool
+    samply_args: list<string>
 ] {
     print $"=== Starting run: ($run_label) ==="
 
@@ -380,10 +382,13 @@ def run-bench-single [
         | append (log-filter-args $loud)
         | append $extra_args
 
-    # Start tempo node in background
-    let node_cmd = [$tempo_bin ...$args]
+    # Start tempo node in background (optionally wrapped with samply)
+    let full_samply_args = if $samply {
+        $samply_args | append ["--save-only" "--presymbolicate" "--output" $"($results_dir)/profile-($run_label).json.gz"]
+    } else { [] }
+    let node_cmd = wrap-samply [$tempo_bin ...$args] $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
-    print $"  Starting node: ($tempo_bin | path basename)"
+    print $"  Starting node: ($tempo_bin | path basename)(if $samply { ' (samply)' } else { '' })"
     job spawn { sh -c $"($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)] ($line)" } }
 
     # Wait for RPC
@@ -457,6 +462,20 @@ def run-bench-single [
         }
     }
 
+    # Wait for samply to finish saving profile
+    if $samply {
+        print "  Waiting for samply to finish saving profile..."
+        mut wait = 0
+        while $wait < 120 {
+            if (ps | where name =~ "samply" | length) == 0 { break }
+            sleep 500ms
+            $wait = $wait + 1
+        }
+        if $wait >= 120 {
+            print "  Warning: samply did not exit in time"
+        }
+    }
+
     # Stop metrics proxy
     if $proxy_pid != null {
         let proxy_pids = (ps | where name =~ "bench-metrics-proxy" | get pid)
@@ -471,6 +490,30 @@ def run-bench-single [
     }
 
     print $"=== Run ($run_label) complete ==="
+}
+
+# Upload a samply profile (.json.gz) to Firefox Profiler and return the short URL.
+# Returns null on failure. Uses the same approach as reth-bench.
+def upload-samply-profile [profile_path: string] {
+    if not ($profile_path | path exists) {
+        print $"  Warning: profile not found: ($profile_path)"
+        return null
+    }
+
+    let profile_size = (ls $profile_path | get size | first)
+    print $"  Uploading ($profile_path | path basename) \(($profile_size)\) to Firefox Profiler..."
+
+    let script = $"($BENCH_DIR)/upload-samply-profile.sh"
+    let result = (bash $script $profile_path | complete)
+
+    if $result.exit_code != 0 {
+        print $"  Warning: failed to upload profile"
+        return null
+    }
+
+    let url = ($result.stdout | str trim)
+    print $"  Profile URL: ($url)"
+    $url
 }
 
 # Generate summary.md from multiple report files
@@ -1478,6 +1521,7 @@ def "main bench" [
         # B-F-F-B interleaved runs
         let benchmark_id = $"bench-($timestamp)"
         let reference_epoch = ((date now | into int) / 1_000_000_000 | into int)
+        let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
 
         let runs = [
             { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha }
@@ -1488,7 +1532,7 @@ def "main bench" [
 
         for run in $runs {
             bench-recover $datadir
-            run-bench-single $run.tempo $baseline_bench_bin $genesis_path $datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch
+            run-bench-single $run.tempo $baseline_bench_bin $genesis_path $datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list
         }
 
         # Generate summary report
@@ -1503,6 +1547,18 @@ def "main bench" [
 
         if not $no_infra {
             docker compose -f $"($BENCH_DIR)/docker-compose.yml" down
+        }
+
+        # Upload samply profiles to Firefox Profiler
+        if $samply {
+            print "\nUploading samply profiles to Firefox Profiler..."
+            for run in $runs {
+                let profile = $"($results_dir)/profile-($run.label).json.gz"
+                let url = (upload-samply-profile $profile)
+                if $url != null {
+                    $url | save -f $"($results_dir)/profile-($run.label)-url.txt"
+                }
+            }
         }
 
         restore-system-tuning $tuning_state
