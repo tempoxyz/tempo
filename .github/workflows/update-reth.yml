@@ -142,6 +142,10 @@ jobs:
           but do NOT modify the reth git source specifications (URL, branch, or rev) in \
           any Cargo.toml — those must stay pointing at branch = \"main\".
 
+          IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
+          to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
+          what replaced the deprecated items.
+
           Here are the compilation errors:
 
           ${CHECK_ERRORS}"
@@ -190,6 +194,10 @@ jobs:
           non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
           but do NOT modify the reth git source specifications (URL, branch, or rev) in \
           any Cargo.toml — those must stay pointing at branch = \"main\".
+
+          IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
+          to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
+          what replaced the deprecated items.
 
           Here are the test failures (last 500 lines):
 
