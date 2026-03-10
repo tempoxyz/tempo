@@ -12,17 +12,6 @@ on:
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
-    inputs:
-      max_check_attempts:
-        description: "Max cargo-check + Amp fix iterations"
-        required: false
-        default: "5"
-        type: string
-      max_test_attempts:
-        description: "Max nextest + Amp fix iterations"
-        required: false
-        default: "3"
-        type: string
 
 concurrency:
   group: update-reth
@@ -111,113 +100,93 @@ jobs:
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
-          MAX_ATTEMPTS=${{ inputs.max_check_attempts || '5' }}
-          check_failed=false
+          AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
+          on the paradigmxyz/reth main branch. \`cargo check --workspace\` is now failing with compilation errors.
 
-          for i in $(seq 1 "$MAX_ATTEMPTS"); do
-            echo "::group::cargo check attempt $i/$MAX_ATTEMPTS"
+          Run \`cargo check --workspace\` to see the errors, then fix the Rust source code and repeat \
+          until cargo check passes. You may also bump non-reth dependency versions in Cargo.toml files \
+          if needed (e.g. revm, alloy), but do NOT modify the reth git source specifications (URL, branch, \
+          or rev) in any Cargo.toml — those must stay pointing at branch = \"main\".
+
+          IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
+          to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
+          what replaced the deprecated items."
+
+          attempt=0
+          while true; do
+            attempt=$((attempt + 1))
+            echo "::group::Amp attempt $attempt"
+            amp --dangerously-allow-all -x "$AMP_PROMPT"
+            echo "::endgroup::"
+
+            echo "::group::Verify cargo check"
             set +e
-            cargo check --workspace 2>&1 | tee /tmp/check-output.txt
-            check_exit=${PIPESTATUS[0]}
+            cargo check --workspace 2>&1
+            check_exit=$?
             set -e
             echo "::endgroup::"
 
             if [ "$check_exit" -eq 0 ]; then
-              echo "Cargo check passed on attempt $i"
-              break
+              echo "Cargo check passed after attempt $attempt"
+              exit 0
             fi
 
-            if [ "$i" -eq "$MAX_ATTEMPTS" ]; then
-              echo "Cargo check still failing after $MAX_ATTEMPTS attempts"
-              check_failed=true
-              break
-            fi
-
-            CHECK_ERRORS=$(tail -500 /tmp/check-output.txt)
-            AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
-          on the paradigmxyz/reth main branch. The cargo check is now failing with compilation errors.
-
-          Please fix the Rust source code to resolve these errors. You may also bump \
-          non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
-          but do NOT modify the reth git source specifications (URL, branch, or rev) in \
-          any Cargo.toml — those must stay pointing at branch = \"main\".
-
-          IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
-          to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
-          what replaced the deprecated items.
-
-          Here are the compilation errors:
-
-          ${CHECK_ERRORS}"
-
-            echo "::group::Amp fix attempt $i"
-            amp --dangerously-allow-all -x "$AMP_PROMPT"
-            echo "::endgroup::"
+            echo "Amp exited but cargo check still failing, retrying..."
           done
-
-          echo "check_failed=$check_failed" >> "$GITHUB_OUTPUT"
 
       # ── test + Amp fix loop ────────────────────────────────────
       - name: Fix test failures
-        if: steps.update.outputs.skip != 'true' && steps.check-loop.outputs.check_failed != 'true'
+        if: steps.update.outputs.skip != 'true'
         id: test-loop
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
-          MAX_ATTEMPTS=${{ inputs.max_test_attempts || '3' }}
-          tests_failed=false
+          AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
+          on the paradigmxyz/reth main branch. Tests are now failing.
 
-          for i in $(seq 1 "$MAX_ATTEMPTS"); do
-            echo "::group::nextest attempt $i/$MAX_ATTEMPTS"
+          Run \`cargo nextest run --profile ci\` to see the failures, then fix the Rust source code and repeat \
+          until all tests pass. Also run \`cargo check --workspace\` after fixes to catch compilation regressions. \
+          You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
+          but do NOT modify the reth git source specifications (URL, branch, or rev) in any Cargo.toml — \
+          those must stay pointing at branch = \"main\".
+
+          IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
+          to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
+          what replaced the deprecated items."
+
+          attempt=0
+          while true; do
+            attempt=$((attempt + 1))
+            echo "::group::Amp attempt $attempt"
+            amp --dangerously-allow-all -x "$AMP_PROMPT"
+            echo "::endgroup::"
+
+            echo "::group::Verify cargo check"
             set +e
-            cargo nextest run --profile ci 2>&1 | tee /tmp/test-output.txt
-            test_exit=${PIPESTATUS[0]}
+            cargo check --workspace 2>&1
+            check_exit=$?
+            set -e
+            echo "::endgroup::"
+
+            if [ "$check_exit" -ne 0 ]; then
+              echo "Amp exited but cargo check failing, retrying..."
+              continue
+            fi
+
+            echo "::group::Verify tests"
+            set +e
+            cargo nextest run --profile ci 2>&1
+            test_exit=$?
             set -e
             echo "::endgroup::"
 
             if [ "$test_exit" -eq 0 ]; then
-              echo "Tests passed on attempt $i"
-              break
+              echo "Tests passed after attempt $attempt"
+              exit 0
             fi
 
-            if [ "$i" -eq "$MAX_ATTEMPTS" ]; then
-              echo "Tests still failing after $MAX_ATTEMPTS attempts"
-              tests_failed=true
-              break
-            fi
-
-            TEST_ERRORS=$(tail -500 /tmp/test-output.txt)
-            AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
-          on the paradigmxyz/reth main branch. The tests are now failing.
-
-          Please fix the Rust source code to resolve these test failures. You may also bump \
-          non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
-          but do NOT modify the reth git source specifications (URL, branch, or rev) in \
-          any Cargo.toml — those must stay pointing at branch = \"main\".
-
-          IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
-          to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
-          what replaced the deprecated items.
-
-          Here are the test failures (last 500 lines):
-
-          ${TEST_ERRORS}"
-
-            echo "::group::Amp fix attempt $i"
-            amp --dangerously-allow-all -x "$AMP_PROMPT"
-            echo "::endgroup::"
-
-            # Quick cargo check after Amp fixes to catch regressions
-            echo "::group::Post-fix cargo check"
-            if ! cargo check --workspace 2>&1; then
-              echo "::endgroup::"
-              echo "Warning: Amp fix introduced compilation errors, continuing to next attempt"
-              continue
-            fi
-            echo "::endgroup::"
+            echo "Amp exited but tests still failing, retrying..."
           done
-
-          echo "tests_failed=$tests_failed" >> "$GITHUB_OUTPUT"
 
       # ── second commit (source fixes) ───────────────────────────
       - name: Commit source fixes
@@ -242,11 +211,6 @@ jobs:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
         run: |
           DATE=$(date -u +%Y-%m-%d)
-          CHECK_FAILED="${{ steps.check-loop.outputs.check_failed }}"
-          TESTS_FAILED="${{ steps.test-loop.outputs.tests_failed }}"
-          MAX_CHECK="${{ inputs.max_check_attempts || '5' }}"
-          MAX_TEST="${{ inputs.max_test_attempts || '3' }}"
-
           TITLE="chore(deps): update reth from main ($DATE)"
 
           # Build PR body in a temp file to avoid shell quoting issues
@@ -254,21 +218,9 @@ jobs:
             echo "Automated nightly update of reth dependencies from \`paradigmxyz/reth\` main branch."
             echo ""
 
-            if [ "$CHECK_FAILED" = "true" ]; then
-              echo "> [!CAUTION]"
-              echo "> Cargo check failed after $MAX_CHECK attempts — manual intervention required."
-              echo ""
-            fi
-            if [ "$TESTS_FAILED" = "true" ]; then
-              echo "> [!CAUTION]"
-              echo "> Tests failed after $MAX_TEST attempts — manual intervention required."
-              echo ""
-            fi
-            if [ "$CHECK_FAILED" != "true" ] && [ "$TESTS_FAILED" != "true" ]; then
-              echo "> [!TIP]"
-              echo "> Cargo check and tests passed successfully."
-              echo ""
-            fi
+            echo "> [!TIP]"
+            echo "> Cargo check and tests passed successfully."
+            echo ""
 
             echo "> [!WARNING]"
             echo "> This PR may contain AI-generated source changes. Please review carefully."
