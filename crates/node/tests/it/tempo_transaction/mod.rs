@@ -103,7 +103,7 @@ async fn test_gas_estimation_snapshots() -> eyre::Result<()> {
         }
     }
 
-    let mut localnet = helpers::Localnet::new().await?;
+    let mut localnet = local::Localnet::new().await?;
     let results = localnet.run_estimate_gas_matrix().await?;
     let gas_estimation: indexmap::IndexMap<String, u64> = results.into_iter().collect();
 
