@@ -259,9 +259,6 @@ where
             .register(DKG_CHANNEL_IDENT, DKG_LIMIT)
             .await
             .unwrap();
-        // We create the subblocks channel even though it might not be used to make
-        // sure that we don't ban peers that activate subblocks and send messages
-        // through this subchannel.
         let subblocks = self
             .oracle
             .control(self.public_key.clone())
