@@ -117,12 +117,16 @@ jobs:
 
           for i in $(seq 1 "$MAX_ATTEMPTS"); do
             echo "::group::cargo check attempt $i/$MAX_ATTEMPTS"
-            if cargo check --workspace 2>&1 | tee /tmp/check-output.txt; then
-              echo "::endgroup::"
+            set +e
+            cargo check --workspace 2>&1 | tee /tmp/check-output.txt
+            check_exit=${PIPESTATUS[0]}
+            set -e
+            echo "::endgroup::"
+
+            if [ "$check_exit" -eq 0 ]; then
               echo "Cargo check passed on attempt $i"
               break
             fi
-            echo "::endgroup::"
 
             if [ "$i" -eq "$MAX_ATTEMPTS" ]; then
               echo "Cargo check still failing after $MAX_ATTEMPTS attempts"
@@ -163,12 +167,16 @@ jobs:
 
           for i in $(seq 1 "$MAX_ATTEMPTS"); do
             echo "::group::nextest attempt $i/$MAX_ATTEMPTS"
-            if cargo nextest run --profile ci 2>&1 | tee /tmp/test-output.txt; then
-              echo "::endgroup::"
+            set +e
+            cargo nextest run --profile ci 2>&1 | tee /tmp/test-output.txt
+            test_exit=${PIPESTATUS[0]}
+            set -e
+            echo "::endgroup::"
+
+            if [ "$test_exit" -eq 0 ]; then
               echo "Tests passed on attempt $i"
               break
             fi
-            echo "::endgroup::"
 
             if [ "$i" -eq "$MAX_ATTEMPTS" ]; then
               echo "Tests still failing after $MAX_ATTEMPTS attempts"
