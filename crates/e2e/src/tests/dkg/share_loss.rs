@@ -9,6 +9,27 @@ use futures::future::join_all;
 
 use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 
+/// Returns the maximum value across all metric lines matching `uid` and
+/// `metric_suffix`. Using max (rather than first-match) is important because
+/// old instance metrics persist in the registry after a node restart, and the
+/// new instance's counters appear as separate lines.
+fn metric_value(metrics: &str, uid: &str, metric_suffix: &str) -> Option<u64> {
+    metrics
+        .lines()
+        .filter(|line| line.starts_with(CONSENSUS_NODE_PREFIX))
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let metric = parts.next()?;
+            let value = parts.next()?;
+            if metric.contains(uid) && metric.ends_with(metric_suffix) {
+                value.parse::<u64>().ok()
+            } else {
+                None
+            }
+        })
+        .max()
+}
+
 #[test_traced("WARN")]
 fn validator_lost_share_but_gets_share_in_next_epoch() {
     let _ = tempo_eyre::install();
@@ -45,46 +66,100 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
 
             let metrics = context.encode();
 
-            'metrics: for line in metrics.lines() {
-                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                    continue 'metrics;
-                }
+            if let Some(epoch) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch") {
+                assert!(epoch < 2, "reached 2nd epoch without recovering new share");
+            }
 
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
+            // Ensures that node has no share.
+            if !node_forgot_share
+                && let Some(v) =
+                    metric_value(&metrics, &uid, "_epoch_manager_how_often_verifier_total")
+            {
+                node_forgot_share = v > 0;
+            }
 
-                if metrics.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
+            // Ensure that the node gets a share by becoming a signer.
+            if node_forgot_share
+                && let Some(v) =
+                    metric_value(&metrics, &uid, "_epoch_manager_how_often_signer_total")
+                && v > 0
+            {
+                break 'acquire_share;
+            }
+        }
+    });
+}
 
-                if metric.ends_with("_epoch_manager_latest_epoch") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert!(value < 2, "reached 2nd epoch without recovering new share");
-                }
+#[test_traced]
+fn validator_loses_consensus_state_becomes_observer() {
+    let _ = tempo_eyre::install();
 
-                // Ensures that node has no share.
-                if !node_forgot_share
-                    && metric.contains(&uid)
-                    && metric.ends_with("_epoch_manager_how_often_verifier_total")
-                {
-                    let value = value.parse::<u64>().unwrap();
-                    tracing::warn!(metric, value,);
-                    node_forgot_share = value > 0;
-                }
+    let seed = 0;
 
-                // Ensure that the node gets a share by becoming a signer.
-                if node_forgot_share
-                    && metric.contains(&uid)
-                    && metric.ends_with("_epoch_manager_how_often_signer_total")
-                {
-                    let value = value.parse::<u64>().unwrap();
-                    tracing::warn!(metric, value,);
-                    if value > 0 {
-                        break 'acquire_share;
-                    }
-                }
+    let cfg = Config::default().with_seed(seed);
+    let executor = Runner::from(cfg);
+
+    executor.start(|mut context| async move {
+        let setup = Setup::new().seed(seed);
+
+        let (mut validators, _execution_runtime) =
+            setup_validators(&mut context, setup.clone()).await;
+
+        let target_idx = validators.len() - 1;
+        let uid = validators[target_idx].uid().to_string();
+
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+
+        'setup: loop {
+            context.sleep(Duration::from_secs(1)).await;
+            let metrics = context.encode();
+
+            if let Some(v) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch")
+                && v > 0
+            {
+                break 'setup;
+            }
+        }
+
+        validators[target_idx].stop().await;
+
+        // Snapshot the signer counter before restart so we can detect increases
+        // from actual DKG recovery (old metrics persist in the registry).
+        let metrics = context.encode();
+        let signer_before =
+            metric_value(&metrics, &uid, "_epoch_manager_how_often_signer_total").unwrap_or(0);
+
+        let old_prefix = &validators[target_idx].consensus_config().partition_prefix;
+        let new_prefix = format!("{old_prefix}_wiped");
+        validators[target_idx]
+            .consensus_config_mut()
+            .partition_prefix = new_prefix;
+
+        validators[target_idx].start(&context).await;
+
+        // The node should finalize the current ceremony as an observer (hitting
+        // MissingPlayerDealing) and then recover a share in the next epoch.
+        let mut detected_missing_dealings = false;
+
+        'recover: loop {
+            context.sleep(Duration::from_secs(1)).await;
+            let metrics = context.encode();
+
+            // The node should report a missing dealed share at finalization.
+            if !detected_missing_dealings
+                && let Some(v) =
+                    metric_value(&metrics, &uid, "_dkg_manager_missing_player_dealings_total")
+                && v > 0
+            {
+                detected_missing_dealings = true;
+            }
+
+            // Once the node becomes a signer again, it has recovered.
+            if let Some(v) = metric_value(&metrics, &uid, "_epoch_manager_how_often_signer_total")
+                && v > signer_before
+            {
+                assert!(detected_missing_dealings);
+                break 'recover;
             }
         }
     });

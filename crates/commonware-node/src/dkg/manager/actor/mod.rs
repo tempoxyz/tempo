@@ -738,6 +738,7 @@ where
                             without consensus state? Finalizing the current round as an observer \
                             and will not have a share in the next epoch"
                         );
+                        self.metrics.missing_player_dealings.inc();
                         None
                     }
                     Err(error) => {
@@ -1134,6 +1135,7 @@ where
                                 without consensus state? Finalizing the current round as an observer \
                                 and will not have a share in the next epoch"
                             );
+                            self.metrics.missing_player_dealings.inc();
                             None
                         }
                         Err(error) => {
@@ -1331,6 +1333,8 @@ struct Metrics {
     dealings_read: Gauge,
     bad_dealings: Gauge,
 
+    missing_player_dealings: Counter,
+
     failures: Counter,
     successes: Counter,
 
@@ -1439,6 +1443,13 @@ impl Metrics {
             bad_dealings.clone(),
         );
 
+        let missing_player_dealings = Counter::default();
+        context.register(
+            "missing_player_dealings",
+            "the number of times a share secret was expected but not present",
+            missing_player_dealings.clone(),
+        );
+
         let rounds_skipped = Counter::default();
         context.register(
             "rounds_skipped",
@@ -1469,6 +1480,7 @@ impl Metrics {
             successes,
             rounds_skipped,
             attempts_to_read_validator_contract,
+            missing_player_dealings,
         }
     }
 
