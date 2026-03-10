@@ -391,9 +391,11 @@ where
         while let Some(pool_tx) = {
             let next_start = Instant::now();
             let next = best_txs.next();
-            self.metrics
-                .best_txs_next_duration_seconds
-                .record(next_start.elapsed());
+            if next.is_some() {
+                self.metrics
+                    .best_txs_next_duration_seconds
+                    .record(next_start.elapsed());
+            }
             next
         } {
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
