@@ -270,7 +270,7 @@ fn can_restart_after_joining_from_snapshot() {
         };
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
-        // The validator that will donate it its database to the replacement.
+        // The validator that will donate its database to the replacement.
         let mut donor = validators.pop().unwrap();
 
         let http_url = validators[0]
@@ -293,6 +293,8 @@ fn can_restart_after_joining_from_snapshot() {
         let rotate_height = Height::new(receipt.block_number.unwrap());
         tracing::debug!(
             block.height = %rotate_height,
+            old.uid = %donor.uid,
+            new.uid = %replacement.uid,
             "validatorConfigV2.rotateValidator executed",
         );
 
