@@ -777,6 +777,8 @@ impl Read for State {
             output: Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?,
             share: ReadExt::read(buf)?,
             players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?,
+            // Range from 0 to u16::MAX because after T2/V2 syncers are no longer
+            // stored in state.
             syncers: Read::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?,
             is_full_dkg: ReadExt::read(buf)?,
         })
