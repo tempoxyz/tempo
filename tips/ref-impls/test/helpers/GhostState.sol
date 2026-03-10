@@ -146,6 +146,13 @@ abstract contract GhostState {
     uint256 public ghost_expiringNonceMissingVBAttempted;
     uint256 public ghost_expiringNonceConcurrentExecuted;
 
+    // ============ Cross-Chain Replay Tracking ============
+
+    /// @dev Tracks attempts to execute a tx signed with wrong chain_id
+    uint256 public ghost_crossChainAttempted;
+    /// @dev Violation counter: cross-chain replay unexpectedly allowed
+    uint256 public ghost_crossChainAllowed;
+
     // ============ Fee-Payer Substitution Replay Tracking ============
 
     /// @dev Tracks attempts to replay with a different fee payer

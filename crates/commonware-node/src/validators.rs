@@ -1,11 +1,10 @@
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
-
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::types::Height;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
+use futures::StreamExt as _;
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::{
     evm::revm::{State, database::StateProviderDatabase},
@@ -14,15 +13,16 @@ use reth_ethereum::{
 use reth_node_builder::{Block as _, ConfigureEvm as _};
 use reth_provider::{
     BlockHashReader as _, BlockIdReader as _, BlockNumReader as _, BlockReader as _, BlockSource,
-    StateProviderFactory as _,
+    CanonStateSubscriptions as _, StateProviderFactory as _,
 };
+use std::{collections::HashMap, net::SocketAddr, time::Duration};
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
 };
 
-use tracing::{Level, info, instrument, warn};
+use tracing::{Level, debug, info, instrument, warn};
 
 pub(crate) enum ReadTarget {
     AtLeast { height: Height },
@@ -41,6 +41,8 @@ pub(crate) async fn read_validator_config_with_retry(
     const MIN_RETRY: Duration = Duration::from_secs(1);
     const MAX_RETRY: Duration = Duration::from_secs(30);
 
+    let mut canon_events = node.provider.canonical_state_stream();
+
     'read_contract: loop {
         total_attempts.inc();
         attempts += 1;
@@ -56,7 +58,7 @@ pub(crate) async fn read_validator_config_with_retry(
                 .unwrap_or(height),
         };
 
-        if let Ok(validators) = read_from_contract_at_height(attempts, node, target_height).await {
+        if let Ok(validators) = read_from_contract_at_height(attempts, node, target_height) {
             break 'read_contract validators;
         }
 
@@ -78,7 +80,18 @@ pub(crate) async fn read_validator_config_with_retry(
                 "reading validator config from contract failed; will retry",
             );
         });
-        context.sleep(retry_after).await;
+        tokio::select! {
+            _ = canon_events.next() => {
+                tracing::info_span!("read_validator_config_with_retry").in_scope(|| {
+                    debug!("woke from canonical state notification");
+                });
+            }
+            _ = context.sleep(retry_after) => {
+                tracing::info_span!("read_validator_config_with_retry").in_scope(|| {
+                    debug!("woke from retry timeout");
+                });
+            }
+        }
     }
 }
 
@@ -155,7 +168,7 @@ pub(crate) fn read_validator_config_at_height<T>(
     ),
     err
 )]
-pub(crate) async fn read_from_contract_at_height(
+pub(crate) fn read_from_contract_at_height(
     _attempt: u32,
     node: &TempoFullNode,
     height: Height,
@@ -168,11 +181,11 @@ pub(crate) async fn read_from_contract_at_height(
 
     info!(?raw_validators, "read validators from contract",);
 
-    Ok(decode_from_contract(raw_validators).await)
+    Ok(decode_from_contract(raw_validators))
 }
 
 #[instrument(skip_all, fields(validators_to_decode = contract_vals.len()))]
-async fn decode_from_contract(
+fn decode_from_contract(
     contract_vals: Vec<IValidatorConfig::Validator>,
 ) -> ordered::Map<PublicKey, DecodedValidator> {
     let mut decoded = HashMap::new();

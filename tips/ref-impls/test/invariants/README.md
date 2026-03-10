@@ -332,6 +332,7 @@ These verify correct behavior when the specific function is called:
 - **TEMPO-REG14**: Non-existent policies - policy IDs >= `policyIdCounter` return false for `policyExists()`.
 - **TEMPO-REG17**: Special policy immutability - policies 0 and 1 cannot be modified via `modifyPolicyWhitelist` or `modifyPolicyBlacklist`.
 - **TEMPO-REG18**: Special policy admin immutability - the admin of policies 0 and 1 cannot be changed (attempts revert with `Unauthorized` since admin is `address(0)`).
+- **TEMPO-REG20**: Non-existent policy reverts - `isAuthorized` reverts with `PolicyNotFound` for policy IDs that have never been created.
 
 
 ## ValidatorConfig

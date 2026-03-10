@@ -4,8 +4,11 @@ pub mod roles;
 
 use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 pub use tempo_contracts::precompiles::{
-    IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
+    IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, USD_CURRENCY,
 };
+
+// Re-export the generated slots module for external access to storage slot constants
+pub use slots as tip20_slots;
 
 use crate::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
@@ -31,9 +34,6 @@ pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 /// Decimal precision for TIP-20 tokens
 const TIP20_DECIMALS: u8 = 6;
 
-/// USD currency string constant
-pub const USD_CURRENCY: &str = "USD";
-
 /// TIP20 token address prefix (12 bytes)
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
 const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
@@ -54,6 +54,18 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
     Ok(())
 }
 
+/// TIP-20 token contract — the native token standard on Tempo.
+///
+/// Implements ERC-20-like functionality (balances, allowances, transfers) with additional
+/// features: role-based access control, pausability, supply caps, transfer policies ([TIP-403]),
+/// and opt-in staking rewards.
+///
+/// [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
+///
+/// Each token lives at a deterministic address with the `0x20C0` prefix.
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract]
 pub struct TIP20Token {
     // RolesAuth
@@ -99,9 +111,13 @@ pub static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
 /// EIP-712 version hash: keccak256("1")
 pub static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
 
+/// Role hash for pausing token transfers.
 pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
+/// Role hash for unpausing token transfers.
 pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
+/// Role hash for minting new tokens.
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
+/// Role hash that prevents an account from burning tokens.
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
 
 impl TIP20Token {
@@ -779,7 +795,9 @@ impl TIP20Token {
     }
 
     /// Checks if the transfer is authorized.
-    /// TIP-1015: For T2+, uses directional sender/recipient checks.
+    /// [TIP-1015]: For T2+, uses directional sender/recipient checks.
+    ///
+    /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
         let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
@@ -903,7 +921,7 @@ impl TIP20Token {
             return Ok(());
         }
 
-        if self.storage.spec().is_t2() {
+        if self.storage.spec().is_t1c() {
             AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
         }
 
@@ -950,11 +968,15 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         PATH_USD_ADDRESS,
+        account_keychain::{
+            AccountKeychain, SignatureType, TokenLimit, authorizeKeyCall, getRemainingLimitCall,
+        },
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, setup_storage},
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
     fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {
@@ -1262,6 +1284,138 @@ pub(crate) mod tests {
                 })
                 .into_log_data()
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx_refunds_spending_limit() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+        let admin = Address::random();
+        let user = Address::random();
+        let access_key = Address::random();
+        let max_fee = U256::from(1000);
+        let refund_amount = U256::from(300);
+        let gas_used = U256::from(100);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, max_fee)
+                .apply()?;
+
+            let token_address = token.address;
+            let spending_limit = U256::from(2000);
+
+            // Set up keychain: authorize an access key with a spending limit
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            keychain.authorize_key(
+                user,
+                authorizeKeyCall {
+                    keyId: access_key,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: token_address,
+                        amount: spending_limit,
+                    }],
+                },
+            )?;
+
+            // Simulate pre-tx: access key deducts max fee from spending limit
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(user)?;
+            keychain.authorize_transfer(user, token_address, max_fee)?;
+
+            let remaining_after_deduction =
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account: user,
+                    keyId: access_key,
+                    token: token_address,
+                })?;
+            assert_eq!(remaining_after_deduction, spending_limit - max_fee);
+
+            // Call transfer_fee_post_tx — should refund the spending limit via is_t1c() gate
+            token.transfer_fee_post_tx(user, refund_amount, gas_used)?;
+
+            let remaining_after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: user,
+                keyId: access_key,
+                token: token_address,
+            })?;
+            assert_eq!(
+                remaining_after_refund,
+                spending_limit - max_fee + refund_amount,
+                "spending limit should be restored by refund amount"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx_pre_t1c() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
+        let admin = Address::random();
+        let user = Address::random();
+        let access_key = Address::random();
+        let max_fee = U256::from(1000);
+        let refund_amount = U256::from(300);
+        let gas_used = U256::from(100);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, max_fee)
+                .apply()?;
+
+            let token_address = token.address;
+            let spending_limit = U256::from(2000);
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            keychain.authorize_key(
+                user,
+                authorizeKeyCall {
+                    keyId: access_key,
+                    signatureType: SignatureType::Secp256k1,
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: token_address,
+                        amount: spending_limit,
+                    }],
+                },
+            )?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(user)?;
+            keychain.authorize_transfer(user, token_address, max_fee)?;
+
+            let remaining_after_deduction =
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account: user,
+                    keyId: access_key,
+                    token: token_address,
+                })?;
+            assert_eq!(remaining_after_deduction, spending_limit - max_fee);
+
+            token.transfer_fee_post_tx(user, refund_amount, gas_used)?;
+
+            // spending limit unchanged pre-t1c
+            let remaining_after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: user,
+                keyId: access_key,
+                token: token_address,
+            })?;
+            assert_eq!(remaining_after_refund, spending_limit - max_fee);
 
             Ok(())
         })

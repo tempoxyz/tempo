@@ -3,6 +3,21 @@ fail-fast = false
 retries = 2
 test-threads = "num-cpus"
 
+# Heavy e2e tests that flake under resource contention — run exclusively.
+# threads-required = "num-test-threads" reserves all slots, so no other test runs concurrently.
+# Scheduled last to avoid blocking the rest of the suite.
+[[profile.ci.overrides]]
+filter = """
+  package(tempo-e2e) & (
+    test(can_restart_after_joining_from_snapshot) |
+    test(validator_can_fast_sync_after_full_dkg) |
+    test(subblocks_are_included)
+  )
+"""
+failure-output = "immediate"
+threads-required = "num-test-threads"
+priority = -100
+
 # tempo-e2e tests spawn multiple execution nodes, each creating 4 rayon thread
 # pools (cpu, rpc, trie, storage) via reth's Runtime. Even with test_with_handle()
 # (2 threads per pool), running many in parallel causes OOM on CI.
@@ -20,6 +35,17 @@ filter = "package(tempo-node) & binary(it)"
 threads-required = 4
 
 # Local development defaults (same constraints apply)
+[[profile.default.overrides]]
+filter = """
+  package(tempo-e2e) & (
+    test(can_restart_after_joining_from_snapshot) |
+    test(validator_can_fast_sync_after_full_dkg) |
+    test(subblocks_are_included)
+  )
+"""
+threads-required = "num-test-threads"
+priority = -100
+
 [[profile.default.overrides]]
 filter = "package(tempo-e2e)"
 threads-required = 8

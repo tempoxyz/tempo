@@ -1,7 +1,7 @@
 use crate::TempoEvmConfig;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::Address;
-use rayon::prelude::*;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
     FromRecoveredTx, RecoveredTx, ToTxEnv, block::ExecutableTxParts,
@@ -42,8 +42,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         let block = payload.block.clone();
         let transactions = (0..payload.block.body().transactions.len())
             .into_par_iter()
-            .map(move |i| (block.clone(), i))
-            .collect::<Vec<_>>();
+            .map(move |i| (block.clone(), i));
 
         Ok((transactions, RecoveredInBlock::new))
     }
@@ -100,8 +99,9 @@ mod tests {
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
     use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
+    use rayon::iter::ParallelIterator;
     use reth_chainspec::EthChainSpec;
-    use reth_evm::{ConfigureEngineEvm, ConvertTx, ExecutableTxTuple};
+    use reth_evm::ConfigureEngineEvm;
     use tempo_chainspec::{TempoChainSpec, spec::ANDANTINO};
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoHeader, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -184,7 +184,7 @@ mod tests {
         assert!(result.is_ok());
 
         let tuple = result.unwrap();
-        let (iter, recover_fn): (_, _) = tuple.into_parts();
+        let (iter, recover_fn): (_, _) = tuple.into();
         let items: Vec<_> = iter.into_par_iter().collect();
 
         // Should have 3 transactions
@@ -192,7 +192,7 @@ mod tests {
 
         // Test the recovery function works on all items
         for item in items {
-            let recovered = recover_fn.convert(item);
+            let recovered = recover_fn(item);
             assert!(recovered.is_ok());
         }
     }
