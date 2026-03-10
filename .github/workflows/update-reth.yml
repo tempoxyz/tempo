@@ -1,0 +1,288 @@
+# Nightly workflow to update reth dependencies from upstream main branch.
+#
+# Checks out the `reth/main` branch (which has reth deps pointing at
+# `branch = "main"`), runs `cargo update` to pull latest revisions,
+# and uses Sourcegraph Amp to auto-fix any compilation / test breakage.
+# Creates or updates a PR targeting `reth/main`.
+
+name: Update reth deps
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      max_check_attempts:
+        description: "Max cargo-check + Amp fix iterations"
+        required: false
+        default: "5"
+        type: string
+      max_test_attempts:
+        description: "Max nextest + Amp fix iterations"
+        required: false
+        default: "3"
+        type: string
+
+concurrency:
+  group: update-reth
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTC_WRAPPER: "sccache"
+  TEMPO_MAINNET_RPC_URL: ${{ secrets.TEMPO_MAINNET_RPC_URL }}
+  TEMPO_TESTNET_RPC_URL: ${{ secrets.TEMPO_TESTNET_RPC_URL }}
+  TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL }}
+
+jobs:
+  update:
+    name: Update reth dependencies
+    runs-on: depot-ubuntu-latest-32
+    timeout-minutes: 120
+    steps:
+      # ── checkout ───────────────────────────────────────────────
+      - uses: actions/checkout@v6
+        with:
+          ref: reth/main
+          fetch-depth: 0
+          token: ${{ secrets.DEREK_PAT }}
+
+      # ── toolchain (matches test.yml) ───────────────────────────
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: taiki-e/install-action@3f67faa728964808f52294a9cd15561b15550b28 # v2.67.19
+        with:
+          tool: nextest@0.9.124
+
+      # ── amp CLI ────────────────────────────────────────────────
+      - name: Install Amp CLI
+        run: npm install -g @sourcegraph/amp
+
+      # ── git identity ───────────────────────────────────────────
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # ── PR branch ──────────────────────────────────────────────
+      - name: Create PR branch
+        run: git checkout -B reth/main/update-deps
+
+      # ── cargo update ───────────────────────────────────────────
+      - name: Update reth crates in lockfile
+        id: update
+        run: |
+          LOCK_BEFORE=$(sha256sum Cargo.lock | cut -d' ' -f1)
+          cargo update -p reth-engine-tree
+          LOCK_AFTER=$(sha256sum Cargo.lock | cut -d' ' -f1)
+
+          if [ "$LOCK_BEFORE" = "$LOCK_AFTER" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "No reth dependency changes detected — nothing to do."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            # Capture lockfile diff for the PR body (first 200 lines)
+            git diff Cargo.lock | head -200 > /tmp/lockfile-diff.txt
+          fi
+
+      # ── early exit if no changes ───────────────────────────────
+      - name: Exit early if no updates
+        if: steps.update.outputs.skip == 'true'
+        run: echo "Lockfile unchanged — skipping remaining steps."
+
+      # ── first commit (lockfile only) ───────────────────────────
+      - name: Commit lockfile update
+        if: steps.update.outputs.skip != 'true'
+        run: |
+          git add Cargo.lock
+          git commit -m "chore(deps): update reth dependencies from main ($(date -u +%Y-%m-%d))"
+
+      # ── cargo check + Amp fix loop ────────────────────────────
+      - name: Fix compilation errors
+        if: steps.update.outputs.skip != 'true'
+        id: check-loop
+        env:
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+          AMP_SERVER_URL: ${{ vars.AMP_SERVER_URL }}
+        run: |
+          MAX_ATTEMPTS=${{ inputs.max_check_attempts || '5' }}
+          check_failed=false
+
+          for i in $(seq 1 "$MAX_ATTEMPTS"); do
+            echo "::group::cargo check attempt $i/$MAX_ATTEMPTS"
+            if cargo check --workspace 2>&1 | tee /tmp/check-output.txt; then
+              echo "::endgroup::"
+              echo "Cargo check passed on attempt $i"
+              break
+            fi
+            echo "::endgroup::"
+
+            if [ "$i" -eq "$MAX_ATTEMPTS" ]; then
+              echo "Cargo check still failing after $MAX_ATTEMPTS attempts"
+              check_failed=true
+              break
+            fi
+
+            CHECK_ERRORS=$(tail -500 /tmp/check-output.txt)
+            AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
+          on the paradigmxyz/reth main branch. The cargo check is now failing with compilation errors.
+
+          Please fix the Rust source code to resolve these errors. You may also bump \
+          non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
+          but do NOT modify the reth git source specifications (URL, branch, or rev) in \
+          any Cargo.toml — those must stay pointing at branch = \"main\".
+
+          Here are the compilation errors:
+
+          ${CHECK_ERRORS}"
+
+            echo "::group::Amp fix attempt $i"
+            amp --dangerously-allow-all -x "$AMP_PROMPT"
+            echo "::endgroup::"
+          done
+
+          echo "check_failed=$check_failed" >> "$GITHUB_OUTPUT"
+
+      # ── test + Amp fix loop ────────────────────────────────────
+      - name: Fix test failures
+        if: steps.update.outputs.skip != 'true' && steps.check-loop.outputs.check_failed != 'true'
+        id: test-loop
+        env:
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+          AMP_SERVER_URL: ${{ vars.AMP_SERVER_URL }}
+        run: |
+          MAX_ATTEMPTS=${{ inputs.max_test_attempts || '3' }}
+          tests_failed=false
+
+          for i in $(seq 1 "$MAX_ATTEMPTS"); do
+            echo "::group::nextest attempt $i/$MAX_ATTEMPTS"
+            if cargo nextest run --profile ci 2>&1 | tee /tmp/test-output.txt; then
+              echo "::endgroup::"
+              echo "Tests passed on attempt $i"
+              break
+            fi
+            echo "::endgroup::"
+
+            if [ "$i" -eq "$MAX_ATTEMPTS" ]; then
+              echo "Tests still failing after $MAX_ATTEMPTS attempts"
+              tests_failed=true
+              break
+            fi
+
+            TEST_ERRORS=$(tail -500 /tmp/test-output.txt)
+            AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
+          on the paradigmxyz/reth main branch. The tests are now failing.
+
+          Please fix the Rust source code to resolve these test failures. You may also bump \
+          non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
+          but do NOT modify the reth git source specifications (URL, branch, or rev) in \
+          any Cargo.toml — those must stay pointing at branch = \"main\".
+
+          Here are the test failures (last 500 lines):
+
+          ${TEST_ERRORS}"
+
+            echo "::group::Amp fix attempt $i"
+            amp --dangerously-allow-all -x "$AMP_PROMPT"
+            echo "::endgroup::"
+
+            # Quick cargo check after Amp fixes to catch regressions
+            echo "::group::Post-fix cargo check"
+            if ! cargo check --workspace 2>&1; then
+              echo "::endgroup::"
+              echo "Warning: Amp fix introduced compilation errors, continuing to next attempt"
+              continue
+            fi
+            echo "::endgroup::"
+          done
+
+          echo "tests_failed=$tests_failed" >> "$GITHUB_OUTPUT"
+
+      # ── second commit (source fixes) ───────────────────────────
+      - name: Commit source fixes
+        if: steps.update.outputs.skip != 'true'
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "fix: resolve breaking changes from reth update ($(date -u +%Y-%m-%d))"
+          else
+            echo "No source changes to commit."
+          fi
+
+      # ── push ───────────────────────────────────────────────────
+      - name: Push branch
+        if: steps.update.outputs.skip != 'true'
+        run: git push --force-with-lease origin reth/main/update-deps
+
+      # ── create / update PR ─────────────────────────────────────
+      - name: Create or update PR
+        if: steps.update.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          CHECK_FAILED="${{ steps.check-loop.outputs.check_failed }}"
+          TESTS_FAILED="${{ steps.test-loop.outputs.tests_failed }}"
+          MAX_CHECK="${{ inputs.max_check_attempts || '5' }}"
+          MAX_TEST="${{ inputs.max_test_attempts || '3' }}"
+
+          TITLE="chore(deps): update reth from main ($DATE)"
+
+          # Build PR body in a temp file to avoid shell quoting issues
+          {
+            echo "Automated nightly update of reth dependencies from \`paradigmxyz/reth\` main branch."
+            echo ""
+
+            if [ "$CHECK_FAILED" = "true" ]; then
+              echo "> [!CAUTION]"
+              echo "> Cargo check failed after $MAX_CHECK attempts — manual intervention required."
+              echo ""
+            fi
+            if [ "$TESTS_FAILED" = "true" ]; then
+              echo "> [!CAUTION]"
+              echo "> Tests failed after $MAX_TEST attempts — manual intervention required."
+              echo ""
+            fi
+            if [ "$CHECK_FAILED" != "true" ] && [ "$TESTS_FAILED" != "true" ]; then
+              echo "> [!TIP]"
+              echo "> Cargo check and tests passed successfully."
+              echo ""
+            fi
+
+            echo "> [!WARNING]"
+            echo "> This PR may contain AI-generated source changes. Please review carefully."
+            echo ""
+
+            if [ -f /tmp/lockfile-diff.txt ]; then
+              echo "<details>"
+              echo "<summary>Lockfile diff (first 200 lines)</summary>"
+              echo ""
+              echo '```diff'
+              cat /tmp/lockfile-diff.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            fi
+          } > /tmp/pr-body.txt
+
+          # Check for existing PR
+          EXISTING_PR=$(gh pr list --head reth/main/update-deps --base reth/main --state open --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Updating existing PR #$EXISTING_PR"
+            gh pr edit "$EXISTING_PR" --title "$TITLE" --body-file /tmp/pr-body.txt
+          else
+            echo "Creating new PR"
+            gh pr create \
+              --base reth/main \
+              --head reth/main/update-deps \
+              --title "$TITLE" \
+              --body-file /tmp/pr-body.txt \
+              --label A-dependencies
+          fi
