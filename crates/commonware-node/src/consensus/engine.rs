@@ -624,6 +624,8 @@ where
 
         if let Some(subblocks) = self.subblocks {
             tasks.push(self.context.spawn(|_| subblocks.run(subblocks_channel)));
+        } else {
+            drop(subblocks_channel);
         }
 
         try_join_all(tasks)
