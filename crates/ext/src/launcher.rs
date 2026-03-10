@@ -565,7 +565,7 @@ impl Launcher {
             if let Ok(Some(new_version)) =
                 Installer::check_latest_version(&source, installed_version)
             {
-                tracing::info!(
+                eprintln!(
                     "tempo-{extension} {new_version} available (pinned to {}; run `tempo update {extension}` to upgrade)",
                     installed_version.unwrap_or("unknown")
                 );
@@ -575,7 +575,7 @@ impl Launcher {
             match installer.install_if_changed(extension, &source, installed_version) {
                 Ok(Some(result)) => {
                     if installed_version.is_some_and(|v| !v.is_empty()) {
-                        tracing::info!("updated tempo-{extension} to {}", result.version);
+                        eprintln!("updated tempo-{extension} to {}", result.version);
                     }
                     registry.record_check(extension, &result.version, false, &result.description);
                 }
