@@ -73,7 +73,7 @@ jobs:
 
       # ── PR branch ──────────────────────────────────────────────
       - name: Create PR branch
-        run: git checkout -B reth/main/update-deps
+        run: git checkout -B reth-main-update-deps
 
       # ── cargo update ───────────────────────────────────────────
       - name: Update reth crates in lockfile
@@ -219,7 +219,7 @@ jobs:
       # ── push ───────────────────────────────────────────────────
       - name: Push branch
         if: steps.update.outputs.skip != 'true'
-        run: git push --force-with-lease origin reth/main/update-deps
+        run: git push --force-with-lease origin reth-main-update-deps
 
       # ── create / update PR ─────────────────────────────────────
       - name: Create or update PR
@@ -273,7 +273,7 @@ jobs:
           } > /tmp/pr-body.txt
 
           # Check for existing PR
-          EXISTING_PR=$(gh pr list --head reth/main/update-deps --base reth/main --state open --json number --jq '.[0].number // empty')
+          EXISTING_PR=$(gh pr list --head reth-main-update-deps --base reth/main --state open --json number --jq '.[0].number // empty')
 
           if [ -n "$EXISTING_PR" ]; then
             echo "Updating existing PR #$EXISTING_PR"
@@ -282,7 +282,7 @@ jobs:
             echo "Creating new PR"
             gh pr create \
               --base reth/main \
-              --head reth/main/update-deps \
+              --head reth-main-update-deps \
               --title "$TITLE" \
               --body-file /tmp/pr-body.txt \
               --label A-dependencies
