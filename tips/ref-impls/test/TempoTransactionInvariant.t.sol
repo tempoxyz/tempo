@@ -58,7 +58,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](72);
+        bytes4[] memory selectors = new bytes4[](73);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -150,6 +150,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         selectors[69] = this.handler_keySpendingRefundRevokedKey.selector;
         // Cross-account key auth replay handler
         selectors[71] = this.handler_keyAuthCrossAccountReplay.selector;
+        // Cross-chain replay handler
+        selectors[72] = this.handler_crossChainReplay.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         // Initialize previous nonce tracking for secp256k1 actors
@@ -235,6 +237,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             0,
             "Cross-account key auth replay unexpectedly allowed"
         );
+
+        // Cross-chain replay
+        assertEq(ghost_crossChainAllowed, 0, "Cross-chain replay unexpectedly allowed");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -4652,6 +4657,79 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         try vmExec.executeTransaction(signedTx) {
             // VIOLATION: Key authorized for A was accepted for B!
             ghost_keyAuthCrossAccountAllowed++;
+        } catch {
+            _handleExpectedReject(_noop);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    CROSS-CHAIN REPLAY HANDLER
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Handler: Sign a Tempo tx with wrong chain_id and verify rejection
+    /// @dev Tests that validate_tempo_tx() enforces chain_id == block.chainid.
+    ///      A tx signed for a different chain must never execute on this chain.
+    function handler_crossChainReplay(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount,
+        uint256 nonceKeySeed,
+        uint256 wrongChainSeed
+    )
+        external
+    {
+        uint256 actorIdx = actorSeed % actors.length;
+        address actor = actors[actorIdx];
+
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (actorIdx == recipientIdx) recipientIdx = (recipientIdx + 1) % actors.length;
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+        if (!_checkBalance(actor, amount)) return;
+
+        uint64 nonceKey = uint64(bound(nonceKeySeed, 1, 100));
+        uint64 currentNonce = uint64(ghost_2dNonce[actor][nonceKey]);
+
+        // Pick a chain_id that differs from block.chainid
+        uint64 currentChainId = uint64(block.chainid);
+        uint64 wrongChainId = uint64(bound(wrongChainSeed, 1, type(uint64).max - 1));
+        if (wrongChainId >= currentChainId) wrongChainId++;
+
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken),
+            value: 0,
+            data: abi.encodeCall(ITIP20.transfer, (recipient, amount))
+        });
+
+        uint64 gasLimit =
+            TxBuilder.callGas(calls[0].data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
+
+        // Build tx with wrong chain_id
+        TempoTransaction memory tx_ = TempoTransactionLib.create().withChainId(wrongChainId)
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE).withGasLimit(gasLimit).withCalls(calls)
+            .withNonceKey(nonceKey).withNonce(currentNonce);
+
+        bytes memory signedTx = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.Secp256k1,
+                privateKey: actorKeys[actorIdx],
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: address(0)
+            })
+        );
+
+        vm.coinbase(validator);
+
+        ghost_crossChainAttempted++;
+        try vmExec.executeTransaction(signedTx) {
+            // VIOLATION: Tx with wrong chain_id was accepted!
+            ghost_crossChainAllowed++;
         } catch {
             _handleExpectedReject(_noop);
         }

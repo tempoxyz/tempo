@@ -153,6 +153,13 @@ abstract contract GhostState {
     /// @dev Violation counter: cross-account key auth replay unexpectedly allowed
     uint256 public ghost_keyAuthCrossAccountAllowed;
 
+    // ============ Cross-Chain Replay Tracking ============
+
+    /// @dev Tracks attempts to execute a tx signed with wrong chain_id
+    uint256 public ghost_crossChainAttempted;
+    /// @dev Violation counter: cross-chain replay unexpectedly allowed
+    uint256 public ghost_crossChainAllowed;
+
     // ============ Update Functions ============
 
     function _updateProtocolNonce(address account) internal {

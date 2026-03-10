@@ -512,7 +512,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
         // Check if swapper has active orders - if so, skip TEMPO-DEX6 balance checks
         // because self-trade makes the accounting complex (maker proceeds returned to swapper)
-        bool swapperHasOrders = _placedOrders[swapper].length > 0;
+        bool swapperHasOrders = _hasActiveOrders(swapper);
 
         // Capture total balances (external + internal) before swap for TEMPO-DEX6
         SwapBalanceSnapshot memory before = SwapBalanceSnapshot({
@@ -825,6 +825,18 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @notice Checks whether an actor has any currently active (not filled/cancelled) orders
+    /// @dev Scans tracked order IDs (including flip-generated IDs captured from swap logs)
+    function _hasActiveOrders(address actor) internal view returns (bool) {
+        uint128[] storage ids = _placedOrders[actor];
+        for (uint256 i = ids.length; i > 0; i--) {
+            try exchange.getOrder(ids[i - 1]) returns (IStablecoinDEX.Order memory) {
+                return true;
+            } catch { }
+        }
+        return false;
+    }
+
     /// @notice Computes expected escrowed amounts by iterating through all orders
     /// @dev Iterates all order IDs to catch flip-created orders not in _placedOrders
     /// @return pathUsdEscrowed Total pathUSD escrowed in active bid orders
@@ -895,7 +907,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         ) returns (
             uint128 amountOut
         ) {
-            uint64 ordersFilled = _countOrderFilledEvents();
+            uint64 ordersFilled = _processSwapLogs();
             // For multi-hop swaps, each hop can add dust from rounding (not just per order)
             uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
             _maxDust += ordersFilled + hops;
@@ -956,7 +968,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         ) returns (
             uint128 amountIn
         ) {
-            uint64 ordersFilled = _countOrderFilledEvents();
+            uint64 ordersFilled = _processSwapLogs();
             // For multi-hop swaps, each hop can add dust from rounding (not just per order)
             uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
             _maxDust += ordersFilled + hops;
@@ -1140,15 +1152,21 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _nextOrderId += 1;
     }
 
-    /// @notice Counts the number of OrderFilled events in the recorded logs
+    /// @notice Processes swap logs: counts fills and tracks any newly created orders
     /// @dev Must be called after vm.recordLogs() and swap execution
-    /// @return count The number of OrderFilled events emitted
-    function _countOrderFilledEvents() internal returns (uint64 count) {
+    /// @return count The number of OrderFilled events emitted by the exchange
+    function _processSwapLogs() internal returns (uint64 count) {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bytes32 orderFilledSelector = IStablecoinDEX.OrderFilled.selector;
+        bytes32 orderPlacedSelector = IStablecoinDEX.OrderPlaced.selector;
         for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].emitter != address(exchange) || logs[i].topics.length == 0) continue;
             if (logs[i].topics[0] == orderFilledSelector) {
                 count++;
+            } else if (logs[i].topics[0] == orderPlacedSelector && logs[i].topics.length >= 3) {
+                uint128 orderId = uint128(uint256(logs[i].topics[1]));
+                address maker = address(uint160(uint256(logs[i].topics[2])));
+                _placedOrders[maker].push(orderId);
             }
         }
     }

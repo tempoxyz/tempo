@@ -189,7 +189,7 @@ where
                         ..=self.last_consensus_finalized_height.get(),
                 )
                 .then(move |height| {
-                    let mut marshal = marshal.clone();
+                    let marshal = marshal.clone();
                     async move { (height, marshal.get_block(Height::new(height)).await) }
                 })
                 .fuse()

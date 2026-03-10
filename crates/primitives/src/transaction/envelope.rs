@@ -604,7 +604,7 @@ mod codec {
     }
 
     impl reth_db_api::table::Compress for TempoTxEnvelope {
-        type Compressed = Vec<u8>;
+        type Compressed = alloc::vec::Vec<u8>;
 
         fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
             let _ = Compact::to_compact(self, buf);

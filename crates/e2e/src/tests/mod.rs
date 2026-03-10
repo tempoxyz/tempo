@@ -44,9 +44,11 @@ fn spawning_execution_node_works() {
         };
         let db_path = handle.nodes_dir().join("node-1").join("db");
         std::fs::create_dir_all(&db_path).expect("failed to create database directory");
-        let database = reth_db::init_db(db_path, reth_db::mdbx::DatabaseArguments::default())
-            .expect("failed to init database")
-            .with_metrics();
+        let database = std::sync::Arc::new(
+            reth_db::init_db(db_path, reth_db::mdbx::DatabaseArguments::default())
+                .expect("failed to init database")
+                .with_metrics(),
+        );
         let node = handle
             .spawn_node("node-1", config, database)
             .await
