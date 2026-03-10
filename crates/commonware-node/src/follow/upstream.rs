@@ -8,7 +8,6 @@
 
 use std::{sync::Arc, time::Duration};
 
-use alloy_network::primitives::HeaderResponse as _;
 use alloy_rpc_types_eth::Block as AlloyRpcBlock;
 use eyre::WrapErr as _;
 use futures::stream::{BoxStream, StreamExt as _};
@@ -17,8 +16,6 @@ use jsonrpsee::{
     rpc_params,
     ws_client::{WsClient, WsClientBuilder},
 };
-use reth_node_core::primitives::SealedBlock;
-use reth_primitives_traits::Block as _;
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_alloy::rpc::TempoHeaderResponse;
 use tempo_node::{
@@ -29,7 +26,7 @@ use tempo_primitives::TempoTxEnvelope;
 use tokio::sync::Mutex;
 use tracing::{debug, warn, warn_span};
 
-use crate::{consensus::block::Block, feed::FeedStateHandle};
+use crate::feed::FeedStateHandle;
 
 type TempoRpcBlock =
     AlloyRpcBlock<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeaderResponse>;
@@ -55,12 +52,12 @@ pub trait UpstreamNode: Send + Sync + 'static {
     fn get_block_by_number(
         &self,
         height: u64,
-    ) -> impl std::future::Future<Output = eyre::Result<Option<Block>>> + Send;
+    ) -> impl std::future::Future<Output = eyre::Result<Option<tempo_primitives::Block>>> + Send;
 
     fn get_block_by_hash(
         &self,
         hash: alloy_primitives::B256,
-    ) -> impl std::future::Future<Output = eyre::Result<Option<Block>>> + Send;
+    ) -> impl std::future::Future<Output = eyre::Result<Option<tempo_primitives::Block>>> + Send;
 }
 
 /// WebSocket-based upstream node for production use.
@@ -120,23 +117,13 @@ impl WsUpstream {
         }
     }
 
-    fn convert_rpc_block(rpc_block: TempoRpcBlock, height_label: &str) -> eyre::Result<Block> {
-        let block_hash = rpc_block.header.hash();
-        let consensus_block = rpc_block
+    fn convert_rpc_block(rpc_block: TempoRpcBlock) -> tempo_primitives::Block {
+        rpc_block
             .into_consensus_block()
             .map_header(|h| h.inner.inner)
             .map_transactions(|tx: alloy_rpc_types_eth::Transaction<TempoTxEnvelope>| {
                 tx.into_inner()
-            });
-
-        let sealed = SealedBlock::seal_slow(consensus_block);
-        eyre::ensure!(
-            sealed.hash() == block_hash,
-            "block hash mismatch at {height_label}: expected {block_hash}, got {}",
-            sealed.hash()
-        );
-
-        Ok(Block::from_execution_block(sealed))
+            })
     }
 }
 
@@ -152,7 +139,7 @@ impl UpstreamNode for WsUpstream {
         client.get_finalization(query).await.wrap_err("rpc error")
     }
 
-    async fn get_block_by_number(&self, height: u64) -> eyre::Result<Option<Block>> {
+    async fn get_block_by_number(&self, height: u64) -> eyre::Result<Option<tempo_primitives::Block>> {
         let client = self.client().await?;
         let rpc_block: Option<TempoRpcBlock> = client
             .request(
@@ -162,25 +149,17 @@ impl UpstreamNode for WsUpstream {
             .await
             .wrap_err("rpc error")?;
 
-        let Some(rpc_block) = rpc_block else {
-            return Ok(None);
-        };
-
-        Self::convert_rpc_block(rpc_block, &format!("height {height}")).map(Some)
+        Ok(rpc_block.map(Self::convert_rpc_block))
     }
 
-    async fn get_block_by_hash(&self, hash: alloy_primitives::B256) -> eyre::Result<Option<Block>> {
+    async fn get_block_by_hash(&self, hash: alloy_primitives::B256) -> eyre::Result<Option<tempo_primitives::Block>> {
         let client = self.client().await?;
         let rpc_block: Option<TempoRpcBlock> = client
             .request("eth_getBlockByHash", rpc_params![hash, true])
             .await
             .wrap_err("rpc error")?;
 
-        let Some(rpc_block) = rpc_block else {
-            return Ok(None);
-        };
-
-        Self::convert_rpc_block(rpc_block, &format!("hash {hash}")).map(Some)
+        Ok(rpc_block.map(Self::convert_rpc_block))
     }
 }
 
@@ -228,25 +207,17 @@ impl UpstreamNode for LocalUpstream {
         Ok(self.feed.get_finalization(query).await)
     }
 
-    async fn get_block_by_number(&self, height: u64) -> eyre::Result<Option<Block>> {
-        let block = self
-            .execution_node
+    async fn get_block_by_number(&self, height: u64) -> eyre::Result<Option<tempo_primitives::Block>> {
+        self.execution_node
             .provider
             .block_by_number(height)
-            .wrap_err("provider error")?
-            .map(|b| Block::from_execution_block(b.seal()));
-
-        Ok(block)
+            .wrap_err("provider error")
     }
 
-    async fn get_block_by_hash(&self, hash: alloy_primitives::B256) -> eyre::Result<Option<Block>> {
-        let block = self
-            .execution_node
+    async fn get_block_by_hash(&self, hash: alloy_primitives::B256) -> eyre::Result<Option<tempo_primitives::Block>> {
+        self.execution_node
             .provider
             .find_block_by_hash(hash, BlockSource::Any)
-            .wrap_err("provider error")?
-            .map(|b| Block::from_execution_block(b.seal()));
-
-        Ok(block)
+            .wrap_err("provider error")
     }
 }

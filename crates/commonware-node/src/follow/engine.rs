@@ -31,6 +31,7 @@ use commonware_runtime::{
 use commonware_utils::{NZUsize, channel::mpsc};
 use eyre::{OptionExt as _, WrapErr as _};
 use rand_08::{CryptoRng, Rng};
+use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoFullNode, rpc::consensus::Query};
 use tracing::{info, info_span};
@@ -298,7 +299,9 @@ where
                         boundary_height.get()
                     ))?;
 
-                eyre::ensure!(certified.digest == block.block_hash());
+                let sealed = SealedBlock::seal_slow(block.clone());
+                let consensus_block = Block::from_execution_block(sealed);
+                eyre::ensure!(certified.digest == consensus_block.block_hash());
 
                 let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)?;
                 let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
@@ -307,7 +310,7 @@ where
                 // Process the boundary block & finalization
                 let round = Round::new(Epoch::new(certified.epoch), View::new(certified.view));
                 let activity = Activity::Finalization(finalization);
-                self.marshal_mailbox.verified(round, block.clone()).await;
+                self.marshal_mailbox.verified(round, consensus_block).await;
                 self.marshal_mailbox.report(activity.clone()).await;
                 self.feed_mailbox.report(activity).await;
 
@@ -350,9 +353,11 @@ where
                     "block at height {} not found in local archive",
                     boundary_height.get()
                 ))?
+                .into_inner()
+                .into_block()
         };
 
-        let extra_data = boundary_block.header().inner.extra_data.as_ref();
+        let extra_data = boundary_block.extra_data();
         let outcome = OnchainDkgOutcome::read(&mut &extra_data[..])
             .wrap_err("block did not contain a DKG outcome")?;
 
@@ -366,7 +371,7 @@ where
         self.scheme_provider.register(outcome.epoch, outcome_scheme);
         info_span!("follow_engine").in_scope(|| {
             info!(
-                height = boundary_block.header().number(),
+                height = boundary_block.header.number(),
                 epoch = outcome.epoch.get(),
                 source = if bootstrap { "upstream" } else { "archive" },
                 "registered starting identity scheme"

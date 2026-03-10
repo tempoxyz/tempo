@@ -11938,7 +11938,6 @@ name = "tempo-commonware-node"
 version = "1.4.0"
 dependencies = [
  "alloy-consensus",
- "alloy-network",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",

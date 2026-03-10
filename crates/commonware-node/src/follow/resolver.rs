@@ -19,7 +19,7 @@ use commonware_utils::{
     vec::NonEmptyVec,
 };
 use eyre::WrapErr as _;
-use reth_primitives_traits::Block as _;
+use reth_node_core::primitives::SealedBlock;
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_node::{TempoFullNode, rpc::consensus::Query};
 use tokio::sync::Mutex;
@@ -84,7 +84,9 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
             }
 
             let result = match &key_clone {
-                handler::Request::Finalized { height } => resolver.resolve_finalized(*height).await,
+                handler::Request::Finalized { height } => {
+                    resolver.resolve_finalized(height.get()).await
+                }
                 handler::Request::Block(commitment) => resolver.resolve_block(*commitment).await,
                 other => {
                     warn_span!("follow")
@@ -125,25 +127,24 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
         });
     }
 
-    async fn resolve_finalized(
-        &self,
-        height: commonware_consensus::types::Height,
-    ) -> eyre::Result<Option<Bytes>> {
-        let h = height.get();
-        let Some(certified) = self.upstream.get_finalization(Query::Height(h)).await? else {
+    async fn resolve_finalized(&self, height: u64) -> eyre::Result<Option<Bytes>> {
+        let Some(certified) = self
+            .upstream
+            .get_finalization(Query::Height(height))
+            .await?
+        else {
             return Ok(None);
         };
 
         let block = self
             .execution_node
             .provider
-            .block_by_number(h)
-            .map_err(|e| eyre::eyre!("local provider error: {e}"))?
-            .map(|b| Block::from_execution_block(b.seal()));
+            .block_by_number(height)
+            .map_err(|e| eyre::eyre!("local provider error: {e}"))?;
 
         let block = match block {
             Some(b) => b,
-            None => match self.upstream.get_block_by_number(h).await? {
+            None => match self.upstream.get_block_by_number(height).await? {
                 Some(b) => b,
                 None => return Ok(None),
             },
@@ -156,7 +157,8 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
             Finalization::read(&mut &cert_bytes[..])
                 .map_err(|e| eyre::eyre!("failed to decode finalization: {e:?}"))?;
 
-        Ok(Some((finalization, block).encode()))
+        let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(block));
+        Ok(Some((finalization, consensus_block).encode()))
     }
 
     async fn resolve_block(&self, commitment: Digest) -> eyre::Result<Option<Bytes>> {
@@ -164,8 +166,7 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
             .execution_node
             .provider
             .find_block_by_hash(commitment.0, BlockSource::Any)
-            .map_err(|e| eyre::eyre!("local provider error: {e}"))?
-            .map(|b| Block::from_execution_block(b.seal()));
+            .map_err(|e| eyre::eyre!("local provider error: {e}"))?;
 
         let block = match block {
             Some(b) => b,
@@ -175,7 +176,8 @@ impl<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> FollowResolver
             },
         };
 
-        Ok(Some(block.encode()))
+        let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(block));
+        Ok(Some(consensus_block.encode()))
     }
 }
 
