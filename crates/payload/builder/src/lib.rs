@@ -5,9 +5,9 @@
 
 mod metrics;
 
-use crate::metrics::{TempoPayloadBuilderMetrics, inc_pool_tx_skipped};
+use crate::metrics::{InstrumentedFinishProvider, TempoPayloadBuilderMetrics, inc_pool_tx_skipped};
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
-use alloy_primitives::{Address, B256, BlockNumber, Bytes, StorageKey, StorageValue, U256};
+use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
 use either::Either;
 use reth_basic_payload_builder::{
@@ -17,7 +17,7 @@ use reth_basic_payload_builder::{
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
-use reth_errors::{ConsensusError, ProviderError, ProviderResult};
+use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
     block::{BlockExecutionError, BlockValidationError},
@@ -26,25 +26,16 @@ use reth_evm::{
 use reth_execution_types::ExecutionOutcome;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock, PayloadBuilderAttributes};
-use reth_primitives_traits::{
-    Account, Bytecode, Recovered, transaction::error::InvalidTransactionError,
-};
+use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
 use reth_revm::{
     State,
     context::{Block, BlockEnv},
     database::StateProviderDatabase,
 };
-use reth_storage_api::{
-    AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, StateProofProvider,
-    StateProvider, StateProviderFactory, StateRootProvider, StorageRootProvider,
-};
+use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
-};
-use reth_trie_common::{
-    AccountProof, HashedPostState, HashedStorage, MultiProof, MultiProofTargets, StorageMultiProof,
-    StorageProof, TrieInput, updates::TrieUpdates,
 };
 use std::{
     sync::{
@@ -70,90 +61,6 @@ use tempo_transaction_pool::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
-
-/// Wraps a [`StateProvider`] reference to instrument `hashed_post_state` and
-/// `state_root_with_updates` with tracing spans and histogram metrics during `builder.finish()`.
-struct InstrumentedFinishProvider<'a> {
-    inner: &'a dyn StateProvider,
-    metrics: TempoPayloadBuilderMetrics,
-}
-
-impl<'a> AsRef<dyn StateProvider + 'a> for InstrumentedFinishProvider<'a> {
-    fn as_ref(&self) -> &(dyn StateProvider + 'a) {
-        self.inner
-    }
-}
-
-reth_storage_api::delegate_impls_to_as_ref!(
-    for InstrumentedFinishProvider<'_> =>
-    AccountReader {
-        fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>>;
-    }
-    BlockHashReader {
-        fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>>;
-        fn canonical_hashes_range(&self, start: BlockNumber, end: BlockNumber) -> ProviderResult<Vec<B256>>;
-    }
-    StateProvider {
-        fn storage(&self, account: Address, storage_key: StorageKey) -> ProviderResult<Option<StorageValue>>;
-    }
-    BytecodeReader {
-        fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>>;
-    }
-    StorageRootProvider {
-        fn storage_root(&self, address: Address, storage: HashedStorage) -> ProviderResult<B256>;
-        fn storage_proof(&self, address: Address, slot: B256, storage: HashedStorage) -> ProviderResult<StorageProof>;
-        fn storage_multiproof(&self, address: Address, slots: &[B256], storage: HashedStorage) -> ProviderResult<StorageMultiProof>;
-    }
-    StateProofProvider {
-        fn proof(&self, input: TrieInput, address: Address, slots: &[B256]) -> ProviderResult<AccountProof>;
-        fn multiproof(&self, input: TrieInput, targets: MultiProofTargets) -> ProviderResult<MultiProof>;
-        fn witness(&self, input: TrieInput, target: HashedPostState) -> ProviderResult<Vec<Bytes>>;
-    }
-);
-
-impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
-    fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
-        let start = Instant::now();
-        let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();
-        let result = self.inner.hashed_post_state(bundle_state);
-        drop(_span);
-        self.metrics
-            .hashed_post_state_duration_seconds
-            .record(start.elapsed());
-        result
-    }
-}
-
-impl StateRootProvider for InstrumentedFinishProvider<'_> {
-    fn state_root(&self, hashed_state: HashedPostState) -> ProviderResult<B256> {
-        self.inner.state_root(hashed_state)
-    }
-
-    fn state_root_from_nodes(&self, input: TrieInput) -> ProviderResult<B256> {
-        self.inner.state_root_from_nodes(input)
-    }
-
-    fn state_root_with_updates(
-        &self,
-        hashed_state: HashedPostState,
-    ) -> ProviderResult<(B256, TrieUpdates)> {
-        let start = Instant::now();
-        let _span = debug_span!(target: "payload_builder", "state_root_with_updates").entered();
-        let result = self.inner.state_root_with_updates(hashed_state);
-        drop(_span);
-        self.metrics
-            .state_root_with_updates_duration_seconds
-            .record(start.elapsed());
-        result
-    }
-
-    fn state_root_from_nodes_with_updates(
-        &self,
-        input: TrieInput,
-    ) -> ProviderResult<(B256, TrieUpdates)> {
-        self.inner.state_root_from_nodes_with_updates(input)
-    }
-}
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
