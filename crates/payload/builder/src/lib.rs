@@ -405,10 +405,12 @@ where
 
         let start = Instant::now();
 
+        let _block_metrics_span = debug_span!(target: "payload_builder", "block_metrics").entered();
         let block_time_millis =
             (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
         self.metrics.block_time_millis.record(block_time_millis);
         self.metrics.block_time_millis_last.set(block_time_millis);
+        drop(_block_metrics_span);
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
