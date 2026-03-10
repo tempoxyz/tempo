@@ -29,15 +29,21 @@ use reth_transaction_pool::{
 };
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
+    error::Result as TempoPrecompileResult,
     nonce::NonceManager,
+    storage::Handler,
     tip_fee_manager::amm::{Pool as AmmPool, PoolKey, compute_amount_out},
-    tip20::slots as tip20_slots,
+    tip20::TIP20Token,
 };
 use tempo_primitives::Block;
+use tempo_revm::TempoStateAccess;
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -104,19 +110,22 @@ where
             return Ok(());
         }
 
-        let state_provider = self.client().state_by_block_hash(block_hash)?;
-        let mut nonce_changes = HashMap::default();
+        // Spec doesn't affect raw storage reads (sload), so default is safe here.
+        let spec = TempoHardfork::default();
+        let mut state_provider = self.client().state_by_block_hash(block_hash)?;
 
-        for seq_id in seq_ids {
-            // Read the current on-chain nonce for this sequence ID
-            let slot = NonceManager::new().nonces[seq_id.address][seq_id.nonce_key].slot();
-            let current_nonce: u64 = state_provider
-                .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?
-                .unwrap_or_default()
-                .saturating_to();
-
-            nonce_changes.insert(seq_id, current_nonce);
-        }
+        let nonce_changes = state_provider
+            .with_read_only_storage_ctx(spec, || -> TempoPrecompileResult<_> {
+                let mut changes = HashMap::default();
+                // Read the current on-chain nonce for this sequence ID
+                for id in &seq_ids {
+                    let current_nonce =
+                        NonceManager::new().nonces[id.address][id.nonce_key].read()?;
+                    changes.insert(*id, current_nonce);
+                }
+                Ok(changes)
+            })
+            .map_err(reth_provider::ProviderError::other)?;
 
         // Apply the nonce changes to the 2D pool
         let (promoted, _mined) = self.aa_2d_pool.write().on_nonce_changes(nonce_changes);
@@ -167,7 +176,7 @@ where
         // - validator token changes (liquidity check)
         // - blacklist/whitelist (policy check)
         // - spending limit spends (remaining limit check)
-        let state_provider = if !updates.validator_token_changes.is_empty()
+        let mut state_provider = if !updates.validator_token_changes.is_empty()
             || !updates.blacklist_additions.is_empty()
             || !updates.whitelist_removals.is_empty()
             || !updates.spending_limit_spends.is_empty()
@@ -235,10 +244,10 @@ where
             // from state for affected (account, key_id, fee_token) combos and evict if
             // the pending tx's fee cost now exceeds the remaining limit.
             if !updates.spending_limit_spends.is_empty()
-                && let Some(ref provider) = state_provider
+                && let Some(ref mut provider) = state_provider
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
-                && exceeds_spending_limit(&**provider, subject, tx.transaction.fee_token_cost())
+                && exceeds_spending_limit(provider, subject, tx.transaction.fee_token_cost())
             {
                 to_remove.push(*tx.hash());
                 spending_limit_spend_count += 1;
@@ -300,7 +309,7 @@ where
             // Only check AA transactions with a fee token (non-AA transactions don't have
             // a fee payer that can be blacklisted via TIP403)
             if !updates.blacklist_additions.is_empty()
-                && let Some(ref provider) = state_provider
+                && let Some(ref mut provider) = state_provider
                 && let Some(fee_token) = tx.transaction.inner().fee_token()
             {
                 let fee_payer = tx
@@ -316,20 +325,8 @@ where
                     }
 
                     // Get the token's transfer policy ID from cache or storage
-                    let token_policy = if let Some(&cached) = policy_cache.get(&fee_token) {
-                        Some(cached)
-                    } else {
-                        provider
-                            .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
-                            .ok()
-                            .flatten()
-                            .map(|packed| {
-                                let policy_id: u64 =
-                                    (packed >> tip20_slots::TRANSFER_POLICY_ID_OFFSET).to();
-                                policy_cache.insert(fee_token, policy_id);
-                                policy_id
-                            })
-                    };
+                    let token_policy =
+                        get_transfer_policy_id(provider, fee_token, &mut policy_cache);
 
                     // If the token's policy matches the blacklist policy, evict the transaction
                     if token_policy == Some(blacklist_policy_id) {
@@ -344,7 +341,7 @@ where
             // When a fee payer is removed from a whitelist, their pending transactions
             // will fail validation at execution time.
             if !updates.whitelist_removals.is_empty()
-                && let Some(ref provider) = state_provider
+                && let Some(ref mut provider) = state_provider
                 && let Some(fee_token) = tx.transaction.inner().fee_token()
             {
                 let fee_payer = tx
@@ -359,20 +356,8 @@ where
                     }
 
                     // Get the token's transfer policy ID from cache or storage
-                    let token_policy = if let Some(&cached) = policy_cache.get(&fee_token) {
-                        Some(cached)
-                    } else {
-                        provider
-                            .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
-                            .ok()
-                            .flatten()
-                            .map(|packed| {
-                                let policy_id: u64 =
-                                    (packed >> tip20_slots::TRANSFER_POLICY_ID_OFFSET).to();
-                                policy_cache.insert(fee_token, policy_id);
-                                policy_id
-                            })
-                    };
+                    let token_policy =
+                        get_transfer_policy_id(provider, fee_token, &mut policy_cache);
 
                     // If the token's policy matches the whitelist policy, evict the transaction
                     if token_policy == Some(whitelist_policy_id) {
@@ -1080,18 +1065,42 @@ where
 /// fee_token) combo. Returns true if the tx's fee cost exceeds the remaining limit,
 /// meaning it should be evicted.
 pub(crate) fn exceeds_spending_limit(
-    provider: &dyn reth_storage_api::StateProvider,
+    provider: &mut impl StateProvider,
     subject: &crate::transaction::KeychainSubject,
     fee_token_cost: alloy_primitives::U256,
 ) -> bool {
     let limit_key = AccountKeychain::spending_limit_key(subject.account, subject.key_id);
-    let slot = AccountKeychain::new().spending_limits[limit_key][subject.fee_token].slot();
-
-    match provider.storage(ACCOUNT_KEYCHAIN_ADDRESS, slot.into()) {
-        Ok(Some(remaining)) => fee_token_cost > remaining,
-        Ok(None) => !fee_token_cost.is_zero(),
+    // Spec doesn't affect raw storage reads (sload), so default is safe here.
+    let spec = TempoHardfork::default();
+    match provider.with_read_only_storage_ctx(spec, || {
+        AccountKeychain::new().spending_limits[limit_key][subject.fee_token].read()
+    }) {
+        Ok(remaining) => fee_token_cost > remaining,
         Err(_) => false,
     }
+}
+
+/// Reads the transfer policy ID for a TIP-20 token, using a cache to avoid redundant lookups.
+fn get_transfer_policy_id(
+    provider: &mut impl StateProvider,
+    fee_token: Address,
+    cache: &mut AddressMap<u64>,
+) -> Option<u64> {
+    if let Some(&cached) = cache.get(&fee_token) {
+        return Some(cached);
+    }
+
+    // Spec doesn't affect raw storage reads (sload), so default is safe here.
+    let spec = TempoHardfork::default();
+    provider.with_read_only_storage_ctx(spec, || {
+        TIP20Token::from_address(fee_token)
+            .and_then(|t| t.transfer_policy_id())
+            .ok()
+            .filter(|&id| id != 0) // sload maps unset slots to 0; treat as None
+            .inspect(|&policy_id| {
+                cache.insert(fee_token, policy_id);
+            })
+    })
 }
 
 impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
@@ -1166,7 +1175,7 @@ mod tests {
             fee_token,
         };
 
-        let state = provider_with_spending_limit(
+        let mut state = provider_with_spending_limit(
             account,
             key_id,
             fee_token,
@@ -1174,7 +1183,7 @@ mod tests {
         );
 
         assert!(exceeds_spending_limit(
-            &*state,
+            &mut state,
             &subject,
             alloy_primitives::U256::from(200)
         ));
@@ -1191,7 +1200,7 @@ mod tests {
             fee_token,
         };
 
-        let state = provider_with_spending_limit(
+        let mut state = provider_with_spending_limit(
             account,
             key_id,
             fee_token,
@@ -1199,7 +1208,7 @@ mod tests {
         );
 
         assert!(!exceeds_spending_limit(
-            &*state,
+            &mut state,
             &subject,
             alloy_primitives::U256::from(200)
         ));
@@ -1220,10 +1229,10 @@ mod tests {
         let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
             tempo_chainspec::spec::MODERATO.clone(),
         ));
-        let state = provider.latest().unwrap();
+        let mut state = provider.latest().unwrap();
 
         assert!(exceeds_spending_limit(
-            &*state,
+            &mut state,
             &subject,
             alloy_primitives::U256::from(1)
         ));
