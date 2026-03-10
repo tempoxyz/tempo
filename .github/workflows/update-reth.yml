@@ -8,6 +8,7 @@
 name: Update reth deps
 
 on:
+  pull_request: # TODO: remove before merging
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
