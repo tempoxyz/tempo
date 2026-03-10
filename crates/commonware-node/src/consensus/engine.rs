@@ -527,10 +527,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        subblocks_channel: (
+        subblocks_channel: Option<(
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
-        ),
+        )>,
     ) -> Handle<eyre::Result<()>> {
         spawn_cell!(
             self.context,
@@ -577,10 +577,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        subblocks_channel: (
+        subblocks_channel: Option<(
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
-        ),
+        )>,
     ) -> eyre::Result<()> {
         let peer_manager = self.peer_manager.start();
 
@@ -622,7 +622,7 @@ where
             peer_manager,
         ];
 
-        if let Some(subblocks) = self.subblocks {
+        if let Some((subblocks, subblocks_channel)) = self.subblocks.zip(subblocks_channel) {
             tasks.push(self.context.spawn(|_| subblocks.run(subblocks_channel)));
         }
 
