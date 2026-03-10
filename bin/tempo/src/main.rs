@@ -158,6 +158,33 @@ fn main() -> eyre::Result<()> {
             // belong to the node CLI. Only intercept InvalidSubcommand errors
             // and route them to the extension launcher.
             if err.kind() != clap::error::ErrorKind::InvalidSubcommand {
+                // Print clap's help/error output, then append installed
+                // extensions when displaying help.
+                if matches!(
+                    err.kind(),
+                    clap::error::ErrorKind::DisplayHelp
+                        | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                ) {
+                    let _ = err.print();
+                    let extensions = tempo_ext::installed_extensions();
+                    if !extensions.is_empty() {
+                        let use_color = std::io::IsTerminal::is_terminal(&std::io::stdout());
+                        let (b, bu, r) = if use_color {
+                            ("\x1b[1m", "\x1b[1m\x1b[4m", "\x1b[0m")
+                        } else {
+                            ("", "", "")
+                        };
+                        println!("\n{bu}Extensions:{r}");
+                        for (name, desc) in &extensions {
+                            if desc.is_empty() {
+                                println!("  {b}{name}{r}");
+                            } else {
+                                println!("  {b}{name:<24}{r} {desc}");
+                            }
+                        }
+                    }
+                    std::process::exit(0);
+                }
                 err.exit();
             }
             let code = match tempo_ext::run(std::env::args_os()) {
@@ -425,3 +452,4 @@ fn main() -> eyre::Result<()> {
     }
     Ok(())
 }
+

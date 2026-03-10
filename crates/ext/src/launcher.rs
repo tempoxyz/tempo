@@ -194,10 +194,15 @@ impl Launcher {
             }
         };
         let pinned = args.version.is_some();
-        let version = installer.install(&args.extension, &source, args.dry_run, false)?;
+        let result = installer.install(&args.extension, &source, args.dry_run, false)?;
         if !args.dry_run {
             let mut registry = Registry::load();
-            registry.record_check(&args.extension, &version, pinned);
+            registry.record_check(
+                &args.extension,
+                &result.version,
+                pinned,
+                &result.description,
+            );
             registry.save();
         }
         Ok(0)
@@ -259,14 +264,14 @@ impl Launcher {
         }
 
         match installer.install_if_changed(&extension, &source, installed_version)? {
-            Some(new_version) => {
+            Some(result) => {
                 if installed_version.is_some_and(|v| !v.is_empty()) {
-                    println!("Updated tempo-{extension} to {new_version}");
+                    println!("Updated tempo-{extension} to {}", result.version);
                 } else {
-                    println!("Installed tempo-{extension} {new_version}");
+                    println!("Installed tempo-{extension} {}", result.version);
                 }
                 let mut registry = registry;
-                registry.record_check(&extension, &new_version, false);
+                registry.record_check(&extension, &result.version, false, &result.description);
                 registry.save();
             }
             None => {
@@ -325,9 +330,14 @@ impl Launcher {
             }
 
             match installer.install_if_changed(name, &source, Some(installed_version)) {
-                Ok(Some(new_version)) => {
-                    println!("Updated tempo-{name} to {new_version}");
-                    updated_registry.record_check(name, &new_version, false);
+                Ok(Some(result)) => {
+                    println!("Updated tempo-{name} to {}", result.version);
+                    updated_registry.record_check(
+                        name,
+                        &result.version,
+                        false,
+                        &result.description,
+                    );
                 }
                 Ok(None) => {
                     updated_registry.touch_check(name);
@@ -371,10 +381,15 @@ impl Launcher {
             return Ok(0);
         }
 
-        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        entries.sort_by_key(|(a, _)| *a);
         for (name, state) in &entries {
             let pin = if state.pinned { " (pinned)" } else { "" };
-            println!("tempo-{name} {}{pin}", state.installed_version);
+            let desc = if state.description.is_empty() {
+                String::new()
+            } else {
+                format!(" - {}", state.description)
+            };
+            println!("  {name:<24} {}{pin}{desc}", state.installed_version);
         }
 
         Ok(0)
@@ -437,9 +452,9 @@ impl Launcher {
             false,
             false,
         ) {
-            Ok(version) => {
+            Ok(result) => {
                 let mut registry = Registry::load();
-                registry.record_check(extension, &version, false);
+                registry.record_check(extension, &result.version, false, &result.description);
                 registry.save();
                 Ok(self.find_binary(&binary_name))
             }
@@ -503,11 +518,11 @@ impl Launcher {
             registry.touch_check(extension);
         } else {
             match installer.install_if_changed(extension, &source, installed_version) {
-                Ok(Some(new_version)) => {
+                Ok(Some(result)) => {
                     if installed_version.is_some_and(|v| !v.is_empty()) {
-                        eprintln!("Updated tempo-{extension} to {new_version}");
+                        eprintln!("Updated tempo-{extension} to {}", result.version);
                     }
-                    registry.record_check(extension, &new_version, false);
+                    registry.record_check(extension, &result.version, false, &result.description);
                 }
                 Ok(None) => {
                     registry.touch_check(extension);

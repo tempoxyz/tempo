@@ -10,6 +10,19 @@ mod registry;
 pub use installer::InstallerError;
 pub use launcher::{LauncherError, run};
 
+/// Returns installed extensions as `(name, description)` pairs, sorted alphabetically.
+pub fn installed_extensions() -> Vec<(String, String)> {
+    let reg = registry::Registry::load();
+    let mut exts: Vec<(String, String)> = reg
+        .extensions
+        .into_iter()
+        .filter(|(_, state)| !state.installed_version.is_empty())
+        .map(|(name, state)| (name, state.description))
+        .collect();
+    exts.sort_by(|(a, _), (b, _)| a.cmp(b));
+    exts
+}
+
 #[cfg(test)]
 pub(crate) mod test_util {
     /// Serialize all tests that mutate process-wide environment variables.

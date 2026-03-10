@@ -55,9 +55,16 @@ pub(crate) struct Installer {
     pub(crate) bin_dir: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct InstallResult {
+    pub(crate) version: String,
+    pub(crate) description: String,
+}
+
 #[derive(Debug)]
 struct ResolvedInstall {
     version: String,
+    description: String,
     /// Path to the downloaded binary. `None` in dry-run mode.
     src: Option<PathBuf>,
     dst: PathBuf,
@@ -90,14 +97,14 @@ impl Installer {
         Ok(Self { bin_dir })
     }
 
-    /// Install an extension and return the installed version string.
+    /// Install an extension and return the installed version and description.
     pub(crate) fn install(
         &self,
         extension: &str,
         source: &InstallSource,
         dry_run: bool,
         quiet: bool,
-    ) -> Result<String, InstallerError> {
+    ) -> Result<InstallResult, InstallerError> {
         self.install_inner(extension, source, None, dry_run, quiet)
     }
 
@@ -125,14 +132,14 @@ impl Installer {
     }
 
     /// Install an extension only if the manifest version is newer than
-    /// `installed_version`. Returns `Some(new_version)` if an update was
+    /// `installed_version`. Returns `Some(result)` if an update was
     /// performed, `None` if already at the latest version.
     pub(crate) fn install_if_changed(
         &self,
         extension: &str,
         source: &InstallSource,
         installed_version: Option<&str>,
-    ) -> Result<Option<String>, InstallerError> {
+    ) -> Result<Option<InstallResult>, InstallerError> {
         let manifest_loc = source
             .manifest
             .as_ref()
@@ -146,9 +153,8 @@ impl Installer {
             return Ok(None);
         }
 
-        let version = manifest.version.clone();
-        self.install_inner(extension, source, Some(manifest), false, true)?;
-        Ok(Some(version))
+        let result = self.install_inner(extension, source, Some(manifest), false, true)?;
+        Ok(Some(result))
     }
 
     fn install_inner(
@@ -158,11 +164,14 @@ impl Installer {
         manifest: Option<ReleaseManifest>,
         dry_run: bool,
         quiet: bool,
-    ) -> Result<String, InstallerError> {
+    ) -> Result<InstallResult, InstallerError> {
         self.ensure_dirs(dry_run)?;
 
         let resolved = self.resolve_install(extension, source, manifest, dry_run, quiet)?;
-        let version = resolved.version.clone();
+        let result = InstallResult {
+            version: resolved.version.clone(),
+            description: resolved.description.clone(),
+        };
         self.copy_binary(&resolved, dry_run, quiet)?;
 
         if let Some(skill_url) = &resolved.skill_url {
@@ -177,7 +186,7 @@ impl Installer {
             );
         }
 
-        Ok(version)
+        Ok(result)
     }
 
     pub(crate) fn remove(&self, extension: &str, dry_run: bool) -> Result<(), InstallerError> {
@@ -241,6 +250,7 @@ impl Installer {
 
         Ok(ResolvedInstall {
             version: manifest.version.clone(),
+            description: manifest.description.clone().unwrap_or_default(),
             src,
             dst,
             skill_url: manifest.skill.clone(),

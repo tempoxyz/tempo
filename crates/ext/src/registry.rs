@@ -32,6 +32,9 @@ pub(crate) struct ExtensionState {
     /// specific version via `tempo add <ext> <version>`.
     #[serde(default)]
     pub(crate) pinned: bool,
+    /// Short description from the release manifest.
+    #[serde(default)]
+    pub(crate) description: String,
 }
 
 impl Registry {
@@ -79,13 +82,20 @@ impl Registry {
         }
     }
 
-    pub(crate) fn record_check(&mut self, extension: &str, version: &str, pinned: bool) {
+    pub(crate) fn record_check(
+        &mut self,
+        extension: &str,
+        version: &str,
+        pinned: bool,
+        description: &str,
+    ) {
         self.extensions.insert(
             extension.to_string(),
             ExtensionState {
                 checked_at: now_secs(),
                 installed_version: version.to_string(),
                 pinned,
+                description: description.to_string(),
             },
         );
     }
@@ -108,6 +118,7 @@ impl Registry {
                     checked_at: now_secs(),
                     installed_version: String::new(),
                     pinned: false,
+                    description: String::new(),
                 },
             );
         }
@@ -152,7 +163,7 @@ mod tests {
     #[test]
     fn no_check_needed_after_recent_record() {
         let mut reg = Registry::default();
-        reg.record_check("wallet", "v1.0.0", false);
+        reg.record_check("wallet", "v1.0.0", false, "");
         assert!(!reg.needs_update_check("wallet"));
     }
 
@@ -165,6 +176,7 @@ mod tests {
                 checked_at: now_secs() - UPDATE_CHECK_INTERVAL_SECS - 1,
                 installed_version: "v1.0.0".to_string(),
                 pinned: false,
+                description: String::new(),
             },
         );
         assert!(reg.needs_update_check("wallet"));
@@ -173,7 +185,7 @@ mod tests {
     #[test]
     fn touch_preserves_version() {
         let mut reg = Registry::default();
-        reg.record_check("wallet", "v1.0.0", false);
+        reg.record_check("wallet", "v1.0.0", false, "");
         reg.extensions.get_mut("wallet").unwrap().checked_at = 0;
         reg.touch_check("wallet");
         assert_eq!(reg.extensions["wallet"].installed_version, "v1.0.0");
@@ -191,7 +203,7 @@ mod tests {
     #[test]
     fn roundtrip_serialize() {
         let mut reg = Registry::default();
-        reg.record_check("wallet", "v1.0.0", false);
+        reg.record_check("wallet", "v1.0.0", false, "");
         let json = serde_json::to_string(&reg).unwrap();
         let loaded: Registry = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.extensions["wallet"].installed_version, "v1.0.0");
@@ -200,14 +212,14 @@ mod tests {
     #[test]
     fn pinned_flag_recorded() {
         let mut reg = Registry::default();
-        reg.record_check("wallet", "1.0.0", true);
+        reg.record_check("wallet", "1.0.0", true, "");
         assert!(reg.is_pinned("wallet"));
     }
 
     #[test]
     fn not_pinned_by_default() {
         let mut reg = Registry::default();
-        reg.record_check("wallet", "1.0.0", false);
+        reg.record_check("wallet", "1.0.0", false, "");
         assert!(!reg.is_pinned("wallet"));
     }
 
@@ -220,19 +232,33 @@ mod tests {
     #[test]
     fn update_unpins() {
         let mut reg = Registry::default();
-        reg.record_check("wallet", "1.0.0", true);
+        reg.record_check("wallet", "1.0.0", true, "");
         assert!(reg.is_pinned("wallet"));
-        reg.record_check("wallet", "2.0.0", false);
+        reg.record_check("wallet", "2.0.0", false, "");
         assert!(!reg.is_pinned("wallet"));
     }
 
     #[test]
     fn roundtrip_serialize_pinned() {
         let mut reg = Registry::default();
-        reg.record_check("wallet", "1.0.0", true);
+        reg.record_check("wallet", "1.0.0", true, "");
         let json = serde_json::to_string(&reg).unwrap();
         let loaded: Registry = serde_json::from_str(&json).unwrap();
         assert!(loaded.is_pinned("wallet"));
+    }
+
+    #[test]
+    fn description_recorded() {
+        let mut reg = Registry::default();
+        reg.record_check("wallet", "1.0.0", false, "Tempo wallet");
+        assert_eq!(reg.extensions["wallet"].description, "Tempo wallet");
+    }
+
+    #[test]
+    fn deserialize_without_description_defaults_empty() {
+        let json = r#"{"extensions":{"wallet":{"checked_at":0,"installed_version":"1.0.0","pinned":false}}}"#;
+        let reg: Registry = serde_json::from_str(json).unwrap();
+        assert_eq!(reg.extensions["wallet"].description, "");
     }
 
     #[test]

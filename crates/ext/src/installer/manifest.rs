@@ -8,6 +8,7 @@ use std::{collections::HashMap, fs};
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct ReleaseManifest {
     pub(super) version: String,
+    pub(super) description: Option<String>,
     pub(super) binaries: HashMap<String, ReleaseBinary>,
     pub(super) skill: Option<String>,
     pub(super) skill_sha256: Option<String>,
@@ -73,6 +74,7 @@ mod tests {
             "https://example.com/wallet"
         );
         assert!(manifest.binaries["wallet"].signature.is_none());
+        assert!(manifest.description.is_none());
         assert!(manifest.skill.is_none());
         assert!(manifest.skill_sha256.is_none());
         assert!(manifest.skill_signature.is_none());
@@ -82,6 +84,7 @@ mod tests {
     fn deserialize_full_manifest() {
         let json = r#"{
             "version": "2.0.0",
+            "description": "Tempo wallet extension",
             "binaries": {
                 "wallet": {
                     "url": "https://example.com/wallet",
@@ -95,6 +98,10 @@ mod tests {
         }"#;
         let manifest: ReleaseManifest = serde_json::from_str(json).unwrap();
         assert_eq!(manifest.version, "2.0.0");
+        assert_eq!(
+            manifest.description.as_deref(),
+            Some("Tempo wallet extension")
+        );
         assert_eq!(manifest.binaries["wallet"].sha256, "abc123");
         assert_eq!(
             manifest.binaries["wallet"].signature.as_deref(),
