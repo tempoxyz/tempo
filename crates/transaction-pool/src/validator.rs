@@ -4,7 +4,7 @@ use crate::{
 };
 use alloy_consensus::Transaction;
 
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::{
     GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -113,7 +113,7 @@ where
     }
 
     /// Validates that keychain transactions specify the expected version
-    /// depending on the current chainspec
+    /// depending on the current chainspec.
     fn validate_keychain_version(
         &self,
         transaction: &TempoPooledTransaction,
@@ -135,15 +135,52 @@ where
         Ok(())
     }
 
+    fn validate_spending_limit(
+        &self,
+        transaction: &TempoPooledTransaction,
+        fee_token: Address,
+        remaining_limit: U256,
+    ) -> Result<(), TempoPoolTransactionError> {
+        let fee_cost = transaction.fee_token_cost();
+        if fee_cost > remaining_limit {
+            return Err(TempoPoolTransactionError::SpendingLimitExceeded {
+                fee_token,
+                cost: fee_cost,
+                remaining: remaining_limit,
+            });
+        }
+
+        Ok(())
+    }
+
     /// Validates AA transactions against the keychain: signature recovery, key authorization,
     /// on-chain key existence/revocation/expiry, and spending limits.
     ///
     /// Version checks are handled separately by [`Self::validate_keychain_version`] early
     /// in the path to ensure permanently invalid signatures trigger proper peer penalties.
+    #[cfg(test)]
     fn validate_against_keychain(
         &self,
         transaction: &TempoPooledTransaction,
         state_provider: &mut impl StateProvider,
+    ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
+        self.validate_against_keychain_with_fee_context(
+            transaction,
+            state_provider,
+            transaction.sender(),
+            transaction
+                .inner()
+                .fee_token()
+                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN),
+        )
+    }
+
+    fn validate_against_keychain_with_fee_context(
+        &self,
+        transaction: &TempoPooledTransaction,
+        state_provider: &mut impl StateProvider,
+        fee_payer: Address,
+        fee_token: Address,
     ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
         let Some(tx) = transaction.inner().as_aa() else {
             return Ok(Ok(()));
@@ -252,12 +289,9 @@ where
                 transaction.set_key_expiry(Some(expiry));
             }
 
-            if let Some(limits) = &auth.limits {
-                let fee_token = transaction
-                    .inner()
-                    .fee_token()
-                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
-                let fee_cost = transaction.fee_token_cost();
+            if fee_payer == transaction.sender()
+                && let Some(limits) = &auth.limits
+            {
                 let remaining_limit = limits
                     .iter()
                     .rev()
@@ -265,12 +299,10 @@ where
                     .map(|limit| limit.limit)
                     .unwrap_or(U256::ZERO);
 
-                if fee_cost > remaining_limit {
-                    return Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded {
-                        fee_token,
-                        cost: fee_cost,
-                        remaining: remaining_limit,
-                    }));
+                if let Err(err) =
+                    self.validate_spending_limit(transaction, fee_token, remaining_limit)
+                {
+                    return Ok(Err(err));
                 }
             }
 
@@ -309,14 +341,8 @@ where
 
         // Check spending limit for fee token if enforce_limits is enabled.
         // This prevents transactions that would exceed the spending limit from entering the pool.
-        if authorized_key.enforce_limits {
-            let fee_token = transaction
-                .inner()
-                .fee_token()
-                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
-            let fee_cost = transaction.fee_token_cost();
-
-            // Read the remaining spending limit from state
+        if fee_payer == transaction.sender() && authorized_key.enforce_limits {
+            // Compute the storage slot for the spending limit
             let limit_key = AccountKeychain::spending_limit_key(transaction.sender(), key_id);
             let remaining_limit = state_provider
                 .with_read_only_storage_ctx(spec, || {
@@ -324,12 +350,9 @@ where
                 })
                 .map_err(ProviderError::other)?;
 
-            if fee_cost > remaining_limit {
-                return Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded {
-                    fee_token,
-                    cost: fee_cost,
-                    remaining: remaining_limit,
-                }));
+            if let Err(err) = self.validate_spending_limit(transaction, fee_token, remaining_limit)
+            {
+                return Ok(Err(err));
             }
         }
 
@@ -707,6 +730,44 @@ where
             );
         }
 
+        let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
+            Ok(fee_payer) => fee_payer,
+            Err(_err) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(
+                        TempoPoolTransactionError::InvalidFeePayerSignature,
+                    ),
+                );
+            }
+        };
+
+        let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer, spec) {
+            Ok(fee_token) => fee_token,
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
+
+        // Validate transactions that involve keychain keys
+        match self.validate_against_keychain_with_fee_context(
+            &transaction,
+            &mut state_provider,
+            fee_payer,
+            fee_token,
+        ) {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(err),
+                );
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        }
+
         // Balance transfer is not allowed as there is no balances in accounts yet.
         // Check added in https://github.com/tempoxyz/tempo/pull/759
         // AATx will aggregate all call values, so we dont need additional check for AA transactions.
@@ -761,25 +822,6 @@ where
                 InvalidPoolTransactionError::other(err),
             );
         }
-
-        let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
-            Ok(fee_payer) => fee_payer,
-            Err(_err) => {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(
-                        TempoPoolTransactionError::InvalidFeePayerSignature,
-                    ),
-                );
-            }
-        };
-
-        let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer, spec) {
-            Ok(fee_token) => fee_token,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
 
         // Ensure that fee token is valid.
         match state_provider.is_valid_fee_token(spec, fee_token) {
@@ -2806,6 +2848,113 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "Inline key authorization should use the last duplicate token limit"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_spending_limit_uses_resolved_fee_token()
+        -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let resolved_fee_token = Address::random();
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![TokenLimit {
+                    token: resolved_fee_token,
+                    limit: U256::MAX,
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain_with_fee_context(
+                &transaction,
+                &state_provider,
+                user_address,
+                resolved_fee_token,
+            )?;
+            assert!(
+                result.is_ok(),
+                "Inline key authorization should use the resolved fee token"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_spending_limit_skipped_for_sponsored_fee_payer()
+        -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let fee_token = address!("0000000000000000000000000000000000000002");
+
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: Some(vec![TokenLimit {
+                    token: fee_token,
+                    limit: U256::ZERO,
+                }]),
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let sponsored_fee_payer = Address::random();
+            assert_ne!(sponsored_fee_payer, user_address);
+
+            let result = validator.validate_against_keychain_with_fee_context(
+                &transaction,
+                &state_provider,
+                sponsored_fee_payer,
+                fee_token,
+            )?;
+            assert!(
+                result.is_ok(),
+                "Inline key authorization spending limits should be skipped for sponsored transactions"
             );
             Ok(())
         }
