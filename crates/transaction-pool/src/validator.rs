@@ -276,8 +276,7 @@ where
                 let fee_cost = transaction.fee_token_cost();
 
                 // Compute the storage slot for the spending limit
-                let limit_key =
-                    AccountKeychain::spending_limit_key(transaction.sender(), key_id);
+                let limit_key = AccountKeychain::spending_limit_key(transaction.sender(), key_id);
                 let spending_limit_slot =
                     AccountKeychain::new().spending_limits[limit_key][fee_token].slot();
 
@@ -3735,15 +3734,10 @@ mod tests {
             let (access_key_signer, access_key_address) = generate_keypair();
             let user_address = Address::random();
 
-            let transaction = create_sponsored_aa_with_keychain_signature(
-                user_address,
-                &access_key_signer,
-            );
+            let transaction =
+                create_sponsored_aa_with_keychain_signature(user_address, &access_key_signer);
 
-            let fee_token = transaction
-                .inner()
-                .fee_token()
-                .unwrap_or(DEFAULT_FEE_TOKEN);
+            let fee_token = transaction.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN);
 
             let validator = setup_validator_with_spending_limit(
                 &transaction,
@@ -3770,10 +3764,7 @@ mod tests {
             let transaction =
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
-            let fee_token = transaction
-                .inner()
-                .fee_token()
-                .unwrap_or(DEFAULT_FEE_TOKEN);
+            let fee_token = transaction.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN);
 
             let validator = setup_validator_with_spending_limit(
                 &transaction,
