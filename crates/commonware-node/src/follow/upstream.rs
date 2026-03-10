@@ -61,11 +61,6 @@ pub trait UpstreamNode: Send + Sync + 'static {
         &self,
         hash: alloy_primitives::B256,
     ) -> impl std::future::Future<Output = eyre::Result<Option<Block>>> + Send;
-
-    fn get_block_and_finalization_by_number(
-        &self,
-        height: u64,
-    ) -> impl std::future::Future<Output = eyre::Result<Option<(Block, CertifiedBlock)>>> + Send;
 }
 
 /// WebSocket-based upstream node for production use.
@@ -187,26 +182,6 @@ impl UpstreamNode for WsUpstream {
 
         Self::convert_rpc_block(rpc_block, &format!("hash {hash}")).map(Some)
     }
-
-    async fn get_block_and_finalization_by_number(
-        &self,
-        height: u64,
-    ) -> eyre::Result<Option<(Block, CertifiedBlock)>> {
-        let finalization = self.get_finalization(Query::Height(height)).await?;
-        let block = self.get_block_by_number(height).await?;
-
-        match block.zip(finalization) {
-            None => Ok(None),
-            Some((block, finalization)) => {
-                eyre::ensure!(
-                    block.block_hash() == finalization.digest,
-                    "block and finalizationhash mismatch at height {height}",
-                );
-
-                Ok(Some((block, finalization)))
-            }
-        }
-    }
 }
 
 /// Upstream backed by direct access to state.
@@ -273,24 +248,5 @@ impl UpstreamNode for LocalUpstream {
             .map(|b| Block::from_execution_block(b.seal()));
 
         Ok(block)
-    }
-
-    async fn get_block_and_finalization_by_number(
-        &self,
-        height: u64,
-    ) -> eyre::Result<Option<(Block, CertifiedBlock)>> {
-        let finalization = self.get_finalization(Query::Height(height)).await?;
-        let block = self.get_block_by_number(height).await?;
-        match block.zip(finalization) {
-            None => Ok(None),
-            Some((block, finalization)) => {
-                eyre::ensure!(
-                    block.block_hash() == finalization.digest,
-                    "block and finalization hash mismatch at height {height}",
-                );
-
-                Ok(Some((block, finalization)))
-            }
-        }
     }
 }

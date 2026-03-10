@@ -27,7 +27,7 @@ use rand_08::{CryptoRng, Rng};
 use eyre::OptionExt;
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_node::rpc::consensus::{CertifiedBlock, Event};
+use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query};
 use tracing::{debug, debug_span, info, info_span, warn, warn_span};
 
 use super::upstream::UpstreamNode;
@@ -129,14 +129,17 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
         });
 
         for height in boundaries {
-            let (block, certified) = self
+            let certified = self
                 .upstream
-                .get_block_and_finalization_by_number(height.get())
+                .get_finalization(Query::Height(height.get()))
                 .await?
                 .ok_or_eyre(format!(
-                    "block and finalization at height {} not found on upstream",
+                    "finalization at height {} not found on upstream",
                     height.get()
                 ))?;
+
+            let sealed = SealedBlock::seal_slow(certified.block.clone());
+            let block = Block::from_execution_block(sealed);
 
             let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)?;
             let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
@@ -150,7 +153,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
             // Validate the finalization certificate
             eyre::ensure!(finalization.verify(&mut self.context, scheme.as_ref(), &Sequential));
 
-            let extra_data = block.header().inner.extra_data.as_ref();
+            let extra_data = certified.block.header.extra_data().as_ref();
             let outcome = OnchainDkgOutcome::read(&mut &extra_data[..])?;
             let outcome_scheme: Scheme<PublicKey, MinSig> = Scheme::verifier(
                 NAMESPACE,
