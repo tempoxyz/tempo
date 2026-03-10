@@ -28,6 +28,8 @@ const AGENT_SKILL_DIRS: &[(&str, &str)] = &[
     (".trae", "Trae"),
 ];
 
+/// Downloads, verifies, and installs an extension's agent skill file into every
+/// detected coding assistant's skills directory.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn install_skill(
     extension: &str,
@@ -118,6 +120,7 @@ pub(super) fn install_skill(
     }
 }
 
+/// Fetches the skill file content from `url` (HTTPS or `file://`).
 fn download_skill(url: &str) -> Result<String, InstallerError> {
     tracing::debug!("downloading skill from {url}");
 
@@ -130,6 +133,7 @@ fn download_skill(url: &str) -> Result<String, InstallerError> {
     }
 }
 
+/// Removes an extension's skill directory from all detected coding assistants.
 pub(super) fn remove_skill(extension: &str, dry_run: bool) {
     let skill_dir_name = format!("tempo-{extension}");
 

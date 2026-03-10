@@ -28,6 +28,45 @@ pub enum LauncherError {
 
     #[error("invalid arguments: {0}")]
     InvalidArgs(String),
+
+    #[error("{0}")]
+    Registry(String),
+}
+
+/// Parses arguments and dispatches to built-in commands (add/update/remove/list)
+/// or extension subcommands. This is the entry point for the `tempo` CLI.
+pub fn run<I, T>(args: I) -> Result<i32, LauncherError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let exe_dir = env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    let launcher = Launcher { exe_dir };
+
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(err) => {
+            // Let clap handle --help and --version by printing and exiting.
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                err.exit();
+            }
+            return Err(LauncherError::InvalidArgs(err.to_string()));
+        }
+    };
+
+    match cli.command {
+        Commands::Add(args) => launcher.handle_install(args),
+        Commands::Update(args) => launcher.handle_update(args),
+        Commands::Remove(args) => launcher.handle_remove(&args.extension, args.dry_run),
+        Commands::List => launcher.handle_list(),
+        Commands::Extension(ext_args) => launcher.handle_extension(ext_args),
+    }
 }
 
 /// Extension manager for the Tempo CLI.
@@ -119,41 +158,7 @@ struct RemoveArgs {
     dry_run: bool,
 }
 
-pub fn run<I, T>(args: I) -> Result<i32, LauncherError>
-where
-    I: IntoIterator<Item = T>,
-    T: Into<OsString> + Clone,
-{
-    let exe_dir = env::current_exe()
-        .ok()
-        .as_deref()
-        .and_then(|path| path.parent().map(Path::to_path_buf));
-    let launcher = Launcher { exe_dir };
-
-    let cli = match Cli::try_parse_from(args) {
-        Ok(cli) => cli,
-        Err(err) => {
-            // Let clap handle --help and --version by printing and exiting.
-            if matches!(
-                err.kind(),
-                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
-            ) {
-                err.exit();
-            }
-            return Err(LauncherError::InvalidArgs(err.to_string()));
-        }
-    };
-
-    match cli.command {
-        Commands::Add(args) => launcher.handle_install(args),
-        Commands::Update(args) => launcher.handle_update(args),
-        Commands::Remove(args) => launcher.handle_remove(&args.extension, args.dry_run),
-        Commands::List => launcher.handle_list(),
-        Commands::Extension(ext_args) => launcher.handle_extension(ext_args),
-    }
-}
-
-/// Run `tempoup` to update the tempo binary itself.
+/// Runs `tempoup` to update the tempo binary itself.
 ///
 /// Passes `TEMPO_BIN_DIR` so tempoup installs into the same directory as the
 /// running binary. If tempoup is not found on `PATH`, it is installed first
@@ -183,11 +188,15 @@ fn run_tempoup(bin_dir: &Path) -> Result<bool, LauncherError> {
     Ok(status.success())
 }
 
+/// Internal dispatcher that holds the directory of the running `tempo` binary
+/// and implements all built-in and extension subcommands.
 struct Launcher {
+    /// Directory containing the `tempo` binary, used to co-locate extensions.
     exe_dir: Option<PathBuf>,
 }
 
 impl Launcher {
+    /// Installs an extension, recording the result in the registry.
     fn handle_install(&self, args: ManagementArgs) -> Result<i32, LauncherError> {
         if !is_valid_extension_name(&args.extension) {
             return Err(LauncherError::InvalidArgs(format!(
@@ -211,7 +220,7 @@ impl Launcher {
         let pinned = args.version.is_some();
         let result = installer.install(&args.extension, &source, args.dry_run, false)?;
         if !args.dry_run {
-            let mut registry = Registry::load();
+            let mut registry = Registry::load().map_err(LauncherError::Registry)?;
             registry.record_check(
                 &args.extension,
                 &result.version,
@@ -223,7 +232,7 @@ impl Launcher {
         Ok(0)
     }
 
-    /// Handle `tempo update [extension]`.
+    /// Handles `tempo update [extension]`.
     ///
     /// Without an extension name, updates tempo itself via `tempoup` and then
     /// updates all installed extensions. With an extension name, only updates
@@ -264,7 +273,7 @@ impl Launcher {
             }
         };
 
-        let registry = Registry::load();
+        let registry = Registry::load().map_err(LauncherError::Registry)?;
         let installed_version = registry
             .extensions
             .get(&extension)
@@ -316,7 +325,7 @@ impl Launcher {
         Ok(0)
     }
 
-    /// Update tempo itself via `tempoup`, then update all installed extensions.
+    /// Updates tempo itself via `tempoup`, then updates all installed extensions.
     fn handle_update_all(&self, dry_run: bool) -> Result<i32, LauncherError> {
         let installer = Installer::from_env(self.exe_dir.as_deref())?;
 
@@ -331,7 +340,7 @@ impl Launcher {
         }
 
         // 2. Update all installed extensions (skip pinned ones).
-        let registry = Registry::load();
+        let registry = Registry::load().map_err(LauncherError::Registry)?;
         let extensions: Vec<(String, String, bool)> = registry
             .extensions
             .iter()
@@ -389,6 +398,7 @@ impl Launcher {
         Ok(0)
     }
 
+    /// Removes an extension's binary, skill files, and registry entry.
     fn handle_remove(&self, extension: &str, dry_run: bool) -> Result<i32, LauncherError> {
         if !is_valid_extension_name(extension) {
             return Err(LauncherError::InvalidArgs(format!(
@@ -400,7 +410,7 @@ impl Launcher {
         installer.remove(extension, dry_run)?;
 
         if !dry_run {
-            let mut registry = Registry::load();
+            let mut registry = Registry::load().map_err(LauncherError::Registry)?;
             registry.extensions.remove(extension);
             registry.save();
         }
@@ -408,8 +418,9 @@ impl Launcher {
         Ok(0)
     }
 
+    /// Prints a table of installed extensions with version and metadata.
     fn handle_list(&self) -> Result<i32, LauncherError> {
-        let registry = Registry::load();
+        let registry = Registry::load().map_err(LauncherError::Registry)?;
         let mut entries: Vec<_> = registry
             .extensions
             .iter()
@@ -449,7 +460,7 @@ impl Launcher {
         Ok(0)
     }
 
-    /// Dispatch to an external extension binary.
+    /// Dispatches to an external extension binary.
     ///
     /// `ext_args` comes from clap's `external_subcommand` — the first element
     /// is the subcommand name, the rest are arguments to forward as-is.
@@ -468,7 +479,7 @@ impl Launcher {
         if let Some(binary) = self.find_binary(&binary_name) {
             tracing::debug!("extension found locally: {}", binary.display());
             self.warn_path_mismatch(&binary);
-            self.maybe_auto_update(&extension);
+            self.maybe_auto_update(&extension)?;
             return run_child(binary, child_args, &display_name);
         }
 
@@ -488,6 +499,8 @@ impl Launcher {
         Ok(1)
     }
 
+    /// Attempts to install an unknown extension from the default manifest URL.
+    /// Returns the binary path on success, `None` if the extension doesn't exist.
     fn try_auto_install_extension(
         &self,
         extension: &str,
@@ -508,7 +521,7 @@ impl Launcher {
             false,
         ) {
             Ok(result) => {
-                let mut registry = Registry::load();
+                let mut registry = Registry::load().map_err(LauncherError::Registry)?;
                 registry.record_check(extension, &result.version, false, &result.description);
                 registry.save();
                 Ok(self.find_binary(&binary_name))
@@ -524,20 +537,21 @@ impl Launcher {
         }
     }
 
-    /// Check for extension updates and install if a newer version is available.
+    /// Checks for extension updates and installs if a newer version is available.
     ///
-    /// Runs at most once every 6 hours per extension. Failures are silent —
-    /// the existing binary is always used if the update check or install fails.
-    fn maybe_auto_update(&self, extension: &str) {
+    /// Runs at most once every 6 hours per extension. Update-check and
+    /// install failures are silent — the existing binary is always used —
+    /// but a corrupt registry is surfaced to the caller.
+    fn maybe_auto_update(&self, extension: &str) -> Result<(), LauncherError> {
         // TEMPO_HOME indicates a managed or test environment where updates
         // should be explicit (via `tempo update`), not automatic.
         if env::var_os("TEMPO_HOME").is_some() {
-            return;
+            return Ok(());
         }
 
-        let mut registry = Registry::load();
+        let mut registry = Registry::load().map_err(LauncherError::Registry)?;
         if !registry.needs_update_check(extension) {
-            return;
+            return Ok(());
         }
 
         let installed_version = registry
@@ -550,7 +564,7 @@ impl Launcher {
             Err(_) => {
                 registry.touch_check(extension);
                 registry.save();
-                return;
+                return Ok(());
             }
         };
 
@@ -589,9 +603,10 @@ impl Launcher {
             }
         }
         registry.save();
+        Ok(())
     }
 
-    /// Warn if the binary we found is not in the directory where the
+    /// Warns if the binary we found is not in the directory where the
     /// installer would place new versions. This happens when exe_dir is
     /// read-only — updates go to `~/.local/bin` but `find_binary` keeps
     /// discovering the stale copy next to the running executable.
@@ -618,6 +633,7 @@ impl Launcher {
         }
     }
 
+    /// Searches for an extension binary: exe_dir, fallback bin dir, then `PATH`.
     fn find_binary(&self, binary: &str) -> Option<PathBuf> {
         let candidates = binary_candidates(binary);
 
@@ -650,6 +666,7 @@ impl Launcher {
     }
 }
 
+/// Returns the base URL for extension manifests (`TEMPO_EXT_BASE_URL` or the default).
 fn base_url() -> String {
     env::var("TEMPO_EXT_BASE_URL").unwrap_or_else(|_| BASE_URL.to_string())
 }
@@ -665,6 +682,7 @@ fn release_public_key() -> String {
     PUBLIC_KEY.to_string()
 }
 
+/// Builds the manifest URL for an extension, optionally pinned to a version.
 fn manifest_url(extension: &str, version: Option<&str>) -> String {
     let base = base_url();
     let base = base.trim_end_matches('/');
@@ -677,6 +695,7 @@ fn manifest_url(extension: &str, version: Option<&str>) -> String {
     }
 }
 
+/// Executes the extension binary with the given arguments and returns the exit code.
 fn run_child(binary: PathBuf, args: &[OsString], display_name: &str) -> Result<i32, LauncherError> {
     tracing::debug!("exec {} args={args:?}", binary.display());
 
@@ -702,6 +721,7 @@ fn run_child(binary: PathBuf, args: &[OsString], display_name: &str) -> Result<i
     Ok(code)
 }
 
+/// Validates an extension name: non-empty, ASCII alphanumeric plus `-` and `_`.
 fn is_valid_extension_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -709,6 +729,7 @@ fn is_valid_extension_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// Prints a user-facing hint when an unknown subcommand has no matching extension.
 fn print_missing_install_hint(extension: &str) {
     println!("Unknown command '{extension}' and no compatible extension found.");
     println!("Run: tempo add {extension}");

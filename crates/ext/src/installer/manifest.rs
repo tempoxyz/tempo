@@ -5,23 +5,35 @@ use crate::installer::{error::InstallerError, file_url_to_path, http_client};
 use serde::Deserialize;
 use std::{collections::HashMap, fs};
 
+/// Deserialized release manifest describing available binaries for an extension.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct ReleaseManifest {
+    /// Semver version string (e.g. `"1.0.0"` or `"v1.0.0"`).
     pub(super) version: String,
+    /// Optional short description of the extension.
     pub(super) description: Option<String>,
+    /// Per-platform binary entries, keyed by platform name (e.g. `"tempo-wallet-darwin-arm64"`).
     pub(super) binaries: HashMap<String, ReleaseBinary>,
+    /// Optional URL for the extension's agent skill file.
     pub(super) skill: Option<String>,
+    /// Expected SHA-256 hex digest of the skill file.
     pub(super) skill_sha256: Option<String>,
+    /// Base64-encoded minisign signature of the skill file.
     pub(super) skill_signature: Option<String>,
 }
 
+/// A single platform binary entry within a release manifest.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct ReleaseBinary {
+    /// Download URL (`https://` or `file://`).
     pub(super) url: String,
+    /// Expected SHA-256 hex digest of the binary.
     pub(super) sha256: String,
+    /// Base64-encoded minisign signature of the binary.
     pub(super) signature: Option<String>,
 }
 
+/// Fetches and deserializes a release manifest from a URL or local path.
 pub(super) fn load_manifest(location: &str) -> Result<ReleaseManifest, InstallerError> {
     let body = if location.starts_with("https://") {
         http_client()?

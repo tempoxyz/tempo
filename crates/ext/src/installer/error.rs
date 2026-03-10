@@ -2,6 +2,7 @@
 
 use std::io;
 
+/// Errors that can occur during extension install, update, or removal.
 #[derive(Debug, thiserror::Error)]
 pub enum InstallerError {
     #[error("io error: {0}")]

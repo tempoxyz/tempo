@@ -12204,6 +12204,7 @@ name = "tempo-ext"
 version = "1.4.0"
 dependencies = [
  "clap",
+ "dirs-next",
  "minisign",
  "minisign-verify",
  "reqwest 0.13.2",

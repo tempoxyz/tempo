@@ -994,3 +994,127 @@ fn list_shows_pinned_status() {
     let code = fix.run(&["tempo", "list"]).unwrap();
     assert_eq!(code, 0);
 }
+
+// ── Corrupt registry ──────────────────────────────────────────────
+
+#[test]
+fn corrupt_registry_blocks_add() {
+    let _lock = lock();
+    let fix = Fixture::new();
+    fix.publish_extension("testpkg", "1.0.0");
+
+    // Write invalid JSON to the registry file.
+    fs::write(fix.home.join("extensions.json"), "NOT VALID JSON").unwrap();
+
+    let err = fix.run(&["tempo", "add", "testpkg"]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("registry corrupt"),
+        "expected 'registry corrupt', got: {msg}"
+    );
+}
+
+#[test]
+fn corrupt_registry_blocks_update() {
+    let _lock = lock();
+    let fix = Fixture::new();
+    fix.publish_extension("testpkg", "1.0.0");
+    fix.run(&["tempo", "add", "testpkg"]).unwrap();
+
+    // Corrupt the registry after a successful install.
+    fs::write(fix.home.join("extensions.json"), "{bad json}").unwrap();
+
+    let err = fix.run(&["tempo", "update", "testpkg"]).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("registry corrupt"), "got: {msg}");
+}
+
+#[test]
+fn corrupt_registry_blocks_update_all() {
+    let _lock = lock();
+    let fix = Fixture::new();
+
+    fs::write(fix.home.join("extensions.json"), "<<<").unwrap();
+
+    let err = fix.run(&["tempo", "update"]).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("registry corrupt"), "got: {msg}");
+}
+
+#[test]
+fn corrupt_registry_blocks_remove() {
+    let _lock = lock();
+    let fix = Fixture::new();
+    fix.publish_extension("testpkg", "1.0.0");
+    fix.run(&["tempo", "add", "testpkg"]).unwrap();
+
+    fs::write(fix.home.join("extensions.json"), "oops").unwrap();
+
+    let err = fix.run(&["tempo", "remove", "testpkg"]).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("registry corrupt"), "got: {msg}");
+}
+
+#[test]
+fn corrupt_registry_blocks_list() {
+    let _lock = lock();
+    let fix = Fixture::new();
+
+    fs::write(fix.home.join("extensions.json"), "~").unwrap();
+
+    let err = fix.run(&["tempo", "list"]).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("registry corrupt"), "got: {msg}");
+}
+
+#[test]
+fn corrupt_registry_error_contains_path() {
+    let _lock = lock();
+    let fix = Fixture::new();
+
+    fs::write(fix.home.join("extensions.json"), "garbage").unwrap();
+
+    let err = fix.run(&["tempo", "list"]).unwrap_err();
+    let msg = err.to_string();
+    let expected = fix.home.join("extensions.json").display().to_string();
+    assert!(
+        msg.contains(&expected),
+        "error should contain path '{expected}', got: {msg}"
+    );
+}
+
+#[test]
+fn missing_registry_allows_all_commands() {
+    let _lock = lock();
+    let fix = Fixture::new();
+
+    // No extensions.json exists — all commands should succeed.
+    assert_eq!(fix.run(&["tempo", "list"]).unwrap(), 0);
+    assert_eq!(fix.run(&["tempo", "update"]).unwrap(), 0);
+
+    // Add should work fine with no prior registry.
+    fix.publish_extension("testpkg", "1.0.0");
+    assert_eq!(fix.run(&["tempo", "add", "testpkg"]).unwrap(), 0);
+    assert_eq!(fix.installed_version("testpkg").as_deref(), Some("1.0.0"));
+
+    // Remove should also work.
+    assert_eq!(fix.run(&["tempo", "remove", "testpkg"]).unwrap(), 0);
+}
+
+#[test]
+fn corrupt_registry_during_auto_install_is_non_fatal() {
+    let _lock = lock();
+    let fix = Fixture::new();
+    fix.publish_extension("testpkg", "1.0.0");
+
+    // Corrupt the registry before attempting auto-install via extension dispatch.
+    // Auto-install swallows errors (including registry corruption) to avoid
+    // blocking extension execution — the binary still gets installed but the
+    // registry write is lost.
+    fs::write(fix.home.join("extensions.json"), "!!!").unwrap();
+
+    // The command doesn't error — it installs the binary, fails to record in
+    // the registry, and the error is swallowed by handle_extension's catch-all.
+    let code = fix.run(&["tempo", "testpkg"]).unwrap();
+    assert_eq!(code, 1, "should fall through to 'not found' hint");
+}

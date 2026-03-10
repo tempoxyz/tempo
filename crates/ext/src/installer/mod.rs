@@ -27,13 +27,14 @@ use tempfile::TempDir;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Builds an HTTP client with a 30-second timeout for manifest/binary fetches.
 pub(super) fn http_client() -> Result<reqwest::blocking::Client, InstallerError> {
     Ok(reqwest::blocking::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .build()?)
 }
 
-/// Parse a `file://` URL into a local path using the `url` crate.
+/// Parses a `file://` URL into a local path using the `url` crate.
 ///
 /// Returns `None` if the URL isn't a valid `file://` URL or can't be
 /// converted to a platform path (e.g. `file://remote/share` on Windows).
@@ -44,44 +45,53 @@ pub(super) fn file_url_to_path(url_str: &str) -> Option<PathBuf> {
         .and_then(|u| u.to_file_path().ok())
 }
 
+/// Where to fetch and verify an extension release from.
 #[derive(Debug, Clone)]
 pub(crate) struct InstallSource {
+    /// URL (or `file://` path) of the signed release manifest JSON.
     pub(crate) manifest: Option<String>,
+    /// Base64-encoded minisign public key for signature verification.
     pub(crate) public_key: Option<String>,
 }
 
+/// Handles downloading, verifying, and placing extension binaries.
 #[derive(Debug, Clone)]
 pub(crate) struct Installer {
+    /// Directory where extension binaries are installed.
     pub(crate) bin_dir: PathBuf,
 }
 
+/// Returned after a successful install with the version and description
+/// from the release manifest.
 #[derive(Debug, Clone)]
 pub(crate) struct InstallResult {
+    /// Installed version string (e.g. `"1.0.0"`).
     pub(crate) version: String,
+    /// Short description from the release manifest.
     pub(crate) description: String,
 }
 
+/// Fully resolved install plan: all paths and verification material ready.
 #[derive(Debug)]
 struct ResolvedInstall {
+    /// Version from the release manifest.
     version: String,
+    /// Short description from the release manifest.
     description: String,
     /// Path to the downloaded binary. `None` in dry-run mode.
     src: Option<PathBuf>,
+    /// Final destination path in `bin_dir`.
     dst: PathBuf,
+    /// Optional URL for the extension's Claude Code skill file.
     skill_url: Option<String>,
+    /// Expected SHA-256 hex digest of the skill file.
     skill_sha256: Option<String>,
+    /// Base64-encoded minisign signature of the skill file.
     skill_signature: Option<String>,
+    /// Decoded public key used for signature verification.
     public_key: PublicKey,
+    /// Temp directory holding the download; kept alive until install completes.
     _download_dir: TempDir,
-}
-
-/// The fallback install directory: `TEMPO_HOME/bin` if set, else `~/.local/bin`.
-pub(crate) fn fallback_bin_dir() -> Option<PathBuf> {
-    if let Some(home) = env::var_os("TEMPO_HOME") {
-        Some(PathBuf::from(home).join("bin"))
-    } else {
-        default_local_bin().ok()
-    }
 }
 
 impl Installer {
@@ -97,7 +107,7 @@ impl Installer {
         Ok(Self { bin_dir })
     }
 
-    /// Install an extension and return the installed version and description.
+    /// Installs an extension and returns the installed version and description.
     pub(crate) fn install(
         &self,
         extension: &str,
@@ -108,7 +118,7 @@ impl Installer {
         self.install_inner(extension, source, None, dry_run, quiet)
     }
 
-    /// Check if a newer version is available without installing.
+    /// Checks if a newer version is available without installing.
     /// Returns `Some(latest_version)` if the manifest version is strictly
     /// newer, `None` if already up to date.
     pub(crate) fn check_latest_version(
@@ -131,7 +141,7 @@ impl Installer {
         }
     }
 
-    /// Install an extension only if the manifest version is newer than
+    /// Installs an extension only if the manifest version is newer than
     /// `installed_version`. Returns `Some(result)` if an update was
     /// performed, `None` if already at the latest version.
     pub(crate) fn install_if_changed(
@@ -157,6 +167,7 @@ impl Installer {
         Ok(Some(result))
     }
 
+    /// Shared implementation for `install` and `install_if_changed`.
     fn install_inner(
         &self,
         extension: &str,
@@ -190,6 +201,7 @@ impl Installer {
         Ok(result)
     }
 
+    /// Removes an extension's binary and skill files.
     pub(crate) fn remove(&self, extension: &str, dry_run: bool) -> Result<(), InstallerError> {
         let binary = format!("tempo-{extension}");
         self.remove_binary(&binary, dry_run)?;
@@ -197,6 +209,7 @@ impl Installer {
         Ok(())
     }
 
+    /// Fetches the manifest, downloads the binary, and verifies checksums/signatures.
     fn resolve_install(
         &self,
         extension: &str,
@@ -263,6 +276,7 @@ impl Installer {
         })
     }
 
+    /// Atomically places the downloaded binary at its destination path.
     fn copy_binary(
         &self,
         resolved: &ResolvedInstall,
@@ -307,6 +321,7 @@ impl Installer {
         Ok(())
     }
 
+    /// Deletes the named binary from `bin_dir`.
     fn remove_binary(&self, binary: &str, dry_run: bool) -> Result<(), InstallerError> {
         let path = self.bin_dir.join(executable_name(binary));
 
@@ -320,6 +335,7 @@ impl Installer {
         Ok(())
     }
 
+    /// Creates `bin_dir` if it doesn't exist and verifies it is writable.
     fn ensure_dirs(&self, dry_run: bool) -> Result<(), InstallerError> {
         if dry_run {
             println!("dry-run: ensure dir {}", self.bin_dir.display());
@@ -332,6 +348,17 @@ impl Installer {
     }
 }
 
+/// The fallback install directory: `TEMPO_HOME/bin` if set, else `~/.local/bin`.
+pub(crate) fn fallback_bin_dir() -> Option<PathBuf> {
+    if let Some(home) = env::var_os("TEMPO_HOME") {
+        Some(PathBuf::from(home).join("bin"))
+    } else {
+        default_local_bin().ok()
+    }
+}
+
+/// Downloads an extension binary, verifies its checksum and signature, and
+/// returns the path to the verified file in `download_dir`.
 fn download_extension(
     binary: &str,
     platform_key: &str,

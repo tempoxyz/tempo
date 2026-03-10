@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 
 use crate::installer::error::InstallerError;
 
+/// Decodes a base64-encoded minisign public key.
 pub(super) fn decode_public_key(encoded_key: &str) -> Result<PublicKey, InstallerError> {
     PublicKey::from_base64(encoded_key).map_err(|err| InstallerError::SignatureFormat {
         field: "release public key",
@@ -12,6 +13,10 @@ pub(super) fn decode_public_key(encoded_key: &str) -> Result<PublicKey, Installe
     })
 }
 
+/// Verifies a minisign signature over `data` and checks that every entry in
+/// `expected_trusted_comments` appears in the signature's trusted comment
+/// (tab-separated tokens). This prevents cross-extension substitution and
+/// version replay attacks.
 pub(super) fn verify_signature(
     artifact: &str,
     data: &[u8],
@@ -47,6 +52,7 @@ pub(super) fn verify_signature(
     Ok(())
 }
 
+/// Computes the SHA-256 digest of `data` and returns it as a lowercase hex string.
 pub(super) fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);

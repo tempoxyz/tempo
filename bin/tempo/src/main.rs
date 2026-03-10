@@ -135,7 +135,10 @@ fn print_extensions_footer() {
         return;
     }
 
-    let extensions = tempo_ext::installed_extensions();
+    let extensions = match tempo_ext::installed_extensions() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
     if extensions.is_empty() {
         return;
     }

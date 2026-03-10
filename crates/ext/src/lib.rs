@@ -11,8 +11,10 @@ pub use installer::InstallerError;
 pub use launcher::{LauncherError, run};
 
 /// Returns installed extensions as `(name, description)` pairs, sorted alphabetically.
-pub fn installed_extensions() -> Vec<(String, String)> {
-    let reg = registry::Registry::load();
+///
+/// Returns an error if the registry file exists but cannot be read or parsed.
+pub fn installed_extensions() -> Result<Vec<(String, String)>, String> {
+    let reg = registry::Registry::load()?;
     let mut exts: Vec<(String, String)> = reg
         .extensions
         .into_iter()
@@ -20,7 +22,7 @@ pub fn installed_extensions() -> Vec<(String, String)> {
         .map(|(name, state)| (name, state.description))
         .collect();
     exts.sort_by(|(a, _), (b, _)| a.cmp(b));
-    exts
+    Ok(exts)
 }
 
 #[cfg(test)]

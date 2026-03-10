@@ -7,6 +7,7 @@ use std::{
 
 use crate::installer::error::InstallerError;
 
+/// Builds the platform-specific binary name (e.g. `tempo-wallet-darwin-arm64`).
 pub(super) fn platform_binary_name(extension: &str) -> String {
     let (os, arch) = platform_tuple();
     format!("tempo-{extension}-{os}-{arch}")
@@ -32,6 +33,7 @@ fn platform_tuple() -> (&'static str, &'static str) {
     (os, arch)
 }
 
+/// Searches `PATH` for a binary by name, returning the first match.
 pub(crate) fn find_in_path(binary: &str) -> Option<PathBuf> {
     let path_env = env::var_os("PATH")?;
     let candidates = binary_candidates(binary);
@@ -48,23 +50,28 @@ pub(crate) fn find_in_path(binary: &str) -> Option<PathBuf> {
     None
 }
 
+/// Returns the user's home directory via `dirs_next`.
 pub(crate) fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME").map(PathBuf::from)
+    dirs_next::home_dir()
 }
 
+/// Returns `~/.local/bin`, the default install directory on Unix.
 pub(crate) fn default_local_bin() -> Result<PathBuf, InstallerError> {
     let home = home_dir().ok_or(InstallerError::HomeDirMissing)?;
     Ok(home.join(".local").join("bin"))
 }
 
+/// Returns the platform executable filename (identity on Unix, `.exe` on Windows).
 pub(super) fn executable_name(binary: &str) -> String {
     binary.to_string()
 }
 
+/// Returns candidate filenames to search for a binary (platform-dependent).
 pub(crate) fn binary_candidates(base: &str) -> Vec<String> {
     vec![base.to_string()]
 }
 
+/// Verifies that `dir` is writable by creating a temporary file in it.
 pub(super) fn check_dir_writable(dir: &Path) -> Result<(), InstallerError> {
     tempfile::NamedTempFile::new_in(dir).map_err(|err| {
         InstallerError::Io(std::io::Error::new(
@@ -75,6 +82,7 @@ pub(super) fn check_dir_writable(dir: &Path) -> Result<(), InstallerError> {
     Ok(())
 }
 
+/// Sets the file mode to `0o755` (owner rwx, group/other rx).
 pub(super) fn set_executable_permissions(file: &fs::File) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
