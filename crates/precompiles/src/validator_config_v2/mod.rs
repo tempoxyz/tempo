@@ -1,3 +1,8 @@
+//! Validator Config V2 precompile – index-canonical, on-chain, [consensus] validator registry with
+//! signature-gated operations, IP uniqueness enforcement, and migration support from V1.
+//!
+//! [consensus]: <https://docs.tempo.xyz/protocol/blockspace/consensus>
+
 pub mod dispatch;
 
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
@@ -26,20 +31,30 @@ pub const VALIDATOR_NS_ROTATE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDA
 /// Per-validator record stored in the `validators` vector.
 #[derive(Debug, Storable)]
 struct ValidatorV2 {
+    /// Ed25519 public key (zero ⇒ invalid).
     public_key: B256,
+    /// Ethereum address identifying this validator.
     validator_address: Address,
+    /// Ingress endpoint in `<ip>:<port>` format for peer connections.
     ingress: String,
+    /// Egress IP address (no port) for firewall whitelisting.
     egress: String,
+    /// Position in the `validators` vector.
     index: u64,
+    /// Block height at which this record was created.
     added_at_height: u64,
+    /// Block height at which this record was deactivated (0 = active).
     deactivated_at_height: u64,
 }
 
 /// Contract-level configuration (owner, initialization flag, and init height).
 #[derive(Debug, Storable)]
 struct Config {
+    /// Contract admin address.
     owner: Address,
+    /// `true` once the contract is fully initialized (post-migration or direct init).
     is_init: bool,
+    /// Block height at which initialization completed.
     init_at_height: u64,
 }
 
@@ -66,25 +81,30 @@ impl Config {
 /// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = VALIDATOR_CONFIG_V2_ADDRESS)]
 pub struct ValidatorConfigV2 {
+    /// Owner, initialization flag, and init height.
     config: Config,
+    /// Append-only ordered list of all validator records (source of truth).
     validators: Vec<ValidatorV2>,
+    /// Validator address → 1-indexed position in `validators` (0 = not found).
     address_to_index: Mapping<Address, u64>,
+    /// Public key → 1-indexed position in `validators` (0 = not found).
     pubkey_to_index: Mapping<B256, u64>,
+    /// Epoch at which a fresh DKG ceremony will be triggered.
     next_dkg_ceremony: u64,
+    /// `keccak256(ingress_ip)` → `true` for active validators, enforcing IP uniqueness.
     active_ingress_ips: Mapping<B256, bool>,
 }
 
 impl ValidatorConfigV2 {
-    /// Bootstraps storage layout and sets the contract owner. Must be called exactly once.
+    /// Initializes the validator config V2 precompile.
     ///
-    /// The contract is fully operational immediately: `is_init` is set to `true`
-    /// and all mutating functions (`add_validator`, `rotate_validator`, etc.) are
-    /// unlocked.
+    /// The contract is fully operational immediately: `is_init` is set to `true` and all
+    /// mutating functions (`add_validator`, `rotate_validator`, etc.) are unlocked.
     ///
     /// For migration from V1, the contract is **not** initialized — instead
-    /// [`migrate_validator`](Self::migrate_validator) copies validators one-by-one
-    /// and [`initialize_if_migrated`](Self::initialize_if_migrated) flips `is_init`
-    /// once all V1 validators have been migrated.
+    /// [`migrate_validator`](Self::migrate_validator) copies validators one-by-one and
+    /// [`initialize_if_migrated`](Self::initialize_if_migrated) flips `is_init` once all
+    /// V1 validators have been migrated.
     pub fn initialize(&mut self, owner: Address) -> Result<()> {
         trace!(address=%self.address, %owner, "Initializing validator config v2 precompile");
         self.__initialize()?;
@@ -98,14 +118,17 @@ impl ValidatorConfigV2 {
     // Config accessors and guards — each reads config once (1 SLOAD)
     // =========================================================================
 
+    /// Returns the current contract owner address.
     pub fn owner(&self) -> Result<Address> {
         self.config.owner.read()
     }
 
+    /// Returns the block height at which the contract was initialized.
     pub fn get_initialized_at_height(&self) -> Result<u64> {
         self.config.init_at_height.read()
     }
 
+    /// Returns whether the contract has been fully initialized.
     pub fn is_initialized(&self) -> Result<bool> {
         self.config.is_init.read()
     }
@@ -138,6 +161,7 @@ impl ValidatorConfigV2 {
         Ok(config)
     }
 
+    /// Returns the total number of validator records (active + deactivated).
     pub fn validator_count(&self) -> Result<u64> {
         Ok(self.validators.len()? as u64)
     }
@@ -174,6 +198,10 @@ impl ValidatorConfigV2 {
         })
     }
 
+    /// Returns the validator at the given array `index`.
+    ///
+    /// # Errors
+    /// - `ValidatorNotFound` — if `index` is out of bounds
     pub fn validator_by_index(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
         if index >= self.validator_count()? {
             Err(ValidatorConfigV2Error::validator_not_found())?
@@ -181,6 +209,10 @@ impl ValidatorConfigV2 {
         self.read_validator_at(index)
     }
 
+    /// Looks up a validator by its Ethereum address.
+    ///
+    /// # Errors
+    /// - `ValidatorNotFound` — if no validator is registered for `addr`
     pub fn validator_by_address(&self, addr: Address) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.address_to_index[addr].read()?;
         if idx1 == 0 {
@@ -189,6 +221,10 @@ impl ValidatorConfigV2 {
         self.read_validator_at(idx1 - 1)
     }
 
+    /// Looks up a validator by its Ed25519 public key.
+    ///
+    /// # Errors
+    /// - `ValidatorNotFound` — if no validator is registered for `pubkey`
     pub fn validator_by_public_key(&self, pubkey: B256) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.pubkey_to_index[pubkey].read()?;
         if idx1 == 0 {
@@ -197,6 +233,7 @@ impl ValidatorConfigV2 {
         self.read_validator_at(idx1 - 1)
     }
 
+    /// Returns all validator records (active and deactivated) in index order.
     pub fn get_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
         let count = self.validator_count()?;
         let mut out = Vec::with_capacity(count as usize);
@@ -206,6 +243,7 @@ impl ValidatorConfigV2 {
         Ok(out)
     }
 
+    /// Returns only validators that have not been deactivated.
     pub fn get_active_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
         let count = self.validator_count()?;
         let mut out = Vec::new();
@@ -218,6 +256,7 @@ impl ValidatorConfigV2 {
         Ok(out)
     }
 
+    /// Returns the epoch at which the next fresh DKG ceremony will be triggered.
     pub fn get_next_full_dkg_ceremony(&self) -> Result<u64> {
         self.next_dkg_ceremony.read()
     }
@@ -378,6 +417,22 @@ impl ValidatorConfigV2 {
     // Owner-only mutating functions
     // =========================================================================
 
+    /// Registers a new validator with a signed Ed25519 attestation. Owner-only.
+    ///
+    /// Validates endpoint format, IP uniqueness, public key uniqueness, and the
+    /// validator's signature before appending the record.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — if `sender` is not the contract owner
+    /// - `NotInitialized` — if the contract is not yet initialized
+    /// - `InvalidPublicKey` — if `publicKey` is zero or cannot be decoded
+    /// - `PublicKeyAlreadyExists` — if `publicKey` is already registered
+    /// - `InvalidValidatorAddress` — if `validatorAddress` is zero
+    /// - `AddressAlreadyHasValidator` — if an active validator already uses the address
+    /// - `NotIpPort` — if `ingress` is not a valid `<ip>:<port>`
+    /// - `NotIp` — if `egress` is not a valid IP address
+    /// - `IngressAlreadyExists` — if the ingress IP is already used by an active validator
+    /// - `InvalidSignatureFormat` / `InvalidSignature` — if the Ed25519 attestation fails
     pub fn add_validator(
         &mut self,
         sender: Address,
@@ -412,6 +467,14 @@ impl ValidatorConfigV2 {
         )
     }
 
+    /// Marks a validator as deactivated at the current block height. Owner or self.
+    ///
+    /// Releases the validator's ingress IP so it can be reused by a new validator.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — if `sender` is neither the validator nor the owner
+    /// - `ValidatorNotFound` — if no validator is registered for the address
+    /// - `ValidatorAlreadyDeleted` — if the validator is already deactivated
     pub fn deactivate_validator(
         &mut self,
         sender: Address,
@@ -430,6 +493,11 @@ impl ValidatorConfigV2 {
         self.validators[idx].write(v)
     }
 
+    /// Transfers contract ownership to a new address. Owner-only.
+    ///
+    /// # Errors
+    /// - `NotInitialized` — if the contract is not yet initialized
+    /// - `Unauthorized` — if `sender` is not the contract owner
     pub fn transfer_ownership(
         &mut self,
         sender: Address,
@@ -440,6 +508,11 @@ impl ValidatorConfigV2 {
         self.config.write(config)
     }
 
+    /// Sets the epoch at which a fresh DKG ceremony will be triggered. Owner-only.
+    ///
+    /// # Errors
+    /// - `NotInitialized` — if the contract is not yet initialized
+    /// - `Unauthorized` — if `sender` is not the contract owner
     pub fn set_next_full_dkg_ceremony(
         &mut self,
         sender: Address,
@@ -453,6 +526,22 @@ impl ValidatorConfigV2 {
     // Dual-auth functions (owner or validator)
     // =========================================================================
 
+    /// Rotates a validator's public key and endpoints. Owner or validator.
+    ///
+    /// Deactivates the old record and appends a new one with a fresh key, verified via an
+    /// Ed25519 signature under [`VALIDATOR_NS_ROTATE`].
+    ///
+    /// # Errors
+    /// - `NotInitialized` — if the contract is not yet initialized
+    /// - `Unauthorized` — if `sender` is neither the validator nor the owner
+    /// - `InvalidPublicKey` — if `publicKey` is zero or cannot be decoded
+    /// - `PublicKeyAlreadyExists` — if `publicKey` is already registered
+    /// - `NotIpPort` — if `ingress` is not a valid `<ip>:<port>`
+    /// - `NotIp` — if `egress` is not a valid IP address
+    /// - `InvalidSignatureFormat` / `InvalidSignature` — if the Ed25519 attestation fails
+    /// - `ValidatorNotFound` — if no active validator exists for the address
+    /// - `ValidatorAlreadyDeleted` — if the validator is already deactivated
+    /// - `IngressAlreadyExists` — if the new ingress IP is already used by another validator
     pub fn rotate_validator(
         &mut self,
         sender: Address,
@@ -491,6 +580,15 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
+    /// Updates a validator's ingress and egress endpoints in-place. Owner or validator.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — if `sender` is neither the validator nor the owner
+    /// - `ValidatorNotFound` — if no active validator exists for the address
+    /// - `ValidatorAlreadyDeleted` — if the validator is already deactivated
+    /// - `NotIpPort` — if `ingress` is not a valid `<ip>:<port>`
+    /// - `NotIp` — if `egress` is not a valid IP address
+    /// - `IngressAlreadyExists` — if the new ingress IP is already used by another validator
     pub fn set_ip_addresses(
         &mut self,
         sender: Address,
@@ -512,6 +610,15 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
+    /// Transfers a validator's controlling address to a new address. Owner or validator.
+    ///
+    /// # Errors
+    /// - `NotInitialized` — if the contract is not yet initialized
+    /// - `Unauthorized` — if `sender` is neither the validator nor the owner
+    /// - `InvalidValidatorAddress` — if `newAddress` is zero
+    /// - `AddressAlreadyHasValidator` — if an active validator already uses `newAddress`
+    /// - `ValidatorNotFound` — if no active validator exists for `currentAddress`
+    /// - `ValidatorAlreadyDeleted` — if the validator is already deactivated
     pub fn transfer_validator_ownership(
         &mut self,
         sender: Address,
@@ -536,9 +643,8 @@ impl ValidatorConfigV2 {
 
     /// Requires the contract to NOT be initialized and the caller to be owner.
     ///
-    /// On the very first migration call the V2 owner is still zero, so we copy
-    /// it from V1 before checking authorization.  Returns the (possibly updated)
-    /// config for reuse.
+    /// On the very first migration call the V2 owner is still zero, so we copy it from V1 before
+    /// checking authorization. Returns the (possibly updated) config for reuse.
     fn require_migration_owner(&mut self, caller: Address) -> Result<Config> {
         let mut config = self.config.read()?;
         if config.is_init {
@@ -560,6 +666,18 @@ impl ValidatorConfigV2 {
         Ok(config)
     }
 
+    /// Copies a single validator from [`ValidatorConfig`] at the given index. Owner-only, pre-init.
+    ///
+    /// Must be called sequentially (`idx` must equal the current V2 count).
+    ///
+    /// # Errors
+    /// - `AlreadyInitialized` — if the contract is already initialized
+    /// - `Unauthorized` — if `sender` is not the contract owner
+    /// - `InvalidMigrationIndex` — if `idx` does not equal the current V2 validator count
+    /// - `ValidatorNotFound` — if `idx` is out of bounds in V1
+    /// - `InvalidValidatorAddress` — if the V1 validator address is zero or already active
+    /// - `InvalidPublicKey` — if the V1 public key is zero or already registered
+    /// - `IngressAlreadyExists` — if the V1 ingress IP is already used
     pub fn migrate_validator(
         &mut self,
         sender: Address,
@@ -608,6 +726,13 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
+    /// Finalizes migration by flipping `is_init` once all V1 validators have been copied.
+    /// Also copies the V1 `next_dkg_ceremony` value into V2 storage.
+    ///
+    /// # Errors
+    /// - `AlreadyInitialized` — if the contract is already initialized
+    /// - `Unauthorized` — if `sender` is not the contract owner
+    /// - `MigrationNotComplete` — if fewer validators have been migrated than exist in V1
     pub fn initialize_if_migrated(&mut self, sender: Address) -> Result<()> {
         let mut config = self.require_migration_owner(sender)?;
         let v1 = v1();
