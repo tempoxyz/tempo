@@ -47,11 +47,6 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
     /// The time it took to execute one transaction in seconds.
     pub(crate) transaction_execution_duration_seconds: Histogram,
-    /// Total time spent in `best_txs.next()` calls that yielded a transaction.
-    /// Does not include the final `None`-returning call.
-    pub(crate) best_txs_next_total_duration_seconds: Histogram,
-    /// Number of `best_txs.next()` calls that yielded a transaction (excludes terminal `None`).
-    pub(crate) best_txs_next_yield_count: Histogram,
     /// The time it took to execute normal transactions in seconds.
     pub(crate) total_normal_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute subblock transactions in seconds.

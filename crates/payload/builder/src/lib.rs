@@ -42,7 +42,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
@@ -377,17 +377,7 @@ where
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
-        let mut best_txs_next_total = Duration::ZERO;
-        let mut best_txs_next_calls = 0u64;
-        while let Some(pool_tx) = {
-            let next_start = Instant::now();
-            let next = best_txs.next();
-            if next.is_some() {
-                best_txs_next_total += next_start.elapsed();
-                best_txs_next_calls += 1;
-            }
-            next
-        } {
+        while let Some(pool_tx) = best_txs.next() {
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
@@ -501,12 +491,6 @@ where
         }
         drop(_block_fill_span);
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
-        self.metrics
-            .best_txs_next_total_duration_seconds
-            .record(best_txs_next_total);
-        self.metrics
-            .best_txs_next_yield_count
-            .record(best_txs_next_calls as f64);
         self.metrics
             .total_normal_transaction_execution_duration_seconds
             .record(total_normal_transaction_execution_elapsed);
