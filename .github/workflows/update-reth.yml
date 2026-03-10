@@ -110,7 +110,6 @@ jobs:
         id: check-loop
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
-          AMP_SERVER_URL: ${{ vars.AMP_SERVER_URL }}
         run: |
           MAX_ATTEMPTS=${{ inputs.max_check_attempts || '5' }}
           check_failed=false
@@ -160,7 +159,6 @@ jobs:
         id: test-loop
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
-          AMP_SERVER_URL: ${{ vars.AMP_SERVER_URL }}
         run: |
           MAX_ATTEMPTS=${{ inputs.max_test_attempts || '3' }}
           tests_failed=false
