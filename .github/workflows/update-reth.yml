@@ -1,9 +1,9 @@
 # Nightly workflow to update reth dependencies from upstream main branch.
 #
-# Checks out the `reth/main` branch (which has reth deps pointing at
+# Checks out the `reth-main` branch (which has reth deps pointing at
 # `branch = "main"`), runs `cargo update` to pull latest revisions,
 # and uses Sourcegraph Amp to auto-fix any compilation / test breakage.
-# Creates or updates a PR targeting `reth/main`.
+# Creates or updates a PR targeting `reth-main`.
 
 name: Update reth deps
 
@@ -41,13 +41,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.DEREK_PAT }}
 
-      - name: Ensure reth/main branch exists
+      - name: Ensure reth-main branch exists
         run: |
-          if git rev-parse --verify origin/reth/main >/dev/null 2>&1; then
-            git checkout reth/main
+          if git rev-parse --verify origin/reth-main >/dev/null 2>&1; then
+            git checkout reth-main
           else
-            echo "reth/main not found, creating from main"
-            git checkout -b reth/main main
+            echo "reth-main not found, creating from main"
+            git checkout -b reth-main origin/main
           fi
 
       # ── toolchain (matches test.yml) ───────────────────────────
@@ -79,8 +79,8 @@ jobs:
           else
             echo "Merge conflicts detected, using Amp to resolve..."
             CONFLICTED=$(git diff --name-only --diff-filter=U)
-            AMP_PROMPT="The branch reth/main has merge conflicts after merging origin/main. \
-            Please resolve all merge conflicts in the following files. Keep the reth/main branch's \
+            AMP_PROMPT="The branch reth-main has merge conflicts after merging origin/main. \
+            Please resolve all merge conflicts in the following files. Keep the reth-main branch's \
             intent (reth deps pointing at branch = \"main\") while incorporating changes from main. \
             Conflicted files: ${CONFLICTED}"
 
@@ -227,8 +227,8 @@ jobs:
       - name: Push branches
         if: steps.update.outputs.skip != 'true'
         run: |
-          # Ensure reth/main exists on remote (needed as PR base)
-          git push -u origin reth/main 2>/dev/null || true
+          # Ensure reth-main exists on remote (needed as PR base)
+          git push -u origin reth-main 2>/dev/null || true
           git push --force-with-lease origin reth-main-update-deps
 
       # ── create / update PR ─────────────────────────────────────
@@ -264,7 +264,7 @@ jobs:
           } > /tmp/pr-body.txt
 
           # Check for existing PR
-          EXISTING_PR=$(gh pr list --head reth-main-update-deps --base reth/main --state open --json number --jq '.[0].number // empty')
+          EXISTING_PR=$(gh pr list --head reth-main-update-deps --base reth-main --state open --json number --jq '.[0].number // empty')
 
           if [ -n "$EXISTING_PR" ]; then
             echo "Updating existing PR #$EXISTING_PR"
@@ -272,7 +272,7 @@ jobs:
           else
             echo "Creating new PR"
             gh pr create \
-              --base reth/main \
+              --base reth-main \
               --head reth-main-update-deps \
               --title "$TITLE" \
               --body-file /tmp/pr-body.txt \
