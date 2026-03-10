@@ -1062,7 +1062,8 @@ impl RevokedKeys {
 #[derive(Debug, Clone, Default)]
 pub struct SpendingLimitUpdates {
     /// Map from account to list of (key_id, token) pairs that had limit changes.
-    by_account: AddressMap<Vec<(Address, Address)>>,
+    /// `None` token acts as a wildcard matching any fee token for that key_id.
+    by_account: AddressMap<Vec<(Address, Option<Address>)>>,
 }
 
 impl SpendingLimitUpdates {
@@ -1071,8 +1072,8 @@ impl SpendingLimitUpdates {
         Self::default()
     }
 
-    /// Inserts a spending limit update.
-    pub fn insert(&mut self, account: Address, key_id: Address, token: Address) {
+    /// Inserts a spending limit update. `None` token matches any fee token.
+    pub fn insert(&mut self, account: Address, key_id: Address, token: Option<Address>) {
         self.by_account
             .entry(account)
             .or_default()
@@ -1091,15 +1092,15 @@ impl SpendingLimitUpdates {
 
     /// Returns true if the given (account, key_id, token) combination is in the index.
     ///
-    /// A wildcard entry `(key_id, Address::ZERO)` matches any token for that key_id.
-    /// This is used for included block txs whose fee token could not be exactly resolved.
+    /// A `None` entry matches any token for that key_id. This is used for included
+    /// block txs whose fee token could not be resolved without state access.
     pub fn contains(&self, account: Address, key_id: Address, token: Address) -> bool {
         self.by_account
             .get(&account)
-            .is_some_and(|pairs: &Vec<(Address, Address)>| {
+            .is_some_and(|pairs: &Vec<(Address, Option<Address>)>| {
                 pairs
                     .iter()
-                    .any(|&(k, t)| k == key_id && (t == token || t.is_zero()))
+                    .any(|&(k, t)| k == key_id && t.is_none_or(|t| t == token))
             })
     }
 }
