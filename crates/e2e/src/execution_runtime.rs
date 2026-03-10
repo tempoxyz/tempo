@@ -334,8 +334,6 @@ impl ExecutionRuntime {
                 .unwrap();
             rt.block_on(async move {
                 while let Some(msg) = from_handle.recv().await {
-                    // create a new task manager for the new node instance
-                    let task_manager = RethRuntime::test();
                     match msg {
                         Message::AddValidator(add_validator) => {
                             let AddValidator {
@@ -415,8 +413,11 @@ impl ExecutionRuntime {
                             database,
                             response,
                         } => {
+                            // Create a fresh RethRuntime per node so each gets
+                            // its own TaskManager and shutdown signal.
+                            let runtime = RethRuntime::test();
                             let node = launch_execution_node(
-                                task_manager,
+                                runtime,
                                 chain_spec.clone(),
                                 datadir.join(name),
                                 config,
