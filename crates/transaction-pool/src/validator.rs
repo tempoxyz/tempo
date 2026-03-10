@@ -260,30 +260,39 @@ where
         }
 
         // Check spending limit for fee token if enforce_limits is enabled.
-        // This prevents transactions that would exceed the spending limit from entering the pool.
+        // Skip when a distinct fee payer sponsors the transaction since the sender's
+        // key isn't spending on fees in that case.
         if authorized_key.enforce_limits {
-            let fee_token = transaction
+            let fee_payer = transaction
                 .inner()
-                .fee_token()
-                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
-            let fee_cost = transaction.fee_token_cost();
+                .fee_payer(transaction.sender())
+                .unwrap_or(transaction.sender());
 
-            // Compute the storage slot for the spending limit
-            let limit_key = AccountKeychain::spending_limit_key(transaction.sender(), key_id);
-            let spending_limit_slot =
-                AccountKeychain::new().spending_limits[limit_key][fee_token].slot();
+            if fee_payer == transaction.sender() {
+                let fee_token = transaction
+                    .inner()
+                    .fee_token()
+                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+                let fee_cost = transaction.fee_token_cost();
 
-            // Read the spending limit from state
-            let remaining_limit = state_provider
-                .storage(ACCOUNT_KEYCHAIN_ADDRESS, spending_limit_slot.into())?
-                .unwrap_or(U256::ZERO);
+                // Compute the storage slot for the spending limit
+                let limit_key =
+                    AccountKeychain::spending_limit_key(transaction.sender(), key_id);
+                let spending_limit_slot =
+                    AccountKeychain::new().spending_limits[limit_key][fee_token].slot();
 
-            if fee_cost > remaining_limit {
-                return Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded {
-                    fee_token,
-                    cost: fee_cost,
-                    remaining: remaining_limit,
-                }));
+                // Read the spending limit from state
+                let remaining_limit = state_provider
+                    .storage(ACCOUNT_KEYCHAIN_ADDRESS, spending_limit_slot.into())?
+                    .unwrap_or(U256::ZERO);
+
+                if fee_cost > remaining_limit {
+                    return Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded {
+                        fee_token,
+                        cost: fee_cost,
+                        remaining: remaining_limit,
+                    }));
+                }
             }
         }
 
