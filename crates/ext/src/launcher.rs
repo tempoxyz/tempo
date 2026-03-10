@@ -389,7 +389,7 @@ impl Launcher {
             } else {
                 format!(" - {}", state.description)
             };
-            println!("  {name:<24} {}{pin}{desc}", state.installed_version);
+            println!("  {name:<22} {}{pin}{desc}", state.installed_version);
         }
 
         Ok(0)

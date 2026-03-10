@@ -33,7 +33,7 @@ mod defaults;
 mod init_state;
 mod tempo_cmd;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
@@ -58,6 +58,13 @@ use tempo_node::{
 };
 use tokio::sync::oneshot;
 use tracing::{info, info_span};
+
+type TempoCli = Cli<
+    TempoChainSpecParser,
+    TempoArgs,
+    DefaultRpcModuleValidator,
+    tempo_cmd::TempoSubcommand,
+>;
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
@@ -145,12 +152,10 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let mut cli = match Cli::<
-        TempoChainSpecParser,
-        TempoArgs,
-        DefaultRpcModuleValidator,
-        tempo_cmd::TempoSubcommand,
-    >::try_parse()
+    let mut cli = match TempoCli::command()
+        .about("Tempo")
+        .try_get_matches_from(std::env::args_os())
+        .and_then(|matches| TempoCli::from_arg_matches(&matches))
     {
         Ok(cli) => cli,
         Err(err) => {
@@ -179,7 +184,7 @@ fn main() -> eyre::Result<()> {
                             if desc.is_empty() {
                                 println!("  {b}{name}{r}");
                             } else {
-                                println!("  {b}{name:<24}{r} {desc}");
+                                println!("  {b}{name:<22}{r} {desc}");
                             }
                         }
                     }
