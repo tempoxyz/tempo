@@ -296,6 +296,12 @@ jobs:
             WAIT_START=$SECONDS
             while true; do
               STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
+              # gh pr checks may return non-JSON (e.g. "no checks reported") before CI starts
+              if ! echo "$STATUS" | jq empty 2>/dev/null; then
+                echo "Waiting for CI to start (gh pr checks returned non-JSON)..."
+                sleep 60
+                continue
+              fi
               PENDING=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | length')
               if [ "$PENDING" = "0" ] 2>/dev/null; then
                 break
