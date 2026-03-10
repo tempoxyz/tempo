@@ -47,12 +47,11 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
     /// The time it took to execute one transaction in seconds.
     pub(crate) transaction_execution_duration_seconds: Histogram,
-    /// Total time spent in `best_txs.next()` across all calls during the block fill loop.
+    /// Total time spent in `best_txs.next()` calls that yielded a transaction.
+    /// Does not include the final `None`-returning call.
     pub(crate) best_txs_next_total_duration_seconds: Histogram,
-    /// Number of `best_txs.next()` calls that returned a transaction.
-    pub(crate) best_txs_next_calls_total: Histogram,
-    /// Wall-clock duration of the pool tx selection + execution loop.
-    pub(crate) block_fill_duration_seconds: Histogram,
+    /// Number of `best_txs.next()` calls that yielded a transaction (excludes terminal `None`).
+    pub(crate) best_txs_next_yield_count: Histogram,
     /// The time it took to execute normal transactions in seconds.
     pub(crate) total_normal_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute subblock transactions in seconds.
@@ -84,6 +83,9 @@ pub(crate) struct TempoPayloadBuilderMetrics {
 }
 
 /// Increments the unified pool transaction skip counter with the given reason label.
+///
+/// Note: `mark_invalid` may also prune descendant transactions from the iterator,
+/// so the skip count represents skip *events*, not total transactions removed.
 #[inline]
 pub(crate) fn inc_pool_tx_skipped(reason: &'static str) {
     metrics::counter!("tempo_payload_builder_pool_transactions_skipped_total", "reason" => reason)

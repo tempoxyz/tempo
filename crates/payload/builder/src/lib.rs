@@ -502,13 +502,10 @@ where
         drop(_block_fill_span);
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
         self.metrics
-            .block_fill_duration_seconds
-            .record(total_normal_transaction_execution_elapsed);
-        self.metrics
             .best_txs_next_total_duration_seconds
             .record(best_txs_next_total);
         self.metrics
-            .best_txs_next_calls_total
+            .best_txs_next_yield_count
             .record(best_txs_next_calls as f64);
         self.metrics
             .total_normal_transaction_execution_duration_seconds
