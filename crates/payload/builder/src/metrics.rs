@@ -28,10 +28,18 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) gas_used: Histogram,
     /// Amount of gas used in the payload.
     pub(crate) gas_used_last: Gauge,
+    /// Time to acquire the state provider and initialize the state DB.
+    pub(crate) state_setup_duration_seconds: Histogram,
+    /// Time to create the EVM/block builder.
+    pub(crate) create_evm_duration_seconds: Histogram,
+    /// Time to apply pre-execution changes.
+    pub(crate) pre_execution_duration_seconds: Histogram,
     /// The time it took to prepare system transactions in seconds.
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
     /// The time it took to execute one transaction in seconds.
     pub(crate) transaction_execution_duration_seconds: Histogram,
+    /// The time it took to select the next candidate transaction from the pool.
+    pub(crate) best_txs_next_duration_seconds: Histogram,
     /// The time it took to execute normal transactions in seconds.
     pub(crate) total_normal_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute subblock transactions in seconds.
@@ -52,4 +60,11 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) rlp_block_size_bytes: Histogram,
     /// RLP-encoded block size in bytes for the last payload.
     pub(crate) rlp_block_size_bytes_last: Gauge,
+}
+
+/// Increments the unified pool transaction skip counter with the given reason label.
+#[inline]
+pub(crate) fn inc_pool_tx_skipped(reason: &'static str) {
+    metrics::counter!("tempo_payload_builder_pool_transactions_skipped_total", "reason" => reason)
+        .increment(1);
 }

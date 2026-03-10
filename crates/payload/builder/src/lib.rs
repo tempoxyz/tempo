@@ -5,7 +5,7 @@
 
 mod metrics;
 
-use crate::metrics::TempoPayloadBuilderMetrics;
+use crate::metrics::{TempoPayloadBuilderMetrics, inc_pool_tx_skipped};
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
@@ -60,7 +60,7 @@ use tempo_transaction_pool::{
     TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
-use tracing::{Level, debug, error, info, instrument, trace, warn};
+use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -240,6 +240,8 @@ where
         self.metrics.block_time_millis.record(block_time_millis);
         self.metrics.block_time_millis_last.set(block_time_millis);
 
+        let state_setup_start = Instant::now();
+        let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
         let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
             Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
@@ -255,6 +257,10 @@ where
             })
             .with_bundle_update()
             .build();
+        drop(_state_setup_span);
+        self.metrics
+            .state_setup_duration_seconds
+            .record(state_setup_start.elapsed());
 
         let chain_spec = self.provider.chain_spec();
         let is_osaka = self
@@ -318,6 +324,8 @@ where
             })
             .collect();
 
+        let create_evm_start = Instant::now();
+        let _create_evm_span = debug_span!(target: "payload_builder", "create_evm").entered();
         let mut builder = self
             .evm_config
             .builder_for_next_block(
@@ -340,11 +348,21 @@ where
                 },
             )
             .map_err(PayloadBuilderError::other)?;
+        drop(_create_evm_span);
+        self.metrics
+            .create_evm_duration_seconds
+            .record(create_evm_start.elapsed());
 
+        let pre_execution_start = Instant::now();
+        let _pre_execution_span = debug_span!(target: "payload_builder", "pre_execution").entered();
         builder.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
+        drop(_pre_execution_span);
+        self.metrics
+            .pre_execution_duration_seconds
+            .record(pre_execution_start.elapsed());
 
         debug!("building new payload");
 
@@ -370,7 +388,14 @@ where
         ));
 
         let execution_start = Instant::now();
-        while let Some(pool_tx) = best_txs.next() {
+        while let Some(pool_tx) = {
+            let next_start = Instant::now();
+            let next = best_txs.next();
+            self.metrics
+                .best_txs_next_duration_seconds
+                .record(next_start.elapsed());
+            next
+        } {
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
@@ -384,6 +409,7 @@ where
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
+                inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
                 continue;
             }
 
@@ -398,6 +424,7 @@ where
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
+                inc_pool_tx_skipped("exceeds_general_gas_limit");
                 continue;
             }
 
@@ -427,6 +454,7 @@ where
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
                 );
+                inc_pool_tx_skipped("oversized_block");
                 continue;
             }
 
@@ -437,7 +465,7 @@ where
                 .unwrap_or_default();
 
             let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
-            let execution_start = Instant::now();
+            let tx_execution_start = Instant::now();
             let gas_used = match builder.execute_transaction(tx_with_env) {
                 Ok(gas_used) => gas_used,
                 Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
@@ -447,6 +475,7 @@ where
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                        inc_pool_tx_skipped("nonce_too_low");
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
@@ -457,13 +486,14 @@ where
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
+                        inc_pool_tx_skipped("invalid_tx");
                     }
                     continue;
                 }
                 // this is an error that we should treat as fatal for this attempt
                 Err(err) => return Err(PayloadBuilderError::evm(err)),
             };
-            let elapsed = execution_start.elapsed();
+            let elapsed = tx_execution_start.elapsed();
             self.metrics
                 .transaction_execution_duration_seconds
                 .record(elapsed);
