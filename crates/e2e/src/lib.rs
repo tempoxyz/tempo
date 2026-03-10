@@ -258,6 +258,7 @@ pub async fn setup_validators(
             subblock_broadcast_interval: Duration::from_millis(50),
             fcu_heartbeat_interval: Duration::from_secs(300),
             feed_state,
+            with_subblocks: false,
         };
 
         nodes.push(TestingNode::new(

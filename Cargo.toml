@@ -246,6 +246,7 @@ url = "2.5"
 criterion = "0.8.2"
 paste = "1"
 test-case = "3"
+insta = { version = "1", features = ["yaml"] }
 secp256k1 = { version = "0.30.0", default-features = false }
 pyroscope = "0.5.8"
 pyroscope_pprofrs = "0.2.10"

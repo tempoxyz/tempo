@@ -195,7 +195,7 @@ struct Inner<TState> {
 
     execution_node: TempoFullNode,
     executor: crate::executor::Mailbox,
-    subblocks: subblocks::Mailbox,
+    subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
 
     state: TState,
@@ -557,7 +557,8 @@ impl Inner<Init> {
             extra_data,
             move || {
                 self.subblocks
-                    .get_subblocks(parent.block_hash())
+                    .as_ref()
+                    .and_then(|s| s.get_subblocks(parent.block_hash()).ok())
                     .unwrap_or_default()
             },
         );
