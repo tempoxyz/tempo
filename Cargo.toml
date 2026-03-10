@@ -17,6 +17,7 @@ members = [
   "crates/dkg-onchain-artifacts",
   "crates/consensus",
   "crates/eyre",
+  "crates/ext",
   "crates/evm",
   "crates/e2e",
   "crates/faucet",
@@ -106,6 +107,7 @@ tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
+tempo-ext = { path = "crates/ext" }
 tempo-revm = { path = "crates/revm", default-features = false }
 tempo-payload-builder = { path = "crates/payload/builder", default-features = false }
 tempo-payload-types = { path = "crates/payload/types", default-features = false }
@@ -210,7 +212,9 @@ bytes = "1.11.1"
 clap = { version = "4.5.57", features = ["derive", "env"] }
 const-hex = { version = "1.17.0" }
 dashmap = "6"
+dirs-next = "2.0.0"
 derive_more = { version = "2.1.1", default-features = false }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 either = "1"
 eyre = "0.6.12"
 futures = "0.3.31"
@@ -221,6 +225,8 @@ itertools = "0.14.0"
 jiff = { version = "0.2.18", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.3"
+minisign = "0.8"
+minisign-verify = "0.2"
 p256 = { version = "0.13", default-features = false }
 parking_lot = "0.12.5"
 prometheus-client = "0.24.0"
@@ -231,6 +237,7 @@ rand_08 = { package = "rand", version = "0.8.5" }
 rand_core = "0.6.4"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+semver = "1"
 serde = { version = "1.0.228", features = ["derive"], default-features = false }
 serde_json = { version = "1.0.149", features = ["alloc"], default-features = false }
 schnellru = "0.2"
