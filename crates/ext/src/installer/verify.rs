@@ -17,7 +17,7 @@ pub(super) fn verify_signature(
     data: &[u8],
     encoded_signature: &str,
     public_key: &PublicKey,
-    expected_trusted_comment: Option<&str>,
+    expected_trusted_comments: &[&str],
 ) -> Result<(), InstallerError> {
     let signature =
         Signature::decode(encoded_signature).map_err(|err| InstallerError::SignatureFormat {
@@ -30,11 +30,12 @@ pub(super) fn verify_signature(
         .map_err(|_| InstallerError::SignatureVerificationFailed(artifact.to_string()))?;
 
     // After cryptographic verification succeeds, the trusted comment is
-    // authenticated. Check it matches the expected artifact identity to
-    // prevent cross-extension substitution attacks.
-    if let Some(expected) = expected_trusted_comment {
-        let tc = signature.trusted_comment();
-        if !tc.split('\t').any(|token| token == expected) {
+    // authenticated. Check that every expected token is present to
+    // prevent cross-extension substitution and version replay attacks.
+    let tc = signature.trusted_comment();
+    let tokens: Vec<&str> = tc.split('\t').collect();
+    for expected in expected_trusted_comments {
+        if !tokens.contains(expected) {
             return Err(InstallerError::TrustedCommentMismatch {
                 artifact: artifact.to_string(),
                 expected: expected.to_string(),
@@ -102,7 +103,7 @@ mod tests {
         let sig_str = sig_box.into_string();
 
         let verify_pk = decode_public_key(&pk.to_base64()).unwrap();
-        assert!(verify_signature("test", data, &sig_str, &verify_pk, None).is_ok());
+        assert!(verify_signature("test", data, &sig_str, &verify_pk, &[]).is_ok());
     }
 
     #[test]
@@ -115,7 +116,7 @@ mod tests {
 
         let wrong_pk = decode_public_key(&other_pk.to_base64()).unwrap();
         assert!(matches!(
-            verify_signature("test", data, &sig_str, &wrong_pk, None),
+            verify_signature("test", data, &sig_str, &wrong_pk, &[]),
             Err(InstallerError::SignatureVerificationFailed(_))
         ));
     }
@@ -129,7 +130,7 @@ mod tests {
 
         let verify_pk = decode_public_key(&pk.to_base64()).unwrap();
         assert!(matches!(
-            verify_signature("test", b"tampered data", &sig_str, &verify_pk, None),
+            verify_signature("test", b"tampered data", &sig_str, &verify_pk, &[]),
             Err(InstallerError::SignatureVerificationFailed(_))
         ));
     }
@@ -139,7 +140,7 @@ mod tests {
         let (pk, _) = test_keypair();
         let verify_pk = decode_public_key(&pk.to_base64()).unwrap();
         assert!(matches!(
-            verify_signature("test", b"data", "not a valid signature", &verify_pk, None),
+            verify_signature("test", b"data", "not a valid signature", &verify_pk, &[]),
             Err(InstallerError::SignatureFormat { .. })
         ));
     }
@@ -152,7 +153,7 @@ mod tests {
             Some(&pk),
             &sk,
             Cursor::new(data),
-            Some("file:tempo-wallet-darwin-arm64"),
+            Some("file:tempo-wallet-darwin-arm64\tversion:v1.0.0"),
             None,
         )
         .unwrap();
@@ -165,7 +166,7 @@ mod tests {
                 data,
                 &sig_str,
                 &verify_pk,
-                Some("file:tempo-wallet-darwin-arm64"),
+                &["file:tempo-wallet-darwin-arm64", "version:v1.0.0"],
             )
             .is_ok()
         );
@@ -179,7 +180,7 @@ mod tests {
             Some(&pk),
             &sk,
             Cursor::new(data),
-            Some("file:tempo-mpp-darwin-arm64"),
+            Some("file:tempo-mpp-darwin-arm64\tversion:v1.0.0"),
             None,
         )
         .unwrap();
@@ -192,14 +193,41 @@ mod tests {
                 data,
                 &sig_str,
                 &verify_pk,
-                Some("file:tempo-wallet-darwin-arm64"),
+                &["file:tempo-wallet-darwin-arm64", "version:v1.0.0"],
             ),
             Err(InstallerError::TrustedCommentMismatch { .. })
         ));
     }
 
     #[test]
-    fn verify_trusted_comment_none_skips_check() {
+    fn verify_trusted_comment_version_mismatch() {
+        let (pk, sk) = test_keypair();
+        let data = b"test data";
+        let sig_box = minisign::sign(
+            Some(&pk),
+            &sk,
+            Cursor::new(data),
+            Some("file:tempo-wallet-darwin-arm64\tversion:v1.0.0"),
+            None,
+        )
+        .unwrap();
+        let sig_str = sig_box.into_string();
+
+        let verify_pk = decode_public_key(&pk.to_base64()).unwrap();
+        assert!(matches!(
+            verify_signature(
+                "tempo-wallet",
+                data,
+                &sig_str,
+                &verify_pk,
+                &["file:tempo-wallet-darwin-arm64", "version:v2.0.0"],
+            ),
+            Err(InstallerError::TrustedCommentMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_trusted_comment_empty_skips_check() {
         let (pk, sk) = test_keypair();
         let data = b"test data";
         let sig_box = minisign::sign(
@@ -213,6 +241,6 @@ mod tests {
         let sig_str = sig_box.into_string();
 
         let verify_pk = decode_public_key(&pk.to_base64()).unwrap();
-        assert!(verify_signature("test", data, &sig_str, &verify_pk, None).is_ok());
+        assert!(verify_signature("test", data, &sig_str, &verify_pk, &[]).is_ok());
     }
 }

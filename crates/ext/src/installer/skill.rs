@@ -70,7 +70,7 @@ pub(super) fn install_skill(
                 content.as_bytes(),
                 sig,
                 public_key,
-                Some(&expected_comment),
+                &[&expected_comment],
             ) {
                 tracing::warn!("{err}, skipping skill install");
                 return;

@@ -109,7 +109,7 @@ impl Fixture {
 
         let tc = trusted_comment_override
             .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("file:{platform_key}"));
+            .unwrap_or_else(|| format!("file:{platform_key}\tversion:{version}"));
 
         let sig_box = minisign::sign(
             Some(&self.pk),
@@ -242,7 +242,7 @@ impl Fixture {
             Some(&self.pk),
             &self.sk,
             Cursor::new(binary_content.as_bytes()),
-            Some(&format!("file:{platform_key}")),
+            Some(&format!("file:{platform_key}\tversion:{version}")),
             Some("test"),
         )
         .unwrap();
