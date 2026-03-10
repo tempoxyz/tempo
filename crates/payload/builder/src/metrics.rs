@@ -75,6 +75,16 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+    /// Number of changed accounts in the hashed post-state.
+    pub(crate) hashed_state_changed_accounts: Histogram,
+    /// Number of accounts with changed storage in the hashed post-state.
+    pub(crate) hashed_state_changed_storage_accounts: Histogram,
+    /// Total number of changed storage slots across all accounts in the hashed post-state.
+    pub(crate) hashed_state_changed_storage_slots_total: Histogram,
+    /// Number of account trie node changes in the trie updates.
+    pub(crate) trie_updates_account_nodes: Histogram,
+    /// Number of storage tries with updates in the trie updates.
+    pub(crate) trie_updates_storage_tries: Histogram,
 }
 
 /// Increments the unified pool transaction skip counter with the given reason label.
@@ -136,6 +146,17 @@ impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
         self.metrics
             .hashed_post_state_duration_seconds
             .record(start.elapsed());
+        self.metrics
+            .hashed_state_changed_accounts
+            .record(result.accounts.len() as f64);
+        self.metrics
+            .hashed_state_changed_storage_accounts
+            .record(result.storages.len() as f64);
+        self.metrics
+            .hashed_state_changed_storage_slots_total
+            .record(
+                result.storages.values().map(|s| s.storage.len()).sum::<usize>() as f64,
+            );
         result
     }
 }
@@ -160,6 +181,14 @@ impl StateRootProvider for InstrumentedFinishProvider<'_> {
         self.metrics
             .state_root_with_updates_duration_seconds
             .record(start.elapsed());
+        if let Ok((_, ref trie_updates)) = result {
+            self.metrics
+                .trie_updates_account_nodes
+                .record(trie_updates.account_nodes.len() as f64);
+            self.metrics
+                .trie_updates_storage_tries
+                .record(trie_updates.storage_tries.len() as f64);
+        }
         result
     }
 
