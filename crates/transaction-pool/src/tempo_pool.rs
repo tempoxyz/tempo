@@ -34,13 +34,8 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
-    account_keychain::AccountKeychain,
-    error::Result as TempoPrecompileResult,
-    nonce::NonceManager,
-    storage::Handler,
-    tip_fee_manager::amm::{Pool as AmmPool, PoolKey, compute_amount_out},
-    tip20::TIP20Token,
+    account_keychain::AccountKeychain, error::Result as TempoPrecompileResult, nonce::NonceManager,
+    storage::Handler, tip20::TIP20Token,
 };
 use tempo_primitives::Block;
 use tempo_revm::TempoStateAccess;
@@ -189,19 +184,20 @@ where
         // Cache policy lookups per fee token to avoid redundant storage reads
         let mut policy_cache: AddressMap<u64> = AddressMap::default();
 
-        // Filter validator token changes to only those from active validators.
-        // This prevents DoS via permissionless setValidatorToken: we only process
-        // token changes from validators who have actually produced recent blocks.
+        // Re-check liquidity for all pooled txs when an active validator changes token.
+        // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
+        // enough liquidity, matching admission and preventing mass-eviction of valid txs.
         let amm_cache = self.amm_liquidity_cache();
-        let active_validator_token_changes: Vec<Address> = updates
-            .validator_token_changes
-            .iter()
-            .filter_map(|&(validator, new_token)| {
-                amm_cache
-                    .is_active_validator(&validator)
-                    .then_some(new_token)
-            })
-            .collect();
+        let has_active_validator_token_changes = !updates.validator_token_changes.is_empty() && {
+            let active_new_tokens: Vec<_> = updates
+                .validator_token_changes
+                .iter()
+                .filter(|(validator, _)| amm_cache.is_active_validator(validator))
+                .filter(|(_, new_token)| !amm_cache.is_active_validator_token(new_token))
+                .map(|(_, new_token)| *new_token)
+                .collect();
+            amm_cache.track_tokens(&active_new_tokens)
+        };
 
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
@@ -254,13 +250,11 @@ where
                 continue;
             }
 
-            // Check 3: Validator token changes (check liquidity for all transactions)
-            // NOTE: Only process changes from validators whose new token is already in use
-            // by actual block producers. This prevents permissionless setValidatorToken calls
-            // from triggering mass eviction.
-            if let Some(ref provider) = state_provider
-                && !active_validator_token_changes.is_empty()
-            {
+            // Check 3: Validator token changes (re-check liquidity for all transactions)
+            // Prevents mass eviction because it only:
+            // - evicts when NO validator token has enough liquidity
+            // - considers active validators (protects from permissionless `setValidatorToken`)
+            if has_active_validator_token_changes && let Some(ref provider) = state_provider {
                 let user_token = tx
                     .transaction
                     .inner()
@@ -268,40 +262,14 @@ where
                     .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
                 let cost = tx.transaction.fee_token_cost();
 
-                let amount_out = match compute_amount_out(cost) {
-                    Ok(amount) => amount,
-                    Err(_) => continue,
-                };
-
-                for &new_validator_token in &active_validator_token_changes {
-                    if user_token == new_validator_token {
-                        continue;
-                    }
-
-                    let pool_key = PoolKey::new(user_token, new_validator_token).get_id();
-                    let slot = tempo_precompiles::tip_fee_manager::TipFeeManager::new().pools
-                        [pool_key]
-                        .base_slot();
-
-                    let pool_value = match provider.storage(TIP_FEE_MANAGER_ADDRESS, slot.into()) {
-                        Ok(Some(value)) => value,
-                        Ok(None) => {
-                            to_remove.push(*tx.hash());
-                            liquidity_count += 1;
-                            break;
-                        }
-                        Err(_) => continue,
-                    };
-
-                    let reserve = alloy_primitives::U256::from(
-                        AmmPool::decode_from_slot(pool_value).reserve_validator_token,
-                    );
-
-                    if reserve < amount_out {
+                match amm_cache.has_enough_liquidity(user_token, cost, &**provider) {
+                    Ok(true) => {}
+                    Ok(false) => {
                         to_remove.push(*tx.hash());
                         liquidity_count += 1;
-                        break;
+                        continue;
                     }
+                    Err(_) => continue,
                 }
             }
 

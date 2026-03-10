@@ -112,15 +112,34 @@ where
         self.inner.client()
     }
 
-    /// Check if a transaction requires keychain validation
+    /// Validates that keychain transactions specify the expected version
+    /// depending on the current chainspec
+    fn validate_keychain_version(
+        &self,
+        transaction: &TempoPooledTransaction,
+        spec: TempoHardfork,
+    ) -> Result<(), TempoPoolTransactionError> {
+        let Some(tx) = transaction.inner().as_aa() else {
+            return Ok(());
+        };
+
+        if let Err(e) = tx.signature().validate_version(spec.is_t1c()) {
+            return Err(e.into());
+        }
+        for auth_sig in &tx.tx().tempo_authorization_list {
+            if let Err(e) = auth_sig.signature().validate_version(spec.is_t1c()) {
+                return Err(e.into());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validates AA transactions against the keychain: signature recovery, key authorization,
+    /// on-chain key existence/revocation/expiry, and spending limits.
     ///
-    /// Returns the validation result indicating what action to take:
-    /// - ValidateKeychain: Need to validate the keychain authorization
-    /// - Skip: No validation needed (not a keychain signature, or same-tx auth is valid)
-    /// - Reject: Transaction should be rejected with the given reason
-    ///
-    /// Returns `Ok(Ok(()))` if validation passes, `Ok(Err(...))` for validation failures,
-    /// or `Err(...)` for provider errors.
+    /// Version checks are handled separately by [`Self::validate_keychain_version`] early
+    /// in the path to ensure permanently invalid signatures trigger proper peer penalties.
     fn validate_against_keychain(
         &self,
         transaction: &TempoPooledTransaction,
@@ -132,16 +151,6 @@ where
 
         let current_time = self.inner.fork_tracker().tip_timestamp();
         let spec = self.inner.chain_spec().tempo_hardfork_at(current_time);
-
-        // Validate keychain signature version (outer + authorization list).
-        if let Err(e) = tx.signature().validate_version(spec.is_t1c()) {
-            return Ok(Err(e.into()));
-        }
-        for auth_sig in &tx.tx().tempo_authorization_list {
-            if let Err(e) = auth_sig.signature().validate_version(spec.is_t1c()) {
-                return Ok(Err(e.into()));
-            }
-        }
 
         let auth = tx.tx().key_authorization.as_ref();
 
@@ -651,18 +660,13 @@ where
             );
         }
 
-        // Validate transactions that involve keychain keys
-        match self.validate_against_keychain(&transaction, &mut state_provider) {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(err),
-                );
-            }
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
+        // Validate keychain signature versions early so that permanently invalid
+        // errors before cheaper economic checks that would mask them.
+        if let Err(err) = self.validate_keychain_version(&transaction, spec) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
         }
 
         // Balance transfer is not allowed as there is no balances in accounts yet.
@@ -827,6 +831,20 @@ where
                     InvalidPoolTransactionError::other(
                         TempoPoolTransactionError::InsufficientLiquidity(fee_token),
                     ),
+                );
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        }
+
+        // Validate transactions that involve keychain keys.
+        match self.validate_against_keychain(&transaction, &mut state_provider) {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(err),
                 );
             }
             Err(err) => {
@@ -3709,11 +3727,12 @@ mod tests {
                 create_aa_with_v1_keychain_signature(user_address, &access_key_signer, None);
 
             let validator = setup_validator_with_spec(&transaction, moderato_with_t1c(), 0);
-            let mut state_provider = validator.inner.client().latest().unwrap();
+            let spec = validator
+                .inner
+                .chain_spec()
+                .tempo_hardfork_at(validator.inner.fork_tracker().tip_timestamp());
 
-            let result = validator
-                .validate_against_keychain(&transaction, &mut state_provider)
-                .expect("should not be a provider error");
+            let result = validator.validate_keychain_version(&transaction, spec);
 
             assert!(
                 matches!(
@@ -3765,11 +3784,12 @@ mod tests {
                 create_aa_with_keychain_signature(user_address, &access_key_signer, None);
 
             let validator = setup_validator_with_spec(&transaction, moderato_without_t1c(), 0);
-            let mut state_provider = validator.inner.client().latest().unwrap();
+            let spec = validator
+                .inner
+                .chain_spec()
+                .tempo_hardfork_at(validator.inner.fork_tracker().tip_timestamp());
 
-            let result = validator
-                .validate_against_keychain(&transaction, &mut state_provider)
-                .expect("should not be a provider error");
+            let result = validator.validate_keychain_version(&transaction, spec);
 
             assert!(
                 matches!(result, Err(TempoPoolTransactionError::V2KeychainPreT1C)),
