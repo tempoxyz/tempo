@@ -1096,6 +1096,7 @@ fn get_transfer_policy_id(
         TIP20Token::from_address(fee_token)
             .and_then(|t| t.transfer_policy_id())
             .ok()
+            .filter(|&id| id != 0) // sload maps unset slots to 0; treat as None
             .inspect(|&policy_id| {
                 cache.insert(fee_token, policy_id);
             })
