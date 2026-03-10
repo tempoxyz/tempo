@@ -144,7 +144,14 @@ impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
 
 impl StateRootProvider for InstrumentedFinishProvider<'_> {
     fn state_root(&self, hashed_state: HashedPostState) -> ProviderResult<B256> {
-        self.inner.state_root(hashed_state)
+        let start = Instant::now();
+        let _span = debug_span!(target: "payload_builder", "state_root").entered();
+        let result = self.inner.state_root(hashed_state);
+        drop(_span);
+        self.metrics
+            .state_root_with_updates_duration_seconds
+            .record(start.elapsed());
+        result
     }
 
     fn state_root_from_nodes(&self, input: TrieInput) -> ProviderResult<B256> {
