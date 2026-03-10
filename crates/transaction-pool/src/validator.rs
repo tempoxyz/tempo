@@ -134,6 +134,11 @@ where
         Ok(())
     }
 
+    /// Validates AA transactions against the keychain: signature recovery, key authorization,
+    /// on-chain key existence/revocation/expiry, and spending limits.
+    ///
+    /// Version checks are handled separately by [`Self::validate_keychain_version`] early
+    /// in the path to ensure permanently invalid signatures trigger proper peer penalties.
     fn validate_against_keychain(
         &self,
         transaction: &TempoPooledTransaction,
