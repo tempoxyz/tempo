@@ -101,11 +101,12 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
         let caller_addr = self.inner.from.unwrap_or_default();
 
         let fee_payer = if self.fee_payer_signature.is_some() {
-            self.clone()
-                .build_aa()
-                .ok()
-                .and_then(|tx| tx.recover_fee_payer(caller_addr).ok())
-                .map(Some)
+            Some(
+                self.clone()
+                    .build_aa()
+                    .ok()
+                    .and_then(|tx| tx.recover_fee_payer(caller_addr).ok()),
+            )
         } else {
             None
         };
@@ -135,6 +136,8 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 || key_authorization.is_some()
                 || key_id.is_some()
                 || fee_payer.is_some()
+                || valid_before.is_some()
+                || valid_after.is_some()
             {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
