@@ -179,8 +179,10 @@ impl TempoPoolUpdates {
             if key_id.is_zero() {
                 continue;
             }
-            // If no `fee_token` is set use `Address::ZERO` as a wildcard so pool eviction
-            // matches this (account, key_id) against any pending tx token.
+            // Resolving the fee token requires state (AMM routing), which we don't have here.
+            // `Address::ZERO` wildcards the token in `SpendingLimitUpdates::contains`, so every
+            // pending tx for this (account, key_id) is re-checked.
+            // Safe because tx-pool gates eviction on `exceeds_spending_limit()`, which reads state.
             let fee_token = aa_tx.tx().fee_token.unwrap_or(Address::ZERO);
             updates
                 .spending_limit_spends
