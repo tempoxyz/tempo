@@ -177,6 +177,7 @@ impl Installer {
         if let Some(skill_url) = &resolved.skill_url {
             install_skill(
                 extension,
+                &resolved.version,
                 skill_url,
                 resolved.skill_sha256.as_deref(),
                 resolved.skill_signature.as_deref(),

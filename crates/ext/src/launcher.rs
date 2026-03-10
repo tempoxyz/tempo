@@ -205,7 +205,7 @@ impl Launcher {
         } else {
             InstallSource {
                 manifest: args.manifest,
-                public_key: args.public_key,
+                public_key: Some(args.public_key.unwrap_or_else(release_public_key)),
             }
         };
         let pinned = args.version.is_some();
@@ -260,7 +260,7 @@ impl Launcher {
         } else {
             InstallSource {
                 manifest: args.manifest,
-                public_key: args.public_key,
+                public_key: Some(args.public_key.unwrap_or_else(release_public_key)),
             }
         };
 
@@ -271,10 +271,23 @@ impl Launcher {
             .map(|e| e.installed_version.as_str());
 
         if args.dry_run {
-            println!(
-                "dry-run: update {extension} (installed: {})",
-                installed_version.unwrap_or("none")
-            );
+            match Installer::check_latest_version(&source, installed_version) {
+                Ok(Some(latest)) => {
+                    println!(
+                        "dry-run: would update tempo-{extension} from {} to {latest}",
+                        installed_version.unwrap_or("none")
+                    );
+                }
+                Ok(None) => {
+                    println!(
+                        "dry-run: tempo-{extension} is already at the latest version ({})",
+                        installed_version.unwrap_or("unknown")
+                    );
+                }
+                Err(err) => {
+                    eprintln!("dry-run: failed to check for updates: {err}");
+                }
+            }
             return Ok(0);
         }
 
@@ -317,13 +330,13 @@ impl Launcher {
             }
         }
 
-        // 2. Update all installed extensions.
+        // 2. Update all installed extensions (skip pinned ones).
         let registry = Registry::load();
-        let extensions: Vec<(String, String)> = registry
+        let extensions: Vec<(String, String, bool)> = registry
             .extensions
             .iter()
             .filter(|(_, state)| !state.installed_version.is_empty())
-            .map(|(name, state)| (name.clone(), state.installed_version.clone()))
+            .map(|(name, state)| (name.clone(), state.installed_version.clone(), state.pinned))
             .collect();
 
         if extensions.is_empty() {
@@ -333,7 +346,12 @@ impl Launcher {
         println!("Updating extensions...");
         let mut updated_registry = registry;
 
-        for (name, installed_version) in &extensions {
+        for (name, installed_version, pinned) in &extensions {
+            if *pinned {
+                println!("Skipping tempo-{name} (pinned at {installed_version})");
+                continue;
+            }
+
             let source = InstallSource {
                 manifest: Some(manifest_url(name, None)),
                 public_key: Some(release_public_key()),
@@ -435,6 +453,7 @@ impl Launcher {
 
         if let Some(binary) = self.find_binary(&binary_name) {
             tracing::debug!("extension found locally: {}", binary.display());
+            self.warn_path_mismatch(&binary);
             self.maybe_auto_update(&extension);
             return run_child(binary, child_args, &display_name);
         }
@@ -558,6 +577,32 @@ impl Launcher {
         registry.save();
     }
 
+    /// Warn if the binary we found is not in the directory where the
+    /// installer would place new versions. This happens when exe_dir is
+    /// read-only — updates go to `~/.local/bin` but `find_binary` keeps
+    /// discovering the stale copy next to the running executable.
+    fn warn_path_mismatch(&self, binary_path: &Path) {
+        let binary_dir = match binary_path.parent() {
+            Some(d) => d,
+            None => return,
+        };
+        let install_dir = match Installer::from_env(self.exe_dir.as_deref()) {
+            Ok(i) => i.bin_dir,
+            Err(_) => return,
+        };
+        if binary_dir != install_dir {
+            eprintln!(
+                "warning: running {} from {} but updates install to {}",
+                binary_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                binary_dir.display(),
+                install_dir.display(),
+            );
+        }
+    }
+
     fn find_binary(&self, binary: &str) -> Option<PathBuf> {
         let candidates = binary_candidates(binary);
 
@@ -629,7 +674,16 @@ fn run_child(binary: PathBuf, args: &[OsString], display_name: &str) -> Result<i
     }
 
     let status = cmd.args(args).status()?;
-    let code = status.code().unwrap_or(1);
+    let code = status.code().unwrap_or_else(|| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if let Some(sig) = status.signal() {
+                return 128 + sig;
+            }
+        }
+        1
+    });
     Ok(code)
 }
 

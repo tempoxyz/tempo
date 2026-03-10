@@ -28,8 +28,10 @@ const AGENT_SKILL_DIRS: &[(&str, &str)] = &[
     (".trae", "Trae"),
 ];
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn install_skill(
     extension: &str,
+    version: &str,
     url: &str,
     expected_sha256: Option<&str>,
     encoded_signature: Option<&str>,
@@ -63,6 +65,7 @@ pub(super) fn install_skill(
 
     let skill_name = format!("tempo-{extension} skill");
     let expected_comment = format!("skill:tempo-{extension}");
+    let version_comment = format!("version:{version}");
     match encoded_signature {
         Some(sig) => {
             if let Err(err) = verify_signature(
@@ -70,7 +73,7 @@ pub(super) fn install_skill(
                 content.as_bytes(),
                 sig,
                 public_key,
-                &[&expected_comment],
+                &[&expected_comment, &version_comment],
             ) {
                 tracing::warn!("{err}, skipping skill install");
                 return;

@@ -52,7 +52,7 @@ pub(crate) enum TempoSubcommand {
 
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(
-        override_usage = "tempo add [EXT]",
+        override_usage = "tempo add <EXT> [VERSION]",
         after_help = "Examples:\n  tempo add wallet\n  tempo add wallet 0.2.0"
     )]
     Add(ExtArgs),
@@ -66,7 +66,7 @@ pub(crate) enum TempoSubcommand {
 
     /// Remove an extension.
     #[command(
-        override_usage = "tempo remove [EXT]",
+        override_usage = "tempo remove <EXT>",
         after_help = "Example: tempo remove wallet"
     )]
     Remove(ExtArgs),
