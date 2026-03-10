@@ -73,8 +73,10 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
 
-    /// Transaction valid before timestamp in seconds (for expiring nonces, TIP-1009).
+    /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -82,8 +84,10 @@ pub struct TempoTransactionRequest {
     )]
     pub valid_before: Option<u64>,
 
-    /// Transaction valid after timestamp in seconds (for expiring nonces, TIP-1009).
+    /// Transaction valid after timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block after this timestamp.
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -98,6 +102,11 @@ pub struct TempoTransactionRequest {
 }
 
 impl TempoTransactionRequest {
+    /// Set the fee token for the [`TempoTransaction`] transaction.
+    pub fn set_fee_token(&mut self, fee_token: Address) {
+        self.fee_token = Some(fee_token);
+    }
+
     /// Builder-pattern method for setting the fee token.
     pub fn with_fee_token(mut self, fee_token: Address) -> Self {
         self.fee_token = Some(fee_token);
@@ -115,7 +124,9 @@ impl TempoTransactionRequest {
         self
     }
 
-    /// Set the valid_before timestamp for expiring nonces (TIP-1009).
+    /// Set the valid_before timestamp for expiring nonces ([TIP-1009]).
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     pub fn set_valid_before(&mut self, valid_before: u64) {
         self.valid_before = Some(valid_before);
     }
@@ -126,7 +137,9 @@ impl TempoTransactionRequest {
         self
     }
 
-    /// Set the valid_after timestamp for expiring nonces (TIP-1009).
+    /// Set the valid_after timestamp for expiring nonces ([TIP-1009]).
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     pub fn set_valid_after(&mut self, valid_after: u64) {
         self.valid_after = Some(valid_after);
     }

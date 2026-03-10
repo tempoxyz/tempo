@@ -133,7 +133,7 @@ The FeeManager extends FeeAMM and handles fee token preferences and distribution
 
 ### Fee Collection Invariants
 
-- **TEMPO-FEE5**: Collected fees should not exceed AMM token balance for any token.
+- **TEMPO-FEE5**: Combined solvency - for each token, total pool reserves + collected fees ≤ AMM token balance.
 - **TEMPO-FEE6**: Fee swap rate M is correctly applied - fee output should always be <= fee input.
 
 ## TIP-1000: State Creation Cost (Gas Pricing)
@@ -187,14 +187,13 @@ Tested via `vmExec.executeTransaction()` and constant assertions:
   - Handler deploys contracts at 50-100% of max size
   - Invariant: max size deployment must succeed within tx cap
 
-- **TEMPO-BLOCK10**: shared_gas_limit = 50M. (constant assertion)
-
 ### Protocol-Level Invariants (Rust)
 
 The following are enforced in the block builder and tested in Rust:
 
 - **TEMPO-BLOCK7**: Block validity rejects over-limit blocks → `crates/payload/builder/src/lib.rs`
 - **TEMPO-BLOCK8-9**: Hardfork activation rules → `crates/chainspec/`
+- **TEMPO-BLOCK10**: Shared gas limit = block_gas_limit / 10 → `crates/consensus/src/lib.rs`
 - **TEMPO-BLOCK11**: Constant base fee within epoch → `crates/chainspec/`
 - **TEMPO-BLOCK12**: General lane enforcement (30M cap) → `crates/payload/builder/src/lib.rs`
 
@@ -333,6 +332,7 @@ These verify correct behavior when the specific function is called:
 - **TEMPO-REG14**: Non-existent policies - policy IDs >= `policyIdCounter` return false for `policyExists()`.
 - **TEMPO-REG17**: Special policy immutability - policies 0 and 1 cannot be modified via `modifyPolicyWhitelist` or `modifyPolicyBlacklist`.
 - **TEMPO-REG18**: Special policy admin immutability - the admin of policies 0 and 1 cannot be changed (attempts revert with `Unauthorized` since admin is `address(0)`).
+- **TEMPO-REG20**: Non-existent policy reverts - `isAuthorized` reverts with `PolicyNotFound` for policy IDs that have never been created.
 
 
 ## ValidatorConfig
@@ -495,6 +495,7 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 ### Approval Invariants
 
 - **TEMPO-TIP5**: Allowance setting - `approve` sets exact allowance amount, returns `true`.
+- **TEMPO-TIP36**: A valid permit sets allowance to the `value` in the permit struct.
 
 ### Mint/Burn Invariants
 
@@ -536,3 +537,11 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 - **TEMPO-TIP27**: Pause-role enforcement - only accounts with `PAUSE_ROLE` can call `pause` (non-role holders revert with `Unauthorized`).
 - **TEMPO-TIP28**: Unpause-role enforcement - only accounts with `UNPAUSE_ROLE` can call `unpause` (non-role holders revert with `Unauthorized`).
 - **TEMPO-TIP29**: Burn-blocked-role enforcement - only accounts with `BURN_BLOCKED_ROLE` can call `burnBlocked` (non-role holders revert with `Unauthorized`).
+
+### Permit Invariants
+
+- **TEMPO-TIP31**: `nonces(owner)` must only ever increase, never decrease.
+- **TEMPO-TIP32**: `nonces(owner)` must increment by exactly 1 on each successful `permit()` call for that owner.
+- **TEMPO-TIP33**: A permit signature can only be used once (enforced by nonce increment).
+- **TEMPO-TIP34**: A permit with a deadline in the past must always revert.
+- **TEMPO-TIP35**: The recovered signer from a valid permit signature must exactly match the `owner` parameter.

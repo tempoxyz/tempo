@@ -193,15 +193,22 @@ impl PausedFeeTokenPool {
 
     /// Removes transactions matching invalidation criteria from the paused pool.
     ///
-    /// This handles both revoked keys and spending limit updates in a single pass.
+    /// This handles revoked keys, spending limit updates, and spending limit spends
+    /// in a single pass. The `spending_limit_spends` parameter captures (account, key_id,
+    /// fee_token) combos from keychain txs that were included in the block and decremented
+    /// limits via `verify_and_update_spending()`.
     /// Uses account-keyed indexes for O(1) account lookup per transaction.
     /// Returns the number of transactions removed.
     pub fn evict_invalidated(
         &mut self,
         revoked_keys: &RevokedKeys,
         spending_limit_updates: &SpendingLimitUpdates,
+        spending_limit_spends: &SpendingLimitUpdates,
     ) -> usize {
-        if revoked_keys.is_empty() && spending_limit_updates.is_empty() {
+        if revoked_keys.is_empty()
+            && spending_limit_updates.is_empty()
+            && spending_limit_spends.is_empty()
+        {
             return 0;
         }
 
@@ -214,6 +221,7 @@ impl PausedFeeTokenPool {
                 };
                 !subject.matches_revoked(revoked_keys)
                     && !subject.matches_spending_limit_update(spending_limit_updates)
+                    && !subject.matches_spending_limit_update(spending_limit_spends)
             });
             count += before - meta.entries.len();
         }
@@ -333,6 +341,55 @@ mod tests {
         let evicted = pool.insert_batch(token, entries);
         assert_eq!(evicted, 0);
         assert_eq!(pool.len(), PAUSED_POOL_GLOBAL_CAP);
+    }
+
+    #[test]
+    fn test_evict_invalidated_with_spending_limit_spends() {
+        let mut pool = PausedFeeTokenPool::new();
+        let user_address = Address::random();
+        let fee_token = Address::random();
+
+        // Create a keychain-signed tx using the builder
+        let access_key_signer = alloy_signer_local::PrivateKeySigner::random();
+        let key_id = alloy_signer::Signer::address(&access_key_signer);
+        let tx = TxBuilder::aa(user_address)
+            .fee_token(fee_token)
+            .build_keychain(user_address, &access_key_signer);
+        let tx = Arc::new(wrap_valid_tx(
+            tx,
+            reth_transaction_pool::TransactionOrigin::External,
+        ));
+
+        // Also add a non-keychain tx that should NOT be evicted
+        let other_tx = create_valid_tx(Address::random());
+
+        pool.insert_batch(
+            fee_token,
+            vec![
+                PausedEntry {
+                    tx,
+                    valid_before: None,
+                },
+                PausedEntry {
+                    tx: other_tx,
+                    valid_before: None,
+                },
+            ],
+        );
+        assert_eq!(pool.len(), 2);
+
+        // Build spending_limit_spends matching the keychain tx
+        let mut spends = SpendingLimitUpdates::new();
+        spends.insert(user_address, key_id, fee_token);
+
+        let evicted =
+            pool.evict_invalidated(&RevokedKeys::new(), &SpendingLimitUpdates::new(), &spends);
+
+        assert_eq!(
+            evicted, 1,
+            "Should evict the keychain tx matching the spend"
+        );
+        assert_eq!(pool.len(), 1, "Non-keychain tx should remain");
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod block_building;
 mod createx;
 mod eth_call;
 mod eth_transactions;
+mod key_authorization;
 mod liquidity;
 mod max_gas_limit;
 mod payment_lane;

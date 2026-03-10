@@ -1,7 +1,10 @@
-//! Tests for per-transaction gas limit caps across hardforks (TIP-1000/1010).
+//! Tests for per-transaction gas limit caps across hardforks ([TIP-1000]/[TIP-1010]).
 //!
 //! Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas).
 //! Post-T1A (TIP-1010): per-tx gas limit cap is 30M (`TEMPO_T1_TX_GAS_LIMIT_CAP`).
+//!
+//! [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
+//! [TIP-1010]: <https://docs.tempo.xyz/protocol/tips/tip-1010>
 
 use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
@@ -12,6 +15,7 @@ use alloy::{
 use alloy_eips::{eip2718::Encodable2718, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 use alloy_network::TxSignerSync;
 use alloy_primitives::Bytes;
+use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP};
 
@@ -161,6 +165,7 @@ async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     genesis["config"].as_object_mut().unwrap().remove("t1Time");
     genesis["config"].as_object_mut().unwrap().remove("t1aTime");
     genesis["config"].as_object_mut().unwrap().remove("t1bTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
     let pre_t1a_genesis = serde_json::to_string(&genesis)?;
 
@@ -200,6 +205,7 @@ async fn test_pre_t1a_tx_above_osaka_limit() -> eyre::Result<()> {
     genesis["config"].as_object_mut().unwrap().remove("t1Time");
     genesis["config"].as_object_mut().unwrap().remove("t1aTime");
     genesis["config"].as_object_mut().unwrap().remove("t1bTime");
+    genesis["config"].as_object_mut().unwrap().remove("t1cTime");
     genesis["config"].as_object_mut().unwrap().remove("t2Time");
     let pre_t1a_genesis = serde_json::to_string(&genesis)?;
 

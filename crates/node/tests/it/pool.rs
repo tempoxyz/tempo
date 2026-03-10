@@ -13,8 +13,9 @@ use reth_ethereum::{
     node::builder::{NodeBuilder, NodeHandle},
     pool::TransactionPool,
     primitives::SignerRecoverable,
-    tasks::Runtime,
+    tasks::TaskManager,
 };
+use reth_node_builder::BuiltPayload;
 use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_primitives_traits::transaction::{TxHashRef, error::InvalidTransactionError};
 use reth_transaction_pool::{
@@ -34,7 +35,8 @@ use tempo_primitives::{
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_pending_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let runtime = Runtime::test_with_handle(tokio::runtime::Handle::current());
+    let tasks = TaskManager::current();
+    let executor = tasks.executor();
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
     ))?);
@@ -48,7 +50,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
         node,
         node_exit_future: _,
     } = NodeBuilder::new(node_config.clone())
-        .testing_node(runtime.clone())
+        .testing_node(executor.clone())
         .node(TempoNode::default())
         .launch()
         .await?;
@@ -81,7 +83,8 @@ async fn submit_pending_tx() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_insufficient_funds() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let runtime = Runtime::test_with_handle(tokio::runtime::Handle::current());
+    let tasks = TaskManager::current();
+    let executor = tasks.executor();
     let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
         "../assets/test-genesis.json"
     ))?);
@@ -95,7 +98,7 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         node,
         node_exit_future: _,
     } = NodeBuilder::new(node_config.clone())
-        .testing_node(runtime.clone())
+        .testing_node(executor.clone())
         .node(TempoNode::default())
         .launch()
         .await?;
@@ -156,12 +159,9 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     let signer_wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let signer_addr = signer_wallet.address();
 
-    // Cache current timestamp
-    let current_time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
+    let payload = setup.node.advance_block().await?;
+    let tip_timestamp = payload.block().header().inner.timestamp;
 
-    // Create an AA transaction with `valid_before = current_time + 1` second
     let tx_aa = TempoTransaction {
         chain_id: 1337,
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
@@ -173,7 +173,7 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
             input: alloy_primitives::Bytes::new(),
         }],
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        valid_before: Some(current_time + 1),
+        valid_before: Some(tip_timestamp + 5),
         ..Default::default()
     };
 
@@ -203,7 +203,6 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     assert_eq!(pooled_txs.len(), 1);
     assert_eq!(*pooled_txs[0].hash(), tx_hash,);
 
-    // Advance blocks to trigger the eviction task (new block timestamp >= valid_before)
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     // Verify tx is still there before commiting the new block

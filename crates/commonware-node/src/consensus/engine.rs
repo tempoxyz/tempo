@@ -22,11 +22,11 @@ use commonware_cryptography::{
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::paged::CacheRef,
-    spawn_cell,
+    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
+    buffer::paged::CacheRef, spawn_cell,
 };
 use commonware_storage::archive::immutable;
-use commonware_utils::NZU64;
+use commonware_utils::{NZU16, NZU64, NZUsize};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_08::{CryptoRng, Rng};
@@ -48,18 +48,20 @@ use super::block::Block;
 /// To better support peers near tip during network instability, we multiply
 /// the consensus activity timeout by this factor.
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
-const PRUNABLE_ITEMS_PER_SECTION: NonZeroU64 = NonZeroU64::new(4_096).expect("value is not zero");
-const IMMUTABLE_ITEMS_PER_SECTION: NonZeroU64 =
-    NonZeroU64::new(262_144).expect("value is not zero");
+const PRUNABLE_ITEMS_PER_SECTION: NonZeroU64 = NZU64!(4_096);
+const IMMUTABLE_ITEMS_PER_SECTION: NonZeroU64 = NZU64!(262_144);
 const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
 const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 3MB
 const FREEZER_VALUE_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
 const FREEZER_VALUE_COMPRESSION: Option<u8> = Some(3);
-const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
-const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
-const BUFFER_POOL_PAGE_SIZE: NonZeroU16 = NonZeroU16::new(4_096).expect("value is not zero"); // 4KB
-const BUFFER_POOL_CAPACITY: NonZeroUsize = NonZeroUsize::new(8_192).expect("value is not zero"); // 32MB
-const MAX_REPAIR: NonZeroUsize = NonZeroUsize::new(20).expect("value is not zero");
+const REPLAY_BUFFER: NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
+const WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
+const BUFFER_POOL_PAGE_SIZE: NonZeroU16 = NZU16!(4_096); // 4KB
+const BUFFER_POOL_CAPACITY: NonZeroUsize = NZUsize!(8_192); // 32MB
+const MAX_REPAIR: NonZeroUsize = NZUsize!(20);
+
+// Ensure the marshal delivers blocks sequentially.
+const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 
 /// Settings for [`Engine`].
 ///
@@ -87,6 +89,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub time_for_peer_response: Duration,
     pub views_to_track: u64,
     pub views_until_leader_skip: u64,
+    pub payload_interrupt_time: Duration,
     pub new_payload_wait_time: Duration,
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
@@ -118,7 +121,8 @@ where
             + Spawner
             + Storage
             + Metrics
-            + Network,
+            + Network
+            + BufferPooler,
     {
         let execution_node = self
             .execution_node
@@ -131,43 +135,16 @@ where
             .epoch_length()
             .ok_or_eyre("chainspec did not contain epochLength; cannot go on without it")?;
 
+        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+
         info!(
             identity = %self.signer.public_key(),
             "using public ed25519 verifying key derived from provided private ed25519 signing key",
         );
 
-        let (peer_manager, peer_manager_mailbox) = peer_manager::init(peer_manager::Config {
-            execution_node: execution_node.clone(),
-            oracle: self.peer_manager.clone(),
-        });
+        let page_cache_ref =
+            CacheRef::from_pooler(&context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
-        let (broadcast, broadcast_mailbox) = buffered::Engine::new(
-            context.with_label("broadcast"),
-            buffered::Config {
-                public_key: self.signer.public_key(),
-                mailbox_size: self.mailbox_size,
-                deque_size: self.deque_size,
-                priority: true,
-                codec_config: (),
-            },
-        );
-
-        let page_cache_ref = CacheRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
-
-        // XXX: All hard-coded values here are the same as prior to commonware
-        // making the resolver configurable in
-        // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
-        let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
-            public_key: self.signer.public_key(),
-            provider: peer_manager_mailbox.clone(),
-            mailbox_size: self.mailbox_size,
-            blocker: self.blocker.clone(),
-            initial: Duration::from_secs(1),
-            timeout: Duration::from_secs(2),
-            fetch_retry_timeout: Duration::from_millis(100),
-            priority_requests: false,
-            priority_responses: false,
-        };
         let scheme_provider = SchemeProvider::new();
 
         const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
@@ -266,10 +243,9 @@ where
         .wrap_err("failed to initialize finalizations by height archive")?;
         info!(elapsed = ?start.elapsed(), "restored finalizations by height archive");
 
-        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
         // TODO(janis): forward `last_finalized_height` to application so it can
         // forward missing blocks to EL.
-        let (marshal, marshal_mailbox, last_finalized_height) = marshal::Actor::init(
+        let (marshal, marshal_mailbox, last_finalized_height) = marshal::core::Actor::init(
             context.with_label("marshal"),
             finalizations_by_height,
             finalized_blocks,
@@ -290,12 +266,50 @@ where
                 key_write_buffer: WRITE_BUFFER,
                 value_write_buffer: WRITE_BUFFER,
                 max_repair: MAX_REPAIR,
+                max_pending_acks: MAX_PENDING_ACKS,
                 block_codec_config: (),
 
                 strategy: Sequential,
             },
         )
         .await;
+
+        let (peer_manager, peer_manager_mailbox) = peer_manager::init(
+            context.with_label("peer_manager"),
+            peer_manager::Config {
+                execution_node: execution_node.clone(),
+                oracle: self.peer_manager.clone(),
+                epoch_strategy: epoch_strategy.clone(),
+                last_finalized_height,
+            },
+        );
+
+        let (broadcast, broadcast_mailbox) = buffered::Engine::new(
+            context.with_label("broadcast"),
+            buffered::Config {
+                public_key: self.signer.public_key(),
+                mailbox_size: self.mailbox_size,
+                deque_size: self.deque_size,
+                peer_provider: peer_manager_mailbox.clone(),
+                priority: true,
+                codec_config: (),
+            },
+        );
+
+        // XXX: All hard-coded values here are the same as prior to commonware
+        // making the resolver configurable in
+        // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
+        let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
+            public_key: self.signer.public_key(),
+            peer_provider: peer_manager_mailbox.clone(),
+            mailbox_size: self.mailbox_size,
+            blocker: self.blocker.clone(),
+            initial: Duration::from_secs(1),
+            timeout: Duration::from_secs(2),
+            fetch_retry_timeout: Duration::from_millis(100),
+            priority_requests: false,
+            priority_responses: false,
+        };
 
         let subblocks = subblocks::Actor::new(subblocks::Config {
             context: context.clone(),
@@ -312,6 +326,7 @@ where
             context.with_label("feed"),
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
+            execution_node.clone(),
             self.feed_state,
         );
 
@@ -333,7 +348,8 @@ where
             marshal: marshal_mailbox.clone(),
             execution_node: execution_node.clone(),
             executor: executor_mailbox.clone(),
-            new_payload_wait_time: self.new_payload_wait_time,
+            payload_resolve_time: self.payload_interrupt_time,
+            payload_return_time: self.new_payload_wait_time,
             subblocks: subblocks.mailbox(),
             scheme_provider: scheme_provider.clone(),
             epoch_strategy: epoch_strategy.clone(),
@@ -375,7 +391,6 @@ where
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
-                peer_manager: peer_manager_mailbox.clone(),
             },
         )
         .await
@@ -413,7 +428,8 @@ where
 
 pub struct Engine<TContext, TBlocker, TPeerManager>
 where
-    TContext: Clock
+    TContext: BufferPooler
+        + Clock
         + governor::clock::Clock
         + Rng
         + CryptoRng
@@ -429,10 +445,10 @@ where
 
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block>,
+    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext, peer_manager::Mailbox>,
+    dkg_manager: dkg::manager::Actor<TContext>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// Acts as the glue between the consensus and execution layers implementing
@@ -455,7 +471,7 @@ where
     epoch_manager: epoch::manager::Actor<TContext, TBlocker>,
     epoch_manager_mailbox: epoch::manager::Mailbox,
 
-    peer_manager: peer_manager::Actor<TPeerManager>,
+    peer_manager: peer_manager::Actor<TContext, TPeerManager>,
     peer_manager_mailbox: peer_manager::Mailbox,
 
     feed: crate::feed::Actor<TContext>,
@@ -465,7 +481,8 @@ where
 
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
 where
-    TContext: Clock
+    TContext: BufferPooler
+        + Clock
         + governor::clock::Clock
         + Rng
         + CryptoRng
@@ -562,9 +579,7 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> eyre::Result<()> {
-        let peer_manager = self
-            .peer_manager
-            .start(self.context.with_label("peer_manager"));
+        let peer_manager = self.peer_manager.start();
 
         let broadcast = self.broadcast.start(broadcast_channel);
         let resolver =
