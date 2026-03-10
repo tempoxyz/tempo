@@ -769,18 +769,18 @@ contract ValidatorConfigV2Test is BaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-                      SET NEXT FULL DKG CEREMONY
+                  SET NETWORK IDENTITY ROTATION EPOCH
     //////////////////////////////////////////////////////////////*/
 
-    function test_setNextFullDkgCeremony_pass() public {
+    function test_setNetworkIdentityRotationEpoch_pass() public {
         _initializeV2();
-        validatorConfigV2.setNextFullDkgCeremony(42);
-        assertEq(validatorConfigV2.getNextFullDkgCeremony(), 42);
+        validatorConfigV2.setNetworkIdentityRotationEpoch(42);
+        assertEq(validatorConfigV2.getNextNetworkIdentityRotationEpoch(), 42);
     }
 
-    function test_setNextFullDkgCeremony_fail() public {
+    function test_setNetworkIdentityRotationEpoch_fail() public {
         // 1. NotInitialized
-        try validatorConfigV2.setNextFullDkgCeremony(42) {
+        try validatorConfigV2.setNetworkIdentityRotationEpoch(42) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.NotInitialized.selector));
@@ -790,7 +790,7 @@ contract ValidatorConfigV2Test is BaseTest {
 
         // 2. Unauthorized
         vm.prank(nonOwner);
-        try validatorConfigV2.setNextFullDkgCeremony(42) {
+        try validatorConfigV2.setNetworkIdentityRotationEpoch(42) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfigV2.Unauthorized.selector));
@@ -1027,7 +1027,7 @@ contract ValidatorConfigV2Test is BaseTest {
         validatorConfigV2.initializeIfMigrated();
 
         assertTrue(validatorConfigV2.isInitialized());
-        assertEq(validatorConfigV2.getNextFullDkgCeremony(), 99);
+        assertEq(validatorConfigV2.getNextNetworkIdentityRotationEpoch(), 99);
     }
 
     function test_initializeIfMigrated_fail() public {
@@ -1272,18 +1272,13 @@ contract ValidatorConfigV2Test is BaseTest {
         assertGt(v.deactivatedAtHeight, 0, "Should be deactivated");
     }
 
-    function test_setIpAddresses_worksBeforeInit() public {
+    function test_setIpAddresses_revertsBeforeInit() public {
         validatorConfigV2.migrateValidator(1);
         validatorConfigV2.migrateValidator(0);
 
-        // Should work before initialization
-        // setupVal1 is at index 1 after reverse migration
         assertFalse(validatorConfigV2.isInitialized());
+        vm.expectRevert(abi.encodeWithSelector(IValidatorConfigV2.NotInitialized.selector));
         validatorConfigV2.setIpAddresses(1, "10.0.0.150:8000", "10.0.0.150");
-
-        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
-        assertEq(v.ingress, "10.0.0.150:8000");
-        assertEq(v.egress, "10.0.0.150");
     }
 
     function test_deactivateValidator_byValidator_worksBeforeInit() public {
@@ -1300,19 +1295,14 @@ contract ValidatorConfigV2Test is BaseTest {
         assertGt(v.deactivatedAtHeight, 0, "Should be deactivated");
     }
 
-    function test_setIpAddresses_byValidator_worksBeforeInit() public {
+    function test_setIpAddresses_byValidator_revertsBeforeInit() public {
         validatorConfigV2.migrateValidator(1);
         validatorConfigV2.migrateValidator(0);
 
-        // Validator can update their own IPs before initialization
-        // setupVal1 is at index 1 after reverse migration
         assertFalse(validatorConfigV2.isInitialized());
         vm.prank(setupVal1);
+        vm.expectRevert(abi.encodeWithSelector(IValidatorConfigV2.NotInitialized.selector));
         validatorConfigV2.setIpAddresses(1, "10.0.0.150:8000", "10.0.0.150");
-
-        IValidatorConfigV2.Validator memory v = validatorConfigV2.validatorByAddress(setupVal1);
-        assertEq(v.ingress, "10.0.0.150:8000");
-        assertEq(v.egress, "10.0.0.150");
     }
 
 }

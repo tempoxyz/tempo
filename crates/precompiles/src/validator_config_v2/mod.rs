@@ -10,7 +10,7 @@ use crate::{
     storage::{Handler, Mapping},
     validator_config::ValidatorConfig,
 };
-use alloy::primitives::{Address, B256, Keccak256, keccak256};
+use alloy::primitives::{Address, B256, Keccak256};
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
     Verifier,
@@ -23,26 +23,21 @@ pub const VALIDATOR_NS_ADD: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
 /// Signature namespace for `rotateValidator` operations.
 pub const VALIDATOR_NS_ROTATE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR";
 
-/// Per-validator record stored in the `validators` vector.
-#[derive(Debug, Storable)]
-struct ValidatorV2 {
-    public_key: B256,
-    validator_address: Address,
-    ingress: String,
-    egress: String,
-    fee_recipient: Address,
-    index: u64,
-    active_idx: u64,
-    added_at_height: u64,
-    deactivated_at_height: u64,
+/// Distinguishes `addValidator` from `rotateValidator` signatures at the type level.
+enum SignatureKind {
+    Add { fee_recipient: Address },
+    Rotate,
 }
 
-/// Contract-level configuration (owner, initialization flag, and init height).
+/// Contract-level configuration: ownership, initialization state, and migration bookkeeping.
 #[derive(Debug, Storable)]
 struct Config {
     owner: Address,
     is_init: bool,
     init_at_height: u64,
+    /// Number of V1 validators skipped during migration (bad pubkey, duplicate, etc).
+    /// Packed alongside `is_init` and `init_at_height` since all are migration lifecycle state.
+    migration_skipped_count: u16,
 }
 
 impl Config {
@@ -51,44 +46,130 @@ impl Config {
             owner,
             is_init,
             init_at_height,
+            migration_skipped_count: 0,
         }
     }
 
     fn is_owner(&self, addr: Address) -> bool {
         self.owner == addr
     }
+
+    fn require_init(self) -> Result<Self> {
+        if self.is_init {
+            return Ok(self);
+        }
+        Err(ValidatorConfigV2Error::not_initialized())?
+    }
+
+    fn require_not_init(self) -> Result<Self> {
+        if self.is_init {
+            Err(ValidatorConfigV2Error::already_initialized())?
+        }
+        Ok(self)
+    }
+
+    fn require_owner(self, caller: Address) -> Result<Self> {
+        if !self.is_owner(caller) {
+            Err(ValidatorConfigV2Error::unauthorized())?
+        }
+        Ok(self)
+    }
+
+    fn require_owner_or_validator(self, caller: Address, validator: Address) -> Result<Self> {
+        if caller != validator && !self.is_owner(caller) {
+            Err(ValidatorConfigV2Error::unauthorized())?
+        }
+        Ok(self)
+    }
 }
 
-/// Validator Config V2 precompile.
+/// A single entry in the `validators` vector.
 ///
-/// Index-canonical storage: the `validators` vec is the source of truth.
-/// `address_to_index` and `pubkey_to_index` are 1-indexed lookup pointers (0 = not found).
+/// ## Lifecycle
+///
+/// A record is created in one of three ways:
+/// - `add_validator`: active entry (`deactivated_at_height = 0`, `active_idx != 0`)
+/// - `migrate_validator`: active or born-deactivated, depending on V1 state
+/// - `rotate_validator`: appends a born-deactivated snapshot of the old identity
+///   and overwrites the original slot in-place with the new identity
+///
+/// A record is deactivated via `deactivate_validator`, which sets
+/// `deactivated_at_height` to the current block height and clears `active_idx` to 0.
+/// This transition is one-way — a deactivated record never becomes active again.
+#[derive(Debug, Storable)]
+struct ValidatorRecord {
+    /// Ed25519 communication public key (unique across all records, reserved forever).
+    public_key: B256,
+    /// Ethereum-style address of the validator (unique among active validators).
+    validator_address: Address,
+    /// Inbound address for peer connections (`<ip>:<port>`).
+    ingress: String,
+    /// Outbound IP for firewall whitelisting (`<ip>`).
+    egress: String,
+    /// Address that receives execution-layer fees for this validator.
+    fee_recipient: Address,
+    /// Position in the `validators` array. Stable across rotations for the in-place slot;
+    /// snapshots get the tail position at the time they were appended.
+    index: u64,
+    /// 1-indexed position in `active_indices` (0 = not active).
+    /// Used as a backpointer for O(1) swap-and-pop removal on deactivation.
+    active_idx: u64,
+    /// Block height at which this record was created (or overwritten during rotation).
+    added_at_height: u64,
+    /// Block height at which this record was deactivated (0 = still active).
+    deactivated_at_height: u64,
+}
+
+/// Validator Config V2 precompile — manages consensus validators with append-only,
+/// delete-once semantics.
+///
+/// Replaces V1's mutable state with immutable height-based tracking (`addedAtHeight`,
+/// `deactivatedAtHeight`) to enable historical validator set reconstruction without
+/// requiring historical state access.
+///
+/// ## Storage design
+///
+/// The `validators` vec is the source of truth (append-only). Two auxiliary mappings
+/// provide O(1) lookups:
+/// - `address_to_index`: validator address -> 1-indexed position (0 = not found)
+/// - `pubkey_to_index`: public key -> 1-indexed position (0 = not found)
+///
+/// A separate `active_indices` vec stores 1-indexed global positions of active validators,
+/// enabling O(active_count) enumeration without scanning deactivated entries. Each validator
+/// stores an `active_idx` backpointer into this vec for O(1) swap-and-pop removal.
 ///
 /// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
 /// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = VALIDATOR_CONFIG_V2_ADDRESS)]
 pub struct ValidatorConfigV2 {
+    /// Contract-level config: ownership, initialization state, and migration bookkeeping.
     config: Config,
-    validators: Vec<ValidatorV2>,
+    /// Append-only array of all validators ever registered (including deactivated snapshots).
+    validators: Vec<ValidatorRecord>,
+    /// Validator address → 1-indexed position in `validators` (0 = not found).
+    /// After deactivation the mapping still points to the old (now-deactivated) entry.
+    /// Overwritten when the address is reused by a new validator, or when ownership is transferred.
     address_to_index: Mapping<Address, u64>,
+    /// Ed25519 public key -> 1-indexed position in `validators` (0 = not found).
+    /// Public keys are reserved forever — even deactivated entries keep their mapping.
     pubkey_to_index: Mapping<B256, u64>,
-    next_dkg_ceremony: u64,
-    migration_skipped_count: u16,
-    active_ingresses: Mapping<B256, bool>,
+    /// Epoch at which a DKG ceremony will run that rotates the network identity.
+    next_network_identity_rotation_epoch: u64,
+    /// Prevents two active validators from sharing the same ingress IP address.
+    active_ingress_ips: Mapping<B256, bool>,
+    /// Compact list of 1-indexed global positions of currently active validators.
+    /// Order is NOT stable (swap-and-pop on deactivation).
     active_indices: Vec<u64>,
 }
 
 impl ValidatorConfigV2 {
     /// Bootstraps storage layout and sets the contract owner. Must be called exactly once.
     ///
-    /// The contract is fully operational immediately: `is_init` is set to `true`
-    /// and all mutating functions (`add_validator`, `rotate_validator`, etc.) are
-    /// unlocked.
+    /// The contract is fully operational immediately: `is_init` is set to `true` and all mutating
+    /// functions (`add_validator`, `rotate_validator`, etc.) are unlocked.
     ///
-    /// For migration from V1, the contract is **not** initialized — instead
-    /// [`migrate_validator`](Self::migrate_validator) copies validators one-by-one
-    /// and [`initialize_if_migrated`](Self::initialize_if_migrated) flips `is_init`
-    /// once all V1 validators have been migrated.
+    /// For V1 migration, the contract is NOT initialized — instead `migrate_validator` manually
+    /// copies validators and `initialize_if_migrated` flips `is_init` once all have been migrated.
     pub fn initialize(&mut self, owner: Address) -> Result<()> {
         trace!(address=%self.address, %owner, "Initializing validator config v2 precompile");
         self.__initialize()?;
@@ -102,54 +183,35 @@ impl ValidatorConfigV2 {
     // Config accessors and guards — each reads config once (1 SLOAD)
     // =========================================================================
 
+    /// Returns the current owner of the contract.
     pub fn owner(&self) -> Result<Address> {
         self.config.owner.read()
     }
 
+    /// Returns the block height at which the contract was initialized.
+    ///
+    /// Only meaningful when [`is_initialized`](Self::is_initialized) returns `true`.
     pub fn get_initialized_at_height(&self) -> Result<u64> {
         self.config.init_at_height.read()
     }
 
+    /// Returns whether V2 has been initialized (either directly or via migration).
+    ///
+    /// When `false`, the CL reads from V1 and mutating operations (except
+    /// `deactivate_validator` and migration functions) are blocked.
     pub fn is_initialized(&self) -> Result<bool> {
         self.config.is_init.read()
     }
 
-    fn require_initialized(&self) -> Result<Config> {
-        let config = self.config.read()?;
-        if !config.is_init {
-            Err(ValidatorConfigV2Error::not_initialized())?
-        }
-        Ok(config)
-    }
-
-    fn require_initialized_owner(&self, caller: Address) -> Result<Config> {
-        let config = self.require_initialized()?;
-        if !config.is_owner(caller) {
-            Err(ValidatorConfigV2Error::unauthorized())?
-        }
-        Ok(config)
-    }
-
-    fn require_initialized_owner_or_validator(
-        &self,
-        caller: Address,
-        validator: Address,
-    ) -> Result<Config> {
-        let config = self.require_initialized()?;
-        if caller != validator && !config.is_owner(caller) {
-            Err(ValidatorConfigV2Error::unauthorized())?
-        }
-        Ok(config)
-    }
-
+    /// Returns the total number of validators ever added, including deactivated
+    /// entries and rotation snapshots.
     pub fn validator_count(&self) -> Result<u64> {
         Ok(self.validators.len()? as u64)
     }
 
-    /// Get active validator by address with index.
     /// Returns the validator at the given global index, or errors if the index
     /// is out of bounds or the validator has been deactivated.
-    fn get_active_validator(&self, idx: u64) -> Result<ValidatorV2> {
+    fn get_active_validator(&self, idx: u64) -> Result<ValidatorRecord> {
         if idx >= self.validators.len()? as u64 {
             Err(ValidatorConfigV2Error::validator_not_found())?
         }
@@ -176,6 +238,10 @@ impl ValidatorConfigV2 {
         })
     }
 
+    /// Returns the validator registry at the given global index in the `validators` array.
+    ///
+    /// # Errors
+    /// - `ValidatorNotFound` — `index` is out of bounds
     pub fn validator_by_index(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
         if index >= self.validator_count()? {
             Err(ValidatorConfigV2Error::validator_not_found())?
@@ -183,6 +249,12 @@ impl ValidatorConfigV2 {
         self.read_validator_at(index)
     }
 
+    /// Looks up a validator registry by its address.
+    ///
+    /// Returns the current entry for the address (after any rotations or transfers).
+    ///
+    /// # Errors
+    /// - `ValidatorNotFound` — the address has never been registered
     pub fn validator_by_address(&self, addr: Address) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.address_to_index[addr].read()?;
         if idx1 == 0 {
@@ -191,6 +263,13 @@ impl ValidatorConfigV2 {
         self.read_validator_at(idx1 - 1)
     }
 
+    /// Looks up a validator by its Ed25519 public key.
+    ///
+    /// For rotated validators, the old public key resolves to the deactivated snapshot, while the
+    /// new key resolves to the in-place active entry.
+    ///
+    /// # Errors
+    /// - `ValidatorNotFound` — the public key has never been registered
     pub fn validator_by_public_key(&self, pubkey: B256) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.pubkey_to_index[pubkey].read()?;
         if idx1 == 0 {
@@ -199,6 +278,8 @@ impl ValidatorConfigV2 {
         self.read_validator_at(idx1 - 1)
     }
 
+    /// Returns all validators ever added, including deactivated entries and rotation snapshots,
+    /// ordered by their global index.
     pub fn get_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
         let count = self.validator_count()?;
         let mut out = Vec::with_capacity(count as usize);
@@ -208,6 +289,9 @@ impl ValidatorConfigV2 {
         Ok(out)
     }
 
+    /// Returns only active validators (where `deactivatedAtHeight == 0`).
+    ///
+    /// NOTE: the order of returned validator records is NOT stable and should NOT be relied upon.
     pub fn get_active_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
         let count = self.active_indices.len()?;
         let mut out = Vec::with_capacity(count);
@@ -218,8 +302,11 @@ impl ValidatorConfigV2 {
         Ok(out)
     }
 
-    pub fn get_next_full_dkg_ceremony(&self) -> Result<u64> {
-        self.next_dkg_ceremony.read()
+    /// Returns the epoch at which a network identity rotation will be triggered.
+    ///
+    /// See [`set_network_identity_rotation_epoch`](Self::set_network_identity_rotation_epoch).
+    pub fn get_next_network_identity_rotation_epoch(&self) -> Result<u64> {
+        self.next_network_identity_rotation_epoch.read()
     }
 
     fn validate_endpoints(ingress: &str, egress: &str) -> Result<()> {
@@ -271,7 +358,7 @@ impl ValidatorConfigV2 {
 
     fn require_unique_ingress(&self, ingress: &str) -> Result<B256> {
         let ingress_hash = Self::ingress_key(ingress)?;
-        if self.active_ingresses[ingress_hash].read()? {
+        if self.active_ingress_ips[ingress_hash].read()? {
             Err(ValidatorConfigV2Error::ingress_already_exists(
                 ingress.to_string(),
             ))?
@@ -284,13 +371,13 @@ impl ValidatorConfigV2 {
         let new_ingress_hash = Self::ingress_key(new_ingress)?;
 
         if old_ingress_hash != new_ingress_hash {
-            if self.active_ingresses[new_ingress_hash].read()? {
+            if self.active_ingress_ips[new_ingress_hash].read()? {
                 Err(ValidatorConfigV2Error::ingress_already_exists(
                     new_ingress.to_string(),
                 ))?
             }
-            self.active_ingresses[old_ingress_hash].delete()?;
-            self.active_ingresses[new_ingress_hash].write(true)?;
+            self.active_ingress_ips[old_ingress_hash].delete()?;
+            self.active_ingress_ips[new_ingress_hash].write(true)?;
         }
 
         Ok(())
@@ -315,7 +402,7 @@ impl ValidatorConfigV2 {
             active_idx = self.active_indices.len()? as u64; // 1-indexed
         }
 
-        let v = ValidatorV2 {
+        let v = ValidatorRecord {
             public_key: pubkey,
             validator_address: addr,
             ingress,
@@ -363,74 +450,47 @@ impl ValidatorConfigV2 {
         Ok(())
     }
 
-    /// Verify validator signature for add operations.
+    /// Verifies a validator signature for add or rotate operations.
     ///
-    /// Constructs the message according to the validator config v2 specification
-    /// and verifies the Ed25519 signature using the appropriate namespace.
-    fn verify_validator_add_signature(
+    /// Constructs the message according to the validator config v2 specification and verifies
+    /// the Ed25519 signature using the appropriate namespace.
+    fn verify_validator_signature(
         &self,
-        pubkey: &B256,
-        signature: &[u8],
-        validator_address: Address,
-        ingress: &str,
-        egress: &str,
-        fee_recipient: Address,
-    ) -> Result<()> {
-        let mut message_data = Vec::new();
-        message_data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
-        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        message_data.extend_from_slice(validator_address.as_slice());
-        message_data
-            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
-        message_data.extend_from_slice(ingress.as_bytes());
-        message_data
-            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
-        message_data.extend_from_slice(egress.as_bytes());
-        message_data.extend_from_slice(fee_recipient.as_slice());
-        let message = keccak256(message_data);
-
-        let public_key = PublicKey::decode(pubkey.as_slice())
-            .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
-        let sig = Signature::decode(signature)
-            .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
-
-        if !public_key.verify(VALIDATOR_NS_ADD, message.as_slice(), &sig) {
-            Err(ValidatorConfigV2Error::invalid_signature())?
-        }
-
-        Ok(())
-    }
-
-    /// Verify validator signature for rotate operations.
-    ///
-    /// Constructs the message according to the validator config v2 specification
-    /// and verifies the Ed25519 signature using the appropriate namespace.
-    fn verify_validator_rotate_signature(
-        &self,
+        kind: SignatureKind,
         pubkey: &B256,
         signature: &[u8],
         validator_address: Address,
         ingress: &str,
         egress: &str,
     ) -> Result<()> {
-        let mut message_data = Vec::new();
-        message_data.extend_from_slice(&self.storage.chain_id().to_be_bytes());
-        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        message_data.extend_from_slice(validator_address.as_slice());
-        message_data
-            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
-        message_data.extend_from_slice(ingress.as_bytes());
-        message_data
-            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
-        message_data.extend_from_slice(egress.as_bytes());
-        let message = keccak256(message_data);
-
-        let public_key = PublicKey::decode(pubkey.as_slice())
-            .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
         let sig = Signature::decode(signature)
             .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
 
-        if !public_key.verify(VALIDATOR_NS_ROTATE, message.as_slice(), &sig) {
+        let mut hasher = Keccak256::new();
+        hasher.update(self.storage.chain_id().to_be_bytes());
+        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        hasher.update(validator_address.as_slice());
+        hasher.update([
+            u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8")
+        ]);
+        hasher.update(ingress.as_bytes());
+        hasher.update([
+            u8::try_from(egress.len()).expect("validator egress length must fit in uint8")
+        ]);
+        hasher.update(egress.as_bytes());
+
+        let namespace = match kind {
+            SignatureKind::Add { fee_recipient } => {
+                hasher.update(fee_recipient.as_slice());
+                VALIDATOR_NS_ADD
+            }
+            SignatureKind::Rotate => VALIDATOR_NS_ROTATE,
+        };
+        let message = hasher.finalize();
+
+        let public_key = PublicKey::decode(pubkey.as_slice())
+            .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
+        if !public_key.verify(namespace, message.as_slice(), &sig) {
             Err(ValidatorConfigV2Error::invalid_signature())?
         }
 
@@ -441,29 +501,47 @@ impl ValidatorConfigV2 {
     // Owner-only mutating functions
     // =========================================================================
 
+    /// Adds a new validator to the set (owner only).
+    ///
+    /// Requires a valid Ed25519 signature, using the [`VALIDATOR_NS_ADD`] namespace, over
+    /// `keccak256(chainId || contractAddr || validatorAddr || len(ingress) || ingress || len(egress) || egress || feeRecipient)`
+    /// which proves that the caller controls the private key corresponding to `publicKey`.
+    ///
+    /// # Errors
+    /// - `NotInitialized` — the contract has not been initialized
+    /// - `Unauthorized` — `sender` is not the owner
+    /// - `InvalidPublicKey` — `publicKey` is zero or not a valid Ed25519 key
+    /// - `PublicKeyAlreadyExists` — the public key is already registered
+    /// - `InvalidValidatorAddress` — `validatorAddress` is zero
+    /// - `AddressAlreadyHasValidator` — the address belongs to an active validator
+    /// - `NotIpPort` / `NotIp` — endpoints fail validation
+    /// - `IngressAlreadyExists` — the new ingress is already in use
+    /// - `InvalidSignature` — signature verification fails
     pub fn add_validator(
         &mut self,
         sender: Address,
         call: IValidatorConfigV2::addValidatorCall,
     ) -> Result<u64> {
-        self.require_initialized_owner(sender)?;
+        self.config.read()?.require_init()?.require_owner(sender)?;
         self.require_new_pubkey(call.publicKey)?;
         self.require_new_address(call.validatorAddress)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
         let ingress_hash = self.require_unique_ingress(&call.ingress)?;
 
-        self.verify_validator_add_signature(
+        self.verify_validator_signature(
+            SignatureKind::Add {
+                fee_recipient: call.feeRecipient,
+            },
             &call.publicKey,
             &call.signature,
             call.validatorAddress,
             &call.ingress,
             &call.egress,
-            call.feeRecipient,
         )?;
 
         let block_height = self.storage.block_number();
 
-        self.active_ingresses[ingress_hash].write(true)?;
+        self.active_ingress_ips[ingress_hash].write(true)?;
 
         let index = self.append_validator(
             call.validatorAddress,
@@ -489,26 +567,33 @@ impl ValidatorConfigV2 {
         Ok(index)
     }
 
+    /// Deactivates a validator by setting its `deactivatedAtHeight` to the current
+    /// block height (owner or the validator itself).
+    ///
+    /// The validator's entry remains in storage for historical queries and its
+    /// public key stays reserved forever. The ingress IP is freed for reuse.
+    ///
+    /// Does NOT require initialization — can be called during the migration window.
+    ///
+    /// Uses swap-and-pop on `active_indices` for O(1) removal.
+    ///
+    /// # Errors
+    /// - `ValidatorNotFound` — `idx` is out of bounds
+    /// - `ValidatorAlreadyDeleted` — the validator is already deactivated
+    /// - `Unauthorized` — `sender` is neither the owner nor the validator
     pub fn deactivate_validator(
         &mut self,
         sender: Address,
         call: IValidatorConfigV2::deactivateValidatorCall,
     ) -> Result<()> {
-        if call.idx >= self.validators.len()? as u64 {
-            Err(ValidatorConfigV2Error::validator_not_found())?
-        }
-        let v = self.validators[call.idx as usize].read()?;
-        if v.deactivated_at_height != 0 {
-            Err(ValidatorConfigV2Error::validator_already_deactivated())?
-        }
-        let config = self.config.read()?;
-        if sender != v.validator_address && !config.is_owner(sender) {
-            Err(ValidatorConfigV2Error::unauthorized())?
-        }
+        let v = self.get_active_validator(call.idx)?;
+        self.config
+            .read()?
+            .require_owner_or_validator(sender, v.validator_address)?;
+
+        self.active_ingress_ips[Self::ingress_key(&v.ingress)?].delete()?;
+
         let block_height = self.storage.block_number();
-
-        self.active_ingresses[Self::ingress_key(&v.ingress)?].delete()?;
-
         self.validators[call.idx as usize]
             .deactivated_at_height
             .write(block_height)?;
@@ -535,12 +620,21 @@ impl ValidatorConfigV2 {
         ))
     }
 
+    /// Transfers ownership of the contract to a new address (owner only).
+    ///
+    /// # Errors
+    /// - `InvalidOwner` — `newOwner` is `address(0)`
+    /// - `Unauthorized` — `sender` is not the owner
+    /// - `NotInitialized` — the contract has not been initialized
     pub fn transfer_ownership(
         &mut self,
         sender: Address,
         call: IValidatorConfigV2::transferOwnershipCall,
     ) -> Result<()> {
-        let mut config = self.require_initialized_owner(sender)?;
+        if call.newOwner.is_zero() {
+            Err(ValidatorConfigV2Error::invalid_owner())?
+        }
+        let mut config = self.config.read()?.require_init()?.require_owner(sender)?;
         let old_owner = config.owner;
         config.owner = call.newOwner;
         self.config.write(config)?;
@@ -553,16 +647,23 @@ impl ValidatorConfigV2 {
         ))
     }
 
-    pub fn set_next_full_dkg_ceremony(
+    /// Sets the epoch at which a rotation of the network identity will be triggered.
+    ///
+    /// If `E` is ahead of the network's current epoch, the network will perform a
+    /// Distribute-Key-Generation (DKG) ceremony to rotate its identity at the new epoch `E`.
+    /// - If the DKG ceremony is successful, then epoch `E+1` will run with a new network identity.
+    /// - If `E` is not ahead of the network epoch this value is ignored.
+    pub fn set_network_identity_rotation_epoch(
         &mut self,
         sender: Address,
-        call: IValidatorConfigV2::setNextFullDkgCeremonyCall,
+        call: IValidatorConfigV2::setNetworkIdentityRotationEpochCall,
     ) -> Result<()> {
-        self.require_initialized_owner(sender)?;
-        let previous_epoch = self.next_dkg_ceremony.read()?;
-        self.next_dkg_ceremony.write(call.epoch)?;
-        self.emit_event(ValidatorConfigV2Event::NextFullDkgCeremonySet(
-            IValidatorConfigV2::NextFullDkgCeremonySet {
+        self.config.read()?.require_init()?.require_owner(sender)?;
+        let previous_epoch = self.next_network_identity_rotation_epoch.read()?;
+        self.next_network_identity_rotation_epoch
+            .write(call.epoch)?;
+        self.emit_event(ValidatorConfigV2Event::NetworkIdentityRotationEpochSet(
+            IValidatorConfigV2::NetworkIdentityRotationEpochSet {
                 previousEpoch: previous_epoch,
                 nextEpoch: call.epoch,
             },
@@ -573,18 +674,42 @@ impl ValidatorConfigV2 {
     // Dual-auth functions (owner or validator)
     // =========================================================================
 
+    /// Rotates a validator to a new identity (owner or the validator itself).
+    ///
+    /// Atomically:
+    /// 1. Appends a deactivated snapshot of the old identity to the tail of `validators`
+    /// 2. Overwrites the slot in-place with new pubkey, endpoints, and `addedAtHeight = now`
+    ///
+    /// The validator's global index, `active_idx`, `address_to_index` pointer, and
+    /// position in `active_indices` are all preserved — only `pubkey_to_index` is
+    /// updated (old key -> snapshot, new key -> original slot).
+    ///
+    /// Requires a valid Ed25519 signature, using the [`VALIDATOR_NS_ROTATE`] namespace, over
+    /// `keccak256(chainId || contractAddr || validatorAddr || len(ingress) || ingress || len(egress) || egress)`
+    /// which proves that the caller controls the private key corresponding to `publicKey`.
+    ///
+    /// # Errors
+    /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
+    /// - `NotInitialized` / `Unauthorized` — auth failure
+    /// - `InvalidPublicKey` / `PublicKeyAlreadyExists` — the new key is invalid
+    /// - `NotIpPort` / `NotIp` / `IngressAlreadyExists` — endpoint validation failure
+    /// - `InvalidSignature` — signature verification fails
     pub fn rotate_validator(
         &mut self,
         sender: Address,
         call: IValidatorConfigV2::rotateValidatorCall,
     ) -> Result<()> {
         let v = self.get_active_validator(call.idx)?;
-        self.require_initialized_owner_or_validator(sender, v.validator_address)?;
+        self.config
+            .read()?
+            .require_init()?
+            .require_owner_or_validator(sender, v.validator_address)?;
         self.require_new_pubkey(call.publicKey)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
         self.require_unique_ingress(&call.ingress)?;
-        self.verify_validator_rotate_signature(
+        self.verify_validator_signature(
+            SignatureKind::Rotate,
             &call.publicKey,
             &call.signature,
             v.validator_address,
@@ -598,7 +723,7 @@ impl ValidatorConfigV2 {
 
         // Append deactivated snapshot of the old validator
         let appended_idx = self.validators.len()? as u64;
-        let snapshot = ValidatorV2 {
+        let snapshot = ValidatorRecord {
             public_key: v.public_key,
             validator_address: v.validator_address,
             ingress: v.ingress,
@@ -639,15 +764,22 @@ impl ValidatorConfigV2 {
         ))
     }
 
+    /// Updates the fee recipient address for a validator (owner or the validator itself).
+    ///
+    /// # Errors
+    /// - `NotInitialized` — the contract has not been initialized
+    /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
+    /// - `Unauthorized` — `sender` is neither the owner nor the validator
     pub fn set_fee_recipient(
         &mut self,
         sender: Address,
         call: IValidatorConfigV2::setFeeRecipientCall,
     ) -> Result<()> {
         let mut v = self.get_active_validator(call.idx)?;
-        if sender != v.validator_address && !self.config.read()?.is_owner(sender) {
-            Err(ValidatorConfigV2Error::unauthorized())?
-        }
+        self.config
+            .read()?
+            .require_init()?
+            .require_owner_or_validator(sender, v.validator_address)?;
 
         v.fee_recipient = call.feeRecipient;
         self.validators[call.idx as usize].write(v)?;
@@ -661,15 +793,24 @@ impl ValidatorConfigV2 {
         ))
     }
 
+    /// Updates a validator's ingress and egress addresses (owner or the validator itself).
+    ///
+    /// # Errors
+    /// - `NotInitialized` — the contract has not been initialized
+    /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
+    /// - `Unauthorized` — `sender` is neither the owner nor the validator
+    /// - `NotIpPort` / `NotIp` — the new endpoints fail validation
+    /// - `IngressAlreadyExists` — the new ingress is already in use.
     pub fn set_ip_addresses(
         &mut self,
         sender: Address,
         call: IValidatorConfigV2::setIpAddressesCall,
     ) -> Result<()> {
         let mut v = self.get_active_validator(call.idx)?;
-        if sender != v.validator_address && !self.config.read()?.is_owner(sender) {
-            Err(ValidatorConfigV2Error::unauthorized())?
-        }
+        self.config
+            .read()?
+            .require_init()?
+            .require_owner_or_validator(sender, v.validator_address)?;
 
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
@@ -689,13 +830,26 @@ impl ValidatorConfigV2 {
         ))
     }
 
+    /// Transfers a validator entry to a new address (owner or the validator itself).
+    ///
+    /// Updates the validator's address in the lookup maps: deletes the old `address_to_index`
+    /// entry and creates a new one pointing to the same slot.
+    ///
+    /// # Errors
+    /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
+    /// - `NotInitialized` / `Unauthorized` — auth failure
+    /// - `InvalidValidatorAddress` — `newAddress` is zero
+    /// - `AddressAlreadyHasValidator` — `newAddress` belongs to an active validator
     pub fn transfer_validator_ownership(
         &mut self,
         sender: Address,
         call: IValidatorConfigV2::transferValidatorOwnershipCall,
     ) -> Result<()> {
         let mut v = self.get_active_validator(call.idx)?;
-        self.require_initialized_owner_or_validator(sender, v.validator_address)?;
+        self.config
+            .read()?
+            .require_init()?
+            .require_owner_or_validator(sender, v.validator_address)?;
         self.require_new_address(call.newAddress)?;
 
         let old_address = v.validator_address;
@@ -719,16 +873,14 @@ impl ValidatorConfigV2 {
     // Migration
     // =========================================================================
 
-    /// Requires the contract to NOT be initialized and the caller to be owner.
+    /// On the very first migration call the V2 owner is still zero, so we copy it from V1
+    /// before checking authorization. Returns the (potentially updated) config for reuse.
     ///
-    /// On the very first migration call the V2 owner is still zero, so we copy
-    /// it from V1 before checking authorization.  Returns the (possibly updated)
-    /// config for reuse.
+    /// # Errors
+    /// - `AlreadyInitialized` — V2 is already initialized
+    /// - `Unauthorized` — `caller` is not the owner (after copying from V1 if needed)
     fn require_migration_owner(&mut self, caller: Address) -> Result<Config> {
-        let mut config = self.config.read()?;
-        if config.is_init {
-            Err(ValidatorConfigV2Error::already_initialized())?
-        }
+        let mut config = self.config.read()?.require_not_init()?;
 
         if config.owner.is_zero() {
             config.owner = v1().owner()?;
@@ -736,37 +888,57 @@ impl ValidatorConfigV2 {
                 owner: config.owner,
                 is_init: false,
                 init_at_height: 0,
+                migration_skipped_count: 0,
             })?;
         }
 
-        if !config.is_owner(caller) {
-            Err(ValidatorConfigV2Error::unauthorized())?
-        }
-        Ok(config)
+        config.require_owner(caller)
     }
 
+    /// Migrates a single validator from V1 to V2 (owner only).
+    ///
+    /// Must be called once per V1 validator, in reverse index order.
+    /// On the first call, copies the owner from V1 if V2's owner is `address(0)`.
+    ///
+    /// Validators are skipped (not reverted) when:
+    /// - The public key is not a valid Ed25519 key
+    /// - The egress address cannot be parsed as a `SocketAddr`
+    /// - The public key or ingress IP is a duplicate of an already-migrated entry
+    ///
+    /// Active V1 validators get `deactivatedAtHeight = 0`; inactive ones get
+    /// `deactivatedAtHeight = block.number`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — `sender` is not the owner
+    /// - `AlreadyInitialized` — V2 is already initialized
+    /// - `InvalidMigrationIndex` — `idx` is out of order
     pub fn migrate_validator(
         &mut self,
         sender: Address,
         call: IValidatorConfigV2::migrateValidatorCall,
     ) -> Result<()> {
-        self.require_migration_owner(sender)?;
+        let config = self.require_migration_owner(sender)?;
         let block_height = self.storage.block_number();
 
         let v1 = v1();
         let v1_count = v1.validator_count()?;
         let migrated = self.validator_count()?;
-        let skipped = self.migration_skipped_count.read()?;
+        let skipped = config.migration_skipped_count;
 
         let total_processed = migrated + u64::from(skipped);
-        if call.idx + total_processed + 1 != v1_count {
+        if total_processed >= v1_count || call.idx != v1_count - total_processed - 1 {
             Err(ValidatorConfigV2Error::invalid_migration_index())?
         }
 
         let v1_val = v1.validators(v1.validators_array(call.idx)?)?;
 
         // Closure to skipping a validator when one of the checks fails
-        let skip = |s: &mut Self| s.migration_skipped_count.write(skipped.saturating_add(1));
+        // NOTE: No real saturation concerns as the validator set << u16::MAX
+        let skip = |s: &mut Self| {
+            s.config
+                .migration_skipped_count
+                .write(skipped.saturating_add(1))
+        };
 
         // Skip if public key decoding fails
         if PublicKey::decode(v1_val.publicKey.as_slice()).is_err() {
@@ -799,10 +971,8 @@ impl ValidatorConfigV2 {
         let ingress_hash = Self::ingress_key(&v1_val.inboundAddress)?;
 
         // Skip if ingress ip hash is a duplicate of an existing entry
-        if now_active && self.active_ingresses[ingress_hash].read()? {
-            self.migration_skipped_count
-                .write(skipped.saturating_add(1))?;
-            return Ok(());
+        if now_active && self.active_ingress_ips[ingress_hash].read()? {
+            return skip(self);
         }
 
         let migrated_idx = self.append_validator(
@@ -816,7 +986,7 @@ impl ValidatorConfigV2 {
         )?;
 
         if now_active {
-            self.active_ingresses[ingress_hash].write(true)?;
+            self.active_ingress_ips[ingress_hash].write(true)?;
         }
 
         self.emit_event(ValidatorConfigV2Event::ValidatorMigrated(
@@ -828,20 +998,32 @@ impl ValidatorConfigV2 {
         ))
     }
 
+    /// Finalizes V1 -> V2 migration by setting `is_init = true`.
+    ///
+    /// Should only be called after all V1 validators have been migrated via
+    /// [`migrate_validator`](Self::migrate_validator). Copies `nextDkgCeremony`
+    /// from V1. After this call, the CL reads from V2 instead of V1 and all
+    /// mutating functions are unlocked.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — `sender` is not the owner
+    /// - `AlreadyInitialized` — V2 is already initialized
+    /// - `MigrationNotComplete` — `validator_count + skipped < v1.validator_count`
     pub fn initialize_if_migrated(&mut self, sender: Address) -> Result<()> {
         let mut config = self.require_migration_owner(sender)?;
         let v1 = v1();
 
         // NOTE: this count comparison is sufficient because `add_validator` and
         // `rotate_validator` are blocked until the contract is initialized.
-        if self.validator_count()? + u64::from(self.migration_skipped_count.read()?)
+        if self.validator_count()? + u64::from(config.migration_skipped_count)
             < v1.validator_count()?
         {
             Err(ValidatorConfigV2Error::migration_not_complete())?
         }
 
         let v1_next_dkg = v1.get_next_full_dkg_ceremony()?;
-        self.next_dkg_ceremony.write(v1_next_dkg)?;
+        self.next_network_identity_rotation_epoch
+            .write(v1_next_dkg)?;
 
         trace!(address=%self.address, "Initializing validator config v2 precompile after migration");
 
@@ -866,7 +1048,7 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
-    use alloy_primitives::{FixedBytes, keccak256};
+    use alloy_primitives::FixedBytes;
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
 
@@ -875,28 +1057,33 @@ mod tests {
         validator_address: Address,
         ingress: &str,
         egress: &str,
-        fee_recipient: Address,
-        namespace: &[u8],
+        kind: SignatureKind,
     ) -> (FixedBytes<32>, Vec<u8>) {
         // Generate a random private key for testing
         let seed = rand_08::random::<u64>();
         let private_key = PrivateKey::from_seed(seed);
         let public_key = private_key.public_key();
 
-        let mut message_data = Vec::new();
-        message_data.extend_from_slice(&1u64.to_be_bytes());
-        message_data.extend_from_slice(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        message_data.extend_from_slice(validator_address.as_slice());
-        message_data
-            .push(u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8"));
-        message_data.extend_from_slice(ingress.as_bytes());
-        message_data
-            .push(u8::try_from(egress.len()).expect("validator egress length must fit in uint8"));
-        message_data.extend_from_slice(egress.as_bytes());
-        if namespace == VALIDATOR_NS_ADD {
-            message_data.extend_from_slice(fee_recipient.as_slice());
-        }
-        let message = keccak256(message_data);
+        let mut hasher = Keccak256::new();
+        hasher.update(1u64.to_be_bytes());
+        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        hasher.update(validator_address.as_slice());
+        hasher.update([
+            u8::try_from(ingress.len()).expect("validator ingress length must fit in uint8")
+        ]);
+        hasher.update(ingress.as_bytes());
+        hasher.update([
+            u8::try_from(egress.len()).expect("validator egress length must fit in uint8")
+        ]);
+        hasher.update(egress.as_bytes());
+        let namespace = match kind {
+            SignatureKind::Add { fee_recipient } => {
+                hasher.update(fee_recipient.as_slice());
+                VALIDATOR_NS_ADD
+            }
+            SignatureKind::Rotate => VALIDATOR_NS_ROTATE,
+        };
+        let message = hasher.finalize();
 
         // Sign with namespace
         let signature = private_key.sign(namespace, message.as_slice());
@@ -937,8 +1124,12 @@ mod tests {
         egress: &str,
         fee_recipient: Address,
     ) -> IValidatorConfigV2::addValidatorCall {
-        let (pubkey, signature) =
-            make_test_keypair_and_signature(addr, ingress, egress, fee_recipient, VALIDATOR_NS_ADD);
+        let (pubkey, signature) = make_test_keypair_and_signature(
+            addr,
+            ingress,
+            egress,
+            SignatureKind::Add { fee_recipient },
+        );
         make_add_call(addr, pubkey, ingress, egress, fee_recipient, signature)
     }
 
@@ -972,8 +1163,9 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1102,8 +1294,9 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                addr1,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: addr1,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1124,8 +1317,9 @@ mod tests {
                 addr2,
                 "192.168.1.2:8000",
                 "192.168.1.2",
-                addr2,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: addr2,
+                },
             );
             vc.storage.set_block_number(201);
             let result = vc.add_validator(
@@ -1246,8 +1440,9 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1267,8 +1462,7 @@ mod tests {
                 validator,
                 "10.0.0.1:8000",
                 "10.0.0.1",
-                validator,
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.storage.set_block_number(300);
             vc.rotate_validator(
@@ -1442,10 +1636,44 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let new_owner = Address::random();
+        let non_owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
+
+            // Rejects pre-init
+            let result = vc.transfer_ownership(
+                owner,
+                IValidatorConfigV2::transferOwnershipCall {
+                    newOwner: new_owner,
+                },
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::not_initialized().into())
+            );
+
             vc.initialize(owner)?;
 
+            // Rejects zero address
+            let result = vc.transfer_ownership(
+                owner,
+                IValidatorConfigV2::transferOwnershipCall {
+                    newOwner: Address::ZERO,
+                },
+            );
+            assert_eq!(result, Err(ValidatorConfigV2Error::invalid_owner().into()));
+            assert_eq!(vc.owner()?, owner);
+
+            // Rejects non-owner
+            let result = vc.transfer_ownership(
+                non_owner,
+                IValidatorConfigV2::transferOwnershipCall {
+                    newOwner: new_owner,
+                },
+            );
+            assert_eq!(result, Err(ValidatorConfigV2Error::unauthorized().into()));
+
+            // Succeeds for owner
             vc.transfer_ownership(
                 owner,
                 IValidatorConfigV2::transferOwnershipCall {
@@ -1454,6 +1682,7 @@ mod tests {
             )?;
             assert_eq!(vc.owner()?, new_owner);
 
+            // Old owner can no longer transfer
             let result = vc.transfer_ownership(
                 owner,
                 IValidatorConfigV2::transferOwnershipCall {
@@ -1480,8 +1709,9 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1558,25 +1788,25 @@ mod tests {
     }
 
     #[test]
-    fn test_set_next_full_dkg_ceremony() -> eyre::Result<()> {
+    fn test_set_network_identity_rotation_epoch() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
             vc.initialize(owner)?;
 
-            assert_eq!(vc.get_next_full_dkg_ceremony()?, 0);
+            assert_eq!(vc.get_next_network_identity_rotation_epoch()?, 0);
 
-            vc.set_next_full_dkg_ceremony(
+            vc.set_network_identity_rotation_epoch(
                 owner,
-                IValidatorConfigV2::setNextFullDkgCeremonyCall { epoch: 42 },
+                IValidatorConfigV2::setNetworkIdentityRotationEpochCall { epoch: 42 },
             )?;
-            assert_eq!(vc.get_next_full_dkg_ceremony()?, 42);
+            assert_eq!(vc.get_next_network_identity_rotation_epoch()?, 42);
 
             let non_owner = Address::random();
-            let result = vc.set_next_full_dkg_ceremony(
+            let result = vc.set_network_identity_rotation_epoch(
                 non_owner,
-                IValidatorConfigV2::setNextFullDkgCeremonyCall { epoch: 100 },
+                IValidatorConfigV2::setNetworkIdentityRotationEpochCall { epoch: 100 },
             );
             assert_eq!(result, Err(ValidatorConfigV2Error::unauthorized().into()));
 
@@ -1622,8 +1852,9 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1:9000",
-                addr1,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: addr1,
+                },
             );
 
             // IP:port for egress should fail (egress validation happens before signature)
@@ -1894,8 +2125,9 @@ mod tests {
                 validator_addr,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator_addr,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator_addr,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -1922,8 +2154,9 @@ mod tests {
                 validator_addr,
                 "192.168.1.2:8000",
                 "192.168.1.2",
-                validator_addr,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator_addr,
+                },
             );
             vc.storage.set_block_number(400);
             vc.add_validator(
@@ -2064,8 +2297,7 @@ mod tests {
                 v1,
                 "[2001:db8::1]:8001",
                 "2001:db8::1",
-                Address::random(),
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.rotate_validator(
                 owner,
@@ -2098,7 +2330,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_ip_addresses_during_migration() -> eyre::Result<()> {
+    fn test_set_ip_addresses_rejects_pre_init() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let v1_addr = Address::random();
@@ -2123,52 +2355,8 @@ mod tests {
             v2.storage.set_block_number(100);
             v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
 
-            // Update IPs during migration (owner can do this pre-init)
-            v2.set_ip_addresses(
-                owner,
-                IValidatorConfigV2::setIpAddressesCall {
-                    idx: 0,
-                    ingress: "10.0.0.1:8000".to_string(),
-                    egress: "10.0.0.1".to_string(),
-                },
-            )?;
-
-            let validator = v2.validator_by_address(v1_addr)?;
-            assert_eq!(validator.ingress, "10.0.0.1:8000");
-            assert_eq!(validator.egress, "10.0.0.1");
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_ip_addresses_migration_rejects_non_owner() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        let non_owner = Address::random();
-        let v1_addr = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut v1 = v1();
-            v1.initialize(owner)?;
-            v1.add_validator(
-                owner,
-                tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: v1_addr,
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
-                    active: true,
-                    inboundAddress: "192.168.1.1:8000".to_string(),
-                    outboundAddress: "192.168.1.1:9000".to_string(),
-                },
-            )?;
-
-            let mut v2 = ValidatorConfigV2::new();
-            v2.storage.set_block_number(100);
-            v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
-
-            // Non-owner cannot update during migration
             let result = v2.set_ip_addresses(
-                non_owner,
+                owner,
                 IValidatorConfigV2::setIpAddressesCall {
                     idx: 0,
                     ingress: "10.0.0.1:8000".to_string(),
@@ -2176,7 +2364,10 @@ mod tests {
                 },
             );
 
-            assert_eq!(result, Err(ValidatorConfigV2Error::unauthorized().into()));
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::not_initialized().into())
+            );
             Ok(())
         })
     }
@@ -2207,8 +2398,7 @@ mod tests {
                 v1,
                 "192.168.2.1:8000",
                 "192.168.2.1",
-                v1,
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
 
             vc.storage.set_block_number(300);
@@ -2263,7 +2453,7 @@ mod tests {
 
             v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
             assert_eq!(v2.validator_count()?, 1);
-            assert_eq!(v2.migration_skipped_count.read()?, 1);
+            assert_eq!(v2.config.migration_skipped_count.read()?, 1);
 
             v2.storage.set_block_number(400);
             v2.initialize_if_migrated(owner)?;
@@ -2310,7 +2500,7 @@ mod tests {
 
             v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
             assert_eq!(v2.validator_count()?, 1);
-            assert_eq!(v2.migration_skipped_count.read()?, 1);
+            assert_eq!(v2.config.migration_skipped_count.read()?, 1);
 
             v2.storage.set_block_number(400);
             v2.initialize_if_migrated(owner)?;
@@ -2359,7 +2549,7 @@ mod tests {
 
             v2.migrate_validator(owner, IValidatorConfigV2::migrateValidatorCall { idx: 0 })?;
             assert_eq!(v2.validator_count()?, 1);
-            assert_eq!(v2.migration_skipped_count.read()?, 1);
+            assert_eq!(v2.config.migration_skipped_count.read()?, 1);
 
             let migrated = v2.validator_by_index(0)?;
             assert_eq!(migrated.validatorAddress, addr2);
@@ -2434,8 +2624,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8001",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.storage.set_block_number(300);
             vc.rotate_validator(
@@ -2488,8 +2677,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                Address::random(),
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.storage.set_block_number(300);
             assert!(
@@ -2724,8 +2912,9 @@ mod tests {
                 addr1,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                addr1,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: addr1,
+                },
             );
             vc.storage.set_block_number(200);
             vc.add_validator(
@@ -2882,8 +3071,7 @@ mod tests {
                 validator,
                 "[2001:db8::1]:8000",
                 "2001:db8::1",
-                validator,
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.storage.set_block_number(300);
             vc.rotate_validator(
@@ -3019,8 +3207,9 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator,
+                },
             );
 
             vc.storage.set_block_number(100);
@@ -3126,8 +3315,9 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                validator,
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add {
+                    fee_recipient: validator,
+                },
             );
 
             vc.storage.set_block_number(200);
@@ -3148,8 +3338,7 @@ mod tests {
                 validator,
                 "10.0.0.2:8000",
                 "10.0.0.2",
-                validator,
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
             vc.storage.set_block_number(300);
             vc.rotate_validator(
@@ -3176,16 +3365,18 @@ mod tests {
             )]);
 
             vc.clear_emitted_events();
-            vc.set_next_full_dkg_ceremony(
+            vc.set_network_identity_rotation_epoch(
                 owner,
-                IValidatorConfigV2::setNextFullDkgCeremonyCall { epoch: 42 },
+                IValidatorConfigV2::setNetworkIdentityRotationEpochCall { epoch: 42 },
             )?;
-            vc.assert_emitted_events(vec![ValidatorConfigV2Event::NextFullDkgCeremonySet(
-                IValidatorConfigV2::NextFullDkgCeremonySet {
-                    previousEpoch: 0,
-                    nextEpoch: 42,
-                },
-            )]);
+            vc.assert_emitted_events(vec![
+                ValidatorConfigV2Event::NetworkIdentityRotationEpochSet(
+                    IValidatorConfigV2::NetworkIdentityRotationEpochSet {
+                        previousEpoch: 0,
+                        nextEpoch: 42,
+                    },
+                ),
+            ]);
 
             Ok(())
         })
