@@ -278,3 +278,74 @@ jobs:
               --body-file /tmp/pr-body.txt \
               --label A-dependencies
           fi
+
+      # ── wait for CI and fix failures ─────────────────────────
+      - name: Wait for CI and fix failures
+        if: steps.update.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+        run: |
+          PR_BRANCH="reth-main-update-deps"
+
+          while true; do
+            echo "Waiting for CI checks to complete..."
+            # Wait for all checks to finish (poll every 60s)
+            while true; do
+              STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
+              PENDING=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | length')
+              if [ "$PENDING" = "0" ] 2>/dev/null; then
+                break
+              fi
+              echo "CI still running ($PENDING checks pending)..."
+              sleep 60
+            done
+
+            # Check for failures
+            FAILED=$(echo "$STATUS" | jq -r '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | .[].name' 2>/dev/null || true)
+            if [ -z "$FAILED" ]; then
+              echo "All CI checks passed!"
+              exit 0
+            fi
+
+            echo "Failed checks: $FAILED"
+
+            # Fetch logs for failed checks
+            FAILED_LOGS=""
+            for check in $FAILED; do
+              echo "Fetching logs for $check..."
+              LOGS=$(gh run view --repo "${{ github.repository }}" -j "$check" --log-failed 2>&1 | tail -200) || true
+              FAILED_LOGS="${FAILED_LOGS}
+
+          === ${check} ===
+          ${LOGS}"
+            done
+
+            # Use Amp to fix
+            AMP_PROMPT="The CI checks on this PR are failing. Please fix the issues. \
+            You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
+            but do NOT modify the reth git source specifications (URL, branch, or rev) in any Cargo.toml — \
+            those must stay pointing at branch = \"main\".
+
+            IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
+            to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
+            what replaced the deprecated items.
+
+            Here are the CI failure logs:
+
+            ${FAILED_LOGS}"
+
+            echo "::group::Amp CI fix"
+            amp --dangerously-allow-all -x "$AMP_PROMPT"
+            echo "::endgroup::"
+
+            # Commit and push fixes
+            if [ -n "$(git status --porcelain)" ]; then
+              git add -A
+              git commit -m "fix: resolve CI failures from reth update ($(date -u +%Y-%m-%d))"
+              git push origin "$PR_BRANCH"
+            else
+              echo "Amp made no changes but CI is still failing — giving up"
+              exit 1
+            fi
+          done
