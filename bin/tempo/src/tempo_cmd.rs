@@ -26,17 +26,6 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 use crate::init_state;
 
-/// Passthrough args for extension management commands.
-///
-/// These commands are defined here so they appear in `tempo --help`, but
-/// the actual implementation lives in `tempo_ext::run()`. We capture all
-/// trailing arguments and re-dispatch.
-#[derive(Debug, clap::Args)]
-pub(crate) struct ExtArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    args: Vec<String>,
-}
-
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
 
@@ -52,19 +41,16 @@ pub(crate) enum TempoSubcommand {
     InitFromBinaryDump(Box<init_state::InitFromBinaryDump<TempoChainSpecParser>>),
 
     /// Install an extension (e.g., `tempo add wallet`).
-    #[command(after_help = "Examples:\n  tempo add wallet\n  tempo add wallet 0.2.0")]
-    Add(ExtArgs),
+    Add,
 
     /// Update tempo and/or extensions.
-    #[command(after_help = "Examples:\n  tempo update          # update tempo + all extensions\n  tempo update wallet   # update a single extension")]
-    Update(ExtArgs),
+    Update,
 
     /// Remove an extension.
-    #[command(after_help = "Example: tempo remove wallet")]
-    Remove(ExtArgs),
+    Remove,
 
     /// List installed extensions.
-    List(ExtArgs),
+    List,
 }
 
 impl ExtendedCommand for TempoSubcommand {
@@ -75,13 +61,8 @@ impl ExtendedCommand for TempoSubcommand {
                 runner.run_blocking_until_ctrl_c(cmd.execute::<tempo_node::node::TempoNode>())?;
                 Ok(())
             }
-            Self::Add(_) | Self::Update(_) | Self::Remove(_) | Self::List(_) => {
-                let code = tempo_ext::run(std::env::args_os()).map_err(|e| eyre!("{e}"))?;
-                if code != 0 {
-                    std::process::exit(code);
-                }
-                Ok(())
-            }
+            // Intercepted before clap parsing in main(); unreachable here.
+            Self::Add | Self::Update | Self::Remove | Self::List => unreachable!(),
         }
     }
 }

@@ -34,7 +34,6 @@ pub enum LauncherError {
 #[derive(Parser, Debug)]
 #[command(
     name = "tempo",
-    disable_help_flag = true,
     disable_version_flag = true,
     disable_help_subcommand = true
 )]
@@ -45,14 +44,17 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Install an extension.
+    /// Install an extension (e.g., `tempo add wallet`).
+    #[command(after_help = "Examples:\n  tempo add wallet\n  tempo add wallet 0.2.0")]
     Add(ManagementArgs),
 
     /// Update tempo and/or extensions. Without arguments, updates tempo
     /// itself via tempoup and then updates all installed extensions.
+    #[command(after_help = "Examples:\n  tempo update          # update tempo + all extensions\n  tempo update wallet   # update a single extension")]
     Update(UpdateArgs),
 
     /// Remove an extension.
+    #[command(after_help = "Example: tempo remove wallet")]
     Remove(RemoveArgs),
 
     /// List installed extensions.
@@ -126,8 +128,19 @@ where
         .and_then(|path| path.parent().map(Path::to_path_buf));
     let launcher = Launcher { exe_dir };
 
-    let cli =
-        Cli::try_parse_from(args).map_err(|err| LauncherError::InvalidArgs(err.to_string()))?;
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(err) => {
+            // Let clap handle --help and --version by printing and exiting.
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                err.exit();
+            }
+            return Err(LauncherError::InvalidArgs(err.to_string()));
+        }
+    };
 
     match cli.command {
         Commands::Add(args) => launcher.handle_install(args),
