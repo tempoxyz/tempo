@@ -12,7 +12,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use alloy_consensus::BlockHeader;
+use alloy_consensus::BlockHeader as _;
 use commonware_broadcast::buffered;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
@@ -28,7 +28,7 @@ use commonware_parallel::Sequential;
 use commonware_runtime::{
     BufferPooler, Clock, Metrics, Pacer, Spawner, Storage, buffer::paged::CacheRef,
 };
-use commonware_utils::channel::mpsc;
+use commonware_utils::{NZUsize, channel::mpsc};
 use eyre::{OptionExt as _, WrapErr as _};
 use rand_08::{CryptoRng, Rng};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -116,7 +116,7 @@ impl<U: UpstreamNode> Builder<U> {
             crate::alias::marshal::Actor<TContext>,
             crate::alias::marshal::Mailbox,
             _,
-        ) = marshal::Actor::init(
+        ) = marshal::core::Actor::init(
             context.with_label("marshal"),
             finalizations_by_height,
             finalized_blocks,
@@ -132,6 +132,7 @@ impl<U: UpstreamNode> Builder<U> {
                 key_write_buffer: storage::WRITE_BUFFER,
                 value_write_buffer: storage::WRITE_BUFFER,
                 max_repair: storage::MAX_REPAIR,
+                max_pending_acks: NZUsize!(1),
                 block_codec_config: (),
                 strategy: Sequential,
             },
@@ -153,6 +154,14 @@ impl<U: UpstreamNode> Builder<U> {
             self.execution_node.clone(),
         );
 
+        let (feed_actor, feed_mailbox) = feed::init(
+            context.with_label("feed"),
+            marshal_mailbox.clone(),
+            epoch_strategy.clone(),
+            self.execution_node.clone(),
+            self.feed_state,
+        );
+
         let (executor_actor, executor_mailbox) = executor::init(
             context.with_label("executor"),
             executor::Config {
@@ -163,13 +172,6 @@ impl<U: UpstreamNode> Builder<U> {
             },
         )
         .wrap_err("failed to initialize executor")?;
-
-        let (feed_actor, feed_mailbox) = feed::init(
-            context.with_label("feed"),
-            marshal_mailbox.clone(),
-            epoch_strategy.clone(),
-            self.feed_state,
-        );
 
         // No broadcast is needed in follow mode.
         let broadcast = stubs::null_broadcast(context.with_label("broadcast"), self.mailbox_size);
@@ -210,7 +212,7 @@ where
     context: TContext,
     upstream: Arc<U>,
     resolver: FollowResolver<TContext, U>,
-    resolver_rx: mpsc::Receiver<commonware_consensus::marshal::ingress::handler::Message<Block>>,
+    resolver_rx: mpsc::Receiver<commonware_consensus::marshal::resolver::handler::Message<Digest>>,
     scheme_provider: SchemeProvider,
     epoch_strategy: FixedEpocher,
     marshal_actor: crate::alias::marshal::Actor<TContext>,
@@ -256,10 +258,7 @@ where
                 .await?
                 .ok_or_eyre("failed to get latest finalization")?;
 
-            let latest_finalization_height = latest_finalization
-                .height
-                .map(Height::new)
-                .ok_or_eyre("latest finalization has no height")?;
+            let latest_finalization_height = Height::new(latest_finalization.block.number());
 
             let epoch_info = self
                 .epoch_strategy

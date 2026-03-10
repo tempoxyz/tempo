@@ -5,6 +5,5 @@ pub(crate) mod block;
 pub(crate) mod digest;
 pub(crate) mod engine;
 
-pub use block::Block;
 pub use digest::Digest;
 pub use engine::{Builder, Engine};

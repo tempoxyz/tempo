@@ -8,7 +8,7 @@ use std::{collections::HashSet, sync::Arc};
 use bytes::Bytes;
 use commonware_codec::{Encode, ReadExt as _};
 use commonware_consensus::{
-    marshal::ingress::handler,
+    marshal::resolver::handler,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
@@ -28,8 +28,8 @@ use tracing::{debug, warn, warn_span};
 use super::upstream::UpstreamNode;
 use crate::consensus::{Digest, block::Block};
 
-type Request = handler::Request<Block>;
-type Message = handler::Message<Block>;
+type Request = handler::Request<Digest>;
+type Message = handler::Message<Digest>;
 
 pub(crate) struct FollowResolver<TContext: Spawner + Clone + Send + 'static, U: UpstreamNode> {
     context: TContext,

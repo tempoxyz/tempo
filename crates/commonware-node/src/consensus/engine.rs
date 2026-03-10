@@ -23,7 +23,7 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::{NZU16, NZU64, NZUsize};
+use commonware_utils::{NZU64, NZUsize};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_08::{CryptoRng, Rng};

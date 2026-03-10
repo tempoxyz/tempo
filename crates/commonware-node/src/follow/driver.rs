@@ -6,6 +6,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Reporter as _,
@@ -24,12 +25,19 @@ use futures::StreamExt as _;
 use rand_08::{CryptoRng, Rng};
 
 use eyre::OptionExt;
+use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tracing::{debug, debug_span, info, info_span, warn, warn_span};
 
 use super::upstream::UpstreamNode;
-use crate::{alias::marshal, config::NAMESPACE, consensus::Digest, epoch::SchemeProvider, feed};
+use crate::{
+    alias::marshal,
+    config::NAMESPACE,
+    consensus::{Digest, block::Block},
+    epoch::SchemeProvider,
+    feed,
+};
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
@@ -92,11 +100,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
                 continue;
             };
 
-            let height = certified
-                .height
-                .map(Height::new)
-                .ok_or_eyre("finalized event missing height")?;
-
+            let height = Height::new(certified.block.number());
             if height <= self.last_seen {
                 continue;
             }
@@ -106,7 +110,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
             });
 
             self.process_boundaries(height).await?;
-            self.process_finalization(&certified, height).await?;
+            self.process_finalization(&certified).await?;
             self.last_seen = height;
         }
 
@@ -168,18 +172,9 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
         Ok(())
     }
 
-    async fn process_finalization(
-        &mut self,
-        certified: &CertifiedBlock,
-        height: Height,
-    ) -> eyre::Result<()> {
-        let block = self
-            .upstream
-            .get_block_by_number(height.get())
-            .await?
-            .ok_or_eyre("block not found on upstream")?;
-
-        eyre::ensure!(certified.digest == block.block_hash());
+    async fn process_finalization(&mut self, certified: &CertifiedBlock) -> eyre::Result<()> {
+        let sealed = SealedBlock::seal_slow(certified.block.clone());
+        let consensus_block = Block::from_execution_block(sealed);
 
         let cert_bytes = alloy_primitives::hex::decode(&certified.certificate)?;
         let finalization: Finalization<Scheme<PublicKey, MinSig>, Digest> =
@@ -200,7 +195,7 @@ impl<C: Clock + Rng + CryptoRng, U: UpstreamNode> FollowDriver<C, U> {
         // Store the Finalized Block
         let round = Round::new(Epoch::new(certified.epoch), View::new(certified.view));
         let activity = Activity::Finalization(finalization);
-        self.marshal_mailbox.verified(round, block).await;
+        self.marshal_mailbox.verified(round, consensus_block).await;
         self.marshal_mailbox.report(activity.clone()).await;
         self.feed_mailbox.report(activity).await;
         Ok(())

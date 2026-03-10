@@ -9,7 +9,9 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
+use commonware_p2p::utils::StaticProvider;
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner};
+use commonware_utils::ordered::Set;
 use rand_08::SeedableRng as _;
 
 use crate::consensus::block::Block;
@@ -35,6 +37,7 @@ pub(super) fn null_broadcast<E: Clock + Spawner + Metrics + BufferPooler>(
         deque_size: 0,
         priority: false,
         codec_config: (),
+        peer_provider: StaticProvider::new(0, Set::default()),
     };
 
     let (_engine, mailbox) = buffered::Engine::new(context, config);
