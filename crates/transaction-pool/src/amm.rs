@@ -805,4 +805,30 @@ mod tests {
             assert_eq!(cache.is_active_validator(&query), expected, "{desc}");
         }
     }
+
+    #[test]
+    fn test_track_tokens() {
+        let token_a = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        let token_b = address!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+
+        // Empty slice is a no-op
+        let cache = AmmLiquidityCache::with_unique_tokens(vec![]);
+        assert!(!cache.track_tokens(&[]));
+        assert!(cache.inner.read().unique_tokens.is_empty());
+
+        // New token is inserted
+        let cache = AmmLiquidityCache::with_unique_tokens(vec![token_a]);
+        assert!(cache.track_tokens(&[token_b]));
+        assert_eq!(cache.inner.read().unique_tokens, vec![token_a, token_b]);
+
+        // Already-tracked token returns false
+        let cache = AmmLiquidityCache::with_unique_tokens(vec![token_a]);
+        assert!(!cache.track_tokens(&[token_a]));
+        assert_eq!(cache.inner.read().unique_tokens.len(), 1);
+
+        // Duplicate input is deduplicated
+        let cache = AmmLiquidityCache::with_unique_tokens(vec![token_a]);
+        assert!(cache.track_tokens(&[token_b, token_b]));
+        assert_eq!(cache.inner.read().unique_tokens.len(), 2);
+    }
 }
