@@ -333,6 +333,15 @@ fn main() -> eyre::Result<()> {
                     .discovery
                     .enable_discv5_discovery = true;
 
+                // Add bootnodes as trusted peers so they are always maintained
+                if let Some(bootnodes) = builder.config().chain.bootnodes() {
+                    builder
+                        .config_mut()
+                        .network
+                        .trusted_peers
+                        .extend(bootnodes.into_iter().map(Into::into));
+                }
+
                 // Resolve the follow URL:
                 // --follow or --follow=auto -> use chain-specific default
                 // --follow=URL -> use provided URL
