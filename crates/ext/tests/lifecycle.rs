@@ -386,10 +386,15 @@ fn remove_deletes_binary() {
 
     fix.run(&["tempo", "add", "testpkg"]).unwrap();
     assert!(fix.binary_path("testpkg").exists());
+    assert!(fix.installed_version("testpkg").is_some());
 
     let code = fix.run(&["tempo", "remove", "testpkg"]).unwrap();
     assert_eq!(code, 0);
     assert!(!fix.binary_path("testpkg").exists());
+    assert!(
+        fix.installed_version("testpkg").is_none(),
+        "remove should clear registry entry"
+    );
 }
 
 #[test]
@@ -813,6 +818,39 @@ fn remove_dry_run_preserves_binary() {
     assert!(
         fix.binary_path("drytest").exists(),
         "dry-run remove should not delete the binary"
+    );
+    assert!(
+        fix.installed_version("drytest").is_some(),
+        "dry-run remove should not clear registry entry"
+    );
+}
+
+#[test]
+fn remove_clears_registry_entry() {
+    let _lock = lock();
+    let fix = Fixture::new();
+
+    fix.publish_extension("regtest", "1.0.0");
+    fix.run(&["tempo", "add", "regtest"]).unwrap();
+    assert_eq!(
+        fix.installed_version("regtest").as_deref(),
+        Some("1.0.0"),
+        "add should record version in registry"
+    );
+
+    fix.run(&["tempo", "remove", "regtest"]).unwrap();
+    assert!(
+        fix.installed_version("regtest").is_none(),
+        "remove should clear the registry entry so list no longer shows it"
+    );
+
+    // Re-add should work cleanly after remove.
+    fix.publish_extension("regtest", "2.0.0");
+    fix.run(&["tempo", "add", "regtest"]).unwrap();
+    assert_eq!(
+        fix.installed_version("regtest").as_deref(),
+        Some("2.0.0"),
+        "re-add after remove should record new version"
     );
 }
 

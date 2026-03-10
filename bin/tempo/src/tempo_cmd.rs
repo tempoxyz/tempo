@@ -33,7 +33,7 @@ use crate::init_state;
 /// trailing arguments and re-dispatch.
 #[derive(Debug, clap::Args)]
 pub(crate) struct ExtArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "EXT")]
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
     args: Vec<String>,
 }
 
@@ -51,18 +51,28 @@ pub(crate) enum TempoSubcommand {
     InitFromBinaryDump(Box<init_state::InitFromBinaryDump<TempoChainSpecParser>>),
 
     /// Install an extension (e.g., `tempo add wallet`).
-    #[command(after_help = "Examples:\n  tempo add wallet\n  tempo add wallet 0.2.0")]
+    #[command(
+        override_usage = "tempo add [EXT]",
+        after_help = "Examples:\n  tempo add wallet\n  tempo add wallet 0.2.0"
+    )]
     Add(ExtArgs),
 
     /// Update tempo and/or extensions.
-    #[command(after_help = "Examples:\n  tempo update          # update tempo + all extensions\n  tempo update wallet   # update a single extension")]
+    #[command(
+        override_usage = "tempo update [EXT]",
+        after_help = "Examples:\n  tempo update          # update tempo + all extensions\n  tempo update wallet   # update a single extension"
+    )]
     Update(ExtArgs),
 
     /// Remove an extension.
-    #[command(after_help = "Example: tempo remove wallet")]
+    #[command(
+        override_usage = "tempo remove [EXT]",
+        after_help = "Example: tempo remove wallet"
+    )]
     Remove(ExtArgs),
 
     /// List installed extensions.
+    #[command(override_usage = "tempo list")]
     List(ExtArgs),
 }
 

@@ -59,12 +59,8 @@ use tempo_node::{
 use tokio::sync::oneshot;
 use tracing::{info, info_span};
 
-type TempoCli = Cli<
-    TempoChainSpecParser,
-    TempoArgs,
-    DefaultRpcModuleValidator,
-    tempo_cmd::TempoSubcommand,
->;
+type TempoCli =
+    Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
@@ -469,4 +465,3 @@ fn main() -> eyre::Result<()> {
     }
     Ok(())
 }
-

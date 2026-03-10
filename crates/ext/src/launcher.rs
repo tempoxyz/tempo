@@ -380,6 +380,13 @@ impl Launcher {
 
         let installer = Installer::from_env(self.exe_dir.as_deref())?;
         installer.remove(extension, dry_run)?;
+
+        if !dry_run {
+            let mut registry = Registry::load();
+            registry.extensions.remove(extension);
+            registry.save();
+        }
+
         Ok(0)
     }
 
