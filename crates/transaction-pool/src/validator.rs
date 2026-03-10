@@ -20,9 +20,10 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_evm::TempoEvmConfig;
+#[cfg(test)]
+use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, account_keychain::AuthorizedKey};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS,
-    account_keychain::{AccountKeychain, AuthorizedKey},
+    account_keychain::AccountKeychain,
     nonce::{INonce, NonceManager},
     storage::Handler,
 };
@@ -158,29 +159,7 @@ where
     ///
     /// Version checks are handled separately by [`Self::validate_keychain_version`] early
     /// in the path to ensure permanently invalid signatures trigger proper peer penalties.
-    #[cfg(test)]
     fn validate_against_keychain(
-        &self,
-        transaction: &TempoPooledTransaction,
-        state_provider: &mut impl StateProvider,
-    ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
-        self.validate_against_keychain_with_fee_context(
-            transaction,
-            state_provider,
-            transaction.sender(),
-            transaction
-                .inner()
-                .fee_token()
-                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN),
-        )
-    }
-
-    /// Validates keychain authorization using fee context resolved by `validate_one`.
-    ///
-    /// The pool must use the same fee payer and fee token that execution will use, otherwise
-    /// keychain spending-limit checks can diverge for sponsored transactions or inferred tokens.
-    /// This function takes those resolved values explicitly to keep pool/execution parity.
-    fn validate_against_keychain_with_fee_context(
         &self,
         transaction: &TempoPooledTransaction,
         state_provider: &mut impl StateProvider,
@@ -252,30 +231,22 @@ where
             )));
         };
 
-        // Ensure that if key auth is present, it is for the same key as the keychain signature.
-        if let Some(auth) = auth
-            && auth.key_id != key_id
-        {
-            return Ok(Err(TempoPoolTransactionError::Keychain(
-                "KeyAuthorization key_id does not match Keychain signature key_id",
-            )));
-        }
-
-        // Compute storage slot using helper function
-        let storage_slot = AccountKeychain::new().keys[transaction.sender()][key_id].base_slot();
-
-        // Read storage slot from state provider
-        let slot_value = state_provider
-            .storage(ACCOUNT_KEYCHAIN_ADDRESS, storage_slot.into())?
-            .unwrap_or(U256::ZERO);
-
-        // Decode AuthorizedKey using helper
-        let authorized_key = AuthorizedKey::decode_from_slot(slot_value);
+        let authorized_key = state_provider
+            .with_read_only_storage_ctx(spec, || {
+                AccountKeychain::new().keys[transaction.sender()][key_id].read()
+            })
+            .map_err(ProviderError::other)?;
 
         // Inline key authorization must still be validated against current key state and
         // fee-token spending limits to prevent deterministic execution failures from entering
         // the pool.
         if let Some(auth) = auth {
+            if auth.key_id != key_id {
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "KeyAuthorization key_id does not match Keychain signature key_id",
+                )));
+            }
+
             if authorized_key.expiry > 0 {
                 return Ok(Err(TempoPoolTransactionError::Keychain(
                     "access key already exists",
@@ -905,7 +876,7 @@ where
         }
 
         // Validate transactions that involve keychain keys.
-        match self.validate_against_keychain_with_fee_context(
+        match self.validate_against_keychain(
             &transaction,
             &mut state_provider,
             fee_payer,
@@ -2415,6 +2386,22 @@ mod tests {
             TempoPooledTransaction::new(recovered)
         }
 
+        fn validate_against_keychain_default_fee_context(
+            validator: &TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+            transaction: &TempoPooledTransaction,
+            state_provider: &mut impl StateProvider,
+        ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
+            validator.validate_against_keychain(
+                transaction,
+                state_provider,
+                transaction.sender(),
+                transaction
+                    .inner()
+                    .fee_token()
+                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN),
+            )
+        }
+
         /// Setup validator with keychain storage for a specific user and key_id.
         fn setup_validator_with_keychain_storage(
             transaction: &TempoPooledTransaction,
@@ -2478,7 +2465,11 @@ mod tests {
             let validator = setup_validator(&transaction, 0);
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(result.is_ok(), "Non-AA tx should skip keychain validation");
             Ok(())
         }
@@ -2491,7 +2482,11 @@ mod tests {
             let validator = setup_validator(&transaction, 0);
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "AA tx with primitive signature should skip keychain validation"
@@ -2524,7 +2519,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "Valid authorized key should pass validation, got: {result:?}"
@@ -2557,7 +2556,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2594,7 +2597,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2623,7 +2630,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2671,7 +2682,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "Valid KeyAuthorization should pass when key does not exist, got: {result:?}"
@@ -2721,7 +2736,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2771,7 +2790,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -2835,7 +2858,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "Inline key authorization should use the last duplicate token limit"
@@ -2882,7 +2909,7 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain_with_fee_context(
+            let result = validator.validate_against_keychain(
                 &transaction,
                 &mut state_provider,
                 user_address,
@@ -2937,7 +2964,7 @@ mod tests {
             let sponsored_fee_payer = Address::random();
             assert_ne!(sponsored_fee_payer, user_address);
 
-            let result = validator.validate_against_keychain_with_fee_context(
+            let result = validator.validate_against_keychain(
                 &transaction,
                 &mut state_provider,
                 sponsored_fee_payer,
@@ -3042,7 +3069,7 @@ mod tests {
                 moderato.clone(),
             );
             let mut sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &mut sp)?;
+            let result = validate_against_keychain_default_fee_context(&validator, &tx, &mut sp)?;
             assert!(
                 result.is_ok(),
                 "chain_id=0 should be accepted pre-T1C, got: {result:?}"
@@ -3065,7 +3092,7 @@ mod tests {
                 moderato.clone(),
             );
             let mut sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &mut sp)?;
+            let result = validate_against_keychain_default_fee_context(&validator, &tx, &mut sp)?;
             assert!(
                 result.is_ok(),
                 "matching chain_id should be accepted pre-T1C, got: {result:?}"
@@ -3088,7 +3115,7 @@ mod tests {
                 moderato,
             );
             let mut sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &mut sp);
+            let result = validate_against_keychain_default_fee_context(&validator, &tx, &mut sp);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3126,7 +3153,7 @@ mod tests {
                 None,
             );
             let mut sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &mut sp)?;
+            let result = validate_against_keychain_default_fee_context(&validator, &tx, &mut sp)?;
             assert!(
                 result.is_ok(),
                 "matching chain_id should be accepted post-T1C, got: {result:?}"
@@ -3147,7 +3174,7 @@ mod tests {
                 None,
             );
             let mut sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &mut sp);
+            let result = validate_against_keychain_default_fee_context(&validator, &tx, &mut sp);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3173,7 +3200,7 @@ mod tests {
                 None,
             );
             let mut sp = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&tx, &mut sp);
+            let result = validate_against_keychain_default_fee_context(&validator, &tx, &mut sp);
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3224,7 +3251,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3273,7 +3304,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3358,7 +3393,11 @@ mod tests {
             let mut state_provider = validator.inner.client().latest().unwrap();
 
             // This should pass since user_address matches sender by construction
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "Properly constructed keychain sig should pass, got: {result:?}"
@@ -3454,7 +3493,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3492,7 +3535,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3529,7 +3576,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "Access key with future expiry should be accepted, got: {result:?}"
@@ -3574,7 +3625,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3622,7 +3677,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3669,7 +3728,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "KeyAuthorization with future expiry should be accepted, got: {result:?}"
@@ -3715,7 +3778,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(result.is_ok(), "KeyAuthorization should be accepted");
             assert_eq!(
                 transaction.key_expiry(),
@@ -3762,7 +3829,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "KeyAuthorization with no expiry should be accepted, got: {result:?}"
@@ -3845,7 +3916,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "Key with enforce_limits=false should pass, got: {result:?}"
@@ -3878,7 +3953,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "Sufficient spending limit should pass, got: {result:?}"
@@ -3910,7 +3989,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "Exact spending limit should pass, got: {result:?}"
@@ -3943,7 +4026,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -3976,7 +4063,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -4012,7 +4103,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider);
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            );
             assert!(
                 matches!(
                     result.expect("should not be a provider error"),
@@ -4107,7 +4202,11 @@ mod tests {
             );
             let mut state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "V2 keychain should be accepted post-T1C, got: {result:?}"
@@ -4182,7 +4281,11 @@ mod tests {
             );
 
             let mut state_provider = validator.inner.client().latest().unwrap();
-            let result = validator.validate_against_keychain(&transaction, &mut state_provider)?;
+            let result = validate_against_keychain_default_fee_context(
+                &validator,
+                &transaction,
+                &mut state_provider,
+            )?;
             assert!(
                 result.is_ok(),
                 "V1 keychain should be accepted pre-T1C, got: {result:?}"
