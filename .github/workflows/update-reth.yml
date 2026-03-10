@@ -68,6 +68,27 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      # ── merge latest main ────────────────────────────────────
+      - name: Merge latest main
+        id: merge-main
+        env:
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+        run: |
+          if git merge origin/main --no-edit; then
+            echo "Merged main cleanly"
+          else
+            echo "Merge conflicts detected, using Amp to resolve..."
+            CONFLICTED=$(git diff --name-only --diff-filter=U)
+            AMP_PROMPT="The branch reth/main has merge conflicts after merging origin/main. \
+            Please resolve all merge conflicts in the following files. Keep the reth/main branch's \
+            intent (reth deps pointing at branch = \"main\") while incorporating changes from main. \
+            Conflicted files: ${CONFLICTED}"
+
+            amp --dangerously-allow-all -x "$AMP_PROMPT"
+            git add -A
+            git commit --no-edit
+          fi
+
       # ── PR branch ──────────────────────────────────────────────
       - name: Create PR branch
         run: git checkout -B reth-main-update-deps
@@ -76,6 +97,9 @@ jobs:
       - name: Update reth crates in lockfile
         id: update
         run: |
+          # Capture old reth revision
+          OLD_REV=$(grep -A2 'name = "reth-engine-tree"' Cargo.lock | grep 'source' | sed 's/.*#//')
+
           LOCK_BEFORE=$(sha256sum Cargo.lock | cut -d' ' -f1)
           cargo update -p reth-engine-tree
           LOCK_AFTER=$(sha256sum Cargo.lock | cut -d' ' -f1)
@@ -85,8 +109,11 @@ jobs:
             echo "No reth dependency changes detected — nothing to do."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
-            # Capture lockfile diff for the PR body (first 200 lines)
-            git diff Cargo.lock | head -200 > /tmp/lockfile-diff.txt
+
+            # Capture new reth revision
+            NEW_REV=$(grep -A2 'name = "reth-engine-tree"' Cargo.lock | grep 'source' | sed 's/.*#//')
+            echo "old_rev=$OLD_REV" >> "$GITHUB_OUTPUT"
+            echo "new_rev=$NEW_REV" >> "$GITHUB_OUTPUT"
           fi
 
       # ── early exit if no changes ───────────────────────────────
@@ -211,30 +238,28 @@ jobs:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
         run: |
           DATE=$(date -u +%Y-%m-%d)
+          OLD_REV="${{ steps.update.outputs.old_rev }}"
+          NEW_REV="${{ steps.update.outputs.new_rev }}"
           TITLE="chore(deps): update reth from main ($DATE)"
 
           # Build PR body in a temp file to avoid shell quoting issues
           {
             echo "Automated nightly update of reth dependencies from \`paradigmxyz/reth\` main branch."
             echo ""
-
-            echo "> [!TIP]"
-            echo "> Cargo check and tests passed successfully."
+            echo "**reth**: [\`${OLD_REV:0:7}...${NEW_REV:0:7}\`](https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV})"
+            echo ""
+            echo "**workflow run**: [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
             echo ""
 
-            echo "> [!WARNING]"
-            echo "> This PR may contain AI-generated source changes. Please review carefully."
-            echo ""
-
-            if [ -f /tmp/lockfile-diff.txt ]; then
-              echo "<details>"
-              echo "<summary>Lockfile diff (first 200 lines)</summary>"
+            # Summarize source migrations using Amp
+            SOURCE_DIFF=$(git diff HEAD~1 -- '*.rs' '*.toml' ':!Cargo.lock')
+            if [ -n "$SOURCE_DIFF" ]; then
+              echo "## Migrations"
               echo ""
-              echo '```diff'
-              cat /tmp/lockfile-diff.txt
-              echo '```'
-              echo ""
-              echo "</details>"
+              SUMMARY=$(echo "$SOURCE_DIFF" | amp -x "Summarize the following code changes as a concise markdown bullet list. \
+                Each bullet should describe what was migrated and why (e.g. API rename, parameter change, removed method). \
+                Do NOT include any preamble or explanation, just the bullet list.")
+              echo "$SUMMARY"
             fi
           } > /tmp/pr-body.txt
 
