@@ -511,6 +511,9 @@ where
         }
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
         self.metrics
+            .block_fill_duration_seconds
+            .record(total_normal_transaction_execution_elapsed);
+        self.metrics
             .total_normal_transaction_execution_duration_seconds
             .record(total_normal_transaction_execution_elapsed);
         self.metrics
@@ -539,6 +542,9 @@ where
         let mut subblock_transactions = 0f64;
         // Apply subblock transactions
         for subblock in &subblocks {
+            let subblock_start = Instant::now();
+            let mut subblock_tx_count = 0f64;
+
             for tx in subblock.transactions_recovered() {
                 if let Err(err) = builder.execute_transaction(tx.cloned()) {
                     if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
@@ -558,8 +564,16 @@ where
                     }
                 }
 
-                subblock_transactions += 1.0;
+                subblock_tx_count += 1.0;
             }
+
+            self.metrics
+                .subblock_execution_duration_seconds
+                .record(subblock_start.elapsed());
+            self.metrics
+                .subblock_transaction_count
+                .record(subblock_tx_count);
+            subblock_transactions += subblock_tx_count;
         }
         let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
         self.metrics

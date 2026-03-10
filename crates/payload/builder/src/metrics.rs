@@ -40,10 +40,16 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) transaction_execution_duration_seconds: Histogram,
     /// The time it took to select the next candidate transaction from the pool.
     pub(crate) best_txs_next_duration_seconds: Histogram,
+    /// Wall-clock duration of the pool tx selection + execution loop.
+    pub(crate) block_fill_duration_seconds: Histogram,
     /// The time it took to execute normal transactions in seconds.
     pub(crate) total_normal_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute subblock transactions in seconds.
     pub(crate) total_subblock_transaction_execution_duration_seconds: Histogram,
+    /// Execution time for a single subblock.
+    pub(crate) subblock_execution_duration_seconds: Histogram,
+    /// Number of transactions in a single subblock.
+    pub(crate) subblock_transaction_count: Histogram,
     /// The time it took to execute all transactions in seconds.
     pub(crate) total_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute system transactions in seconds.
