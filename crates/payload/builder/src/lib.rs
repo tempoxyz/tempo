@@ -391,7 +391,8 @@ where
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
-                self.metrics.inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
+                self.metrics
+                    .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
                 continue;
             }
 
@@ -406,7 +407,8 @@ where
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
-                self.metrics.inc_pool_tx_skipped("exceeds_general_gas_limit");
+                self.metrics
+                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
                 continue;
             }
 
