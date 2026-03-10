@@ -271,9 +271,11 @@ where
 
             // Read the remaining spending limit from state
             let limit_key = AccountKeychain::spending_limit_key(transaction.sender(), key_id);
-            let remaining_limit = state_provider.with_read_only_storage_ctx(spec, || {
-                AccountKeychain::new().spending_limits[limit_key][fee_token].read()
-            }).map_err(ProviderError::other)?;
+            let remaining_limit = state_provider
+                .with_read_only_storage_ctx(spec, || {
+                    AccountKeychain::new().spending_limits[limit_key][fee_token].read()
+                })
+                .map_err(ProviderError::other)?;
 
             if fee_cost > remaining_limit {
                 return Ok(Err(TempoPoolTransactionError::SpendingLimitExceeded {
