@@ -101,12 +101,15 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
         let caller_addr = self.inner.from.unwrap_or_default();
 
         let fee_payer = if self.fee_payer_signature.is_some() {
-            Some(
-                self.clone()
-                    .build_aa()
-                    .ok()
-                    .and_then(|tx| tx.recover_fee_payer(caller_addr).ok()),
-            )
+            // Try to recover the fee payer address from the signature.
+            // If recovery fails (e.g. dummy signature during gas estimation / fill),
+            // fall back to the caller address so gas estimation still works.
+            let recovered = self
+                .clone()
+                .build_aa()
+                .ok()
+                .and_then(|tx| tx.recover_fee_payer(caller_addr).ok());
+            Some(Some(recovered.unwrap_or(caller_addr)))
         } else {
             None
         };
