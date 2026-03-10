@@ -26,22 +26,25 @@ use reth_evm::{
 use reth_execution_types::ExecutionOutcome;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock, PayloadBuilderAttributes};
-use reth_primitives_traits::{Account, Bytecode, Recovered, transaction::error::InvalidTransactionError};
+use reth_primitives_traits::{
+    Account, Bytecode, Recovered, transaction::error::InvalidTransactionError,
+};
 use reth_revm::{
     State,
     context::{Block, BlockEnv},
     database::StateProviderDatabase,
 };
 use reth_storage_api::{
-    HashedPostStateProvider, StateProvider, StateProviderFactory, StateRootProvider,
+    AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, StateProofProvider,
+    StateProvider, StateProviderFactory, StateRootProvider, StorageRootProvider,
 };
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use reth_trie_common::{
-    AccountProof, HashedPostState, HashedStorage, MultiProof, MultiProofTargets,
-    StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
+    AccountProof, HashedPostState, HashedStorage, MultiProof, MultiProofTargets, StorageMultiProof,
+    StorageProof, TrieInput, updates::TrieUpdates,
 };
 use std::{
     sync::{
