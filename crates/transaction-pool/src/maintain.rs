@@ -179,10 +179,9 @@ impl TempoPoolUpdates {
             if key_id.is_zero() {
                 continue;
             }
-            let fee_token = aa_tx
-                .tx()
-                .fee_token
-                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+            // If no `fee_token` is set use `Address::ZERO` as a wildcard so pool eviction
+            // matches this (account, key_id) against any pending tx token.
+            let fee_token = aa_tx.tx().fee_token.unwrap_or(Address::ZERO);
             updates
                 .spending_limit_spends
                 .insert(keychain_sig.user_address, key_id, fee_token);
@@ -1409,9 +1408,9 @@ mod tests {
             assert!(updates.spending_limit_spends.is_empty());
         }
 
-        /// Uses default fee token when keychain tx has no explicit fee_token.
+        /// When a keychain tx has no explicit fee_token, it is stored as a wildcard.
         #[test]
-        fn uses_default_fee_token_when_none_set() {
+        fn uses_wildcard_fee_token_when_none_set() {
             let user_address = Address::random();
             let access_key_signer = PrivateKeySigner::random();
             let key_id = access_key_signer.address();
@@ -1426,10 +1425,11 @@ mod tests {
 
             let updates = TempoPoolUpdates::from_chain(&chain);
 
+            // Wildcard should match any token
             assert!(updates.spending_limit_spends.contains(
                 user_address,
                 key_id,
-                tempo_precompiles::DEFAULT_FEE_TOKEN,
+                Address::random(),
             ));
         }
 
