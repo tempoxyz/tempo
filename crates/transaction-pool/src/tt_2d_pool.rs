@@ -5274,92 +5274,67 @@ mod tests {
 
     #[test]
     fn cross_pool_eviction_same_priority_evicts_newer() {
-        // Same priority: the newer tx (expiring nonce, added last) is evicted.
         let mut pool = eviction_test_pool();
         let sender = Address::random();
 
-        let tx_2d_1 = TxBuilder::aa(sender).nonce_key(U256::from(1)).nonce(0).build();
-        let tx_2d_2 = TxBuilder::aa(sender).nonce_key(U256::from(2)).nonce(0).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::from(1)).nonce(0).build();
+        let tx2 = TxBuilder::aa(sender).nonce_key(U256::from(2)).nonce(0).build();
         let tx_exp = TxBuilder::aa(sender).nonce_key(U256::MAX).build();
-        let tx_2d_1_hash = *tx_2d_1.hash();
-        let tx_2d_2_hash = *tx_2d_2.hash();
-        let tx_exp_hash = *tx_exp.hash();
 
-        // Fill pool with two 2D txs
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx_2d_1, TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx_2d_2, TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1.clone(), TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2.clone(), TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        let result = pool.add_transaction(Arc::new(wrap_valid_tx(tx_exp.clone(), TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
 
-        // Third tx triggers eviction — expiring nonce tx is newer, so it gets evicted
-        let result = pool.add_transaction(Arc::new(wrap_valid_tx(tx_exp, TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        // Same priority — newer expiring nonce tx evicted, older 2D txs preserved
         let AddedTransaction::Pending(pending) = result else { panic!("expected pending") };
-
-        assert_eq!(pending.discarded[0].hash(), &tx_exp_hash);
-        assert!(pool.contains(&tx_2d_1_hash));
-        assert!(pool.contains(&tx_2d_2_hash));
-        assert!(!pool.contains(&tx_exp_hash));
+        assert_eq!(pending.discarded[0].hash(), tx_exp.hash());
+        assert!(pool.contains(tx1.hash()));
+        assert!(pool.contains(tx2.hash()));
+        assert!(!pool.contains(tx_exp.hash()));
         pool.assert_invariants();
     }
 
     #[test]
     fn cross_pool_eviction_lower_priority_expiring_evicted_first() {
-        // Expiring nonce tx has lower priority → gets evicted regardless of submission order.
         let mut pool = eviction_test_pool();
         let sender = Address::random();
 
-        // Expiring nonce tx added first (older) but with lower priority
-        let tx_exp = TxBuilder::aa(sender)
-            .nonce_key(U256::MAX)
-            .max_priority_fee(100)
-            .max_fee(200)
-            .build();
-        let tx_exp_hash = *tx_exp.hash();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx_exp, TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        // Expiring nonce tx added first but with lower priority
+        let tx_exp = TxBuilder::aa(sender).nonce_key(U256::MAX).max_priority_fee(100).max_fee(200).build();
+        let tx2 = TxBuilder::aa(sender).nonce_key(U256::from(1)).nonce(0).build();
+        let tx3 = TxBuilder::aa(sender).nonce_key(U256::from(2)).nonce(0).build();
 
-        // 2D tx with higher priority
-        let tx_2d_1 = TxBuilder::aa(sender).nonce_key(U256::from(1)).nonce(0).build();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx_2d_1, TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx_exp.clone(), TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        let result = pool.add_transaction(Arc::new(wrap_valid_tx(tx3.clone(), TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
 
-        // Third tx triggers eviction — lower-priority expiring tx evicted even though it's older
-        let tx_2d_2 = TxBuilder::aa(sender).nonce_key(U256::from(2)).nonce(0).build();
-        let tx_2d_2_hash = *tx_2d_2.hash();
-        let result = pool.add_transaction(Arc::new(wrap_valid_tx(tx_2d_2, TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        // Lower-priority expiring tx evicted even though it was added first
         let AddedTransaction::Pending(pending) = result else { panic!("expected pending") };
-
-        assert_eq!(pending.discarded[0].hash(), &tx_exp_hash);
-        assert!(!pool.contains(&tx_exp_hash));
-        assert!(pool.contains(&tx_2d_2_hash));
+        assert_eq!(pending.discarded[0].hash(), tx_exp.hash());
+        assert!(!pool.contains(tx_exp.hash()));
+        assert!(pool.contains(tx3.hash()));
         pool.assert_invariants();
     }
 
     #[test]
     fn cross_pool_eviction_lower_priority_2d_evicted_first() {
-        // 2D tx has lower priority → gets evicted even though expiring nonce tx is newer.
         let mut pool = eviction_test_pool();
         let sender = Address::random();
 
         // 2D tx with low priority added first
-        let tx_2d_low = TxBuilder::aa(sender)
-            .nonce_key(U256::from(1))
-            .nonce(0)
-            .max_priority_fee(100)
-            .max_fee(200)
-            .build();
-        let tx_2d_low_hash = *tx_2d_low.hash();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx_2d_low, TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
-
-        // Expiring nonce tx with higher priority
+        let tx_low = TxBuilder::aa(sender).nonce_key(U256::from(1)).nonce(0).max_priority_fee(100).max_fee(200).build();
         let tx_exp = TxBuilder::aa(sender).nonce_key(U256::MAX).build();
-        let tx_exp_hash = *tx_exp.hash();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx_exp, TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        let tx3 = TxBuilder::aa(sender).nonce_key(U256::from(2)).nonce(0).build();
 
-        // Third tx triggers eviction — lower-priority 2D tx evicted
-        let tx_2d_high = TxBuilder::aa(sender).nonce_key(U256::from(2)).nonce(0).build();
-        let result = pool.add_transaction(Arc::new(wrap_valid_tx(tx_2d_high, TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx_low.clone(), TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx_exp.clone(), TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+        let result = pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)), 0, TempoHardfork::T1).unwrap();
+
+        // Lower-priority 2D tx evicted even though expiring nonce tx is newer
         let AddedTransaction::Pending(pending) = result else { panic!("expected pending") };
-
-        assert_eq!(pending.discarded[0].hash(), &tx_2d_low_hash);
-        assert!(!pool.contains(&tx_2d_low_hash));
-        assert!(pool.contains(&tx_exp_hash));
+        assert_eq!(pending.discarded[0].hash(), tx_low.hash());
+        assert!(!pool.contains(tx_low.hash()));
+        assert!(pool.contains(tx_exp.hash()));
         pool.assert_invariants();
     }
 
