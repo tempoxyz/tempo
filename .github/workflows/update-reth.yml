@@ -288,16 +288,60 @@ jobs:
         run: |
           PR_BRANCH="reth-main-update-deps"
 
+          CI_TIMEOUT_MINUTES=30
+
           while true; do
             echo "Waiting for CI checks to complete..."
-            # Wait for all checks to finish (poll every 60s)
+            # Wait for all checks to finish (poll every 60s, timeout after CI_TIMEOUT_MINUTES)
+            WAIT_START=$SECONDS
             while true; do
               STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
               PENDING=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | length')
               if [ "$PENDING" = "0" ] 2>/dev/null; then
                 break
               fi
-              echo "CI still running ($PENDING checks pending)..."
+
+              ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
+              if [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
+                echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
+                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | .[].name')
+                STUCK_LOGS=""
+                for job in $STUCK_NAMES; do
+                  echo "Fetching logs for stuck job: $job..."
+                  LOGS=$(gh run view --repo "${{ github.repository }}" -j "$job" --log 2>&1 | tail -300) || true
+                  STUCK_LOGS="${STUCK_LOGS}
+
+              === ${job} (stuck/in-progress) ===
+              ${LOGS}"
+                done
+
+                STUCK_PROMPT="Some CI jobs on this PR have been running for over ${CI_TIMEOUT_MINUTES} minutes and appear stuck. \
+                Investigate why these tests might be hanging. Look at the logs below for clues — common causes include \
+                deadlocks, infinite loops, tests waiting on network/RPC connections that never resolve, or resource exhaustion. \
+                Fix the root cause in the source code if possible.
+
+                Stuck jobs: ${STUCK_NAMES}
+
+                Logs from stuck jobs:
+                ${STUCK_LOGS}"
+
+                echo "::group::Amp stuck CI investigation"
+                amp --dangerously-allow-all -x "$STUCK_PROMPT"
+                echo "::endgroup::"
+
+                if [ -n "$(git status --porcelain)" ]; then
+                  git add -A
+                  git commit -m "fix: resolve stuck CI jobs from reth update ($(date -u +%Y-%m-%d))"
+                  git push origin "$PR_BRANCH"
+                else
+                  echo "Amp made no changes for stuck jobs — giving up"
+                  exit 1
+                fi
+                # Restart the outer loop to wait for new CI run
+                continue 2
+              fi
+
+              echo "CI still running ($PENDING checks pending, ${ELAPSED}m elapsed)..."
               sleep 60
             done
 
