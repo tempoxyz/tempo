@@ -5,7 +5,7 @@
 
 mod metrics;
 
-use crate::metrics::TempoPayloadBuilderMetrics;
+use crate::metrics::{FinalizationStateStats, TempoPayloadBuilderMetrics};
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
@@ -60,7 +60,7 @@ use tempo_transaction_pool::{
     TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
-use tracing::{Level, debug, error, info, instrument, trace, warn};
+use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -559,17 +559,55 @@ where
             .total_transaction_execution_duration_seconds
             .record(total_transaction_execution_elapsed);
 
-        let builder_finish_start = Instant::now();
-        let BlockBuilderOutcome {
+        let (
+            builder_finish_elapsed,
+            state_stats,
             execution_result,
             block,
             hashed_state,
             trie_updates,
-        } = builder.finish(&state_provider)?;
-        let builder_finish_elapsed = builder_finish_start.elapsed();
-        self.metrics
-            .payload_finalization_duration_seconds
-            .record(builder_finish_elapsed);
+        ) = {
+            let _span = debug_span!(target: "payload_builder", "finish_block").entered();
+            let builder_finish_start = Instant::now();
+            let res = builder.finish(&state_provider);
+            let builder_finish_elapsed = builder_finish_start.elapsed();
+            self.metrics
+                .payload_finalization_duration_seconds
+                .record(builder_finish_elapsed);
+            let BlockBuilderOutcome {
+                execution_result,
+                block,
+                hashed_state,
+                trie_updates,
+            } = res?;
+
+            let state_stats = FinalizationStateStats {
+                accounts_modified: hashed_state.accounts.len(),
+                storage_slots_modified: hashed_state
+                    .storages
+                    .values()
+                    .map(|s| s.storage.len())
+                    .sum(),
+                storage_tries_wiped: hashed_state.storages.values().filter(|s| s.wiped).count(),
+                trie_nodes_changed: trie_updates.account_nodes.len()
+                    + trie_updates.removed_nodes.len()
+                    + trie_updates
+                        .storage_tries
+                        .values()
+                        .map(|s| s.storage_nodes.len() + s.removed_nodes.len())
+                        .sum::<usize>(),
+            };
+            self.metrics.record_finalization_state_stats(&state_stats);
+
+            (
+                builder_finish_elapsed,
+                state_stats,
+                execution_result,
+                block,
+                hashed_state,
+                trie_updates,
+            )
+        };
 
         let total_transactions = block.transaction_count();
         self.metrics
@@ -619,6 +657,10 @@ where
             payment_transactions,
             subblock_transactions,
             total_transactions,
+            accounts_modified = state_stats.accounts_modified,
+            storage_slots_modified = state_stats.storage_slots_modified,
+            storage_tries_wiped = state_stats.storage_tries_wiped,
+            trie_nodes_changed = state_stats.trie_nodes_changed,
             ?elapsed,
             ?total_normal_transaction_execution_elapsed,
             ?total_subblock_transaction_execution_elapsed,
