@@ -72,7 +72,8 @@ fn subblocks_are_included() {
             let block = match update {
                 ConsensusEngineEvent::BlockReceived(_)
                 | ConsensusEngineEvent::ForkchoiceUpdated(_, _)
-                | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
+                | ConsensusEngineEvent::CanonicalChainCommitted(_, _)
+                | ConsensusEngineEvent::SlowBlock(_) => continue,
                 ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
                 ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
                 ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
@@ -179,7 +180,8 @@ fn subblocks_are_included_with_failing_txs() {
             let block = match update {
                 ConsensusEngineEvent::BlockReceived(_)
                 | ConsensusEngineEvent::ForkchoiceUpdated(_, _)
-                | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
+                | ConsensusEngineEvent::CanonicalChainCommitted(_, _)
+                | ConsensusEngineEvent::SlowBlock(_) => continue,
                 ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
                 ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
                 ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
