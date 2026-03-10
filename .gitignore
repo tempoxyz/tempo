@@ -22,6 +22,8 @@ localnet/**
 .claude/
 !docs/.claude/
 CLAUDE.local.md
+research.md
+plan.md
 
 # Docs
 tips/ref-impls/cache/

@@ -1,14 +1,16 @@
-use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
+//! Shared helper functions for Tempo transaction integration tests.
+//!
+//! Provides transaction construction, signing (secp256k1 / P256 / WebAuthn),
+//! key authorization, funding, and assertion utilities used by both the
+//! local and testnet test environments.
+
+use crate::utils::SingleNodeSetup;
 use alloy::{
-    consensus::BlockHeader,
     hex,
     primitives::{Address, B256, Bytes, Signature, U256, keccak256},
     providers::Provider,
     rpc::types::TransactionRequest,
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
@@ -16,7 +18,7 @@ use alloy_primitives::TxKind;
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
-use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::tip20::ITIP20::{self, transferCall};
@@ -63,259 +65,6 @@ pub(crate) fn rand_funding_amount() -> U256 {
 /// Deterministic to ensure test reproducibility.
 pub(crate) fn rand_sub_amount(max: U256) -> U256 {
     max / U256::from(4)
-}
-
-// ---------------------------------------------------------------------------
-// Localnet — TestEnv implementation for single-node local tests
-// ---------------------------------------------------------------------------
-
-pub(crate) struct Localnet {
-    pub setup: SingleNodeSetup,
-    pub provider: alloy::providers::RootProvider,
-    pub chain_id: u64,
-    pub funder_signer: alloy::signers::local::LocalSigner<alloy::signers::k256::ecdsa::SigningKey>,
-    pub funder_addr: Address,
-}
-
-impl Localnet {
-    pub(crate) async fn new() -> eyre::Result<Self> {
-        reth_tracing::init_test_tracing();
-        let setup = TestNodeBuilder::new().build_with_node_access().await?;
-        let provider = alloy::providers::RootProvider::new_http(setup.node.rpc_url());
-        let chain_id = provider.get_chain_id().await?;
-        let funder_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
-        let funder_addr = funder_signer.address();
-        Ok(Self {
-            setup,
-            provider,
-            chain_id,
-            funder_signer,
-            funder_addr,
-        })
-    }
-}
-
-impl super::types::TestEnv for Localnet {
-    type P = alloy::providers::RootProvider;
-
-    fn provider(&self) -> &Self::P {
-        &self.provider
-    }
-
-    fn chain_id(&self) -> u64 {
-        self.chain_id
-    }
-
-    fn hardfork(&self) -> TempoHardfork {
-        TempoHardfork::T1C
-    }
-
-    async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
-        let amount = rand_funding_amount();
-        fund_address_with(
-            &mut self.setup,
-            &self.provider,
-            &self.funder_signer,
-            self.funder_addr,
-            addr,
-            amount,
-            DEFAULT_FEE_TOKEN,
-            self.chain_id,
-        )
-        .await?;
-        Ok(amount)
-    }
-
-    async fn submit_tx(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<serde_json::Value> {
-        self.setup.node.rpc.inject_tx(encoded.into()).await?;
-        self.setup.node.advance_block().await?;
-
-        let raw: Option<serde_json::Value> = self
-            .provider
-            .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-            .await?;
-        let receipt =
-            raw.ok_or_else(|| eyre::eyre!("Transaction receipt not found for {tx_hash}"))?;
-        let status = receipt["status"]
-            .as_str()
-            .ok_or_else(|| eyre::eyre!("Receipt missing status field"))?;
-        assert_eq!(status, "0x1", "Receipt status mismatch for {tx_hash}");
-        Ok(receipt)
-    }
-
-    async fn submit_tx_excluded_by_builder(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<()> {
-        self.setup.node.rpc.inject_tx(encoded.into()).await?;
-        assert!(
-            self.setup.node.inner.pool.contains(&tx_hash),
-            "Tx should be in pool after injection"
-        );
-
-        // Advance several blocks — tx should never be included by the builder.
-        for _ in 0..5 {
-            self.setup.node.advance_block().await?;
-
-            let raw: Option<serde_json::Value> = self
-                .provider
-                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                .await?;
-            if let Some(receipt) = raw {
-                let status = receipt["status"].as_str().unwrap_or("?");
-                panic!(
-                    "Transaction {tx_hash} was mined (status={status}), \
-                     expected exclusion by builder"
-                );
-            }
-        }
-        Ok(())
-    }
-
-    async fn bump_protocol_nonce(
-        &mut self,
-        signer: &PrivateKeySigner,
-        signer_addr: Address,
-        count: u64,
-    ) -> eyre::Result<()> {
-        let recipient = Address::random();
-        let start_nonce = self.provider.get_transaction_count(signer_addr).await?;
-
-        for i in 0..count {
-            let tx = create_basic_aa_tx(
-                self.chain_id,
-                start_nonce + i,
-                vec![Call {
-                    to: recipient.into(),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
-                300_000,
-            );
-
-            let signature = sign_aa_tx_secp256k1(&tx, signer)?;
-            let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-            let tx_hash = *envelope.tx_hash();
-            self.setup
-                .node
-                .rpc
-                .inject_tx(envelope.encoded_2718().into())
-                .await?;
-            self.setup.node.advance_block().await?;
-            wait_until_pool_not_contains(
-                &self.setup.node.inner.pool,
-                &tx_hash,
-                "bump_protocol_nonce",
-            )
-            .await?;
-        }
-
-        let final_nonce = self.provider.get_transaction_count(signer_addr).await?;
-        assert_eq!(
-            final_nonce,
-            start_nonce + count,
-            "Protocol nonce should have bumped"
-        );
-        Ok(())
-    }
-
-    async fn current_block_timestamp(&mut self) -> eyre::Result<u64> {
-        for _ in 0..3 {
-            self.setup.node.advance_block().await?;
-        }
-        let block = self
-            .provider
-            .get_block_by_number(Default::default())
-            .await?
-            .ok_or_else(|| eyre::eyre!("latest block missing"))?;
-        Ok(block.header.timestamp())
-    }
-
-    async fn submit_tx_unchecked(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<serde_json::Value> {
-        self.setup.node.rpc.inject_tx(encoded.into()).await?;
-
-        // Try multiple blocks — the tx may not be pending in the first block
-        // if pool maintenance hasn't processed the previous block yet.
-        for _ in 0..3 {
-            self.setup.node.advance_block().await?;
-
-            let raw: Option<serde_json::Value> = self
-                .provider
-                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                .await?;
-            if let Some(receipt) = raw {
-                return Ok(receipt);
-            }
-        }
-        Err(eyre::eyre!(
-            "Transaction receipt not found for {tx_hash} after 3 blocks"
-        ))
-    }
-
-    async fn submit_tx_sync(
-        &mut self,
-        encoded: Vec<u8>,
-        tx_hash: B256,
-    ) -> eyre::Result<serde_json::Value> {
-        let sync_provider: alloy::providers::RootProvider =
-            alloy::providers::RootProvider::new_http(self.setup.node.rpc_url());
-        let encoded_for_sync = encoded;
-        let mut sync_handle = tokio::spawn(async move {
-            sync_provider
-                .raw_request::<_, serde_json::Value>(
-                    "eth_sendRawTransactionSync".into(),
-                    [encoded_for_sync],
-                )
-                .await
-        });
-
-        tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            loop {
-                tokio::select! {
-                    res = &mut sync_handle => {
-                        let res = res.map_err(|err| eyre::eyre!("Sync task failed: {err}"))?;
-                        let _raw_result = res.map_err(|err| eyre::eyre!("Sync request failed: {err}"))?;
-                        break;
-                    }
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
-                        self.setup
-                            .node
-                            .advance_block()
-                            .await
-                            .map_err(|err| eyre::eyre!("Advance block failed: {err}"))?;
-                    }
-                }
-            }
-            // Poll for receipt after sync completes (may not be immediately queryable)
-            for _ in 0..10 {
-                let raw: Option<serde_json::Value> = self
-                    .provider
-                    .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                    .await?;
-                if let Some(receipt) = raw {
-                    let status = receipt["status"]
-                        .as_str()
-                        .ok_or_else(|| eyre::eyre!("Receipt missing status field for {tx_hash}"))?;
-                    assert_eq!(status, "0x1", "Receipt status mismatch for {tx_hash}");
-                    return Ok(receipt);
-                }
-                self.setup.node.advance_block().await
-                    .map_err(|err| eyre::eyre!("Advance block failed: {err}"))?;
-            }
-            Err(eyre::eyre!("Transaction receipt not found for {tx_hash} after sync"))
-        })
-        .await
-        .map_err(|_| eyre::eyre!("eth_sendRawTransactionSync timed out"))?
-    }
 }
 
 /// Helper function to fund an address with tokens
@@ -1276,9 +1025,9 @@ pub(crate) fn build_fill_request_context(
         .map(|offset| resolve_timestamp_offset(current_timestamp, offset));
 
     let valid_before = valid_before_offset.or_else(|| match test_case.nonce_mode {
-        NonceMode::Expiring => Some(current_timestamp + 20),
+        NonceMode::Expiring => Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS / 2),
         NonceMode::ExpiringAtBoundary => {
-            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS)
+            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS - 1)
         }
         NonceMode::ExpiringExceedsBoundary => {
             Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS + 3600)

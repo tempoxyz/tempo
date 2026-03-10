@@ -1,3 +1,9 @@
+//! Generic matrix test runners and scenario runners.
+//!
+//! Each runner is parameterized over [`TestEnv`](super::types::TestEnv) so it
+//! can execute against both the local single-node environment and a live
+//! testnet RPC.
+
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::Provider,
