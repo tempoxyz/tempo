@@ -1446,7 +1446,7 @@ impl Metrics {
         let missing_player_dealings = Counter::default();
         context.register(
             "missing_player_dealings",
-            "the number of times a share secret was expected but not present",
+            "the number of times a share was not recoverable from dealings",
             missing_player_dealings.clone(),
         );
 
