@@ -62,15 +62,6 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) rlp_block_size_bytes_last: Gauge,
 }
 
-/// Skip reason labels for `pool_transactions_skipped_total`.
-pub(crate) mod skip_reason {
-    pub(crate) const EXCEEDS_NON_SHARED_GAS_LIMIT: &str = "exceeds_non_shared_gas_limit";
-    pub(crate) const EXCEEDS_GENERAL_GAS_LIMIT: &str = "exceeds_general_gas_limit";
-    pub(crate) const OVERSIZED_BLOCK: &str = "oversized_block";
-    pub(crate) const NONCE_TOO_LOW: &str = "nonce_too_low";
-    pub(crate) const INVALID_TX: &str = "invalid_tx";
-}
-
 /// Increments the unified pool transaction skip counter with the given reason label.
 #[inline]
 pub(crate) fn inc_pool_tx_skipped(reason: &'static str) {

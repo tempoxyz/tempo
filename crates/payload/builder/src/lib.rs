@@ -5,7 +5,7 @@
 
 mod metrics;
 
-use crate::metrics::{TempoPayloadBuilderMetrics, inc_pool_tx_skipped, skip_reason};
+use crate::metrics::{TempoPayloadBuilderMetrics, inc_pool_tx_skipped};
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
@@ -411,7 +411,7 @@ where
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
-                inc_pool_tx_skipped(skip_reason::EXCEEDS_NON_SHARED_GAS_LIMIT);
+                inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
                 continue;
             }
 
@@ -426,7 +426,7 @@ where
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
-                inc_pool_tx_skipped(skip_reason::EXCEEDS_GENERAL_GAS_LIMIT);
+                inc_pool_tx_skipped("exceeds_general_gas_limit");
                 continue;
             }
 
@@ -456,7 +456,7 @@ where
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
                 );
-                inc_pool_tx_skipped(skip_reason::OVERSIZED_BLOCK);
+                inc_pool_tx_skipped("oversized_block");
                 continue;
             }
 
@@ -477,7 +477,7 @@ where
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                        inc_pool_tx_skipped(skip_reason::NONCE_TOO_LOW);
+                        inc_pool_tx_skipped("nonce_too_low");
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
@@ -488,7 +488,7 @@ where
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
-                        inc_pool_tx_skipped(skip_reason::INVALID_TX);
+                        inc_pool_tx_skipped("invalid_tx");
                     }
                     continue;
                 }
