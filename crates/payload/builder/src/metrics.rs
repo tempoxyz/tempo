@@ -77,14 +77,16 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
 }
 
-/// Increments the unified pool transaction skip counter with the given reason label.
-///
-/// Note: `mark_invalid` may also prune descendant transactions from the iterator,
-/// so the skip count represents skip *events*, not total transactions removed.
-#[inline]
-pub(crate) fn inc_pool_tx_skipped(reason: &'static str) {
-    metrics::counter!("tempo_payload_builder_pool_transactions_skipped_total", "reason" => reason)
-        .increment(1);
+impl TempoPayloadBuilderMetrics {
+    /// Increments the unified pool transaction skip counter with the given reason label.
+    ///
+    /// Note: `mark_invalid` may also prune descendant transactions from the iterator,
+    /// so the skip count represents skip *events*, not total transactions removed.
+    #[inline]
+    pub(crate) fn inc_pool_tx_skipped(&self, reason: &'static str) {
+        metrics::counter!("tempo_payload_builder_pool_transactions_skipped_total", "reason" => reason)
+            .increment(1);
+    }
 }
 
 /// Wraps a [`StateProvider`] reference to instrument `hashed_post_state` and
