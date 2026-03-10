@@ -12,10 +12,10 @@ use commonware_p2p::{Address, AddressableManager, Provider};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::{StreamExt as _, channel::mpsc, future::join};
+use futures::{StreamExt as _, channel::mpsc, future::try_join};
 use prometheus_client::metrics::gauge::Gauge;
 use reth_ethereum::{network::NetworkInfo, rpc::eth::primitives::BlockNumHash};
-use reth_provider::{BlockIdReader as _, HeaderProvider as _};
+use reth_provider::{BlockIdReader as _, BlockNumReader as _, HeaderProvider as _};
 use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
@@ -105,35 +105,52 @@ where
     }
 
     async fn run(mut self) {
-        if let Err(error) = self.bootstrap_initial_peers().await {
-            info_span!("peer_manager").in_scope(|| {
-                error!(
-                    %error,
-                    "failed to bootstrap initial peers on startup, cannot continue",
-                );
-            });
-            return;
-        }
+        const MIN_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+        const MAX_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+
+        let mut bootstrapped = false;
+        let next_attempt = self.context.sleep(Duration::from_secs(0));
+        tokio::pin!(next_attempt);
+        let mut bootstrap_attempts = 0;
 
         let reason = 'event_loop: loop {
-            match self.mailbox.next().await {
-                None => break 'event_loop eyre::eyre!("mailbox closed unexpectedly"),
-                Some(msg) => {
-                    if let Err(error) = self.handle_message(msg.cause, msg.message).await {
-                        break 'event_loop error;
+            tokio::select!(
+                _ = &mut next_attempt, if !bootstrapped => {
+                    bootstrap_attempts += 1;
+                    if self.bootstrap_peers(bootstrap_attempts).await.is_err() {
+                        let retry_after = MIN_RETRY.saturating_mul(bootstrap_attempts).min(MAX_RETRY);
+                        info_span!("bootstrap peers").in_scope(|| {
+                            info!(
+                                is_syncing = self.execution_node.network.is_syncing(),
+                                best_block = %tempo_telemetry_util::display_result(&self.execution_node.provider.best_block_number()),
+                                "failed bootstrapping validators; will retry",
+                            );
+                        });
+                        next_attempt.set(self.context.sleep(retry_after));
+                    } else {
+                        bootstrapped = true;
                     }
                 }
-            }
+                msg = self.mailbox.next() => {
+                    match msg {
+                        None => break 'event_loop eyre::eyre!("mailbox closed unexpectedly"),
+
+                        Some(msg) => {
+                            if let Err(error) = self.handle_message(msg.cause, msg.message).await {
+                                break 'event_loop error;
+                            }
+                        }
+                    }
+                }
+            )
         };
         info_span!("peer_manager").in_scope(|| error!(%reason,"agent shutting down"));
     }
 
     /// Bootstraps and registers initial peer set from the latest DKG outcome
     /// and finalized state.
-    ///
-    ///
-    #[instrument(skip_all, err)]
-    async fn bootstrap_initial_peers(&mut self) -> eyre::Result<()> {
+    #[instrument(skip_all, fields(attempt = _attempt), err)]
+    async fn bootstrap_peers(&mut self, _attempt: u32) -> eyre::Result<()> {
         // Always take whatever is higher: the last finalized height as per
         // consensus layer (greater than 0 only on restarts with populated
         // consensus state), or the highest finalized block number from the
@@ -181,18 +198,19 @@ where
         // passed to the executor actor to backfill finalized blocks that might
         // have been lost on restart because the execution layer did not persist
         // them in time.
-        //
-        // If the execution layer has been deleted then this loop will never
-        // complete.
-        let (latest_boundary_header, highest_finalized_header) = join(
-            read_header_at_height_with_retry(&self.context, &self.execution_node, latest_boundary),
-            read_header_at_height_with_retry(
-                &self.context,
-                &self.execution_node,
-                highest_finalized,
-            ),
+        let (latest_boundary_header, highest_finalized_header) = try_join(
+            async {
+                read_header_at_height(&self.execution_node, latest_boundary)
+                    .await
+                    .wrap_err("failed reading latest boundary header")
+            },
+            async {
+                read_header_at_height(&self.execution_node, highest_finalized)
+                    .await
+                    .wrap_err("failed reading highest finalized header")
+            },
         )
-        .await;
+        .await?;
 
         let onchain_outcome =
             OnchainDkgOutcome::read(&mut latest_boundary_header.extra_data().as_ref())
@@ -374,36 +392,17 @@ struct LastTrackedPeerSet {
     peers: ordered::Map<PublicKey, commonware_p2p::Address>,
 }
 
-async fn read_header_at_height_with_retry(
-    context: &impl Clock,
+#[instrument(skip_all, fields(height), err)]
+async fn read_header_at_height(
     execution_node: &TempoFullNode,
     height: u64,
-) -> TempoHeader {
-    let mut attempts = 0u32;
-    const MIN_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
-    const MAX_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
-    loop {
-        attempts += 1;
-        match execution_node
-            .provider
-            .header_by_number(height)
-            .map_err(eyre::Report::new)
-            .and_then(|h| h.ok_or_eyre("no header at boundary height"))
-        {
-            Ok(header) => break header,
-            Err(error) => {
-                let retry_after = MIN_RETRY.saturating_mul(attempts).min(MAX_RETRY);
-                warn!(
-                    %error,
-                    %height,
-                    attempts,
-                    retry_after = %tempo_telemetry_util::display_duration(retry_after),
-                    "header not yet available for height; will retry",
-                );
-                context.sleep(retry_after).await;
-            }
-        }
-    }
+) -> eyre::Result<TempoHeader> {
+    execution_node
+        .provider
+        .header_by_number(height)
+        .map_err(eyre::Report::new)
+        .and_then(|h| h.ok_or_eyre("execution layer did not have a header at the requested height"))
+        .wrap_err_with(|| format!("failed reading header at height `{height}`"))
 }
 
 #[instrument(

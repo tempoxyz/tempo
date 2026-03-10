@@ -194,10 +194,17 @@ jobs:
           done
 
       - name: Publish event (sha tag)
+        if: ${{ github.repository == 'tempoxyz/tempo' }}
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "${{ secrets.EVENTS_KEY }}" > ${{ runner.temp }}/key
+          echo "${{ secrets.EVENTS_CERT }}" > ${{ runner.temp }}/cert
+
           curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            --key ${{ runner.temp }}/key \
+            --cert ${{ runner.temp }}/cert \
             -H "Content-Type: application/json" \
             -d '{
               "repository": "${{ github.repository }}",
@@ -209,11 +216,17 @@ jobs:
             }'
 
       - name: Publish event (nightly tag)
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.nightly == 'true' }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && (github.event_name == 'schedule' || github.event.inputs.nightly == 'true') }}
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "${{ secrets.EVENTS_KEY }}" > ${{ runner.temp }}/key
+          echo "${{ secrets.EVENTS_CERT }}" > ${{ runner.temp }}/cert
+
           curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            --key ${{ runner.temp }}/key \
+            --cert ${{ runner.temp }}/cert \
             -H "Content-Type: application/json" \
             -d '{
               "repository": "${{ github.repository }}",

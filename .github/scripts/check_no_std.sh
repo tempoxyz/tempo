@@ -6,6 +6,7 @@ set -eo pipefail
 # These crates are expected to build without std on bare-metal targets.
 no_std_crates=(
     tempo-contracts
+    tempo-primitives
 )
 
 for crate in "${no_std_crates[@]}"; do

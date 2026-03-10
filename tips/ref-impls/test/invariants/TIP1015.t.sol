@@ -18,6 +18,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 ///      TEMPO-1015-6: Built-in Policy Compatibility - compound policies can reference policies 0/1
 ///      TEMPO-1015-7: distributeReward requires both sender AND recipient authorization
 ///      TEMPO-1015-8: claimRewards uses correct directional authorization
+/// forge-config: default.hardfork = "tempo:T2"
 contract TIP1015InvariantTest is InvariantBaseTest {
 
     /*//////////////////////////////////////////////////////////////
@@ -889,6 +890,29 @@ contract TIP1015InvariantTest is InvariantBaseTest {
             registry.modifyPolicyBlacklist(policyId, account, !authorize);
         }
         vm.stopPrank();
+    }
+
+    /// @notice Handler: isAuthorized must revert with PolicyNotFound for non-existent policies
+    /// @dev Tests TEMPO-REG20 (T2-specific: isAuthorized reverts instead of returning false)
+    function checkIsAuthorizedRevertsNonExistentPolicy(
+        uint64 policyId,
+        uint256 actorSeed
+    )
+        external
+    {
+        uint64 counter = registry.policyIdCounter();
+        uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
+        address account = _actors[bound(actorSeed, 0, _actors.length - 1)];
+
+        try registry.isAuthorized(nonExistentId, account) {
+            revert("TEMPO-REG20: Non-existent policy should revert with PolicyNotFound");
+        } catch (bytes memory reason) {
+            assertEq(
+                bytes4(reason),
+                ITIP403Registry.PolicyNotFound.selector,
+                "TEMPO-REG20: Should revert with PolicyNotFound"
+            );
+        }
     }
 
     /*//////////////////////////////////////////////////////////////

@@ -14,7 +14,11 @@ use commonware_cryptography::{
     Signer as _,
     bls12381::{
         dkg::{self, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog},
-        primitives::{group::Share, sharing::Mode, variant::MinSig},
+        primitives::{
+            group::Share,
+            sharing::{Mode, ModeVersion},
+            variant::MinSig,
+        },
     },
     ed25519::{PrivateKey, PublicKey},
     transcript::{Summary, Transcript},
@@ -139,7 +143,7 @@ where
         self.events
             .append(
                 section,
-                Event::Ack {
+                &Event::Ack {
                     player: player.clone(),
                     ack: ack.clone(),
                 },
@@ -190,7 +194,7 @@ where
         self.events
             .append(
                 section,
-                Event::Dealing {
+                &Event::Dealing {
                     dealer: dealer.clone(),
                     public_msg: pub_msg.clone(),
                     private_msg: priv_msg.clone(),
@@ -237,7 +241,7 @@ where
         self.events
             .append(
                 section,
-                Event::Log {
+                &Event::Log {
                     dealer: dealer.clone(),
                     log: log.clone(),
                 },
@@ -281,7 +285,7 @@ where
         self.events
             .append(
                 section,
-                Event::Finalized {
+                &Event::Finalized {
                     digest,
                     parent,
                     height,
@@ -770,7 +774,7 @@ impl Read for State {
         Ok(Self {
             epoch: ReadExt::read(buf)?,
             seed: ReadExt::read(buf)?,
-            output: Read::read_cfg(buf, cfg)?,
+            output: Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?,
             share: ReadExt::read(buf)?,
             players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?,
             syncers: Read::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?,
@@ -832,7 +836,7 @@ impl Read for LegacyState {
         Ok(Self {
             epoch: ReadExt::read(buf)?,
             seed: ReadExt::read(buf)?,
-            output: Read::read_cfg(buf, cfg)?,
+            output: Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?,
             share: ReadExt::read(buf)?,
             dealers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
             players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
@@ -1450,9 +1454,9 @@ mod tests {
                 .await
                 .unwrap();
 
-                journal.append(ancient_legacy).await.unwrap();
-                journal.append(previous_legacy).await.unwrap();
-                journal.append(latest_legacy).await.unwrap();
+                journal.append(&ancient_legacy).await.unwrap();
+                journal.append(&previous_legacy).await.unwrap();
+                journal.append(&latest_legacy).await.unwrap();
                 journal.sync().await.unwrap();
             }
 
@@ -1556,7 +1560,7 @@ mod tests {
                 .await
                 .unwrap();
 
-                journal.append(only_legacy).await.unwrap();
+                journal.append(&only_legacy).await.unwrap();
                 journal.sync().await.unwrap();
             }
 
@@ -1629,7 +1633,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                journal.append(journal_legacy).await.unwrap();
+                journal.append(&journal_legacy).await.unwrap();
                 journal.sync().await.unwrap();
             }
 

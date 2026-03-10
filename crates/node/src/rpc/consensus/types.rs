@@ -4,6 +4,7 @@ use alloy_primitives::B256;
 use futures::Future;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::rpc::TempoHeaderResponse;
+use tempo_primitives::Block;
 use tokio::sync::broadcast;
 
 /// A block with a threshold BLS certificate (notarization or finalization).
@@ -12,11 +13,13 @@ use tokio::sync::broadcast;
 pub struct CertifiedBlock {
     pub epoch: u64,
     pub view: u64,
-    /// Block height, if known. May be `None` if the block hasn't been stored yet.
-    pub height: Option<u64>,
     pub digest: B256,
+
     /// Hex-encoded full notarization or finalization.
     pub certificate: String,
+
+    /// The Tempo block.
+    pub block: Block,
 }
 
 /// Consensus event emitted.
