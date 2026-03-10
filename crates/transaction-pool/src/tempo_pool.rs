@@ -240,6 +240,12 @@ where
             // from state for affected (account, key_id, fee_token) combos and evict if
             // the pending tx's fee cost now exceeds the remaining limit.
             if !updates.spending_limit_spends.is_empty()
+                // NOTE: sponsored txs don't consume the sender's key limits.
+                && tx
+                    .transaction
+                    .inner()
+                    .as_aa()
+                    .is_none_or(|aa| aa.tx().fee_payer_signature.is_none())
                 && let Some(ref mut provider) = state_provider
                 && let Some(ref subject) = keychain_subject
                 && subject.matches_spending_limit_update(&updates.spending_limit_spends)
@@ -1040,15 +1046,24 @@ pub(crate) fn exceeds_spending_limit(
     subject: &crate::transaction::KeychainSubject,
     fee_token_cost: alloy_primitives::U256,
 ) -> bool {
-    let limit_key = AccountKeychain::spending_limit_key(subject.account, subject.key_id);
     // Spec doesn't affect raw storage reads (sload), so default is safe here.
     let spec = TempoHardfork::default();
-    match provider.with_read_only_storage_ctx(spec, || {
-        AccountKeychain::new().spending_limits[limit_key][subject.fee_token].read()
-    }) {
-        Ok(remaining) => fee_token_cost > remaining,
-        Err(_) => false,
-    }
+    let limit_key = AccountKeychain::spending_limit_key(subject.account, subject.key_id);
+
+    provider
+        .with_read_only_storage_ctx(spec, || -> TempoPrecompileResult<bool> {
+            let keychain = AccountKeychain::new();
+            if !keychain.keys[subject.account][subject.key_id]
+                .read()?
+                .enforce_limits
+            {
+                return Ok(false);
+            }
+
+            let remaining = keychain.spending_limits[limit_key][subject.fee_token].read()?;
+            Ok(fee_token_cost > remaining)
+        })
+        .unwrap_or_default()
 }
 
 /// Reads the transfer policy ID for a TIP-20 token, using a cache to avoid redundant lookups.
@@ -1111,7 +1126,10 @@ mod tests {
     use crate::transaction::KeychainSubject;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
-    use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, account_keychain::AccountKeychain};
+    use tempo_precompiles::{
+        ACCOUNT_KEYCHAIN_ADDRESS,
+        account_keychain::{AccountKeychain, AuthorizedKey},
+    };
 
     fn provider_with_spending_limit(
         account: Address,
@@ -1123,13 +1141,27 @@ mod tests {
             tempo_chainspec::spec::MODERATO.clone(),
         ));
 
+        let keychain = AccountKeychain::new();
+
+        // Write AuthorizedKey with enforce_limits=true
+        let key_slot = keychain.keys[account][key_id].base_slot();
+        let authorized_key = AuthorizedKey {
+            signature_type: 0,
+            expiry: u64::MAX,
+            enforce_limits: true,
+            is_revoked: false,
+        }
+        .encode_to_slot();
+
         let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-        let slot = AccountKeychain::new().spending_limits[limit_key][fee_token].slot();
+        let limit_slot = keychain.spending_limits[limit_key][fee_token].slot();
 
         provider.add_account(
             ACCOUNT_KEYCHAIN_ADDRESS,
-            ExtendedAccount::new(0, alloy_primitives::U256::ZERO)
-                .extend_storage([(slot.into(), remaining_limit)]),
+            ExtendedAccount::new(0, alloy_primitives::U256::ZERO).extend_storage([
+                (key_slot.into(), authorized_key),
+                (limit_slot.into(), remaining_limit),
+            ]),
         );
 
         provider.latest().unwrap()
@@ -1196,13 +1228,63 @@ mod tests {
             fee_token,
         };
 
-        // Provider with no spending limit storage set
+        // Provider with AuthorizedKey (enforce_limits=true) but no spending limit slot
         let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
             tempo_chainspec::spec::MODERATO.clone(),
         ));
+        let key_slot = AccountKeychain::new().keys[account][key_id].base_slot();
+        let authorized_key = AuthorizedKey {
+            signature_type: 0,
+            expiry: u64::MAX,
+            enforce_limits: true,
+            is_revoked: false,
+        }
+        .encode_to_slot();
+        provider.add_account(
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            ExtendedAccount::new(0, alloy_primitives::U256::ZERO)
+                .extend_storage([(key_slot.into(), authorized_key)]),
+        );
         let mut state = provider.latest().unwrap();
 
         assert!(exceeds_spending_limit(
+            &mut state,
+            &subject,
+            alloy_primitives::U256::from(1)
+        ));
+    }
+
+    #[test]
+    fn exceeds_spending_limit_returns_false_when_limits_not_enforced() {
+        let account = Address::random();
+        let key_id = Address::random();
+        let fee_token = Address::random();
+        let subject = KeychainSubject {
+            account,
+            key_id,
+            fee_token,
+        };
+
+        // Provider with AuthorizedKey (enforce_limits=false)
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+        let key_slot = AccountKeychain::new().keys[account][key_id].base_slot();
+        let authorized_key = AuthorizedKey {
+            signature_type: 0,
+            expiry: u64::MAX,
+            enforce_limits: false,
+            is_revoked: false,
+        }
+        .encode_to_slot();
+        provider.add_account(
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            ExtendedAccount::new(0, alloy_primitives::U256::ZERO)
+                .extend_storage([(key_slot.into(), authorized_key)]),
+        );
+        let mut state = provider.latest().unwrap();
+
+        assert!(!exceeds_spending_limit(
             &mut state,
             &subject,
             alloy_primitives::U256::from(1)
