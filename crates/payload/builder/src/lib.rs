@@ -7,7 +7,7 @@ mod metrics;
 
 use crate::metrics::{TempoPayloadBuilderMetrics, inc_pool_tx_skipped};
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::{Decodable, Encodable};
 use either::Either;
 use reth_basic_payload_builder::{
@@ -241,13 +241,7 @@ where
         self.metrics.block_time_millis_last.set(block_time_millis);
 
         let state_setup_start = Instant::now();
-        let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
-            Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
-        } else {
-            state_provider
-        };
+        let state_provider = self.setup_state_provider(parent_header.hash())?;
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
             .with_database(if self.disable_state_cache {
@@ -257,7 +251,6 @@ where
             })
             .with_bundle_update()
             .build();
-        drop(_state_setup_span);
         self.metrics
             .state_setup_duration_seconds
             .record(state_setup_start.elapsed());
@@ -325,41 +318,40 @@ where
             .collect();
 
         let create_evm_start = Instant::now();
-        let _create_evm_span = debug_span!(target: "payload_builder", "create_evm").entered();
-        let mut builder = self
-            .evm_config
-            .builder_for_next_block(
-                &mut db,
-                &parent_header,
-                TempoNextBlockEnvAttributes {
-                    inner: NextBlockEnvAttributes {
-                        timestamp: attributes.timestamp(),
-                        suggested_fee_recipient: attributes.suggested_fee_recipient(),
-                        prev_randao: attributes.prev_randao(),
-                        gas_limit: block_gas_limit,
-                        parent_beacon_block_root: attributes.parent_beacon_block_root(),
-                        withdrawals: Some(attributes.withdrawals().clone()),
-                        extra_data: attributes.extra_data().clone(),
+        let mut builder = debug_span!("create_evm").in_scope(|| {
+            self.evm_config
+                .builder_for_next_block(
+                    &mut db,
+                    &parent_header,
+                    TempoNextBlockEnvAttributes {
+                        inner: NextBlockEnvAttributes {
+                            timestamp: attributes.timestamp(),
+                            suggested_fee_recipient: attributes.suggested_fee_recipient(),
+                            prev_randao: attributes.prev_randao(),
+                            gas_limit: block_gas_limit,
+                            parent_beacon_block_root: attributes.parent_beacon_block_root(),
+                            withdrawals: Some(attributes.withdrawals().clone()),
+                            extra_data: attributes.extra_data().clone(),
+                        },
+                        general_gas_limit,
+                        shared_gas_limit,
+                        timestamp_millis_part: attributes.timestamp_millis_part(),
+                        subblock_fee_recipients,
                     },
-                    general_gas_limit,
-                    shared_gas_limit,
-                    timestamp_millis_part: attributes.timestamp_millis_part(),
-                    subblock_fee_recipients,
-                },
-            )
-            .map_err(PayloadBuilderError::other)?;
-        drop(_create_evm_span);
+                )
+                .map_err(PayloadBuilderError::other)
+        })?;
         self.metrics
             .create_evm_duration_seconds
             .record(create_evm_start.elapsed());
 
         let pre_execution_start = Instant::now();
-        let _pre_execution_span = debug_span!(target: "payload_builder", "pre_execution").entered();
-        builder.apply_pre_execution_changes().map_err(|err| {
-            warn!(%err, "failed to apply pre-execution changes");
-            PayloadBuilderError::Internal(err.into())
+        debug_span!("pre_execution").in_scope(|| {
+            builder.apply_pre_execution_changes().map_err(|err| {
+                warn!(%err, "failed to apply pre-execution changes");
+                PayloadBuilderError::Internal(err.into())
+            })
         })?;
-        drop(_pre_execution_span);
         self.metrics
             .pre_execution_duration_seconds
             .record(pre_execution_start.elapsed());
@@ -388,7 +380,7 @@ where
         ));
 
         let execution_start = Instant::now();
-        let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
+        let _block_fill_span = debug_span!("block_fill").entered();
         while let Some(pool_tx) = {
             let next_start = Instant::now();
             let next = best_txs.next();
@@ -540,45 +532,45 @@ where
         }
 
         let subblocks_start = Instant::now();
-        let _subblock_txs_span = debug_span!(target: "payload_builder", "execute_subblock_txs").entered();
         let subblocks_count = subblocks.len() as f64;
-        let mut subblock_transactions = 0f64;
-        // Apply subblock transactions
-        for subblock in &subblocks {
-            let subblock_start = Instant::now();
-            let mut subblock_tx_count = 0f64;
+        let subblock_transactions = debug_span!("execute_subblock_txs").in_scope(|| {
+            let mut subblock_transactions = 0f64;
+            for subblock in &subblocks {
+                let subblock_start = Instant::now();
+                let mut subblock_tx_count = 0f64;
 
-            for tx in subblock.transactions_recovered() {
-                if let Err(err) = builder.execute_transaction(tx.cloned()) {
-                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                        ..
-                    }) = &err
-                    {
-                        error!(
-                            ?err,
-                            "subblock transaction failed execution, aborting payload building"
-                        );
-                        self.highest_invalid_subblock
-                            .store(builder.evm().block().number.to(), Ordering::Relaxed);
+                for tx in subblock.transactions_recovered() {
+                    if let Err(err) = builder.execute_transaction(tx.cloned()) {
+                        if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                            ..
+                        }) = &err
+                        {
+                            error!(
+                                ?err,
+                                "subblock transaction failed execution, aborting payload building"
+                            );
+                            self.highest_invalid_subblock
+                                .store(builder.evm().block().number.to(), Ordering::Relaxed);
 
-                        return Err(PayloadBuilderError::evm(err));
-                    } else {
-                        return Err(PayloadBuilderError::evm(err));
+                            return Err(PayloadBuilderError::evm(err));
+                        } else {
+                            return Err(PayloadBuilderError::evm(err));
+                        }
                     }
+
+                    subblock_tx_count += 1.0;
                 }
 
-                subblock_tx_count += 1.0;
+                self.metrics
+                    .subblock_execution_duration_seconds
+                    .record(subblock_start.elapsed());
+                self.metrics
+                    .subblock_transaction_count
+                    .record(subblock_tx_count);
+                subblock_transactions += subblock_tx_count;
             }
-
-            self.metrics
-                .subblock_execution_duration_seconds
-                .record(subblock_start.elapsed());
-            self.metrics
-                .subblock_transaction_count
-                .record(subblock_tx_count);
-            subblock_transactions += subblock_tx_count;
-        }
-        drop(_subblock_txs_span);
+            Ok(subblock_transactions)
+        })?;
         let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
         self.metrics
             .total_subblock_transaction_execution_duration_seconds
@@ -594,13 +586,14 @@ where
 
         // Apply system transactions
         let system_txs_execution_start = Instant::now();
-        let _system_txs_span = debug_span!(target: "payload_builder", "execute_system_txs").entered();
-        for system_tx in system_txs {
-            builder
-                .execute_transaction(system_tx)
-                .map_err(PayloadBuilderError::evm)?;
-        }
-        drop(_system_txs_span);
+        debug_span!("execute_system_txs").in_scope(|| {
+            for system_tx in system_txs {
+                builder
+                    .execute_transaction(system_tx)
+                    .map_err(PayloadBuilderError::evm)?;
+            }
+            Ok::<_, PayloadBuilderError>(())
+        })?;
         let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
         self.metrics
             .system_transactions_execution_duration_seconds
@@ -612,14 +605,12 @@ where
             .record(total_transaction_execution_elapsed);
 
         let builder_finish_start = Instant::now();
-        let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
         let BlockBuilderOutcome {
             execution_result,
             block,
             hashed_state,
             trie_updates,
-        } = builder.finish(&state_provider)?;
-        drop(_finish_span);
+        } = debug_span!("finish_block").in_scope(|| builder.finish(&state_provider))?;
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
             .payload_finalization_duration_seconds
@@ -705,6 +696,23 @@ where
             payload,
             cached_reads,
         })
+    }
+
+    /// Acquires and optionally instruments the state provider for the given parent hash.
+    #[instrument(level = "debug", target = "payload_builder", skip_all)]
+    fn setup_state_provider(
+        &self,
+        parent_hash: B256,
+    ) -> Result<Box<dyn StateProvider>, PayloadBuilderError> {
+        let state_provider = self.provider.state_by_block_hash(parent_hash)?;
+        if self.state_provider_metrics {
+            Ok(Box::new(InstrumentedStateProvider::new(
+                state_provider,
+                "builder",
+            )))
+        } else {
+            Ok(state_provider)
+        }
     }
 }
 
