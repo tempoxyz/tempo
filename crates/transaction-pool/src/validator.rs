@@ -885,32 +885,30 @@ where
                         } else {
                             *transaction.hash()
                         };
-                        let is_seen = state_provider.with_read_only_storage_ctx(spec, || {
-                            NonceManager::new().is_expiring_nonce_seen(replay_hash, current_time)
-                        });
 
-                        let is_replay = match is_seen {
-                            Ok(seen) => seen,
+                        // If the replay hash is still active (seen and not expired), reject.
+                        // Note: This is also enforced at the protocol level in handler.rs via
+                        // `check_and_mark_expiring_nonce`, so even if a tx bypasses pool validation
+                        // (e.g., injected directly into a block), execution will still reject it.
+                        match state_provider.with_read_only_storage_ctx(spec, || {
+                            NonceManager::new().is_expiring_nonce_seen(replay_hash, current_time)
+                        }) {
                             Err(err) => {
                                 return TransactionValidationOutcome::Error(
                                     *transaction.hash(),
                                     Box::new(err),
                                 );
                             }
+                            Ok(true) => {
+                                return TransactionValidationOutcome::Invalid(
+                                    transaction.into_transaction(),
+                                    InvalidPoolTransactionError::other(
+                                        TempoPoolTransactionError::ExpiringNonceReplay,
+                                    ),
+                                );
+                            }
+                            Ok(false) => (),
                         };
-
-                        // If the replay hash is still active (seen and not expired), reject.
-                        // Note: This is also enforced at the protocol level in handler.rs via
-                        // `check_and_mark_expiring_nonce`, so even if a tx bypasses pool validation
-                        // (e.g., injected directly into a block), execution will still reject it.
-                        if is_replay {
-                            return TransactionValidationOutcome::Invalid(
-                                transaction.into_transaction(),
-                                InvalidPoolTransactionError::other(
-                                    TempoPoolTransactionError::ExpiringNonceReplay,
-                                ),
-                            );
-                        }
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce
                         state_nonce = match state_provider.with_read_only_storage_ctx(spec, || {
