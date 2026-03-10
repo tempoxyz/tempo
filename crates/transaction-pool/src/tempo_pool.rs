@@ -442,6 +442,9 @@ where
                     )?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
+                        if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
+                            return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
+                        }
                         self.protocol_pool
                             .inner()
                             .on_new_pending_transaction(pending);
