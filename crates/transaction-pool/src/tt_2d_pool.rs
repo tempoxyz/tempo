@@ -5273,7 +5273,8 @@ mod tests {
     }
 
     #[test]
-    fn cross_pool_eviction_same_priority_evicts_newer() {
+    fn eviction_same_priority_evicts_newer() {
+        // Direction 1: newer expiring tx evicted over older 2D txs
         let mut pool = eviction_test_pool();
         let sender = Address::random();
 
@@ -5307,7 +5308,6 @@ mod tests {
             )
             .unwrap();
 
-        // Same priority — newer expiring nonce tx evicted, older 2D txs preserved
         let AddedTransaction::Pending(pending) = result else {
             panic!("expected pending")
         };
@@ -5316,10 +5316,53 @@ mod tests {
         assert!(pool.contains(tx2.hash()));
         assert!(!pool.contains(tx_exp.hash()));
         pool.assert_invariants();
+
+        // Test opposite direction where newer 2D tx evicted over older expiring tx
+        let mut pool = eviction_test_pool();
+        let sender = Address::random();
+
+        let tx_exp = TxBuilder::aa(sender).nonce_key(U256::MAX).build();
+        let tx2 = TxBuilder::aa(sender)
+            .nonce_key(U256::from(1))
+            .nonce(0)
+            .build();
+        let tx3 = TxBuilder::aa(sender)
+            .nonce_key(U256::from(2))
+            .nonce(0)
+            .build();
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_exp.clone(), TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx2.clone(), TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        let result = pool
+            .add_transaction(
+                Arc::new(wrap_valid_tx(tx3.clone(), TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+
+        let AddedTransaction::Pending(pending) = result else {
+            panic!("expected pending")
+        };
+        assert_eq!(pending.discarded[0].hash(), tx3.hash());
+        assert!(pool.contains(tx_exp.hash()));
+        assert!(pool.contains(tx2.hash()));
+        assert!(!pool.contains(tx3.hash()));
+        pool.assert_invariants();
     }
 
     #[test]
-    fn cross_pool_eviction_lower_priority_expiring_evicted_first() {
+    fn eviction_lower_priority_expiring_evicted() {
         let mut pool = eviction_test_pool();
         let sender = Address::random();
 
@@ -5369,7 +5412,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_pool_eviction_lower_priority_2d_evicted_first() {
+    fn eviction_lower_priority_2d_evicted() {
         let mut pool = eviction_test_pool();
         let sender = Address::random();
 
