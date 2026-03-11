@@ -329,8 +329,7 @@ jobs:
           CI_TIMEOUT_MINUTES=30
 
           while true; do
-            echo "Waiting for CI checks to complete..."
-            # Wait for all checks to finish (poll every 60s, timeout after CI_TIMEOUT_MINUTES)
+            echo "Polling CI checks..."
             WAIT_START=$SECONDS
             while true; do
               STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
@@ -340,11 +339,22 @@ jobs:
                 sleep 60
                 continue
               fi
-              PENDING=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | length')
-              if [ "$PENDING" = "0" ] 2>/dev/null; then
+
+              # Check for any failures immediately
+              FAILED=$(echo "$STATUS" | jq -r '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | .[].name' 2>/dev/null || true)
+              if [ -n "$FAILED" ]; then
+                echo "Found failed checks (not waiting for others): $FAILED"
                 break
               fi
 
+              # All done with no failures = success
+              PENDING=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | length')
+              if [ "$PENDING" = "0" ] 2>/dev/null; then
+                echo "All CI checks passed!"
+                exit 0
+              fi
+
+              # Check for stuck jobs
               ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
               if [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
                 echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
@@ -385,17 +395,11 @@ jobs:
                 continue 2
               fi
 
-              echo "CI still running ($PENDING checks pending, ${ELAPSED}m elapsed)..."
+              echo "CI still running ($PENDING checks pending, ${ELAPSED}m elapsed), no failures yet..."
               sleep 60
             done
 
-            # Check for failures
-            FAILED=$(echo "$STATUS" | jq -r '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | .[].name' 2>/dev/null || true)
-            if [ -z "$FAILED" ]; then
-              echo "All CI checks passed!"
-              exit 0
-            fi
-
+            # We get here when FAILED is non-empty
             echo "Failed checks: $FAILED"
 
             # Fetch logs for failed checks
