@@ -76,7 +76,6 @@ fn subblocks_are_included() {
                 | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
                 ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
                 ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
-                ConsensusEngineEvent::SlowBlock(_) => unreachable!("unexpected slow block"),
                 ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
 
@@ -185,7 +184,6 @@ fn subblocks_are_included_with_failing_txs() {
                 | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
                 ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
                 ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
-                ConsensusEngineEvent::SlowBlock(_) => unreachable!("unexpected slow block"),
                 ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
             let receipts = &block.execution_outcome().receipts;
