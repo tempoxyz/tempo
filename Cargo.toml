@@ -125,7 +125,7 @@ reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "tem
 reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
-reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2", default-features = false }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
@@ -174,7 +174,7 @@ alloy = { version = "1.6.1", default-features = false }
 alloy-consensus = { version = "1.6.1", default-features = false }
 alloy-contract = { version = "1.6.1", default-features = false }
 alloy-eips = { version = "1.6.1", default-features = false }
-alloy-evm = "0.27.3"
+alloy-evm = { version = "0.27.3", default-features = false }
 revm-inspectors = "0.34.2"
 alloy-genesis = "1.6.1"
 alloy-hardforks = "0.4.7"
@@ -244,7 +244,7 @@ serde_json = { version = "1.0.149", features = ["alloc"], default-features = fal
 schnellru = "0.2"
 sha2 = { version = "0.10", default-features = false }
 tempfile = "3.24.0"
-thiserror = "2.0.18"
+thiserror = { version = "2.0.18", default-features = false }
 # TODO: restrict this to only the required features
 tokio = { version = "1.49.0", features = ["full"] }
 tokio-util = "0.7.18"

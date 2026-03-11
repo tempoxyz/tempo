@@ -15,13 +15,13 @@ tempo-chainspec.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 
 reth-chainspec.workspace = true
-reth-consensus.workspace = true
+reth-consensus = { workspace = true, features = ["std"] }
 reth-consensus-common.workspace = true
 reth-ethereum-consensus.workspace = true
 reth-primitives-traits.workspace = true
 
 alloy-consensus.workspace = true
-alloy-evm.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 alloy-genesis.workspace = true

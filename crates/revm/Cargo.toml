@@ -22,7 +22,7 @@ reth-rpc-eth-types = { workspace = true, optional = true }
 
 revm.workspace = true
 
-alloy-evm.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-sol-types.workspace = true
@@ -30,7 +30,7 @@ alloy-sol-types.workspace = true
 auto_impl.workspace = true
 derive_more.workspace = true
 tracing.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 eyre.workspace = true
