@@ -41,7 +41,7 @@ use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::prim
 use reth_ethereum_cli::Cli;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
-use std::{sync::Arc, thread};
+use std::{collections::HashMap, sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
 use tempo_consensus::TempoConsensus;
@@ -236,10 +236,17 @@ fn main() -> eyre::Result<()> {
 
                 // Start the unified metrics exporter if configured
                 if let Some(config) = telemetry_config {
+                    let extra_labels = args
+                        .consensus
+                        .public_key()?
+                        .map(|k| HashMap::from([("consensus_pubkey".to_string(), k.to_string())]))
+                        .unwrap_or_default();
+
                     let prometheus_config = PrometheusMetricsConfig {
                         endpoint: config.metrics_prometheus_url,
                         interval: config.metrics_prometheus_interval,
                         auth_header: config.metrics_auth_header,
+                        extra_labels: extra_labels,
                     };
 
                     install_prometheus_metrics(
