@@ -96,6 +96,29 @@ jobs:
           git config user.name "$GIT_NAME"
           git config user.email "${GIT_ID}+${GIT_LOGIN}@users.noreply.github.com"
 
+      # ── amp helper ────────────────────────────────────────────
+      - name: Create amp wrapper
+        run: |
+          # Wrapper that runs amp with --stream-json, extracts the thread URL,
+          # logs it, and still prints the final result text.
+          cat > /usr/local/bin/amp-run <<'WRAPPER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          OUTPUT=$(amp "$@" --stream-json 2>&1)
+          THREAD_ID=$(echo "$OUTPUT" | head -1 | jq -r '.session_id // empty' 2>/dev/null || true)
+          if [ -n "$THREAD_ID" ]; then
+            echo "🔗 Amp thread: https://ampcode.com/threads/${THREAD_ID}"
+          fi
+          # Print the final result text
+          echo "$OUTPUT" | jq -r 'select(.type=="result") | .result // empty' 2>/dev/null || true
+          # Propagate error if amp failed
+          IS_ERROR=$(echo "$OUTPUT" | jq -r 'select(.type=="result") | .is_error // false' 2>/dev/null || true)
+          if [ "$IS_ERROR" = "true" ]; then
+            exit 1
+          fi
+          WRAPPER
+          chmod +x /usr/local/bin/amp-run
+
       # ── merge latest main (fresh path only) ────────────────────
       - name: Merge latest main
         if: steps.detect.outputs.has_existing != 'true'
@@ -112,7 +135,7 @@ jobs:
             intent (reth deps pointing at branch = \"main\") while incorporating changes from main. \
             Conflicted files: ${CONFLICTED}"
 
-            amp --dangerously-allow-all -x "$AMP_PROMPT"
+            amp-run --dangerously-allow-all -x "$AMP_PROMPT"
             git add -A
             git commit --no-edit
           fi
@@ -186,7 +209,7 @@ jobs:
           while true; do
             attempt=$((attempt + 1))
             echo "::group::Amp attempt $attempt"
-            amp --dangerously-allow-all -x "$AMP_PROMPT"
+            amp-run --dangerously-allow-all -x "$AMP_PROMPT"
             echo "::endgroup::"
 
             echo "::group::Verify cargo check"
@@ -240,7 +263,7 @@ jobs:
           while true; do
             attempt=$((attempt + 1))
             echo "::group::Amp attempt $attempt"
-            amp --dangerously-allow-all -x "$AMP_PROMPT"
+            amp-run --dangerously-allow-all -x "$AMP_PROMPT"
             echo "::endgroup::"
 
             echo "::group::Verify test compilation"
@@ -279,6 +302,7 @@ jobs:
       - name: Create or update PR
         env:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
           DATE=$(date -u +%Y-%m-%d)
           OLD_REV="${{ steps.update.outputs.old_rev }}"
@@ -301,7 +325,7 @@ jobs:
             if [ -n "$SOURCE_DIFF" ]; then
               echo "## Migrations"
               echo ""
-              SUMMARY=$(echo "$SOURCE_DIFF" | amp -x "Summarize the following code changes as a concise markdown bullet list. \
+              SUMMARY=$(echo "$SOURCE_DIFF" | amp-run -x "Summarize the following code changes as a concise markdown bullet list. \
                 Each bullet should describe what was migrated and why (e.g. API rename, parameter change, removed method). \
                 Do NOT include any preamble or explanation, just the bullet list.")
               echo "$SUMMARY"
@@ -389,7 +413,7 @@ jobs:
                 ${STUCK_LOGS}"
 
                 echo "::group::Amp stuck CI investigation"
-                amp --dangerously-allow-all -x "$STUCK_PROMPT"
+                amp-run --dangerously-allow-all -x "$STUCK_PROMPT"
                 echo "::endgroup::"
 
                 if [ -n "$(git status --porcelain)" ]; then
@@ -439,7 +463,7 @@ jobs:
             ${FAILED_LOGS}"
 
             echo "::group::Amp CI fix"
-            amp --dangerously-allow-all -x "$AMP_PROMPT"
+            amp-run --dangerously-allow-all -x "$AMP_PROMPT"
             echo "::endgroup::"
 
             # Commit and push fixes
