@@ -73,6 +73,10 @@ impl super::types::TestEnv for Testnet {
         self.hardfork
     }
 
+    fn uses_legacy_keyauth_pool_validation(&self) -> bool {
+        true
+    }
+
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
         let tx_hashes: Vec<B256> = self
             .provider
