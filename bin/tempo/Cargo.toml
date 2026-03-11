@@ -74,22 +74,13 @@ name = "tempo"
 path = "src/main.rs"
 
 [features]
-efault = ["asm-keccak", "jemalloc", "otlp", "rocksdb"]
+efault = ["asm-keccak", "jemalloc", "otlp"]
 
 asm-keccak = [
 	"alloy-primitives/asm-keccak",
 	"reth-ethereum-cli/asm-keccak",
 	"tempo-alloy/asm-keccak",
 	"tempo-node/asm-keccak"
-]
-
-rocksdb = [
-	"reth-ethereum-cli/rocksdb",
-	"reth-cli-commands/rocksdb",
-	"reth-provider/rocksdb",
-	"reth-db-api/rocksdb",
-	"reth-storage-api/rocksdb",
-	"tempo-node/rocksdb"
 ]
 
 otlp = [

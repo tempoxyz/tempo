@@ -101,11 +101,6 @@ asm-keccak = [
 	"reth-node-ethereum/asm-keccak",
 	"tempo-alloy/asm-keccak",
 ]
-rocksdb = [
-	"reth-provider/rocksdb",
-	"reth-e2e-test-utils/rocksdb",
-	"reth-node-core/rocksdb"
-]
 otlp = ["reth-ethereum/otlp", "reth-node-core/otlp"]
 js-tracer = [
 	"reth-ethereum/js-tracer",
