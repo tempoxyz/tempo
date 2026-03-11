@@ -326,10 +326,7 @@ impl TestNodeBuilder {
 
         let node = nodes.remove(0);
 
-        Ok(SingleNodeSetup {
-            node,
-            hardfork,
-        })
+        Ok(SingleNodeSetup { node, hardfork })
     }
 
     /// Build multiple nodes with direct access
@@ -356,9 +353,7 @@ impl TestNodeBuilder {
         )
         .await?;
 
-        Ok(MultiNodeSetup {
-            nodes,
-        })
+        Ok(MultiNodeSetup { nodes })
     }
 
     /// Build HTTP-only setup

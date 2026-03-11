@@ -398,8 +398,7 @@ mod tests {
 
         let built_calls = req.clone().build_aa().expect("build_aa").calls;
 
-        let evm_env =
-            EvmEnv::<TempoHardfork, TempoBlockEnv>::default();
+        let evm_env = EvmEnv::<TempoHardfork, TempoBlockEnv>::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
@@ -517,8 +516,7 @@ mod tests {
             ..Default::default()
         };
 
-        let evm_env =
-            EvmEnv::<TempoHardfork, TempoBlockEnv>::default();
+        let evm_env = EvmEnv::<TempoHardfork, TempoBlockEnv>::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
 
         assert!(

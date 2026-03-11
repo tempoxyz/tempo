@@ -109,12 +109,8 @@ impl<H> TxResult for TempoTxResult<H> {
 /// logic on top: section-based transaction ordering ([`BlockSection`]), subblock
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
 pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
-    pub(crate) inner: EthBlockExecutor<
-        'a,
-        TempoEvm<DB, I>,
-        &'a TempoChainSpec,
-        TempoReceiptBuilder,
-    >,
+    pub(crate) inner:
+        EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,

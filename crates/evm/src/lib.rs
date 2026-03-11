@@ -14,6 +14,8 @@ mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]
 mod engine;
+#[cfg(feature = "engine")]
+use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
@@ -235,7 +237,10 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 ommers: &[],
-                withdrawals: attributes.inner.withdrawals.map(|w| Cow::Owned(w.into_inner())),
+                withdrawals: attributes
+                    .inner
+                    .withdrawals
+                    .map(|w| Cow::Owned(w.into_inner())),
                 extra_data: attributes.inner.extra_data,
                 tx_count_hint: None,
             },

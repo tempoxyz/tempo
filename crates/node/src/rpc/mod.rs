@@ -5,8 +5,8 @@ pub mod eth_ext;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy_primitives::B256;
 use alloy::consensus::ReceiptWithBloom;
+use alloy_primitives::B256;
 use alloy_rpc_types_eth::Log;
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};

@@ -419,7 +419,7 @@ impl ExecutionRuntime {
                                 task_manager,
                                 chain_spec.clone(),
                                 datadir.join(name),
-                                config,
+                                *config,
                                 database,
                             )
                             .await
@@ -604,7 +604,7 @@ impl ExecutionRuntimeHandle {
         self.to_runtime
             .send(Message::SpawnNode {
                 name: name.to_string(),
-                config,
+                config: Box::new(config),
                 database,
                 response: tx,
             })
@@ -774,7 +774,7 @@ enum Message {
     SetNextFullDkgCeremony(Box<SetNextFullDkgCeremony>),
     SpawnNode {
         name: String,
-        config: ExecutionNodeConfig,
+        config: Box<ExecutionNodeConfig>,
         database: DatabaseEnv,
         response: tokio::sync::oneshot::Sender<ExecutionNode>,
     },

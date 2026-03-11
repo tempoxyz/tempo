@@ -236,7 +236,7 @@ fn subblocks_are_included_with_failing_txs() {
                 .iter()
                 .zip(block.recovered_block().transactions_recovered())
             {
-                if !expected_transactions.contains(&*tx.tx_hash()) {
+                if !expected_transactions.contains(tx.tx_hash()) {
                     continue;
                 }
 
@@ -250,7 +250,7 @@ fn subblocks_are_included_with_failing_txs() {
                     );
                 cumulative_gas_used = receipt.cumulative_gas_used;
 
-                if !failing_transactions.contains(&*tx.tx_hash()) {
+                if !failing_transactions.contains(tx.tx_hash()) {
                     assert!(receipt.success);
                     assert!(receipt.cumulative_gas_used > 0);
                     continue;
