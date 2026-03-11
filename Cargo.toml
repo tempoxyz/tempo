@@ -211,7 +211,7 @@ axum = "0.8.8"
 base64 = { version = "0.22", features = ["alloc"], default-features = false }
 bytes = "1.11.1"
 clap = { version = "4.5.57", features = ["derive", "env"] }
-const-hex = { version = "1.17.0" }
+const-hex = { version = "1.18.1" }
 dashmap = "6"
 dirs-next = "2.0.0"
 derive_more = { version = "2.1.1", default-features = false }
@@ -223,7 +223,7 @@ governor = "0.10.4"
 indexmap = "2.13.0"
 indicatif = "0.18"
 itertools = "0.14.0"
-jiff = { version = "0.2.18", default-features = false }
+jiff = { version = "0.2.23", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.3"
 minisign = "0.8"
@@ -243,10 +243,10 @@ serde = { version = "1.0.228", features = ["derive"], default-features = false }
 serde_json = { version = "1.0.149", features = ["alloc"], default-features = false }
 schnellru = "0.2"
 sha2 = { version = "0.10", default-features = false }
-tempfile = "3.24.0"
+tempfile = "3.27.0"
 thiserror = "2.0.18"
 # TODO: restrict this to only the required features
-tokio = { version = "1.49.0", features = ["full"] }
+tokio = { version = "1.50.0", features = ["full"] }
 tokio-util = "0.7.18"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
