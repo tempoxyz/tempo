@@ -98,7 +98,10 @@ use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns}
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
 use std::{sync::Arc, time::Duration};
-use tempo_chainspec::spec::TempoChainSpec;
+use tempo_chainspec::{
+    hardfork::{TempoHardfork, TempoHardforks},
+    spec::TempoChainSpec,
+};
 use tempo_contracts::precompiles::{
     IRolesAuth,
     ITIP20::{self, ITIP20Instance},
@@ -212,6 +215,8 @@ pub(crate) async fn await_receipts(
 pub(crate) struct SingleNodeSetup {
     /// The node handle for direct manipulation (inject_tx, advance_block, etc.)
     pub node: reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    /// Latest Tempo hardfork active at genesis (timestamp 0).
+    pub hardfork: TempoHardfork,
 }
 
 /// Result type for multi-node setup
@@ -309,6 +314,7 @@ impl TestNodeBuilder {
         }
 
         let chain_spec = self.build_chain_spec()?;
+        let hardfork = chain_spec.tempo_hardfork_at(0);
 
         let (mut nodes, _wallet) = setup::<TempoNode>(
             1,
@@ -320,7 +326,7 @@ impl TestNodeBuilder {
 
         let node = nodes.remove(0);
 
-        Ok(SingleNodeSetup { node })
+        Ok(SingleNodeSetup { node, hardfork })
     }
 
     /// Build multiple nodes with direct access

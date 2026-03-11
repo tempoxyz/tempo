@@ -335,8 +335,7 @@ impl ExecutionRuntime {
             rt.block_on(async move {
                 while let Some(msg) = from_handle.recv().await {
                     // create a new task manager for the new node instance
-                    let runtime = Runtime::with_existing_handle(tokio::runtime::Handle::current())
-                        .expect("must be able to create a Runtime");
+                    let runtime = Runtime::test();
                     match msg {
                         Message::AddValidator(add_validator) => {
                             let AddValidator {
@@ -420,7 +419,7 @@ impl ExecutionRuntime {
                                 runtime,
                                 chain_spec.clone(),
                                 datadir.join(name),
-                                config,
+                                *config,
                                 database,
                             )
                             .await
@@ -605,7 +604,7 @@ impl ExecutionRuntimeHandle {
         self.to_runtime
             .send(Message::SpawnNode {
                 name: name.to_string(),
-                config,
+                config: Box::new(config),
                 database,
                 response: tx,
             })
@@ -775,7 +774,7 @@ enum Message {
     SetNextFullDkgCeremony(Box<SetNextFullDkgCeremony>),
     SpawnNode {
         name: String,
-        config: ExecutionNodeConfig,
+        config: Box<ExecutionNodeConfig>,
         database: DatabaseEnv,
         response: tokio::sync::oneshot::Sender<ExecutionNode>,
     },

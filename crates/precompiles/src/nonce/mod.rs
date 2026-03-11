@@ -24,7 +24,7 @@ pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 /// ```solidity
 /// contract Nonce {
 ///     mapping(address => mapping(uint256 => uint64)) public nonces;      // slot 0
-///     
+///
 ///     // Expiring nonce storage (for hash-based replay protection)
 ///     mapping(bytes32 => uint64) public expiringNonceSeen;               // slot 1: txHash => expiry
 ///     mapping(uint32 => bytes32) public expiringNonceRing;               // slot 2: circular buffer of tx hashes
@@ -91,13 +91,8 @@ impl NonceManager {
         Ok(new_nonce)
     }
 
-    /// Returns the storage slot for a given hash in the expiring nonce seen set.
-    /// This can be used by the transaction pool to check if a hash has been seen.
-    pub fn expiring_seen_slot(&self, hash: B256) -> U256 {
-        self.expiring_nonce_seen[hash].slot()
-    }
-
     /// Checks if a hash has been seen and is still valid (not expired).
+    /// NOTE: internally used by the transaction pool.
     pub fn is_expiring_nonce_seen(&self, hash: B256, now: u64) -> Result<bool> {
         let expiry = self.expiring_nonce_seen[hash].read()?;
         Ok(expiry != 0 && expiry > now)
@@ -385,26 +380,6 @@ mod tests {
             // tx_hash1 should now be fully evicted (since it was at ring position 0)
             // and tx_hash2 replaces it
             assert!(mgr.is_expiring_nonce_seen(tx_hash2, new_now)?);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_expiring_seen_slot() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mgr = NonceManager::new();
-
-            let tx_hash = B256::repeat_byte(0x55);
-            let slot = mgr.expiring_seen_slot(tx_hash);
-
-            // Slot should be deterministic
-            assert_eq!(slot, mgr.expiring_seen_slot(tx_hash));
-
-            // Different hashes should have different slots
-            let other_hash = B256::repeat_byte(0x66);
-            assert_ne!(slot, mgr.expiring_seen_slot(other_hash));
 
             Ok(())
         })
