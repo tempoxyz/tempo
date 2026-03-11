@@ -66,7 +66,7 @@ alloy-network.workspace = true
 tempo-precompiles.workspace = true
 alloy-rpc-types-engine.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
-reth-e2e-test-utils.workspace = true
+reth-e2e-test-utils = { workspace = true, features = ["rocksdb"] }
 reth-node-core.workspace = true
 reth-node-metrics.workspace = true
 serde_json.workspace = true
