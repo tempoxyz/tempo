@@ -296,6 +296,24 @@ impl reth_primitives_traits::InMemorySize for TempoTxType {
     }
 }
 
+impl alloy_consensus::InMemorySize for TempoTxType {
+    fn size(&self) -> usize {
+        size_of::<Self>()
+    }
+}
+
+impl alloy_consensus::InMemorySize for TempoTxEnvelope {
+    fn size(&self) -> usize {
+        match self {
+            Self::Legacy(tx) => alloy_consensus::InMemorySize::size(tx),
+            Self::Eip2930(tx) => alloy_consensus::InMemorySize::size(tx),
+            Self::Eip1559(tx) => alloy_consensus::InMemorySize::size(tx),
+            Self::Eip7702(tx) => alloy_consensus::InMemorySize::size(tx),
+            Self::AA(tx) => size_of_val(tx),
+        }
+    }
+}
+
 impl fmt::Display for TempoTxType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

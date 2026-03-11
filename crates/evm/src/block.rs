@@ -19,7 +19,7 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use reth_revm::{
-    DatabaseCommit, Inspector, State,
+    DatabaseCommit, Inspector,
     context::result::ResultAndState,
     context_interface::JournalTr,
     state::{Account, Bytecode, EvmState},
@@ -111,7 +111,7 @@ impl<H> TxResult for TempoTxResult<H> {
 pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) inner: EthBlockExecutor<
         'a,
-        TempoEvm<&'a mut State<DB>, I>,
+        TempoEvm<DB, I>,
         &'a TempoChainSpec,
         TempoReceiptBuilder,
     >,
@@ -129,11 +129,11 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
 where
-    DB: Database,
-    I: Inspector<TempoContext<&'a mut State<DB>>>,
+    DB: Database + DatabaseCommit,
+    I: Inspector<TempoContext<DB>>,
 {
     pub(crate) fn new(
-        evm: TempoEvm<&'a mut State<DB>, I>,
+        evm: TempoEvm<DB, I>,
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
@@ -361,12 +361,12 @@ where
 
 impl<'a, DB, I> BlockExecutor for TempoBlockExecutor<'a, DB, I>
 where
-    DB: Database,
-    I: Inspector<TempoContext<&'a mut State<DB>>>,
+    DB: Database + DatabaseCommit,
+    I: Inspector<TempoContext<DB>>,
 {
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
-    type Evm = TempoEvm<&'a mut State<DB>, I>;
+    type Evm = TempoEvm<DB, I>;
     type Result = TempoTxResult<TempoHaltReason>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
@@ -375,18 +375,22 @@ where
         // Deploy 0xEF marker bytecode to ValidatorConfigV2 when T2 activates.
         let timestamp = self.evm().block().timestamp.to::<u64>();
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
-            let db = self.evm_mut().ctx_mut().journaled_state.db_mut();
-            let acc = db
-                .load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS)
-                .map_err(BlockExecutionError::other)?;
-            let mut info = acc.account_info().unwrap_or_default();
+            let ctx = self.evm_mut().ctx_mut();
+            let info = ctx
+                .journaled_state
+                .load_account(VALIDATOR_CONFIG_V2_ADDRESS)
+                .map_err(BlockExecutionError::other)?
+                .data
+                .info
+                .clone();
             if info.is_empty_code_hash() {
                 let code = Bytecode::new_legacy([0xef].into());
-                info.code_hash = code.hash_slow();
-                info.code = Some(code);
+                let code_hash = code.hash_slow();
                 let mut account: Account = info.into();
+                account.info.code_hash = code_hash;
+                account.info.code = Some(code);
                 account.mark_touch();
-                db.commit(EvmState::from_iter([(
+                ctx.journaled_state.db_mut().commit(EvmState::from_iter([(
                     VALIDATOR_CONFIG_V2_ADDRESS,
                     account,
                 )]));
@@ -517,11 +521,7 @@ where
 
 // Test-only methods to set internal state without exposing fields as pub(crate)
 #[cfg(test)]
-impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
-where
-    DB: Database,
-    I: Inspector<TempoContext<&'a mut State<DB>>>,
-{
+impl<'a, DB: Database, I> TempoBlockExecutor<'a, DB, I> {
     /// Set the block section for testing section transition logic.
     pub(crate) fn set_section_for_test(&mut self, section: BlockSection) {
         self.section = section;
@@ -592,8 +592,7 @@ mod tests {
         )];
         let result: ExecutionResult<TempoHaltReason> = ExecutionResult::Success {
             reason: revm::context::result::SuccessReason::Return,
-            gas_used: 21000,
-            gas_refunded: 0,
+            gas: revm::context::result::ResultGas::new(21000, 21000, 0, 0, 0),
             logs,
             output: revm::context::result::Output::Call(Bytes::new()),
         };
@@ -1102,8 +1101,7 @@ mod tests {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
                         reason: revm::context::result::SuccessReason::Return,
-                        gas_used: 21000,
-                        gas_refunded: 0,
+                        gas: revm::context::result::ResultGas::new(21000, 21000, 0, 0, 0),
                         logs: vec![],
                         output: revm::context::result::Output::Call(Bytes::new()),
                     },

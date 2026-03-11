@@ -6,7 +6,8 @@ pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
 use alloy_primitives::B256;
-use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
+use alloy::consensus::ReceiptWithBloom;
+use alloy_rpc_types_eth::Log;
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 use futures::{TryFutureExt, future::Either};
@@ -30,7 +31,7 @@ use alloy::{
     primitives::{U256, uint},
 };
 use reth_ethereum::tasks::{
-    TaskSpawner,
+    Runtime,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
 use reth_evm::{
@@ -185,7 +186,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthApiSpec for TempoEthApi<N> {
 
 impl<N: FullNodeTypes<Types = TempoNode>> SpawnBlocking for TempoEthApi<N> {
     #[inline]
-    fn io_task_spawner(&self) -> impl TaskSpawner {
+    fn io_task_spawner(&self) -> &Runtime {
         self.inner.task_spawner()
     }
 
@@ -347,6 +348,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
 
     fn send_transaction(
         &self,
+        origin: reth_transaction_pool::TransactionOrigin,
         tx: WithEncoded<Recovered<PoolPooledTx<Self::Pool>>>,
     ) -> impl Future<Output = Result<B256, Self::Error>> + Send {
         match tx.value().inner().subblock_proposer() {
@@ -368,7 +370,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
                 ))
                 .into(),
             ))),
-            None => Either::Right(self.inner.send_transaction(tx).map_err(Into::into)),
+            None => Either::Right(self.inner.send_transaction(origin, tx).map_err(Into::into)),
         }
     }
 
@@ -430,8 +432,24 @@ impl TempoReceiptConverter {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self {
             inner: EthReceiptConverter::new(chain_spec).with_builder(
-                |receipt: TempoReceipt, next_log_index, meta| {
-                    receipt.into_rpc(next_log_index, meta).into_with_bloom()
+                |receipt: TempoReceipt, next_log_index, meta: TransactionMeta| {
+                    let mut log_index = next_log_index;
+                    receipt
+                        .map_logs(|log| {
+                            let idx = log_index;
+                            log_index += 1;
+                            alloy::rpc::types::Log {
+                                inner: log,
+                                block_hash: Some(meta.block_hash),
+                                block_number: Some(meta.block_number),
+                                block_timestamp: Some(meta.timestamp),
+                                transaction_hash: Some(meta.tx_hash),
+                                transaction_index: Some(meta.index),
+                                log_index: Some(idx as u64),
+                                removed: false,
+                            }
+                        })
+                        .into_with_bloom()
                 },
             ),
         }

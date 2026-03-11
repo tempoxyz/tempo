@@ -693,7 +693,7 @@ mod tests {
         let req = TempoTransactionRequest::from(tx);
 
         let evm_env = reth_evm::EvmEnv::<
-            reth_evm::revm::primitives::hardfork::SpecId,
+            tempo_chainspec::hardfork::TempoHardfork,
             tempo_evm::TempoBlockEnv,
         >::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");

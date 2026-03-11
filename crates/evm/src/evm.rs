@@ -8,7 +8,7 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, Bytes, Log, TxKind};
-use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
+use reth_revm::{InspectSystemCallEvm, MainContext, context::result::{ExecutionResult, ResultGas}};
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
@@ -171,17 +171,11 @@ where
             };
 
             // system transactions should not consume any gas
-            let ExecutionResult::Success {
-                gas_used,
-                gas_refunded,
-                ..
-            } = &mut result.result
-            else {
+            let ExecutionResult::Success { gas, .. } = &mut result.result else {
                 return Err(TempoInvalidTransaction::SystemTransactionFailed(result.result).into());
             };
 
-            *gas_used = 0;
-            *gas_refunded = 0;
+            *gas = ResultGas::new(0, 0, 0, 0, 0);
 
             Ok(result)
         } else if self.inspect {

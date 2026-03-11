@@ -188,8 +188,9 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
         &self,
         block: &RecoveredBlock<Block>,
         result: &BlockExecutionResult<TempoReceipt>,
+        receipt_root_bloom: Option<reth_consensus::ReceiptRootBloom>,
     ) -> Result<(), ConsensusError> {
-        FullConsensus::<TempoPrimitives>::validate_block_post_execution(&self.inner, block, result)
+        FullConsensus::<TempoPrimitives>::validate_block_post_execution(&self.inner, block, result, receipt_root_bloom)
     }
 }
 
@@ -804,7 +805,7 @@ mod tests {
         };
 
         let err = consensus
-            .validate_block_post_execution(&recovered, &result)
+            .validate_block_post_execution(&recovered, &result, None)
             .unwrap_err();
         assert!(
             matches!(err, ConsensusError::BodyReceiptRootDiff(_)),

@@ -85,7 +85,7 @@ where
     }
 
     /// Updates the 2d nonce pool with the given state changes.
-    pub(crate) fn notify_aa_pool_on_state_updates(&self, state: &HashMap<Address, BundleAccount>) {
+    pub(crate) fn notify_aa_pool_on_state_updates(&self, state: &AddressMap<BundleAccount>) {
         let (promoted, _mined) = self.aa_2d_pool.write().on_state_updates(state);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
@@ -578,6 +578,28 @@ where
         self.add_validated_transactions(origin, validated)
     }
 
+    async fn add_transactions_with_origins(
+        &self,
+        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
+    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
+        if transactions.is_empty() {
+            return Vec::new();
+        }
+        let origins: Vec<_> = transactions.iter().map(|(origin, _)| *origin).collect();
+        let validated = self
+            .protocol_pool
+            .validator()
+            .validate_transactions(transactions)
+            .await;
+        let validated: Vec<_> = validated.into_iter().collect();
+
+        origins
+            .into_iter()
+            .zip(validated)
+            .map(|(origin, tx)| self.add_validated_transaction(origin, tx))
+            .collect()
+    }
+
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
         self.protocol_pool.transaction_event_listener(tx_hash)
     }
@@ -818,6 +840,13 @@ where
         txs
     }
 
+    fn prune_transactions(
+        &self,
+        hashes: Vec<TxHash>,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        self.protocol_pool.prune_transactions(hashes)
+    }
+
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
         self.protocol_pool.retain_unknown(announcement);
         if announcement.is_empty() {
@@ -957,7 +986,7 @@ where
         txs
     }
 
-    fn unique_senders(&self) -> std::collections::HashSet<Address> {
+    fn unique_senders(&self) -> alloy_primitives::map::AddressSet {
         let mut senders = self.protocol_pool.unique_senders();
         senders.extend(self.aa_2d_pool.read().senders_iter().copied());
         senders

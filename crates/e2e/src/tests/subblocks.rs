@@ -73,13 +73,14 @@ fn subblocks_are_included() {
             let block = match update {
                 ConsensusEngineEvent::BlockReceived(_)
                 | ConsensusEngineEvent::ForkchoiceUpdated(_, _)
-                | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
+                | ConsensusEngineEvent::CanonicalChainCommitted(_, _)
+                | ConsensusEngineEvent::SlowBlock(_) => continue,
                 ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
                 ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
                 ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
 
-            let receipts = &block.execution_outcome().receipts()[0];
+            let receipts = &block.execution_outcome().receipts;
 
             // Assert that block only contains our subblock transactions and the system transactions
             assert_eq!(
@@ -102,13 +103,13 @@ fn subblocks_are_included() {
 
             // Assert that all transactions were successful
             for receipt in receipts {
-                assert!(receipt.status());
+                assert!(receipt.success);
             }
 
             if !expected_transactions.is_empty() {
                 let fee_token_storage = &block
                     .execution_outcome()
-                    .state()
+                    .state
                     .account(&DEFAULT_FEE_TOKEN)
                     .unwrap()
                     .storage;
@@ -181,12 +182,13 @@ fn subblocks_are_included_with_failing_txs() {
             let block = match update {
                 ConsensusEngineEvent::BlockReceived(_)
                 | ConsensusEngineEvent::ForkchoiceUpdated(_, _)
-                | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
+                | ConsensusEngineEvent::CanonicalChainCommitted(_, _)
+                | ConsensusEngineEvent::SlowBlock(_) => continue,
                 ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
                 ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
                 ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
-            let receipts = &block.execution_outcome().receipts()[0];
+            let receipts = &block.execution_outcome().receipts;
 
             // Assert that block only contains our subblock transactions and system transactions
             assert_eq!(
@@ -234,7 +236,7 @@ fn subblocks_are_included_with_failing_txs() {
                 .iter()
                 .zip(block.recovered_block().transactions_recovered())
             {
-                if !expected_transactions.contains(tx.tx_hash()) {
+                if !expected_transactions.contains(&*tx.tx_hash()) {
                     continue;
                 }
 
@@ -248,8 +250,8 @@ fn subblocks_are_included_with_failing_txs() {
                     );
                 cumulative_gas_used = receipt.cumulative_gas_used;
 
-                if !failing_transactions.contains(tx.tx_hash()) {
-                    assert!(receipt.status());
+                if !failing_transactions.contains(&*tx.tx_hash()) {
+                    assert!(receipt.success);
                     assert!(receipt.cumulative_gas_used > 0);
                     continue;
                 }
@@ -260,7 +262,7 @@ fn subblocks_are_included_with_failing_txs() {
 
                 let slot = block
                     .execution_outcome()
-                    .state()
+                    .state
                     .account(&NONCE_PRECOMPILE_ADDRESS)
                     .unwrap()
                     .storage
@@ -277,7 +279,7 @@ fn subblocks_are_included_with_failing_txs() {
             for (fee_recipient, expected_fee) in expected_fees {
                 let fee_token_storage = &block
                     .execution_outcome()
-                    .state()
+                    .state
                     .account(&DEFAULT_FEE_TOKEN)
                     .unwrap()
                     .storage;

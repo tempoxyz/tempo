@@ -13,7 +13,7 @@ use revm::{
     context::{
         Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
-        result::{EVMError, ExecutionResult, InvalidTransaction},
+        result::{EVMError, ExecutionResult, InvalidTransaction, ResultGas},
         transaction::{AccessListItem, AccessListItemTr},
     },
     context_interface::cfg::{GasId, GasParams},
@@ -605,6 +605,7 @@ where
         &mut self,
         evm: &mut Self::Evm,
         result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        result_gas: ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.logs.clear();
         // reset initial gas to 0 to avoid gas limit check errors
@@ -614,7 +615,7 @@ where
         }
 
         MainnetHandler::default()
-            .execution_result(evm, result)
+            .execution_result(evm, result, result_gas)
             .map(|result| result.map_haltreason(Into::into))
     }
 
@@ -640,6 +641,7 @@ where
         // since the default implementation only checks for TransactionType::Eip7702
         let refunded_gas = if has_aa_auth_list {
             let chain_id = ctx.cfg().chain_id();
+            let refund_per_auth = ctx.cfg().gas_params().tx_eip7702_auth_refund();
 
             let (tx, journal) = evm.ctx().tx_journal_mut();
 
@@ -647,6 +649,7 @@ where
 
             apply_auth_list::<_, Self::Error>(
                 chain_id,
+                refund_per_auth,
                 tempo_tx_env
                     .tempo_authorization_list
                     .iter()
@@ -1430,7 +1433,8 @@ where
 
             Ok(ExecutionResult::Halt {
                 reason: TempoHaltReason::SubblockTxFeePayment,
-                gas_used: 0,
+                gas: ResultGas::new(0, 0, 0, 0, 0),
+                logs: Vec::new(),
             })
         } else {
             MainnetHandler::default()
