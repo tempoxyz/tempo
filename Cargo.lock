@@ -12138,6 +12138,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-provider",
  "alloy-sol-types",
+ "serde",
  "tokio",
 ]
 
