@@ -1,9 +1,8 @@
 # Nightly workflow to update reth dependencies from upstream main branch.
 #
-# Checks out the `reth-main` branch (which has reth deps pointing at
-# `branch = "main"`), runs `cargo update` to pull latest revisions,
-# and uses Sourcegraph Amp to auto-fix any compilation / test breakage.
-# Creates or updates a PR targeting `reth-main`.
+# If an existing `reth-main-update-deps` branch with an open PR exists,
+# checks it out directly and picks up where it left off (bump, compile fix,
+# test fix, CI fix).  Otherwise starts fresh from `reth-main`.
 
 name: Update reth deps
 
@@ -41,7 +40,25 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.DEREK_PAT }}
 
+      # ── detect existing PR branch ──────────────────────────────
+      - name: Detect existing PR branch
+        id: detect
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
+        run: |
+          EXISTING_PR=$(gh pr list --head reth-main-update-deps --base reth-main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING_PR" ] && git rev-parse --verify origin/reth-main-update-deps >/dev/null 2>&1; then
+            echo "existing_pr=$EXISTING_PR" >> "$GITHUB_OUTPUT"
+            echo "has_existing=true" >> "$GITHUB_OUTPUT"
+            echo "Found existing PR #$EXISTING_PR on reth-main-update-deps"
+          else
+            echo "has_existing=false" >> "$GITHUB_OUTPUT"
+            echo "No existing PR branch — starting fresh"
+          fi
+
+      # ── setup base branch (reth-main) ──────────────────────────
       - name: Ensure reth-main branch exists
+        if: steps.detect.outputs.has_existing != 'true'
         run: |
           if git rev-parse --verify origin/reth-main >/dev/null 2>&1; then
             git checkout reth-main
@@ -49,6 +66,11 @@ jobs:
             echo "reth-main not found, creating from main"
             git checkout -b reth-main origin/main
           fi
+
+      # ── checkout existing PR branch ────────────────────────────
+      - name: Checkout existing PR branch
+        if: steps.detect.outputs.has_existing == 'true'
+        run: git checkout reth-main-update-deps
 
       # ── toolchain (matches test.yml) ───────────────────────────
       - uses: dtolnay/rust-toolchain@stable
@@ -68,9 +90,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # ── merge latest main ────────────────────────────────────
+      # ── merge latest main (fresh path only) ────────────────────
       - name: Merge latest main
-        id: merge-main
+        if: steps.detect.outputs.has_existing != 'true'
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
@@ -89,8 +111,9 @@ jobs:
             git commit --no-edit
           fi
 
-      # ── PR branch ──────────────────────────────────────────────
+      # ── PR branch (fresh path only) ────────────────────────────
       - name: Create PR branch
+        if: steps.detect.outputs.has_existing != 'true'
         run: git checkout -B reth-main-update-deps
 
       # ── cargo update ───────────────────────────────────────────
@@ -105,10 +128,10 @@ jobs:
           LOCK_AFTER=$(sha256sum Cargo.lock | cut -d' ' -f1)
 
           if [ "$LOCK_BEFORE" = "$LOCK_AFTER" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "No reth dependency changes detected — nothing to do."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            echo "No reth dependency changes detected."
           else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
 
             # Capture new reth revision
             NEW_REV=$(grep -A2 'name = "reth-engine-tree"' Cargo.lock | grep 'source' | sed 's/.*#//')
@@ -116,25 +139,31 @@ jobs:
             echo "new_rev=$NEW_REV" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── early exit if no changes ───────────────────────────────
-      - name: Exit early if no updates
-        if: steps.update.outputs.skip == 'true'
-        run: echo "Lockfile unchanged — skipping remaining steps."
-
-      # ── first commit (lockfile only) ───────────────────────────
+      # ── commit lockfile bump if changed ─────────────────────────
       - name: Commit lockfile update
-        if: steps.update.outputs.skip != 'true'
+        if: steps.update.outputs.bumped == 'true'
         run: |
           git add Cargo.lock
           git commit -m "chore(deps): update reth dependencies from main ($(date -u +%Y-%m-%d))"
 
       # ── cargo check + Amp fix loop ────────────────────────────
       - name: Fix compilation errors
-        if: steps.update.outputs.skip != 'true'
         id: check-loop
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
+          echo "::group::Initial cargo check"
+          set +e
+          cargo check --workspace 2>&1
+          check_exit=$?
+          set -e
+          echo "::endgroup::"
+
+          if [ "$check_exit" -eq 0 ]; then
+            echo "Cargo check already passes — skipping."
+            exit 0
+          fi
+
           AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
           on the paradigmxyz/reth main branch. \`cargo check --workspace\` is now failing with compilation errors.
 
@@ -171,11 +200,22 @@ jobs:
 
       # ── test compilation check + Amp fix loop ─────────────────
       - name: Fix test compilation errors
-        if: steps.update.outputs.skip != 'true'
         id: test-loop
         env:
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
+          echo "::group::Initial test compilation check"
+          set +e
+          cargo nextest run --profile ci --no-run 2>&1
+          test_exit=$?
+          set -e
+          echo "::endgroup::"
+
+          if [ "$test_exit" -eq 0 ]; then
+            echo "Tests already compile — skipping."
+            exit 0
+          fi
+
           AMP_PROMPT="This Rust workspace just had its reth dependencies updated to the latest commit \
           on the paradigmxyz/reth main branch. Test compilation is failing.
 
@@ -212,9 +252,8 @@ jobs:
             echo "Amp exited but test compilation still failing, retrying..."
           done
 
-      # ── second commit (source fixes) ───────────────────────────
+      # ── commit source fixes ─────────────────────────────────────
       - name: Commit source fixes
-        if: steps.update.outputs.skip != 'true'
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
@@ -225,7 +264,6 @@ jobs:
 
       # ── push ───────────────────────────────────────────────────
       - name: Push branches
-        if: steps.update.outputs.skip != 'true'
         run: |
           # Ensure reth-main exists on remote (needed as PR base)
           git push -u origin reth-main 2>/dev/null || true
@@ -233,7 +271,6 @@ jobs:
 
       # ── create / update PR ─────────────────────────────────────
       - name: Create or update PR
-        if: steps.update.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
         run: |
@@ -246,13 +283,15 @@ jobs:
           {
             echo "Automated nightly update of reth dependencies from \`paradigmxyz/reth\` main branch."
             echo ""
-            echo "**reth**: [\`${OLD_REV:0:7}...${NEW_REV:0:7}\`](https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV})"
-            echo ""
+            if [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
+              echo "**reth**: [\`${OLD_REV:0:7}...${NEW_REV:0:7}\`](https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV})"
+              echo ""
+            fi
             echo "**Workflow Run**: [link](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
             echo ""
 
             # Summarize source migrations using Amp
-            SOURCE_DIFF=$(git diff HEAD~1 -- '*.rs' '*.toml' ':!Cargo.lock')
+            SOURCE_DIFF=$(git diff HEAD~1 -- '*.rs' '*.toml' ':!Cargo.lock' 2>/dev/null || true)
             if [ -n "$SOURCE_DIFF" ]; then
               echo "## Migrations"
               echo ""
@@ -281,7 +320,6 @@ jobs:
 
       # ── wait for CI and fix failures ─────────────────────────
       - name: Wait for CI and fix failures
-        if: steps.update.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.DEREK_PAT }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
@@ -399,4 +437,3 @@ jobs:
               exit 1
             fi
           done
-
