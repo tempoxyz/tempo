@@ -51,6 +51,19 @@ def wrap-samply [cmd: list<string>, samply: bool, samply_args: list<string>] {
     }
 }
 
+# Compute effective features and RUSTFLAGS for tracy builds.
+# The "tracy" cargo feature on bin/tempo already includes tracy-client/ondemand,
+# so we only need to append "tracy" here. tempo-bench doesn't have a tracy feature,
+# so it must be built separately with the base features.
+def tracy-build-config [features: string, tracy: string] {
+    if $tracy == "off" {
+        { features: $features, extra_rustflags: "" }
+    } else {
+        let tracy_features = if $features == "" { "tracy" } else { $"($features),tracy" }
+        { features: $tracy_features, extra_rustflags: " -C force-frame-pointers=yes" }
+    }
+}
+
 # Validate mode is either "dev" or "consensus"
 def validate-mode [mode: string] {
     if $mode != "dev" and $mode != "consensus" {
@@ -60,11 +73,13 @@ def validate-mode [mode: string] {
 }
 
 # Build tempo binary with cargo
-def build-tempo [bins: list<string>, profile: string, features: string] {
+def build-tempo [bins: list<string>, profile: string, features: string, --extra-rustflags: string = ""] {
     let bin_args = ($bins | each { |bin| ["--bin" $bin] } | flatten)
-    let build_cmd = ["cargo" "build" "--profile" $profile "--features" $features] | append $bin_args
+    let build_cmd = ["cargo" "build" "--profile" $profile "--features" $features]
+        | append $bin_args
+    let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
     print $"Building ($bins | str join ', '): `($build_cmd | str join ' ')`..."
-    with-env { RUSTFLAGS: $RUSTFLAGS } {
+    with-env { RUSTFLAGS: $rustflags } {
         run-external ($build_cmd | first) ...($build_cmd | skip 1)
     }
 }
@@ -294,18 +309,30 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string] {
 }
 
 # Build tempo binaries in a git worktree (with optional MinIO cache)
-def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache] {
+def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --extra-rustflags: string = "", --bench-features: string = ""] {
     # Try cache first
     if not $no_cache and (try-cache-download $worktree_dir $profile $commit_sha) {
         return
     }
 
-    # Build from source
+    # Build from source — when tracy is enabled, tempo and tempo-bench need different features
     print $"Building binaries for ($ref) in ($worktree_dir)..."
-    let bin_args = ["--bin" "tempo" "--bin" "tempo-bench"]
-    let build_cmd = ["cargo" "build" "--profile" $profile "--features" $features] | append $bin_args
-    with-env { RUSTFLAGS: $RUSTFLAGS } {
-        do { cd $worktree_dir; run-external ($build_cmd | first) ...($build_cmd | skip 1) }
+    let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
+    if $bench_features != "" and $bench_features != $features {
+        # Build tempo (with tracy features) and tempo-bench (without) separately
+        let tempo_cmd = ["cargo" "build" "--profile" $profile "--features" $features "--bin" "tempo"]
+        let bench_cmd = ["cargo" "build" "--profile" $profile "--features" $bench_features "--bin" "tempo-bench"]
+        with-env { RUSTFLAGS: $rustflags } {
+            do { cd $worktree_dir; run-external ($tempo_cmd | first) ...($tempo_cmd | skip 1) }
+            do { cd $worktree_dir; run-external ($bench_cmd | first) ...($bench_cmd | skip 1) }
+        }
+    } else {
+        let bin_args = ["--bin" "tempo" "--bin" "tempo-bench"]
+        let build_cmd = ["cargo" "build" "--profile" $profile "--features" $features]
+            | append $bin_args
+        with-env { RUSTFLAGS: $rustflags } {
+            do { cd $worktree_dir; run-external ($build_cmd | first) ...($build_cmd | skip 1) }
+        }
     }
 
     # Upload to cache
@@ -344,6 +371,9 @@ def run-bench-single [
     reference_epoch: int
     samply: bool
     samply_args: list<string>
+    tracy: string
+    tracy_filter: string
+    tracy_seconds: int
 ] {
     print $"=== Starting run: ($run_label) ==="
 
@@ -381,6 +411,14 @@ def run-bench-single [
         | append (build-dev-args)
         | append (log-filter-args $loud)
         | append $extra_args
+        | append (if $tracy != "off" { ["--log.tracy" "--log.tracy.filter" $tracy_filter] } else { [] })
+
+    # Tracy environment variables
+    let tracy_env_prefix = if $tracy == "on" {
+        "TRACY_NO_SYS_TRACE=1 "
+    } else if $tracy == "full" {
+        "TRACY_SAMPLING_HZ=1 "
+    } else { "" }
 
     # Start tempo node in background (optionally wrapped with samply)
     let full_samply_args = if $samply {
@@ -388,13 +426,25 @@ def run-bench-single [
     } else { [] }
     let node_cmd = wrap-samply [$tempo_bin ...$args] $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
-    print $"  Starting node: ($tempo_bin | path basename)(if $samply { ' (samply)' } else { '' })"
-    job spawn { sh -c $"($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)] ($line)" } }
+    let profiling_label = if $samply { " (samply)" } else if $tracy != "off" { $" \(tracy=($tracy)\)" } else { "" }
+    print $"  Starting node: ($tempo_bin | path basename)($profiling_label)"
+    job spawn { sh -c $"($tracy_env_prefix)($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)] ($line)" } }
 
     # Wait for RPC
     sleep 2sec
     let rpc_timeout = if $bloat > 0 { 600 } else { 120 }
     wait-for-rpc "http://localhost:8545" $rpc_timeout
+
+    # Start tracy-capture after RPC is ready (node must be running for connection)
+    let tracy_output = $"($results_dir)/tracy-profile-($run_label).tracy"
+    let tracy_capture_started = if $tracy != "off" {
+        let seconds_flag = if $tracy_seconds > 0 { $"-s ($tracy_seconds)" } else { "" }
+        let limit_msg = if $tracy_seconds > 0 { $" \(($tracy_seconds)s limit\)" } else { "" }
+        print $"  Starting tracy-capture($limit_msg)..."
+        job spawn { sh -c $"tracy-capture -f -o ($tracy_output) ($seconds_flag)" }
+        sleep 500ms
+        true
+    } else { false }
 
     # Run tempo-bench
     let bench_cmd = [
@@ -439,6 +489,27 @@ def run-bench-single [
     } else {
         print $"  ERROR: no report.json found for ($run_label)"
         error make { msg: $"Benchmark run ($run_label) produced no report.json" }
+    }
+
+    # Stop tracy-capture FIRST (it needs the node alive to flush data)
+    if $tracy_capture_started {
+        print "  Stopping tracy-capture..."
+        let capture_pids = (ps | where name =~ "tracy-capture" | get pid)
+        for pid in $capture_pids {
+            kill -s 2 $pid  # SIGINT for graceful flush
+        }
+        mut wait_tracy = 0
+        while $wait_tracy < 30 {
+            if (ps | where name =~ "tracy-capture" | length) == 0 { break }
+            sleep 1sec
+            $wait_tracy = $wait_tracy + 1
+        }
+        if $wait_tracy >= 30 {
+            print "  Warning: tracy-capture did not exit, sending SIGKILL"
+            for pid in (ps | where name =~ "tracy-capture" | get pid) {
+                kill -s 9 $pid
+            }
+        }
     }
 
     # Stop node
@@ -514,6 +585,41 @@ def upload-samply-profile [profile_path: string] {
     let url = ($result.stdout | str trim)
     print $"  Profile URL: ($url)"
     $url
+}
+
+# Upload a tracy profile (.tracy) to R2 via mc and return the viewer URL.
+# Returns null on failure or if mc is not available.
+# Deletes the large .tracy file after successful upload to save disk.
+def upload-tracy-profile [profile_path: string, label: string, commit_sha: string] {
+    if not ($profile_path | path exists) {
+        print $"  Warning: tracy profile not found: ($profile_path)"
+        return null
+    }
+    if not (has-mc) {
+        print "  Warning: mc not available, skipping tracy upload"
+        return null
+    }
+
+    let profile_size = (ls $profile_path | get size | first)
+    print $"  Uploading ($profile_path | path basename) \(($profile_size)\) to R2..."
+
+    let timestamp = (date now | format date "%Y%m%d-%H%M%S")
+    let short_sha = ($commit_sha | str substring 0..7)
+    let remote_name = $"($label)-($short_sha)-($timestamp).tracy"
+    let mc_alias = "r2"
+    let viewer_base = "https://tracy.tempoxyz.dev"
+
+    try {
+        mc cp $profile_path $"($mc_alias)/tracy/profiles/($remote_name)"
+        let viewer_url = $"($viewer_base)?profile_url=/profiles/($remote_name)"
+        print $"  ($label): ($viewer_url)"
+        # Delete large .tracy file after upload to free disk
+        rm $profile_path
+        $viewer_url
+    } catch {
+        print "  Warning: failed to upload tracy profile"
+        null
+    }
 }
 
 # Generate summary.md from multiple report files
@@ -1291,6 +1397,9 @@ def "main bench" [
     --bench-datadir: string = ""                    # Node database directory (default: LOCALNET_DIR/reth, /reth-bench for schelk)
     --tune                                          # Apply system tuning for dedicated benchmark runners (Linux only)
     --no-cache                                      # Skip binary cache (force build from source)
+    --tracy: string = "off"                         # Tracy profiling: off, on, full
+    --tracy-filter: string = "debug"                # Tracy tracing filter level
+    --tracy-seconds: int = 30                       # Tracy capture duration limit in seconds (0 = unlimited)
 ] {
     validate-mode $mode
 
@@ -1328,6 +1437,23 @@ def "main bench" [
 
     # Apply system tuning if requested (before any benchmark work)
     let tuning_state = if $tune { apply-system-tuning } else { { tuned: false } }
+
+    # Validate tracy flag
+    if $tracy not-in ["off" "on" "full"] {
+        print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
+        exit 1
+    }
+    if $samply and $tracy != "off" {
+        print "Error: --samply and --tracy are mutually exclusive. Choose one."
+        exit 1
+    }
+    if $tracy != "off" {
+        let has_tracy_capture = (which tracy-capture | length) > 0
+        if not $has_tracy_capture {
+            print "Error: tracy-capture not found. Install tracy (https://github.com/wolfpld/tracy) and ensure tracy-capture is in PATH."
+            exit 1
+        }
+    }
 
     # Validate comparison mode flags
     if ($baseline != "" and $feature == "") or ($baseline == "" and $feature != "") {
@@ -1387,23 +1513,35 @@ def "main bench" [
             git worktree add $feature_wt $feature_sha
         }
 
-        # Build binaries
+        # Build binaries (apply tracy build config if needed)
+        let tbc = (tracy-build-config $features $tracy)
+        let effective_features = $tbc.features
+        let effective_extra_rustflags = $tbc.extra_rustflags
+        # Force --no-cache when tracy is enabled (cached binaries lack tracy features)
+        let effective_no_cache = $no_cache or ($tracy != "off")
+
         if $baseline == "local" or $feature == "local" {
             print "Building local binaries..."
-            build-tempo ["tempo" "tempo-bench"] $profile $features
+            if $tracy != "off" {
+                # Build tempo (with tracy) and tempo-bench (without) separately
+                build-tempo --extra-rustflags $effective_extra_rustflags ["tempo"] $profile $effective_features
+                build-tempo ["tempo-bench"] $profile $features
+            } else {
+                build-tempo ["tempo" "tempo-bench"] $profile $effective_features
+            }
         }
         if $baseline != "local" {
-            if $no_cache {
-                build-in-worktree --no-cache $baseline_wt $baseline $profile $features $baseline_sha
+            if $effective_no_cache {
+                build-in-worktree --no-cache --extra-rustflags $effective_extra_rustflags --bench-features $features $baseline_wt $baseline $profile $effective_features $baseline_sha
             } else {
-                build-in-worktree $baseline_wt $baseline $profile $features $baseline_sha
+                build-in-worktree $baseline_wt $baseline $profile $effective_features $baseline_sha
             }
         }
         if $feature != "local" {
-            if $no_cache {
-                build-in-worktree --no-cache $feature_wt $feature $profile $features $feature_sha
+            if $effective_no_cache {
+                build-in-worktree --no-cache --extra-rustflags $effective_extra_rustflags --bench-features $features $feature_wt $feature $profile $effective_features $feature_sha
             } else {
-                build-in-worktree $feature_wt $feature $profile $features $feature_sha
+                build-in-worktree $feature_wt $feature $profile $effective_features $feature_sha
             }
         }
 
@@ -1518,6 +1656,16 @@ def "main bench" [
             docker compose -f $"($BENCH_DIR)/docker-compose.yml" up -d
         }
 
+        # Setup kernel permissions for tracy full mode (CPU sampling)
+        if $tracy == "full" and (^uname | str trim) == "Linux" {
+            print "Configuring system for tracy CPU sampling..."
+            # Allow non-root perf event access (required for CPU sampling)
+            try { sudo sysctl -w kernel.perf_event_paranoid=-1 } catch { }
+            # Mount tracefs with world-readable permissions
+            try { sudo mount -t tracefs tracefs /sys/kernel/tracing -o remount,mode=755 } catch { }
+            try { sudo chmod -R a+r /sys/kernel/tracing } catch { }
+        }
+
         # B-F-F-B interleaved runs
         let benchmark_id = $"bench-($timestamp)"
         let reference_epoch = ((date now | into int) / 1_000_000_000 | into int)
@@ -1532,7 +1680,7 @@ def "main bench" [
 
         for run in $runs {
             bench-recover $datadir
-            run-bench-single $run.tempo $baseline_bench_bin $genesis_path $datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list
+            run-bench-single $run.tempo $baseline_bench_bin $genesis_path $datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list $tracy $tracy_filter $tracy_seconds
         }
 
         # Generate summary report
@@ -1557,6 +1705,18 @@ def "main bench" [
                 let url = (upload-samply-profile $profile)
                 if $url != null {
                     $url | save -f $"($results_dir)/profile-($run.label)-url.txt"
+                }
+            }
+        }
+
+        # Upload tracy profiles to R2
+        if $tracy != "off" {
+            print "\nUploading tracy profiles to R2..."
+            for run in $runs {
+                let profile = $"($results_dir)/tracy-profile-($run.label).tracy"
+                let viewer_url = (upload-tracy-profile $profile $run.label $run.git_ref)
+                if $viewer_url != null {
+                    $viewer_url | save -f $"($results_dir)/tracy-($run.label)-url.txt"
                 }
             }
         }
@@ -2139,6 +2299,9 @@ def main [] {
     print "  --nodes <N>              Number of consensus nodes (default: 3, consensus mode only)"
     print "  --samply                 Profile nodes with samply"
     print "  --samply-args <ARGS>     Additional samply arguments (space-separated)"
+    print "  --tracy <MODE>           Tracy profiling: off (default), on, full"
+    print "  --tracy-filter <FILTER>  Tracy tracing filter level (default: debug)"
+    print "  --tracy-seconds <N>      Tracy capture duration limit in seconds (default: 30, 0 = unlimited)"
     print "  --reset                  Reset localnet before starting"
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"

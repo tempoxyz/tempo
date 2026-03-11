@@ -160,6 +160,7 @@ reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = 
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2" }
+tracy-client = { version = "0.18", default-features = false }
 
 reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "tempo/v1.10.2", features = [
   "std",
