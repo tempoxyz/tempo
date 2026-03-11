@@ -91,12 +91,12 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     }
 }
 
-impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
+impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransactionRequest {
     type Err = EthApiError;
 
-    fn try_into_tx_env<Spec>(
+    fn try_into_tx_env(
         self,
-        evm_env: &EvmEnv<Spec, TempoBlockEnv>,
+        evm_env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {
         let caller_addr = self.inner.from.unwrap_or_default();
 
@@ -398,8 +398,7 @@ mod tests {
 
         let built_calls = req.clone().build_aa().expect("build_aa").calls;
 
-        let evm_env =
-            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let evm_env = EvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
@@ -517,8 +516,7 @@ mod tests {
             ..Default::default()
         };
 
-        let evm_env =
-            EvmEnv::<reth_evm::revm::primitives::hardfork::SpecId, TempoBlockEnv>::default();
+        let evm_env = EvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
 
         assert!(

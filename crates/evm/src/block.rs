@@ -555,7 +555,10 @@ mod tests {
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
     use reth_revm::State;
-    use revm::{context::result::ExecutionResult, database::EmptyDB};
+    use revm::{
+        context::result::{ExecutionResult, ResultGas},
+        database::EmptyDB,
+    };
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -589,8 +592,7 @@ mod tests {
         )];
         let result: ExecutionResult<TempoHaltReason> = ExecutionResult::Success {
             reason: revm::context::result::SuccessReason::Return,
-            gas_used: 21000,
-            gas_refunded: 0,
+            gas: ResultGas::default().with_limit(21000).with_spent(21000),
             logs,
             output: revm::context::result::Output::Call(Bytes::new()),
         };
@@ -1099,8 +1101,7 @@ mod tests {
                 result: ResultAndState {
                     result: revm::context::result::ExecutionResult::Success {
                         reason: revm::context::result::SuccessReason::Return,
-                        gas_used: 21000,
-                        gas_refunded: 0,
+                        gas: ResultGas::default().with_limit(21000).with_spent(21000),
                         logs: vec![],
                         output: revm::context::result::Output::Call(Bytes::new()),
                     },
