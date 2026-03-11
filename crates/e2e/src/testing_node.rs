@@ -14,7 +14,7 @@ use reth_ethereum::{
     storage::BlockNumReader,
 };
 use reth_node_builder::NodeTypesWithDBAdapter;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tempo_commonware_node::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
@@ -286,7 +286,10 @@ where
     /// Panics if either consensus or execution is not running.
     pub async fn stop(&mut self) {
         self.stop_consensus().await;
-        self.stop_execution().await
+        self.stop_execution().await;
+
+        // Sleep for a bit to make sure that all tasks are finished
+        std::thread::sleep(Duration::from_secs(1));
     }
 
     /// Stop only the consensus engine.
