@@ -434,7 +434,7 @@ where
         unreachable!("'checkpoint' not supported in read-only context")
     }
 
-    fn checkpoint_commit(&mut self) {
+    fn checkpoint_commit(&mut self, _: revm::context::journaled_state::JournalCheckpoint) {
         unreachable!("'checkpoint_commit' not supported in read-only context")
     }
 

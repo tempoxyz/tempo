@@ -221,8 +221,8 @@ pub struct CheckpointGuard {
 impl CheckpointGuard {
     /// Commits all state changes since the checkpoint.
     pub fn commit(mut self) {
-        if self.checkpoint.take().is_some() {
-            StorageCtx::with_storage(|s| s.checkpoint_commit());
+        if let Some(cp) = self.checkpoint.take() {
+            StorageCtx::with_storage(|s| s.checkpoint_commit(cp));
         }
     }
 }
@@ -360,6 +360,12 @@ unsafe fn extend_lifetime_mut<'b, T: ?Sized>(r: &mut T) -> &'b mut T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::U256;
+    use tempo_chainspec::hardfork::TempoHardfork;
+
+    fn t1c_storage() -> HashMapStorageProvider {
+        HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C)
+    }
 
     #[test]
     #[should_panic(expected = "already borrowed")]
@@ -371,6 +377,98 @@ mod tests {
                 // re-entrant call should panic
                 StorageCtx::with_storage(|_| ())
             })
+        });
+    }
+
+    #[test]
+    fn test_checkpoint_commit_and_revert() {
+        let mut storage = t1c_storage();
+        let addr = Address::ZERO;
+        let key = U256::from(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+
+            // commit persists state
+            ctx.sstore(addr, key, U256::from(42)).unwrap();
+            let guard = ctx.checkpoint();
+            ctx.sstore(addr, key, U256::from(99)).unwrap();
+            guard.commit();
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
+
+            // drop reverts state
+            {
+                let _guard = ctx.checkpoint();
+                ctx.sstore(addr, key, U256::from(1)).unwrap();
+            }
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
+        });
+    }
+
+    #[test]
+    fn test_nested_checkpoints_lifo() {
+        let mut storage = t1c_storage();
+        let addr = Address::ZERO;
+        let key = U256::from(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+            ctx.sstore(addr, key, U256::from(10)).unwrap();
+
+            // both committed in LIFO order
+            let outer = ctx.checkpoint();
+            ctx.sstore(addr, key, U256::from(20)).unwrap();
+            let inner = ctx.checkpoint();
+            ctx.sstore(addr, key, U256::from(30)).unwrap();
+            inner.commit();
+            outer.commit();
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(30));
+
+            // inner reverts, outer commits
+            let outer = ctx.checkpoint();
+            ctx.sstore(addr, key, U256::from(40)).unwrap();
+            {
+                let _inner = ctx.checkpoint();
+                ctx.sstore(addr, key, U256::from(50)).unwrap();
+            }
+            outer.commit();
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(40));
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "out-of-order")]
+    fn test_nested_checkpoints_out_of_order_commit_panics() {
+        let mut storage = t1c_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+
+            let outer = ctx.checkpoint();
+            let _inner = ctx.checkpoint();
+
+            // Wrong order: committing outer while inner is still active
+            outer.commit();
+        });
+    }
+
+    #[test]
+    fn test_checkpoint_noop_pre_t1c() {
+        let mut storage = HashMapStorageProvider::new(1); // default = T0
+        let addr = Address::ZERO;
+        let key = U256::from(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+
+            ctx.sstore(addr, key, U256::from(42)).unwrap();
+            {
+                let _guard = ctx.checkpoint(); // no-op pre-T1C
+                ctx.sstore(addr, key, U256::from(99)).unwrap();
+                // drop does nothing — no checkpoint was created
+            }
+            // state is NOT reverted because checkpoints are disabled pre-T1C
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
         });
     }
 }

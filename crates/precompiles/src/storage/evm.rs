@@ -20,6 +20,9 @@ pub struct EvmPrecompileStorageProvider<'a> {
     spec: TempoHardfork,
     is_static: bool,
     gas_params: GasParams,
+    /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
+    #[cfg(debug_assertions)]
+    checkpoint_stack: Vec<usize>,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -39,6 +42,8 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             spec,
             is_static,
             gas_params,
+            #[cfg(debug_assertions)]
+            checkpoint_stack: Vec::new(),
         }
     }
 
@@ -243,17 +248,50 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn checkpoint(&mut self) -> JournalCheckpoint {
-        self.internals.checkpoint()
+        let cp = self.internals.checkpoint();
+        #[cfg(debug_assertions)]
+        self.track_checkpoint(&cp);
+        cp
     }
 
     #[inline]
-    fn checkpoint_commit(&mut self) {
+    fn checkpoint_commit(&mut self, _checkpoint: JournalCheckpoint) {
+        #[cfg(debug_assertions)]
+        self.assert_lifo(&_checkpoint, "commit");
         self.internals.checkpoint_commit()
     }
 
     #[inline]
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+        #[cfg(debug_assertions)]
+        self.assert_lifo(&checkpoint, "revert");
         self.internals.checkpoint_revert(checkpoint)
+    }
+}
+
+/// LIFO checkpoint validation (debug builds only).
+///
+/// Since `EvmInternals` doesn't expose revm's journal depth, we mirror it by
+/// recording each checkpoint's `journal_i` on creation and asserting that
+/// commits/reverts always resolve the most recent checkpoint first.
+#[cfg(debug_assertions)]
+impl EvmPrecompileStorageProvider<'_> {
+    /// Records a newly created checkpoint for later LIFO validation.
+    fn track_checkpoint(&mut self, cp: &JournalCheckpoint) {
+        self.checkpoint_stack.push(cp.journal_i);
+    }
+
+    /// Panics if `cp` is not the most recently created checkpoint.
+    fn assert_lifo(&mut self, cp: &JournalCheckpoint, op: &str) {
+        let top = self
+            .checkpoint_stack
+            .pop()
+            .unwrap_or_else(|| panic!("checkpoint_{op}: no active checkpoint"));
+
+        assert_eq!(
+            cp.journal_i, top,
+            "out-of-order checkpoint {op} (expected top of stack)"
+        );
     }
 }
 
