@@ -20,7 +20,7 @@ pub struct PrometheusMetricsConfig {
     pub interval: SignedDuration,
     /// Optional Authorization header value
     pub auth_header: Option<String>,
-    /// Labels labels to append to every metrics
+    /// Extra labels to append to every metrics
     pub extra_labels: HashMap<String, String>,
 }
 
