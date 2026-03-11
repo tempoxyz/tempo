@@ -390,30 +390,28 @@ jobs:
                 echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
                 STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | map(.name) | join(", ")')
 
-                # Fetch logs from in-progress runs on this branch
-                STUCK_LOGS=""
-                while IFS= read -r run_id; do
-                  [ -z "$run_id" ] && continue
-                  echo "Fetching logs for in-progress run $run_id..."
-                  LOGS=$(gh run view "$run_id" --log 2>&1 | tail -300) || true
-                  STUCK_LOGS="${STUCK_LOGS}
-
-              === run ${run_id} ===
-              ${LOGS}"
-                done < <(gh run list --branch "$PR_BRANCH" --status in_progress --json databaseId --jq '.[].databaseId')
-
-                STUCK_PROMPT="Some CI jobs on this PR have been running for over ${CI_TIMEOUT_MINUTES} minutes and appear stuck. \
-                Investigate why these tests might be hanging. Look at the logs below for clues — common causes include \
-                deadlocks, infinite loops, tests waiting on network/RPC connections that never resolve, or resource exhaustion. \
-                Fix the root cause in the source code if possible.
-
-                Stuck jobs: ${STUCK_NAMES}
-
-                Logs from stuck jobs:
-                ${STUCK_LOGS}"
+                # Fetch logs from in-progress runs for the current HEAD commit
+                HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
+                {
+                  echo "Some CI jobs on this PR have been running for over ${CI_TIMEOUT_MINUTES} minutes and appear stuck."
+                  echo "Investigate why these tests might be hanging. Look at the logs below for clues — common causes include"
+                  echo "deadlocks, infinite loops, tests waiting on network/RPC connections that never resolve, or resource exhaustion."
+                  echo "Fix the root cause in the source code if possible."
+                  echo ""
+                  echo "Stuck jobs: ${STUCK_NAMES}"
+                  echo ""
+                  echo "Logs from stuck jobs:"
+                  while IFS= read -r run_id; do
+                    [ -z "$run_id" ] && continue
+                    echo "Fetching logs for in-progress run $run_id..." >&2
+                    echo ""
+                    echo "=== run ${run_id} ==="
+                    gh run view "$run_id" --log 2>&1 | tail -300 || true
+                  done < <(gh run list --branch "$PR_BRANCH" --commit "$HEAD_SHA" --status in_progress --json databaseId --jq '.[].databaseId')
+                } > /tmp/amp-prompt.txt
 
                 echo "::group::Amp stuck CI investigation"
-                amp-run --dangerously-allow-all -x "$STUCK_PROMPT"
+                amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
                 echo "::endgroup::"
 
                 if [ -n "$(git status --porcelain)" ]; then
@@ -436,34 +434,30 @@ jobs:
             FAILED_NAMES=$(echo "$STATUS" | jq -r '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | map(.name) | join(", ")')
             echo "Failed checks: $FAILED_NAMES"
 
-            # Fetch logs from failed runs on this branch
-            FAILED_LOGS=""
-            while IFS= read -r run_id; do
-              [ -z "$run_id" ] && continue
-              echo "Fetching logs for failed run $run_id..."
-              LOGS=$(gh run view "$run_id" --log-failed 2>&1 | tail -200) || true
-              FAILED_LOGS="${FAILED_LOGS}
-
-          === run ${run_id} ===
-          ${LOGS}"
-            done < <(gh run list --branch "$PR_BRANCH" --status failure --json databaseId --jq '.[].databaseId')
-
-            # Use Amp to fix
-            AMP_PROMPT="The CI checks on this PR are failing. Please fix the issues. \
-            You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy), \
-            but do NOT modify the reth git source specifications (URL, branch, or rev) in any Cargo.toml — \
-            those must stay pointing at branch = \"main\".
-
-            IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code \
-            to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
-            what replaced the deprecated items.
-
-            Here are the CI failure logs:
-
-            ${FAILED_LOGS}"
+            # Fetch logs from failed runs for the current HEAD commit
+            HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
+            {
+              echo "The CI checks on this PR are failing. Please fix the issues."
+              echo "You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy),"
+              echo "but do NOT modify the reth git source specifications (URL, branch, or rev) in any Cargo.toml —"
+              echo "those must stay pointing at branch = \"main\"."
+              echo ""
+              echo "IMPORTANT: Do NOT suppress warnings with #[allow(...)]. Instead, migrate the code"
+              echo "to use the new non-deprecated APIs. Look at the upstream reth source code to understand"
+              echo "what replaced the deprecated items."
+              echo ""
+              echo "Here are the CI failure logs:"
+              while IFS= read -r run_id; do
+                [ -z "$run_id" ] && continue
+                echo "Fetching logs for failed run $run_id..." >&2
+                echo ""
+                echo "=== run ${run_id} ==="
+                gh run view "$run_id" --log-failed 2>&1 | tail -200 || true
+              done < <(gh run list --branch "$PR_BRANCH" --commit "$HEAD_SHA" --status failure --json databaseId --jq '.[].databaseId')
+            } > /tmp/amp-prompt.txt
 
             echo "::group::Amp CI fix"
-            amp-run --dangerously-allow-all -x "$AMP_PROMPT"
+            amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
             echo "::endgroup::"
 
             # Commit and push fixes
