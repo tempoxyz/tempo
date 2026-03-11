@@ -364,16 +364,19 @@ jobs:
               ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
               if [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
                 echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
-                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | .[].name')
+                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | map(.name) | join(", ")')
+
+                # Fetch logs from in-progress runs on this branch
                 STUCK_LOGS=""
-                for job in $STUCK_NAMES; do
-                  echo "Fetching logs for stuck job: $job..."
-                  LOGS=$(gh run view --repo "${{ github.repository }}" -j "$job" --log 2>&1 | tail -300) || true
+                while IFS= read -r run_id; do
+                  [ -z "$run_id" ] && continue
+                  echo "Fetching logs for in-progress run $run_id..."
+                  LOGS=$(gh run view "$run_id" --log 2>&1 | tail -300) || true
                   STUCK_LOGS="${STUCK_LOGS}
 
-              === ${job} (stuck/in-progress) ===
+              === run ${run_id} ===
               ${LOGS}"
-                done
+                done < <(gh run list --branch "$PR_BRANCH" --status in_progress --json databaseId --jq '.[].databaseId')
 
                 STUCK_PROMPT="Some CI jobs on this PR have been running for over ${CI_TIMEOUT_MINUTES} minutes and appear stuck. \
                 Investigate why these tests might be hanging. Look at the logs below for clues — common causes include \
@@ -406,18 +409,20 @@ jobs:
             done
 
             # We get here when FAILED is non-empty
-            echo "Failed checks: $FAILED"
+            FAILED_NAMES=$(echo "$STATUS" | jq -r '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | map(.name) | join(", ")')
+            echo "Failed checks: $FAILED_NAMES"
 
-            # Fetch logs for failed checks
+            # Fetch logs from failed runs on this branch
             FAILED_LOGS=""
-            for check in $FAILED; do
-              echo "Fetching logs for $check..."
-              LOGS=$(gh run view --repo "${{ github.repository }}" -j "$check" --log-failed 2>&1 | tail -200) || true
+            while IFS= read -r run_id; do
+              [ -z "$run_id" ] && continue
+              echo "Fetching logs for failed run $run_id..."
+              LOGS=$(gh run view "$run_id" --log-failed 2>&1 | tail -200) || true
               FAILED_LOGS="${FAILED_LOGS}
 
-          === ${check} ===
+          === run ${run_id} ===
           ${LOGS}"
-            done
+            done < <(gh run list --branch "$PR_BRANCH" --status failure --json databaseId --jq '.[].databaseId')
 
             # Use Amp to fix
             AMP_PROMPT="The CI checks on this PR are failing. Please fix the issues. \
