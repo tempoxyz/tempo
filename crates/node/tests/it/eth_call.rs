@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, setup_test_token};
+use crate::utils::{ForkSchedule, TestNodeBuilder, setup_test_token};
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
@@ -19,12 +19,19 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM, UnknownFunctionSelector,
 };
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::TIP20Token};
+use test_case::test_case;
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_call() -> eyre::Result<()> {
+async fn test_eth_call(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_schedule(schedule)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -59,11 +66,17 @@ async fn test_eth_call() -> eyre::Result<()> {
     Ok(())
 }
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_trace_call() -> eyre::Result<()> {
+async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_schedule(schedule)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -153,11 +166,17 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     Ok(())
 }
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_get_logs() -> eyre::Result<()> {
+async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_schedule(schedule)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -212,11 +231,17 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     Ok(())
 }
 
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_estimate_gas() -> eyre::Result<()> {
+async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_schedule(schedule)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -460,11 +485,118 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
     Ok(())
 }
 
+/// Regression test: on mainnet, `validatorTokens[address(0)]` was pre-seeded with a
+/// DONOTUSE token in genesis. The old code used `Address::ZERO` as beneficiary for RPC gas
+/// estimation, so `get_validator_token(Address::ZERO)` returned DONOTUSE instead of falling
+/// back to `DEFAULT_FEE_TOKEN` (PathUSD), causing gas estimation to fail.
+///
+/// The fix uses `TIP_FEE_MANAGER_ADDRESS` as the sentinel beneficiary, which is guaranteed to
+/// have no validator token set (its mapping is always zero → falls back to PathUSD).
 #[tokio::test(flavor = "multi_thread")]
-async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
+async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    // Craft test genesis with mainnet's fee manager storage (pre-seeded with DONOTUSE token).
+    let mut test_genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
+    let presto_genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../../../chainspec/src/genesis/presto.json"))?;
+
+    let fee_manager_addr = "0xfeec000000000000000000000000000000000000";
+    let presto_storage = presto_genesis["alloc"][fee_manager_addr]["storage"]
+        .as_object()
+        .expect("presto fee manager storage must exist");
+    let test_storage = test_genesis["alloc"][fee_manager_addr]["storage"]
+        .as_object_mut()
+        .expect("test fee manager storage must exist");
+    for (k, v) in presto_storage {
+        test_storage.insert(k.clone(), v.clone());
+    }
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet_address = wallet.address();
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&test_genesis)?)
+        .build_http_only()
+        .await?;
+
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(setup.http_url);
+
+    // Verify the pre-seeded state: validatorTokens[address(0)] should be non-PathUSD
+    let fee_manager =
+        IFeeManager::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let zero_addr_token = fee_manager.validatorTokens(Address::ZERO).call().await?;
+    assert_ne!(
+        zero_addr_token, PATH_USD_ADDRESS,
+        "validatorTokens[address(0)] should be the DONOTUSE token, not PathUSD"
+    );
+
+    // Setup a user fee token with liquidity so the user can pay fees
+    let user_fee_token = setup_test_token(provider.clone(), wallet_address).await?;
+
+    user_fee_token
+        .mint(wallet_address, U256::from(u128::MAX))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    fee_amm
+        .mint(
+            *user_fee_token.address(),
+            PATH_USD_ADDRESS,
+            U256::from(u32::MAX),
+            wallet_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    fee_manager
+        .setUserToken(*user_fee_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Gas estimation should succeed because the fix uses TIP_FEE_MANAGER_ADDRESS as
+    // beneficiary, which has no validator token set and falls back to PathUSD.
+    let recipient = Address::random();
+    let calldata = user_fee_token
+        .transfer(recipient, U256::ONE)
+        .calldata()
+        .clone();
+    let tx = TransactionRequest::default()
+        .from(wallet_address)
+        .to(*user_fee_token.address())
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .input(TransactionInput::new(calldata));
+
+    let gas = provider.estimate_gas(tx).await?;
+    assert!(
+        gas > 0,
+        "gas estimation must succeed with pre-seeded validatorTokens[address(0)]"
+    );
+
+    Ok(())
+}
+
+#[test_case(ForkSchedule::Devnet ; "devnet")]
+#[test_case(ForkSchedule::Testnet ; "testnet")]
+#[test_case(ForkSchedule::Mainnet ; "mainnet")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_unknown_selector_error_via_rpc(schedule: ForkSchedule) -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new()
+        .with_schedule(schedule)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
