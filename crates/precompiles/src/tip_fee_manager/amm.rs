@@ -134,8 +134,8 @@ impl TipFeeManager {
         // Calculate input and update reserves
         let amount_in = amount_out
             .checked_mul(N)
-            .and_then(|product| product.checked_div(SCALE))
-            .and_then(|result| result.checked_add(U256::ONE))
+            .and_then(|product| product.checked_add(SCALE - U256::from(1)))
+            .and_then(|result| result.checked_div(SCALE))
             .ok_or(TempoPrecompileError::under_overflow())?;
 
         let amount_in: u128 = amount_in
