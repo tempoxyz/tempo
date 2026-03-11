@@ -84,11 +84,17 @@ jobs:
       - name: Install Amp CLI
         run: npm install -g @sourcegraph/amp
 
-      # ── git identity ───────────────────────────────────────────
+      # ── git identity (use Derek's account) ─────────────────────
       - name: Configure git
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_PAT }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          USER_JSON=$(gh api /user)
+          GIT_NAME=$(echo "$USER_JSON" | jq -r '.name // .login')
+          GIT_ID=$(echo "$USER_JSON" | jq -r '.id')
+          GIT_LOGIN=$(echo "$USER_JSON" | jq -r '.login')
+          git config user.name "$GIT_NAME"
+          git config user.email "${GIT_ID}+${GIT_LOGIN}@users.noreply.github.com"
 
       # ── merge latest main (fresh path only) ────────────────────
       - name: Merge latest main
