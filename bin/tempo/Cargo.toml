@@ -87,6 +87,9 @@ rocksdb = [
 	"reth-ethereum-cli/rocksdb",
 	"reth-cli-commands/rocksdb",
 	"reth-provider/rocksdb",
+	"reth-db-api/rocksdb",
+	"reth-storage-api/rocksdb",
+	"tempo-node/rocksdb"
 ]
 
 otlp = [
