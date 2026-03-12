@@ -161,9 +161,15 @@ fn main() -> eyre::Result<()> {
             .try_to_config()
             .wrap_err("failed to parse telemetry config")?
     {
-        let consensus_id = node_cmd.ext.consensus.public_key()?.map(|k| k.to_string());
+        let consensus_id = node_cmd
+            .ext
+            .consensus
+            .public_key()
+            .wrap_err("failed parsing consensus key")?
+            .map(|k| k.to_string());
+
         if let Some(id) = &consensus_id {
-            // VictoriaMetrics does not support merging `extra_fields` query args like with `extra_labels` for
+            // VictoriaMetrics does not support merging `extra_fields` query args like `extra_labels` for
             // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var
             // used at startup to capture contextual information.
             let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
@@ -255,7 +261,11 @@ fn main() -> eyre::Result<()> {
 
                 // Start the unified metrics exporter if configured
                 if let Some(config) = telemetry_config {
-                    let consensus_id = args.consensus.public_key()?.map(|k| k.to_string());
+                    let consensus_id = args
+                        .consensus
+                        .public_key()
+                        .wrap_err("failed parsing consensus key")?
+                        .map(|k| k.to_string());
 
                     let prometheus_config = PrometheusMetricsConfig {
                         endpoint: config.metrics_prometheus_url,
