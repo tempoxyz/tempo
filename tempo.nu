@@ -674,9 +674,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             continue
         }
         let report = (open $report_path)
-        let blocks = ($report | get blocks | where gas_used > 0)
+        let blocks = ($report | get blocks)
         if ($blocks | length) == 0 {
-            print $"Warning: ($label) report has no blocks after filtering ramp-up, skipping"
+            print $"Warning: ($label) report has no blocks, skipping"
             continue
         }
 
