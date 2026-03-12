@@ -8,7 +8,10 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::{
         dkg::Output,
-        primitives::{sharing::Sharing, variant::MinSig},
+        primitives::{
+            sharing::{ModeVersion, Sharing},
+            variant::MinSig,
+        },
     },
     ed25519::PublicKey,
 };
@@ -72,7 +75,7 @@ impl Read for OnchainDkgOutcome {
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
         let epoch = ReadExt::read(buf)?;
-        let output = Read::read_cfg(buf, &MAX_VALIDATORS)?;
+        let output = Read::read_cfg(buf, &(MAX_VALIDATORS, ModeVersion::v0()))?;
         let next_players = Read::read_cfg(
             buf,
             &(RangeCfg::from(1..=(MAX_VALIDATORS.get() as usize)), ()),
