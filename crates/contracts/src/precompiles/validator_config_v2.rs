@@ -1,6 +1,9 @@
 use alloc::string::String;
 
-pub use IValidatorConfigV2::IValidatorConfigV2Errors as ValidatorConfigV2Error;
+pub use IValidatorConfigV2::{
+    IValidatorConfigV2Errors as ValidatorConfigV2Error,
+    IValidatorConfigV2Events as ValidatorConfigV2Event,
+};
 
 crate::sol! {
     /// Validator Config V2 interface for managing consensus validators with append-only,
@@ -111,6 +114,44 @@ crate::sol! {
 
         /// Initialize V2 after migration (owner only)
         function initializeIfMigrated() external;
+
+        // Events
+        event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+        event ValidatorAdded(
+            address indexed validatorAddress,
+            bytes32 publicKey,
+            string ingress,
+            string egress,
+            uint64 index,
+            uint64 addedAtHeight
+        );
+        event ValidatorDeactivated(
+            address indexed validatorAddress,
+            uint64 index,
+            uint64 deactivatedAtHeight
+        );
+        event ValidatorRotated(
+            address indexed validatorAddress,
+            bytes32 oldPublicKey,
+            bytes32 newPublicKey,
+            uint64 oldIndex,
+            uint64 newIndex,
+            uint64 rotatedAtHeight
+        );
+        event IpAddressesUpdated(address indexed validatorAddress, string ingress, string egress);
+        event ValidatorOwnershipTransferred(
+            address indexed oldAddress,
+            address indexed newAddress,
+            uint64 index
+        );
+        event NextFullDkgCeremonySet(uint64 epoch);
+        event ValidatorMigrated(
+            address indexed validatorAddress,
+            bytes32 publicKey,
+            uint64 index,
+            uint64 addedAtHeight,
+            uint64 deactivatedAtHeight
+        );
 
         // =====================================================================
         // Errors
