@@ -20,7 +20,7 @@ use reth_db_api::{
     tables,
     transaction::DbTxMut,
 };
-use reth_ethereum::chainspec::EthChainSpec;
+use reth_ethereum::{chainspec::EthChainSpec, tasks::Runtime};
 use reth_primitives_traits::{Account, StorageEntry};
 use reth_provider::{BlockNumReader, DatabaseProviderFactory, HashingWriter};
 use reth_storage_api::DBProvider;
@@ -51,13 +51,13 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
     InitFromBinaryDump<C>
 {
     /// Execute the init-from-binary-dump command.
-    pub(crate) async fn execute<N>(self) -> eyre::Result<()>
+    pub(crate) async fn execute<N>(self, runtime: Runtime) -> eyre::Result<()>
     where
         N: CliNodeTypes<ChainSpec = C::ChainSpec>,
     {
         info!(target: "tempo::cli", "Tempo init-from-binary-dump starting");
 
-        let environment = self.env.init::<N>(AccessRights::RW)?;
+        let environment = self.env.init::<N>(AccessRights::RW, runtime)?;
         let provider_factory = environment.provider_factory;
 
         let provider_rw = provider_factory.database_provider_rw()?;
