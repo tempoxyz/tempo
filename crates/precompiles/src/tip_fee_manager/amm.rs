@@ -93,8 +93,8 @@ impl TipFeeManager {
         self.pools[pool_id].read()
     }
 
-    /// Ensures that pool has enough liquidity for a fee swap and reserves funds.
-    /// Returns the amount out needed for the swap
+    /// Checks that the pool has enough liquidity for a fee swap.
+    /// Returns the amount out needed (does not reserve; see `reserve_pool_liquidity`).
     pub fn check_sufficient_liquidity(&mut self, pool_id: B256, max_amount: U256) -> Result<u128> {
         let amount_out_needed = compute_amount_out(max_amount)?;
         let pool = self.pools[pool_id].read()?;

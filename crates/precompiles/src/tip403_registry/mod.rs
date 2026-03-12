@@ -96,7 +96,7 @@ impl PolicyData {
 
         // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
         Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
-            .expect("unable to decode PoliciData from slot")
+            .expect("unable to decode PolicyData from slot")
     }
 
     pub fn encode_to_slot(&self) -> U256 {
@@ -148,7 +148,7 @@ impl TIP403Registry {
 
     // View functions
     pub fn policy_id_counter(&self) -> Result<u64> {
-        // Initialize policy ID counter to 2 if it's 0 (skip built-in policy IDs)
+        // Skips the built-in policiy IDs, when initializing the counter for the first time.
         self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
@@ -277,7 +277,7 @@ impl TIP403Registry {
         self.set_policy_data(new_policy_id, PolicyData { policy_type, admin })?;
 
         // Set initial accounts - only emit events for valid policy types
-        // Pre-T1 with invalid types: accounts are added but no events emitted (matches original)
+        // Pre-T2 with invalid types: accounts are added but no events emitted (matches original)
         for account in call.accounts.iter() {
             self.set_policy_set(new_policy_id, *account, true)?;
 
@@ -303,7 +303,7 @@ impl TIP403Registry {
                     ))?;
                 }
                 ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
-                    // T1+: unreachable since `validate_simple_policy_type` already rejected
+                    // T2+: unreachable since `ensure_is_simple` already rejected
                     return Err(TIP403RegistryError::incompatible_policy_type().into());
                 }
             }
@@ -626,7 +626,7 @@ trait PolicyTypeExt {
 impl PolicyTypeExt for PolicyType {
     /// Validates and returns the policy type to store, handling backward compatibility.
     ///
-    /// Pre-T1: Converts `COMPOUND` and `__Invalid` to 255 to match original ABI decoding behavior.
+    /// Pre-T2: Converts `COMPOUND` and `__Invalid` to 255 to match original ABI decoding behavior.
     /// T2+: Only allows `WHITELIST` and `BLACKLIST`.
     fn ensure_is_simple(&self) -> Result<u8> {
         match self {
