@@ -566,6 +566,19 @@ mod tests {
     };
     use tempo_revm::TempoHaltReason;
 
+    fn assert_block_validation_err<T: std::fmt::Debug>(
+        result: Result<T, BlockValidationError>,
+        expected: &str,
+    ) {
+        match result {
+            Err(BlockValidationError::Other(msg)) => assert!(
+                msg.to_string().contains(expected),
+                "expected error containing '{expected}', got: {msg}"
+            ),
+            other => panic!("expected BlockValidationError::Other, got: {other:?}"),
+        }
+    }
+
     fn create_legacy_tx() -> TempoTxEnvelope {
         let tx = TxLegacy {
             chain_id: Some(1),
@@ -1158,39 +1171,36 @@ mod tests {
         // Input shorter than U256::BYTES (31 bytes) — rejected
         let mut db = State::builder().with_bundle_update().build();
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-        let result = executor.validate_system_tx(&create_system_tx(
-            chain_id,
-            Bytes::copy_from_slice(&[0u8; 31]),
-        ));
-        assert!(matches!(
-            result.unwrap_err(),
-            BlockValidationError::Other(_)
-        ));
+        assert_block_validation_err(
+            executor.validate_system_tx(&create_system_tx(
+                chain_id,
+                Bytes::copy_from_slice(&[0u8; 31]),
+            )),
+            "invalid subblocks metadata system transaction",
+        );
 
         // Input exactly U256::BYTES (32 bytes) — passes length check but RLP decode fails
         let mut db = State::builder().with_bundle_update().build();
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-        let result = executor.validate_system_tx(&create_system_tx(
-            chain_id,
-            Bytes::copy_from_slice(&U256::from(1u64).to_be_bytes::<32>()),
-        ));
-        assert!(matches!(
-            result.unwrap_err(),
-            BlockValidationError::Other(_)
-        ));
+        assert_block_validation_err(
+            executor.validate_system_tx(&create_system_tx(
+                chain_id,
+                Bytes::copy_from_slice(&U256::from(1u64).to_be_bytes::<32>()),
+            )),
+            "invalid subblocks metadata system transaction",
+        );
 
         // Valid metadata but wrong block number
         let mut db = State::builder().with_bundle_update().build();
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
         let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
-        let result = executor.validate_system_tx(&create_system_tx(
-            chain_id,
-            create_system_tx_input(metadata, 99),
-        ));
-        assert!(matches!(
-            result.unwrap_err(),
-            BlockValidationError::Other(_)
-        ));
+        assert_block_validation_err(
+            executor.validate_system_tx(&create_system_tx(
+                chain_id,
+                create_system_tx_input(metadata, 99),
+            )),
+            "invalid subblocks metadata system transaction",
+        );
     }
 
     #[test]
@@ -1240,10 +1250,10 @@ mod tests {
             .with_incentive_gas_used(10_000_001)
             .build(&mut db, &chainspec);
         let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
-        assert!(matches!(
-            executor.validate_shared_gas(&metadata).unwrap_err(),
-            BlockValidationError::Other(_)
-        ));
+        assert_block_validation_err(
+            executor.validate_shared_gas(&metadata),
+            "incentive gas limit exceeded",
+        );
 
         // Multi-validator: incentive gas accumulates (not multiplied)
         // 2 validators, shared=10M → gas_per_subblock=5M, both empty → incentive=10M
