@@ -15,17 +15,6 @@ use tempo_contracts::precompiles::ITIP20;
 /// Same as TIP20_TOKEN_PREFIX
 pub const TIP20_PAYMENT_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
-/// Returns `true` if `to` has the TIP-20 payment prefix.
-fn is_tip20_call(to: Option<&Address>) -> bool {
-    to.is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX))
-}
-
-/// Returns `true` if `to` has the TIP-20 payment prefix and `input` is recognized payment
-/// calldata (selector + exact ABI-encoded length).
-fn is_tip20_payment(to: Option<&Address>, input: &[u8]) -> bool {
-    is_tip20_call(to) && ITIP20::ITIP20Calls::is_payment(input)
-}
-
 /// Fake signature for Tempo system transactions.
 pub const TEMPO_SYSTEM_TX_SIGNATURE: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
 
@@ -458,6 +447,17 @@ impl From<TempoTransaction> for TempoTypedTransaction {
     fn from(value: TempoTransaction) -> Self {
         Self::AA(value)
     }
+}
+
+/// Returns `true` if `to` has the TIP-20 payment prefix.
+fn is_tip20_call(to: Option<&Address>) -> bool {
+    to.is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX))
+}
+
+/// Returns `true` if `to` has the TIP-20 payment prefix and `input` is recognized payment
+/// calldata (selector + exact ABI-encoded length).
+fn is_tip20_payment(to: Option<&Address>, input: &[u8]) -> bool {
+    is_tip20_call(to) && ITIP20::ITIP20Calls::is_payment(input)
 }
 
 #[cfg(feature = "rpc")]
