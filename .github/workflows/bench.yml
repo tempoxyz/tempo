@@ -59,6 +59,11 @@ on:
         required: false
         default: "30"
         type: string
+      tracy-offset:
+        description: "Seconds to wait before starting tracy capture"
+        required: false
+        default: "120"
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -92,6 +97,7 @@ jobs:
       samply: ${{ steps.args.outputs.samply }}
       tracy: ${{ steps.args.outputs.tracy }}
       tracy-seconds: ${{ steps.args.outputs.tracy-seconds }}
+      tracy-offset: ${{ steps.args.outputs.tracy-offset }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
     steps:
       - name: Check org membership
@@ -119,7 +125,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
-            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds;
+            let pr, actor, preset, duration, bloat, tps, baseline, feature, samply, tracy, tracySeconds, tracyOffset;
 
             if (context.eventName === 'workflow_dispatch') {
               actor = '${{ github.actor }}';
@@ -132,6 +138,7 @@ jobs:
               samply = '${{ github.event.inputs.samply }}' === 'true' ? 'true' : 'false';
               tracy = '${{ github.event.inputs.tracy }}' || 'off';
               tracySeconds = '${{ github.event.inputs.tracy-seconds }}' || '30';
+              tracyOffset = '${{ github.event.inputs.tracy-offset }}' || '120';
 
               // Find PR for the selected branch
               const branch = '${{ github.ref_name }}';
@@ -151,11 +158,11 @@ jobs:
               actor = context.payload.comment.user.login;
 
               const body = context.payload.comment.body.trim();
-              const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds']);
+              const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset']);
               const refArgs = new Set(['baseline', 'feature']);
               const stringArgs = new Set(['preset', 'tracy']);
               const boolArgs = new Set(['samply']);
-              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30' };
+              const defaults = { preset: 'tip20', duration: '300', bloat: '1024', tps: '10000', baseline: '', feature: '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120' };
               const unknown = [];
               const invalid = [];
               const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
@@ -197,7 +204,7 @@ jobs:
               if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
               if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
               if (errors.length) {
-                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N]\``;
+                const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N]\``;
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -216,11 +223,12 @@ jobs:
               samply = defaults.samply;
               tracy = defaults.tracy;
               tracySeconds = defaults['tracy-seconds'];
+              tracyOffset = defaults['tracy-offset'];
             }
 
             // Validate tracy value
             if (!['off', 'on', 'full'].includes(tracy)) {
-              const msg = `❌ **Invalid bench command**\n\n\`tracy=${tracy}\` is not valid. Must be \`off\`, \`on\`, or \`full\`.\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N]\``;
+              const msg = `❌ **Invalid bench command**\n\n\`tracy=${tracy}\` is not valid. Must be \`off\`, \`on\`, or \`full\`.\n\n**Usage:** \`@decofe bench [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [samply] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N]\``;
               if (context.eventName === 'issue_comment') {
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
@@ -277,6 +285,7 @@ jobs:
             core.setOutput('samply', samply);
             core.setOutput('tracy', tracy);
             core.setOutput('tracy-seconds', tracySeconds);
+            core.setOutput('tracy-offset', tracyOffset);
 
       - name: Acknowledge request
         id: ack
@@ -334,6 +343,7 @@ jobs:
       BENCH_SAMPLY: ${{ needs.tempo-bench-ack.outputs.samply }}
       BENCH_TRACY: ${{ needs.tempo-bench-ack.outputs.tracy }}
       BENCH_TRACY_SECONDS: ${{ needs.tempo-bench-ack.outputs.tracy-seconds }}
+      BENCH_TRACY_OFFSET: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
       BENCH_COMMENT_ID: ${{ needs.tempo-bench-ack.outputs.comment-id }}
     steps:
       - name: Clean up previous results
@@ -503,7 +513,7 @@ jobs:
             --bench-datadir /reth-bench \
             --tune \
             $([ "$BENCH_SAMPLY" = "true" ] && echo "--samply" || true) \
-            $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS" || true)
+            $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true)
 
       - name: Find results directory
         id: results-dir

@@ -149,6 +149,14 @@ def has-mc [] {
     (which mc | length) > 0
 }
 
+# Force-clear schelk's "is_mounted" state after a crash where dm-era is gone
+def schelk-force-unmount-state [] {
+    let state_path = "/var/lib/schelk/state.json"
+    print $"  Clearing stale is_mounted flag in ($state_path)..."
+    let state = (sudo cat $state_path | from json | update is_mounted false)
+    $state | to json | sudo tee $state_path | ignore
+}
+
 # Recover snapshot to virgin state and remount
 def bench-recover [datadir: string] {
     if (has-schelk) {
@@ -156,7 +164,13 @@ def bench-recover [datadir: string] {
         if (mountpoint -q /reth-bench | complete).exit_code == 0 {
             sudo umount -l /reth-bench | ignore
         }
-        sudo schelk recover -y
+        try {
+            sudo schelk recover -y
+        } catch {
+            print "Surgical recover failed, falling back to full-recover..."
+            schelk-force-unmount-state
+            sudo schelk full-recover -y
+        }
         sudo schelk mount
         sudo chown -R (whoami | str trim) /reth-bench
     } else {
@@ -185,13 +199,21 @@ def bench-mount [] {
         if (mountpoint -q /reth-bench | complete).exit_code == 0 {
             print "Schelk volume already mounted, recovering first..."
             sudo umount -l /reth-bench | ignore
-            try { sudo schelk recover -y } catch { }
+            try { sudo schelk recover -y } catch {
+                print "Surgical recover failed, falling back to full-recover..."
+                schelk-force-unmount-state
+                sudo schelk full-recover -y
+            }
         }
         print "Mounting schelk scratch volume..."
-        try { sudo schelk mount } catch { |e|
-            # If mount fails because schelk still thinks it's mounted, force recover
-            print $"Mount failed, forcing recover..."
-            try { sudo schelk recover -y } catch { }
+        try { sudo schelk mount } catch {
+            # Mount failed — state may be inconsistent after a crash
+            print "Mount failed, forcing recover..."
+            try { sudo schelk recover -y } catch {
+                print "Surgical recover failed, falling back to full-recover..."
+                schelk-force-unmount-state
+                sudo schelk full-recover -y
+            }
             sudo schelk mount
         }
         sudo chown -R (whoami | str trim) /reth-bench
@@ -374,6 +396,7 @@ def run-bench-single [
     tracy: string
     tracy_filter: string
     tracy_seconds: int
+    tracy_offset: int
 ] {
     print $"=== Starting run: ($run_label) ==="
 
@@ -436,13 +459,19 @@ def run-bench-single [
     wait-for-rpc "http://localhost:8545" $rpc_timeout
 
     # Start tracy-capture after RPC is ready (node must be running for connection)
+    # If tracy-offset > 0, delay the capture start in a background job so tempo-bench isn't blocked
     let tracy_output = $"($results_dir)/tracy-profile-($run_label).tracy"
     let tracy_capture_started = if $tracy != "off" {
         let seconds_flag = if $tracy_seconds > 0 { $"-s ($tracy_seconds)" } else { "" }
         let limit_msg = if $tracy_seconds > 0 { $" \(($tracy_seconds)s limit\)" } else { "" }
-        print $"  Starting tracy-capture($limit_msg)..."
-        job spawn { sh -c $"tracy-capture -f -o ($tracy_output) ($seconds_flag)" }
-        sleep 500ms
+        if $tracy_offset > 0 {
+            print $"  Tracy-capture will start in ($tracy_offset)s($limit_msg)..."
+            job spawn { sleep ($"($tracy_offset)sec" | into duration); sh -c $"tracy-capture -f -o ($tracy_output) ($seconds_flag)" }
+        } else {
+            print $"  Starting tracy-capture($limit_msg)..."
+            job spawn { sh -c $"tracy-capture -f -o ($tracy_output) ($seconds_flag)" }
+            sleep 500ms
+        }
         true
     } else { false }
 
@@ -1400,6 +1429,7 @@ def "main bench" [
     --tracy: string = "off"                         # Tracy profiling: off, on, full
     --tracy-filter: string = "debug"                # Tracy tracing filter level
     --tracy-seconds: int = 30                       # Tracy capture duration limit in seconds (0 = unlimited)
+    --tracy-offset: int = 120                       # Seconds to wait before starting tracy capture (default: 120)
 ] {
     validate-mode $mode
 
@@ -1680,7 +1710,7 @@ def "main bench" [
 
         for run in $runs {
             bench-recover $datadir
-            run-bench-single $run.tempo $baseline_bench_bin $genesis_path $datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list $tracy $tracy_filter $tracy_seconds
+            run-bench-single $run.tempo $baseline_bench_bin $genesis_path $datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list $tracy $tracy_filter $tracy_seconds $tracy_offset
         }
 
         # Generate summary report
@@ -2302,6 +2332,7 @@ def main [] {
     print "  --tracy <MODE>           Tracy profiling: off (default), on, full"
     print "  --tracy-filter <FILTER>  Tracy tracing filter level (default: debug)"
     print "  --tracy-seconds <N>      Tracy capture duration limit in seconds (default: 30, 0 = unlimited)"
+    print "  --tracy-offset <N>       Seconds to wait before starting tracy capture (default: 120)"
     print "  --reset                  Reset localnet before starting"
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
