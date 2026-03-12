@@ -38,23 +38,22 @@ pub fn install_prometheus_metrics(
         .try_into()
         .wrap_err("invalid metrics duration")?;
 
+    let mut endpoint = config.endpoint;
+    if let Some(id) = config.consensus_id {
+        endpoint
+            .query_pairs_mut()
+            .append_pair("extra_label", &format!("consensus_id={id}"));
+    }
+
+    let url = endpoint.to_string();
     let client = reqwest::Client::new();
-
-    let endpoint = config.endpoint.to_string();
     let auth_header = config.auth_header;
-
-    let query_params = config
-        .consensus_id
-        .map(|k| format!("?extra_label=consensus_id={k}"))
-        .unwrap_or_default();
-
-    let url = format!("{endpoint}{query_params}");
 
     let reth_recorder = install_prometheus_recorder();
     context.spawn(move |context| async move {
         use commonware_runtime::Clock as _;
 
-        tracing::info_span!("metrics_exporter", %endpoint).in_scope(|| tracing::info!("started"));
+        tracing::info_span!("metrics_exporter", %url).in_scope(|| tracing::info!("started"));
 
         loop {
             context.sleep(interval).await;
@@ -74,7 +73,7 @@ pub fn install_prometheus_metrics(
             }
 
             let res = request.send().await;
-            tracing::info_span!("metrics_exporter", %endpoint).in_scope(|| match res {
+            tracing::info_span!("metrics_exporter", %url).in_scope(|| match res {
                 Ok(response) if !response.status().is_success() => {
                     tracing::warn!(status = %response.status(), "metrics endpoint returned failure")
                 }

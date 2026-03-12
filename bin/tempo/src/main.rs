@@ -161,12 +161,31 @@ fn main() -> eyre::Result<()> {
             .try_to_config()
             .wrap_err("failed to parse telemetry config")?
     {
+        let consensus_id = node_cmd.ext.consensus.public_key()?.map(|k| k.to_string());
+        if let Some(id) = &consensus_id {
+            // VictoriaMetrics does not support merging `extra_fields` query args like with `extra_labels` for
+            // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var
+            // used at startup to capture contextual information.
+            let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
+            let new_attrs = if current.is_empty() {
+                format!("consensus_id={id}")
+            } else {
+                format!("{current},consensus_id={id}")
+            };
+
+            // SAFETY: called at startup before the OTEL SDK is initialised
+            unsafe {
+                std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", &new_attrs);
+            }
+        }
+
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
         cli.traces.logs_otlp = Some(config.logs_otlp_url.clone());
         cli.traces.logs_otlp_filter = config
             .logs_otlp_filter
             .parse()
             .wrap_err("invalid default logs filter")?;
+
         telemetry_config.replace(config);
     }
 
