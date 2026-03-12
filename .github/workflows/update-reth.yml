@@ -209,9 +209,17 @@ jobs:
           to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
           what replaced the deprecated items."
 
+          MAX_ATTEMPTS=10
+          DEADLINE=$((SECONDS + 3600))  # 60 minutes
           attempt=0
           while true; do
             attempt=$((attempt + 1))
+            if [ "$attempt" -gt "$MAX_ATTEMPTS" ] || [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "::error::Gave up after $((attempt - 1)) attempts / $((SECONDS / 60))m — pushing best effort"
+              echo "check_passed=false" >> "$GITHUB_OUTPUT"
+              exit 0  # don't fail — let subsequent steps commit+push partial work
+            fi
+
             echo "::group::Amp attempt $attempt"
             amp-run --dangerously-allow-all -x "$AMP_PROMPT"
             echo "::endgroup::"
@@ -225,6 +233,7 @@ jobs:
 
             if [ "$check_exit" -eq 0 ]; then
               echo "Cargo check passed after attempt $attempt"
+              echo "check_passed=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
@@ -263,9 +272,17 @@ jobs:
           to use the new non-deprecated APIs. Look at the upstream reth source code to understand \
           what replaced the deprecated items."
 
+          MAX_ATTEMPTS=10
+          DEADLINE=$((SECONDS + 3600))  # 60 minutes
           attempt=0
           while true; do
             attempt=$((attempt + 1))
+            if [ "$attempt" -gt "$MAX_ATTEMPTS" ] || [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "::error::Gave up after $((attempt - 1)) attempts / $((SECONDS / 60))m — pushing best effort"
+              echo "test_passed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
             echo "::group::Amp attempt $attempt"
             amp-run --dangerously-allow-all -x "$AMP_PROMPT"
             echo "::endgroup::"
@@ -279,6 +296,7 @@ jobs:
 
             if [ "$test_exit" -eq 0 ]; then
               echo "Tests compile after attempt $attempt"
+              echo "test_passed=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
@@ -361,8 +379,16 @@ jobs:
           PR_BRANCH="reth-main-update-deps"
 
           CI_TIMEOUT_MINUTES=30
+          MAX_CI_FIX_ATTEMPTS=10
+          CI_FIX_DEADLINE=$((SECONDS + 3600))  # 60 minutes for the whole fix cycle
+          ci_fix_attempt=0
 
           while true; do
+            ci_fix_attempt=$((ci_fix_attempt + 1))
+            if [ "$ci_fix_attempt" -gt "$MAX_CI_FIX_ATTEMPTS" ] || [ "$SECONDS" -ge "$CI_FIX_DEADLINE" ]; then
+              echo "::error::CI fix loop gave up after $((ci_fix_attempt - 1)) attempts / $((SECONDS / 60))m"
+              exit 1
+            fi
             echo "Polling CI checks..."
             WAIT_START=$SECONDS
             while true; do
