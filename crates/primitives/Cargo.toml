@@ -57,7 +57,7 @@ alloy-primitives = { workspace = true, features = [
 	"rand",
 ] }
 alloy-signer.workspace = true
-alloy-sol-types.workspace = true
+alloy-sol-types = { workspace = true, features = ["arbitrary"] }
 alloy-signer-local.workspace = true
 rand.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
