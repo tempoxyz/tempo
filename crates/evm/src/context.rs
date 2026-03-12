@@ -49,8 +49,6 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
     for TempoNextBlockEnvAttributes
 {
     fn build_pending_env(parent: &crate::SealedHeader<tempo_primitives::TempoHeader>) -> Self {
-        // Use parent's values directly since pending block building is disabled for Tempo
-        // (PendingBlockKind::None) - blocks require consensus data that RPC doesn't have.
         Self {
             inner: NextBlockEnvAttributes::build_pending_env(parent),
             general_gas_limit: parent.general_gas_limit,
