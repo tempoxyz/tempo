@@ -424,7 +424,6 @@ where
 
             // check if the job was cancelled, if so we can exit early
             if cancel.is_cancelled() {
-                self.metrics.inc_build_outcome("cancelled");
                 return Ok(BuildOutcome::Cancelled);
             }
 
@@ -481,10 +480,7 @@ where
                     continue;
                 }
                 // this is an error that we should treat as fatal for this attempt
-                Err(err) => {
-                    self.metrics.inc_build_failure("pool_tx_evm_error");
-                    return Err(PayloadBuilderError::evm(err));
-                }
+                Err(err) => return Err(PayloadBuilderError::evm(err)),
             };
             let elapsed = tx_execution_start.elapsed();
             self.metrics
@@ -520,7 +516,6 @@ where
             drop(builder);
             drop(db);
             // can skip building the block
-            self.metrics.inc_build_outcome("aborted");
             return Ok(BuildOutcome::Aborted {
                 fees: total_fees,
                 cached_reads,
@@ -549,12 +544,9 @@ where
                         );
                         self.highest_invalid_subblock
                             .store(builder.evm().block().number.to(), Ordering::Relaxed);
-                        self.metrics.inc_subblocks_invalidated();
                         self.metrics.inc_build_failure("subblock_invalid_tx");
-
                         return Err(PayloadBuilderError::evm(err));
                     } else {
-                        self.metrics.inc_build_failure("subblock_evm_error");
                         return Err(PayloadBuilderError::evm(err));
                     }
                 }
@@ -698,7 +690,6 @@ where
         let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
 
         drop(db);
-        self.metrics.inc_build_outcome("better");
         Ok(BuildOutcome::Better {
             payload,
             cached_reads,
