@@ -801,8 +801,11 @@ fn initialize_fee_manager(
             fee_manager
                 .initialize()
                 .expect("Could not init fee manager");
+            println!(
+                "Setting user fee token {user_fee_token_address} for {} accounts",
+                initial_accounts.len()
+            );
             for address in initial_accounts.iter().progress() {
-                println!("Setting user token for {user_fee_token_address}");
                 fee_manager
                     .set_user_token(
                         *address,

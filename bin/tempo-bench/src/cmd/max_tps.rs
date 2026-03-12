@@ -49,7 +49,6 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
-    thread,
     time::Duration,
 };
 use tempo_contracts::precompiles::{
@@ -686,9 +685,8 @@ fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
 
                     // Place an order at a random tick that's a multiple of `TICK_SPACING`
-                    let tick =
-                        rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
-                            * TICK_SPACING;
+                    let tick = random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
+                        * TICK_SPACING;
                     exchange
                         .place(token, MIN_ORDER_AMOUNT, true, tick)
                         .into_transaction_request()
@@ -896,6 +894,7 @@ pub async fn generate_report(
             .get_block_receipts(number.into())
             .await?
             .ok_or_eyre("Receipts for block {number} not found")?;
+
         let timestamp = block.header.timestamp_millis();
 
         let latency_ms = last_block_timestamp.map(|last| timestamp - last);
@@ -967,7 +966,7 @@ async fn monitor_tps(counters: TransactionCounters, target_count: usize, token: 
                 last_count = current_count;
 
                 info!(tps, total = current_count, "Status");
-                thread::sleep(Duration::from_secs(1));
+                tokio::time::sleep(Duration::from_secs(1)).await;
 
                 if current_count == target_count {
                     break;

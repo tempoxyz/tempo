@@ -80,6 +80,9 @@ pub async fn run_consensus_stack(
     );
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota, message_backlog);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
+    // We create the subblocks channel even though it might not be used to make
+    // sure that we don't ban peers that activate subblocks and send messages
+    // through this subchannel.
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
     let fee_recipient = config
@@ -107,10 +110,12 @@ pub async fn run_consensus_stack(
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         views_until_leader_skip: config.inactive_views_until_leader_skip,
-        new_payload_wait_time: config.time_to_build_proposal.into_duration(),
+        payload_interrupt_time: config.time_to_prepare_proposal_transactions.into_duration(),
+        new_payload_wait_time: config.minimum_time_before_propose.into_duration(),
         time_to_build_subblock: config.time_to_build_subblock.into_duration(),
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
+        with_subblocks: config.enable_subblocks,
 
         feed_state,
     }

@@ -380,7 +380,7 @@ mod tests {
 
         // Build spending_limit_spends matching the keychain tx
         let mut spends = SpendingLimitUpdates::new();
-        spends.insert(user_address, key_id, fee_token);
+        spends.insert(user_address, key_id, Some(fee_token));
 
         let evicted =
             pool.evict_invalidated(&RevokedKeys::new(), &SpendingLimitUpdates::new(), &spends);

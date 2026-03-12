@@ -144,7 +144,9 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
             // Read and insert entries
             let mut entry_buf = [0u8; 64];
-            for _ in 0..pair_count {
+            let start = std::time::Instant::now();
+            let mut last_log = start;
+            for i in 0..pair_count {
                 reader
                     .read_exact(&mut entry_buf)
                     .wrap_err("failed to read storage entry")?;
@@ -166,6 +168,24 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 storage_entries.push(entry);
 
                 total_entries += 1;
+
+                let now = std::time::Instant::now();
+                if now.duration_since(last_log) >= std::time::Duration::from_secs(5)
+                    || i + 1 == pair_count
+                {
+                    let pct = ((i + 1) as f64 / pair_count as f64) * 100.0;
+                    let elapsed = start.elapsed();
+                    let pairs_per_sec = (i + 1) as f64 / elapsed.as_secs_f64();
+                    info!(
+                        target: "tempo::cli",
+                        %address,
+                        progress = format_args!("{}/{} ({pct:.0}%)", i + 1, pair_count),
+                        elapsed = ?elapsed,
+                        pairs_per_sec = pairs_per_sec as u64,
+                        "Inserting storage"
+                    );
+                    last_log = now;
+                }
             }
 
             total_tokens += 1;

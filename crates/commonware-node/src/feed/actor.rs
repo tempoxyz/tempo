@@ -1,34 +1,89 @@
 //! Feed actor implementation.
 //!
 //! This actor:
-//! - Receives consensus activity (notarizations, finalizations, nullifications)
+//! - Receives consensus activity (notarizations, finalizations)
 //! - Updates shared state (accessible by RPC handlers)
 //! - Broadcasts events to subscribers
+//!
+//! Block resolution uses [`marshal::Mailbox::subscribe_by_digest`] to wait for the block
+//! to become available, avoiding a race where the block hasn't been stored yet
+//! when the activity arrives.
+//!
+//! The actor always polls the oldest (lowest-round) pending subscription so
+//! that events are emitted in order. Notarizations are dropped when a finalization
+//!  at a higher-or-equal round is pending, since the finalization supersedes them.
 
 use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_consensus::{
-    Heightable as _,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
     types::{Epoch, FixedEpocher, Round, View},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, Handle, Spawner, spawn_cell};
-use futures::StreamExt;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tempo_node::rpc::consensus::{CertifiedBlock, Event};
-use tracing::{info, info_span, instrument};
+use commonware_utils::channel::oneshot;
+use eyre::eyre;
+use futures::{FutureExt, StreamExt};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tempo_node::{
+    TempoFullNode,
+    rpc::consensus::{CertifiedBlock, Event},
+};
+use tracing::{error, info_span, instrument, warn, warn_span};
 
 use super::state::FeedStateHandle;
-use crate::{alias::marshal, consensus::Digest};
-use tempo_node::TempoFullNode;
+use crate::{
+    alias::marshal,
+    consensus::{Digest, block::Block},
+    utils::OptionFuture,
+};
 
 /// Type alias for the activity type used by the feed actor.
 pub(super) type FeedActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
 /// Receiver for activity messages.
 pub(super) type Receiver = futures::channel::mpsc::UnboundedReceiver<FeedActivity>;
+
+/// A pending block subscription paired with its originating activity.
+///
+/// Resolves to `(Round, FeedActivity, Block)` when the block becomes available.
+struct PendingSubscription {
+    round: Round,
+    activity: Option<FeedActivity>,
+    block_rx: oneshot::Receiver<Block>,
+}
+
+impl PendingSubscription {
+    fn new(round: Round, activity: FeedActivity, block_rx: oneshot::Receiver<Block>) -> Self {
+        Self {
+            round,
+            activity: Some(activity),
+            block_rx,
+        }
+    }
+}
+
+impl Future for PendingSubscription {
+    type Output = eyre::Result<(Round, FeedActivity, Block)>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.block_rx.poll_unpin(cx) {
+            Poll::Ready(Ok(block)) => {
+                let activity = self.activity.take().expect("polled after completion");
+                Poll::Ready(Ok((self.round, activity, block)))
+            }
+            Poll::Ready(Err(_)) => Poll::Ready(Err(eyre::eyre!("block subscription cancelled"))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
 
 pub(crate) struct Actor<TContext> {
     /// Runtime context.
@@ -39,6 +94,9 @@ pub(crate) struct Actor<TContext> {
     state: FeedStateHandle,
     /// Marshal mailbox for block lookups.
     marshal: marshal::Mailbox,
+    /// Pending block subscriptions keyed by round. Since finalizations
+    /// must be delivered, pending subscriptions are bound by the marshal.
+    pending: BTreeMap<Round, PendingSubscription>,
 }
 
 impl<TContext: Spawner> Actor<TContext> {
@@ -62,6 +120,7 @@ impl<TContext: Spawner> Actor<TContext> {
             receiver,
             state,
             marshal,
+            pending: BTreeMap::new(),
         }
     }
 
@@ -71,125 +130,135 @@ impl<TContext: Spawner> Actor<TContext> {
     }
 
     /// Run the actor's main loop.
+    ///
+    /// The loop races the oldest pending block subscription
+    /// against incoming activity so events are emitted in order.
     async fn run(&mut self) {
-        loop {
+        let reason = loop {
+            // We need a mutable reference to poll pending subscription. Thus if a new activity arrives,
+            // we also need to re-insert this popped subscription.
+            let mut oldest = OptionFuture::from(self.pending.pop_first().map(|(_, p)| p));
+
             select!(
+                result = &mut oldest => {
+                    match result {
+                        Ok((_, activity, block)) => self.handle_activity(activity, block),
+                        Err(error) => warn_span!("feed_actor").in_scope(||
+                            warn!(%error, "did not get pending block")
+                        ),
+                    }
+                },
+
                 activity = self.receiver.next() => {
                     let Some(activity) = activity else {
-                        info_span!("shutdown").in_scope(|| info!("actor shutting down"));
-                        break;
+                        break eyre!("mailbox closed");
                     };
-                    self.handle_activity(activity).await;
+
+                    if let Some(p) = oldest.take() {
+                        self.pending.insert(p.round, p);
+                    }
+                    self.subscribe(activity).await;
                 },
-            )
-        }
+            );
+        };
+
+        info_span!("feed_actor").in_scope(|| error!(%reason, "shutting down"));
     }
 
-    /// Create a [`CertifiedBlock`] from the notarization or finalization.
-    async fn create_certified_block(
-        &mut self,
-        round: Round,
-        digest: Digest,
-        certificate: &impl Encode,
-    ) -> CertifiedBlock {
-        let certificate = hex::encode(certificate.encode());
-        let height = self
-            .marshal
-            .get_block(&digest)
-            .await
-            .map(|b| b.height().get());
+    async fn subscribe(&mut self, activity: FeedActivity) {
+        let (round, payload) = match &activity {
+            Activity::Notarization(n) => (n.proposal.round, n.proposal.payload),
+            Activity::Finalization(f) => (f.proposal.round, f.proposal.payload),
+            _ => return,
+        };
 
-        let view = round.view().get();
-        let epoch = round.epoch().get();
+        // Prune & filter incoming activity.
+        // - Incoming Finalization. Prune older subscriptions as we only care about latest information
+        // - Incoming Notarization. Only accept if ahead of the latest Finalization.
+        match &activity {
+            Activity::Finalization(_) => self.pending.retain(|&r, p| {
+                matches!(&p.activity, Some(Activity::Finalization(_))) || r > round
+            }),
+            Activity::Notarization(_)
+                if self
+                    .state
+                    .read()
+                    .latest_finalized
+                    .as_ref()
+                    .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)))
+                    .is_none_or(|f| f < round) => {}
 
-        CertifiedBlock {
-            epoch,
-            view,
-            height,
-            digest: digest.0,
-            certificate,
+            _ => return,
         }
+
+        let block_rx = self.marshal.subscribe_by_digest(Some(round), payload).await;
+        let pending = PendingSubscription::new(round, activity, block_rx);
+        self.pending.insert(round, pending);
     }
 
     #[instrument(skip_all, fields(activity = ?activity))]
-    async fn handle_activity(&mut self, activity: FeedActivity) {
+    fn handle_activity(&self, activity: FeedActivity, consensus_block: Block) {
+        let block = consensus_block.into_inner().into_block();
+        let (round, digest, certificate) = match activity.clone() {
+            Activity::Notarization(notarization) => (
+                notarization.proposal.round,
+                notarization.proposal.payload.0,
+                notarization.encode(),
+            ),
+            Activity::Finalization(finalization) => (
+                finalization.proposal.round,
+                finalization.proposal.payload.0,
+                finalization.encode(),
+            ),
+            _ => return,
+        };
+
+        let certified = CertifiedBlock {
+            epoch: round.epoch().get(),
+            view: round.view().get(),
+            block,
+            digest,
+            certificate: hex::encode(certificate),
+        };
+
+        let mut state = self.state.write();
+        let latest_finalized_round = state
+            .latest_finalized
+            .as_ref()
+            .map(|b| Round::new(Epoch::new(b.epoch), View::new(b.view)));
+        let latest_notarized_round = state
+            .latest_notarized
+            .as_ref()
+            .map(|b| Round::new(Epoch::new(b.epoch), View::new(b.view)));
+
+        // Update state and broadcast events
         match activity {
-            Activity::Notarization(notarization) => {
-                let seen = now_millis();
-                let round = notarization.proposal.round;
-
-                let block = self
-                    .create_certified_block(round, notarization.proposal.payload, &notarization)
-                    .await;
-
+            Activity::Notarization(_) => {
                 let _ = self.state.events_tx().send(Event::Notarized {
-                    block: block.clone(),
-                    seen,
-                });
-
-                {
-                    let mut state = self.state.write();
-
-                    // Late-arriving notarization relative finalization is ignored.
-                    if state
-                        .latest_finalized
-                        .as_ref()
-                        .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)))
-                        .is_none_or(|r| r <= round)
-                        // Notarization must be strictly newer
-                        && state
-                            .latest_notarized
-                            .as_ref()
-                            .map(|n| Round::new(Epoch::new(n.epoch), View::new(n.view)))
-                            .is_none_or(|r| r <= round)
-                    {
-                        state.latest_notarized = Some(block);
-                    }
-                }
-            }
-            Activity::Finalization(finalization) => {
-                let seen = now_millis();
-                let round = finalization.proposal.round;
-
-                let block = self
-                    .create_certified_block(round, finalization.proposal.payload, &finalization)
-                    .await;
-
-                let _ = self.state.events_tx().send(Event::Finalized {
-                    block: block.clone(),
-                    seen,
-                });
-
-                {
-                    let mut state = self.state.write();
-
-                    // Finalization must be strictly newer
-                    if state
-                        .latest_finalized
-                        .as_ref()
-                        .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)))
-                        .is_none_or(|r| r <= round)
-                    {
-                        state.latest_finalized = Some(block);
-
-                        // Clear any older notarization
-                        if state
-                            .latest_notarized
-                            .as_ref()
-                            .map(|n| Round::new(Epoch::new(n.epoch), View::new(n.view)))
-                            .is_some_and(|r| r <= round)
-                        {
-                            state.latest_notarized = None;
-                        }
-                    }
-                }
-            }
-            Activity::Nullification(nullification) => {
-                let _ = self.state.events_tx().send(Event::Nullified {
-                    epoch: nullification.round.epoch().get(),
-                    view: nullification.round.view().get(),
+                    block: certified.clone(),
                     seen: now_millis(),
                 });
+
+                if latest_finalized_round.is_none_or(|r| r < round)
+                    && latest_notarized_round.is_none_or(|r| r < round)
+                {
+                    state.latest_notarized = Some(certified);
+                }
+            }
+
+            Activity::Finalization(_) => {
+                let _ = self.state.events_tx().send(Event::Finalized {
+                    block: certified.clone(),
+                    seen: now_millis(),
+                });
+
+                if latest_finalized_round.is_none_or(|r| r < round) {
+                    if latest_notarized_round.is_none_or(|r| r < round) {
+                        state.latest_notarized = None;
+                    }
+
+                    state.latest_finalized = Some(certified);
+                }
             }
             _ => {}
         }

@@ -6,7 +6,6 @@ use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Heightable as _,
     marshal::{self, Update},
-    simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
@@ -721,27 +720,37 @@ where
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<BTreeMap<_, _>>();
 
-            if let Some(player_state) = player_state.take() {
+            let player_outcome = player_state.take().and_then(|player| {
                 info!("we were a player in the ceremony; finalizing share");
-                // NOTE: this method will panic if the player lost state. There
-                // is a strong assumption that if the player ACKed shares (so
-                // that they are not revealed), that it must have the shares
-                // available. Upon restart, the shares must be replayed against
-                // the player state.
-                match player_state.finalize(logs, &Sequential) {
+                match player.finalize(logs.clone(), &Sequential) {
                     Ok((new_output, new_share)) => {
                         info!("local DKG ceremony was a success");
-                        (new_output, state::ShareState::Plaintext(Some(new_share)))
+                        Some((new_output, state::ShareState::Plaintext(Some(new_share))))
+                    }
+                    Err(
+                        reason
+                        @ commonware_cryptography::bls12381::dkg::Error::MissingPlayerDealing,
+                    ) => {
+                        warn!(
+                            reason = %eyre::Report::new(reason),
+                            "missing critical DKG state to reconstruct a share in this epoch; has \
+                            consensus state been deleted or a node with the same identity started \
+                            without consensus state? Finalizing the current round as an observer \
+                            and will not have a share in the next epoch"
+                        );
+                        None
                     }
                     Err(error) => {
                         warn!(
                             error = %eyre::Report::new(error),
                             "local DKG ceremony was a failure",
                         );
-                        (state.output.clone(), state.share.clone())
+                        Some((state.output.clone(), state.share.clone()))
                     }
                 }
-            } else {
+            });
+
+            player_outcome.unwrap_or_else(move || {
                 match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
@@ -755,7 +764,7 @@ where
                         (state.output.clone(), state.share.clone())
                     }
                 }
-            }
+            })
         };
 
         if local_output != onchain_outcome.output {
@@ -1106,34 +1115,52 @@ where
                         .expect("did not return a player instance even though we created it for this round already")
             );
 
-            let (output, share) = if let Some(player_state) = player_state {
-                match player_state.finalize(logs, &Sequential) {
-                    Ok((new_output, share)) => {
-                        info!("DKG ceremony was a success");
-                        (new_output, state::ShareState::Plaintext(Some(share)))
+            let (output, share) = {
+                let player_outcome = player_state.and_then(|player| {
+                    info!("we were a player in the ceremony; finalizing share");
+                    match player.finalize(logs.clone(), &Sequential) {
+                        Ok((new_output, new_share)) => {
+                            info!("local DKG ceremony was a success");
+                            Some((new_output, state::ShareState::Plaintext(Some(new_share))))
+                        }
+                        Err(
+                            reason
+                            @ commonware_cryptography::bls12381::dkg::Error::MissingPlayerDealing,
+                        ) => {
+                            warn!(
+                                reason = %eyre::Report::new(reason),
+                                "missing critical DKG state to reconstruct a share in this epoch; has \
+                                consensus state been deleted or a node with the same identity started \
+                                without consensus state? Finalizing the current round as an observer \
+                                and will not have a share in the next epoch"
+                            );
+                            None
+                        }
+                        Err(error) => {
+                            warn!(
+                                error = %eyre::Report::new(error),
+                                "local DKG ceremony was a failure",
+                            );
+                            Some((state.output.clone(), state.share.clone()))
+                        }
                     }
-                    Err(error) => {
-                        warn!(
-                            error = %eyre::Report::new(error),
-                            "DKG ceremony was a failure",
-                        );
-                        (state.output.clone(), state.share.clone())
+                });
+
+                player_outcome.unwrap_or_else(move || {
+                    match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
+                        Ok(output) => {
+                            info!("local DKG ceremony was a success");
+                            (output, state::ShareState::Plaintext(None))
+                        }
+                        Err(error) => {
+                            warn!(
+                                error = %eyre::Report::new(error),
+                                "local DKG ceremony was a failure",
+                            );
+                            (state.output.clone(), state.share.clone())
+                        }
                     }
-                }
-            } else {
-                match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
-                    Ok(output) => {
-                        info!("DKG ceremony was a success");
-                        (output, state::ShareState::Plaintext(None))
-                    }
-                    Err(error) => {
-                        warn!(
-                            error = %eyre::Report::new(error),
-                            "DKG ceremony was a failure",
-                        );
-                        (state.output.clone(), state.share.clone())
-                    }
-                }
+                })
             };
 
             storage.cache_dkg_outcome(state.epoch, request.digest, output.clone(), share);
@@ -1251,7 +1278,6 @@ where
             .wrap_err("the boundary header did not contain the on-chain DKG outcome")?;
 
     let all_validators = validators::read_from_contract_at_height(0, node, newest_height)
-        .await
         .wrap_err_with(|| {
             format!("failed reading validator config from block height `{newest_height}`")
         })?;
@@ -1456,14 +1482,14 @@ impl Metrics {
     }
 }
 
-/// A wrapper around [`marshal::ingress::mailbox::AncestorStream`] wrapped in
+/// A wrapper around [`marshal::ancestry::AncestorStream`] wrapped in
 /// an option to make it easier to work with select macros.
 ///
 /// Invariants: if the inner stream is set, then the matching original request
 /// is also set.
 struct AncestorStream {
     pending_request: Option<(Span, GetDkgOutcome)>,
-    inner: Option<marshal::ingress::mailbox::AncestorStream<Scheme<PublicKey, MinSig>, Block>>,
+    inner: Option<marshal::ancestry::AncestorStream<crate::alias::marshal::Mailbox, Block>>,
 }
 
 impl AncestorStream {
@@ -1482,7 +1508,7 @@ impl AncestorStream {
     fn set(
         &mut self,
         pending_request: (Span, GetDkgOutcome),
-        stream: marshal::ingress::mailbox::AncestorStream<Scheme<PublicKey, MinSig>, Block>,
+        stream: marshal::ancestry::AncestorStream<crate::alias::marshal::Mailbox, Block>,
     ) {
         self.pending_request.replace(pending_request);
         self.inner.replace(stream);
