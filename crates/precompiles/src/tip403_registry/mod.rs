@@ -122,7 +122,7 @@ impl TIP403Registry {
 
     // View functions
     pub fn policy_id_counter(&self) -> Result<u64> {
-        // Skips the built-in policiy IDs, when initializing the counter for the first time.
+        // Skips the built-in policy IDs, when initializing the counter for the first time.
         self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
