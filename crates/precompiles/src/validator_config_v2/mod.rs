@@ -3229,7 +3229,14 @@ mod tests {
             vc.storage.set_block_number(200);
             let result = vc.add_validator(
                 owner,
-                make_add_call(validator, pubkey, "192.168.1.1:8000", "192.168.1.1", fee_recipient, sig),
+                make_add_call(
+                    validator,
+                    pubkey,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    fee_recipient,
+                    sig,
+                ),
             );
             assert_eq!(
                 result,
