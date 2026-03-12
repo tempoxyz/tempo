@@ -23,6 +23,10 @@ const PAYMENT_CALLDATA: &[([u8; 4], usize)] = &[
     (hex!("95777d59"), 100), // transferWithMemo(address,uint256,bytes32)
     (hex!("23b872dd"), 100), // transferFrom(address,address,uint256)
     (hex!("929c2539"), 132), // transferFromWithMemo(address,address,uint256,bytes32)
+    (hex!("40c10f19"), 68),  // mint(address,uint256)
+    (hex!("e44f0b12"), 100), // mintWithMemo(address,uint256,bytes32)
+    (hex!("42966c68"), 36),  // burn(uint256)
+    (hex!("38f23b0b"), 68),  // burnWithMemo(uint256,bytes32)
 ];
 
 /// Returns `true` if `input` has a recognized TIP-20 payment selector and its length exactly
