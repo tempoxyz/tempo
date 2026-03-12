@@ -68,9 +68,6 @@ const SLOW_TX_THRESHOLD: Duration = Duration::from_millis(50);
 /// Threshold above which the entire payload build emits a detailed warning.
 const SLOW_BUILD_THRESHOLD: Duration = Duration::from_millis(500);
 
-/// Maximum number of individual slow transactions to log per payload build.
-const MAX_SLOW_TX_LOGS: usize = 3;
-
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
@@ -386,8 +383,6 @@ where
         ));
 
         let execution_start = Instant::now();
-        let mut slow_tx_count: usize = 0;
-        let mut slowest_tx_elapsed = Duration::ZERO;
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         while let Some(pool_tx) = best_txs.next() {
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
@@ -494,18 +489,12 @@ where
                 .transaction_execution_duration_seconds
                 .record(elapsed);
             if elapsed > SLOW_TX_THRESHOLD {
-                slow_tx_count += 1;
-                if elapsed > slowest_tx_elapsed {
-                    slowest_tx_elapsed = elapsed;
-                }
-                if slow_tx_count <= MAX_SLOW_TX_LOGS {
-                    warn!(
-                        tx_hash = %pool_tx.hash(),
-                        gas_used,
-                        ?elapsed,
-                        "slow transaction execution"
-                    );
-                }
+                warn!(
+                    tx_hash = %pool_tx.hash(),
+                    gas_used,
+                    ?elapsed,
+                    "slow transaction execution"
+                );
             }
             trace!(?elapsed, "Transaction executed");
 
@@ -518,14 +507,6 @@ where
             block_size_used += tx_rlp_length;
         }
         drop(_block_fill_span);
-        if slow_tx_count > MAX_SLOW_TX_LOGS {
-            warn!(
-                slow_tx_count,
-                suppressed = slow_tx_count - MAX_SLOW_TX_LOGS,
-                ?slowest_tx_elapsed,
-                "additional slow transactions suppressed"
-            );
-        }
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
         self.metrics
             .total_normal_transaction_execution_duration_seconds
@@ -679,18 +660,8 @@ where
             .rlp_block_size_bytes_last
             .set(rlp_length as f64);
 
-        // Gas utilization breakdown
         let gas_utilization = gas_used as f64 / block_gas_limit as f64;
         self.metrics.gas_utilization_ratio.set(gas_utilization);
-        self.metrics
-            .non_shared_gas_used
-            .set(cumulative_gas_used as f64);
-        // Subblock gas is the portion of total gas consumed by validator subblock transactions.
-        // cumulative_gas_used only tracks proposer pool txs, so the difference is subblock gas.
-        let shared_gas_used_amount = gas_used.saturating_sub(cumulative_gas_used);
-        self.metrics
-            .shared_gas_used
-            .set(shared_gas_used_amount as f64);
 
         if elapsed > SLOW_BUILD_THRESHOLD {
             warn!(
