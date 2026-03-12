@@ -102,11 +102,6 @@ impl FeedStateHandle {
         let _ = self.execution_node.set(execution_node);
     }
 
-    /// Take the execution node for the feed state. Should only be called once.
-    pub fn drop_execution_node(&mut self) {
-        self.execution_node = Arc::new(OnceLock::new());
-    }
-
     /// Get the broadcast sender for events.
     pub(super) fn events_tx(&self) -> &broadcast::Sender<Event> {
         &self.events_tx
