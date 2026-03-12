@@ -51,8 +51,8 @@ pub struct PoolKey {
     pub validator_token: Address,
 }
 
-// TODO(rusowsky): remove this and create a read-only wrapper that is callable from read-only ctx with db access
 impl Pool {
+    /// Decodes a `Pool` from a raw slot value (needed from changeset diffs).
     pub fn decode_from_slot(slot_value: U256) -> Self {
         use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
 
