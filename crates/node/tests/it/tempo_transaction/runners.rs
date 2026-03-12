@@ -920,7 +920,8 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                         KeyAuthorization::unrestricted(chain_id, SignatureType::P256, addr_3)
                             .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
                                 r: B256::from_slice(&wrong_sig_bytes[0..32]),
-                                s: normalize_p256_s(&wrong_sig_bytes[32..64]),
+                                s: normalize_p256_s(&wrong_sig_bytes[32..64])
+                                    .expect("p256 crate produces valid s"),
                                 pub_key_x: wrong_pub_x,
                                 pub_key_y: wrong_pub_y,
                                 pre_hash: true,
