@@ -4,7 +4,7 @@ pub mod roles;
 
 use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 pub use tempo_contracts::precompiles::{
-    IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
+    IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, USD_CURRENCY,
 };
 
 // Re-export the generated slots module for external access to storage slot constants
@@ -33,9 +33,6 @@ pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 
 /// Decimal precision for TIP-20 tokens
 const TIP20_DECIMALS: u8 = 6;
-
-/// USD currency string constant
-pub const USD_CURRENCY: &str = "USD";
 
 /// TIP20 token address prefix (12 bytes)
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)

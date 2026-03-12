@@ -59,7 +59,7 @@ impl AmmLiquidityCache {
         &self,
         user_token: Address,
         fee: U256,
-        state_provider: &impl StateProvider,
+        state_provider: &(impl StateProvider + ?Sized),
     ) -> Result<bool, ProviderError> {
         let amount_out = compute_amount_out(fee).map_err(ProviderError::other)?;
 
@@ -268,7 +268,7 @@ struct AmmLiquidityCacheInner {
 }
 
 impl AmmLiquidityCache {
-    /// Returns true if the given address is a validator that has produced recent blocks.
+    /// Returns `true` if the given address is a validator that has produced recent blocks.
     ///
     /// Use this to filter validator token change events: only process changes from
     /// validators who actually produce blocks. This prevents permissionless
@@ -277,10 +277,31 @@ impl AmmLiquidityCache {
         self.inner.read().unique_validators.contains(validator)
     }
 
-    /// Returns true if the given token is in the unique_tokens list (tokens used
+    /// Returns `true` if the given token is in the `unique_tokens` list (tokens used
     /// by recent block producers as their preferred fee token).
     pub fn is_active_validator_token(&self, token: &Address) -> bool {
         self.inner.read().unique_tokens.contains(token)
+    }
+
+    /// Injects tokens into `unique_tokens` so `has_enough_liquidity` sees them.
+    /// Returns `true` if any of the input tokens is added to the `unique_tokens` list.
+    ///
+    /// NOTE: Bridges the gap between `setValidatorToken` events and the next block
+    /// produced by that validator. Cleaned up on the next `on_new_block` call.
+    pub fn track_tokens(&self, tokens: &[Address]) -> bool {
+        let mut updated = false;
+        if tokens.is_empty() {
+            return updated;
+        }
+
+        let mut inner = self.inner.write();
+        for &token in tokens {
+            if !inner.unique_tokens.contains(&token) {
+                inner.unique_tokens.push(token);
+                updated = true;
+            }
+        }
+        updated
     }
 }
 
@@ -783,5 +804,31 @@ mod tests {
             let cache = AmmLiquidityCache::with_unique_validators(unique_validators);
             assert_eq!(cache.is_active_validator(&query), expected, "{desc}");
         }
+    }
+
+    #[test]
+    fn test_track_tokens() {
+        let token_a = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        let token_b = address!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+
+        // Empty slice is a no-op
+        let cache = AmmLiquidityCache::with_unique_tokens(vec![]);
+        assert!(!cache.track_tokens(&[]));
+        assert!(cache.inner.read().unique_tokens.is_empty());
+
+        // New token is inserted
+        let cache = AmmLiquidityCache::with_unique_tokens(vec![token_a]);
+        assert!(cache.track_tokens(&[token_b]));
+        assert_eq!(cache.inner.read().unique_tokens, vec![token_a, token_b]);
+
+        // Already-tracked token returns false
+        let cache = AmmLiquidityCache::with_unique_tokens(vec![token_a]);
+        assert!(!cache.track_tokens(&[token_a]));
+        assert_eq!(cache.inner.read().unique_tokens.len(), 1);
+
+        // Duplicate input is deduplicated
+        let cache = AmmLiquidityCache::with_unique_tokens(vec![token_a]);
+        assert!(cache.track_tokens(&[token_b, token_b]));
+        assert_eq!(cache.inner.read().unique_tokens.len(), 2);
     }
 }

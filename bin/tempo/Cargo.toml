@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 base64.workspace = true
 url.workspace = true
+tempo-ext.workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
 tempo-commonware-node.workspace = true
