@@ -310,7 +310,7 @@ where
         // Drop the execution node reference from the consensus config
         self.consensus_config.execution_node.take();
         self.consensus_config.feed_state.drop_execution_node();
-        
+
         if let Some(feed_state) = &mut self.execution_config.feed_state {
             feed_state.drop_execution_node();
         }

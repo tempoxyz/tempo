@@ -103,7 +103,7 @@ impl FeedStateHandle {
     }
 
     /// Take the execution node for the feed state. Should only be called once.
-    pub fn drop_execution_node(&mut self){
+    pub fn drop_execution_node(&mut self) {
         self.execution_node = Arc::new(OnceLock::new());
     }
 
