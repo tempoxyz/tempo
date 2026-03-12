@@ -121,10 +121,21 @@ impl super::types::TestEnv for Testnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<()> {
-        let _ = self
+        // Pool validation may now reject txs that were previously only excluded
+        // by the builder (e.g. duplicate key_authorization). A pool rejection is
+        // a stricter form of exclusion, so treat it as success.
+        let send_result = self
             .provider
             .raw_request::<_, B256>("eth_sendRawTransaction".into(), [encoded])
-            .await?;
+            .await;
+        if let Err(e) = send_result {
+            let err = e.to_string();
+            assert!(
+                err.contains("already exists") || err.contains("spending limit exceeded"),
+                "Expected pool validation rejection, got: {e}"
+            );
+            return Ok(());
+        }
 
         // Verify the tx is known to the RPC (confirms it entered the mempool).
         let tx_obj: Option<serde_json::Value> = self
