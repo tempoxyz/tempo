@@ -18,10 +18,22 @@
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
+/// Compile-time jemalloc configuration for heap profiling.
+///
+/// tikv-jemallocator uses prefixed symbols, so the runtime `MALLOC_CONF` env var is ignored.
+/// This exported symbol is read by jemalloc at init time to enable profiling unconditionally
+/// when the `jemalloc-prof` feature is active.
+///
+/// See <https://github.com/jemalloc/jemalloc/wiki/Getting-Started>
+#[cfg(all(feature = "jemalloc-prof", unix))]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
+
 mod defaults;
+mod init_state;
 mod tempo_cmd;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
@@ -33,7 +45,7 @@ use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
 use tempo_consensus::TempoConsensus;
-use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
+use tempo_evm::TempoEvmConfig;
 use tempo_faucet::{
     args::FaucetArgs,
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
@@ -47,12 +59,15 @@ use tempo_node::{
 use tokio::sync::oneshot;
 use tracing::{info, info_span};
 
+type TempoCli =
+    Cli<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>;
+
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
 struct TempoArgs {
     /// Follow this specific RPC node for block hashes.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
-    #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
+    #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
     pub follow: Option<String>,
 
     #[command(flatten)]
@@ -93,7 +108,59 @@ struct PyroscopeArgs {
     pub sample_rate: u32,
 }
 
+/// Force-install the default crypto provider.
+///
+/// This is necessary in case there are more than one available backends enabled in rustls (ring,
+/// aws-lc-rs).
+///
+/// This should be called high in the main fn.
+///
+/// See also:
+///   <https://github.com/snapview/tokio-tungstenite/issues/353#issuecomment-2455100010>
+///   <https://github.com/awslabs/aws-sdk-rust/discussions/1257>
+fn install_crypto_provider() {
+    // https://github.com/snapview/tokio-tungstenite/issues/353
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install default rustls crypto provider");
+}
+
+/// Print installed extensions as a footer after root help output.
+/// Skips printing when help is for a subcommand (e.g. `tempo node --help`).
+fn print_extensions_footer() {
+    let is_subcommand_help = std::env::args()
+        .skip(1)
+        .any(|a| !a.starts_with('-') && a != "help");
+    if is_subcommand_help {
+        return;
+    }
+
+    let extensions = match tempo_ext::installed_extensions() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    if extensions.is_empty() {
+        return;
+    }
+    let use_color = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let (b, bu, r) = if use_color {
+        ("\x1b[1m", "\x1b[1m\x1b[4m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
+    println!("\n{bu}Extensions:{r}");
+    for (name, desc) in &extensions {
+        if desc.is_empty() {
+            println!("  {b}{name}{r}");
+        } else {
+            println!("  {b}{name:<22}{r} {desc}");
+        }
+    }
+}
+
 fn main() -> eyre::Result<()> {
+    install_crypto_provider();
+
     reth_cli_util::sigsegv_handler::install();
 
     // XXX: ensures that the error source chain is preserved in
@@ -114,12 +181,38 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let mut cli = Cli::<
-        TempoChainSpecParser,
-        TempoArgs,
-        DefaultRpcModuleValidator,
-        tempo_cmd::TempoSubcommand,
-    >::parse();
+    let mut cli = match TempoCli::command()
+        .about("Tempo")
+        .try_get_matches_from(std::env::args_os())
+        .and_then(|matches| TempoCli::from_arg_matches(&matches))
+    {
+        Ok(cli) => cli,
+        Err(err) => {
+            if err.kind() == clap::error::ErrorKind::InvalidSubcommand {
+                // Unknown subcommand — try the extension launcher.
+                let code = match tempo_ext::run(std::env::args_os()) {
+                    Ok(code) => code,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        1
+                    }
+                };
+                std::process::exit(code);
+            }
+
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp
+                    | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ) {
+                let _ = err.print();
+                print_extensions_footer();
+                std::process::exit(0);
+            }
+
+            err.exit();
+        }
+    };
 
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
@@ -251,12 +344,8 @@ fn main() -> eyre::Result<()> {
         ret
     });
 
-    let components = |spec: Arc<TempoChainSpec>| {
-        (
-            TempoEvmConfig::new(spec.clone(), TempoEvmFactory::default()),
-            TempoConsensus::new(spec),
-        )
-    };
+    let components =
+        |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         let faucet_args = args.faucet_args.clone();
@@ -299,6 +388,13 @@ fn main() -> eyre::Result<()> {
         } = builder
             .node(TempoNode::new(&args.node_args, validator_key))
             .apply(|mut builder: WithLaunchContext<_>| {
+                // Enable discv5 peer discovery
+                builder
+                    .config_mut()
+                    .network
+                    .discovery
+                    .enable_discv5_discovery = true;
+
                 // Resolve the follow URL:
                 // --follow or --follow=auto -> use chain-specific default
                 // --follow=URL -> use provided URL

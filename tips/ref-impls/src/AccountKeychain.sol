@@ -69,7 +69,9 @@ contract AccountKeychain is IAccountKeychain {
         uint64 expiry,
         bool enforceLimits,
         TokenLimit[] calldata limits
-    ) external {
+    )
+        external
+    {
         // Check that the transaction key for this transaction is zero (main key)
         _requireRootKey();
 
@@ -213,11 +215,22 @@ contract AccountKeychain is IAccountKeychain {
     }
 
     /// @inheritdoc IAccountKeychain
-    function getRemainingLimit(address account, address keyId, address token)
+    function getRemainingLimit(
+        address account,
+        address keyId,
+        address token
+    )
         external
         view
         returns (uint256)
     {
+        AuthorizedKey storage key = keys[account][keyId];
+
+        // Return zero if key doesn't exist or has been revoked
+        if (key.expiry == 0 || key.isRevoked) {
+            return 0;
+        }
+
         bytes32 limitKey = _spendingLimitKey(account, keyId);
         return spendingLimits[limitKey][token];
     }
@@ -249,7 +262,12 @@ contract AccountKeychain is IAccountKeychain {
     /// @param keyId The key ID that signed the transaction
     /// @param token The token being transferred
     /// @param amount The amount being transferred
-    function _verifyAndUpdateSpending(address account, address keyId, address token, uint256 amount)
+    function _verifyAndUpdateSpending(
+        address account,
+        address keyId,
+        address token,
+        uint256 amount
+    )
         internal
     {
         // If using main key (zero address), no spending limits apply

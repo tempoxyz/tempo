@@ -54,8 +54,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     uint256 private _totalKeysRevoked;
     uint256 private _totalLimitUpdates;
 
-    /// @dev Coverage log file path
-
     /*//////////////////////////////////////////////////////////////
                                SETUP
     //////////////////////////////////////////////////////////////*/
@@ -66,13 +64,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         _setupInvariantBase();
-        _actors = _buildActors(10);
+        (_actors,) = _buildActors(10);
         _potentialKeyIds = _buildAddressPool(20, KEY_ID_POOL_OFFSET);
 
         // Seed each actor with an initial key to ensure handlers have keys to work with
         _seedInitialKeys();
-
-        _initLogFile("account_keychain.log", "AccountKeychain Invariant Test Log");
     }
 
     /// @dev Seeds each actor with one initial key to bootstrap the fuzzer state
@@ -81,7 +77,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             address account = _actors[a];
             // Use a deterministic key for each actor (offset by actor index)
             address keyId = _potentialKeyIds[a % _potentialKeyIds.length];
-            _createKeyInternal(account, keyId, false);
+            _createKeyInternal(account, keyId);
         }
     }
 
@@ -111,8 +107,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @dev Core key authorization with ghost state updates. Does NOT include assertions.
     /// @param account The account to authorize the key for
     /// @param keyId The key ID to authorize
-    /// @param isFallback Whether this is a fallback creation (for logging)
-    function _createKeyInternal(address account, address keyId, bool isFallback) internal {
+    function _createKeyInternal(address account, address keyId) internal {
         uint64 expiry = _generateExpiry(uint256(keccak256(abi.encode(account, keyId))));
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
@@ -132,17 +127,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             _keyUsed[account][keyId] = true;
             _accountKeys[account].push(keyId);
         }
-
-        if (isFallback && _loggingEnabled) {
-            _log(
-                string.concat(
-                    "AUTHORIZE_KEY[fallback]: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId)
-                )
-            );
-        }
     }
 
     /// @dev Find an existing active (non-revoked) key for an account
@@ -150,7 +134,10 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @param seed Random seed for selection
     /// @return keyId The found key ID (address(0) if not found)
     /// @return found Whether a matching key was found
-    function _findActiveKey(address account, uint256 seed)
+    function _findActiveKey(
+        address account,
+        uint256 seed
+    )
         internal
         view
         returns (address keyId, bool found)
@@ -160,7 +147,8 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         uint256 startIdx = seed % keys.length;
         for (uint256 i = 0; i < keys.length; i++) {
-            uint256 idx = (startIdx + i) % keys.length;
+            // Use modulo directly to avoid overflow when startIdx + i wraps
+            uint256 idx = addmod(startIdx, i, keys.length);
             address candidate = keys[idx];
             if (_ghostKeyExists[account][candidate] && !_ghostKeyRevoked[account][candidate]) {
                 return (candidate, true);
@@ -175,14 +163,19 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     /// @return account The actor with an active key
     /// @return keyId The active key ID
     /// @return skip True if no active key could be found or created
-    function _ensureActorWithActiveKey(uint256 actorSeed, uint256 keyIdSeed)
+    function _ensureActorWithActiveKey(
+        uint256 actorSeed,
+        uint256 keyIdSeed
+    )
         internal
         returns (address account, address keyId, bool skip)
     {
         // First, iterate over actors to find one with an existing active key
         uint256 startActorIdx = actorSeed % _actors.length;
         for (uint256 a = 0; a < _actors.length; a++) {
-            address candidate = _actors[(startActorIdx + a) % _actors.length];
+            // Use addmod to avoid overflow when startActorIdx + a wraps
+            uint256 idx = addmod(startActorIdx, a, _actors.length);
+            address candidate = _actors[idx];
             bool found;
             (keyId, found) = _findActiveKey(candidate, keyIdSeed);
             if (found) {
@@ -192,11 +185,14 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // No actor has an active key - create one as fallback
         account = _selectActor(actorSeed);
+        uint256 startKeyIdx = keyIdSeed % _potentialKeyIds.length;
         for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-            address candidateKey = _potentialKeyIds[(keyIdSeed + i) % _potentialKeyIds.length];
+            // Use addmod to avoid overflow when startKeyIdx + i wraps
+            uint256 idx = addmod(startKeyIdx, i, _potentialKeyIds.length);
+            address candidateKey = _potentialKeyIds[idx];
             // Can't reauthorize revoked keys (TEMPO-KEY4)
             if (!_ghostKeyRevoked[account][candidateKey]) {
-                _createKeyInternal(account, candidateKey, true);
+                _createKeyInternal(account, candidateKey);
                 return (account, candidateKey, false);
             }
         }
@@ -218,7 +214,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         uint256 expirySeed,
         bool enforceLimits,
         uint256 limitAmountSeed
-    ) external {
+    )
+        external
+    {
         address account = _selectActor(accountSeed);
         address keyId = _selectKeyId(keyIdSeed);
 
@@ -271,21 +269,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 uint8(info.signatureType), uint8(sigType), "TEMPO-KEY1: SignatureType should match"
             );
             assertFalse(info.isRevoked, "TEMPO-KEY1: Should not be revoked");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "AUTHORIZE_KEY: account=",
-                        _getActorIndex(account),
-                        " keyId=",
-                        vm.toString(keyId),
-                        " sigType=",
-                        vm.toString(uint8(sigType)),
-                        " enforceLimits=",
-                        enforceLimits ? "true" : "false"
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownKeychainError(reason);
@@ -324,17 +307,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             assertTrue(info.isRevoked, "TEMPO-KEY3: Key should be marked as revoked");
             assertEq(info.expiry, 0, "TEMPO-KEY3: Expiry should be cleared");
             assertEq(info.keyId, address(0), "TEMPO-KEY3: KeyId should return 0 for revoked");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "REVOKE_KEY: account=",
-                        _getActorIndex(account),
-                        " keyId=",
-                        vm.toString(keyId)
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownKeychainError(reason);
@@ -351,11 +323,16 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         address keyOwner = address(0);
         uint256 startActorIdx = accountSeed % _actors.length;
         for (uint256 a = 0; a < _actors.length && keyId == address(0); a++) {
-            address candidate = _actors[(startActorIdx + a) % _actors.length];
+            // Use addmod to avoid overflow
+            uint256 actorIdx = addmod(startActorIdx, a, _actors.length);
+            address candidate = _actors[actorIdx];
             address[] memory keys = _accountKeys[candidate];
-            uint256 startKeyIdx = keyIdSeed % (keys.length > 0 ? keys.length : 1);
+            if (keys.length == 0) continue;
+            uint256 startKeyIdx = keyIdSeed % keys.length;
             for (uint256 k = 0; k < keys.length; k++) {
-                address potentialKey = keys[(startKeyIdx + k) % keys.length];
+                // Use addmod to avoid overflow
+                uint256 keyIdx = addmod(startKeyIdx, k, keys.length);
+                address potentialKey = keys[keyIdx];
                 if (_ghostKeyRevoked[candidate][potentialKey]) {
                     keyId = potentialKey;
                     keyOwner = candidate;
@@ -368,8 +345,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             // No revoked key found - create and revoke one as fallback
             account = _selectActor(accountSeed);
             // Find an unused keyId for this account
+            uint256 startKeyIdx = keyIdSeed % _potentialKeyIds.length;
             for (uint256 i = 0; i < _potentialKeyIds.length; i++) {
-                address candidateKey = _potentialKeyIds[(keyIdSeed + i) % _potentialKeyIds.length];
+                // Use addmod to avoid overflow
+                uint256 idx = addmod(startKeyIdx, i, _potentialKeyIds.length);
+                address candidateKey = _potentialKeyIds[idx];
                 if (
                     !_ghostKeyExists[account][candidateKey]
                         && !_ghostKeyRevoked[account][candidateKey]
@@ -382,7 +362,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 return;
             }
             // Create and immediately revoke the key
-            _createKeyInternal(account, keyId, false);
+            _createKeyInternal(account, keyId);
             vm.prank(account);
             keychain.revokeKey(keyId);
             _totalKeysRevoked++;
@@ -415,18 +395,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 "TEMPO-KEY4: Should revert with KeyAlreadyRevoked"
             );
         }
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_REAUTHORIZE_REVOKED: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " correctly rejected"
-                )
-            );
-        }
     }
 
     /// @notice Handler for updating spending limits
@@ -436,7 +404,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         uint256 keyIdSeed,
         uint256 tokenSeed,
         uint256 newLimitSeed
-    ) external {
+    )
+        external
+    {
         // Need tokens for spending limits
         if (_tokens.length == 0) {
             return;
@@ -471,22 +441,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             // TEMPO-KEY6: Verify enforceLimits is now true
             IAccountKeychain.KeyInfo memory info = keychain.getKey(account, keyId);
             assertTrue(info.enforceLimits, "TEMPO-KEY6: EnforceLimits should be true after update");
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "UPDATE_LIMIT: account=",
-                        _getActorIndex(account),
-                        " keyId=",
-                        vm.toString(keyId),
-                        " token=",
-                        vm.toString(token),
-                        " limit=",
-                        vm.toString(newLimit),
-                        hadLimitsBefore ? "" : " (enabled limits)"
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownKeychainError(reason);
@@ -516,14 +470,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 bytes4(reason),
                 IAccountKeychain.ZeroPublicKey.selector,
                 "TEMPO-KEY7: Should revert with ZeroPublicKey"
-            );
-        }
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_ZERO_KEY: account=", _getActorIndex(account), " correctly rejected"
-                )
             );
         }
     }
@@ -558,18 +504,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 "TEMPO-KEY8: Should revert with KeyAlreadyExists"
             );
         }
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "TRY_DUPLICATE_KEY: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " correctly rejected"
-                )
-            );
-        }
     }
 
     /// @notice Handler for revoking non-existent key (should fail)
@@ -598,25 +532,15 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 "TEMPO-KEY9: Should revert with KeyNotFound"
             );
         }
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    wasRevoked
-                        ? "TRY_REVOKE_ALREADY_REVOKED: account="
-                        : "TRY_REVOKE_NONEXISTENT: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " correctly rejected with KeyNotFound"
-                )
-            );
-        }
     }
 
     /// @notice Handler for verifying account isolation
     /// @dev Tests TEMPO-KEY10 (keys are isolated per account)
-    function verifyAccountIsolation(uint256 account1Seed, uint256 account2Seed, uint256 keyIdSeed)
+    function verifyAccountIsolation(
+        uint256 account1Seed,
+        uint256 account2Seed,
+        uint256 keyIdSeed
+    )
         external
     {
         address account1 = _selectActor(account1Seed);
@@ -701,20 +625,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         assertEq(limit1, 1000e6, "TEMPO-KEY10: Account1 limit should be 1000");
         assertEq(limit2, 2000e6, "TEMPO-KEY10: Account2 limit should be 2000");
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "ACCOUNT_ISOLATION: keyId=",
-                    vm.toString(keyId),
-                    " ",
-                    _getActorIndex(account1),
-                    " ",
-                    _getActorIndex(account2),
-                    " verified"
-                )
-            );
-        }
     }
 
     /// @notice Handler for checking getTransactionKey
@@ -803,16 +713,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                     "TEMPO-KEY17: Should revert with KeyExpired when timestamp == expiry"
                 );
             }
-
-            if (_loggingEnabled) {
-                _log(
-                    string.concat(
-                        "EXPIRY_BOUNDARY: account=",
-                        _getActorIndex(account),
-                        " key correctly expired at timestamp==expiry"
-                    )
-                );
-            }
         } catch (bytes memory reason) {
             vm.stopPrank();
             // ExpiryInPast is acceptable if expiry <= block.timestamp at creation
@@ -822,7 +722,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for testing operations on expired keys
     /// @dev Tests TEMPO-KEY18 (operations on expired keys fail with KeyExpired)
-    function testExpiredKeyOperations(uint256 accountSeed, uint256 keyIdSeed, uint256 warpAmount)
+    function testExpiredKeyOperations(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint256 warpAmount
+    )
         external
     {
         if (_tokens.length == 0) {
@@ -860,23 +764,15 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 "TEMPO-KEY18: Should revert with KeyExpired"
             );
         }
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "EXPIRED_KEY_OP: account=",
-                    _getActorIndex(account),
-                    " keyId=",
-                    vm.toString(keyId),
-                    " correctly rejected after expiry"
-                )
-            );
-        }
     }
 
     /// @notice Handler for testing invalid signature type
     /// @dev Tests TEMPO-KEY19 (invalid enum values >= 3 are rejected with InvalidSignatureType)
-    function testInvalidSignatureType(uint256 accountSeed, uint256 keyIdSeed, uint8 badType)
+    function testInvalidSignatureType(
+        uint256 accountSeed,
+        uint256 keyIdSeed,
+        uint8 badType
+    )
         external
     {
         address account = _selectActor(accountSeed);
@@ -915,18 +811,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 bytes4(returnData),
                 IAccountKeychain.InvalidSignatureType.selector,
                 "TEMPO-KEY19: Should revert with InvalidSignatureType"
-            );
-        }
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    "INVALID_SIG_TYPE: account=",
-                    _getActorIndex(account),
-                    " badType=",
-                    vm.toString(badType),
-                    " correctly rejected"
-                )
             );
         }
     }
@@ -1002,38 +886,6 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 }
             }
         }
-    }
-
-    /// @notice Called after each invariant run to log final state
-    function afterInvariant() public {
-        if (!_loggingEnabled) return;
-
-        // Count total keys across all accounts
-        uint256 totalActiveKeys = 0;
-        uint256 totalRevokedKeys = 0;
-        for (uint256 a = 0; a < _actors.length; a++) {
-            address account = _actors[a];
-            address[] memory keys = _accountKeys[account];
-            for (uint256 k = 0; k < keys.length; k++) {
-                if (_ghostKeyRevoked[account][keys[k]]) {
-                    totalRevokedKeys++;
-                } else if (_ghostKeyExists[account][keys[k]]) {
-                    totalActiveKeys++;
-                }
-            }
-        }
-
-        _log("");
-        _log("--------------------------------------------------------------------------------");
-        _log("Final State Summary");
-        _log("--------------------------------------------------------------------------------");
-        _log(string.concat("Keys authorized: ", vm.toString(_totalKeysAuthorized)));
-        _log(string.concat("Keys revoked: ", vm.toString(_totalKeysRevoked)));
-        _log(string.concat("Limit updates: ", vm.toString(_totalLimitUpdates)));
-        _log(string.concat("Active keys (ghost): ", vm.toString(totalActiveKeys)));
-        _log(string.concat("Revoked keys (ghost): ", vm.toString(totalRevokedKeys)));
-        _log(string.concat("Final timestamp: ", vm.toString(block.timestamp)));
-        _log("--------------------------------------------------------------------------------");
     }
 
     /*//////////////////////////////////////////////////////////////

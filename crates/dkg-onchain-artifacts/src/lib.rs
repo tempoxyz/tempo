@@ -8,7 +8,10 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::{
         dkg::Output,
-        primitives::{sharing::Sharing, variant::MinSig},
+        primitives::{
+            sharing::{ModeVersion, Sharing},
+            variant::MinSig,
+        },
     },
     ed25519::PublicKey,
 };
@@ -72,7 +75,7 @@ impl Read for OnchainDkgOutcome {
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
         let epoch = ReadExt::read(buf)?;
-        let output = Read::read_cfg(buf, &MAX_VALIDATORS)?;
+        let output = Read::read_cfg(buf, &(MAX_VALIDATORS, ModeVersion::v0()))?;
         let next_players = Read::read_cfg(
             buf,
             &(RangeCfg::from(1..=(MAX_VALIDATORS.get() as usize)), ()),
@@ -105,13 +108,13 @@ mod tests {
     use commonware_cryptography::{Signer as _, bls12381::dkg, ed25519::PrivateKey};
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
-    use rand::SeedableRng as _;
+    use rand_08::SeedableRng as _;
 
     use super::OnchainDkgOutcome;
 
     #[test]
     fn onchain_dkg_outcome_roundtrip() {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let mut rng = rand_08::rngs::StdRng::seed_from_u64(42);
 
         let mut player_keys = repeat_with(|| PrivateKey::random(&mut rng))
             .take(10)

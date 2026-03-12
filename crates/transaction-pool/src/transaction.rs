@@ -33,6 +33,8 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached payment classification for efficient block building
     is_payment: bool,
+    /// Cached expiring nonce classification
+    is_expiring_nonce: bool,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
@@ -42,12 +44,21 @@ pub struct TempoPooledTransaction {
     /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
     /// `None` for non-keychain transactions or keys that never expire.
     key_expiry: OnceLock<Option<u64>>,
+    /// Resolved fee token cached at validation time.
+    ///
+    /// Used by `keychain_subject()` so pool maintenance matches against the same token
+    /// that was validated without requiring state access.
+    resolved_fee_token: OnceLock<Address>,
 }
 
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
         let is_payment = transaction.is_payment();
+        let is_expiring_nonce = transaction
+            .as_aa()
+            .map(|tx| tx.tx().is_expiring_nonce_tx())
+            .unwrap_or(false);
         Self {
             inner: EthPooledTransaction {
                 cost: calc_gas_balance_spending(
@@ -60,9 +71,11 @@ impl TempoPooledTransaction {
                 transaction,
             },
             is_payment,
+            is_expiring_nonce,
             nonce_key_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
+            resolved_fee_token: OnceLock::new(),
         }
     }
 
@@ -115,11 +128,7 @@ impl TempoPooledTransaction {
 
     /// Returns true if this is an expiring nonce transaction.
     pub(crate) fn is_expiring_nonce(&self) -> bool {
-        self.inner
-            .transaction
-            .as_aa()
-            .map(|tx| tx.tx().is_expiring_nonce_tx())
-            .unwrap_or(false)
+        self.is_expiring_nonce
     }
 
     /// Extracts the keychain subject (account, key_id, fee_token) from this transaction.
@@ -134,7 +143,11 @@ impl TempoPooledTransaction {
         let aa_tx = self.inner().as_aa()?;
         let keychain_sig = aa_tx.signature().as_keychain()?;
         let key_id = keychain_sig.key_id(&aa_tx.signature_hash()).ok()?;
-        let fee_token = self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN);
+        let fee_token = self
+            .resolved_fee_token
+            .get()
+            .copied()
+            .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
         Some(KeychainSubject {
             account: keychain_sig.user_address,
             key_id,
@@ -196,6 +209,17 @@ impl TempoPooledTransaction {
     pub fn key_expiry(&self) -> Option<u64> {
         self.key_expiry.get().copied().flatten()
     }
+
+    /// Caches the resolved fee token determined during validation.
+    pub fn set_resolved_fee_token(&self, fee_token: Address) {
+        let _ = self.resolved_fee_token.set(fee_token);
+    }
+
+    /// Returns the expiring nonce hash for AA expiring nonce transactions.
+    pub fn expiring_nonce_hash(&self) -> Option<B256> {
+        let aa_tx = self.inner().as_aa()?;
+        Some(aa_tx.expiring_nonce_hash(self.sender()))
+    }
 }
 
 #[derive(Debug, Error)]
@@ -238,6 +262,9 @@ pub enum TempoPoolTransactionError {
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
     )]
     Keychain(&'static str),
+
+    #[error("Fee payer signature recovery failed")]
+    InvalidFeePayerSignature,
 
     #[error(
         "Native transfers are not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
@@ -345,13 +372,13 @@ pub enum TempoPoolTransactionError {
     #[error("Expiring nonce transactions must have nonce == 0")]
     ExpiringNonceNonceNotZero,
 
-    /// Thrown when an access key has expired.
-    #[error("Access key expired: expiry {expiry} <= current time {current_time}")]
-    AccessKeyExpired { expiry: u64, current_time: u64 },
+    /// Thrown when an access key has expired or is expiring within the propagation buffer.
+    #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
+    AccessKeyExpired { expiry: u64, min_allowed: u64 },
 
-    /// Thrown when a KeyAuthorization has expired.
-    #[error("KeyAuthorization expired: expiry {expiry} <= current time {current_time}")]
-    KeyAuthorizationExpired { expiry: u64, current_time: u64 },
+    /// Thrown when a KeyAuthorization has expired or is expiring within the propagation buffer.
+    #[error("KeyAuthorization expired: expiry {expiry} <= min allowed {min_allowed}")]
+    KeyAuthorizationExpired { expiry: u64, min_allowed: u64 },
 
     /// Thrown when a keychain transaction's fee token cost exceeds the spending limit.
     #[error(
@@ -362,6 +389,14 @@ pub enum TempoPoolTransactionError {
         cost: U256,
         remaining: U256,
     },
+
+    /// Legacy V1 keychain signature rejected post-T1C (permanently invalid).
+    #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
+    LegacyKeychainPostT1C,
+
+    /// V2 keychain signature rejected pre-T1C (not yet valid).
+    #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
+    V2KeychainPreT1C,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -376,9 +411,12 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InvalidValidAfter { .. }
             | Self::ExpiringNonceValidBeforeTooFar { .. }
             | Self::ExpiringNonceReplay
+            | Self::AccessKeyExpired { .. }
+            | Self::KeyAuthorizationExpired { .. }
             | Self::Keychain(_)
             | Self::InsufficientLiquidity(_)
-            | Self::SpendingLimitExceeded { .. } => false,
+            | Self::SpendingLimitExceeded { .. }
+            | Self::V2KeychainPreT1C => false,
             Self::NonZeroValue
             | Self::SubblockNonceKey
             | Self::InsufficientGasForAAIntrinsicCost { .. }
@@ -391,17 +429,30 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::TooManyTokenLimits { .. }
             | Self::ExpiringNonceMissingValidBefore
             | Self::ExpiringNonceNonceNotZero
-            | Self::AccessKeyExpired { .. }
-            | Self::KeyAuthorizationExpired { .. }
+            | Self::InvalidFeePayerSignature
             | Self::NoCalls
             | Self::CreateCallWithAuthorizationList
             | Self::CreateCallNotFirst
-            | Self::FeeCapBelowMinBaseFee { .. } => true,
+            | Self::FeeCapBelowMinBaseFee { .. }
+            | Self::LegacyKeychainPostT1C => true,
         }
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+impl From<tempo_primitives::transaction::KeychainVersionError> for TempoPoolTransactionError {
+    fn from(err: tempo_primitives::transaction::KeychainVersionError) -> Self {
+        match err {
+            tempo_primitives::transaction::KeychainVersionError::LegacyPostT1C => {
+                Self::LegacyKeychainPostT1C
+            }
+            tempo_primitives::transaction::KeychainVersionError::V2BeforeActivation => {
+                Self::V2KeychainPreT1C
+            }
+        }
     }
 }
 
@@ -762,6 +813,8 @@ mod tests {
                 false,
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),
+            (TempoPoolTransactionError::LegacyKeychainPostT1C, true),
+            (TempoPoolTransactionError::V2KeychainPreT1C, false),
             (
                 TempoPoolTransactionError::InsufficientLiquidity(Address::ZERO),
                 false,
@@ -773,6 +826,21 @@ mod tests {
                 },
                 false,
             ),
+            (
+                TempoPoolTransactionError::AccessKeyExpired {
+                    expiry: 100,
+                    min_allowed: 200,
+                },
+                false,
+            ),
+            (
+                TempoPoolTransactionError::KeyAuthorizationExpired {
+                    expiry: 100,
+                    min_allowed: 200,
+                },
+                false,
+            ),
+            (TempoPoolTransactionError::InvalidFeePayerSignature, true),
             (TempoPoolTransactionError::NonZeroValue, true),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
@@ -994,7 +1062,8 @@ impl RevokedKeys {
 #[derive(Debug, Clone, Default)]
 pub struct SpendingLimitUpdates {
     /// Map from account to list of (key_id, token) pairs that had limit changes.
-    by_account: AddressMap<Vec<(Address, Address)>>,
+    /// `None` token acts as a wildcard matching any fee token for that key_id.
+    by_account: AddressMap<Vec<(Address, Option<Address>)>>,
 }
 
 impl SpendingLimitUpdates {
@@ -1003,8 +1072,8 @@ impl SpendingLimitUpdates {
         Self::default()
     }
 
-    /// Inserts a spending limit update.
-    pub fn insert(&mut self, account: Address, key_id: Address, token: Address) {
+    /// Inserts a spending limit update. `None` token matches any fee token.
+    pub fn insert(&mut self, account: Address, key_id: Address, token: Option<Address>) {
         self.by_account
             .entry(account)
             .or_default()
@@ -1022,11 +1091,16 @@ impl SpendingLimitUpdates {
     }
 
     /// Returns true if the given (account, key_id, token) combination is in the index.
+    ///
+    /// A `None` entry matches any token for that key_id. This is used for included
+    /// block txs whose fee token could not be resolved without state access.
     pub fn contains(&self, account: Address, key_id: Address, token: Address) -> bool {
         self.by_account
             .get(&account)
-            .is_some_and(|pairs: &Vec<(Address, Address)>| {
-                pairs.iter().any(|&(k, t)| k == key_id && t == token)
+            .is_some_and(|pairs: &Vec<(Address, Option<Address>)>| {
+                pairs
+                    .iter()
+                    .any(|&(k, t)| k == key_id && t.is_none_or(|t| t == token))
             })
     }
 }

@@ -304,6 +304,9 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             .epoch();
 
         // Can't proceed without knowing a validator set for the current epoch.
+        //
+        // TODO(hamdi): When finalizing a boundary block, the scheme for the next epoch is not yet registered meaning
+        // we skip the subblock building task. This issue is scoped to the boundary and will be fixed.
         let Some(scheme) = self.scheme_provider.scoped(epoch_of_next_block) else {
             debug!(%epoch_of_next_block, "scheme not found for epoch");
             return;
@@ -370,7 +373,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         });
     }
 
-    #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender, msg_bytes = message.len()))]
+    #[instrument(skip_all, err(level = Level::DEBUG), fields(sender = %sender, msg_bytes = message.len()))]
     async fn on_network_message(
         &mut self,
         sender: PublicKey,
@@ -701,8 +704,9 @@ async fn build_subblock(
     let (transactions, senders) = match evm_at_block(&node, parent_hash) {
         Ok(mut evm) => {
             let (mut selected, mut senders, mut to_remove) = (Vec::new(), Vec::new(), Vec::new());
-            let gas_budget =
-                evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
+            let gas_budget = (evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR)
+                .checked_div(num_validators as u64)
+                .expect("validator set must not be empty");
 
             let mut gas_left = gas_budget;
             let txs = transactions.lock().clone();

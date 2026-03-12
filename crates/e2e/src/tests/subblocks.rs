@@ -42,7 +42,7 @@ fn subblocks_are_included() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(10);
+            .epoch_length(100);
 
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
@@ -53,6 +53,7 @@ fn subblocks_are_included() {
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
             node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+            node.consensus_config_mut().with_subblocks = true;
 
             let fee_recipient = Address::random();
             node.consensus_config_mut().fee_recipient = fee_recipient;
@@ -148,7 +149,7 @@ fn subblocks_are_included_with_failing_txs() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(10);
+            .epoch_length(100);
 
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
@@ -159,6 +160,7 @@ fn subblocks_are_included_with_failing_txs() {
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
             node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+            node.consensus_config_mut().with_subblocks = true;
 
             let fee_recipient = Address::random();
             node.consensus_config_mut().fee_recipient = fee_recipient;
@@ -301,7 +303,7 @@ fn subblocks_are_included_with_failing_txs() {
             for node in nodes.iter() {
                 for _ in 0..5 {
                     // Randomly submit some of the transactions from a new signer that doesn't have any funds
-                    if rand::random::<bool>() {
+                    if rand_08::random::<bool>() {
                         let tx =
                             submit_subblock_tx_from(node, &PrivateKeySigner::random(), 1_000_000)
                                 .await;
@@ -328,12 +330,13 @@ fn oversized_subblock_txs_are_removed() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .epoch_length(10);
+            .epoch_length(100);
 
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
 
         for node in &mut nodes {
             node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+            node.consensus_config_mut().with_subblocks = true;
         }
 
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
@@ -403,7 +406,7 @@ async fn submit_subblock_tx_from<TClock: commonware_runtime::Clock>(
     wallet: &PrivateKeySigner,
     gas_limit: u64,
 ) -> TxHash {
-    let mut nonce_bytes = rand::random::<[u8; 32]>();
+    let mut nonce_bytes = rand_08::random::<[u8; 32]>();
     nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
     nonce_bytes[1..16].copy_from_slice(&node.public_key().as_ref()[..15]);
 

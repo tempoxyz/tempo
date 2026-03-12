@@ -94,7 +94,7 @@ impl Precompile for StablecoinDEX {
                 IStablecoinDEXCalls::MIN_PRICE(call) => view(call, |_| Ok(self.min_price())),
                 IStablecoinDEXCalls::MAX_PRICE(call) => view(call, |_| Ok(self.max_price())),
                 IStablecoinDEXCalls::tickToPrice(call) => {
-                    view(call, |c| Ok(crate::stablecoin_dex::tick_to_price(c.tick)))
+                    view(call, |c| self.tick_to_price(c.tick))
                 }
                 IStablecoinDEXCalls::priceToTick(call) => {
                     view(call, |c| self.price_to_tick(c.price))

@@ -42,7 +42,9 @@ interface ITIP20Factory {
         ITIP20 quoteToken,
         address admin,
         bytes32 salt
-    ) external returns (address);
+    )
+        external
+        returns (address);
 
     /// @notice Checks if a given address is a TIP-20 compliant token
     /// @param token The address of the token to check

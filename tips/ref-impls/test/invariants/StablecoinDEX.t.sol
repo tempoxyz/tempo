@@ -15,22 +15,23 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     /// @dev Mapping of actor address to their placed order IDs
     mapping(address => uint128[]) private _placedOrders;
 
-    /// @dev Fixed set of valid ticks used for order placement
-    int16[10] private _ticks = [int16(10), 20, 30, 40, 50, 60, 70, 80, 90, 100];
+    /// @dev Canonical set of valid ticks used for order placement, flip tick selection,
+    /// and tick consistency checks. Kept small to concentrate liquidity so orders interact
+    /// during swaps. Dense cluster [-30..30] enables multi-tick swap traversal through both
+    /// bitmap words (symmetric across the word boundary at 0). Also covers: boundaries
+    /// (±2000) and int8 bitmap boundary (±1280 → compressed ±128).
+    int16[11] private _ticks = [int16(-2000), -1280, -30, -20, -10, 0, 10, 20, 30, 1280, 2000];
 
     /// @dev Expected next order ID, used to verify TEMPO-DEX1
     uint128 private _nextOrderId;
 
-    /// @dev Log file path for recording exchange actions
-    string private constant LOG_FILE = "stablecoin_dex.log";
-
-    /// @dev Maximum amount of dust that can be left in the protocol. This is used to verify TEMPO-DEX19.
+    /// @dev Maximum amount of dust that can be left in the protocol. This is used to verify TEMPO-DEX9.
     uint64 private _maxDust;
 
-    /// @dev Dust level before each swap, used to verify TEMPO-DEX18 (each swap increases dust by at most 1).
+    /// @dev Dust level before each swap, used to verify TEMPO-DEX8 (each swap increases dust by at most 1).
     uint256 private _dustBeforeSwap;
 
-    /// @dev TEMPO-DEX20: Ghost variables for tracking divisibility edge cases
+    /// @dev TEMPO-DEX19: Ghost variables for tracking divisibility edge cases
     /// When (base * price) % PRICE_SCALE == 0, ceil should equal floor (no +1)
     uint256 private _ghostDivisibleEscrowCount;
     uint256 private _ghostDivisibleEscrowCorrect;
@@ -53,9 +54,6 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
         _actors = _buildActorsWithApprovals(20, address(exchange));
         _nextOrderId = exchange.nextOrderId();
-
-        _initLogFile(LOG_FILE, "StablecoinDEX Invariant Test Log");
-        if (_loggingEnabled) _logBalances();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -63,7 +61,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Fuzz handler: Places a bid or ask order and optionally cancels it
-    /// @dev Tests TEMPO-DEX1 (order ID), TEMPO-DEX2 (escrow), TEMPO-DEX3 (cancel refund), TEMPO-DEX7 (tick liquidity)
+    /// @dev Tests TEMPO-DEX1 (order ID), TEMPO-DEX2 (escrow), TEMPO-DEX3 (cancel refund), TEMPO-DEX11 (tick liquidity)
     /// @param actorRnd Random seed for selecting actor
     /// @param amount Order amount (bounded to valid range)
     /// @param tickRnd Random seed for selecting tick
@@ -77,7 +75,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint256 tokenRnd,
         bool isBid,
         bool cancel
-    ) public {
+    )
+        public
+    {
         int16 tick = _ticks[tickRnd % _ticks.length];
         address actor = _actors[actorRnd % _actors.length];
         address token = address(_tokens[tokenRnd % _tokens.length]);
@@ -110,26 +110,19 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         // Verify order was created correctly
         _assertOrderCreated(orderId, actor, amount, tick, isBid);
 
-        // Log the action
-        if (_loggingEnabled) {
-            _logPlaceOrder(actor, orderId, amount, TIP20(token).symbol(), tick, isBid);
-        }
-
         if (cancel) {
             _cancelAndVerifyRefund(
                 orderId, actor, token, amount, tick, isBid, actorBalanceBeforePlace
             );
-            if (_loggingEnabled) _logCancelOrder(actor, orderId, isBid, TIP20(token).symbol());
         } else {
             _placedOrders[actor].push(orderId);
 
-            // TEMPO-DEX7: Verify tick level liquidity updated
+            // TEMPO-DEX11: Verify tick level liquidity updated
             (,, uint128 tickLiquidity) = exchange.getTickLevel(token, tick, isBid);
-            assertTrue(tickLiquidity >= amount, "TEMPO-DEX7: tick liquidity not updated");
+            assertTrue(tickLiquidity >= amount, "TEMPO-DEX11: tick liquidity not updated");
         }
 
         vm.stopPrank();
-        if (_loggingEnabled) _logBalances();
     }
 
     function placeOrder1(
@@ -138,7 +131,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint256 tickRnd,
         uint256 tokenRnd,
         bool isBid
-    ) external {
+    )
+        external
+    {
         placeOrder(actorRnd, amount, tickRnd, tokenRnd, isBid, false);
     }
 
@@ -150,26 +145,31 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint256 tickRnd,
         uint256 tokenRnd,
         bool isBid
-    ) external {
+    )
+        external
+    {
         placeOrder(actorRnd, amount, tickRnd, tokenRnd, isBid, true);
     }
 
-    /// @notice TEMPO-DEX20: Test divisibility edge cases - when (base*price) % PRICE_SCALE == 0
+    /// @notice TEMPO-DEX19: Test divisibility edge cases - when (base*price) % PRICE_SCALE == 0
     function placeDivisibleBid(uint256 actorRnd, uint256 tickRnd, uint256 tokenRnd) external {
         int16 tick = _ticks[tickRnd % _ticks.length];
         address actor = _actors[actorRnd % _actors.length];
         address token = address(_tokens[tokenRnd % _tokens.length]);
         uint32 price = exchange.tickToPrice(tick);
+        uint256 scale = exchange.PRICE_SCALE();
 
-        // Calculate amount where (amount * price) % 100_000 == 0, above min order size
-        uint128 amount = uint128((100_000 / _gcd(uint256(price), 100_000)) * 10_000);
-        if (amount < 100_000_000) return;
+        // Calculate the smallest amount >= min order size where (amount * price) % PRICE_SCALE == 0
+        uint256 g = _gcd(uint256(price), scale);
+        uint256 step = scale / g;
+        uint256 minOrder = 100_000_000;
+        uint128 amount = uint128(step * ((minOrder + step - 1) / step));
 
         uint256 product = uint256(amount) * uint256(price);
-        if (product % 100_000 != 0) return;
+        assertEq(product % scale, 0, "TEMPO-DEX19: divisible amount construction failed");
 
         _ghostDivisibleEscrowCount++;
-        uint256 expectedEscrow = product / 100_000;
+        uint256 expectedEscrow = product / scale;
         _ensureFunds(actor, pathUSD, expectedEscrow + 1000);
 
         // Capture both external and internal balance before placing order
@@ -179,7 +179,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
         vm.prank(actor);
         uint128 orderId = exchange.place(token, amount, true, tick);
-        _nextOrderId++;
+        _assertNextOrderId(orderId);
 
         // Calculate total escrow from both external and internal balance changes
         uint256 externalAfter = pathUSD.balanceOf(actor);
@@ -187,12 +187,12 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint256 totalAfter = externalAfter + internalAfter;
         uint256 escrowed = totalBefore - totalAfter;
 
-        // TEMPO-DEX20: When (amount * price) % PRICE_SCALE == 0, escrow must be EXACT
+        // TEMPO-DEX19: When (amount * price) % PRICE_SCALE == 0, escrow must be EXACT
         // No +1 tolerance allowed - ceil should equal floor when perfectly divisible
         assertEq(
             escrowed,
             expectedEscrow,
-            "TEMPO-DEX20: Divisible escrow should be exact (no +1 rounding)"
+            "TEMPO-DEX19: Divisible escrow should be exact (no +1 rounding)"
         );
         _ghostDivisibleEscrowCorrect++;
         _placedOrders[actor].push(orderId);
@@ -207,6 +207,35 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         return a;
     }
 
+    /// @dev Picks a flip tick from _ticks on the correct side of tick (strict inequality).
+    /// Returns (false, 0) if no valid flip tick exists (tick is at a boundary).
+    function _pickFlipTick(
+        int16 tick,
+        bool isBid,
+        uint256 rnd
+    )
+        internal
+        view
+        returns (bool ok, int16 flipTick)
+    {
+        uint256 count = 0;
+        for (uint256 i = 0; i < _ticks.length; i++) {
+            int16 t = _ticks[i];
+            if (isBid ? (t > tick) : (t < tick)) count++;
+        }
+        if (count == 0) return (false, int16(0));
+
+        uint256 k = rnd % count;
+        for (uint256 i = 0; i < _ticks.length; i++) {
+            int16 t = _ticks[i];
+            if (isBid ? (t > tick) : (t < tick)) {
+                if (k == 0) return (true, t);
+                k--;
+            }
+        }
+        revert("_pickFlipTick: unreachable");
+    }
+
     /// @dev Helper to verify order was created correctly (TEMPO-DEX2)
     function _assertOrderCreated(
         uint128 orderId,
@@ -214,7 +243,10 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint128 amount,
         int16 tick,
         bool isBid
-    ) internal view {
+    )
+        internal
+        view
+    {
         IStablecoinDEX.Order memory order = exchange.getOrder(orderId);
         assertEq(order.maker, actor, "TEMPO-DEX2: order maker mismatch");
         assertEq(order.amount, amount, "TEMPO-DEX2: order amount mismatch");
@@ -253,18 +285,6 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         vm.startPrank(actor);
         exchange.withdraw(token, amount);
         vm.stopPrank();
-
-        if (_loggingEnabled) {
-            _log(
-                string.concat(
-                    _getActorIndex(actor),
-                    " withdrew ",
-                    vm.toString(amount),
-                    " ",
-                    TIP20(token).symbol()
-                )
-            );
-        }
     }
 
     /// @dev Helper to cancel order and verify refund (TEMPO-DEX3)
@@ -276,7 +296,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         int16 tick,
         bool isBid,
         uint256 actorBalanceBeforePlace
-    ) internal {
+    )
+        internal
+    {
         if (isBid) {
             _cancelAndVerifyBidRefund(orderId, actor, token, amount, tick, actorBalanceBeforePlace);
         } else {
@@ -303,7 +325,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint128 amount,
         int16 tick,
         uint256 actorBalanceBeforePlace
-    ) internal {
+    )
+        internal
+    {
         uint128 balanceBefore = exchange.balanceOf(actor, address(pathUSD));
         uint256 dexBalanceBefore = pathUSD.balanceOf(address(exchange));
         uint256 actorExternalBefore = pathUSD.balanceOf(actor);
@@ -351,7 +375,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         address token,
         uint128 amount,
         uint256 actorBalanceBeforePlace
-    ) internal {
+    )
+        internal
+    {
         uint128 balanceBefore = exchange.balanceOf(actor, token);
         uint256 dexBalanceBefore = TIP20(token).balanceOf(address(exchange));
         uint256 actorExternalBefore = TIP20(token).balanceOf(actor);
@@ -385,23 +411,31 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Fuzz handler: Places a flip order that auto-flips when filled
-    /// @dev Tests TEMPO-DEX1 (order ID), TEMPO-DEX12 (flip tick constraints)
+    /// @dev Tests TEMPO-DEX1 (order ID), TEMPO-DEX17 (flip tick constraints)
     /// @param actorRnd Random seed for selecting actor
     /// @param amount Order amount (bounded to valid range)
     /// @param tickRnd Random seed for selecting tick
     /// @param tokenRnd Random seed for selecting token
     /// @param isBid True for bid flip order, false for ask flip order
+    /// @param flipTickRnd Random seed for selecting flip tick from _ticks
     function placeFlipOrder(
         uint256 actorRnd,
         uint128 amount,
         uint256 tickRnd,
         uint256 tokenRnd,
-        bool isBid
-    ) external {
+        bool isBid,
+        uint256 flipTickRnd
+    )
+        external
+    {
         int16 tick = _ticks[tickRnd % _ticks.length];
         address actor = _actors[actorRnd % _actors.length];
         TIP20 token = _tokens[tokenRnd % _tokens.length];
         amount = uint128(bound(amount, 100_000_000, 10_000_000_000));
+
+        // DEX-09: Select flip tick from _ticks on the correct side of tick
+        (bool ok, int16 flipTick) = _pickFlipTick(tick, isBid, flipTickRnd);
+        if (!ok) return;
 
         // Ensure funds for the token being escrowed (pathUSD for bids, base token for asks)
         // For bids, escrow = baseToQuoteCeil(amount, tick), so we need to ensure enough funds
@@ -415,76 +449,25 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
 
         vm.startPrank(actor);
-        uint128 orderId;
-        int16 flipTick;
-        if (isBid) {
-            flipTick = 200;
-            orderId = exchange.placeFlip(address(token), amount, true, tick, flipTick);
-        } else {
-            flipTick = -200;
-            orderId = exchange.placeFlip(address(token), amount, false, tick, flipTick);
-        }
+        uint128 orderId = exchange.placeFlip(address(token), amount, isBid, tick, flipTick);
         _assertNextOrderId(orderId);
 
-        // TEMPO-DEX12: Flip order constraints
+        // TEMPO-DEX17: Flip order constraints
         IStablecoinDEX.Order memory order = exchange.getOrder(orderId);
-        assertTrue(order.isFlip, "TEMPO-DEX12: flip order not marked as flip");
+        assertTrue(order.isFlip, "TEMPO-DEX17: flip order not marked as flip");
         if (isBid) {
             assertTrue(
-                order.flipTick > order.tick, "TEMPO-DEX12: bid flip tick must be > order tick"
+                order.flipTick > order.tick, "TEMPO-DEX17: bid flip tick must be > order tick"
             );
         } else {
             assertTrue(
-                order.flipTick < order.tick, "TEMPO-DEX12: ask flip tick must be < order tick"
+                order.flipTick < order.tick, "TEMPO-DEX17: ask flip tick must be < order tick"
             );
         }
 
         _placedOrders[actor].push(orderId);
 
-        // Log the action
-        if (_loggingEnabled) {
-            _logFlipOrder(actor, orderId, amount, token.symbol(), tick, flipTick, isBid);
-        }
-
         vm.stopPrank();
-        if (_loggingEnabled) _logBalances();
-    }
-
-    /// @dev Helper to log flip order placement to avoid stack too deep
-    function _logFlipOrder(
-        address actor,
-        uint128 orderId,
-        uint128 amount,
-        string memory tokenSymbol,
-        int16 tick,
-        int16 flipTick,
-        bool isBid
-    ) internal {
-        if (!_loggingEnabled) return;
-        string memory escrowToken = isBid ? "pathUSD" : tokenSymbol;
-        string memory receiveToken = isBid ? tokenSymbol : "pathUSD";
-        _log(
-            string.concat(
-                _getActorIndex(actor),
-                " placed flip ",
-                isBid ? "bid" : "ask",
-                " order #",
-                vm.toString(orderId),
-                " for ",
-                vm.toString(amount),
-                " ",
-                tokenSymbol,
-                " at tick ",
-                vm.toString(tick),
-                " -> flipTick ",
-                vm.toString(flipTick),
-                " (escrow: ",
-                escrowToken,
-                ", receive: ",
-                receiveToken,
-                ")"
-            )
-        );
     }
 
     /// @dev Struct to capture swapper balances before swap to avoid stack too deep
@@ -498,7 +481,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Fuzz handler: Executes swaps with exact amount in or exact amount out
-    /// @dev Tests TEMPO-DEX4, TEMPO-DEX5, TEMPO-DEX14, TEMPO-DEX16
+    /// @dev Tests TEMPO-DEX4, TEMPO-DEX5, TEMPO-DEX6, TEMPO-DEX7
     /// @param swapperRnd Random seed for selecting swapper
     /// @param amount Swap amount (bounded to valid range)
     /// @param tokenInRnd Random seed for selecting tokenIn
@@ -510,7 +493,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint256 tokenInRnd,
         uint256 tokenOutRnd,
         bool amtIn
-    ) external {
+    )
+        external
+    {
         address swapper = _actors[swapperRnd % _actors.length];
         amount = uint128(bound(amount, 100_000_000, 1_000_000_000));
 
@@ -525,11 +510,11 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         // Ensure swapper has enough of tokenIn
         _ensureFunds(swapper, TIP20(tokenIn), amount);
 
-        // Check if swapper has active orders - if so, skip TEMPO-DEX14 balance checks
+        // Check if swapper has active orders - if so, skip TEMPO-DEX6 balance checks
         // because self-trade makes the accounting complex (maker proceeds returned to swapper)
-        bool swapperHasOrders = _placedOrders[swapper].length > 0;
+        bool swapperHasOrders = _hasActiveOrders(swapper);
 
-        // Capture total balances (external + internal) before swap for TEMPO-DEX14
+        // Capture total balances (external + internal) before swap for TEMPO-DEX6
         SwapBalanceSnapshot memory before = SwapBalanceSnapshot({
             tokenIn: tokenIn,
             tokenOut: tokenOut,
@@ -549,11 +534,10 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _nextOrderId = exchange.nextOrderId();
 
         vm.stopPrank();
-        if (_loggingEnabled) _logBalances();
     }
 
     /// @notice Fuzz handler: Blacklists an actor, has another actor cancel their stale orders, then whitelists again
-    /// @dev Tests TEMPO-DEX13 (stale order cancellation by non-owner when maker is blacklisted)
+    /// @dev Tests TEMPO-DEX18 (stale order cancellation by non-owner when maker is blacklisted)
     /// @param blacklistActorRnd Random seed for selecting actor to blacklist
     /// @param cancellerActorRnd Random seed for selecting actor who will cancel stale orders
     /// @param forBids If true, blacklist in quote token (pathUSD) for bids; if false, blacklist in base token for asks
@@ -561,7 +545,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint256 blacklistActorRnd,
         uint256 cancellerActorRnd,
         bool forBids
-    ) external {
+    )
+        external
+    {
         address blacklistedActor = _selectActor(blacklistActorRnd);
         address canceller = _selectActorExcluding(cancellerActorRnd, blacklistedActor);
 
@@ -603,7 +589,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                         ? exchange.balanceOf(blacklistedActor, address(pathUSD))
                         : exchange.balanceOf(blacklistedActor, base);
 
-                    // TEMPO-DEX13: Anyone can cancel a stale order from a blacklisted maker
+                    // TEMPO-DEX18: Anyone can cancel a stale order from a blacklisted maker
                     exchange.cancelStaleOrder(orderId);
 
                     // Verify refund was credited to blacklisted actor's internal balance
@@ -620,44 +606,32 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                         assertEq(
                             balanceAfter - balanceBefore,
                             expectedRefund,
-                            "TEMPO-DEX13: stale bid cancel refund mismatch"
+                            "TEMPO-DEX18: stale bid cancel refund mismatch"
                         );
                     } else {
                         assertEq(
                             balanceAfter - balanceBefore,
                             order.remaining,
-                            "TEMPO-DEX13: stale ask cancel refund mismatch"
+                            "TEMPO-DEX18: stale ask cancel refund mismatch"
                         );
                     }
 
                     // Verify order no longer exists
                     try exchange.getOrder(orderId) returns (IStablecoinDEX.Order memory) {
-                        revert("TEMPO-DEX13: order should not exist after stale cancel");
+                        revert("TEMPO-DEX18: order should not exist after stale cancel");
                     } catch (bytes memory reason) {
                         assertEq(
                             bytes4(reason),
                             IStablecoinDEX.OrderDoesNotExist.selector,
-                            "TEMPO-DEX13: unexpected error on getOrder"
+                            "TEMPO-DEX18: unexpected error on getOrder"
                         );
                     }
-
-                    // Log successful stale order cancellation
-                    _log(
-                        string.concat(
-                            _getActorIndex(canceller),
-                            " cancelled stale order #",
-                            vm.toString(orderId),
-                            " of blacklisted ",
-                            _getActorIndex(blacklistedActor)
-                        )
-                    );
                 }
             } catch (bytes memory reason) {
                 _assertKnownOrderError(reason);
             }
         }
         vm.stopPrank();
-        _logBalances();
 
         // Whitelist the actor again so they can continue to be used in tests
         if (forBids) {
@@ -682,12 +656,12 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Called after invariant testing completes to clean up state
-    /// @dev Cancels all remaining orders and verifies TEMPO-DEX3 (refunds) and TEMPO-DEX10 (linked list)
+    /// @dev Cancels all remaining orders and verifies TEMPO-DEX3 (refunds) and TEMPO-DEX14 (linked list)
     function afterInvariant() public {
         // Cancel all orders by iterating through order IDs
         for (uint128 orderId = 1; orderId < _nextOrderId; orderId++) {
             try exchange.getOrder(orderId) returns (IStablecoinDEX.Order memory order) {
-                // TEMPO-DEX10: Verify linked list consistency before cancel
+                // TEMPO-DEX14: Verify linked list consistency before cancel
                 _assertOrderLinkedListConsistency(orderId, order);
 
                 // Get the base token for this order
@@ -740,34 +714,10 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             totalBalance += _tokens[j].balanceOf(address(exchange));
         }
 
-        // Log dust remaining in DEX
-        if (_loggingEnabled) {
-            string memory dustLog = string.concat(
-                "Dust remaining: pathUSD=", vm.toString(pathUSD.balanceOf(address(exchange)))
-            );
-            for (uint256 j = 0; j < _tokens.length; j++) {
-                dustLog = string.concat(
-                    dustLog,
-                    ", ",
-                    _tokens[j].symbol(),
-                    "=",
-                    vm.toString(_tokens[j].balanceOf(address(exchange)))
-                );
-            }
-            dustLog = string.concat(
-                dustLog,
-                " | Total=",
-                vm.toString(pathUSD.balanceOf(address(exchange)) + totalBalance),
-                ", Swaps=",
-                vm.toString(_maxDust)
-            );
-            _log(dustLog);
-        }
-
         assertGe(
             _maxDust,
             pathUSD.balanceOf(address(exchange)) + totalBalance,
-            "TEMPO-DEX19: Excess post-swap dust"
+            "TEMPO-DEX9: Excess post-swap dust"
         );
     }
 
@@ -776,7 +726,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Main invariant function called after each fuzz sequence
-    /// @dev Verifies TEMPO-DEX6 (balance solvency), TEMPO-DEX7/11 (tick consistency), TEMPO-DEX8/9 (best tick)
+    /// @dev Verifies TEMPO-DEX10 (balance solvency), TEMPO-DEX11/15 (tick consistency), TEMPO-DEX12/13 (best tick)
     ///      Optimized: unified loops over actors and tokens to reduce iteration overhead
     function invariantStablecoinDEX() public view {
         // Compute expected escrowed amounts from all orders (including flip-created orders)
@@ -803,47 +753,47 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             }
         }
 
-        // TEMPO-DEX6: Check pathUSD balance solvency
+        // TEMPO-DEX10: Check pathUSD balance solvency
         assertTrue(
             dexPathUsdBalance >= totalUserPathUsd,
-            "TEMPO-DEX6: DEX pathUsd balance < sum of user internal balances"
+            "TEMPO-DEX10: DEX pathUsd balance < sum of user internal balances"
         );
         assertApproxEqAbs(
             dexPathUsdBalance,
             totalUserPathUsd + expectedPathUsdEscrowed,
             _maxDust,
-            "TEMPO-DEX6: DEX pathUSD balance != user balances + escrowed"
+            "TEMPO-DEX10: DEX pathUSD balance != user balances + escrowed"
         );
 
         // Single loop over tokens for all token-based checks
         for (uint256 t = 0; t < _tokens.length; t++) {
             address tokenAddr = address(_tokens[t]);
 
-            // TEMPO-DEX6: Token balance solvency
+            // TEMPO-DEX10: Token balance solvency
             assertTrue(
                 dexTokenBalances[t] >= totalUserTokenBalances[t],
-                "TEMPO-DEX6: DEX token balance < sum of user internal balances"
+                "TEMPO-DEX10: DEX token balance < sum of user internal balances"
             );
             assertApproxEqAbs(
                 dexTokenBalances[t],
                 totalUserTokenBalances[t] + expectedTokenEscrowed[t],
                 _maxDust,
-                "TEMPO-DEX6: DEX token balance != user balances + escrowed"
+                "TEMPO-DEX10: DEX token balance != user balances + escrowed"
             );
 
-            // TEMPO-DEX8 & TEMPO-DEX9: Best bid/ask tick consistency
+            // TEMPO-DEX12 & TEMPO-DEX13: Best bid/ask tick consistency
             _assertBestTickConsistency(tokenAddr);
 
-            // TEMPO-DEX7 & TEMPO-DEX11: Tick level and bitmap consistency
+            // TEMPO-DEX11 & TEMPO-DEX15: Tick level and bitmap consistency
             _assertTickLevelConsistency(tokenAddr);
         }
 
-        // TEMPO-DEX20: Divisibility edge cases - all should have correct escrow
+        // TEMPO-DEX19: Divisibility edge cases - all should have correct escrow
         if (_ghostDivisibleEscrowCount > 0) {
             assertEq(
                 _ghostDivisibleEscrowCorrect,
                 _ghostDivisibleEscrowCount,
-                "TEMPO-DEX20: Divisible escrow mismatch"
+                "TEMPO-DEX19: Divisible escrow mismatch"
             );
         }
     }
@@ -873,6 +823,18 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 dust += dexTokenBalance - totalUserTokenBalance - tokenEscrowed[t];
             }
         }
+    }
+
+    /// @notice Checks whether an actor has any currently active (not filled/cancelled) orders
+    /// @dev Scans tracked order IDs (including flip-generated IDs captured from swap logs)
+    function _hasActiveOrders(address actor) internal view returns (bool) {
+        uint128[] storage ids = _placedOrders[actor];
+        for (uint256 i = ids.length; i > 0; i--) {
+            try exchange.getOrder(ids[i - 1]) returns (IStablecoinDEX.Order memory) {
+                return true;
+            } catch { }
+        }
+        return false;
     }
 
     /// @notice Computes expected escrowed amounts by iterating through all orders
@@ -923,8 +885,10 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint128 amount,
         SwapBalanceSnapshot memory before,
         bool skipBalanceCheck
-    ) internal {
-        // TEMPO-DEX16: Quote should match execution TODO: enable when fixed
+    )
+        internal
+    {
+        // TEMPO-DEX7: Quote should match execution TODO: enable when fixed
         uint128 quotedOut;
         try exchange.quoteSwapExactAmountIn(before.tokenIn, before.tokenOut, amount) returns (
             uint128 quoted
@@ -934,7 +898,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             quotedOut = 0;
         }
 
-        // TEMPO-DEX18: Record dust before swap
+        // TEMPO-DEX8: Record dust before swap
         _dustBeforeSwap = _computeDust();
 
         vm.recordLogs();
@@ -943,46 +907,34 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         ) returns (
             uint128 amountOut
         ) {
-            uint64 ordersFilled = _countOrderFilledEvents();
-            _maxDust += ordersFilled;
+            uint64 ordersFilled = _processSwapLogs();
+            // For multi-hop swaps, each hop can add dust from rounding (not just per order)
+            uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
+            _maxDust += ordersFilled + hops;
 
-            // TEMPO-DEX18: Each swap can increase dust by at most 1 per order filled
+            // TEMPO-DEX8: Each swap can increase dust by at most 1 per order filled + 1 per hop
+            // (rounding occurs at each hop, not just at hop boundaries)
             uint256 dustAfterSwap = _computeDust();
             assertLe(
                 dustAfterSwap,
-                _dustBeforeSwap + ordersFilled,
-                "TEMPO-DEX18: swap increased dust by more than 1 per order filled"
+                _dustBeforeSwap + ordersFilled + hops,
+                "TEMPO-DEX8: swap increased dust by more than expected (1 per order + 1 per hop)"
             );
             // TEMPO-DEX4: amountOut >= minAmountOut
             assertTrue(
                 amountOut >= amount - 100, "TEMPO-DEX4: swap exact amountOut less than minAmountOut"
             );
 
-            // TEMPO-DEX14: Swapper total balance changes correctly
+            // TEMPO-DEX6: Swapper total balance changes correctly
             // Skip if swapper has orders (self-trade makes accounting complex)
             if (!skipBalanceCheck) {
                 _assertSwapBalanceChanges(swapper, before, amount, amountOut);
             }
 
-            // TEMPO-DEX16: Quote matches execution TODO: enable when fixed
+            // TEMPO-DEX7: Quote matches execution TODO: enable when fixed
             if (quotedOut > 0) {
-                //assertEq(amountOut, quotedOut, "TEMPO-DEX16: quote mismatch for swapExactAmountIn");
+                //assertEq(amountOut, quotedOut, "TEMPO-DEX7: quote mismatch for swapExactAmountIn");
             }
-
-            // Log successful swap
-            _log(
-                string.concat(
-                    _getActorIndex(swapper),
-                    " swapExactAmountIn: ",
-                    vm.toString(amount),
-                    " ",
-                    TIP20(before.tokenIn).symbol(),
-                    " -> ",
-                    vm.toString(amountOut),
-                    " ",
-                    TIP20(before.tokenOut).symbol()
-                )
-            );
         } catch (bytes memory reason) {
             _assertKnownSwapError(reason);
         }
@@ -994,8 +946,10 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint128 amount,
         SwapBalanceSnapshot memory before,
         bool skipBalanceCheck
-    ) internal {
-        // TEMPO-DEX16: Quote should match execution
+    )
+        internal
+    {
+        // TEMPO-DEX7: Quote should match execution
         uint128 quotedIn;
         try exchange.quoteSwapExactAmountOut(before.tokenIn, before.tokenOut, amount) returns (
             uint128 quoted
@@ -1005,7 +959,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             quotedIn = 0;
         }
 
-        // TEMPO-DEX18: Record dust before swap
+        // TEMPO-DEX8: Record dust before swap
         _dustBeforeSwap = _computeDust();
 
         vm.recordLogs();
@@ -1014,15 +968,18 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         ) returns (
             uint128 amountIn
         ) {
-            uint64 ordersFilled = _countOrderFilledEvents();
-            _maxDust += ordersFilled;
+            uint64 ordersFilled = _processSwapLogs();
+            // For multi-hop swaps, each hop can add dust from rounding (not just per order)
+            uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
+            _maxDust += ordersFilled + hops;
 
-            // TEMPO-DEX18: Each swap can increase dust by at most 1 per order filled
+            // TEMPO-DEX8: Each swap can increase dust by at most 1 per order filled + 1 per hop
+            // (rounding occurs at each hop, not just at hop boundaries)
             uint256 dustAfterSwap = _computeDust();
             assertLe(
                 dustAfterSwap,
-                _dustBeforeSwap + ordersFilled,
-                "TEMPO-DEX18: swap increased dust by more than 1 per order filled"
+                _dustBeforeSwap + ordersFilled + hops,
+                "TEMPO-DEX8: swap increased dust by more than expected (1 per order + 1 per hop)"
             );
 
             // TEMPO-DEX5: amountIn <= maxAmountIn
@@ -1030,37 +987,22 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 amountIn <= amount + 100, "TEMPO-DEX5: swap exact amountIn greater than maxAmountIn"
             );
 
-            // TEMPO-DEX14: Swapper total balance changes correctly
+            // TEMPO-DEX6: Swapper total balance changes correctly
             // Skip if swapper has orders (self-trade makes accounting complex)
             if (!skipBalanceCheck) {
                 _assertSwapBalanceChanges(swapper, before, amountIn, amount);
             }
 
-            // TEMPO-DEX16: Quote matches execution. TODO: enable when fixed
+            // TEMPO-DEX7: Quote matches execution. TODO: enable when fixed
             if (quotedIn > 0) {
-                //assertEq(amountIn, quotedIn, "TEMPO-DEX16: quote mismatch for swapExactAmountOut");
+                //assertEq(amountIn, quotedIn, "TEMPO-DEX7: quote mismatch for swapExactAmountOut");
             }
-
-            // Log successful swap
-            _log(
-                string.concat(
-                    _getActorIndex(swapper),
-                    " swapExactAmountOut: ",
-                    vm.toString(amountIn),
-                    " ",
-                    TIP20(before.tokenIn).symbol(),
-                    " -> ",
-                    vm.toString(amount),
-                    " ",
-                    TIP20(before.tokenOut).symbol()
-                )
-            );
         } catch (bytes memory reason) {
             _assertKnownSwapError(reason);
         }
     }
 
-    /// @dev Helper to assert swap balance changes for TEMPO-DEX14
+    /// @dev Helper to assert swap balance changes for TEMPO-DEX6
     /// @notice Checks total balance (external + internal) to handle taker == maker scenarios
     /// @param swapper The swapper address
     /// @param before Balance snapshot before the swap
@@ -1071,7 +1013,10 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         SwapBalanceSnapshot memory before,
         uint128 tokenInSpent,
         uint128 tokenOutReceived
-    ) internal view {
+    )
+        internal
+        view
+    {
         // Calculate total balances (external + internal) after swap
         uint256 tokenInTotalBefore = before.tokenInExternal + before.tokenInInternal;
         uint256 tokenOutTotalBefore = before.tokenOutExternal + before.tokenOutInternal;
@@ -1085,32 +1030,32 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         assertEq(
             tokenInTotalBefore - tokenInTotalAfter,
             tokenInSpent,
-            "TEMPO-DEX14: swapper total tokenIn change incorrect"
+            "TEMPO-DEX6: swapper total tokenIn change incorrect"
         );
 
         // Swapper's total tokenOut should increase by tokenOutReceived
         assertEq(
             tokenOutTotalAfter - tokenOutTotalBefore,
             tokenOutReceived,
-            "TEMPO-DEX14: swapper total tokenOut change incorrect"
+            "TEMPO-DEX6: swapper total tokenOut change incorrect"
         );
     }
 
     /// @notice Verifies best bid and ask tick point to valid tick levels
-    /// @dev Tests TEMPO-DEX8 (best bid) and TEMPO-DEX9 (best ask)
+    /// @dev Tests TEMPO-DEX12 (best bid) and TEMPO-DEX13 (best ask)
     /// @param baseToken The base token address for the trading pair
     function _assertBestTickConsistency(address baseToken) internal view {
         (,, int16 bestBidTick, int16 bestAskTick) =
             exchange.books(exchange.pairKey(baseToken, address(pathUSD)));
 
-        // TEMPO-DEX8: If bestBidTick is not MIN, it should have liquidity
+        // TEMPO-DEX12: If bestBidTick is not MIN, it should have liquidity
         if (bestBidTick != type(int16).min) {
             (,, uint128 bidLiquidity) = exchange.getTickLevel(baseToken, bestBidTick, true);
             // Note: during swaps, bestBidTick may temporarily point to empty tick
             // This is acceptable as it gets updated on next operation
         }
 
-        // TEMPO-DEX9: If bestAskTick is not MAX, it should have liquidity
+        // TEMPO-DEX13: If bestAskTick is not MAX, it should have liquidity
         if (bestAskTick != type(int16).max) {
             (,, uint128 askLiquidity) = exchange.getTickLevel(baseToken, bestAskTick, false);
             // Note: during swaps, bestAskTick may temporarily point to empty tick
@@ -1118,77 +1063,82 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Verifies tick level data structure consistency
-    /// @dev Tests TEMPO-DEX7 (liquidity matches orders), TEMPO-DEX10 (head/tail consistency), TEMPO-DEX11 (bitmap)
+    /// @dev Tests TEMPO-DEX11 (liquidity matches orders), TEMPO-DEX14 (head/tail consistency), TEMPO-DEX15 (bitmap)
     /// @param baseToken The base token address for the trading pair
     function _assertTickLevelConsistency(address baseToken) internal view {
-        // Check a sample of ticks for consistency
         for (uint256 i = 0; i < _ticks.length; i++) {
-            int16 tick = _ticks[i];
+            _assertTickConsistency(baseToken, _ticks[i]);
+        }
+    }
 
-            // Check bid tick level
-            (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) =
-                exchange.getTickLevel(baseToken, tick, true);
-            if (bidLiquidity > 0) {
-                // TEMPO-DEX7: If liquidity > 0, head should be non-zero
-                assertTrue(bidHead != 0, "TEMPO-DEX7: bid tick has liquidity but no head");
-                assertTrue(bidTail != 0, "TEMPO-DEX7: bid tick has liquidity but no tail");
-                // TEMPO-DEX11: Bitmap correctness verified indirectly via bestBidTick/bestAskTick in _assertBestTickConsistency
-            }
-            if (bidHead == 0) {
-                // If head is 0, tail should also be 0 and liquidity should be 0
-                assertEq(bidTail, 0, "TEMPO-DEX10: bid tail non-zero but head is zero");
-                assertEq(bidLiquidity, 0, "TEMPO-DEX7: bid liquidity non-zero but head is zero");
-            } else {
-                // TEMPO-DEX17: head.prev should be 0
-                IStablecoinDEX.Order memory headOrder = exchange.getOrder(bidHead);
-                assertEq(headOrder.prev, 0, "TEMPO-DEX17: bid head.prev is not None");
-                // TEMPO-DEX17: tail.next should be 0
-                IStablecoinDEX.Order memory tailOrder = exchange.getOrder(bidTail);
-                assertEq(tailOrder.next, 0, "TEMPO-DEX17: bid tail.next is not None");
-            }
+    /// @dev Checks bid and ask consistency for a single tick
+    function _assertTickConsistency(address baseToken, int16 tick) internal view {
+        // Check bid tick level
+        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) =
+            exchange.getTickLevel(baseToken, tick, true);
+        if (bidLiquidity > 0) {
+            // TEMPO-DEX11: If liquidity > 0, head should be non-zero
+            assertTrue(bidHead != 0, "TEMPO-DEX11: bid tick has liquidity but no head");
+            assertTrue(bidTail != 0, "TEMPO-DEX11: bid tick has liquidity but no tail");
+            // TEMPO-DEX15: Bitmap correctness verified indirectly via bestBidTick/bestAskTick in _assertBestTickConsistency
+        }
+        if (bidHead == 0) {
+            // If head is 0, tail should also be 0 and liquidity should be 0
+            assertEq(bidTail, 0, "TEMPO-DEX14: bid tail non-zero but head is zero");
+            assertEq(bidLiquidity, 0, "TEMPO-DEX11: bid liquidity non-zero but head is zero");
+        } else {
+            // TEMPO-DEX16: head.prev should be 0
+            IStablecoinDEX.Order memory headOrder = exchange.getOrder(bidHead);
+            assertEq(headOrder.prev, 0, "TEMPO-DEX16: bid head.prev is not None");
+            // TEMPO-DEX16: tail.next should be 0
+            IStablecoinDEX.Order memory tailOrder = exchange.getOrder(bidTail);
+            assertEq(tailOrder.next, 0, "TEMPO-DEX16: bid tail.next is not None");
+        }
 
-            // Check ask tick level
-            (uint128 askHead, uint128 askTail, uint128 askLiquidity) =
-                exchange.getTickLevel(baseToken, tick, false);
-            if (askLiquidity > 0) {
-                assertTrue(askHead != 0, "TEMPO-DEX7: ask tick has liquidity but no head");
-                assertTrue(askTail != 0, "TEMPO-DEX7: ask tick has liquidity but no tail");
-            }
-            if (askHead == 0) {
-                assertEq(askTail, 0, "TEMPO-DEX10: ask tail non-zero but head is zero");
-                assertEq(askLiquidity, 0, "TEMPO-DEX7: ask liquidity non-zero but head is zero");
-            } else {
-                // TEMPO-DEX17: head.prev should be 0
-                IStablecoinDEX.Order memory headOrder = exchange.getOrder(askHead);
-                assertEq(headOrder.prev, 0, "TEMPO-DEX17: ask head.prev is not None");
-                // TEMPO-DEX17: tail.next should be 0
-                IStablecoinDEX.Order memory tailOrder = exchange.getOrder(askTail);
-                assertEq(tailOrder.next, 0, "TEMPO-DEX17: ask tail.next is not None");
-            }
+        // Check ask tick level
+        (uint128 askHead, uint128 askTail, uint128 askLiquidity) =
+            exchange.getTickLevel(baseToken, tick, false);
+        if (askLiquidity > 0) {
+            assertTrue(askHead != 0, "TEMPO-DEX11: ask tick has liquidity but no head");
+            assertTrue(askTail != 0, "TEMPO-DEX11: ask tick has liquidity but no tail");
+        }
+        if (askHead == 0) {
+            assertEq(askTail, 0, "TEMPO-DEX14: ask tail non-zero but head is zero");
+            assertEq(askLiquidity, 0, "TEMPO-DEX11: ask liquidity non-zero but head is zero");
+        } else {
+            // TEMPO-DEX16: head.prev should be 0
+            IStablecoinDEX.Order memory headOrder = exchange.getOrder(askHead);
+            assertEq(headOrder.prev, 0, "TEMPO-DEX16: ask head.prev is not None");
+            // TEMPO-DEX16: tail.next should be 0
+            IStablecoinDEX.Order memory tailOrder = exchange.getOrder(askTail);
+            assertEq(tailOrder.next, 0, "TEMPO-DEX16: ask tail.next is not None");
         }
     }
 
     /// @notice Verifies order linked list pointers are consistent
-    /// @dev Tests TEMPO-DEX10: prev.next == current and next.prev == current
+    /// @dev Tests TEMPO-DEX14: prev.next == current and next.prev == current
     /// @param orderId The order ID to verify
     /// @param order The order data
-    function _assertOrderLinkedListConsistency(uint128 orderId, IStablecoinDEX.Order memory order)
+    function _assertOrderLinkedListConsistency(
+        uint128 orderId,
+        IStablecoinDEX.Order memory order
+    )
         internal
         view
     {
-        // TEMPO-DEX10: If order has prev, prev's next should point to this order
+        // TEMPO-DEX14: If order has prev, prev's next should point to this order
         if (order.prev != 0) {
             IStablecoinDEX.Order memory prevOrder = exchange.getOrder(order.prev);
             assertEq(
-                prevOrder.next, orderId, "TEMPO-DEX10: prev order's next doesn't point to current"
+                prevOrder.next, orderId, "TEMPO-DEX14: prev order's next doesn't point to current"
             );
         }
 
-        // TEMPO-DEX10: If order has next, next's prev should point to this order
+        // TEMPO-DEX14: If order has next, next's prev should point to this order
         if (order.next != 0) {
             IStablecoinDEX.Order memory nextOrder = exchange.getOrder(order.next);
             assertEq(
-                nextOrder.prev, orderId, "TEMPO-DEX10: next order's prev doesn't point to current"
+                nextOrder.prev, orderId, "TEMPO-DEX14: next order's prev doesn't point to current"
             );
         }
     }
@@ -1202,15 +1152,21 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         _nextOrderId += 1;
     }
 
-    /// @notice Counts the number of OrderFilled events in the recorded logs
+    /// @notice Processes swap logs: counts fills and tracks any newly created orders
     /// @dev Must be called after vm.recordLogs() and swap execution
-    /// @return count The number of OrderFilled events emitted
-    function _countOrderFilledEvents() internal returns (uint64 count) {
+    /// @return count The number of OrderFilled events emitted by the exchange
+    function _processSwapLogs() internal returns (uint64 count) {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bytes32 orderFilledSelector = IStablecoinDEX.OrderFilled.selector;
+        bytes32 orderPlacedSelector = IStablecoinDEX.OrderPlaced.selector;
         for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].emitter != address(exchange) || logs[i].topics.length == 0) continue;
             if (logs[i].topics[0] == orderFilledSelector) {
                 count++;
+            } else if (logs[i].topics[0] == orderPlacedSelector && logs[i].topics.length >= 3) {
+                uint128 orderId = uint128(uint256(logs[i].topics[1]));
+                address maker = address(uint160(uint256(logs[i].topics[2])));
+                _placedOrders[maker].push(orderId);
             }
         }
     }
@@ -1252,68 +1208,6 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
         // Multi-hop: base -> pathUSD -> base
         return 2;
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                              LOGGING
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Logs exchange balances for all tokens
-    function _logBalances() internal {
-        if (!_loggingEnabled) return;
-        _logContractBalances(address(exchange), "DEX");
-    }
-
-    /// @dev Helper to log order placement to avoid stack too deep
-    function _logPlaceOrder(
-        address actor,
-        uint128 orderId,
-        uint128 amount,
-        string memory tokenSymbol,
-        int16 tick,
-        bool isBid
-    ) internal {
-        if (!_loggingEnabled) return;
-        string memory escrowToken = isBid ? "pathUSD" : tokenSymbol;
-        string memory receiveToken = isBid ? tokenSymbol : "pathUSD";
-        _log(
-            string.concat(
-                _getActorIndex(actor),
-                " placed ",
-                isBid ? "bid" : "ask",
-                " order #",
-                vm.toString(orderId),
-                " for ",
-                vm.toString(amount),
-                " ",
-                tokenSymbol,
-                " at tick ",
-                vm.toString(tick),
-                " (escrow: ",
-                escrowToken,
-                ", receive: ",
-                receiveToken,
-                ")"
-            )
-        );
-    }
-
-    /// @dev Helper to log order cancellation to avoid stack too deep
-    function _logCancelOrder(address actor, uint128 orderId, bool isBid, string memory tokenSymbol)
-        internal
-    {
-        if (!_loggingEnabled) return;
-        string memory refundToken = isBid ? "pathUSD" : tokenSymbol;
-        _log(
-            string.concat(
-                _getActorIndex(actor),
-                " cancelled order #",
-                vm.toString(orderId),
-                " (refund: ",
-                refundToken,
-                ")"
-            )
-        );
     }
 
 }

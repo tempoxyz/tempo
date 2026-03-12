@@ -73,8 +73,10 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
 
-    /// Transaction valid before timestamp in seconds (for expiring nonces, TIP-1009).
+    /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -82,8 +84,10 @@ pub struct TempoTransactionRequest {
     )]
     pub valid_before: Option<u64>,
 
-    /// Transaction valid after timestamp in seconds (for expiring nonces, TIP-1009).
+    /// Transaction valid after timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block after this timestamp.
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -98,6 +102,11 @@ pub struct TempoTransactionRequest {
 }
 
 impl TempoTransactionRequest {
+    /// Set the fee token for the [`TempoTransaction`] transaction.
+    pub fn set_fee_token(&mut self, fee_token: Address) {
+        self.fee_token = Some(fee_token);
+    }
+
     /// Builder-pattern method for setting the fee token.
     pub fn with_fee_token(mut self, fee_token: Address) -> Self {
         self.fee_token = Some(fee_token);
@@ -115,7 +124,9 @@ impl TempoTransactionRequest {
         self
     }
 
-    /// Set the valid_before timestamp for expiring nonces (TIP-1009).
+    /// Set the valid_before timestamp for expiring nonces ([TIP-1009]).
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     pub fn set_valid_before(&mut self, valid_before: u64) {
         self.valid_before = Some(valid_before);
     }
@@ -126,7 +137,9 @@ impl TempoTransactionRequest {
         self
     }
 
-    /// Set the valid_after timestamp for expiring nonces (TIP-1009).
+    /// Set the valid_after timestamp for expiring nonces ([TIP-1009]).
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     pub fn set_valid_after(&mut self, valid_after: u64) {
         self.valid_after = Some(valid_after);
     }
@@ -192,8 +205,7 @@ impl TempoTransactionRequest {
         }
 
         Ok(TempoTransaction {
-            // TODO: use tempo mainnet chainid once assigned
-            chain_id: self.inner.chain_id.unwrap_or(1),
+            chain_id: self.inner.chain_id.unwrap_or(4217),
             nonce,
             fee_payer_signature: self.fee_payer_signature,
             valid_before: self.valid_before,
@@ -206,7 +218,7 @@ impl TempoTransactionRequest {
             calls,
             tempo_authorization_list: self.tempo_authorization_list,
             nonce_key: self.nonce_key.unwrap_or_default(),
-            key_authorization: None,
+            key_authorization: self.key_authorization,
         })
     }
 }
@@ -301,13 +313,16 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             fee_token: tx.fee_token,
             inner: TransactionRequest {
                 from: None,
-                to: Some(tx.kind()),
+                // AA transactions store their calls in `calls` below.
+                // `to`, `value`, `input` must stay unset to avoid the builder
+                // creating a duplicate call from the envelope fields.
+                to: None,
                 gas: Some(tx.gas_limit()),
                 gas_price: tx.gas_price(),
                 max_fee_per_gas: Some(tx.max_fee_per_gas()),
                 max_priority_fee_per_gas: tx.max_priority_fee_per_gas(),
-                value: Some(tx.value()),
-                input: alloy_rpc_types_eth::TransactionInput::new(tx.input().clone()),
+                value: None,
+                input: alloy_rpc_types_eth::TransactionInput::default(),
                 nonce: Some(tx.nonce()),
                 chain_id: tx.chain_id(),
                 access_list: tx.access_list().cloned(),
@@ -389,8 +404,8 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
-    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+    use alloy_primitives::{Bytes, address};
+    use tempo_primitives::transaction::{Call, TEMPO_EXPIRING_NONCE_KEY};
 
     #[test]
     fn test_set_valid_before() {
@@ -556,5 +571,137 @@ mod tests {
 
         let request: TempoTransactionRequest = tx.into();
         assert_eq!(request.fee_payer_signature, Some(sig));
+    }
+
+    #[test]
+    fn test_build_aa_preserves_key_authorization() {
+        use tempo_primitives::transaction::{
+            KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization,
+        };
+
+        let key_auth = SignedKeyAuthorization {
+            authorization: KeyAuthorization {
+                chain_id: 4217,
+                key_type: SignatureType::Secp256k1,
+                key_id: address!("0x1111111111111111111111111111111111111111"),
+                expiry: None,
+                limits: None,
+            },
+            signature: PrimitiveSignature::default(),
+        };
+
+        let mut request = TempoTransactionRequest {
+            key_authorization: Some(key_auth.clone()),
+            ..Default::default()
+        };
+        request.inner.nonce = Some(0);
+        request.inner.gas = Some(21000);
+        request.inner.max_fee_per_gas = Some(1000000000);
+        request.inner.max_priority_fee_per_gas = Some(1000000);
+        request.inner.to = Some(address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D").into());
+
+        let tx = request.build_aa().expect("should build transaction");
+        assert_eq!(
+            tx.key_authorization,
+            Some(key_auth),
+            "build_aa must preserve key_authorization from the request"
+        );
+    }
+
+    #[test]
+    fn test_aa_roundtrip_preserves_count() {
+        let base = TempoTransaction {
+            chain_id: 4217,
+            nonce: 1,
+            gas_limit: 100_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000,
+            calls: vec![],
+            ..Default::default()
+        };
+
+        // Regression: single-call AA round-trip must not duplicate the call + preserve.
+        let call = vec![Call {
+            to: address!("0x1111111111111111111111111111111111111111").into(),
+            value: U256::ZERO,
+            input: Bytes::from(vec![0xaa]),
+        }];
+        let mut original = base.clone();
+        original.calls = call.clone();
+
+        let roundtrip = TempoTransactionRequest::from(original)
+            .build_aa()
+            .expect("build_aa should succeed");
+        assert_eq!(
+            roundtrip.calls, call,
+            "single-call AA must not gain extra calls on round-trip"
+        );
+
+        // Regression: multi-call AA round-trip must preserve exact call list.
+        let batch = vec![
+            Call {
+                to: address!("0x1111111111111111111111111111111111111111").into(),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0xaa]),
+            },
+            Call {
+                to: address!("0x2222222222222222222222222222222222222222").into(),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0xbb]),
+            },
+        ];
+        let mut original = base;
+        original.calls = batch.clone();
+
+        let roundtrip = TempoTransactionRequest::from(original)
+            .build_aa()
+            .expect("build_aa should succeed");
+        assert_eq!(
+            roundtrip.calls, batch,
+            "multi-call AA must not gain phantom calls on round-trip"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "tempo-compat")]
+    fn test_aa_roundtrip_via_tx_env() {
+        use reth_rpc_convert::TryIntoTxEnv;
+
+        let calls = vec![
+            Call {
+                to: address!("0x1111111111111111111111111111111111111111").into(),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0xaa]),
+            },
+            Call {
+                to: address!("0x2222222222222222222222222222222222222222").into(),
+                value: U256::ZERO,
+                input: Bytes::from(vec![0xbb]),
+            },
+        ];
+
+        let tx = TempoTransaction {
+            chain_id: 4217,
+            nonce: 1,
+            gas_limit: 100_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1_000_000,
+            calls: calls.clone(),
+            ..Default::default()
+        };
+
+        let req = TempoTransactionRequest::from(tx);
+
+        let evm_env = reth_evm::EvmEnv::<
+            reth_evm::revm::primitives::hardfork::SpecId,
+            tempo_evm::TempoBlockEnv,
+        >::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+        let aa_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
+
+        assert_eq!(
+            aa_calls, calls,
+            "roundtrip via try_into_tx_env must preserve exact call list"
+        );
     }
 }

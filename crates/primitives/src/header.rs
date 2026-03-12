@@ -188,7 +188,7 @@ impl reth_primitives_traits::header::HeaderMut for TempoHeader {
 
 #[cfg(feature = "reth-codec")]
 impl reth_db_api::table::Compress for TempoHeader {
-    type Compressed = Vec<u8>;
+    type Compressed = alloc::vec::Vec<u8>;
 
     fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
         let _ = reth_codecs::Compact::to_compact(self, buf);

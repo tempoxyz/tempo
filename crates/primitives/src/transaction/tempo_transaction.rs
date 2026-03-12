@@ -5,6 +5,7 @@ use crate::{
         key_authorization::SignedKeyAuthorization,
     },
 };
+use alloc::vec::Vec;
 use alloy_consensus::{SignableTransaction, Transaction, crypto::RecoveryError};
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
@@ -891,7 +892,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
 mod serde_input {
     //! Helper module for serializing and deserializing the `input` field of a [`Call`] as either `input` or `data` fields.
 
-    use std::borrow::Cow;
+    use alloc::borrow::Cow;
 
     use super::*;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};

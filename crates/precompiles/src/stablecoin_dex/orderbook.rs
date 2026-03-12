@@ -2,7 +2,7 @@
 
 use crate::{
     error::Result,
-    stablecoin_dex::IStablecoinDEX,
+    stablecoin_dex::{IStablecoinDEX, TICK_SPACING},
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
@@ -437,10 +437,19 @@ pub fn price_to_tick(price: u32) -> Result<i16> {
     Ok((price as i32 - PRICE_SCALE as i32) as i16)
 }
 
+/// Validate that a tick is aligned to [`TICK_SPACING`].
+pub fn validate_tick_spacing(tick: i16) -> Result<()> {
+    if tick % TICK_SPACING != 0 {
+        return Err(StablecoinDEXError::invalid_tick().into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::TempoPrecompileError;
+    use rand_08::Rng;
 
     use alloy::primitives::address;
 
@@ -530,6 +539,30 @@ mod tests {
         // Test boundary values
         assert_eq!(tick_to_price(MIN_TICK), PRICE_SCALE - 2000);
         assert_eq!(tick_to_price(MAX_TICK), PRICE_SCALE + 2000);
+    }
+
+    #[test]
+    fn test_validate_tick_spacing() {
+        let mut rng = rand_08::thread_rng();
+
+        assert!(validate_tick_spacing(0).is_ok());
+        assert!(validate_tick_spacing(10).is_ok());
+        assert!(validate_tick_spacing(-10).is_ok());
+        assert!(validate_tick_spacing(100).is_ok());
+        assert!(validate_tick_spacing(MIN_TICK).is_ok());
+        assert!(validate_tick_spacing(MAX_TICK).is_ok());
+
+        for _ in 0..100 {
+            let tick = rng.gen_range(MIN_TICK..=MAX_TICK) * TICK_SPACING;
+            assert!(validate_tick_spacing(tick).is_ok());
+        }
+
+        for _ in 0..100 {
+            let offset = rng.gen_range(1..TICK_SPACING);
+            let base = rng.gen_range(MIN_TICK..=MAX_TICK) * TICK_SPACING;
+            let tick = base + offset;
+            assert!(validate_tick_spacing(tick).is_err());
+        }
     }
 
     #[test]

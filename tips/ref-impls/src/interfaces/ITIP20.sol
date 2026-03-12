@@ -215,7 +215,12 @@ interface ITIP20 {
     /// @param amount The amount of tokens to transfer.
     /// @param memo The memo to attach to the transfer.
     /// @return success True if the transfer was successful.
-    function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo)
+    function transferFromWithMemo(
+        address from,
+        address to,
+        uint256 amount,
+        bytes32 memo
+    )
         external
         returns (bool);
 
@@ -242,5 +247,31 @@ interface ITIP20 {
     /// @param account The address to query pending rewards for.
     /// @return The total pending claimable reward amount.
     function getPendingRewards(address account) external view returns (uint256);
+
+    // EIP-2612 Permit (TIP-1004)
+
+    /// @notice The permit signature has expired (block.timestamp > deadline)
+    error PermitExpired();
+
+    /// @notice The permit signature is invalid (wrong signer, malformed, or zero address recovered)
+    error InvalidSignature();
+
+    /// @notice Approves `spender` to spend `value` tokens on behalf of `owner` via a signed permit
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    )
+        external;
+
+    /// @notice Returns the current nonce for an address
+    function nonces(address owner) external view returns (uint256);
+
+    /// @notice Returns the EIP-712 domain separator for this token
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
 
 }

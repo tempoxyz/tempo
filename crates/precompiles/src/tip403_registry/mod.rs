@@ -14,14 +14,38 @@ use crate::{
 };
 use alloy::primitives::{Address, U256};
 
+/// Built-in policy ID that always rejects authorization.
+pub const REJECT_ALL_POLICY_ID: u64 = 0;
+
+/// Built-in policy ID that always allows authorization.
+pub const ALLOW_ALL_POLICY_ID: u64 = 1;
+
+/// Registry for [TIP-403] transfer policies. TIP20 tokens reference an ID from this registry
+/// to police transfers between sender and receiver addresses.
+///
+/// [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
+///
+/// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
+/// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = TIP403_REGISTRY_ADDRESS)]
 pub struct TIP403Registry {
+    /// Monotonically increasing counter for policy IDs. Starts at `2` because IDs `0`
+    /// ([`REJECT_ALL_POLICY_ID`]) and `1` ([`ALLOW_ALL_POLICY_ID`]) are reserved special
+    /// policies.
     policy_id_counter: u64,
+    /// Maps a policy ID to its [`PolicyRecord`], which stores the base [`PolicyData`]
+    /// (type + admin) and, for compound policies, the [`CompoundPolicyData`] sub-policy
+    /// references.
     policy_records: Mapping<u64, PolicyRecord>,
+    /// Per-policy address set used by simple (non-compound) policies. For whitelists the
+    /// value is `true` when the address is allowed; for blacklists it is `true` when the
+    /// address is restricted.
     policy_set: Mapping<u64, Mapping<Address, bool>>,
 }
 
-/// Policy record containing base data and optional data for compound policies (TIP-1015)
+/// Policy record containing base data and optional data for compound policies ([TIP-1015])
+///
+/// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
 #[derive(Debug, Clone, Storable)]
 pub struct PolicyRecord {
     /// Base policy data
@@ -30,7 +54,9 @@ pub struct PolicyRecord {
     pub compound: CompoundPolicyData,
 }
 
-/// Data for compound policies (TIP-1015)
+/// Data for compound policies ([TIP-1015])
+///
+/// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
 #[derive(Debug, Clone, Default, Storable)]
 pub struct CompoundPolicyData {
     pub sender_policy_id: u64,
@@ -54,6 +80,7 @@ pub enum AuthRole {
     MintRecipient,
 }
 
+/// Base policy metadata. Packed into a single storage slot.
 #[derive(Debug, Clone, Storable)]
 pub struct PolicyData {
     // NOTE: enums are defined as u8, and leverage the sol! macro's `TryInto<u8>` impl
@@ -106,6 +133,11 @@ impl PolicyData {
     fn is_compound(&self) -> bool {
         self.policy_type == PolicyType::COMPOUND as u8
     }
+
+    /// Returns `true` if the policy data is the default (uninitialized) value.
+    fn is_default(&self) -> bool {
+        self.policy_type == 0 && self.admin == Address::ZERO
+    }
 }
 
 impl TIP403Registry {
@@ -116,7 +148,7 @@ impl TIP403Registry {
 
     // View functions
     pub fn policy_id_counter(&self) -> Result<u64> {
-        // Initialize policy ID counter to 2 if it's 0 (skip special policies)
+        // Initialize policy ID counter to 2 if it's 0 (skip built-in policy IDs)
         self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
@@ -135,13 +167,16 @@ impl TIP403Registry {
         &self,
         call: ITIP403Registry::policyDataCall,
     ) -> Result<ITIP403Registry::policyDataReturn> {
-        // Check if policy exists before returning data
-        if !self.policy_exists(ITIP403Registry::policyExistsCall {
-            policyId: call.policyId,
-        })? {
+        // Check if policy exists before reading the data (spec: pre-T2)
+        if !self.storage.spec().is_t2()
+            && !self.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: call.policyId,
+            })?
+        {
             return Err(TIP403RegistryError::policy_not_found().into());
         }
 
+        // Get policy data and verify that the policy id exists (spec: +T2)
         let data = self.get_policy_data(call.policyId)?;
 
         Ok(ITIP403Registry::policyDataReturn {
@@ -150,7 +185,9 @@ impl TIP403Registry {
         })
     }
 
-    /// Returns the compound policy data for a compound policy (TIP-1015)
+    /// Returns the compound policy data for a compound policy ([TIP-1015])
+    ///
+    /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn compound_policy_data(
         &self,
         call: ITIP403Registry::compoundPolicyDataCall,
@@ -379,7 +416,9 @@ impl TIP403Registry {
         ))
     }
 
-    /// Creates a new compound policy that references three simple policies (TIP-1015)
+    /// Creates a new compound policy that references three simple policies ([TIP-1015])
+    ///
+    /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn create_compound_policy(
         &mut self,
         msg_sender: Address,
@@ -426,7 +465,9 @@ impl TIP403Registry {
         Ok(new_policy_id)
     }
 
-    /// Core role-based authorization check (TIP-1015).
+    /// Core role-based authorization check ([TIP-1015]).
+    ///
+    /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn is_authorized_as(&self, policy_id: u64, user: Address, role: AuthRole) -> Result<bool> {
         if let Some(auth) = self.builtin_authorization(policy_id) {
             return Ok(auth);
@@ -460,11 +501,16 @@ impl TIP403Registry {
         self.is_simple(policy_id, user, &data)
     }
 
-    /// Returns authorization result for built-in policies (0 = reject, 1 = allow).
+    /// Returns authorization result for built-in policies
+    /// ([`REJECT_ALL_POLICY_ID`] / [`ALLOW_ALL_POLICY_ID`]).
     /// Returns None for user-created policies.
     #[inline]
     fn builtin_authorization(&self, policy_id: u64) -> Option<bool> {
-        (policy_id < 2).then_some(policy_id == 1)
+        match policy_id {
+            ALLOW_ALL_POLICY_ID => Some(true),
+            REJECT_ALL_POLICY_ID => Some(false),
+            _ => None,
+        }
     }
 
     /// Authorization for simple (non-compound) policies only.
@@ -515,8 +561,22 @@ impl TIP403Registry {
     }
 
     // Internal helper functions
+
+    /// Returns policy data for the given policy ID.
+    /// Errors with `PolicyNotFound` for invalid policy ids.
     fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
-        self.policy_records[policy_id].base.read()
+        let data = self.policy_records[policy_id].base.read()?;
+
+        // Verify that the policy id exists (spec: +T2).
+        // Skip the counter read (extra SLOAD) when policy data is non-default.
+        if self.storage.spec().is_t2()
+            && data.is_default()
+            && policy_id >= self.policy_id_counter()?
+        {
+            return Err(TIP403RegistryError::policy_not_found().into());
+        }
+
+        Ok(data)
     }
 
     fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
@@ -587,13 +647,13 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::{
         primitives::{Address, Log},
         sol_types::SolEvent,
     };
-    use rand::Rng;
+    use rand_08::Rng;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
 
@@ -751,7 +811,7 @@ mod tests {
             assert!(registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: 1 })?);
 
             // Test 100 random policy IDs > 1 should not exist initially
-            let mut rng = rand::thread_rng();
+            let mut rng = rand_08::thread_rng();
             for _ in 0..100 {
                 let random_policy_id = rng.gen_range(2..u64::MAX);
                 assert!(!registry.policy_exists(ITIP403Registry::policyExistsCall {
@@ -1936,6 +1996,126 @@ mod tests {
                 TIP403RegistryError::invalid_policy_type().into()
             );
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_policy_data_encode_to_slot_returns_correct_value() -> eyre::Result<()> {
+        let admin = Address::random();
+        let policy_data = PolicyData {
+            policy_type: 0, // WHITELIST
+            admin,
+        };
+
+        let encoded = policy_data.encode_to_slot();
+
+        // Decode it back and verify
+        let decoded = PolicyData::decode_from_slot(encoded);
+        assert_eq!(decoded.policy_type, policy_data.policy_type);
+        assert_eq!(decoded.admin, policy_data.admin);
+
+        // Verify encoded is NOT default (all zeros)
+        assert_ne!(
+            encoded,
+            U256::ZERO,
+            "encode_to_slot should return non-default value for valid policy data"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_initialize_sets_storage_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Before init, should not be initialized
+            assert!(!registry.is_initialized()?);
+
+            // Initialize
+            registry.initialize()?;
+
+            // After init, should be initialized
+            assert!(registry.is_initialized()?);
+
+            // New handle should still see initialized state
+            let registry2 = TIP403Registry::new();
+            assert!(registry2.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_policy_exists_boundary_at_counter() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Create a policy to get policy_id = 2 (counter starts at 2)
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+
+            // The counter should now be 3
+            let counter = registry.policy_id_counter()?;
+            assert_eq!(counter, 3);
+
+            // Policy at counter - 1 should exist
+            assert!(registry.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: policy_id,
+            })?);
+
+            // Policy at exactly counter should NOT exist (tests < vs <=)
+            assert!(
+                !registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: counter })?
+            );
+
+            // Policy at counter + 1 should NOT exist
+            assert!(!registry.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: counter + 1,
+            })?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_nonexistent_policy_behavior() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let user = Address::random();
+        let nonexistent_id = 999;
+
+        // Pre-T2: silently returns default data / false
+        StorageCtx::enter(&mut storage, || -> Result<()> {
+            let registry = TIP403Registry::new();
+            let data = registry.get_policy_data(nonexistent_id)?;
+            assert!(data.is_default());
+            assert!(!registry.is_authorized_as(nonexistent_id, user, AuthRole::Transfer)?);
+            Ok(())
+        })?;
+
+        // T2: reverts with `PolicyNotFound`
+        let mut storage = storage.with_spec(TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+            assert_eq!(
+                registry.get_policy_data(nonexistent_id).unwrap_err(),
+                TIP403RegistryError::policy_not_found().into()
+            );
+            assert_eq!(
+                registry
+                    .is_authorized_as(nonexistent_id, user, AuthRole::Transfer)
+                    .unwrap_err(),
+                TIP403RegistryError::policy_not_found().into()
+            );
             Ok(())
         })
     }

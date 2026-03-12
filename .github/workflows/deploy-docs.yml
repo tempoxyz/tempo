@@ -1,5 +1,7 @@
 name: Deploy TIPs to Docs
 
+permissions: {}
+
 on:
   push:
     branches: [main]
@@ -12,6 +14,7 @@ jobs:
   deploy:
     name: Trigger Vercel Deploy
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Deploy to Vercel
         run: |
