@@ -3166,6 +3166,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let validator = Address::random();
+        let fee_recipient = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
             vc.initialize(owner)?;
@@ -3175,7 +3176,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add { fee_recipient },
             );
 
             // Generate signature from a completely different key
@@ -3183,7 +3184,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add { fee_recipient },
             );
 
             vc.storage.set_block_number(200);
@@ -3194,6 +3195,7 @@ mod tests {
                     pubkey,
                     "192.168.1.1:8000",
                     "192.168.1.1",
+                    fee_recipient,
                     wrong_sig,
                 ),
             );
@@ -3211,6 +3213,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let validator = Address::random();
+        let fee_recipient = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
             vc.initialize(owner)?;
@@ -3220,13 +3223,13 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
 
             vc.storage.set_block_number(200);
             let result = vc.add_validator(
                 owner,
-                make_add_call(validator, pubkey, "192.168.1.1:8000", "192.168.1.1", sig),
+                make_add_call(validator, pubkey, "192.168.1.1:8000", "192.168.1.1", fee_recipient, sig),
             );
             assert_eq!(
                 result,
@@ -3242,6 +3245,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let validator = Address::random();
+        let fee_recipient = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
             vc.initialize(owner)?;
@@ -3250,7 +3254,7 @@ mod tests {
             vc.storage.set_block_number(200);
             vc.add_validator(
                 owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1"),
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", fee_recipient),
             )?;
 
             // Generate a new pubkey for rotation
@@ -3258,7 +3262,7 @@ mod tests {
                 validator,
                 "10.0.0.1:8000",
                 "10.0.0.1",
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
 
             // Sign with a different key
@@ -3266,14 +3270,14 @@ mod tests {
                 validator,
                 "10.0.0.1:8000",
                 "10.0.0.1",
-                VALIDATOR_NS_ROTATE,
+                SignatureKind::Rotate,
             );
 
             vc.storage.set_block_number(300);
             let result = vc.rotate_validator(
                 owner,
                 IValidatorConfigV2::rotateValidatorCall {
-                    validatorAddress: validator,
+                    idx: 0,
                     publicKey: new_pubkey,
                     ingress: "10.0.0.1:8000".to_string(),
                     egress: "10.0.0.1".to_string(),
@@ -3294,6 +3298,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let validator = Address::random();
+        let fee_recipient = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
             vc.initialize(owner)?;
@@ -3302,7 +3307,7 @@ mod tests {
                 validator,
                 "192.168.1.1:8000",
                 "192.168.1.1",
-                VALIDATOR_NS_ADD,
+                SignatureKind::Add { fee_recipient },
             );
 
             vc.storage.set_block_number(200);
@@ -3313,6 +3318,7 @@ mod tests {
                     pubkey,
                     "192.168.1.1:8000",
                     "192.168.1.1",
+                    fee_recipient,
                     vec![0xde, 0xad],
                 ),
             );
