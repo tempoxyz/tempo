@@ -25,19 +25,21 @@ use tempo_node::node::TempoNode;
 use tracing::{debug, instrument};
 
 /// A testing node that can start and stop both consensus and execution layers.
-pub struct TestingNode<TClock>
+pub struct TestingNode<TContext>
 where
-    TClock: commonware_runtime::Clock,
+    TContext: commonware_runtime::Clock,
 {
+    /// The runtime context.
+    pub context: TContext,
     /// Unique identifier for this node
     pub uid: String,
     /// Public key of the validator
     pub public_key: PublicKey,
     /// Simulated network oracle for test environments
-    pub oracle: Oracle<PublicKey, TClock>,
+    pub oracle: Oracle<PublicKey, TContext>,
     /// Consensus configuration used to start the consensus engine
     pub consensus_config:
-        consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>>,
+        consensus::Builder<Control<PublicKey, TContext>, SocketManager<PublicKey, TContext>>,
     /// Running consensus handle (None if consensus is stopped)
     pub consensus_handle: Option<Handle<eyre::Result<()>>>,
     /// Path to the execution node's data directory
@@ -65,9 +67,9 @@ where
     n_starts: u32,
 }
 
-impl<TClock> TestingNode<TClock>
+impl<TContext> TestingNode<TContext>
 where
-    TClock: commonware_runtime::Clock,
+    TContext: commonware_runtime::Clock,
 {
     /// Create a new TestingNode without spawning execution or starting consensus.
     ///
@@ -77,15 +79,16 @@ where
     pub fn new(
         uid: String,
         public_key: PublicKey,
-        oracle: Oracle<PublicKey, TClock>,
+        oracle: Oracle<PublicKey, TContext>,
         consensus_config: consensus::Builder<
-            Control<PublicKey, TClock>,
-            SocketManager<PublicKey, TClock>,
+            Control<PublicKey, TContext>,
+            SocketManager<PublicKey, TContext>,
         >,
         execution_runtime: ExecutionRuntimeHandle,
         execution_config: ExecutionNodeConfig,
         network_address: SocketAddr,
         chain_address: Address,
+        context: TContext,
     ) -> Self {
         let execution_node_datadir = execution_runtime
             .nodes_dir()
@@ -93,6 +96,7 @@ where
 
         let execution_node_name = execution_runtime::execution_node_name(&public_key);
         Self {
+            context,
             uid,
             public_key,
             oracle,
@@ -125,19 +129,20 @@ where
     /// Get a reference to the consensus config.
     pub fn consensus_config(
         &self,
-    ) -> &consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>> {
+    ) -> &consensus::Builder<Control<PublicKey, TContext>, SocketManager<PublicKey, TContext>> {
         &self.consensus_config
     }
 
     /// Get a mutable reference to the consensus config.
     pub fn consensus_config_mut(
         &mut self,
-    ) -> &mut consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>> {
+    ) -> &mut consensus::Builder<Control<PublicKey, TContext>, SocketManager<PublicKey, TContext>>
+    {
         &mut self.consensus_config
     }
 
     /// Get a reference to the oracle.
-    pub fn oracle(&self) -> &Oracle<PublicKey, TClock> {
+    pub fn oracle(&self) -> &Oracle<PublicKey, TContext> {
         &self.oracle
     }
 
@@ -289,7 +294,7 @@ where
         self.stop_execution().await;
 
         // Sleep for a bit to make sure that all tasks are finished
-        std::thread::sleep(Duration::from_secs(1));
+        self.context.sleep(Duration::from_secs(10)).await;
     }
 
     /// Stop only the consensus engine.

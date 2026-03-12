@@ -347,7 +347,6 @@ fn can_restart_after_joining_from_snapshot() {
             .best_block_number()
             .unwrap();
 
-        context.sleep(Duration::from_secs(10)).await;
         receiver.start(&context).await;
 
         info!(
