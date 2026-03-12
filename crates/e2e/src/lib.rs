@@ -270,7 +270,6 @@ pub async fn setup_validators(
             execution_config,
             network_address,
             chain_address,
-            context.clone(),
         ));
     }
 

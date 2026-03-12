@@ -48,7 +48,7 @@ fn spawning_execution_node_works() {
             .expect("failed to init database")
             .with_metrics();
         let node = handle
-            .spawn_node("node-1", config, database)
+            .spawn_node("node-1", config, database, None)
             .await
             .expect("a running execution runtime must be able to spawn nodes");
 

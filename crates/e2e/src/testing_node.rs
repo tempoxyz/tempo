@@ -8,13 +8,13 @@ use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
 use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
 use reth_ethereum::{
     provider::{
-        DatabaseProviderFactory, ProviderFactory,
+        DatabaseProviderFactory, ProviderFactory, RocksDBProviderFactory,
         providers::{BlockchainProvider, RocksDBProvider, StaticFileProvider},
     },
     storage::BlockNumReader,
 };
 use reth_node_builder::NodeTypesWithDBAdapter;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tempo_commonware_node::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
@@ -25,21 +25,19 @@ use tempo_node::node::TempoNode;
 use tracing::{debug, instrument};
 
 /// A testing node that can start and stop both consensus and execution layers.
-pub struct TestingNode<TContext>
+pub struct TestingNode<TClock>
 where
-    TContext: commonware_runtime::Clock,
+    TClock: commonware_runtime::Clock,
 {
-    /// The runtime context.
-    pub context: TContext,
     /// Unique identifier for this node
     pub uid: String,
     /// Public key of the validator
     pub public_key: PublicKey,
     /// Simulated network oracle for test environments
-    pub oracle: Oracle<PublicKey, TContext>,
+    pub oracle: Oracle<PublicKey, TClock>,
     /// Consensus configuration used to start the consensus engine
     pub consensus_config:
-        consensus::Builder<Control<PublicKey, TContext>, SocketManager<PublicKey, TContext>>,
+        consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>>,
     /// Running consensus handle (None if consensus is stopped)
     pub consensus_handle: Option<Handle<eyre::Result<()>>>,
     /// Path to the execution node's data directory
@@ -52,6 +50,8 @@ where
     pub execution_config: ExecutionNodeConfig,
     /// Database instance for the execution node
     pub execution_database: Option<DatabaseEnv>,
+    /// RocksDB provider for the execution node
+    pub execution_rocksdb: Option<RocksDBProvider>,
     /// The execution node name assigned at initialization. Important when
     /// constructing the datadir at which to find the node.
     pub execution_node_name: String,
@@ -67,9 +67,9 @@ where
     n_starts: u32,
 }
 
-impl<TContext> TestingNode<TContext>
+impl<TClock> TestingNode<TClock>
 where
-    TContext: commonware_runtime::Clock,
+    TClock: commonware_runtime::Clock,
 {
     /// Create a new TestingNode without spawning execution or starting consensus.
     ///
@@ -79,16 +79,15 @@ where
     pub fn new(
         uid: String,
         public_key: PublicKey,
-        oracle: Oracle<PublicKey, TContext>,
+        oracle: Oracle<PublicKey, TClock>,
         consensus_config: consensus::Builder<
-            Control<PublicKey, TContext>,
-            SocketManager<PublicKey, TContext>,
+            Control<PublicKey, TClock>,
+            SocketManager<PublicKey, TClock>,
         >,
         execution_runtime: ExecutionRuntimeHandle,
         execution_config: ExecutionNodeConfig,
         network_address: SocketAddr,
         chain_address: Address,
-        context: TContext,
     ) -> Self {
         let execution_node_datadir = execution_runtime
             .nodes_dir()
@@ -96,7 +95,6 @@ where
 
         let execution_node_name = execution_runtime::execution_node_name(&public_key);
         Self {
-            context,
             uid,
             public_key,
             oracle,
@@ -108,6 +106,7 @@ where
             execution_config,
             execution_node_name,
             execution_database: None,
+            execution_rocksdb: None,
             last_db_block_on_stop: None,
             network_address,
             chain_address,
@@ -129,20 +128,19 @@ where
     /// Get a reference to the consensus config.
     pub fn consensus_config(
         &self,
-    ) -> &consensus::Builder<Control<PublicKey, TContext>, SocketManager<PublicKey, TContext>> {
+    ) -> &consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>> {
         &self.consensus_config
     }
 
     /// Get a mutable reference to the consensus config.
     pub fn consensus_config_mut(
         &mut self,
-    ) -> &mut consensus::Builder<Control<PublicKey, TContext>, SocketManager<PublicKey, TContext>>
-    {
+    ) -> &mut consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>> {
         &mut self.consensus_config
     }
 
     /// Get a reference to the oracle.
-    pub fn oracle(&self) -> &Oracle<PublicKey, TContext> {
+    pub fn oracle(&self) -> &Oracle<PublicKey, TClock> {
         &self.oracle
     }
 
@@ -185,9 +183,14 @@ where
                 &self.execution_node_name,
                 self.execution_config.clone(),
                 self.execution_database.as_ref().unwrap().clone(),
+                self.execution_rocksdb.clone(),
             )
             .await
             .expect("must be able to spawn execution node");
+
+        if self.execution_rocksdb.is_none() {
+            self.execution_rocksdb = Some(execution_node.node.provider().rocksdb_provider());
+        }
 
         // verify database persistence on restart
         if let Some(expected_block) = self.last_db_block_on_stop {
@@ -292,9 +295,6 @@ where
     pub async fn stop(&mut self) {
         self.stop_consensus().await;
         self.stop_execution().await;
-
-        // Sleep for a bit to make sure that all tasks are finished
-        self.context.sleep(Duration::from_secs(10)).await;
     }
 
     /// Stop only the consensus engine.
@@ -311,14 +311,6 @@ where
 
         // Wait for the consensus handle to actually finish
         let _ = handle.await;
-
-        // Drop the execution node reference from the consensus config
-        self.consensus_config.execution_node.take();
-        self.consensus_config.feed_state.drop_execution_node();
-
-        if let Some(feed_state) = &mut self.execution_config.feed_state {
-            feed_state.drop_execution_node();
-        }
 
         debug!(%self.uid, "stopped consensus for testing node");
     }
