@@ -35,8 +35,6 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 use crate::init_state;
 
-const ADD_VALIDATOR_NAMESPACE: &[u8] = b"TEMPO_VALIDATOR_CONFIG_V2_ADD_VALIDATOR";
-
 /// Passthrough args for extension management commands.
 ///
 /// These commands are defined here so they appear in `tempo --help`, but
@@ -143,7 +141,6 @@ impl ConsensusSubcommand {
 /// Shared validator identity arguments used across add/rotate/sign commands.
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorIdentityArgs {
-    /// The validator address.
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
 
@@ -196,6 +193,9 @@ pub(crate) struct AddValidator {
 
     #[command(flatten)]
     submit: ValidatorTransactionArgs,
+
+    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
+    fee_recipient: Address,
 }
 
 impl AddValidator {
@@ -238,6 +238,7 @@ impl AddValidator {
             ingress: self.identity.ingress.to_string(),
             egress: self.identity.egress.to_string(),
             signature: self.submit.signature,
+            feeRecipient: self.fee_recipient,
         };
 
         let tx = TransactionRequest::default()
@@ -258,6 +259,9 @@ impl AddValidator {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct RotateValidator {
+    #[arg(long, value_name = "INTEGER")]
+    validator_index: u64,
+
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
 
@@ -300,7 +304,7 @@ impl RotateValidator {
             .wrap_err("rotate-validator signature check failed")?;
 
         let calldata = IValidatorConfigV2::rotateValidatorCall {
-            validatorAddress: self.identity.validator_address,
+            idx: self.validator_index,
             publicKey: self.identity.public_key,
             ingress: self.identity.ingress.to_string(),
             egress: self.identity.egress.to_string(),
