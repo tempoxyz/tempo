@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use alloy_evm::eth::EthBlockExecutionCtx;
 use alloy_primitives::{Address, B256};
 use reth_evm::NextBlockEnvAttributes;
-use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 use tempo_primitives::subblock::PartialValidatorKey;
 
 /// Execution context for Tempo block.
@@ -59,7 +58,7 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
         // This address can never be the sender of a transaction, so its validatorTokens
         // mapping is guaranteed to be zero, which falls back to DEFAULT_FEE_TOKEN.
         // NOTE: Address::ZERO cannot be used because genesis maps it to the "DONOTUSE" token.
-        inner.suggested_fee_recipient = TIP_FEE_MANAGER_ADDRESS;
+        inner.suggested_fee_recipient = tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 
         Self {
             inner,
@@ -106,7 +105,8 @@ mod tests {
         assert_eq!(pending_env.timestamp_millis_part, timestamp_millis_part);
         assert!(pending_env.subblock_fee_recipients.is_empty());
         assert_eq!(
-            pending_env.inner.suggested_fee_recipient, TIP_FEE_MANAGER_ADDRESS,
+            pending_env.inner.suggested_fee_recipient,
+            tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS,
             "pending env uses TIP_FEE_MANAGER_ADDRESS so RPC resolves default fee token"
         );
     }

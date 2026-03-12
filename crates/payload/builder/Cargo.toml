@@ -32,6 +32,7 @@ reth-primitives-traits.workspace = true
 reth-revm.workspace = true
 reth-storage-api.workspace = true
 reth-transaction-pool.workspace = true
+reth-trie-common.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
