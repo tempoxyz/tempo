@@ -74,7 +74,7 @@ name = "tempo"
 path = "src/main.rs"
 
 [features]
-efault = ["asm-keccak", "jemalloc", "otlp"]
+default = ["asm-keccak", "jemalloc", "otlp"]
 
 asm-keccak = [
 	"alloy-primitives/asm-keccak",
