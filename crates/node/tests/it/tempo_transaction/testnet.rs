@@ -74,7 +74,7 @@ impl super::types::TestEnv for Testnet {
     }
 
     fn uses_legacy_keyauth_pool_validation(&self) -> bool {
-        true
+        false
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {
