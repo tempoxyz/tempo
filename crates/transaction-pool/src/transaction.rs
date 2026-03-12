@@ -637,7 +637,9 @@ mod tests {
     use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;
     use alloy_primitives::{Address, Signature, TxKind, address};
-    use tempo_precompiles::nonce::NonceManager;
+    use alloy_sol_types::SolCall;
+    use tempo_contracts::precompiles::ITIP20;
+    use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
         TempoTransaction,
         tempo_transaction::Call,
@@ -648,11 +650,14 @@ mod tests {
     #[test]
     fn test_payment_classification_positive() {
         // Test that TIP20 address prefix with valid calldata is classified as payment
-        let payment_addr = address!("20c0000000000000000000000000000000000001");
-        let mut calldata = vec![0u8; 68];
-        calldata[..4].copy_from_slice(&alloy_primitives::hex!("a9059cbb"));
+        let calldata = ITIP20::transferCall {
+            to: Address::random(),
+            amount: U256::random(),
+        }
+        .abi_encode();
+
         let tx = TxEip1559 {
-            to: TxKind::Call(payment_addr),
+            to: TxKind::Call(PATH_USD_ADDRESS),
             gas_limit: 21000,
             input: Bytes::from(calldata),
             ..Default::default()

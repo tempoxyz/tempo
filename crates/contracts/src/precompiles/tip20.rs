@@ -187,7 +187,8 @@ impl ITIP20::ITIP20Calls {
         fn is_call<C: alloy_sol_types::SolCall>(input: &[u8]) -> bool {
             use alloy_sol_types::SolType;
             input.first_chunk::<4>() == Some(&C::SELECTOR)
-                && input.len() == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap()
+                && input.len()
+                    == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
         }
 
         is_call::<ITIP20::transferCall>(input)
