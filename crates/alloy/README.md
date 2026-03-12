@@ -35,7 +35,7 @@ async fn build_provider() -> Result<impl Provider<TempoNetwork>, TransportError>
 
 This crate also exposes bindings for all Tempo precompiles, such as [TIP20](https://docs.tempo.xyz/protocol/tip20/overview):
 
-```rust
+```rust,no_run
 use alloy::{
     primitives::{U256, address},
     providers::ProviderBuilder,
