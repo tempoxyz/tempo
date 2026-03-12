@@ -54,7 +54,7 @@ pub struct TempoPooledTransaction {
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
-        let is_payment = transaction.is_strict_payment();
+        let is_payment = transaction.is_payment_v2();
         let is_expiring_nonce = transaction
             .as_aa()
             .map(|tx| tx.tx().is_expiring_nonce_tx())

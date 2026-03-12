@@ -171,6 +171,36 @@ crate::sol! {
     }
 }
 
+impl ITIP20::ITIP20Calls {
+    /// Returns `true` if `input` matches one of the recognized [TIP-20 payment] selectors:
+    /// - `transfer` / `transferWithMemo`
+    /// - `transferFrom` / `transferFromWithMemo`
+    /// - `mint` / `mintWithMemo`
+    /// - `burn` / `burnWithMemo`
+    ///
+    /// # NOTES
+    /// - Only validates calldata; the caller must check the TIP-20 address prefix on `to`.
+    /// - Only selector and exact ABI-encoded length match, no decoding (better performance).
+    ///
+    /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+    pub fn is_payment(input: &[u8]) -> bool {
+        fn is_call<C: alloy_sol_types::SolCall>(input: &[u8]) -> bool {
+            use alloy_sol_types::SolType;
+            input.first_chunk::<4>() == Some(&C::SELECTOR)
+                && input.len() == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap()
+        }
+
+        is_call::<ITIP20::transferCall>(input)
+            || is_call::<ITIP20::transferWithMemoCall>(input)
+            || is_call::<ITIP20::transferFromCall>(input)
+            || is_call::<ITIP20::transferFromWithMemoCall>(input)
+            || is_call::<ITIP20::mintCall>(input)
+            || is_call::<ITIP20::mintWithMemoCall>(input)
+            || is_call::<ITIP20::burnCall>(input)
+            || is_call::<ITIP20::burnWithMemoCall>(input)
+    }
+}
+
 impl RolesAuthError {
     /// Creates an error for unauthorized access.
     pub const fn unauthorized() -> Self {

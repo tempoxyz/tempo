@@ -11,6 +11,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-contracts.workspace = true
+
 # Reth
 reth-db-api = { workspace = true, optional = true }
 reth-ethereum-primitives = { workspace = true, optional = true }
