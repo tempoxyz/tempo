@@ -336,7 +336,7 @@ where
                 blocker: self.config.blocker.clone(),
                 automaton: self.config.application.clone(),
                 relay: self.config.application.clone(),
-                reporter: Reporters::from((
+                reporter: Reporters::<_, crate::subblocks::Mailbox, _>::from((
                     self.config.subblocks.clone(),
                     Reporters::from((self.config.marshal.clone(), self.config.feed.clone())),
                 )),
