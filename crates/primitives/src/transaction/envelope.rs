@@ -193,7 +193,7 @@ impl TempoTxEnvelope {
 
     /// Strict [TIP-20 payment] classification: `0x20c0` prefix AND recognized calldata.
     ///
-    /// Like [`is_payment_v1`](Self::is_payment_v1), but additionally requires calldata to match a
+    /// Like [`is_payment`](Self::is_payment), but additionally requires calldata to match a
     /// recognized payment selector with exact ABI-encoded length.
     ///
     /// # NOTE
