@@ -63,7 +63,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let environment = self.env.init::<N>(AccessRights::RW)?;
         let provider_factory = environment.provider_factory;
 
-        let provider_rw = provider_factory.database_provider_rw()?;
+        let mut provider_rw = provider_factory.database_provider_rw()?;
 
         // Verify we're at genesis (block 0)
         let last_block = provider_rw.last_block_number()?;
@@ -81,9 +81,10 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         let mut total_entries = 0u64;
         let mut total_tokens = 0u64;
+        let mut total_commits = 0u64;
 
         // Process tokens from binary file, flushing hashed state in bounded batches
-        // to keep memory usage constant regardless of bloat size.
+        // and committing periodically to keep MDBX dirty pages bounded.
         loop {
             // Try to read header
             let mut header_buf = [0u8; 40];
@@ -123,72 +124,88 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 "Processing token storage"
             );
 
-            // Get cursors for plain state tables
-            let tx = provider_rw.tx_ref();
-            let mut storage_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
-            let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
-
             // Insert empty account for this address (required for storage to be included in trie)
             // Only insert if the account doesn't already exist from genesis
-            if account_cursor.seek_exact(address)?.is_none() {
-                account_cursor.upsert(address, &Account::default())?;
+            {
+                let tx = provider_rw.tx_ref();
+                let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
+                if account_cursor.seek_exact(address)?.is_none() {
+                    account_cursor.upsert(address, &Account::default())?;
+                }
             }
 
             // Write hashed account entry immediately
             provider_rw.insert_account_for_hashing([(address, Some(Account::default()))])?;
 
-            // Read entries and flush hashed storage in batches to bound memory
+            // Read entries and flush hashed storage in batches to bound memory.
+            // Each batch flush also commits the transaction and reopens it to
+            // release MDBX dirty pages, keeping memory usage bounded.
             let mut batch = Vec::with_capacity(HASHING_BATCH_SIZE.min(pair_count as usize));
             let mut entry_buf = [0u8; 64];
             let start = std::time::Instant::now();
             let mut last_log = start;
-            for i in 0..pair_count {
-                reader
-                    .read_exact(&mut entry_buf)
-                    .wrap_err("failed to read storage entry")?;
 
-                let slot = B256::from_slice(&entry_buf[..32]);
-                let value = U256::from_be_bytes::<32>(entry_buf[32..64].try_into().unwrap());
-
-                // Skip zero values (they represent deletion)
-                if value.is_zero() {
-                    continue;
-                }
-
-                let entry = StorageEntry { key: slot, value };
-
-                // Insert into plain storage state
-                storage_cursor.upsert(address, &entry)?;
-
-                batch.push(entry);
-                total_entries += 1;
-
-                if batch.len() >= HASHING_BATCH_SIZE {
-                    provider_rw.insert_storage_for_hashing([(address, batch.drain(..))])?;
-                }
-
-                let now = std::time::Instant::now();
-                if now.duration_since(last_log) >= std::time::Duration::from_secs(5)
-                    || i + 1 == pair_count
+            let mut i = 0u64;
+            while i < pair_count {
+                // Process up to one batch worth of entries with cursors scoped
+                // so they are dropped before the commit.
                 {
-                    let pct = ((i + 1) as f64 / pair_count as f64) * 100.0;
-                    let elapsed = start.elapsed();
-                    let pairs_per_sec = (i + 1) as f64 / elapsed.as_secs_f64();
-                    info!(
-                        target: "tempo::cli",
-                        %address,
-                        progress = format_args!("{}/{} ({pct:.0}%)", i + 1, pair_count),
-                        elapsed = ?elapsed,
-                        pairs_per_sec = pairs_per_sec as u64,
-                        "Inserting storage"
-                    );
-                    last_log = now;
-                }
-            }
+                    let tx = provider_rw.tx_ref();
+                    let mut storage_cursor =
+                        tx.cursor_dup_write::<tables::PlainStorageState>()?;
 
-            // Flush remaining entries for this token
-            if !batch.is_empty() {
-                provider_rw.insert_storage_for_hashing([(address, batch)])?;
+                    while i < pair_count && batch.len() < HASHING_BATCH_SIZE {
+                        reader
+                            .read_exact(&mut entry_buf)
+                            .wrap_err("failed to read storage entry")?;
+
+                        let slot = B256::from_slice(&entry_buf[..32]);
+                        let value =
+                            U256::from_be_bytes::<32>(entry_buf[32..64].try_into().unwrap());
+
+                        i += 1;
+
+                        // Skip zero values (they represent deletion)
+                        if value.is_zero() {
+                            continue;
+                        }
+
+                        let entry = StorageEntry { key: slot, value };
+
+                        // Insert into plain storage state
+                        storage_cursor.upsert(address, &entry)?;
+
+                        batch.push(entry);
+                        total_entries += 1;
+
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_log) >= std::time::Duration::from_secs(5)
+                            || i == pair_count
+                        {
+                            let pct = (i as f64 / pair_count as f64) * 100.0;
+                            let elapsed = start.elapsed();
+                            let pairs_per_sec = i as f64 / elapsed.as_secs_f64();
+                            info!(
+                                target: "tempo::cli",
+                                %address,
+                                progress = format_args!("{}/{} ({pct:.0}%)", i, pair_count),
+                                elapsed = ?elapsed,
+                                pairs_per_sec = pairs_per_sec as u64,
+                                "Inserting storage"
+                            );
+                            last_log = now;
+                        }
+                    }
+                } // cursors dropped
+
+                // Flush batch, commit, and reopen to release MDBX dirty pages
+                if !batch.is_empty() {
+                    provider_rw
+                        .insert_storage_for_hashing([(address, batch.drain(..))])?;
+                    provider_rw.commit()?;
+                    provider_rw = provider_factory.database_provider_rw()?;
+                    total_commits += 1;
+                }
             }
 
             total_tokens += 1;
@@ -197,6 +214,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 target: "tempo::cli",
                 %address,
                 total_entries,
+                total_commits,
                 "Token hashed storage flushed"
             );
         }
@@ -205,10 +223,11 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             target: "tempo::cli",
             total_tokens,
             total_entries,
+            total_commits,
             "All storage written (plain + hashed)"
         );
 
-        // Commit the transaction
+        // Final commit for any remaining writes (e.g. account inserts with no storage)
         provider_rw.commit()?;
 
         info!(
