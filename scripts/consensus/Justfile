@@ -1,0 +1,33 @@
+set dotenv-load := false
+
+consensus_dir := justfile_directory()
+
+generate-genesis:
+    rm -rf {{consensus_dir}}/generated
+    cargo xtask generate-genesis \
+        --validators 10.0.0.1:8000,10.0.0.2:8000,10.0.0.3:8000,10.0.0.4:8000 \
+        --seed 0 \
+        --accounts 100 \
+        --no-extra-tokens \
+        --no-pairwise-liquidity \
+        --output {{consensus_dir}}/generated
+    cd {{consensus_dir}}/generated && \
+        for i in 0 1 2 3; do mv "10.0.0.$((i+1)):8000" "validator-$i"; done
+
+up:
+    {{consensus_dir}}/start-network.sh
+
+down:
+    {{consensus_dir}}/stop-network.sh
+
+logs validator="0":
+    docker logs -f tempo-validator-{{validator}}
+
+test-partial:
+    {{consensus_dir}}/test-partial-network-failure.sh
+
+test-halt:
+    {{consensus_dir}}/test-network-halt-and-recovery.sh
+
+test-full:
+    {{consensus_dir}}/test-full-network-failure-and-recovery.sh

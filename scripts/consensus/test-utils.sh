@@ -5,10 +5,12 @@
 # Function to get current block number
 get_block_number() {
   local rpc_url="$1"
-  curl -s -X POST "$rpc_url" \
+  local hex
+  hex=$(curl -s -X POST "$rpc_url" \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' |
-    jq -r '.result // "0x0"' | xargs printf "%d\n" 2>/dev/null || echo "0"
+    jq -r '.result // "0x0"') || true
+  printf "%d" "${hex:-0x0}" 2>/dev/null || echo "0"
 }
 
 # Function to monitor block production for a specified duration
