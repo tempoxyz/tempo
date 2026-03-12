@@ -149,8 +149,10 @@ jobs:
       - name: Update reth crates in lockfile
         id: update
         run: |
-          # Capture old reth revision
-          OLD_REV=$(grep -A2 'name = "reth-engine-tree"' Cargo.lock | grep 'source' | sed 's/.*#//')
+          # Capture old reth revision via cargo metadata
+          OLD_REV=$(cargo metadata --format-version 1 2>/dev/null \
+            | jq -r '.packages[] | select(.name == "reth-engine-tree") | .source' \
+            | sed 's/.*#//')
 
           LOCK_BEFORE=$(sha256sum Cargo.lock | cut -d' ' -f1)
           cargo update -p reth-engine-tree
@@ -163,7 +165,9 @@ jobs:
             echo "bumped=true" >> "$GITHUB_OUTPUT"
 
             # Capture new reth revision
-            NEW_REV=$(grep -A2 'name = "reth-engine-tree"' Cargo.lock | grep 'source' | sed 's/.*#//')
+            NEW_REV=$(cargo metadata --format-version 1 2>/dev/null \
+              | jq -r '.packages[] | select(.name == "reth-engine-tree") | .source' \
+              | sed 's/.*#//')
             echo "old_rev=$OLD_REV" >> "$GITHUB_OUTPUT"
             echo "new_rev=$NEW_REV" >> "$GITHUB_OUTPUT"
           fi
@@ -406,7 +410,11 @@ jobs:
                     echo "Fetching logs for in-progress run $run_id..." >&2
                     echo ""
                     echo "=== run ${run_id} ==="
-                    gh run view "$run_id" --log 2>&1 | tail -300 || true
+                    LOG=$(gh run view "$run_id" --log 2>&1 || true)
+                    # Show error/panic lines with context, plus the tail for general state
+                    echo "$LOG" | grep -n -i -E 'panic|error\[|FAILED|timed out|deadlock|stack overflow' -B2 -A5 | head -200 || true
+                    echo "--- last 200 lines ---"
+                    echo "$LOG" | tail -200
                   done < <(gh run list --branch "$PR_BRANCH" --commit "$HEAD_SHA" --status in_progress --json databaseId --jq '.[].databaseId')
                 } > /tmp/amp-prompt.txt
 
