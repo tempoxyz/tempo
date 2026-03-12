@@ -397,6 +397,7 @@ def run-bench-single [
     tracy_filter: string
     tracy_seconds: int
     tracy_offset: int
+    tracing_otlp: string
 ] {
     print $"=== Starting run: ($run_label) ==="
 
@@ -435,6 +436,7 @@ def run-bench-single [
         | append (log-filter-args $loud)
         | append $extra_args
         | append (if $tracy != "off" { ["--log.tracy" "--log.tracy.filter" $tracy_filter] } else { [] })
+        | append (if $tracing_otlp != "" { [$"--tracing-otlp=($tracing_otlp)"] } else { [] })
 
     # Tracy environment variables
     let tracy_env_prefix = if $tracy == "on" {
@@ -1430,6 +1432,7 @@ def "main bench" [
     --tracy-filter: string = "debug"                # Tracy tracing filter level
     --tracy-seconds: int = 30                       # Tracy capture duration limit in seconds (0 = unlimited)
     --tracy-offset: int = 120                       # Seconds to wait before starting tracy capture (default: 120)
+    --tracing-otlp: string = ""                     # OTLP endpoint for tracing (e.g. http://10.10.0.150:10428/insert/opentelemetry/v1/traces)
 ] {
     validate-mode $mode
 
@@ -1710,7 +1713,7 @@ def "main bench" [
 
         for run in $runs {
             bench-recover $datadir
-            run-bench-single $run.tempo $baseline_bench_bin $genesis_path $datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list $tracy $tracy_filter $tracy_seconds $tracy_offset
+            run-bench-single $run.tempo $baseline_bench_bin $genesis_path $datadir $run.label $results_dir $tps $duration $accounts $max_concurrent_requests $weights $preset $bench_args $loud $node_args $bloat $run.git_ref $benchmark_id $reference_epoch $samply $samply_args_list $tracy $tracy_filter $tracy_seconds $tracy_offset $tracing_otlp
         }
 
         # Generate summary report
@@ -2333,6 +2336,7 @@ def main [] {
     print "  --tracy-filter <FILTER>  Tracy tracing filter level (default: debug)"
     print "  --tracy-seconds <N>      Tracy capture duration limit in seconds (default: 30, 0 = unlimited)"
     print "  --tracy-offset <N>       Seconds to wait before starting tracy capture (default: 120)"
+    print "  --tracing-otlp <URL>     OTLP endpoint for tracing (e.g. http://10.10.0.150:10428/insert/opentelemetry/v1/traces)"
     print "  --reset                  Reset localnet before starting"
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"

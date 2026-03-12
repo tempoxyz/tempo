@@ -512,6 +512,7 @@ jobs:
             --feature "$FEATURE_REF" \
             --bench-datadir /reth-bench \
             --tune \
+            --tracing-otlp "http://10.10.0.150:10428/insert/opentelemetry/v1/traces" \
             $([ "$BENCH_SAMPLY" = "true" ] && echo "--samply" || true) \
             $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true)
 
