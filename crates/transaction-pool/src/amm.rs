@@ -18,6 +18,7 @@ use tempo_chainspec::{
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
+    error::Result as TempoResult,
     storage::Handler,
     tip_fee_manager::{
         TipFeeManager,
@@ -97,9 +98,8 @@ impl AmmLiquidityCache {
         }
 
         // Spec doesn't affect raw storage reads (sload), so default is safe here.
-        let result = state_provider.with_read_only_storage_ctx(
-            TempoHardfork::default(),
-            || -> tempo_precompiles::error::Result<bool> {
+        state_provider
+            .with_read_only_storage_ctx(TempoHardfork::default(), || -> TempoResult<bool> {
                 // Otherwise, load pools that weren't found in cache and check if they have enough liquidity
                 for validator_token in missing_in_cache {
                     // This might race other fetches but we're OK with it.
@@ -124,10 +124,8 @@ impl AmmLiquidityCache {
                 }
 
                 Ok(false)
-            },
-        );
-
-        result.map_err(ProviderError::other)
+            })
+            .map_err(ProviderError::other)
     }
 
     /// Clears all cached state. Used on reorg to invalidate stale entries

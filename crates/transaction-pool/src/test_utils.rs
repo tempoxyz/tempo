@@ -355,8 +355,8 @@ pub(crate) fn create_mock_provider()
     MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(DEV.clone()))
 }
 
-/// Extension trait that lets tests populate `MockEthProvider` storage using the typed
-/// precompile handler API instead of manual slot encoding.
+/// Extension trait that lets tests populate `MockEthProvider` storage using the typed precompile
+/// handler API without relying on manual slot encoding.
 ///
 /// # Example
 ///
