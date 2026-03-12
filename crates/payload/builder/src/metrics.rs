@@ -75,6 +75,12 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+    /// Block gas utilization ratio (gas_used / gas_limit).
+    pub(crate) gas_utilization_ratio: Gauge,
+    /// Gas used by proposer pool transactions (non-shared).
+    pub(crate) non_shared_gas_used: Gauge,
+    /// Gas used by validator subblock transactions (shared).
+    pub(crate) shared_gas_used: Gauge,
 }
 
 impl TempoPayloadBuilderMetrics {

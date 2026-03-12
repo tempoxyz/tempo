@@ -42,7 +42,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
@@ -61,6 +61,12 @@ use tempo_transaction_pool::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+
+/// Threshold above which a single transaction execution emits a warning.
+const SLOW_TX_THRESHOLD: Duration = Duration::from_millis(50);
+
+/// Threshold above which the entire payload build emits a detailed warning.
+const SLOW_BUILD_THRESHOLD: Duration = Duration::from_millis(500);
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -258,9 +264,10 @@ where
             .with_bundle_update()
             .build();
         drop(_state_setup_span);
+        let state_setup_elapsed = state_setup_start.elapsed();
         self.metrics
             .state_setup_duration_seconds
-            .record(state_setup_start.elapsed());
+            .record(state_setup_elapsed);
 
         let chain_spec = self.provider.chain_spec();
         let is_osaka = self
@@ -481,6 +488,14 @@ where
             self.metrics
                 .transaction_execution_duration_seconds
                 .record(elapsed);
+            if elapsed > SLOW_TX_THRESHOLD {
+                warn!(
+                    tx_hash = %pool_tx.hash(),
+                    gas_used,
+                    ?elapsed,
+                    "slow transaction execution"
+                );
+            }
             trace!(?elapsed, "Transaction executed");
 
             // update and add to total fees
@@ -644,6 +659,35 @@ where
         self.metrics
             .rlp_block_size_bytes_last
             .set(rlp_length as f64);
+
+        // Gas utilization breakdown
+        let gas_utilization = gas_used as f64 / block_gas_limit as f64;
+        self.metrics.gas_utilization_ratio.set(gas_utilization);
+        self.metrics
+            .non_shared_gas_used
+            .set(cumulative_gas_used as f64);
+        // Subblock gas is the portion of total gas consumed by validator subblock transactions.
+        // cumulative_gas_used only tracks proposer pool txs, so the difference is subblock gas.
+        let shared_gas_used_amount = gas_used.saturating_sub(cumulative_gas_used);
+        self.metrics
+            .shared_gas_used
+            .set(shared_gas_used_amount as f64);
+
+        if elapsed > SLOW_BUILD_THRESHOLD {
+            warn!(
+                ?elapsed,
+                ?state_setup_elapsed,
+                ?total_normal_transaction_execution_elapsed,
+                ?total_subblock_transaction_execution_elapsed,
+                ?system_txs_execution_elapsed,
+                ?builder_finish_elapsed,
+                gas_used,
+                gas_utilization = format_args!("{:.1}%", gas_utilization * 100.0),
+                subblocks_count,
+                total_transactions,
+                "Slow payload build"
+            );
+        }
 
         info!(
             parent_hash = ?sealed_block.parent_hash(),
