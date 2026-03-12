@@ -699,7 +699,7 @@ impl StablecoinDEX {
     /// Fill an order and delete from storage. Returns the next best order and price level.
     ///
     /// NOTE: Maker transfer policy authorization is intentionally NOT checked here.
-    /// Swaps must never revert due to unexecutable orders from blacklisted makers, as that
+    /// Fills must never fail due to unexecutable orders from blacklisted makers, as that
     /// would force takers to pay gas eating through stale liquidity. Instead, anyone can
     /// call [`cancel_stale_order`](Self::cancel_stale_order) to remove orders from
     /// blacklisted makers before they are filled.
