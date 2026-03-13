@@ -141,17 +141,18 @@ impl ConsensusSubcommand {
 /// Shared validator identity arguments used across add/rotate/sign commands.
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorIdentityArgs {
+    /// The validator's address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
-
+    /// The fee recipient address
+    #[arg(long, value_name = "ETHEREUM_ADDRESS")]
+    fee_recipient_address: Address,
     /// The identity key of the validator (0x-prefixed hex).
     #[arg(long, value_name = "IDENTITY_KEY")]
     public_key: B256,
-
     /// The inbound address for the validator.
     #[arg(long, value_name = "IP:PORT")]
     ingress: SocketAddr,
-
     /// The outbound address for the validator.
     #[arg(long, value_name = "IP")]
     egress: IpAddr,
@@ -165,6 +166,7 @@ impl ValidatorIdentityArgs {
             public_key: self.public_key,
             ingress: self.ingress,
             egress: self.egress,
+            fee_recipient: self.fee_recipient_address,
         }
     }
 }
@@ -259,12 +261,11 @@ impl AddValidator {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct RotateValidator {
+    /// Index of the validator in the config.
     #[arg(long, value_name = "INTEGER")]
     validator_index: u64,
-
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
-
     #[command(flatten)]
     submit: ValidatorTransactionArgs,
 }
@@ -331,11 +332,9 @@ impl RotateValidator {
 pub(crate) struct CreateSignatureArgs {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
-
     /// RPC used to fetch the chain id
     #[arg(long, value_name = "RPC_URL")]
     chain_id_from_rpc_url: String,
-
     /// Path to the ed25519 signing key file.
     #[arg(long, value_name = "FILE")]
     signing_key: PathBuf,

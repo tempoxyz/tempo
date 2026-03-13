@@ -26,6 +26,7 @@ pub struct ValidatorConfig {
     pub public_key: B256,
     pub ingress: SocketAddr,
     pub egress: IpAddr,
+    pub fee_recipient: Address,
 }
 
 impl ValidatorConfig {
@@ -33,16 +34,20 @@ impl ValidatorConfig {
     /// `keccak256(chainId || contractAddr || validatorAddr || ingress || egress)`.
     pub fn message_hash(&self) -> B256 {
         let ingress = self.ingress.to_string();
+        let ingress_length = u8::try_from(ingress.len()).expect("ingress length must fit u8");
+
         let egress = self.egress.to_string();
+        let egress_length = u8::try_from(egress.len()).expect("egress length must fit u8");
 
         let mut hasher = Keccak256::new();
         hasher.update(self.chain_id.to_be_bytes());
         hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
         hasher.update(self.validator_address.as_slice());
-        hasher.update(ingress.len().to_be_bytes());
+        hasher.update([ingress_length]);
         hasher.update(ingress.as_bytes());
-        hasher.update(egress.len().to_be_bytes());
+        hasher.update([egress_length]);
         hasher.update(egress.as_bytes());
+        hasher.update(self.fee_recipient.as_slice());
         hasher.finalize()
     }
 

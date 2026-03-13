@@ -1019,6 +1019,7 @@ fn initialize_validator_config_v2(
                     public_key: pubkey,
                     ingress: addr,
                     egress: addr.ip(),
+                    fee_recipient: validator_address,
                 };
 
                 let message = config.message_hash();
