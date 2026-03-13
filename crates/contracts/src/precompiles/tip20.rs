@@ -319,3 +319,56 @@ impl TIP20Error {
         Self::InvalidSignature(ITIP20::InvalidSignature {})
     }
 }
+
+#[cfg(test)]
+#[rustfmt::skip]
+mod test {
+    use super::*;
+    use alloy_primitives::{Address, B256, U256};
+    use alloy_sol_types::SolCall;
+    use alloc::vec::Vec;
+
+    /// Returns valid ABI-encoded calldata for every recognized TIP-20 payment selector.
+    fn payment_calldatas() -> [Vec<u8>; 8] {
+        let (to, from, amount, memo) =
+            (Address::random(), Address::random(), U256::random(), B256::random());
+
+        [
+            ITIP20::transferCall { to, amount }.abi_encode(),
+            ITIP20::transferWithMemoCall { to, amount, memo }.abi_encode(),
+            ITIP20::transferFromCall { from, to, amount }.abi_encode(),
+            ITIP20::transferFromWithMemoCall { from, to, amount, memo }.abi_encode(),
+            ITIP20::mintCall { to, amount }.abi_encode(),
+            ITIP20::mintWithMemoCall { to, amount, memo }.abi_encode(),
+            ITIP20::burnCall { amount }.abi_encode(),
+            ITIP20::burnWithMemoCall { amount, memo }.abi_encode(),
+        ]
+    }
+
+    /// Returns ABI-encoded calldata for TIP-20 selectors NOT recognized as payments.
+    fn non_payment_calldatas() -> [Vec<u8>; 3] {
+        let mut data = ITIP20::transferCall { to: Address::random(), amount: U256::random() }.abi_encode();
+        data[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+
+        [
+            // non-payment TIP20 calls with known selectors
+            ITIP20::claimRewardsCall {}.abi_encode(),
+            ITIP20::permitCall {
+                owner: Address::random(), spender: Address::random(), value: U256::random(), deadline: U256::random(),
+                v: u8::MAX, r: B256::random(), s: B256::random() }.abi_encode(),
+            // non-payment TIP20 calls with unknown selectors
+            data,
+        ]
+    }
+
+    #[test]
+    fn test_is_payment() {
+        for calldata in payment_calldatas() {
+            assert!(ITIP20::ITIP20Calls::is_payment(&calldata))
+        }
+
+        for calldata in non_payment_calldatas() {
+            assert!(!ITIP20::ITIP20Calls::is_payment(&calldata))
+        }
+    }
+}
