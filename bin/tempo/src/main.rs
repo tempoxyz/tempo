@@ -223,22 +223,22 @@ fn main() -> eyre::Result<()> {
             .try_to_config()
             .wrap_err("failed to parse telemetry config")?
     {
-        let consensus_id = node_cmd
+        let consensus_pubkey = node_cmd
             .ext
             .consensus
             .public_key()
             .wrap_err("failed parsing consensus key")?
             .map(|k| k.to_string());
 
-        if let Some(id) = &consensus_id {
+        if let Some(pubkey) = &consensus_pubkey {
             // VictoriaMetrics does not support merging `extra_fields` query args like `extra_labels` for
             // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var
             // used at startup to capture contextual information.
             let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
             let new_attrs = if current.is_empty() {
-                format!("consensus_id={id}")
+                format!("consensus_pubkey={pubkey}")
             } else {
-                format!("{current},consensus_id={id}")
+                format!("{current},consensus_pubkey={pubkey}")
             };
 
             // SAFETY: called at startup before the OTEL SDK is initialised
@@ -323,7 +323,7 @@ fn main() -> eyre::Result<()> {
 
                 // Start the unified metrics exporter if configured
                 if let Some(config) = telemetry_config {
-                    let consensus_id = args
+                    let consensus_pubkey = args
                         .consensus
                         .public_key()
                         .wrap_err("failed parsing consensus key")?
@@ -333,7 +333,7 @@ fn main() -> eyre::Result<()> {
                         endpoint: config.metrics_prometheus_url,
                         interval: config.metrics_prometheus_interval,
                         auth_header: config.metrics_auth_header,
-                        consensus_id,
+                        consensus_pubkey,
                     };
 
                     install_prometheus_metrics(

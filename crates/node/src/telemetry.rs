@@ -20,7 +20,7 @@ pub struct PrometheusMetricsConfig {
     /// Optional Authorization header value
     pub auth_header: Option<String>,
     /// Consensus Identifier for this node.
-    pub consensus_id: Option<String>,
+    pub consensus_pubkey: Option<String>,
 }
 
 /// Spawns a task that periodically pushes both consensus and execution metrics to Victoria Metrics.
@@ -39,10 +39,10 @@ pub fn install_prometheus_metrics(
         .wrap_err("invalid metrics duration")?;
 
     let mut endpoint = config.endpoint;
-    if let Some(id) = config.consensus_id {
+    if let Some(pubkey) = config.consensus_pubkey {
         endpoint
             .query_pairs_mut()
-            .append_pair("extra_label", &format!("consensus_id={id}"));
+            .append_pair("extra_label", &format!("consensus_pubkey={pubkey}"));
     }
 
     let url = endpoint.to_string();
