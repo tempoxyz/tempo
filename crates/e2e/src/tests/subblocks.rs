@@ -53,6 +53,7 @@ fn subblocks_are_included_1_node() {
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
             node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+            node.consensus_config_mut().with_subblocks = true;
 
             let fee_recipient = Address::random();
             node.consensus_config_mut().fee_recipient = fee_recipient;
@@ -265,6 +266,7 @@ fn subblocks_are_included_with_failing_txs_5_nodes() {
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
             node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+            node.consensus_config_mut().with_subblocks = true;
 
             let fee_recipient = Address::random();
             node.consensus_config_mut().fee_recipient = fee_recipient;
@@ -440,6 +442,7 @@ fn oversized_subblock_txs_are_removed() {
 
         for node in &mut nodes {
             node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+            node.consensus_config_mut().with_subblocks = true;
         }
 
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
