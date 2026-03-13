@@ -1460,8 +1460,11 @@ def "main bench" [
 
     let weights = if $preset != "" { $PRESETS | get $preset } else { [0.0, 0.0, 0.0, 0.0] }
 
-    # Auto-derive tracing OTLP URL from TEMPO_TELEMETRY_URL if not explicitly set
-    let tracing_otlp = if $tracing_otlp == "" and ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
+    # Auto-derive tracing OTLP URL: prefer GRAFANA_TEMPO, fall back to TEMPO_TELEMETRY_URL
+    let tracing_otlp = if $tracing_otlp == "" and ($env.GRAFANA_TEMPO? | default "" | str length) > 0 {
+        let base = ($env.GRAFANA_TEMPO | str trim --right --char '/')
+        $"($base)/v1/traces"
+    } else if $tracing_otlp == "" and ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
         let base = ($env.TEMPO_TELEMETRY_URL | str trim --right --char '/')
         $"($base)/opentelemetry/v1/traces"
     } else {

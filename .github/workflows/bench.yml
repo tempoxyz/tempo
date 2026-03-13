@@ -346,10 +346,15 @@ jobs:
       BENCH_TRACY_OFFSET: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
       BENCH_COMMENT_ID: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
     steps:
       - name: Mask telemetry URL
         if: env.TEMPO_TELEMETRY_URL
         run: echo "::add-mask::$TEMPO_TELEMETRY_URL"
+
+      - name: Mask Grafana Tempo URL
+        if: env.GRAFANA_TEMPO
+        run: echo "::add-mask::$GRAFANA_TEMPO"
 
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
