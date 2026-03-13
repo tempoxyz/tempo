@@ -110,7 +110,8 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           OUTPUT=$(amp "$@" --stream-json 2>&1)
-          THREAD_ID=$(echo "$OUTPUT" | head -1 | jq -r '.session_id // empty' 2>/dev/null || true)
+          FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
+          THREAD_ID=$(echo "$FIRST_LINE" | jq -r '.session_id // empty' 2>/dev/null || true)
           if [ -n "$THREAD_ID" ]; then
             echo "🔗 Amp thread: https://ampcode.com/threads/${THREAD_ID}"
           fi
@@ -353,8 +354,15 @@ jobs:
             fi
           } > /tmp/pr-body.txt
 
+          # Skip PR if there are no commits between the branches
+          COMMITS_AHEAD=$(git rev-list --count origin/reth-main..reth-main-update-deps 2>/dev/null || echo "0")
+          if [ "$COMMITS_AHEAD" = "0" ]; then
+            echo "No commits ahead of reth-main — nothing to PR"
+            exit 0
+          fi
+
           # Check for existing PR
-          EXISTING_PR=$(gh pr list --head reth-main-update-deps --base reth-main --state open --json number --jq '.[0].number // empty')
+          EXISTING_PR="${{ steps.detect.outputs.existing_pr }}"
 
           if [ -n "$EXISTING_PR" ]; then
             echo "Updating existing PR #$EXISTING_PR"
