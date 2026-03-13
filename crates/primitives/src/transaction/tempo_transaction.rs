@@ -794,16 +794,6 @@ impl Decodable for TempoTransaction {
     }
 }
 
-#[cfg(feature = "reth")]
-impl reth_primitives_traits::InMemorySize for TempoTransaction {
-    fn size(&self) -> usize {
-        Self::size(self)
-    }
-}
-
-#[cfg(feature = "serde-bincode-compat")]
-impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTransaction {}
-
 // Custom Arbitrary implementation to ensure calls is never empty and CREATE validation passes
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
