@@ -170,9 +170,8 @@ where
 
 /// Helper to count payment and non-payment transactions
 fn count_transaction_types(transactions: &[TempoTxEnvelope]) -> (usize, usize) {
-    let payment_count = transactions.iter().filter(|tx| tx.is_payment()).count();
-    let non_payment_count = transactions.iter().filter(|tx| !tx.is_payment()).count();
-    (payment_count, non_payment_count)
+    let payment_count = transactions.iter().filter(|tx| tx.is_payment_v2()).count();
+    (payment_count, transactions.len() - payment_count)
 }
 
 /// Test with only a few mixed payment and non-payment transactions
@@ -320,7 +319,7 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
 
     for tx in &user_txs {
         assert!(
-            tx.is_payment(),
+            tx.is_payment_v2(),
             "All transactions should be payment transactions"
         );
     }
@@ -390,7 +389,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
 
     for tx in &user_txs {
         assert!(
-            !tx.is_payment(),
+            !tx.is_payment_v2(),
             "All transactions should be non-payment transactions"
         );
     }
