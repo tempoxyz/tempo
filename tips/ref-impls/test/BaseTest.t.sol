@@ -37,6 +37,7 @@ contract BaseTest is Test {
     bytes32 internal constant _TRANSFER_ROLE = keccak256("TRANSFER_ROLE");
     bytes32 internal constant _RECEIVE_WITH_MEMO_ROLE = keccak256("RECEIVE_WITH_MEMO_ROLE");
     bytes32 internal constant _BURN_BLOCKED_ROLE = keccak256("BURN_BLOCKED_ROLE");
+    bytes32 internal constant _BURN_AT_ROLE = keccak256("BURN_AT_ROLE");
 
     // Common test addresses
     address public admin = address(this);

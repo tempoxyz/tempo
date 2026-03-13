@@ -86,6 +86,15 @@ impl Precompile for TIP20Token {
             TIP20Call::TIP20(ITIP20Calls::ISSUER_ROLE(call)) => {
                 view(call, |_| Ok(Self::issuer_role()))
             }
+            TIP20Call::TIP20(ITIP20Calls::BURN_AT_ROLE(call)) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(
+                        ITIP20::BURN_AT_ROLECall::SELECTOR,
+                        self.storage.gas_used(),
+                    );
+                }
+                view(call, |_| Ok(Self::burn_at_role()))
+            }
             TIP20Call::TIP20(ITIP20Calls::BURN_BLOCKED_ROLE(call)) => {
                 view(call, |_| Ok(Self::burn_blocked_role()))
             }
@@ -133,6 +142,12 @@ impl Precompile for TIP20Token {
             }
             TIP20Call::TIP20(ITIP20Calls::burnWithMemo(call)) => {
                 mutate_void(call, msg_sender, |s, c| self.burn_with_memo(s, c))
+            }
+            TIP20Call::TIP20(ITIP20Calls::burnAt(call)) => {
+                if !self.storage.spec().is_t2() {
+                    return unknown_selector(ITIP20::burnAtCall::SELECTOR, self.storage.gas_used());
+                }
+                mutate_void(call, msg_sender, |s, c| self.burn_at(s, c))
             }
             TIP20Call::TIP20(ITIP20Calls::burnBlocked(call)) => {
                 mutate_void(call, msg_sender, |s, c| self.burn_blocked(s, c))
@@ -807,6 +822,35 @@ mod tests {
             // Test DOMAIN_SEPARATOR selector is gated
             let ds_calldata = ITIP20::DOMAIN_SEPARATORCall {}.abi_encode();
             let result = token.call(&ds_calldata, admin)?;
+            assert!(result.reverted);
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_at_selectors_gated_behind_t2() -> eyre::Result<()> {
+        // Pre-T2: burnAt and BURN_AT_ROLE should return unknown selector
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            // Test burnAt selector is gated
+            let burn_at_calldata = ITIP20::burnAtCall {
+                from: Address::random(),
+                amount: U256::from(100),
+            }
+            .abi_encode();
+            let result = token.call(&burn_at_calldata, admin)?;
+            assert!(result.reverted);
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+
+            // Test BURN_AT_ROLE selector is gated
+            let role_calldata = ITIP20::BURN_AT_ROLECall {}.abi_encode();
+            let result = token.call(&role_calldata, admin)?;
             assert!(result.reverted);
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
