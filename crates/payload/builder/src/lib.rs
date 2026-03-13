@@ -306,10 +306,6 @@ where
             // `valid_before` field.
             if has_expired_transactions(subblock, attributes.timestamp()) {
                 self.metrics.inc_subblocks_expired();
-                warn!(
-                    validator = %subblock.validator(),
-                    "dropping subblock with expired transactions"
-                );
                 return false;
             }
 
