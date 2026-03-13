@@ -348,6 +348,7 @@ impl DecodedValidatorV2 {
             index,
             addedAtHeight: added_at_height,
             deactivatedAtHeight: deleted_at_height,
+            ..
         }: IValidatorConfigV2::Validator,
     ) -> eyre::Result<Self> {
         let public_key = PublicKey::decode(publicKey.as_ref())

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{pin::Pin, time::Duration};
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use commonware_codec::ReadExt as _;
@@ -12,15 +12,15 @@ use commonware_p2p::{Address, AddressableManager, Provider};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::{StreamExt as _, channel::mpsc, future::try_join};
+use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::gauge::Gauge;
-use reth_ethereum::{network::NetworkInfo, rpc::eth::primitives::BlockNumHash};
-use reth_provider::{BlockIdReader as _, BlockNumReader as _, HeaderProvider as _};
+use reth_ethereum::network::NetworkInfo;
+use reth_provider::{BlockIdReader as _, HeaderProvider as _};
 use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tempo_primitives::TempoHeader;
-use tracing::{Level, Span, debug, error, info, info_span, instrument, warn};
+use tracing::{Span, debug, error, info_span, instrument, warn};
 
 use crate::{
     consensus::block::Block,
@@ -28,6 +28,14 @@ use crate::{
         read_active_and_known_peers_at_block_hash, read_active_and_known_peers_at_block_hash_v1,
     },
 };
+
+/// The interval on which the peer set is update during bootstrapping.
+/// Aggressive timing to get started.
+const BOOSTRAP_UPDATE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// The interval on which peer sets are freshed during normal operation.
+/// Relaxed timing during normal operation.
+const HEARTBEAT_UPDATE_INTERVAL: Duration = Duration::from_secs(30);
 
 use super::ingress::{Message, MessageWithCause};
 
@@ -47,6 +55,8 @@ where
     peers: Gauge,
 
     last_tracked_peer_set: Option<LastTrackedPeerSet>,
+
+    peer_update_timer: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
 }
 
 impl<TContext, TPeerManager> Actor<TContext, TPeerManager>
@@ -54,26 +64,6 @@ where
     TContext: Clock + Metrics + Spawner,
     TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
-    /// Returns the last tracked peer set.
-    ///
-    /// Must only be called after bootstrapping the initial peer set. Will
-    /// panic otherwise.
-    fn last_tracked_peer_set(&self) -> &LastTrackedPeerSet {
-        self.last_tracked_peer_set
-            .as_ref()
-            .expect("set after bootstrap")
-    }
-
-    /// Returns a mutable borrow of the last tracked peer set.
-    ///
-    /// Must be called only after bootstrapping the initial peer set. Will
-    /// panic otherwise.
-    fn last_tracked_peer_set_mut(&mut self) -> &mut LastTrackedPeerSet {
-        self.last_tracked_peer_set
-            .as_mut()
-            .expect("set after bootstrap")
-    }
-
     pub(super) fn new(
         context: TContext,
         super::Config {
@@ -91,8 +81,10 @@ where
             "how many peers are registered overall for the latest epoch",
             peers.clone(),
         );
+        let context = ContextCell::new(context);
+        let peer_update_timer = Box::pin(context.sleep(BOOSTRAP_UPDATE_INTERVAL));
         Self {
-            context: ContextCell::new(context),
+            context,
             oracle,
             execution_node,
             executor,
@@ -101,36 +93,16 @@ where
             mailbox,
             peers,
             last_tracked_peer_set: None,
+
+            peer_update_timer,
         }
     }
 
     async fn run(mut self) {
-        const MIN_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
-        const MAX_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
-
-        let mut bootstrapped = false;
-        let next_attempt = self.context.sleep(Duration::from_secs(0));
-        tokio::pin!(next_attempt);
-        let mut bootstrap_attempts = 0;
-
         let reason = 'event_loop: loop {
             tokio::select!(
-                _ = &mut next_attempt, if !bootstrapped => {
-                    bootstrap_attempts += 1;
-                    if self.bootstrap_peers(bootstrap_attempts).await.is_err() {
-                        let retry_after = MIN_RETRY.saturating_mul(bootstrap_attempts).min(MAX_RETRY);
-                        info_span!("bootstrap peers").in_scope(|| {
-                            info!(
-                                is_syncing = self.execution_node.network.is_syncing(),
-                                best_block = %tempo_telemetry_util::display_result(&self.execution_node.provider.best_block_number()),
-                                "failed bootstrapping validators; will retry",
-                            );
-                        });
-                        next_attempt.set(self.context.sleep(retry_after));
-                    } else {
-                        bootstrapped = true;
-                    }
-                }
+                biased;
+
                 msg = self.mailbox.next() => {
                     match msg {
                         None => break 'event_loop eyre::eyre!("mailbox closed unexpectedly"),
@@ -142,15 +114,114 @@ where
                         }
                     }
                 }
+
+                // Perform aggressive retries if no peer set is tracked yet.
+                // Otherwise just do it every minute.
+                _ = &mut self.peer_update_timer => {
+                    let _ = self.update_peer_set(None).await;
+                    self.reset_peer_update_timer();
+                }
             )
         };
         info_span!("peer_manager").in_scope(|| error!(%reason,"agent shutting down"));
     }
+    pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
+        spawn_cell!(self.context, self.run().await)
+    }
 
-    /// Bootstraps and registers initial peer set from the latest DKG outcome
+    #[instrument(parent = &cause, skip_all)]
+    async fn handle_message(&mut self, cause: Span, message: Message) -> eyre::Result<()> {
+        match message {
+            Message::Track { id, peers } => {
+                AddressableManager::track(&mut self.oracle, id, peers).await;
+            }
+            Message::Overwrite { peers } => {
+                AddressableManager::overwrite(&mut self.oracle, peers).await;
+            }
+            Message::PeerSet { id, response } => {
+                let result = Provider::peer_set(&mut self.oracle, id).await;
+                let _ = response.send(result);
+            }
+            Message::Subscribe { response } => {
+                let receiver = Provider::subscribe(&mut self.oracle).await;
+                let _ = response.send(receiver);
+            }
+            Message::Finalized(update) => match *update {
+                Update::Block(block, ack) => {
+                    let _ = self.update_peer_set(Some(block)).await;
+                    ack.acknowledge();
+                    self.reset_peer_update_timer();
+                }
+                Update::Tip { .. } => {}
+            },
+        }
+        Ok(())
+    }
+
+    /// Updates the peer set.
+    #[instrument(
+        skip_all,
+        fields(
+            block.height = block.as_ref().map(|b| tracing::field::display(b.height())),
+        ),
+        err,
+    )]
+    async fn update_peer_set(&mut self, block: Option<Block>) -> eyre::Result<()> {
+        if let Some(block) = &block
+            && let Err(reason) = self.executor.subscribe_finalized(block.height()).await
+        {
+            warn!(
+                %reason,
+                "unable to clarify whether the finalized block was already \
+                forwarded to execution layer; will try to read validator \
+                config contract, but it will likely fail",
+            );
+        }
+
+        let maybe_latest_finalized_header = read_highest_finalized_header(&self.execution_node);
+        let reference_timestamp = match &block {
+            Some(block) => maybe_latest_finalized_header.ok().map_or_else(
+                || block.timestamp(),
+                |header| header.timestamp().max(block.timestamp()),
+            ),
+            None => read_highest_finalized_header(&self.execution_node)
+                .wrap_err("could not determine a timestamp to determine peer behavior")?
+                .timestamp(),
+        };
+
+        // Post T2 behavior: do a best-effort update of the peerset, to whatever
+        // is available as long as it is newer than what we are already tracking.
+        //
+        // Also run this if we do not yet have any peer set available.
+        if self
+            .execution_node
+            .chain_spec()
+            .is_t2_active_at_timestamp(reference_timestamp)
+            || self.last_tracked_peer_set.is_none()
+        {
+            self.refresh_peers()
+                .await
+                .wrap_err("failed refreshing peer set")?;
+        } else if let Some(block) = block {
+            let height = block.number();
+            if let Some(peers) = read_peer_set_if_boundary(
+                &self.context,
+                &self.epoch_strategy,
+                &self.execution_node,
+                block,
+            )
+            .await
+            {
+                self.track_or_overwrite(height, peers).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads the peers given the latest finalized state.
     /// and finalized state.
-    #[instrument(skip_all, fields(attempt = _attempt), err)]
-    async fn bootstrap_peers(&mut self, _attempt: u32) -> eyre::Result<()> {
+    #[instrument(skip_all, err)]
+    async fn refresh_peers(&mut self) -> eyre::Result<()> {
         // Always take whatever is higher: the last finalized height as per
         // consensus layer (greater than 0 only on restarts with populated
         // consensus state), or the highest finalized block number from the
@@ -170,6 +241,15 @@ where
             .wrap_err("unable to read highest finalized block from execution layer")?
             .unwrap_or(self.last_finalized_height.get())
             .max(self.last_finalized_height.get());
+
+        // Short circuit - no need to read the same state if there is no new data.
+        if self
+            .last_tracked_peer_set
+            .as_ref()
+            .is_some_and(|tracked| tracked.height >= highest_finalized)
+        {
+            return Ok(());
+        }
 
         let epoch_info = self
             .epoch_strategy
@@ -194,23 +274,11 @@ where
                 .get()
         };
 
-        // NOTE: retry relies on the knowledge that `last_finalized_block` is
-        // passed to the executor actor to backfill finalized blocks that might
-        // have been lost on restart because the execution layer did not persist
-        // them in time.
-        let (latest_boundary_header, highest_finalized_header) = try_join(
-            async {
-                read_header_at_height(&self.execution_node, latest_boundary)
-                    .await
-                    .wrap_err("failed reading latest boundary header")
-            },
-            async {
-                read_header_at_height(&self.execution_node, highest_finalized)
-                    .await
-                    .wrap_err("failed reading highest finalized header")
-            },
-        )
-        .await?;
+        let latest_boundary_header = read_header_at_height(&self.execution_node, latest_boundary)
+            .wrap_err("failed reading latest boundary header")?;
+        let highest_finalized_header =
+            read_header_at_height(&self.execution_node, highest_finalized)
+                .wrap_err("failed reading highest finalized header")?;
 
         let onchain_outcome =
             OnchainDkgOutcome::read(&mut latest_boundary_header.extra_data().as_ref())
@@ -234,154 +302,56 @@ where
         )
         .wrap_err("unable to read initial peer set from execution layer")?;
 
-        self.peers.set(peers.len() as i64);
-
-        info!(
-            epoch = %onchain_outcome.epoch,
-            %latest_boundary,
-            %highest_finalized,
-            ?peers,
-            "bootstrapped initial peer set from DKG outcome on latest boundary \
-            and block state from highest finalized block",
-        );
-
-        let last_tracked_peer_set = LastTrackedPeerSet {
-            height: highest_finalized,
-            peers,
-        };
-        self.oracle
-            .track(
-                last_tracked_peer_set.height,
-                last_tracked_peer_set.peers.clone(),
-            )
+        self.track_or_overwrite(highest_finalized_header.number(), peers)
             .await;
-        self.last_tracked_peer_set = Some(last_tracked_peer_set);
 
         Ok(())
     }
 
-    pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
-        spawn_cell!(self.context, self.run().await)
-    }
-
-    #[instrument(parent = &cause, skip_all)]
-    async fn handle_message(&mut self, cause: Span, message: Message) -> eyre::Result<()> {
-        match message {
-            Message::Track { id, peers } => {
-                AddressableManager::track(&mut self.oracle, id, peers).await;
-            }
-            Message::Overwrite { peers } => {
-                AddressableManager::overwrite(&mut self.oracle, peers).await;
-            }
-            Message::PeerSet { id, response } => {
-                let result = Provider::peer_set(&mut self.oracle, id).await;
-                let _ = response.send(result);
-            }
-            Message::Subscribe { response } => {
-                let receiver = Provider::subscribe(&mut self.oracle).await;
-                let _ = response.send(receiver);
-            }
-            Message::Finalized(update) => match *update {
-                Update::Block(block, ack) => {
-                    self.update_peer_set(block).await;
-                    ack.acknowledge();
-                }
-                Update::Tip { .. } => {}
-            },
-        }
-        Ok(())
-    }
-
-    #[instrument(
-        skip_all,
-        fields(
-            block.height = %block.height(),
-        ),
-    )]
-    async fn update_peer_set(&mut self, block: Block) {
-        if let Err(reason) = self.executor.subscribe_finalized(block.height()).await {
-            warn!(
-                %reason,
-                "unable to clarify whether the finalized block was already \
-                forwarded to execution layer; will try to read validator \
-                config contract, but it will likely fail",
-            );
-        }
-
-        // Post T2 behavior: do a best-effort update of the peerset, to whatever
-        // is available as long as it is newer than what we are already tracking.
-        let (height, peers) = if self
-            .execution_node
-            .chain_spec()
-            .is_t2_active_at_timestamp(block.timestamp())
-        {
-            let highest_finalized = match self.execution_node.provider.finalized_block_num_hash() {
-                Err(error) => {
-                    warn!(
-                        reason = %eyre::Report::new(error),
-                        "failed reading latest finalized block number and hash \
-                        from execution layer ",
-                    );
-                    return;
-                }
-                Ok(None) => {
-                    debug!("no finalized block block state set; returning");
-                    return;
-                }
-                Ok(Some(num_hash)) => num_hash,
-            };
-            let peers = if highest_finalized.number > self.last_tracked_peer_set().height {
-                read_peers_at_block_num_hash(
-                    &self.execution_node,
-                    &self.epoch_strategy,
-                    highest_finalized,
-                )
-                .ok()
-            } else {
-                None
-            };
-            (highest_finalized.number, peers)
-
-        // Pre T2 behavior: wait until the boundary is available.
-        } else {
-            let height = block.number();
-            let peers = read_peer_set_if_boundary(
-                &self.context,
-                &self.epoch_strategy,
-                &self.execution_node,
-                block,
-            )
-            .await;
-            (height, peers)
-        };
-
-        if let Some(peers) = &peers {
-            // Overwrite the addresses if the peers are unchanged.
-            if peers.keys() == self.last_tracked_peer_set().peers.keys() {
-                if peers.values() != self.last_tracked_peer_set().peers.values() {
+    async fn track_or_overwrite(
+        &mut self,
+        height: u64,
+        peers: ordered::Map<PublicKey, commonware_p2p::Address>,
+    ) {
+        if let Some(tracked) = &self.last_tracked_peer_set {
+            // Overwrite the addresses if only the addresses are changed.
+            if peers.keys() == tracked.peers.keys() {
+                if peers.values() != tracked.peers.values() {
                     self.oracle.overwrite(peers.clone()).await;
                 }
             // Otherwise track the new peers.
             } else {
                 self.oracle.track(height, peers.clone()).await;
             }
+        } else {
+            self.oracle.track(height, peers.clone()).await;
         }
 
         // Always bump the last-tracked peer set. If the peers are unchanged
         // this only updates the height, but we use the height to determine if
         // state should be read or not.
-        self.last_tracked_peer_set_mut().height = height;
-        if let Some(peers) = peers {
-            self.last_tracked_peer_set_mut().peers = peers;
-        }
+        self.last_tracked_peer_set
+            .replace(LastTrackedPeerSet { height, peers });
 
         if let Some(tracked) = &self.last_tracked_peer_set {
             self.peers.set(tracked.peers.len() as i64);
         }
 
         debug!(
-            last_tracked_peer_set = ?self.last_tracked_peer_set,
+            last_tracked_peer_set = ?self.last_tracked_peer_set.as_ref().expect("just set it"),
             "latest tracked peerset",
+        );
+    }
+
+    fn reset_peer_update_timer(&mut self) {
+        // Perform aggressive retries if no peer set is tracked yet.
+        // Otherwise just do it every minute.
+        self.peer_update_timer = Box::pin(
+            self.context.sleep(
+                self.last_tracked_peer_set
+                    .as_ref()
+                    .map_or(BOOSTRAP_UPDATE_INTERVAL, |_| HEARTBEAT_UPDATE_INTERVAL),
+            ),
         );
     }
 }
@@ -393,10 +363,7 @@ struct LastTrackedPeerSet {
 }
 
 #[instrument(skip_all, fields(height), err)]
-async fn read_header_at_height(
-    execution_node: &TempoFullNode,
-    height: u64,
-) -> eyre::Result<TempoHeader> {
+fn read_header_at_height(execution_node: &TempoFullNode, height: u64) -> eyre::Result<TempoHeader> {
     execution_node
         .provider
         .header_by_number(height)
@@ -405,54 +372,23 @@ async fn read_header_at_height(
         .wrap_err_with(|| format!("failed reading header at height `{height}`"))
 }
 
-#[instrument(
-    skip_all,
-    fields(block.hash = %num_hash.hash, block.number = %num_hash.number),
-    err(level = Level::WARN),
-)]
-fn read_peers_at_block_num_hash(
-    execution_node: &TempoFullNode,
-    epoch_strategy: &FixedEpocher,
-    num_hash: BlockNumHash,
-) -> eyre::Result<ordered::Map<PublicKey, Address>> {
-    let epoch_info = epoch_strategy
-        .containing(Height::new(num_hash.number))
-        .expect("epoch strategy covers all heights");
-    let latest_boundary = if epoch_info.last().get() == num_hash.number {
-        num_hash.number
-    } else {
-        epoch_info.epoch().previous().map_or(0, |prev| {
-            epoch_strategy
-                .last(prev)
-                .expect("valid for all epochs")
-                .get()
-        })
-    };
-
-    let boundary_header = execution_node
+#[instrument(skip_all, fields(height), err)]
+fn read_highest_finalized_header(execution_node: &TempoFullNode) -> eyre::Result<TempoHeader> {
+    let highest_finalized = execution_node
         .provider
-        .header_by_number(latest_boundary)
+        .finalized_block_hash()
         .map_err(eyre::Report::new)
-        .and_then(|maybe| maybe.ok_or_eyre("unknown header"))
-        .wrap_err_with(|| {
-            format!("failed reading header for last boundary height `{latest_boundary}`")
-        })?;
-
-    let onchain_outcome = OnchainDkgOutcome::read(&mut boundary_header.extra_data().as_ref())
-        .expect("invariant: boundary blocks must contain DKG outcome");
-
-    let peers_as_per_dkg = ordered::Set::from_iter_dedup(
-        onchain_outcome
-            .players()
-            .iter()
-            .cloned()
-            .chain(onchain_outcome.next_players().iter().cloned()),
-    );
-
-    let peers =
-        read_active_and_known_peers_at_block_hash(execution_node, &peers_as_per_dkg, num_hash.hash)
-            .wrap_err("failed reading peers from on-chain state")?;
-    Ok(peers)
+        .and_then(|h| h.ok_or_eyre("execution layer has no record of any finalization hashes"))?;
+    execution_node
+        .provider
+        .header_by_hash_or_number(highest_finalized.into())
+        .map_err(eyre::Report::new)
+        .and_then(|h| {
+            h.ok_or_eyre(
+                "execution layer did not have the header for the advertised finalized hash",
+            )
+        })
+        .wrap_err_with(|| format!("failed reading header for hash `{highest_finalized}`"))
 }
 
 async fn read_peer_set_if_boundary(

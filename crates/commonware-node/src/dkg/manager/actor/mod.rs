@@ -1709,7 +1709,7 @@ pub(crate) fn read_re_dkg_epoch(node: &TempoFullNode, digest: Digest) -> eyre::R
     {
         read_validator_config_at_block_hash(node, digest.0, |config: &ValidatorConfigV2| {
             config
-                .get_next_full_dkg_ceremony()
+                .get_next_network_identity_rotation_epoch()
                 .map_err(eyre::Report::new)
         })
         .map(|(_, _, epoch)| epoch)
