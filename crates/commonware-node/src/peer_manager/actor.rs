@@ -31,7 +31,7 @@ use crate::{
 
 /// The interval on which the peer set is update during bootstrapping.
 /// Aggressive timing to get started.
-const BOOSTRAP_UPDATE_INTERVAL: Duration = Duration::from_secs(5);
+const BOOTSTRAP_UPDATE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The interval on which peer sets are freshed during normal operation.
 /// Relaxed timing during normal operation.
@@ -82,7 +82,7 @@ where
             peers.clone(),
         );
         let context = ContextCell::new(context);
-        let peer_update_timer = Box::pin(context.sleep(BOOSTRAP_UPDATE_INTERVAL));
+        let peer_update_timer = Box::pin(context.sleep(BOOTSTRAP_UPDATE_INTERVAL));
         Self {
             context,
             oracle,
@@ -350,7 +350,7 @@ where
             self.context.sleep(
                 self.last_tracked_peer_set
                     .as_ref()
-                    .map_or(BOOSTRAP_UPDATE_INTERVAL, |_| HEARTBEAT_UPDATE_INTERVAL),
+                    .map_or(BOOTSTRAP_UPDATE_INTERVAL, |_| HEARTBEAT_UPDATE_INTERVAL),
             ),
         );
     }
