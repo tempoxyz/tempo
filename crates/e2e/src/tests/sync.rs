@@ -161,7 +161,9 @@ fn joins_from_snapshot() {
                         assert!(
                             epoch >= last_epoch_before_stop.saturating_sub(1),
                             "when starting from snapshot, older epochs must never \
-                            had consensus engines running"
+                            had consensus engines running; entered epoch `{epoch}` \
+                            but the snapshot was supposed to be in  \
+                            `{last_epoch_before_stop}`"
                         );
                     }
                 }
