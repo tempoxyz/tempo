@@ -26,8 +26,10 @@ use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node_config::SigningKey;
-use tempo_commonware_node_config::validator::{self as validator, ValidatorConfig};
+use tempo_commonware_node_config::{
+    SigningKey,
+    validator::{self as validator, ValidatorConfig},
+};
 use tempo_contracts::precompiles::{
     IValidatorConfig, IValidatorConfigV2, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
