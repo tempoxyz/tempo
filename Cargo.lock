@@ -12438,6 +12438,7 @@ dependencies = [
  "alloy-serde",
  "alloy-signer",
  "alloy-signer-local",
+ "alloy-sol-types",
  "arbitrary",
  "base64 0.22.1",
  "derive_more",
@@ -12456,6 +12457,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempo-contracts",
  "tracing-subscriber 0.3.22",
 ]
 
