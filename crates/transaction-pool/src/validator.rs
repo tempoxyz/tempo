@@ -1,5 +1,6 @@
 use crate::{
     amm::AmmLiquidityCache,
+    metrics::TempoValidatorMetrics,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use alloy_consensus::Transaction;
@@ -83,6 +84,8 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) max_tempo_authorizations: usize,
     /// Cache of AMM liquidity for validator tokens.
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
+    /// Validator metrics for observability.
+    pub(crate) metrics: TempoValidatorMetrics,
 }
 
 impl<Client> TempoTransactionValidator<Client>
@@ -100,6 +103,7 @@ where
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             amm_liquidity_cache,
+            metrics: TempoValidatorMetrics::default(),
         }
     }
 
@@ -660,6 +664,24 @@ where
         &self,
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
+        state_provider: impl StateProvider,
+    ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        let start = std::time::Instant::now();
+        let outcome = self.validate_one_inner(origin, transaction, state_provider);
+        self.metrics.validation_duration_seconds.record(start.elapsed());
+
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            let reason = classify_rejection_reason(err);
+            self.metrics.inc_rejected(reason);
+        }
+
+        outcome
+    }
+
+    fn validate_one_inner(
+        &self,
+        origin: TransactionOrigin,
+        transaction: TempoPooledTransaction,
         mut state_provider: impl StateProvider,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
         // Get the current hardfork based on tip timestamp
@@ -1016,6 +1038,66 @@ where
             }
             outcome => outcome,
         }
+    }
+}
+
+/// Classifies a pool transaction rejection error into a static reason string for metrics.
+fn classify_rejection_reason(err: &InvalidPoolTransactionError) -> &'static str {
+    match err {
+        InvalidPoolTransactionError::Consensus(inner) => match inner {
+            InvalidTransactionError::TxTypeNotSupported => "system_tx",
+            InvalidTransactionError::NonceNotConsistent { .. } => "nonce_too_low",
+            InvalidTransactionError::InsufficientFunds(_) => "insufficient_funds",
+            _ => "consensus_other",
+        },
+        InvalidPoolTransactionError::OversizedData { .. } => "oversized",
+        InvalidPoolTransactionError::Other(boxed) => {
+            match boxed.as_any().downcast_ref::<TempoPoolTransactionError>() {
+                Some(tempo_err) => match tempo_err {
+                    TempoPoolTransactionError::FeeCapBelowMinBaseFee { .. } => "fee_too_low",
+                    TempoPoolTransactionError::InvalidFeeToken(_) => "invalid_fee_token",
+                    TempoPoolTransactionError::PausedFeeToken(_) => "paused_fee_token",
+                    TempoPoolTransactionError::MissingFeeToken => "invalid_fee_token",
+                    TempoPoolTransactionError::BlackListedFeePayer { .. } => "blacklisted",
+                    TempoPoolTransactionError::InsufficientLiquidity(_) => {
+                        "insufficient_liquidity"
+                    }
+                    TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. } => {
+                        "insufficient_gas"
+                    }
+                    TempoPoolTransactionError::NonZeroValue => "non_zero_value",
+                    TempoPoolTransactionError::InvalidValidBefore { .. }
+                    | TempoPoolTransactionError::InvalidValidAfter { .. }
+                    | TempoPoolTransactionError::ExpiringNonceReplay
+                    | TempoPoolTransactionError::ExpiringNonceMissingValidBefore
+                    | TempoPoolTransactionError::ExpiringNonceNonceNotZero
+                    | TempoPoolTransactionError::ExpiringNonceValidBeforeTooFar { .. } => {
+                        "temporal_conditional"
+                    }
+                    TempoPoolTransactionError::Keychain(_)
+                    | TempoPoolTransactionError::AccessKeyExpired { .. }
+                    | TempoPoolTransactionError::KeyAuthorizationExpired { .. }
+                    | TempoPoolTransactionError::SpendingLimitExceeded { .. } => "keychain",
+                    TempoPoolTransactionError::LegacyKeychainPostT1C
+                    | TempoPoolTransactionError::V2KeychainPreT1C => "keychain_version",
+                    TempoPoolTransactionError::InvalidFeePayerSignature => "invalid_fee_payer",
+                    TempoPoolTransactionError::SubblockNonceKey => "subblock_nonce_key",
+                    TempoPoolTransactionError::TooManyAuthorizations { .. }
+                    | TempoPoolTransactionError::TooManyCalls { .. }
+                    | TempoPoolTransactionError::NoCalls
+                    | TempoPoolTransactionError::CreateCallNotFirst
+                    | TempoPoolTransactionError::CreateCallWithAuthorizationList
+                    | TempoPoolTransactionError::CallInputTooLarge { .. }
+                    | TempoPoolTransactionError::TooManyAccessListAccounts { .. }
+                    | TempoPoolTransactionError::TooManyStorageKeysPerAccount { .. }
+                    | TempoPoolTransactionError::TooManyTotalStorageKeys { .. }
+                    | TempoPoolTransactionError::TooManyTokenLimits { .. } => "field_limits",
+                    TempoPoolTransactionError::ExceedsNonPaymentLimit => "exceeds_gas_limit",
+                },
+                None => "other",
+            }
+        }
+        _ => "other",
     }
 }
 

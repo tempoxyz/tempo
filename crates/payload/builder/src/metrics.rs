@@ -75,6 +75,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+    /// Time to fetch the best transactions iterator from the pool.
+    pub(crate) pool_fetch_duration_seconds: Histogram,
 }
 
 impl TempoPayloadBuilderMetrics {

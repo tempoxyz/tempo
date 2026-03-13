@@ -111,3 +111,20 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Number of paused transactions evicted due to the global cap.
     pub paused_pool_cap_evicted: Counter,
 }
+
+/// Metrics for the Tempo transaction pool validator.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.validator")]
+pub struct TempoValidatorMetrics {
+    /// Total time spent validating a single transaction in seconds.
+    pub validation_duration_seconds: Histogram,
+}
+
+impl TempoValidatorMetrics {
+    /// Increments the rejection counter with the given reason label.
+    #[inline]
+    pub fn inc_rejected(&self, reason: &'static str) {
+        metrics::counter!("transaction_pool_validator_rejected_total", "reason" => reason)
+            .increment(1);
+    }
+}
