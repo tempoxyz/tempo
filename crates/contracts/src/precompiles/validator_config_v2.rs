@@ -1,6 +1,9 @@
 use alloc::string::String;
 
-pub use IValidatorConfigV2::IValidatorConfigV2Errors as ValidatorConfigV2Error;
+pub use IValidatorConfigV2::{
+    IValidatorConfigV2Errors as ValidatorConfigV2Error,
+    IValidatorConfigV2Events as ValidatorConfigV2Event,
+};
 
 crate::sol! {
     /// Validator Config V2 interface for managing consensus validators with append-only,
@@ -23,6 +26,7 @@ crate::sol! {
             address validatorAddress;
             string ingress;
             string egress;
+            address feeRecipient;
             uint64 index;
             uint64 addedAtHeight;
             uint64 deactivatedAtHeight;
@@ -31,9 +35,6 @@ crate::sol! {
         // =====================================================================
         // View functions
         // =====================================================================
-
-        /// Get the complete set of validators (including deleted)
-        function getAllValidators() external view returns (Validator[] memory validators);
 
         /// Get only active validators (deactivatedAtHeight == 0)
         function getActiveValidators() external view returns (Validator[] memory validators);
@@ -44,7 +45,7 @@ crate::sol! {
         /// Get the contract owner
         function owner() external view returns (address);
 
-        /// Get total count of validators ever added (including deleted)
+        /// Get total count of validators ever added (including deactivated)
         function validatorCount() external view returns (uint64);
 
         /// Get validator by index
@@ -56,8 +57,8 @@ crate::sol! {
         /// Get validator by public key
         function validatorByPublicKey(bytes32 publicKey) external view returns (Validator memory);
 
-        /// Get the epoch for next full DKG ceremony
-        function getNextFullDkgCeremony() external view returns (uint64);
+        /// Get the epoch for next network identity rotation (full DKG ceremony)
+        function getNextNetworkIdentityRotationEpoch() external view returns (uint64);
 
         /// Check if V2 has been initialized
         function isInitialized() external view returns (bool);
@@ -72,39 +73,46 @@ crate::sol! {
             bytes32 publicKey,
             string calldata ingress,
             string calldata egress,
+            address feeRecipient,
             bytes calldata signature
-        ) external;
+        ) external returns (uint64 index);
 
         /// Deactivate a validator (owner or validator)
-        function deactivateValidator(address validatorAddress) external;
+        function deactivateValidator(uint64 idx) external;
 
         /// Rotate a validator to new identity (owner or validator)
         function rotateValidator(
-            address validatorAddress,
+            uint64 idx,
             bytes32 publicKey,
             string calldata ingress,
             string calldata egress,
             bytes calldata signature
         ) external;
 
+        /// Update fee recipient.
+        function setFeeRecipient(
+            uint64 idx,
+            address feeRecipient
+        ) external;
+
         /// Update IP addresses (owner or validator)
         function setIpAddresses(
-            address validatorAddress,
+            uint64 idx,
             string calldata ingress,
             string calldata egress
         ) external;
 
         /// Transfer validator ownership to new address (owner or validator)
         function transferValidatorOwnership(
-            address currentAddress,
+            uint64 idx,
             address newAddress
         ) external;
 
         /// Transfer contract ownership (owner only)
         function transferOwnership(address newOwner) external;
 
-        /// Set the epoch for next full DKG ceremony (owner only)
-        function setNextFullDkgCeremony(uint64 epoch) external;
+        /// Set the epoch for next network identity rotation via full DKG ceremony (owner only)
+        function setNetworkIdentityRotationEpoch(uint64 epoch) external;
 
         /// Migrate a single validator from V1 (owner only)
         function migrateValidator(uint64 idx) external;
@@ -113,12 +121,38 @@ crate::sol! {
         function initializeIfMigrated() external;
 
         // =====================================================================
+        // Events
+        // =====================================================================
+
+        event ValidatorAdded(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey, string ingress, string egress, address feeRecipient);
+        event ValidatorDeactivated(uint64 indexed index, address indexed validatorAddress);
+        event ValidatorRotated(
+            uint64 indexed index,
+            uint64 indexed deactivatedIndex,
+            address indexed validatorAddress,
+            bytes32 oldPublicKey,
+            bytes32 newPublicKey,
+            string ingress,
+            string egress,
+            address caller
+        );
+        event FeeRecipientUpdated(uint64 indexed index, address feeRecipient, address caller);
+        event IpAddressesUpdated(uint64 indexed index, string ingress, string egress, address caller);
+        event ValidatorOwnershipTransferred(uint64 indexed index, address indexed oldAddress, address indexed newAddress, address caller);
+        event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
+        event ValidatorMigrated(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey);
+        event NetworkIdentityRotationEpochSet(uint64 indexed previousEpoch, uint64 indexed nextEpoch);
+        event Initialized(uint64 height);
+        event SkippedValidatorMigration(uint64 indexed index, address indexed validatorAddress, bytes32 publicKey);
+
+        // =====================================================================
         // Errors
         // =====================================================================
 
         error AlreadyInitialized();
         error IngressAlreadyExists(string ingress);
         error InvalidMigrationIndex();
+        error InvalidOwner();
         error InvalidPublicKey();
         error InvalidSignature();
         error InvalidSignatureFormat();
@@ -129,8 +163,8 @@ crate::sol! {
         error NotIpPort(string input, string backtrace);
         error PublicKeyAlreadyExists();
         error Unauthorized();
-        error ValidatorAlreadyDeleted();
         error AddressAlreadyHasValidator();
+        error ValidatorAlreadyDeactivated();
         error ValidatorNotFound();
     }
 }
@@ -152,8 +186,8 @@ impl ValidatorConfigV2Error {
         Self::ValidatorNotFound(IValidatorConfigV2::ValidatorNotFound {})
     }
 
-    pub const fn validator_already_deleted() -> Self {
-        Self::ValidatorAlreadyDeleted(IValidatorConfigV2::ValidatorAlreadyDeleted {})
+    pub const fn validator_already_deactivated() -> Self {
+        Self::ValidatorAlreadyDeactivated(IValidatorConfigV2::ValidatorAlreadyDeactivated {})
     }
 
     pub const fn invalid_public_key() -> Self {
@@ -186,6 +220,10 @@ impl ValidatorConfigV2Error {
 
     pub const fn invalid_migration_index() -> Self {
         Self::InvalidMigrationIndex(IValidatorConfigV2::InvalidMigrationIndex {})
+    }
+
+    pub const fn invalid_owner() -> Self {
+        Self::InvalidOwner(IValidatorConfigV2::InvalidOwner {})
     }
 
     pub fn not_ip(input: String, backtrace: String) -> Self {
