@@ -586,7 +586,28 @@ jobs:
                   },
                 });
                 const logsUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(logsPane)}&orgId=1`;
-                grafanaSection = `\n\n### Observability\n\n- [Metrics dashboard](${grafanaUrl})\n- [Logs](${logsUrl})\n`;
+                const tracesPane = JSON.stringify({
+                  g39: {
+                    datasource: 'cf59s9gws8z5se',
+                    queries: [{
+                      refId: 'A',
+                      datasource: { type: 'tempo', uid: 'cf59s9gws8z5se' },
+                      queryType: 'traceqlSearch',
+                      limit: 20,
+                      tableType: 'traces',
+                      metricsQueryType: 'range',
+                      serviceMapUseNativeHistograms: false,
+                      filters: [
+                        { id: '0ff61fb0', operator: '=', scope: 'resource', tag: 'benchmark_id', value: [benchId], valueType: 'string', isCustomValue: false },
+                        { id: 'service-name', tag: 'service.name', operator: '=', scope: 'resource', value: ['reth'], valueType: 'string', isCustomValue: false },
+                      ],
+                    }],
+                    range: { from: String(fromMs), to: String(toMs) },
+                    compact: false,
+                  },
+                });
+                const tracesUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(tracesPane)}&orgId=1`;
+                grafanaSection = `\n\n### Observability\n\n- [Metrics dashboard](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
               }
             } catch (e) {}
 
