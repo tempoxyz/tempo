@@ -445,6 +445,9 @@ def run-bench-single [
         "TRACY_SAMPLING_HZ=1 "
     } else { "" }
 
+    # OTEL resource attributes for benchmark identification in logs/traces
+    let otel_attrs = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($benchmark_id),benchmark_run=($run_label),run_type=($run_type),git_ref=($git_ref) "
+
     # Start tempo node in background (optionally wrapped with samply)
     let full_samply_args = if $samply {
         $samply_args | append ["--save-only" "--presymbolicate" "--output" $"($results_dir)/profile-($run_label).json.gz"]
@@ -453,7 +456,7 @@ def run-bench-single [
     let node_cmd_str = ($node_cmd | str join " ")
     let profiling_label = if $samply { " (samply)" } else if $tracy != "off" { $" \(tracy=($tracy)\)" } else { "" }
     print $"  Starting node: ($tempo_bin | path basename)($profiling_label)"
-    job spawn { sh -c $"($tracy_env_prefix)($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)] ($line)" } }
+    job spawn { sh -c $"($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)] ($line)" } }
 
     # Wait for RPC
     sleep 2sec
@@ -1432,7 +1435,7 @@ def "main bench" [
     --tracy-filter: string = "debug"                # Tracy tracing filter level
     --tracy-seconds: int = 30                       # Tracy capture duration limit in seconds (0 = unlimited)
     --tracy-offset: int = 120                       # Seconds to wait before starting tracy capture (default: 120)
-    --tracing-otlp: string = ""                     # OTLP endpoint for tracing (e.g. http://10.10.0.150:10428/insert/opentelemetry/v1/traces)
+    --tracing-otlp: string = ""                     # OTLP endpoint for tracing (auto-derived from TEMPO_TELEMETRY_URL if not set)
 ] {
     validate-mode $mode
 
@@ -1456,6 +1459,14 @@ def "main bench" [
     }
 
     let weights = if $preset != "" { $PRESETS | get $preset } else { [0.0, 0.0, 0.0, 0.0] }
+
+    # Auto-derive tracing OTLP URL from TEMPO_TELEMETRY_URL if not explicitly set
+    let tracing_otlp = if $tracing_otlp == "" and ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
+        let base = ($env.TEMPO_TELEMETRY_URL | str trim --right --char '/')
+        $"($base)/opentelemetry/v1/traces"
+    } else {
+        $tracing_otlp
+    }
 
     # Handle --force: delete existing localnet data to force full re-init
     if $force {
@@ -2336,7 +2347,7 @@ def main [] {
     print "  --tracy-filter <FILTER>  Tracy tracing filter level (default: debug)"
     print "  --tracy-seconds <N>      Tracy capture duration limit in seconds (default: 30, 0 = unlimited)"
     print "  --tracy-offset <N>       Seconds to wait before starting tracy capture (default: 120)"
-    print "  --tracing-otlp <URL>     OTLP endpoint for tracing (e.g. http://10.10.0.150:10428/insert/opentelemetry/v1/traces)"
+    print "  --tracing-otlp <URL>     OTLP endpoint for tracing (auto-derived from TEMPO_TELEMETRY_URL if not set)"
     print "  --reset                  Reset localnet before starting"
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"

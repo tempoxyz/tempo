@@ -345,7 +345,12 @@ jobs:
       BENCH_TRACY_SECONDS: ${{ needs.tempo-bench-ack.outputs.tracy-seconds }}
       BENCH_TRACY_OFFSET: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
       BENCH_COMMENT_ID: ${{ needs.tempo-bench-ack.outputs.comment-id }}
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
     steps:
+      - name: Mask telemetry URL
+        if: env.TEMPO_TELEMETRY_URL
+        run: echo "::add-mask::$TEMPO_TELEMETRY_URL"
+
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
 
@@ -512,7 +517,6 @@ jobs:
             --feature "$FEATURE_REF" \
             --bench-datadir /reth-bench \
             --tune \
-            --tracing-otlp "http://10.10.0.150:10428/insert/opentelemetry/v1/traces" \
             $([ "$BENCH_SAMPLY" = "true" ] && echo "--samply" || true) \
             $([ "$BENCH_TRACY" != "off" ] && echo "--tracy $BENCH_TRACY --tracy-seconds $BENCH_TRACY_SECONDS --tracy-offset $BENCH_TRACY_OFFSET" || true)
 
@@ -551,7 +555,7 @@ jobs:
               summary = '⚠️ Benchmark completed but failed to read summary.';
             }
 
-            // Compute Grafana URL from summary.json
+            // Compute Grafana URLs from summary.json
             let grafanaSection = '';
             try {
               const meta = JSON.parse(fs.readFileSync(`${resultsDir}/summary.json`, 'utf8'));
@@ -561,7 +565,23 @@ jobs:
                 const fromMs = refEpoch * 1000;
                 const toMs = Date.now();
                 const grafanaUrl = `https://tempoxyz.grafana.net/d/tikv2tn/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}&var-job=tempo-bench`;
-                grafanaSection = `\n\n### Grafana Dashboard\n\n[View real-time metrics](${grafanaUrl})\n`;
+                const logsPane = JSON.stringify({
+                  pw4: {
+                    datasource: 'ffdsfozmb3eo0e',
+                    queries: [{
+                      refId: 'A',
+                      datasource: { type: 'victoriametrics-logs-datasource', uid: 'ffdsfozmb3eo0e' },
+                      editorMode: 'code',
+                      expr: `benchmark_id:${benchId}`,
+                      queryType: 'instant',
+                    }],
+                    range: { from: String(fromMs), to: String(toMs) },
+                    panelsState: { logs: { sortOrder: 'Descending' } },
+                    compact: false,
+                  },
+                });
+                const logsUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(logsPane)}&orgId=1`;
+                grafanaSection = `\n\n### Observability\n\n- [Metrics dashboard](${grafanaUrl})\n- [Logs](${logsUrl})\n`;
               }
             } catch (e) {}
 
