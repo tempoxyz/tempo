@@ -110,11 +110,15 @@ fn validator_loses_consensus_state_becomes_observer() {
             context.sleep(Duration::from_secs(1)).await;
             let metrics = context.encode();
 
-            // Should have dealings in epoch 1.
-            if let Some(v) = metric_value(&metrics, &uid, "_marshal_processed_height")
-                && v >= 30
-            {
-                break 'setup;
+            // Dealings in the first epoch.
+            if let Some(epoch) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch") {
+                assert_eq!(epoch, 0);
+
+                if let Some(v) = metric_value(&metrics, &uid, "_dkg_manager_ceremony_acks_sent")
+                    && v > 0
+                {
+                    break 'setup;
+                }
             }
         }
 
@@ -123,35 +127,39 @@ fn validator_loses_consensus_state_becomes_observer() {
         let old_prefix = &validators[target_idx].consensus_config().partition_prefix;
         let new_prefix = format!("{old_prefix}_wiped");
         let cfg = validators[target_idx].consensus_config_mut();
+
+        // Also remove the share from config since post-setup we may still be in Epoch 0
         cfg.partition_prefix = new_prefix;
+        cfg.share.take();
 
         validators[target_idx].start(&context).await;
 
         let uid = validators[target_idx].metric_prefix();
 
-        // The node should finalize the current ceremony as an observer (hitting
-        // MissingPlayerDealing) and then recover a share in the next epoch.
-        let mut detected_missing_dealings = false;
-
         'recover: loop {
             context.sleep(Duration::from_secs(1)).await;
             let metrics = context.encode();
 
-            // The node should report a missing dealed share at finalization.
-            if !detected_missing_dealings
-                && let Some(v) =
-                    metric_value(&metrics, &uid, "_dkg_manager_missing_player_dealings_total")
-                && v > 0
-            {
-                detected_missing_dealings = true;
-            }
+            if let Some(epoch) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch") {
+                assert!(epoch < 3);
 
-            // Once the node becomes a signer again, it has recovered.
-            if let Some(v) = metric_value(&metrics, &uid, "_epoch_manager_how_often_signer_total")
-                && v > 0
-            {
-                assert!(detected_missing_dealings);
-                break 'recover;
+                // Only receive shares in Epoch 1
+                if epoch == 1 {
+                    if let Some(v) =
+                        metric_value(&metrics, &uid, "_dkg_manager_how_often_dealer_total")
+                    {
+                        assert_eq!(v, 0);
+                    }
+                }
+
+                // Participate as a Dealer in Epoch 2
+                if let Some(v) = metric_value(&metrics, &uid, "_dkg_manager_how_often_dealer_total")
+                    && v > 0
+                {
+                    assert_eq!(v, 1);
+                    assert_eq!(epoch, 2);
+                    break 'recover;
+                }
             }
         }
     });

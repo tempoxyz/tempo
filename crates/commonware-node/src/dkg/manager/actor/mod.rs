@@ -738,7 +738,6 @@ where
                             without consensus state? Finalizing the current round as an observer \
                             and will not have a share in the next epoch"
                         );
-                        self.metrics.missing_player_dealings.inc();
                         None
                     }
                     Err(error) => {
@@ -1135,7 +1134,6 @@ where
                                 without consensus state? Finalizing the current round as an observer \
                                 and will not have a share in the next epoch"
                             );
-                            self.metrics.missing_player_dealings.inc();
                             None
                         }
                         Err(error) => {
@@ -1333,8 +1331,6 @@ struct Metrics {
     dealings_read: Gauge,
     bad_dealings: Gauge,
 
-    missing_player_dealings: Counter,
-
     failures: Counter,
     successes: Counter,
 
@@ -1411,7 +1407,7 @@ impl Metrics {
         let shares_received = Gauge::default();
         context.register(
             "ceremony_shares_received",
-            "the number of shares received by this node as a playr in the current ceremony",
+            "the number of shares received by this node as a player in the current ceremony",
             shares_received.clone(),
         );
 
@@ -1441,13 +1437,6 @@ impl Metrics {
             "ceremony_bad_dealings",
             "the number of blocks where decoding and verifying dealings failed in the current ceremony",
             bad_dealings.clone(),
-        );
-
-        let missing_player_dealings = Counter::default();
-        context.register(
-            "missing_player_dealings",
-            "the number of times a share was not recoverable due to missing dealings",
-            missing_player_dealings.clone(),
         );
 
         let rounds_skipped = Counter::default();
@@ -1480,7 +1469,6 @@ impl Metrics {
             successes,
             rounds_skipped,
             attempts_to_read_validator_contract,
-            missing_player_dealings,
         }
     }
 
