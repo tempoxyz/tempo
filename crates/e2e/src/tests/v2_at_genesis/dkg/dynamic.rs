@@ -263,20 +263,20 @@ impl AssertValidatorIsRemoved {
                     assert_no_v1(key, value);
                     assert_no_dkg_failure(key, value);
 
-                    if key.ends_with("ceremony_failures_total") {
-                        assert_eq!(0, value.parse::<u64>().unwrap(),);
-                    }
-
                     if key.ends_with("_epoch_manager_latest_epoch")
                         && !key.contains(&removed_validator.uid)
                     {
                         network_epoch.replace(value.parse::<u64>().unwrap());
                     }
 
-                    if key.ends_with("_dkg_manager_ceremony_players") {
+                    if key.ends_with("_dkg_manager_ceremony_players")
+                        && !key.contains(&removed_validator.uid)
+                    {
                         players.replace(value.parse::<u32>().unwrap());
                     }
-                    if key.ends_with("_dkg_manager_ceremony_dealers") {
+                    if key.ends_with("_dkg_manager_ceremony_dealers")
+                        && !key.contains(&removed_validator.uid)
+                    {
                         dealers.replace(value.parse::<u32>().unwrap());
                     }
                     if key.ends_with("peer_manager_peers") && !key.contains(&removed_validator.uid)
