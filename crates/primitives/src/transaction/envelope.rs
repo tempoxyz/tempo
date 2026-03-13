@@ -677,13 +677,14 @@ mod tests {
 
     #[rustfmt::skip]
     /// Returns valid ABI-encoded calldata for every recognized TIP-20 payment selector.
-    fn payment_calldatas() -> Vec<Bytes> {
+    fn payment_calldatas() -> [Bytes; 9] {
         let (to, from, amount, memo) = (Address::random(), Address::random(), U256::random(), B256::random());
-        vec![
+        [
             ITIP20::transferCall { to, amount }.abi_encode().into(),
             ITIP20::transferWithMemoCall { to, amount, memo }.abi_encode().into(),
             ITIP20::transferFromCall { from, to, amount }.abi_encode().into(),
             ITIP20::transferFromWithMemoCall { from, to, amount, memo }.abi_encode().into(),
+            ITIP20::approveCall { spender: to, amount }.abi_encode().into(),
             ITIP20::mintCall { to, amount }.abi_encode().into(),
             ITIP20::mintWithMemoCall { to, amount, memo }.abi_encode().into(),
             ITIP20::burnCall { amount }.abi_encode().into(),

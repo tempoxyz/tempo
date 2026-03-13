@@ -1,6 +1,7 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 use alloy_primitives::{Address, U256};
+use alloy_sol_types::{SolCall, SolType};
 
 /// USD currency string constant.
 pub const USD_CURRENCY: &str = "USD";
@@ -184,8 +185,7 @@ impl ITIP20::ITIP20Calls {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
-        fn is_call<C: alloy_sol_types::SolCall>(input: &[u8]) -> bool {
-            use alloy_sol_types::SolType;
+        fn is_call<C: SolCall>(input: &[u8]) -> bool {
             input.first_chunk::<4>() == Some(&C::SELECTOR)
                 && input.len()
                     == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
@@ -195,6 +195,7 @@ impl ITIP20::ITIP20Calls {
             || is_call::<ITIP20::transferWithMemoCall>(input)
             || is_call::<ITIP20::transferFromCall>(input)
             || is_call::<ITIP20::transferFromWithMemoCall>(input)
+            || is_call::<ITIP20::approveCall>(input)
             || is_call::<ITIP20::mintCall>(input)
             || is_call::<ITIP20::mintWithMemoCall>(input)
             || is_call::<ITIP20::burnCall>(input)
@@ -321,23 +322,22 @@ impl TIP20Error {
 }
 
 #[cfg(test)]
-#[rustfmt::skip]
 mod test {
     use super::*;
-    use alloy_primitives::{Address, B256, U256};
-    use alloy_sol_types::SolCall;
     use alloc::vec::Vec;
+    use alloy_primitives::{Address, B256, U256};
 
+    #[rustfmt::skip]
     /// Returns valid ABI-encoded calldata for every recognized TIP-20 payment selector.
-    fn payment_calldatas() -> [Vec<u8>; 8] {
-        let (to, from, amount, memo) =
-            (Address::random(), Address::random(), U256::random(), B256::random());
+    fn payment_calldatas() -> [Vec<u8>; 9] {
+        let (to, from, amount, memo) = (Address::random(), Address::random(), U256::random(), B256::random());
 
         [
             ITIP20::transferCall { to, amount }.abi_encode(),
             ITIP20::transferWithMemoCall { to, amount, memo }.abi_encode(),
             ITIP20::transferFromCall { from, to, amount }.abi_encode(),
             ITIP20::transferFromWithMemoCall { from, to, amount, memo }.abi_encode(),
+            ITIP20::approveCall { spender: to, amount }.abi_encode(),
             ITIP20::mintCall { to, amount }.abi_encode(),
             ITIP20::mintWithMemoCall { to, amount, memo }.abi_encode(),
             ITIP20::burnCall { amount }.abi_encode(),
@@ -345,6 +345,7 @@ mod test {
         ]
     }
 
+    #[rustfmt::skip]
     /// Returns ABI-encoded calldata for TIP-20 selectors NOT recognized as payments.
     fn non_payment_calldatas() -> [Vec<u8>; 3] {
         let mut data = ITIP20::transferCall { to: Address::random(), amount: U256::random() }.abi_encode();
