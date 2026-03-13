@@ -334,26 +334,6 @@ impl alloy_rlp::Decodable for PrimitiveSignature {
     }
 }
 
-#[cfg(feature = "reth-codec")]
-impl reth_codecs::Compact for PrimitiveSignature {
-    fn to_compact<B>(&self, buf: &mut B) -> usize
-    where
-        B: alloy_rlp::BufMut + AsMut<[u8]>,
-    {
-        let bytes = self.to_bytes();
-        // Delegate to Bytes::to_compact which handles variable-length encoding
-        bytes.to_compact(buf)
-    }
-
-    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
-        // Delegate to Bytes::from_compact which handles variable-length decoding
-        let (bytes, rest) = Bytes::from_compact(buf, len);
-        let signature = Self::from_bytes(&bytes)
-            .expect("Failed to decode PrimitiveSignature from compact encoding");
-        (signature, rest)
-    }
-}
-
 /// Keychain signature version.
 ///
 /// Determines how the signature hash is computed for the inner signature.
@@ -752,26 +732,6 @@ impl alloy_rlp::Decodable for TempoSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
         Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
-    }
-}
-
-#[cfg(feature = "reth-codec")]
-impl reth_codecs::Compact for TempoSignature {
-    fn to_compact<B>(&self, buf: &mut B) -> usize
-    where
-        B: alloy_rlp::BufMut + AsMut<[u8]>,
-    {
-        let bytes = self.to_bytes();
-        // Delegate to Bytes::to_compact which handles variable-length encoding
-        bytes.to_compact(buf)
-    }
-
-    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
-        // Delegate to Bytes::from_compact which handles variable-length decoding
-        let (bytes, rest) = Bytes::from_compact(buf, len);
-        let signature = Self::from_bytes(&bytes)
-            .expect("Failed to decode TempoSignature from compact encoding");
-        (signature, rest)
     }
 }
 

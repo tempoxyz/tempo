@@ -1,6 +1,6 @@
 [package]
 name = "tempo-contracts"
-description = "TODO:"
+description = "Tempo blockchain contract bindings and ABI definitions"
 
 version.workspace = true
 edition.workspace = true
