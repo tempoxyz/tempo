@@ -157,6 +157,7 @@ pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .expect("`./genesis/andantino.json` must be present and deserializable");
     TempoChainSpec::from_genesis(genesis)
         .with_default_follow_url("wss://rpc.testnet.tempo.xyz")
+        .with_default_snapshot_base_url("https://snapshots.tempoxyz.dev/42429")
         .into()
 });
 
@@ -165,6 +166,7 @@ pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .expect("`./genesis/moderato.json` must be present and deserializable");
     TempoChainSpec::from_genesis(genesis)
         .with_default_follow_url("wss://rpc.moderato.tempo.xyz")
+        .with_default_snapshot_base_url("https://snapshots.tempoxyz.dev/42431")
         .into()
 });
 
@@ -173,6 +175,7 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .expect("`./genesis/presto.json` must be present and deserializable");
     TempoChainSpec::from_genesis(genesis)
         .with_default_follow_url("wss://rpc.presto.tempo.xyz")
+        .with_default_snapshot_base_url("https://snapshots.tempoxyz.dev/4217")
         .into()
 });
 
@@ -193,12 +196,19 @@ pub struct TempoChainSpec {
     pub info: TempoGenesisInfo,
     /// Default RPC URL for following this chain.
     pub default_follow_url: Option<&'static str>,
+    /// Default snapshot base URL for downloading this chain's snapshot.
+    pub default_snapshot_base_url: Option<&'static str>,
 }
 
 impl TempoChainSpec {
     /// Returns the default RPC URL for following this chain.
     pub fn default_follow_url(&self) -> Option<&'static str> {
         self.default_follow_url
+    }
+
+    /// Returns the default snapshot base URL for downloading this chain's snapshot.
+    pub fn default_snapshot_base_url(&self) -> Option<&'static str> {
+        self.default_snapshot_base_url
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
@@ -224,12 +234,19 @@ impl TempoChainSpec {
             }),
             info,
             default_follow_url: None,
+            default_snapshot_base_url: None,
         }
     }
 
     /// Sets the default follow URL for this chain spec.
     pub fn with_default_follow_url(mut self, url: &'static str) -> Self {
         self.default_follow_url = Some(url);
+        self
+    }
+
+    /// Sets the default snapshot base URL for this chain spec.
+    pub fn with_default_snapshot_base_url(mut self, url: &'static str) -> Self {
+        self.default_snapshot_base_url = Some(url);
         self
     }
 
@@ -252,6 +269,7 @@ impl From<ChainSpec> for TempoChainSpec {
             }),
             info: TempoGenesisInfo::default(),
             default_follow_url: None,
+            default_snapshot_base_url: None,
         }
     }
 }
