@@ -25,11 +25,13 @@ impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelop
 
 #[cfg(feature = "reth-codec")]
 mod codec {
-    use crate::transaction::envelope::{
-        TempoTxEnvelope, TempoTxType, TEMPO_SYSTEM_TX_SIGNATURE,
+    use crate::{
+        TempoSignature, TempoTransaction,
+        transaction::{
+            envelope::{TEMPO_SYSTEM_TX_SIGNATURE, TempoTxEnvelope, TempoTxType},
+            tt_signed::AASigned,
+        },
     };
-    use crate::transaction::tt_signed::AASigned;
-    use crate::{TempoSignature, TempoTransaction};
 
     use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy};
     use alloy_eips::eip2718::EIP7702_TX_TYPE_ID;
@@ -184,10 +186,7 @@ mod codec {
     impl reth_db_api::table::Compress for TempoTxEnvelope {
         type Compressed = alloc::vec::Vec<u8>;
 
-        fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(
-            &self,
-            buf: &mut B,
-        ) {
+        fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
             let _ = Compact::to_compact(self, buf);
         }
     }

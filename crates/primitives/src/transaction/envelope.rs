@@ -90,6 +90,12 @@ impl TryFrom<TempoTxType> for TxType {
     }
 }
 
+impl alloy_consensus::InMemorySize for TempoTxType {
+    fn size(&self) -> usize {
+        size_of::<Self>()
+    }
+}
+
 impl TempoTxEnvelope {
     /// Returns the fee token preference if this is a fee token transaction
     pub fn fee_token(&self) -> Option<Address> {

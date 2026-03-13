@@ -5,8 +5,8 @@ mod tempo_transaction;
 mod tt_signed;
 
 #[cfg(feature = "reth-codec")]
-mod tt_signature;
+mod key_authorization;
 #[cfg(feature = "reth-codec")]
 mod tt_authorization;
 #[cfg(feature = "reth-codec")]
-mod key_authorization;
+mod tt_signature;

@@ -31,12 +31,18 @@ pub type Block = alloy_consensus::Block<TempoTxEnvelope, TempoHeader>;
 /// Tempo block body.
 pub type BlockBody = alloy_consensus::BlockBody<TempoTxEnvelope, TempoHeader>;
 
+#[cfg(feature = "reth")]
+mod reth_compat;
+
+/// Tempo receipt.
+/// Implements reth trait bounds when the `reth` feature is enabled.
+#[cfg(feature = "reth")]
+pub use reth_compat::TempoReceipt;
+#[cfg(not(feature = "reth"))]
+pub type TempoReceipt<L = alloy_primitives::Log> = alloy_consensus::EthereumReceipt<TempoTxType, L>;
+
 /// A [`NodePrimitives`] implementation for Tempo.
+/// Implements [`reth_primitives_traits::NodePrimitives`] when the `reth` feature is enabled.
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct TempoPrimitives;
-
-#[cfg(feature = "reth")]
-mod reth_compat;
-#[cfg(feature = "reth")]
-pub use reth_compat::TempoReceipt;
